@@ -2,6 +2,15 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.4.0] - 2026-03-03
+
+### Changed
+- `lager install` deploys box code via HTTPS git clone instead of SSH, removing the need for GitHub deploy keys
+- `lager update` automatically migrates existing boxes from SSH to HTTPS remote URLs
+
+### Improved
+- Open-source release: repository is publicly accessible, enabling installation and updates without GitHub credentials
+
 ## [0.3.28] - 2026-02-20
 
 ### Added
