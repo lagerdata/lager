@@ -1,0 +1,29 @@
+---
+title: "Version 0.4.2"
+description: "March 04, 2026"
+---
+
+## <u>Improvements</u>
+
+- `lager install` and `lager uninstall` now provide detailed SSH error diagnostics (connection refused, no route to host, host key changes)
+- `lager uninstall` supports `--dry-run` flag to preview what would be removed without making changes
+- Deployment script uses SSH connection multiplexing for reliability over VPN connections
+- Shared `host_in_known_hosts` utility extracted to `ssh_utils` for consistent host key handling across commands
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.4.2
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.4.2/)

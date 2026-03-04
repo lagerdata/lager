@@ -2,6 +2,14 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.4.2] - 2026-03-04
+
+### Improved
+- `lager install` and `lager uninstall` now provide detailed SSH error diagnostics (connection refused, no route to host, host key changes)
+- `lager uninstall` supports `--dry-run` flag to preview what would be removed without making changes
+- Deployment script uses SSH connection multiplexing for reliability over VPN connections
+- Shared `host_in_known_hosts` utility extracted to `ssh_utils` for consistent host key handling across commands
+
 ## [0.4.1] - 2026-03-03
 
 ### Fixed
