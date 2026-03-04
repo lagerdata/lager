@@ -21,20 +21,8 @@ All notable changes to the Lager platform are documented here. For detailed rele
 - `lager install` deploys box code via HTTPS git clone instead of SSH, removing the need for GitHub deploy keys
 - `lager update` automatically migrates existing boxes from SSH to HTTPS remote URLs
 
-### Removed
-- Lager Factory web application and `lager factory` CLI command
-
 ### Improved
 - Open-source release: repository is publicly accessible, enabling installation and updates without GitHub credentials
-
-## [0.3.28] - 2026-02-20
-
-### Added
-- Lager Factory web application with interactive Step-based test runner
-- Multi-box dashboard with SQLite persistence for lines, stations, and run records
-- WebSocket-based station execution with operator interaction (buttons, text input, pass/fail prompts)
-- Real-time stdout/stderr streaming and webcam integration during station runs
-- Results and statistics pages for test run tracking
 
 ## [0.3.27] - 2026-02-19
 

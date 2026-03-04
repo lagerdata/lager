@@ -15,7 +15,6 @@ Lager provides a client-server architecture where:
 lager/
 ├── cli/                    # Command-line interface (includes deployment scripts)
 ├── box/                    # Box hardware control software
-├── factory/                # Factory test dashboard (Flask web app)
 ├── test/                   # Integration and API tests
 └── docs/                   # Documentation (Mintlify docs + deployment reference)
 ```

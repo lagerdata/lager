@@ -74,9 +74,6 @@ Thumbs.db
 # Project specific
 .lager
 
-# Factory runtime data
-factory/webapp/data/scripts/manifest.json
-
 # Build artifacts
 cli/build/
 cli/dist/
