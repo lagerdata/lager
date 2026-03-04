@@ -39,6 +39,7 @@ RUN apt-get update && apt-get install -y unzip && rm -rf /var/lib/apt/lists/* \
 	&& wget -q https://files.labjack.com/installers/LJM/Linux/x64/release/LabJack-LJM_2024-06-10.zip \
 	&& unzip LabJack-LJM_2024-06-10.zip \
 	&& ./labjack_ljm_installer.run -- --without-kipling --no-restart-device-rules \
+	&& ldconfig \
 	&& rm -f LabJack-LJM_2024-06-10.zip labjack_ljm_installer.run \
 	&& test -f /usr/local/lib/libLabJackM.so
 
