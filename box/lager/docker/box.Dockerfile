@@ -33,12 +33,14 @@ RUN apt-get update && apt-get install -y ca-certificates libusb-1.0-0-dev libude
 
 
 # LabJack LJM SDK -- proprietary, downloaded at build time
-# See: https://labjack.com/pages/support?doc=/software-driver/installer-downloads/ljm-software-installers-t4-t7-digit/
-RUN wget -q https://labjack.com/sites/default/files/software/labjack_ljm_software_2019_07_16_x86_64.tar.gz \
-	&& tar -xf labjack_ljm_software_2019_07_16_x86_64.tar.gz \
-	&& cd labjack_ljm_software_2019_07_16_x86_64 \
-	&& ./labjack_ljm_installer.run; exit 0
-RUN rm -rf /labjack_ljm_software_2019_07_16_x86_64*
+# See: https://support.labjack.com/docs/ljm-software-installer-downloads-t4-t7-t8-digit
+# Docker install pattern from: https://github.com/labjack/ljm_docker
+RUN apt-get update && apt-get install -y unzip && rm -rf /var/lib/apt/lists/* \
+	&& wget -q https://files.labjack.com/installers/LJM/Linux/x64/release/LabJack-LJM_2024-06-10.zip \
+	&& unzip LabJack-LJM_2024-06-10.zip \
+	&& ./labjack_ljm_installer.run -- --without-kipling --no-restart-device-rules \
+	&& rm -f LabJack-LJM_2024-06-10.zip labjack_ljm_installer.run \
+	&& test -f /usr/local/lib/libLabJackM.so
 
 RUN /usr/local/bin/python -m pip install --upgrade pip \
 && pip3 install --upgrade setuptools \
