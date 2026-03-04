@@ -110,8 +110,7 @@
             "pages": [
               "source/reference/cli/webcam",
               "source/reference/cli/arm",
-              "source/reference/cli/web-apps",
-              "source/reference/cli/factory"
+              "source/reference/cli/web-apps"
             ]
           }
         ]
@@ -193,6 +192,7 @@
           {
             "group": "Version History",
             "pages": [
+              "source/release-notes/v0.4.1",
               "source/release-notes/v0.4.0",
               "source/release-notes/v0.3.28",
               "source/release-notes/v0.3.27",

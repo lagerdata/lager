@@ -1,0 +1,26 @@
+---
+title: "Version 0.4.1"
+description: "March 03, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- `lager install` GitHub connectivity check now uses `git ls-remote` instead of `curl`, fixing deployment failures on Lager Boxes where `curl` is not installed (e.g. Ubuntu 24.04)
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.4.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.4.1/)
