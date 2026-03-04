@@ -12,7 +12,36 @@ import os
 import subprocess
 import time
 from pathlib import Path
+from typing import Optional
 import click
+
+
+def host_in_known_hosts(ip: str) -> bool:
+    """Check if a host IP exists in ~/.ssh/known_hosts.
+
+    Used to distinguish between a genuinely new host (not yet in known_hosts)
+    and a host whose key has changed (already in known_hosts but mismatched).
+
+    Args:
+        ip: IP address to look up
+
+    Returns:
+        True if the host already has an entry in known_hosts, False otherwise
+    """
+    known_hosts_path = Path.home() / ".ssh" / "known_hosts"
+    if not known_hosts_path.exists():
+        return False
+
+    try:
+        result = subprocess.run(
+            ["ssh-keygen", "-F", ip],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
+    except Exception:
+        return False
 
 
 class SSHConnectionPool:
