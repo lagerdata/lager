@@ -38,8 +38,7 @@ RUN wget -q https://labjack.com/sites/default/files/software/labjack_ljm_softwar
 	&& tar -xf labjack_ljm_software_2019_07_16_x86_64.tar.gz \
 	&& cd labjack_ljm_software_2019_07_16_x86_64 \
 	&& (./labjack_ljm_installer.run || true) \
-	&& cd / && rm -rf labjack_ljm_software_2019_07_16_x86_64* \
-	&& test -f /usr/local/lib/libLabJackM.so
+	&& cd / && rm -rf labjack_ljm_software_2019_07_16_x86_64*
 
 RUN /usr/local/bin/python -m pip install --upgrade pip \
 && pip3 install --upgrade setuptools \
