@@ -558,7 +558,7 @@ UDEV_RULES_DIR="${SCRIPT_DIR}/../../box/udev_rules"
 
     # Verify GitHub HTTPS connectivity
     print_info "Checking GitHub connectivity..."
-    if ssh "${BOX_USER}@${BOX_IP}" "curl -s --max-time 10 -o /dev/null -w '%{http_code}' https://github.com/lagerdata/lager | grep -q '200\|301'" 2>/dev/null; then
+    if ssh "${BOX_USER}@${BOX_IP}" "git ls-remote --exit-code https://github.com/lagerdata/lager.git HEAD" >/dev/null 2>&1; then
         print_success "GitHub is reachable via HTTPS"
     else
         print_error "Cannot reach GitHub from the box"
