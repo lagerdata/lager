@@ -76,7 +76,6 @@ This document tracks what test coverage exists across all Lager features and the
 - **Power management**: Supply, Battery, Solar, and ELoad all have full 3-suite coverage with tolerance checks, boundary tests, and safety teardown.
 - **I/O domain**: 17 Python API tests covering ADC, DAC, GPIO, and PWM with real value assertions and safety teardown. 3 FT232H/Aardvark API tests are gold standard with 100+ assertions each.
 - **MCP server**: 384 unit tests (mocked, no hardware) plus 64+ integration tests covering 165+ tools across 25 unit and 11 integration test files.
-- **Factory webapp**: 16 pytest test modules plus 46 test scripts covering webapp internals, step runner protocol, and dashboard readiness.
 
 ## Test File Inventory
 
@@ -105,10 +104,6 @@ test/
 ├── unit/                 # Local unit tests
 │   ├── blufi/            # 1 file: BluFi protocol unit tests
 │   └── cli/              # 2 files: Keithley locking, performance
-├── factory/              # Factory webapp tests (pytest + scripts)
-│   ├── *.py              # 16 pytest test modules
-│   ├── manual_scripts/   # 10 manual test scripts
-│   └── scripts/          # 36 test scenario scripts (dashboard + factory)
 └── framework/            # Test utilities
     ├── harness.sh        # Bash test framework
     ├── colors.sh         # Bash color utilities
@@ -350,12 +345,6 @@ test/
 | `cli/test_keithley_locking.py` | VISA lock state diagnostic |
 | `cli/test_performance_improvements.py` | Config caching, connection pooling |
 
-#### Factory Webapp (`test/factory/` -- 16 pytest modules + 46 scripts)
-
-Pytest modules: `test_app.py`, `test_config.py`, `test_api_routes.py`, `test_box_manager.py`, `test_box_data_client.py`, `test_box_lines_routes.py`, `test_box_stations_routes.py`, `test_box_station_runner_routes.py`, `test_dashboard_routes.py`, `test_results_routes.py`, `test_webcam_routes.py`, `test_script_runner.py`, `test_script_store.py`, `test_step_lib_factory.py`, `test_step_parser.py`, `test_step_runner.py`
-
-Test scripts: `manual_scripts/` (10 scripts), `scripts/dashboard/` (12 scripts), `scripts/factory/` (24 scripts)
-
 #### Test Framework (`test/framework/` -- 4 files)
 
 | File | What it provides |
@@ -383,8 +372,6 @@ python -m pytest test/mcp/unit/ -v --import-mode=importlib -c /dev/null
 python -m pytest test/mcp/integration/ -v --import-mode=importlib -c /dev/null \
     --box1 <YOUR-BOX> --box3 <YOUR-BOX>
 
-# Factory tests
-python -m pytest test/factory/ -v
 ```
 
 <!-- Copyright 2024-2026 Lager Data LLC -->

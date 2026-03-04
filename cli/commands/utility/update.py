@@ -304,8 +304,8 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
             ctx.exit(0)
 
     # Initialize progress bar (only in non-verbose mode)
-    # Total steps: connectivity, repo check, git state check, fetch, checkout/pull, flatten, udev, sudoers, docker stop, [force image removal], docker build, cleanup, /etc/lager, docker start, binaries, jlink, verify, version, factory sync
-    total_steps = 21 if force else 20
+    # Total steps: connectivity, repo check, git state check, fetch, checkout/pull, flatten, udev, sudoers, docker stop, [force image removal], docker build, cleanup, /etc/lager, docker start, binaries, jlink, verify, version
+    total_steps = 20 if force else 19
     progress = None if verbose else ProgressBar(total_steps=total_steps)
 
     if not verbose:
@@ -1205,85 +1205,6 @@ fi
     # Update local .lager file with version (version was already written to box above)
     if box_cli_version and box:
         update_box_version(box, box_cli_version)
-
-    # Step 14: Sync .lager boxes to factory dashboard (if factory is deployed)
-    if progress:
-        progress.update("Syncing factory...")
-    log('Syncing factory dashboard...', nl=False)
-
-    try:
-        # Check if factory directory exists on the host (container was stopped earlier)
-        factory_check = run_ssh_command_with_output(
-            'test -d /home/lagerdata/factory',
-            timeout_secs=10
-        )
-
-        if factory_check.returncode != 0:
-            log_status('Syncing factory dashboard...', 'SKIPPED (no factory)', 'yellow')
-        else:
-            import json as json_mod
-            # Build boxes.json from all saved boxes (dict keyed by box name)
-            saved_boxes = list_boxes()
-            boxes_dict = {}
-            for name, box_info in sorted(saved_boxes.items()):
-                if isinstance(box_info, dict):
-                    ip = box_info.get('ip', '')
-                    user = box_info.get('user', 'lagerdata')
-                else:
-                    ip = box_info
-                    user = 'lagerdata'
-
-                if not ip or ip == 'unknown':
-                    continue
-
-                # For the box being updated, use localhost
-                # so the factory container can reach its own lager container
-                if name == box_name:
-                    entry_ip = '127.0.0.1'
-                else:
-                    entry_ip = ip
-
-                boxes_dict[name] = {
-                    'name': name,
-                    'ip': entry_ip,
-                    'ssh_user': user,
-                    'container': 'lager',
-                }
-
-            boxes_json = json_mod.dumps(boxes_dict, indent=2)
-            # Escape single quotes for shell
-            escaped_json = boxes_json.replace("'", "'\\''")
-
-            # Write boxes.json to the host filesystem
-            write_result = run_ssh_command_with_output(
-                f"echo '{escaped_json}' > /home/lagerdata/factory/webapp/boxes.json",
-                timeout_secs=10
-            )
-
-            if write_result.returncode != 0:
-                log_status('Syncing factory dashboard...', 'FAILED (write)', 'red')
-            else:
-                # Start factory container (it was stopped by the "stop all" step)
-                start_result = run_ssh_command_with_output(
-                    'cd /home/lagerdata/factory && docker compose up -d',
-                    timeout_secs=60
-                )
-                if start_result.returncode != 0:
-                    log_status('Syncing factory dashboard...', 'FAILED (start)', 'red')
-                else:
-                    # Copy boxes.json into the running container and restart
-                    # so it picks up the new config (docker cp works even without bind mounts)
-                    cp_result = run_ssh_command_with_output(
-                        'docker cp /home/lagerdata/factory/webapp/boxes.json factory:/factory/webapp/boxes.json && '
-                        'docker restart factory',
-                        timeout_secs=30
-                    )
-                    if cp_result.returncode == 0:
-                        log_status('Syncing factory dashboard...', f'OK ({len(boxes_dict)} boxes)', 'green')
-                    else:
-                        log_status('Syncing factory dashboard...', 'FAILED (copy)', 'red')
-    except Exception as e:
-        log_status('Syncing factory dashboard...', f'FAILED ({e})', 'red')
 
     # Finish progress bar
     if progress:

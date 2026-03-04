@@ -72,7 +72,7 @@ from .commands.measurement.energy import energy
 from .commands.box import hello, boxes, instruments, nets, ssh
 
 # Utility commands (from commands.utility package)
-from .commands.utility import defaults, binaries, update, pip, exec_, logs, webcam, install, uninstall, factory
+from .commands.utility import defaults, binaries, update, pip, exec_, logs, webcam, install, uninstall
 
 def _decode_environment():
     for key in os.environ:
@@ -141,7 +141,6 @@ cli.add_command(logs)
 cli.add_command(binaries)
 cli.add_command(install)
 cli.add_command(uninstall)
-cli.add_command(factory)
 cli.add_command(terminal_cmd)
 
 def _schedule_update_check(ctx):
