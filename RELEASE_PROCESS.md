@@ -10,20 +10,54 @@ If you are looking to contribute code, see [CONTRIBUTING.md](CONTRIBUTING.md).
 - [`build`](https://pypa-build.readthedocs.io/) (`pip install build`)
 - [`twine`](https://twine.readthedocs.io/) (`pip install twine`)
 - A [PyPI API token](https://pypi.org/help/#apitoken) with upload access to the `lager-cli` project
-- Push access to the `main` branch on GitHub
+- Push access to `lagerdata/lager` on GitHub
+
+## Remote Setup
+
+Contributors work from personal forks. By convention:
+
+| Remote     | Points to                              |
+|------------|----------------------------------------|
+| `origin`   | Your fork (e.g. `youruser/lager`)      |
+| `upstream` | Canonical repo (`lagerdata/lager`)     |
+
+```bash
+# One-time setup (after forking on GitHub)
+git clone git@github.com:<youruser>/lager.git
+cd lager
+git remote add upstream git@github.com:lagerdata/lager.git
+git fetch upstream
+```
+
+## Contributing Code
+
+1. Create a feature branch from the latest upstream main:
+   ```bash
+   git fetch upstream
+   git checkout -b my-feature upstream/main
+   ```
+2. Make changes, commit, and push to your fork:
+   ```bash
+   git push -u origin my-feature
+   ```
+3. Open a PR against the upstream repo:
+   ```bash
+   gh pr create --repo lagerdata/lager
+   ```
+4. After review, the PR is merged into upstream `main`.
 
 ## Pre-release Checklist
 
 Before starting a release, verify:
 
-- [ ] All staging changes are merged and CI is green
+- [ ] All PRs merged to upstream `main` and CI is green
 - [ ] Tests pass against target hardware boxes
 - [ ] `CHANGELOG.md` has entries for all user-facing changes
 - [ ] No open security issues that should block the release
 
 ## Release Steps
 
-Throughout this guide, replace `X.Y.Z` with the actual version number (e.g., `0.3.29`).
+Throughout this guide, replace `X.Y.Z` with the actual version number (e.g., `0.4.2`).
 
 ### 1. Update Version Number
 
@@ -56,7 +90,7 @@ Add a new section at the top of `CHANGELOG.md` following the [Keep a Changelog](
 To see what changed since the last release, review the commit history:
 
 ```bash
-git log origin/main..HEAD --oneline --no-decorate
+git log upstream/main..HEAD --oneline --no-decorate
 ```
 
 ### 3. Create Release Notes File
@@ -119,7 +153,7 @@ Add the new version to the top of the Release Notes list in `docs/docs.json`:
       "group": "Version History",
       "pages": [
         "source/release-notes/vX.Y.Z",
-        "source/release-notes/v0.3.28",
+        "source/release-notes/v0.4.2",
         ...
       ]
     }
@@ -127,32 +161,29 @@ Add the new version to the top of the Release Notes list in `docs/docs.json`:
 }
 ```
 
-### 5. Commit and Push to Staging
+### 5. Commit and Push to Upstream Main
+
+Sync your local main with upstream, commit the release files, and push directly to upstream:
 
 ```bash
+git fetch upstream
+git checkout main
+git reset --hard upstream/main
 git add cli/__init__.py CHANGELOG.md docs/source/release-notes/vX.Y.Z.mdx docs/docs.json
 git commit -m "vX.Y.Z"
-git push origin staging
+git push upstream main
 ```
 
-### 6. Merge to Main
-
-```bash
-git checkout main
-git merge staging
-git push origin main
-```
-
-### 7. Tag the Release
+### 6. Tag the Release
 
 Create an annotated tag on main:
 
 ```bash
 git tag -a vX.Y.Z -m "vX.Y.Z"
-git push origin vX.Y.Z
+git push upstream vX.Y.Z
 ```
 
-### 8. Build Distribution Packages
+### 7. Build Distribution Packages
 
 Clean old artifacts and build:
 
@@ -164,7 +195,7 @@ python -m build
 
 This creates `.tar.gz` and `.whl` files in `cli/dist/`.
 
-### 9. Upload to PyPI
+### 8. Upload to PyPI
 
 ```bash
 twine upload dist/*
@@ -172,21 +203,19 @@ twine upload dist/*
 
 When prompted, use `__token__` as the username and your PyPI API token as the password.
 
-### 10. Create GitHub Release
+### 9. Create GitHub Release
 
-Go to [Releases](https://github.com/lagerdata/lager/releases) and create a new release:
+Create a file with the release notes (copy the relevant section from `CHANGELOG.md`):
+
+```bash
+gh release create vX.Y.Z --repo lagerdata/lager --title "vX.Y.Z" --notes-file release-notes.md
+```
+
+Alternatively, go to [Releases](https://github.com/lagerdata/lager/releases) and create a new release manually:
 
 - **Tag**: Select the `vX.Y.Z` tag
 - **Title**: `vX.Y.Z`
 - **Description**: Copy the relevant section from `CHANGELOG.md`
-
-Alternatively, use the GitHub CLI:
-
-```bash
-gh release create vX.Y.Z --title "vX.Y.Z" --notes-file - <<EOF
-Copy CHANGELOG.md section here
-EOF
-```
 
 ## Post-release
 
@@ -195,11 +224,12 @@ EOF
    pip install lager-cli==X.Y.Z
    lager --version
    ```
-2. Switch back to the staging branch for continued development:
+2. Sync your fork with upstream:
    ```bash
-   git checkout staging
-   git merge main
-   git push origin staging
+   git fetch upstream
+   git checkout main
+   git reset --hard upstream/main
+   git push origin main
    ```
 
 ## Versioning Policy
@@ -220,4 +250,4 @@ This project follows [Semantic Versioning](https://semver.org/):
 
 **Import errors during build:** Ensure all dependencies listed in `cli/setup.py` are available in your environment.
 
-**Tag already exists:** If you need to re-tag (e.g., after a fix), delete the old tag first: `git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`. Only do this if the release has not been published to PyPI.
+**Tag already exists:** If you need to re-tag (e.g., after a fix), delete the old tag first: `git tag -d vX.Y.Z && git push upstream :refs/tags/vX.Y.Z`. Only do this if the release has not been published to PyPI.

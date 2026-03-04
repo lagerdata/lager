@@ -31,11 +31,6 @@ test/
 │   ├── unit/             # Mocked subprocess tests (~254 tests)
 │   └── integration/      # Real hardware tests (~64 tests)
 │
-├── factory/              # Factory/dashboard webapp tests
-│   ├── test_*.py         # Pytest unit tests for webapp internals
-│   ├── run_dashboard_tests.py  # Automated dashboard production readiness
-│   └── scripts/          # Test scripts used by factory test suite
-│
 ├── framework/            # Shared test infrastructure
 │   ├── colors.sh         # Color definitions for bash tests
 │   ├── harness.sh        # Bash test harness functions
@@ -244,20 +239,6 @@ python -m pytest test/mcp/integration/ -v --import-mode=importlib -c /dev/null \
 
 Always use `--import-mode=importlib -c /dev/null` to prevent `test/mcp` from shadowing the `mcp` PyPI package.
 
-## Factory/Dashboard Tests
-
-Factory tests are pytest tests that validate the factory webapp internals.
-
-```bash
-# Run all factory tests
-python -m pytest test/factory/ -v
-
-# Run dashboard production readiness tests
-python test/factory/run_dashboard_tests.py
-```
-
-Test scripts used as fixtures live in `test/factory/scripts/`.
-
 ## Naming Conventions
 
 | Type | Pattern | Example |
@@ -265,13 +246,12 @@ Test scripts used as fixtures live in `test/factory/scripts/`.
 | Python API test | `test_<feature>.py` | `test_supply_comprehensive.py` |
 | Bash integration test | `<feature>.sh` | `supply.sh` |
 | MCP unit test | `test_<module>.py` | `test_power_tools.py` |
-| Factory unit test | `test_<module>.py` | `test_db.py` |
 | CLI unit test | `test_<module>.py` | `test_commands.py` |
 | Test directory | lowercase, domain-based | `power/`, `io/`, `sensors/` |
 
 ## Adding a New Test
 
-1. Determine the type: Python API (`api/`), bash integration (`integration/`), MCP (`mcp/`), factory (`factory/`), or CLI unit (`unit/`)
+1. Determine the type: Python API (`api/`), bash integration (`integration/`), MCP (`mcp/`), or CLI unit (`unit/`)
 2. Place it in the correct domain subdirectory
 3. Follow the template for that type
 4. For Python API tests: use `from lager import Net, NetType` (not internal paths)

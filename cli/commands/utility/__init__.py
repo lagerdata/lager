@@ -24,7 +24,6 @@ from .logs import logs
 from .webcam import webcam
 from .install import install
 from .uninstall import uninstall
-from .factory import factory
 
 __all__ = [
     "defaults",
@@ -36,5 +35,4 @@ __all__ = [
     "webcam",
     "install",
     "uninstall",
-    "factory",
 ]

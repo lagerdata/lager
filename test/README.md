@@ -1,6 +1,6 @@
 # Lager Test Suite
 
-Comprehensive test suite for validating Lager CLI commands, Python API, MCP server, and factory webapp.
+Comprehensive test suite for validating Lager CLI commands, Python API, and MCP server.
 
 ## Directory Structure
 
@@ -30,15 +30,6 @@ test/
 ├── mcp/                        # MCP server tests (pytest)
 │   ├── unit/                   # Mocked subprocess tests (~254 tests)
 │   └── integration/            # Real hardware tests (~64 tests)
-│
-├── factory/                    # Factory/dashboard webapp tests
-│   ├── test_*.py               # Pytest unit tests for webapp internals
-│   ├── conftest.py             # Factory test fixtures
-│   ├── run_dashboard_tests.py  # Automated dashboard production readiness tests
-│   ├── scripts/                # Test scripts used by factory test suite
-│   │   ├── dashboard/          # Dashboard feature test scripts
-│   │   └── factory/            # Factory step test cases, edge cases
-│   └── manual_scripts/         # Manual test scripts
 │
 ├── framework/                  # Shared test infrastructure
 │   ├── colors.sh               # Color definitions (GREEN, RED, YELLOW, etc.)
@@ -79,21 +70,11 @@ python -m pytest test/unit/ -v
 # MCP unit tests (always use these flags)
 python -m pytest test/mcp/unit/ -v --import-mode=importlib -c /dev/null
 
-# Factory webapp tests
-python -m pytest test/factory/ -v
-```
-
 ### MCP integration tests (real hardware)
 
 ```bash
 python -m pytest test/mcp/integration/ -v --import-mode=importlib -c /dev/null \
     --box1 <YOUR-BOX> --box3 <YOUR-BOX>
-```
-
-### Dashboard tests
-
-```bash
-python test/factory/run_dashboard_tests.py
 ```
 
 ## Test Categories
@@ -105,7 +86,6 @@ python test/factory/run_dashboard_tests.py
 | CLI unit | `unit/` | pytest | No |
 | MCP unit | `mcp/unit/` | pytest (mocked) | No |
 | MCP integration | `mcp/integration/` | pytest | Yes |
-| Factory/dashboard | `factory/` | pytest + standalone | No |
 
 ## Writing New Tests
 
