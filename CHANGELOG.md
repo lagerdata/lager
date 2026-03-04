@@ -2,11 +2,19 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.4.1] - 2026-03-03
+
+### Fixed
+- `lager install` GitHub connectivity check now uses `git ls-remote` instead of `curl`, fixing deployment failures on boxes where `curl` is not installed (e.g. Ubuntu 24.04)
+
 ## [0.4.0] - 2026-03-03
 
 ### Changed
 - `lager install` deploys box code via HTTPS git clone instead of SSH, removing the need for GitHub deploy keys
 - `lager update` automatically migrates existing boxes from SSH to HTTPS remote URLs
+
+### Removed
+- Lager Factory web application and `lager factory` CLI command
 
 ### Improved
 - Open-source release: repository is publicly accessible, enabling installation and updates without GitHub credentials
