@@ -96,7 +96,8 @@ def _load_ljm():
     # 1) Fast path
     try:
         from labjack import ljm as _ljm
-        if getattr(_ljm, '_staticLib', None) is None:
+        from labjack.ljm import ljm as _inner
+        if getattr(_inner, '_staticLib', None) is None:
             raise ImportError(
                 "labjack.ljm loaded but the native LJM library (libLabJackM.so) "
                 "is not available. Install the LJM SDK from "
@@ -131,7 +132,8 @@ def _load_ljm():
 
     try:
         _ljm = importlib.import_module("labjack.ljm")
-        if getattr(_ljm, '_staticLib', None) is None:
+        _inner = importlib.import_module("labjack.ljm.ljm")
+        if getattr(_inner, '_staticLib', None) is None:
             raise ImportError(
                 "labjack.ljm loaded but the native LJM library (libLabJackM.so) "
                 "is not available. Install the LJM SDK from "
