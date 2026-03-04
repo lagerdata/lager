@@ -197,6 +197,33 @@ print_info() {
     echo -e "${BLUE}[INFO] $1${NC}"
 }
 
+# SSH connection multiplexing configuration
+# Reuses a single TCP connection for all SSH commands,
+# preventing connection reset issues over VPN
+EXISTING_CM=$(ssh -G "${BOX_USER}@${BOX_IP}" 2>/dev/null | awk '/^controlmaster /{print $2}')
+if [ "$EXISTING_CM" = "auto" ] || [ "$EXISTING_CM" = "yes" ] || [ "$EXISTING_CM" = "autoask" ]; then
+    # Existing SSH config already provides ControlMaster — just add keepalive options
+    SSH_OPTS="-o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=10"
+    SCP_OPTS=""
+    LAGER_OWN_MASTER=false
+else
+    # No existing multiplexing — set up our own
+    CONTROL_DIR="$HOME/.lager_cache/ssh_control"
+    mkdir -p "$CONTROL_DIR"
+    CONTROL_PATH="${CONTROL_DIR}/deploy-${BOX_IP}"
+    SSH_OPTS="-o ControlMaster=auto -o ControlPath=${CONTROL_PATH} -o ControlPersist=10m -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=10"
+    SCP_OPTS="-o ControlPath=${CONTROL_PATH}"
+    LAGER_OWN_MASTER=true
+fi
+
+# Wrapper for ssh -t that includes multiplexing and suppresses
+# "Shared connection to X closed." noise from pseudo-terminal sessions
+ssh_t() {
+    local rc=0
+    ssh -t $SSH_OPTS "$@" 2> >(grep -v "onnection to .* closed\." >&2) || rc=$?
+    return $rc
+}
+
 # Pre-flight checks
 echo -e "${BOLD}Pre-flight checks...${NC}"
 echo ""
@@ -248,7 +275,7 @@ else
         print_info "Installing Docker on box (this may take a few minutes)..."
 
         # Install Docker on the box
-        ssh -t "${BOX_USER}@${BOX_IP}" "
+        ssh_t "${BOX_USER}@${BOX_IP}" "
             sudo apt-get update && \
             sudo apt-get install -y docker.io docker-compose-v2 && \
             sudo systemctl enable docker && \
@@ -384,6 +411,33 @@ EOF
 fi
 
 # =============================================================================
+# Establish SSH Connection Multiplexing
+# =============================================================================
+if [ "$LAGER_OWN_MASTER" = true ]; then
+    # Clean up any stale control socket from a previous run
+    ssh -O exit -o ControlPath="${CONTROL_PATH}" "${BOX_USER}@${BOX_IP}" 2>/dev/null || true
+
+    # Establish master connection (runs in background)
+    print_info "Establishing persistent SSH connection..."
+    if ssh $SSH_OPTS -fN "${BOX_USER}@${BOX_IP}"; then
+        print_success "SSH connection established (multiplexed)"
+    else
+        print_warning "Could not establish multiplexed SSH — will use individual connections"
+    fi
+
+    # Clean up master connection on exit (success or failure)
+    cleanup_ssh() {
+        ssh -O exit -o ControlPath="${CONTROL_PATH}" "${BOX_USER}@${BOX_IP}" 2>/dev/null || true
+    }
+    trap cleanup_ssh EXIT
+else
+    # Warm up the existing multiplexed connection
+    print_info "Warming up SSH connection..."
+    ssh $SSH_OPTS -o BatchMode=yes "${BOX_USER}@${BOX_IP}" "true" 2>/dev/null || true
+    print_success "SSH connection ready (using existing multiplexing)"
+fi
+
+# =============================================================================
 # STEP 2: Sudo Configuration
 # =============================================================================
 print_step "Configuring Passwordless Sudo"
@@ -442,13 +496,13 @@ fi
 SCRIPT_EOF
 
 # Copy script to box and execute with -t for terminal allocation
-scp "$TEMP_SCRIPT" "${BOX_USER}@${BOX_IP}:/tmp/setup_sudo.sh" >/dev/null
-ssh -t "${BOX_USER}@${BOX_IP}" "chmod +x /tmp/setup_sudo.sh && /tmp/setup_sudo.sh && rm /tmp/setup_sudo.sh"
+scp $SCP_OPTS "$TEMP_SCRIPT" "${BOX_USER}@${BOX_IP}:/tmp/setup_sudo.sh" >/dev/null
+ssh_t "${BOX_USER}@${BOX_IP}" "chmod +x /tmp/setup_sudo.sh && /tmp/setup_sudo.sh && rm /tmp/setup_sudo.sh"
 rm "$TEMP_SCRIPT"
 echo ""
 
 # Verify setup
-if ssh "${BOX_USER}@${BOX_IP}" "test -f /etc/sudoers.d/lagerdata-udev" 2>/dev/null; then
+if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -f /etc/sudoers.d/lagerdata-udev" 2>/dev/null; then
     print_success "Sudo configuration completed"
 else
     print_warning "Sudo setup may have failed - deployment may require password"
@@ -457,7 +511,7 @@ fi
 # Ensure /etc/lager directory exists (always check, even if sudo was already configured)
 echo ""
 print_info "Ensuring /etc/lager directory exists..."
-if ! ssh "${BOX_USER}@${BOX_IP}" "test -d /etc/lager" 2>/dev/null; then
+if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -d /etc/lager" 2>/dev/null; then
     print_warning "/etc/lager does not exist - creating it now (may require password)..."
 
     TEMP_SCRIPT=$(mktemp)
@@ -482,8 +536,8 @@ if [ ! -f /etc/lager/saved_nets.json ]; then
 fi
 SCRIPT_EOF
 
-    scp "$TEMP_SCRIPT" "${BOX_USER}@${BOX_IP}:/tmp/setup_lager_dir.sh" >/dev/null
-    ssh -t "${BOX_USER}@${BOX_IP}" "chmod +x /tmp/setup_lager_dir.sh && /tmp/setup_lager_dir.sh && rm /tmp/setup_lager_dir.sh"
+    scp $SCP_OPTS "$TEMP_SCRIPT" "${BOX_USER}@${BOX_IP}:/tmp/setup_lager_dir.sh" >/dev/null
+    ssh_t "${BOX_USER}@${BOX_IP}" "chmod +x /tmp/setup_lager_dir.sh && /tmp/setup_lager_dir.sh && rm /tmp/setup_lager_dir.sh"
     rm "$TEMP_SCRIPT"
 else
     print_success "/etc/lager directory exists"
@@ -491,18 +545,18 @@ fi
 
 # Always ensure correct permissions (even if directory existed before)
 print_info "Ensuring correct permissions on /etc/lager..."
-ssh -t "${BOX_USER}@${BOX_IP}" "sudo chown -R 33:33 /etc/lager && sudo chmod 755 /etc/lager"
+ssh_t "${BOX_USER}@${BOX_IP}" "sudo chown -R 33:33 /etc/lager && sudo chmod 755 /etc/lager"
 print_success "Permissions set correctly (owned by www-data UID 33)"
 
 # Ensure saved_nets.json exists and is writable
-if ! ssh "${BOX_USER}@${BOX_IP}" "test -f /etc/lager/saved_nets.json" 2>/dev/null; then
+if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -f /etc/lager/saved_nets.json" 2>/dev/null; then
     print_info "Initializing /etc/lager/saved_nets.json..."
-    ssh -t "${BOX_USER}@${BOX_IP}" "echo '[]' | sudo tee /etc/lager/saved_nets.json > /dev/null && sudo chown 33:33 /etc/lager/saved_nets.json && sudo chmod 644 /etc/lager/saved_nets.json"
+    ssh_t "${BOX_USER}@${BOX_IP}" "echo '[]' | sudo tee /etc/lager/saved_nets.json > /dev/null && sudo chown 33:33 /etc/lager/saved_nets.json && sudo chmod 644 /etc/lager/saved_nets.json"
     print_success "saved_nets.json initialized (owned by www-data UID 33)"
 else
     print_success "/etc/lager/saved_nets.json exists"
     # Ensure proper permissions for Docker container access (www-data UID 33)
-    ssh -t "${BOX_USER}@${BOX_IP}" "sudo chown 33:33 /etc/lager/saved_nets.json && sudo chmod 644 /etc/lager/saved_nets.json"
+    ssh_t "${BOX_USER}@${BOX_IP}" "sudo chown 33:33 /etc/lager/saved_nets.json && sudo chmod 644 /etc/lager/saved_nets.json"
 fi
 
 # =============================================================================
@@ -516,7 +570,7 @@ else
     print_info "Deploying firewall configuration script to box..."
 
     # Copy the firewall script to the box (located in ../security/)
-    scp "${SCRIPT_DIR}/../security/secure_box_firewall.sh" "${BOX_USER}@${BOX_IP}:/tmp/secure_box_firewall.sh" >/dev/null
+    scp $SCP_OPTS "${SCRIPT_DIR}/../security/secure_box_firewall.sh" "${BOX_USER}@${BOX_IP}:/tmp/secure_box_firewall.sh" >/dev/null
 
     # Build firewall script arguments
     FIREWALL_ARGS=""
@@ -528,18 +582,11 @@ else
     echo ""
 
     # Run the firewall script on the box
-    ssh -t "${BOX_USER}@${BOX_IP}" "chmod +x /tmp/secure_box_firewall.sh && sudo /tmp/secure_box_firewall.sh $FIREWALL_ARGS && rm /tmp/secure_box_firewall.sh"
+    # Note: Cannot capture output because sudo may prompt for password via PTY
+    ssh_t "${BOX_USER}@${BOX_IP}" "chmod +x /tmp/secure_box_firewall.sh && sudo /tmp/secure_box_firewall.sh $FIREWALL_ARGS && rm /tmp/secure_box_firewall.sh"
 
     echo ""
     print_success "Firewall configuration completed"
-
-    # Verify firewall is active
-    if ssh "${BOX_USER}@${BOX_IP}" "sudo ufw status | grep -q 'Status: active'" 2>/dev/null; then
-        print_success "UFW firewall is active and configured"
-    else
-        print_warning "UFW firewall may not be properly configured"
-        print_info "You can manually verify with: ssh ${BOX_USER}@${BOX_IP} 'sudo ufw status verbose'"
-    fi
 fi
 
 # =============================================================================
@@ -556,29 +603,42 @@ UDEV_RULES_DIR="${SCRIPT_DIR}/../../box/udev_rules"
     print_info "Deploying via git sparse-checkout (branch: ${GIT_BRANCH})..."
     echo ""
 
-    # Verify GitHub HTTPS connectivity
+    # Verify GitHub HTTPS connectivity (with timeout to prevent hangs)
     print_info "Checking GitHub connectivity..."
-    if ssh "${BOX_USER}@${BOX_IP}" "git ls-remote --exit-code https://github.com/lagerdata/lager.git HEAD" >/dev/null 2>&1; then
+    if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "timeout 30 git ls-remote --exit-code https://github.com/lagerdata/lager.git HEAD" >/dev/null 2>&1; then
         print_success "GitHub is reachable via HTTPS"
     else
+        # Re-run without suppression so SSH errors are visible
         print_error "Cannot reach GitHub from the box"
+        ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "timeout 30 git ls-remote --exit-code https://github.com/lagerdata/lager.git HEAD" 2>&1 || true
         echo "The box needs internet access to clone from GitHub."
         echo "Check the box's network connectivity and DNS resolution."
         exit 1
     fi
 
     # Check if ~/box already exists and is a git repo
-    HAS_GIT_REPO=$(ssh "${BOX_USER}@${BOX_IP}" "test -d ~/box/.git && echo 'yes' || echo 'no'" 2>/dev/null)
+    HAS_GIT_REPO=$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -d ~/box/.git && echo 'yes' || echo 'no'" 2>/dev/null) || {
+        print_error "SSH connection failed while checking box state"
+        echo "  The SSH connection to the box was lost."
+        echo "  This may be due to network instability. Please try again."
+        exit 1
+    }
 
     # Also check if essential files exist (repo might be corrupted from previous flattening)
-    HAS_START_SCRIPT=$(ssh "${BOX_USER}@${BOX_IP}" "test -f ~/box/start_box.sh && echo 'yes' || echo 'no'" 2>/dev/null)
-    HAS_BOX_SUBDIR=$(ssh "${BOX_USER}@${BOX_IP}" "test -d ~/box/box && echo 'yes' || echo 'no'" 2>/dev/null)
+    HAS_START_SCRIPT=$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -f ~/box/start_box.sh && echo 'yes' || echo 'no'" 2>/dev/null) || {
+        print_error "SSH connection failed while checking box state"
+        exit 1
+    }
+    HAS_BOX_SUBDIR=$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -d ~/box/box && echo 'yes' || echo 'no'" 2>/dev/null) || {
+        print_error "SSH connection failed while checking box state"
+        exit 1
+    }
 
     # If repo exists but is corrupted (no start_box.sh and no box/ subdir), force fresh clone
     if [ "$HAS_GIT_REPO" = "yes" ] && [ "$HAS_START_SCRIPT" = "no" ] && [ "$HAS_BOX_SUBDIR" = "no" ]; then
         print_warning "Existing repository is corrupted (missing essential files)"
         print_info "Removing corrupted repository and doing fresh clone..."
-        ssh "${BOX_USER}@${BOX_IP}" "rm -rf ~/box" 2>/dev/null || true
+        ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "rm -rf ~/box" 2>/dev/null || true
         HAS_GIT_REPO="no"
     fi
 
@@ -588,7 +648,7 @@ UDEV_RULES_DIR="${SCRIPT_DIR}/../../box/udev_rules"
 
         # Update existing sparse checkout (discard any local changes)
         # Re-configure sparse checkout to ensure box directory is included
-        ssh "${BOX_USER}@${BOX_IP}" "
+        ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
             cd ~/box && \
             git sparse-checkout set box && \
             git fetch origin && \
@@ -599,9 +659,9 @@ UDEV_RULES_DIR="${SCRIPT_DIR}/../../box/udev_rules"
         "
 
         # After update, check if box/ subdirectory exists and flatten if needed
-        if ssh "${BOX_USER}@${BOX_IP}" "test -d ~/box/box" 2>/dev/null; then
+        if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -d ~/box/box" 2>/dev/null; then
             print_info "Flattening directory structure..."
-            ssh "${BOX_USER}@${BOX_IP}" "
+            ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
                 cd ~/box && \
                 shopt -s dotglob && \
                 mv box/* . && \
@@ -613,12 +673,12 @@ UDEV_RULES_DIR="${SCRIPT_DIR}/../../box/udev_rules"
     else
         # Remove old box directory if exists (rsync-based or corrupted)
         print_info "Removing old box directory (if exists)..."
-        ssh "${BOX_USER}@${BOX_IP}" "rm -rf ~/box" 2>/dev/null || true
+        ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "rm -rf ~/box" 2>/dev/null || true
 
         # Clone with sparse checkout
         print_info "Cloning repository with sparse checkout..."
         echo ""
-        ssh "${BOX_USER}@${BOX_IP}" "
+        ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
             git clone --filter=blob:none --no-checkout https://github.com/lagerdata/lager.git ~/box && \
             cd ~/box && \
             git sparse-checkout init --cone && \
@@ -627,7 +687,7 @@ UDEV_RULES_DIR="${SCRIPT_DIR}/../../box/udev_rules"
         "
 
         # Check if box/ directory exists after checkout
-        if ! ssh "${BOX_USER}@${BOX_IP}" "test -d ~/box/box" 2>/dev/null; then
+        if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -d ~/box/box" 2>/dev/null; then
             print_error "The 'box/' directory does not exist on branch '${GIT_BRANCH}'"
             echo ""
             echo "This usually means the branch doesn't have the expected directory structure."
@@ -641,7 +701,7 @@ UDEV_RULES_DIR="${SCRIPT_DIR}/../../box/udev_rules"
 
         # Flatten directory structure: move box/* to root
         print_info "Flattening directory structure..."
-        ssh "${BOX_USER}@${BOX_IP}" "
+        ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
             cd ~/box && \
             shopt -s dotglob && \
             mv box/* . && \
@@ -664,10 +724,10 @@ if [ -d "${UDEV_RULES_DIR}" ]; then
         echo "Found $RULES_COUNT udev rule(s) to deploy"
 
         # Copy all rules files to /tmp on box
-        scp "${UDEV_RULES_DIR}"/*.rules "${BOX_USER}@${BOX_IP}:/tmp/"
+        scp $SCP_OPTS "${UDEV_RULES_DIR}"/*.rules "${BOX_USER}@${BOX_IP}:/tmp/"
 
         # Install rules and reload udev
-        ssh "${BOX_USER}@${BOX_IP}" "
+        ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
             echo 'Installing udev rules...'
             sudo cp /tmp/*.rules /etc/udev/rules.d/
             sudo chmod 644 /etc/udev/rules.d/*.rules
@@ -707,7 +767,7 @@ download_jlink_on_box() {
 
     # Install J-Link using the .deb package directly on box
     # SEGGER provides a stable deb package that can be downloaded without authentication
-    ssh "${BOX_USER}@${BOX_IP}" "BOX_USER=${BOX_USER}" bash << 'REMOTE_SCRIPT'
+    ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "BOX_USER=${BOX_USER}" bash << 'REMOTE_SCRIPT'
         set -e
 
         mkdir -p "/home/${BOX_USER}/third_party"
@@ -824,7 +884,7 @@ else
     print_info "Checking if J-Link is already installed on box..."
 
     # First check if any J-Link executable exists (any version)
-    EXISTING_JLINK=$(ssh "${BOX_USER}@${BOX_IP}" "find /home/${BOX_USER}/third_party -name JLinkGDBServerCLExe 2>/dev/null | head -n 1" || echo "")
+    EXISTING_JLINK=$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "find /home/${BOX_USER}/third_party -name JLinkGDBServerCLExe 2>/dev/null | head -n 1" || echo "")
 
     if [ -n "$EXISTING_JLINK" ]; then
         # J-Link already extracted and installed
@@ -832,7 +892,7 @@ else
         print_success "J-Link already installed on box at: $(basename $INSTALLED_DIR)"
     else
         # Check if any J-Link tarball exists but needs extraction
-        EXISTING_TGZ=$(ssh "${BOX_USER}@${BOX_IP}" "find /home/${BOX_USER}/third_party -name 'JLink_Linux_*.tgz' 2>/dev/null | head -n 1" || echo "")
+        EXISTING_TGZ=$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "find /home/${BOX_USER}/third_party -name 'JLink_Linux_*.tgz' 2>/dev/null | head -n 1" || echo "")
 
         if [ -n "$EXISTING_TGZ" ]; then
             # Found tarball - validate and extract it
@@ -840,23 +900,23 @@ else
             print_info "Validating tarball..."
 
             # Validate the tarball is a valid gzip file
-            if ssh "${BOX_USER}@${BOX_IP}" "gzip -t $EXISTING_TGZ 2>/dev/null"; then
+            if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "gzip -t $EXISTING_TGZ 2>/dev/null"; then
                 print_info "Extracting J-Link..."
-                ssh "${BOX_USER}@${BOX_IP}" "cd /home/${BOX_USER}/third_party && tar xzf $(basename $EXISTING_TGZ)"
+                ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "cd /home/${BOX_USER}/third_party && tar xzf $(basename $EXISTING_TGZ)"
 
                 # Verify extraction
-                EXTRACTED_JLINK=$(ssh "${BOX_USER}@${BOX_IP}" "find /home/${BOX_USER}/third_party -name JLinkGDBServerCLExe 2>/dev/null | head -n 1" || echo "")
+                EXTRACTED_JLINK=$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "find /home/${BOX_USER}/third_party -name JLinkGDBServerCLExe 2>/dev/null | head -n 1" || echo "")
                 if [ -n "$EXTRACTED_JLINK" ]; then
                     print_success "J-Link extracted successfully"
                 else
                     print_warning "J-Link extraction may have failed - will download fresh"
                     # Remove corrupted tarball and download fresh
-                    ssh "${BOX_USER}@${BOX_IP}" "rm -f $EXISTING_TGZ"
+                    ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "rm -f $EXISTING_TGZ"
                     EXISTING_TGZ=""  # Clear variable to trigger download
                 fi
             else
                 print_warning "Tarball is corrupted - removing and will download fresh"
-                ssh "${BOX_USER}@${BOX_IP}" "rm -f $EXISTING_TGZ"
+                ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "rm -f $EXISTING_TGZ"
                 EXISTING_TGZ=""  # Clear variable to trigger download
             fi
         fi
@@ -870,7 +930,7 @@ else
             # Download and install J-Link on the box using debian package
             if download_jlink_on_box "$JLINK_VERSION"; then
                 # Verify installation
-                INSTALLED_JLINK=$(ssh "${BOX_USER}@${BOX_IP}" "find /home/${BOX_USER}/third_party -name JLinkGDBServerCLExe 2>/dev/null | head -n 1" || echo "")
+                INSTALLED_JLINK=$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "find /home/${BOX_USER}/third_party -name JLinkGDBServerCLExe 2>/dev/null | head -n 1" || echo "")
                 if [ -n "$INSTALLED_JLINK" ]; then
                     echo ""
                     print_success "J-Link installed successfully on box"
@@ -898,18 +958,18 @@ print_step "Installing pyOCD (Open Source)"
 # It's installed automatically via pip
 
 print_info "Checking if pyOCD is already installed..."
-if ssh "${BOX_USER}@${BOX_IP}" "python3 -c 'import pyocd' 2>/dev/null" ; then
-    PYOCD_VERSION=$(ssh "${BOX_USER}@${BOX_IP}" "python3 -c 'import pyocd; print(pyocd.__version__)' 2>/dev/null" || echo "unknown")
+if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "python3 -c 'import pyocd' 2>/dev/null" ; then
+    PYOCD_VERSION=$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "python3 -c 'import pyocd; print(pyocd.__version__)' 2>/dev/null" || echo "unknown")
     print_success "pyOCD already installed (version: ${PYOCD_VERSION})"
 else
     print_info "Installing pyOCD and yoctopuce via pip..."
     echo ""
 
     # Install pyOCD and yoctopuce using pip3
-    ssh "${BOX_USER}@${BOX_IP}" "pip3 install --user yoctopuce" 2>&1 | grep -v "Defaulting to user installation" || true
-    if ssh "${BOX_USER}@${BOX_IP}" "pip3 install --user 'pyocd>=0.36.0'" 2>&1 | grep -q "Successfully installed\|Requirement already satisfied" ; then
+    ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "pip3 install --user yoctopuce" 2>&1 | grep -v "Defaulting to user installation" || true
+    if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "pip3 install --user 'pyocd>=0.36.0'" 2>&1 | grep -q "Successfully installed\|Requirement already satisfied" ; then
         echo ""
-        PYOCD_VERSION=$(ssh "${BOX_USER}@${BOX_IP}" "python3 -c 'import pyocd; print(pyocd.__version__)' 2>/dev/null" || echo "installed")
+        PYOCD_VERSION=$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "python3 -c 'import pyocd; print(pyocd.__version__)' 2>/dev/null" || echo "installed")
         print_success "pyOCD installed successfully (version: ${PYOCD_VERSION})"
         echo ""
         print_info "pyOCD provides debug support for:"
@@ -932,12 +992,12 @@ fi
 print_step "Starting Docker Containers"
 
 print_info "Ensuring Docker service is enabled (for auto-start on boot)..."
-ssh "${BOX_USER}@${BOX_IP}" "sudo systemctl enable docker >/dev/null 2>&1 || true"
+ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "sudo systemctl enable docker >/dev/null 2>&1 || true"
 print_success "Docker service enabled"
 
 print_info "Stopping and removing all existing containers..."
 # Update restart policy first to prevent auto-restart, then force remove all containers
-ssh "${BOX_USER}@${BOX_IP}" "
+ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
     # Disable auto-restart on all containers first
     docker update --restart=no \$(docker ps -aq) 2>/dev/null || true
     # Stop all running containers
@@ -953,7 +1013,7 @@ print_success "All containers cleaned up"
 
 print_info "Cleaning up Docker images and build cache to free disk space..."
 echo ""
-ssh "${BOX_USER}@${BOX_IP}" "
+ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
     echo 'Removing unused Docker images...'
     docker image prune -af 2>/dev/null || true
     echo 'Removing Docker build cache...'
@@ -964,20 +1024,20 @@ echo ""
 print_success "Docker images and build cache cleaned up"
 
 print_info "Checking available disk space..."
-ssh "${BOX_USER}@${BOX_IP}" "df -h / | tail -n 1 | awk '{print \"Available: \" \$4 \" (\" \$5 \" used)\"}'" 2>/dev/null || true
+ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "df -h / | tail -n 1 | awk '{print \"Available: \" \$4 \" (\" \$5 \" used)\"}'" 2>/dev/null || true
 echo ""
 
 # Configure VPN interface if specified
 if [ -n "$VPN_INTERFACE" ]; then
     print_info "Configuring VPN interface: $VPN_INTERFACE"
-    ssh "${BOX_USER}@${BOX_IP}" "echo 'LAGER_WG_IFACE=${VPN_INTERFACE}' > /home/${BOX_USER}/.env"
+    ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "echo 'LAGER_WG_IFACE=${VPN_INTERFACE}' > /home/${BOX_USER}/.env"
     print_success "VPN interface configured: $VPN_INTERFACE"
     echo ""
 fi
 
 print_info "Building and starting containers..."
 echo ""
-ssh "${BOX_USER}@${BOX_IP}" "cd ~/box && chmod +x start_box.sh && ./start_box.sh"
+ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "cd ~/box && chmod +x start_box.sh && ./start_box.sh"
 
 echo ""
 print_success "Docker containers started successfully"
@@ -993,11 +1053,11 @@ if [ "$SKIP_VERIFY" = false ]; then
     # Check container status (new setup uses single 'lager' container)
     print_info "Checking container status..."
     echo ""
-    ssh "${BOX_USER}@${BOX_IP}" "docker ps --filter 'name=lager' --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
+    ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker ps --filter 'name=lager' --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'"
     echo ""
 
     # Count running containers
-    RUNNING_CONTAINERS=$(ssh "${BOX_USER}@${BOX_IP}" "docker ps --filter 'name=lager' --format '{{.Names}}' | wc -l")
+    RUNNING_CONTAINERS=$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker ps --filter 'name=lager' --format '{{.Names}}' | wc -l")
 
     if [ "$RUNNING_CONTAINERS" -ge 1 ]; then
         print_success "Lager container is running"
@@ -1008,7 +1068,7 @@ if [ "$SKIP_VERIFY" = false ]; then
     # Verify restart policies
     echo ""
     print_info "Verifying auto-restart configuration..."
-    ssh "${BOX_USER}@${BOX_IP}" "cd ~/box && ./verify_restart_policy.sh" || true
+    ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "cd ~/box && ./verify_restart_policy.sh" || true
 
     # Test lager connectivity (if lager CLI is available)
     if command -v lager &> /dev/null; then

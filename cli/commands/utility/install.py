@@ -14,6 +14,7 @@ import shutil
 from pathlib import Path
 from importlib import resources
 from ...box_storage import add_box, get_box_ip, get_box_user
+from ...core.ssh_utils import host_in_known_hosts
 
 
 def get_script_path(script_name: str, subdir: str = "scripts") -> Path:
@@ -68,24 +69,6 @@ def get_script_path(script_name: str, subdir: str = "scripts") -> Path:
         return dev_path
 
     raise FileNotFoundError(f"Deployment script not found: {script_name}")
-
-
-def _host_in_known_hosts(ip: str) -> bool:
-    """Check if a host IP exists in ~/.ssh/known_hosts."""
-    known_hosts_path = Path.home() / ".ssh" / "known_hosts"
-    if not known_hosts_path.exists():
-        return False
-
-    try:
-        result = subprocess.run(
-            ["ssh-keygen", "-F", ip],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        return result.returncode == 0 and bool(result.stdout.strip())
-    except Exception:
-        return False
 
 
 @click.command()
@@ -212,7 +195,7 @@ def install(ctx, box, ip, user, branch, skip_jlink, skip_firewall, skip_verify, 
                 ctx.exit(1)
             elif "host key verification failed" in stderr:
                 # Distinguish between new host (not in known_hosts) vs changed key
-                if _host_in_known_hosts(ip):
+                if host_in_known_hosts(ip):
                     # Changed key - security concern, require manual intervention
                     click.secho("Error: Host key verification failed", fg='red', err=True)
                     click.echo(err=True)
@@ -403,10 +386,12 @@ def install(ctx, box, ip, user, branch, skip_jlink, skip_firewall, skip_verify, 
             ctx.exit(1)
 
     except subprocess.TimeoutExpired:
-        click.secho("Error: Deployment timed out after 30 minutes", fg='red', err=True)
+        click.echo()
+        click.secho("Deployment timed out after 30 minutes.", fg='red', err=True)
         ctx.exit(1)
     except Exception as e:
-        click.secho(f"Error running deployment: {e}", fg='red', err=True)
+        click.echo()
+        click.secho("Deployment failed!", fg='red', err=True)
         ctx.exit(1)
 
     click.echo()
@@ -459,7 +444,8 @@ def install(ctx, box, ip, user, branch, skip_jlink, skip_firewall, skip_verify, 
 
         subprocess.run(
             ["ssh", "-t", ssh_host, write_version_cmd],
-            timeout=120  # Increased from 30 to match update.py timeout
+            timeout=120,  # Increased from 30 to match update.py timeout
+            stderr=subprocess.DEVNULL,  # Suppress "Shared connection closed" noise
         )
 
         click.secho(f"Version {box_cli_version} stored on box", fg='green')
