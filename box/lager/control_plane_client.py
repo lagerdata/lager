@@ -86,7 +86,7 @@ class ControlPlaneClient:
                     net_type = NetType.from_role(role).name
                 except (KeyError, ValueError):
                     net_type = role
-                devices.append({'name': net.get('name', ''), 'type': net_type})
+                devices.append({'name': net.get('name', ''), 'type': net_type, 'netName': net.get('name', '')})
         except (FileNotFoundError, json.JSONDecodeError, TypeError, ImportError):
             pass
         return devices
