@@ -679,6 +679,81 @@ def import_boxes(file, merge, yes):
         click.echo(click.style(f"[OK] Successfully imported {len(import_boxes_data)} box(es) from {file}", fg='green'))
 
 
+@boxes.command('connect')
+@click.option('--box', required=True, help='Name of the box to connect')
+@click.option('--url', required=True, help='Control plane URL (e.g., http://stout:3001)')
+@click.option('--api-key', required=True, help='API key for control plane authentication')
+@click.option('--heartbeat-interval', default=30, type=int, help='Heartbeat interval in seconds (default: 30)')
+@click.option('--yes', is_flag=True, help='Confirm the action without prompting.')
+def connect(box, url, api_key, heartbeat_interval, yes):
+    """Connect a box to a control plane for heartbeat reporting."""
+    import subprocess
+    import time
+    import requests
+    import shlex
+    from ...box_storage import get_box_ip, get_box_user
+    from ...core.ssh_utils import get_reusable_ssh_command
+
+    ip = get_box_ip(box)
+    if not ip:
+        click.secho(f"Error: Box '{box}' not found in configuration", fg='red', err=True)
+        raise click.Abort()
+
+    user = get_box_user(box) or 'lagerdata'
+
+    if not yes:
+        click.echo(f"\nConnect box '{box}' ({ip}) to control plane:")
+        click.echo(f"  URL:       {url}")
+        click.echo(f"  API Key:   {api_key[:8]}...")
+        click.echo(f"  Interval:  {heartbeat_interval}s")
+        click.echo()
+        if not click.confirm("Proceed?", default=False):
+            click.echo("Cancelled.")
+            return
+
+    config = json.dumps({
+        'url': url,
+        'api_key': api_key,
+        'heartbeat_interval_seconds': heartbeat_interval,
+        'enabled': True,
+    })
+
+    # Write config to box via SSH
+    click.echo(f"Writing control plane config to {box}...")
+    ssh_cmd = get_reusable_ssh_command(ip, user=user, command=f'echo {shlex.quote(config)} | sudo tee /etc/lager/control_plane.json > /dev/null')
+    result = subprocess.run(ssh_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        click.secho(f"Error writing config: {result.stderr.strip()}", fg='red', err=True)
+        raise click.Abort()
+
+    # Restart the box container
+    click.echo(f"Restarting lager container on {box}...")
+    ssh_cmd = get_reusable_ssh_command(ip, user=user, command='docker restart lager')
+    result = subprocess.run(ssh_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        click.secho(f"Error restarting container: {result.stderr.strip()}", fg='red', err=True)
+        raise click.Abort()
+
+    # Verify the box is healthy
+    click.echo("Waiting for box to come back up...")
+    time.sleep(5)
+    try:
+        resp = requests.get(f'http://{ip}:5000/status', timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            click.secho(f"Box '{box}' connected successfully!", fg='green')
+            click.echo(f"  Healthy: {data.get('healthy')}")
+            click.echo(f"  Version: {data.get('version')}")
+            nets = data.get('nets', [])
+            if nets:
+                click.echo(f"  Nets:    {len(nets)}")
+        else:
+            click.secho(f"Warning: Box returned HTTP {resp.status_code}", fg='yellow')
+    except requests.exceptions.RequestException as e:
+        click.secho(f"Warning: Could not verify box status: {e}", fg='yellow')
+        click.echo("The config was written. The box may still be starting up.")
+
+
 def compare_versions(v1, v2):
     """
     Compare two version strings.

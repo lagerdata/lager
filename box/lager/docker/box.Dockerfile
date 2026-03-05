@@ -80,6 +80,7 @@ RUN /usr/local/bin/python -m pip install --upgrade pip \
 	'websockets==12.0' \
 	'rich' \
 	'cbor2' \
+	'websocket-client>=1.6.0' \
 	'git+https://github.com/Vaskivskyi/asusrouter.git@8de97bfa8ffe3efa2f6d1ec30bb95187d13ab37a'
 
 RUN git config --global http.version HTTP/1.1
@@ -103,7 +104,7 @@ RUN pip3 install -r /tmp/user_requirements.txt
 
 # Copy Python lager package modules (grouped structure)
 # Copy Python files at root level
-COPY __init__.py actuate.py box_http_server.py dashboard_db.py cache.py constants.py core.py \
+COPY __init__.py actuate.py box_http_server.py control_plane_client.py dashboard_db.py cache.py constants.py core.py \
      exceptions.py hardware_service.py log.py rotation.py util.py \
      /app/lager/lager/
 

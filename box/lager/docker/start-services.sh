@@ -58,6 +58,15 @@ else
     echo "Oscilloscope daemon not available (PicoScope streaming disabled)"
 fi
 
+# Start control plane heartbeat if configured
+if [ -f /etc/lager/control_plane.json ]; then
+    ENABLED=$(python3 -c "import json; print(json.load(open('/etc/lager/control_plane.json')).get('enabled', False))" 2>/dev/null)
+    if [ "$ENABLED" = "True" ]; then
+        echo "Starting Control Plane heartbeat client..."
+        restart_service "control plane heartbeat" "python3 -m lager.control_plane_client" "/tmp/lager-control-plane.log" &
+    fi
+fi
+
 # Give services a moment to start
 sleep 2
 
@@ -70,6 +79,9 @@ echo "  - Box HTTP+WebSocket: port 9000 (log: /tmp/lager-http-server.log)"
 if [ -x /usr/local/bin/oscilloscope-daemon ]; then
     echo "  - Oscilloscope Daemon: ports 8082-8085 (log: /tmp/oscilloscope-daemon.log)"
     echo "  - Oscilloscope UI: port 8081 (log: /tmp/oscilloscope-ui.log)"
+fi
+if [ -f /etc/lager/control_plane.json ]; then
+    echo "  - Control Plane Heartbeat: (log: /tmp/lager-control-plane.log)"
 fi
 echo ""
 echo "Container ready! Controller container is NO LONGER NEEDED."
