@@ -137,6 +137,41 @@ def hello():
     })
 
 
+@app.route('/status', methods=['GET'])
+def status():
+    """Return box status for control plane probing."""
+    import json as _json
+    from lager.nets.constants import NetType
+
+    version = 'unknown'
+    try:
+        with open('/etc/lager/version', 'r') as f:
+            version_content = f.read().strip()
+            version = version_content.split('|', 1)[0] if '|' in version_content else version_content
+    except (FileNotFoundError, IOError):
+        pass
+
+    nets = []
+    try:
+        with open('/etc/lager/saved_nets.json', 'r') as f:
+            saved_nets = _json.load(f)
+        for net in saved_nets:
+            role = net.get('role', '')
+            try:
+                net_type = NetType.from_role(role).name
+            except (KeyError, ValueError):
+                net_type = role
+            nets.append({'name': net.get('name', ''), 'type': net_type})
+    except (FileNotFoundError, _json.JSONDecodeError, TypeError):
+        pass
+
+    return jsonify({
+        'healthy': True,
+        'version': version,
+        'nets': nets,
+    })
+
+
 # Register supply HTTP and WebSocket handlers from modular http package
 register_supply_routes(app)
 register_supply_socketio(socketio)

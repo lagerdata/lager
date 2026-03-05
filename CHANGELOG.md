@@ -2,6 +2,18 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.5.0] - 2026-03-05
+
+### Added
+- Control plane heartbeat client (`control_plane_client.py`) for WebSocket-based box status reporting
+- `/status` endpoint on both Flask and Python HTTP servers returning box health, version, and nets
+- `lager boxes connect` command to configure a box for control plane heartbeat reporting
+- `websocket-client` dependency added to box Docker image
+
+### Changed
+- Refactored version file reading in `service.py` into reusable `_read_box_version()` helper
+- `start-services.sh` starts control plane heartbeat when configured
+
 ## [0.4.2] - 2026-03-04
 
 ### Improved

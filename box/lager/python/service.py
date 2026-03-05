@@ -267,34 +267,38 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
             # Return CLI version stored by lager update command
             import os
 
-            # Try primary location first (requires sudo during update)
-            version_file = '/etc/lager/version'
-            if not os.path.exists(version_file):
-                # Fall back to user-writable location
-                version_file = os.path.expanduser('~/box/.lager/version')
-
-            if os.path.exists(version_file):
-                try:
-                    with open(version_file, 'r') as f:
-                        version_content = f.read().strip()
-                        # Parse format: <box_version>|<local_cli_version>
-                        if '|' in version_content:
-                            box_version, updater_version = version_content.split('|', 1)
-                        else:
-                            # Legacy format or just box version
-                            box_version = version_content
-                            updater_version = None
-
-                        self.send_json_response(200, {
-                            'box_version': box_version,
-                            'updater_version': updater_version,
-                            'raw': version_content
-                        })
-                except Exception as e:
-                    logger.error(f"Error reading version file: {e}")
-                    self.send_error_response(500, f'Error reading version: {e}')
+            version_data = self._read_box_version()
+            if version_data:
+                self.send_json_response(200, version_data)
             else:
                 self.send_error_response(404, 'Version file not found')
+        elif self.path == '/status':
+            # Return box status for control plane probing
+            import os
+            from lager.nets.constants import NetType
+
+            version_data = self._read_box_version()
+            version = version_data.get('box_version', 'unknown') if version_data else 'unknown'
+
+            nets = []
+            try:
+                with open('/etc/lager/saved_nets.json', 'r') as f:
+                    saved_nets = json.load(f)
+                for net in saved_nets:
+                    role = net.get('role', '')
+                    try:
+                        net_type = NetType.from_role(role).name
+                    except (KeyError, ValueError):
+                        net_type = role
+                    nets.append({'name': net.get('name', ''), 'type': net_type})
+            except (FileNotFoundError, json.JSONDecodeError, TypeError):
+                pass
+
+            self.send_json_response(200, {
+                'healthy': True,
+                'version': version,
+                'nets': nets,
+            })
         elif self.path == '/test-stream':
             # Test endpoint to verify streaming format works
             def test_generator():
@@ -307,6 +311,38 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
             self._handle_download_file()
         else:
             self.send_error_response(404, 'Not found')
+
+    def _read_box_version(self):
+        """Read box version from /etc/lager/version or fallback location.
+
+        Returns dict with box_version, updater_version, raw keys, or None if not found.
+        """
+        import os
+
+        version_file = '/etc/lager/version'
+        if not os.path.exists(version_file):
+            version_file = os.path.expanduser('~/box/.lager/version')
+
+        if not os.path.exists(version_file):
+            return None
+
+        try:
+            with open(version_file, 'r') as f:
+                version_content = f.read().strip()
+                if '|' in version_content:
+                    box_version, updater_version = version_content.split('|', 1)
+                else:
+                    box_version = version_content
+                    updater_version = None
+
+                return {
+                    'box_version': box_version,
+                    'updater_version': updater_version,
+                    'raw': version_content,
+                }
+        except Exception as e:
+            logger.error(f"Error reading version file: {e}")
+            return None
 
     def do_POST(self):
         """Handle POST requests"""
