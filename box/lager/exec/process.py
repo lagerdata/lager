@@ -21,6 +21,7 @@ import functools
 logger = logging.getLogger(__name__)
 
 KEEPALIVE_TIME = 20  # seconds
+MAX_LOG_SIZE = 10 * 1024 * 1024  # 10MB cap for detached process output logs
 
 
 def make_output_channel(cleanup_fns):
@@ -222,6 +223,8 @@ def stream_process_output_to_file(proc, output_channel, cleanup_fns, log_path, m
             readables.append(proc.stderr)
 
         with open(log_path, 'ab') as log_file:
+            cap_reached = False
+
             while True:
                 if readables == [output_channel]:
                     break
@@ -235,17 +238,24 @@ def stream_process_output_to_file(proc, output_channel, cleanup_fns, log_path, m
                             continue
                         readables.remove(readable)
 
-                    fileno = fileno_map[readable]
-                    for part in emit(fileno, chunk):
-                        log_file.write(part)
-                    log_file.flush()
+                    if not cap_reached:
+                        fileno = fileno_map[readable]
+                        for part in emit(fileno, chunk):
+                            log_file.write(part)
+                        log_file.flush()
+
+                        if log_file.tell() >= MAX_LOG_SIZE:
+                            cap_reached = True
+                            logger.warning(f"Log file reached {MAX_LOG_SIZE} byte cap, stopping capture")
 
             returncode = str(terminate_process(proc))
 
             remaining = output_channel.read()
-            for part in emit(fileno_map[output_channel], remaining):
-                log_file.write(part)
+            if not cap_reached:
+                for part in emit(fileno_map[output_channel], remaining):
+                    log_file.write(part)
 
+            # Always write the exit marker, even if cap was reached
             exit_marker = f'- {len(returncode)} {returncode}'.encode()
             log_file.write(exit_marker)
             log_file.flush()

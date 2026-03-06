@@ -625,7 +625,6 @@ class DirectHTTPSession:
             'lager_process_id': lager_process_id,
             'signal': int(sig)
         })
-        response.raise_for_status()
         return response
 
     def box_hello(self, box):
