@@ -381,12 +381,11 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
     if detach:
         try:
             data = resp.json()
-            pid = data.get('pid', '?')
             process_id = data.get('lager_process_id', lager_process_id)
             box_label = dut_name or box_ip
-            click.echo(f'Process detached (PID: {pid}, Process ID: {process_id})')
+            click.echo(f'Process detached (Process ID: {process_id})')
             click.echo(f'To reattach: lager python --reattach {process_id} --box {box_label}')
-            click.echo(f'To kill: lager python --kill --box {box_label}')
+            click.echo(f'To kill: lager python --kill {process_id} --box {box_label}')
         except Exception:
             click.echo('Process detached.')
         return
@@ -503,7 +502,7 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
     if detached_by_user:
         box_label = dut_name or box_ip
         click.echo(f'To reattach: lager python --reattach {process_id} --box {box_label}')
-        click.echo(f'To kill: lager python --kill --box {box_label}')
+        click.echo(f'To kill: lager python --kill {process_id} --box {box_label}')
 
 
 @click.command()
@@ -516,10 +515,11 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
 @click.option(
     '--passenv',
     multiple=True, help='Environment variable to inherit')
-@click.option('--kill', is_flag=True, default=False, help='Terminate running script')
+@click.option('--kill', default=None, help='Kill a specific process by process ID')
+@click.option('--kill-all', is_flag=True, default=False, help='Kill all running scripts')
 @click.option('--download', type=click.Path(exists=False, dir_okay=False), multiple=True, help='File to download after completion')
 @click.option('--allow-overwrite', is_flag=True, default=False, help='Overwrite existing files when downloading')
-@click.option('--signal', 'signum', default='SIGTERM', type=_SIGNAL_CHOICES, help='Signal to use with --kill', show_default=True)
+@click.option('--signal', 'signum', default='SIGTERM', type=_SIGNAL_CHOICES, help='Signal to use with --kill/--kill-all', show_default=True)
 @click.option('--timeout', type=click.IntRange(min=0), default=0, required=False, help='Max runtime in seconds (0=no timeout)')
 @click.option('--detach', '-d', is_flag=True, required=False, default=False, help='Detach')
 @click.option('--port', '-p', multiple=True, help='Port forwarding (SRC_PORT[:DST_PORT][/PROTOCOL])', type=PortForwardType())
@@ -527,7 +527,7 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
 @click.option('--add-file', type=click.Path(exists=True, dir_okay=False), multiple=True, help='File to upload with script')
 @click.option('--reattach', default=None, help='Reattach to detached process by process ID')
 @click.argument('args', nargs=-1)
-def python(ctx, runnable, box, env, passenv, kill, download, allow_overwrite, signum, timeout, detach, port, org, add_file, reattach, args):
+def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_overwrite, signum, timeout, detach, port, org, add_file, reattach, args):
     """Run Python script on box"""
     from ...box_storage import resolve_and_validate_box
 
@@ -535,8 +535,31 @@ def python(ctx, runnable, box, env, passenv, kill, download, allow_overwrite, si
     box_name = box
     box_ip = resolve_and_validate_box(ctx, box_name)
 
-    if not runnable and not kill and not reattach:
-        raise click.UsageError('Please supply a RUNNABLE, --kill, or --reattach option')
+    if not runnable and not kill and not kill_all and not reattach:
+        raise click.UsageError('Please supply a RUNNABLE, --kill, --kill-all, or --reattach option')
+
+    if kill:
+        session = ctx.obj.get_session_for_box(box_ip, box_name=box_name)
+        signum_val = _get_signal_number(signum)
+        resp = session.kill_python(box_ip, kill, signum_val)
+        if resp.status_code == 422:
+            try:
+                error_data = resp.json()
+                click.secho(error_data.get('error', 'Invalid request'), fg='red', err=True)
+            except Exception:
+                click.secho(f'Invalid process ID: {kill}', fg='red', err=True)
+            ctx.exit(1)
+        resp.raise_for_status()
+        click.echo(f'Process {kill} killed')
+        return
+
+    if kill_all:
+        session = ctx.obj.get_session_for_box(box_ip, box_name=box_name)
+        signum_val = _get_signal_number(signum)
+        resp = session.kill_python(box_ip, None, signum_val)
+        resp.raise_for_status()
+        click.echo('All processes killed')
+        return
 
     if reattach:
         session = ctx.obj.get_session_for_box(box_ip, box_name=box_name)
@@ -555,4 +578,4 @@ def python(ctx, runnable, box, env, passenv, kill, download, allow_overwrite, si
     if box_name:
         env.append(f'LAGER_BOX={box_name}')
 
-    run_python_internal(ctx, runnable, box_ip, env, passenv, kill, download, allow_overwrite, signum, timeout, detach, port, org, args, add_file, dut_name=box_name)
+    run_python_internal(ctx, runnable, box_ip, env, passenv, False, download, allow_overwrite, signum, timeout, detach, port, org, args, add_file, dut_name=box_name)
