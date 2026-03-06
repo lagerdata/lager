@@ -10,6 +10,9 @@ Lazy-imports BrainStem to minimise start-up cost.
 
 from __future__ import annotations
 
+import atexit
+import signal
+
 from .usb_net import USBNet, LibraryMissingError, DeviceNotFoundError, PortStateError
 
 
@@ -40,6 +43,19 @@ class AcronameUSBNet(USBNet):
         AcronameUSBNet._Result = Result
 
     # ------------------------------------------------------------------ #
+    # graceful cleanup
+    # ------------------------------------------------------------------ #
+    @classmethod
+    def disconnect(cls):
+        """Disconnect the cached hub so the USB device is released."""
+        if cls._cached_hub is not None:
+            try:
+                cls._cached_hub.disconnect()
+            except Exception:
+                pass
+            cls._cached_hub = None
+
+    # ------------------------------------------------------------------ #
     # lazy hub discovery (singleton)
     # ------------------------------------------------------------------ #
     def _connect_hub(self):
@@ -55,6 +71,19 @@ class AcronameUSBNet(USBNet):
             hub = cls()
             if hub.discoverAndConnect(self._brainstem.link.Spec.USB) == self._Result.NO_ERROR:
                 AcronameUSBNet._cached_hub = hub
+
+                # Ensure hub is disconnected on exit
+                atexit.register(AcronameUSBNet.disconnect)
+
+                # SIGTERM doesn't run atexit by default — install a handler
+                # that calls sys.exit() so atexit handlers fire, but only if
+                # no custom handler has been installed already.
+                current = signal.getsignal(signal.SIGTERM)
+                if current in (signal.SIG_DFL, None):
+                    def _sigterm_exit(signum, frame):
+                        raise SystemExit(1)
+                    signal.signal(signal.SIGTERM, _sigterm_exit)
+
                 return hub
 
         raise DeviceNotFoundError("No Acroname hub detected on USB")
