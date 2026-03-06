@@ -383,8 +383,10 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
             data = resp.json()
             pid = data.get('pid', '?')
             process_id = data.get('lager_process_id', lager_process_id)
+            box_label = dut_name or box_ip
             click.echo(f'Process detached (PID: {pid}, Process ID: {process_id})')
-            click.echo(f'To kill: lager python --kill --box {dut_name or box_ip}')
+            click.echo(f'To reattach: lager python --reattach {process_id} --box {box_label}')
+            click.echo(f'To kill: lager python --kill --box {box_label}')
         except Exception:
             click.echo('Process detached.')
         return
@@ -426,6 +428,84 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
         sys.exit(1)
 
 
+def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
+    """
+    Reattach to a detached process and stream its output.
+
+    Ctrl+C kills the process (same as normal lager python).
+    Ctrl+D detaches from the stream without killing the process.
+    """
+    try:
+        resp = session.attach_python(box_ip, process_id)
+    except requests.exceptions.ConnectionError:
+        click.secho(f'Could not connect to box at {box_ip}', fg='red', err=True)
+        ctx.exit(1)
+    except requests.exceptions.Timeout:
+        click.secho(f'Connection to box at {box_ip} timed out', fg='red', err=True)
+        ctx.exit(1)
+
+    if resp.status_code == 404 or resp.status_code == 422:
+        try:
+            error_data = resp.json()
+            click.secho(error_data.get('error', 'Process not found'), fg='red', err=True)
+        except Exception:
+            click.secho(f'Process not found: {process_id}', fg='red', err=True)
+        ctx.exit(1)
+    elif resp.status_code >= 400:
+        click.secho(f'Error: Box returned HTTP {resp.status_code}', fg='red', err=True)
+        ctx.exit(1)
+
+    # Ctrl+C = kill the process (same as normal lager python)
+    kill_python = functools.partial(session.kill_python, box_ip, process_id)
+    handler = functools.partial(sigint_handler, kill_python, box_ip)
+    signal.signal(signal.SIGINT, handler)
+
+    # Ctrl+D = detach (stdin EOF watcher thread)
+    detached_by_user = False
+
+    def watch_stdin_for_detach():
+        nonlocal detached_by_user
+        try:
+            while True:
+                ch = sys.stdin.read(1)
+                if not ch:  # EOF (Ctrl+D)
+                    detached_by_user = True
+                    click.echo('\nDetaching...')
+                    resp.close()
+                    return
+        except (ValueError, OSError):
+            return
+
+    if sys.stdin.isatty():
+        stdin_thread = threading.Thread(target=watch_stdin_for_detach, daemon=True)
+        stdin_thread.start()
+
+    try:
+        for (datatype, content) in stream_python_output(resp):
+            if datatype == StreamDatatypes.EXIT:
+                signal.signal(signal.SIGINT, _ORIGINAL_SIGINT_HANDLER)
+                click.echo(f'Process exited with code {content}')
+                sys.exit(content)
+            elif datatype == StreamDatatypes.STDOUT:
+                click.echo(content.decode("utf-8", errors="ignore"), nl=False)
+            elif datatype == StreamDatatypes.STDERR:
+                click.echo(content.decode("utf-8", errors="ignore"), nl=False, err=True)
+            elif datatype == StreamDatatypes.OUTPUT:
+                click.echo(content)
+    except (BrokenPipeError, requests.exceptions.ChunkedEncodingError):
+        pass
+    except OutputFormatNotSupported:
+        click.secho('Response format not supported. Please upgrade lager-cli', fg='red', err=True)
+        sys.exit(1)
+    finally:
+        signal.signal(signal.SIGINT, _ORIGINAL_SIGINT_HANDLER)
+
+    if detached_by_user:
+        box_label = dut_name or box_ip
+        click.echo(f'To reattach: lager python --reattach {process_id} --box {box_label}')
+        click.echo(f'To kill: lager python --kill --box {box_label}')
+
+
 @click.command()
 @click.pass_context
 @click.argument('runnable', required=False, type=click.Path(exists=True))
@@ -445,8 +525,9 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
 @click.option('--port', '-p', multiple=True, help='Port forwarding (SRC_PORT[:DST_PORT][/PROTOCOL])', type=PortForwardType())
 @click.option('--org', default=None, hidden=True)
 @click.option('--add-file', type=click.Path(exists=True, dir_okay=False), multiple=True, help='File to upload with script')
+@click.option('--reattach', default=None, help='Reattach to detached process by process ID')
 @click.argument('args', nargs=-1)
-def python(ctx, runnable, box, env, passenv, kill, download, allow_overwrite, signum, timeout, detach, port, org, add_file, args):
+def python(ctx, runnable, box, env, passenv, kill, download, allow_overwrite, signum, timeout, detach, port, org, add_file, reattach, args):
     """Run Python script on box"""
     from ...box_storage import resolve_and_validate_box
 
@@ -454,8 +535,13 @@ def python(ctx, runnable, box, env, passenv, kill, download, allow_overwrite, si
     box_name = box
     box_ip = resolve_and_validate_box(ctx, box_name)
 
-    if not runnable and not kill:
-        raise click.UsageError('Please supply a RUNNABLE or the --kill option')
+    if not runnable and not kill and not reattach:
+        raise click.UsageError('Please supply a RUNNABLE, --kill, or --reattach option')
+
+    if reattach:
+        session = ctx.obj.get_session_for_box(box_ip, box_name=box_name)
+        _handle_reattach(ctx, box_ip, reattach, session, box_name)
+        return
 
     if not allow_overwrite:
         for filename in download:

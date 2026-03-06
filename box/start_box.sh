@@ -43,14 +43,8 @@ fi
 # Check for J-Link installation (searches for any version)
 echo "Checking for J-Link GDB Server..."
 
-# Determine base directory (prefer lagerdata, fallback to pi)
-if [ -d /home/lagerdata ]; then
-    BASE_DIR="/home/lagerdata"
-elif [ -d /home/pi ]; then
-    BASE_DIR="/home/pi"
-else
-    BASE_DIR="/home/$(whoami)"
-fi
+# Use current user's home directory (works for any username)
+BASE_DIR="$HOME"
 
 THIRD_PARTY_DIR="$BASE_DIR/third_party"
 
@@ -187,8 +181,7 @@ else
 fi
 
 # Get environment variables that will be passed to Python scripts
-[[ -f /home/pi/.env ]] && source /home/pi/.env || true
-[[ -f /home/lagerdata/.env ]] && source /home/lagerdata/.env || true
+[[ -f "$HOME/.env" ]] && source "$HOME/.env" || true
 
 # Auto-detect PIGPIO address (may not exist, default to standard)
 # Docker-internal network default for pigpio container; auto-detected at runtime

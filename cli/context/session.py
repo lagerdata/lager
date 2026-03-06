@@ -643,6 +643,26 @@ class DirectHTTPSession:
         url = f'{self.base_url}/nets'
         return self.session.get(url)
 
+    def attach_python(self, box, lager_process_id):
+        """
+        Reattach to a detached Python process on box.
+
+        Args:
+            box: Box IP (ignored, uses self.box_ip)
+            lager_process_id: Process ID to reattach to
+
+        Returns:
+            requests.Response object with streaming content
+        """
+        url = f'{self.base_url}/python/attach'
+        response = self.session.post(
+            url,
+            json={'lager_process_id': lager_process_id},
+            stream=True,
+            timeout=(7, None),
+        )
+        return response
+
     def download_file(self, box, filename):
         """
         Download a file from box via direct HTTP.

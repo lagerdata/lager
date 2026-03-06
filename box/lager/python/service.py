@@ -37,6 +37,7 @@ from .exceptions import (
     MissingModuleFolderError,
     InvalidSignalError,
     LagerPythonInvalidProcessIdError,
+    LagerPythonProcessNotFoundError,
 )
 
 logger = logging.getLogger(__name__)
@@ -351,6 +352,8 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                 self._handle_python_execute()
             elif self.path == '/python/kill':
                 self._handle_python_kill()
+            elif self.path == '/python/attach':
+                self._handle_python_attach()
             elif self.path == '/pip':
                 self._handle_pip()
             elif self.path == '/test-execute':
@@ -478,6 +481,37 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
 
         PythonExecutor.kill_process(lager_process_id=lager_process_id, sig=sig)
         self.send_json_response(200, {'status': 'killed'})
+
+    def _handle_python_attach(self):
+        """Handle POST /python/attach - Reattach to a detached process"""
+        import os
+        import uuid as uuid_mod
+        from lager.exec.process import stream_log_file
+
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length)
+        data = json.loads(body.decode('utf-8'))
+
+        lager_process_id = data.get('lager_process_id')
+        if not lager_process_id:
+            self.send_error_response(400, 'lager_process_id is required')
+            return
+
+        # Validate UUID format
+        try:
+            uuid_mod.UUID(lager_process_id)
+        except ValueError:
+            raise LagerPythonInvalidProcessIdError(lager_process_id)
+
+        process_dir = f'/tmp/lager_processes/{lager_process_id}'
+        log_path = os.path.join(process_dir, 'output.log')
+        meta_path = os.path.join(process_dir, 'meta.json')
+
+        if not os.path.isdir(process_dir):
+            raise LagerPythonProcessNotFoundError(lager_process_id)
+
+        generator = stream_log_file(log_path, meta_path)
+        self.send_streaming_response(generator)
 
     def _handle_test_execute(self):
         """Handle POST /test-execute - Simple test of Python execution"""
