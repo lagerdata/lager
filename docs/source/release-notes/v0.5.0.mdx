@@ -1,0 +1,32 @@
+---
+title: "Version 0.5.0"
+description: "March 05, 2026"
+---
+
+## <u>Features</u>
+
+- **Control plane heartbeat**: WebSocket-based heartbeat client reports Lager Box status (health, version, nets) to the control plane
+- **Box status endpoint**: `/status` endpoint on both Flask and Python HTTP servers returning box health, version, and connected nets
+- **`lager boxes connect`**: new command to configure a Lager Box for control plane heartbeat reporting
+
+## <u>Improvements</u>
+
+- Refactored version file reading in `service.py` into reusable `_read_box_version()` helper
+- `start-services.sh` starts control plane heartbeat when configured
+- Added `websocket-client` dependency to box Docker image
+
+## <u>Installation</u>
+
+```bash
+pip install lager-cli==0.5.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.5.0/)
