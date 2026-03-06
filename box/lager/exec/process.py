@@ -13,6 +13,8 @@ import tempfile
 import subprocess
 import select
 import time
+import json
+import os
 import logging
 import functools
 
@@ -190,6 +192,127 @@ def stream_process_output(proc, output_channel, cleanup_fns):
         logger.exception('stream_process_output failed', exc_info=exc)
     finally:
         do_cleanup(cleanup_fns)
+
+
+def stream_process_output_to_file(proc, output_channel, cleanup_fns, log_path, meta_path):
+    """
+    Stream output from a running process into a log file on disk.
+
+    Writes the same wire-format chunks as stream_process_output, but to a file
+    instead of yielding them. Used for detached processes so output can be
+    replayed later via stream_log_file().
+
+    Args:
+        proc: subprocess.Popen object
+        output_channel: Additional output channel file object
+        cleanup_fns: Set of cleanup functions to call when done
+        log_path: Path to the output log file (opened in append-binary mode)
+        meta_path: Path to the meta.json file to update on completion
+    """
+    fileno_map = {
+        proc.stdout: 1,
+        output_channel: 3,
+    }
+    if proc.stderr is not None:
+        fileno_map[proc.stderr] = 2
+
+    try:
+        readables = [proc.stdout, output_channel]
+        if proc.stderr is not None:
+            readables.append(proc.stderr)
+
+        with open(log_path, 'ab') as log_file:
+            while True:
+                if readables == [output_channel]:
+                    break
+
+                rlist, _wlist, _xlist = select.select(readables, [], [], 0.1)
+
+                for readable in rlist:
+                    chunk = readable.read(1024)
+                    if chunk == b'':
+                        if readable == output_channel:
+                            continue
+                        readables.remove(readable)
+
+                    fileno = fileno_map[readable]
+                    for part in emit(fileno, chunk):
+                        log_file.write(part)
+                    log_file.flush()
+
+            returncode = str(terminate_process(proc))
+
+            remaining = output_channel.read()
+            for part in emit(fileno_map[output_channel], remaining):
+                log_file.write(part)
+
+            exit_marker = f'- {len(returncode)} {returncode}'.encode()
+            log_file.write(exit_marker)
+            log_file.flush()
+
+        # Update meta.json with finished status
+        try:
+            with open(meta_path, 'r') as f:
+                meta = json.load(f)
+            meta['status'] = 'finished'
+            meta['returncode'] = int(returncode)
+            with open(meta_path, 'w') as f:
+                json.dump(meta, f)
+        except Exception as exc:
+            logger.exception('Failed to update meta.json', exc_info=exc)
+
+    except Exception as exc:
+        logger.exception('stream_process_output_to_file failed', exc_info=exc)
+    finally:
+        do_cleanup(cleanup_fns)
+
+
+def stream_log_file(log_path, meta_path):
+    """
+    Stream a log file, tailing it if the process is still running.
+
+    Reads existing data from log_path and yields it in chunks. If the process
+    is still running (per meta.json), tails the file for new data. When the
+    process finishes and all bytes are read, the generator exhausts.
+
+    Args:
+        log_path: Path to the output log file
+        meta_path: Path to the meta.json file
+
+    Yields:
+        bytes: Chunks of wire-format output data
+    """
+    with open(log_path, 'rb') as f:
+        last_keepalive = time.time()
+
+        while True:
+            chunk = f.read(4096)
+            if chunk:
+                yield chunk
+                continue
+
+            # No more data right now — check if process is done
+            try:
+                with open(meta_path, 'r') as mf:
+                    meta = json.load(mf)
+                status = meta.get('status', 'running')
+            except Exception:
+                status = 'running'
+
+            if status == 'finished':
+                # Read any final bytes that arrived after last read
+                final = f.read()
+                if final:
+                    yield final
+                return
+
+            # Still running — tail the file
+            now = time.time()
+            if now - last_keepalive > KEEPALIVE_TIME:
+                last_keepalive = now
+                yield from emit(0, b'')
+
+            time.sleep(0.2)
 
 
 # Export cleanup functions for external use
