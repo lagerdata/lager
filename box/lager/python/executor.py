@@ -420,9 +420,18 @@ class PythonExecutor:
                 except Exception as exc:
                     logger.warning(f"Failed to clean up {process_dir}: {exc}")
         else:
-            # Without a process ID, we can't selectively kill
-            # This is legacy behavior that's not recommended
-            logger.warning("No process ID provided for kill_process; no action taken")
+            # No process ID — kill ALL lager python processes
+            _kill_all_lager_processes(sig)
+
+            # Clean up all log directories
+            process_base = '/tmp/lager_processes'
+            if os.path.isdir(process_base):
+                import shutil as _shutil
+                try:
+                    _shutil.rmtree(process_base)
+                    logger.info(f"Cleaned up all process directories: {process_base}")
+                except Exception as exc:
+                    logger.warning(f"Failed to clean up {process_base}: {exc}")
 
 
 def _kill_by_proc_id(sig, proc_id):
@@ -498,3 +507,57 @@ def _kill_by_proc_id(sig, proc_id):
             continue
 
     logger.warning(f"Could not find process with LAGER_PROCESS_ID={proc_id_str}")
+
+
+def _kill_all_lager_processes(sig):
+    """
+    Kill all processes that have a LAGER_PROCESS_ID environment variable.
+
+    Used when --kill is invoked without a specific process ID.
+
+    Args:
+        sig: Signal number to send
+    """
+    import glob
+
+    search_str = b'LAGER_PROCESS_ID='
+    killed = 0
+
+    for environ_path in glob.glob('/proc/*/environ'):
+        try:
+            pid = int(environ_path.split('/')[2])
+
+            with open(environ_path, 'rb') as f:
+                environ_data = f.read()
+
+            if search_str in environ_data:
+                logger.info(f"Killing lager process PID {pid} with signal {sig}")
+                try:
+                    os.kill(pid, sig)
+                    killed += 1
+                except (ProcessLookupError, PermissionError) as e:
+                    logger.warning(f"Failed to kill PID {pid}: {e}")
+                    continue
+
+                if sig != signal_module.SIGKILL:
+                    import time
+                    for _ in range(30):
+                        try:
+                            os.kill(pid, 0)
+                        except ProcessLookupError:
+                            break
+                        time.sleep(0.1)
+                    else:
+                        try:
+                            logger.warning(f"Process {pid} did not exit after 3s, sending SIGKILL")
+                            os.kill(pid, signal_module.SIGKILL)
+                        except (ProcessLookupError, PermissionError):
+                            pass
+
+        except (FileNotFoundError, ValueError, PermissionError):
+            continue
+
+    if killed:
+        logger.info(f"Killed {killed} lager process(es)")
+    else:
+        logger.warning("No running lager processes found")
