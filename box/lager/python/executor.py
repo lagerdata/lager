@@ -20,6 +20,7 @@ import zipfile
 import subprocess
 import logging
 import uuid
+import threading
 import signal as signal_module
 
 from lager.exec.process import (
@@ -27,6 +28,7 @@ from lager.exec.process import (
     add_cleanup_fn,
     do_cleanup,
     stream_process_output,
+    stream_process_output_to_file,
 )
 from .exceptions import (
     PipInstallError,
@@ -219,7 +221,9 @@ class PythonExecutor:
 
             # Execute directly
             if detach:
-                stdin = stdout = stderr = subprocess.DEVNULL
+                stdin = subprocess.DEVNULL
+                stdout = subprocess.PIPE
+                stderr = subprocess.STDOUT if stdout_is_stderr else subprocess.PIPE
             else:
                 stdin = subprocess.PIPE
                 stdout = subprocess.PIPE
@@ -236,13 +240,38 @@ class PythonExecutor:
                 start_new_session=detach,  # detached processes survive independently
             )
 
-            # Handle detached mode — return immediately
+            # Handle detached mode — capture output to file, return immediately
             if detach:
                 lager_process_id = None
                 for var in (env_vars or []):
                     if var.startswith('LAGER_PROCESS_ID='):
                         lager_process_id = var.split('=', 1)[1]
                         break
+
+                # Set up process registry directory for reattach
+                process_dir = f'/tmp/lager_processes/{lager_process_id}'
+                os.makedirs(process_dir, exist_ok=True)
+                log_path = os.path.join(process_dir, 'output.log')
+                meta_path = os.path.join(process_dir, 'meta.json')
+
+                meta = {
+                    'pid': proc.pid,
+                    'lager_process_id': lager_process_id,
+                    'started': __import__('time').time(),
+                    'status': 'running',
+                    'returncode': None,
+                }
+                with open(meta_path, 'w') as f:
+                    json.dump(meta, f)
+
+                # Start daemon thread to capture output to log file
+                capture_thread = threading.Thread(
+                    target=stream_process_output_to_file,
+                    args=(proc, output_channel, self.cleanup_fns, log_path, meta_path),
+                    daemon=True,
+                )
+                capture_thread.start()
+
                 return {
                     'status': 'detached',
                     'pid': proc.pid,
@@ -380,6 +409,16 @@ class PythonExecutor:
                 raise LagerPythonInvalidProcessIdError(lager_process_id)
             # Kill process by searching for it directly
             _kill_by_proc_id(sig, lager_process_id.encode())
+
+            # Clean up log directory
+            process_dir = f'/tmp/lager_processes/{lager_process_id}'
+            if os.path.isdir(process_dir):
+                import shutil as _shutil
+                try:
+                    _shutil.rmtree(process_dir)
+                    logger.info(f"Cleaned up process directory: {process_dir}")
+                except Exception as exc:
+                    logger.warning(f"Failed to clean up {process_dir}: {exc}")
         else:
             # Without a process ID, we can't selectively kill
             # This is legacy behavior that's not recommended

@@ -74,6 +74,35 @@ from .commands.box import hello, boxes, instruments, nets, ssh
 # Utility commands (from commands.utility package)
 from .commands.utility import defaults, binaries, update, pip, exec_, logs, webcam, install, uninstall
 
+def _check_venv_shadowing():
+    """Warn if a system-installed lager is shadowing the venv version."""
+    virtual_env = os.environ.get('VIRTUAL_ENV')
+    if not virtual_env:
+        return
+
+    # If VIRTUAL_ENV is set but sys.prefix doesn't point to it, the
+    # system `lager` entry-point script (with a hardcoded shebang) is
+    # running instead of the venv's copy.  This is the exact shadowing
+    # scenario we want to catch.
+    if os.path.realpath(sys.prefix) == os.path.realpath(virtual_env):
+        return
+
+    click.secho(
+        f"WARNING: Lager CLI v{__version__} is running from a system Python ({sys.prefix}), "
+        f"not from your active virtual environment ({virtual_env}).",
+        fg='yellow', err=True,
+    )
+    click.secho(
+        "This can cause version mismatches. To fix:\n"
+        "  hash -r              # clear shell cache, then retry\n"
+        "  pip install --force-reinstall lager-cli   # if hash -r alone doesn't help\n"
+        "Or uninstall the system version:\n"
+        "  deactivate && pip uninstall lager-cli && source <venv>/bin/activate",
+        fg='yellow', err=True,
+    )
+    click.echo(err=True)
+
+
 def _decode_environment():
     for key in os.environ:
         if key.startswith('LAGER_'):
@@ -89,6 +118,8 @@ def cli(ctx=None, see_version=None, debug=False, colorize=False, interpreter=Non
     """
         Lager CLI
     """
+    _check_venv_shadowing()
+
     if os.getenv('LAGER_DECODE_ENV'):
         _decode_environment()
 

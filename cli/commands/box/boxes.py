@@ -694,6 +694,27 @@ def connect(box, url, api_key, heartbeat_interval, yes):
     from ...box_storage import get_box_ip, get_box_user
     from ...core.ssh_utils import get_reusable_ssh_command
 
+    # Validate URL
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if parsed.scheme not in ('http', 'https'):
+        click.secho(f"Error: URL scheme must be http or https, got '{parsed.scheme}'", fg='red', err=True)
+        raise click.Abort()
+    if not parsed.hostname:
+        click.secho("Error: URL must include a hostname", fg='red', err=True)
+        raise click.Abort()
+
+    # Warn if control plane is unreachable from this machine (may still work from the box)
+    import requests as _req
+    try:
+        _req.get(f'{url.rstrip("/")}/healthz', timeout=5)
+    except _req.exceptions.RequestException:
+        click.secho(
+            f"Warning: Could not reach {url} from this machine. "
+            "It may still be reachable from the box.",
+            fg='yellow',
+        )
+
     ip = get_box_ip(box)
     if not ip:
         click.secho(f"Error: Box '{box}' not found in configuration", fg='red', err=True)
@@ -718,9 +739,10 @@ def connect(box, url, api_key, heartbeat_interval, yes):
         'enabled': True,
     })
 
-    # Write config to box via SSH
+    # Write config into the lager Docker container (avoids needing sudo on host)
     click.echo(f"Writing control plane config to {box}...")
-    ssh_cmd = get_reusable_ssh_command(ip, user=user, command=f'echo {shlex.quote(config)} | sudo tee /etc/lager/control_plane.json > /dev/null')
+    write_cmd = f'echo {shlex.quote(config)} | docker exec -u root -i lager tee /etc/lager/control_plane.json > /dev/null'
+    ssh_cmd = get_reusable_ssh_command(ip, user=user, command=write_cmd)
     result = subprocess.run(ssh_cmd, capture_output=True, text=True)
     if result.returncode != 0:
         click.secho(f"Error writing config: {result.stderr.strip()}", fg='red', err=True)
