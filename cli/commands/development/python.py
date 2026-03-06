@@ -384,7 +384,7 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
             pid = data.get('pid', '?')
             process_id = data.get('lager_process_id', lager_process_id)
             click.echo(f'Process detached (PID: {pid}, Process ID: {process_id})')
-            click.echo(f'To kill: lager python --kill --box {box_ip}')
+            click.echo(f'To kill: lager python --kill --box {dut_name or box_ip}')
         except Exception:
             click.echo('Process detached.')
         return
