@@ -66,7 +66,7 @@ def sigint_handler(kill_python, box_ip, _sig, _frame):
 
     # Now restore original handler and kill remote process
     signal.signal(signal.SIGINT, _ORIGINAL_SIGINT_HANDLER)
-    kill_python(signal.SIGINT)
+    kill_python(signal.SIGTERM)
 
 
 def _do_exit(exit_code, box, session, downloads):
@@ -376,6 +376,18 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
                 if resp.text:
                     click.echo(resp.text, err=True)
         ctx.exit(1)
+
+    # Handle detached mode: parse JSON response and return immediately
+    if detach:
+        try:
+            data = resp.json()
+            pid = data.get('pid', '?')
+            process_id = data.get('lager_process_id', lager_process_id)
+            click.echo(f'Process detached (PID: {pid}, Process ID: {process_id})')
+            click.echo(f'To kill: lager python --kill --box {box_ip}')
+        except Exception:
+            click.echo('Process detached.')
+        return
 
     kill_python = functools.partial(session.kill_python, box_ip, lager_process_id)
     handler = functools.partial(sigint_handler, kill_python, box_ip)
