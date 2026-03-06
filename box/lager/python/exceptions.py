@@ -40,3 +40,10 @@ class LagerPythonInvalidProcessIdError(PythonExecutionError):
     def __init__(self, process_id):
         self.process_id = process_id
         super().__init__(f"Invalid process UUID: {process_id}")
+
+
+class LagerPythonProcessNotFoundError(PythonExecutionError):
+    """Raised when a detached process cannot be found for reattach"""
+    def __init__(self, process_id):
+        self.process_id = process_id
+        super().__init__(f"Process not found: {process_id}")

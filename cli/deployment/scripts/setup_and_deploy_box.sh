@@ -302,6 +302,18 @@ else
     fi
 fi
 
+# Always ensure current user is in docker group (handles multi-user scenario)
+print_info "Ensuring ${BOX_USER} is in the docker group..."
+ssh_t "${BOX_USER}@${BOX_IP}" "sudo usermod -aG docker \$USER" 2>/dev/null || true
+
+# Verify docker access works for this user
+if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker info >/dev/null 2>&1"; then
+    print_success "${BOX_USER} has docker access"
+else
+    print_warning "Docker group membership may require re-login"
+    print_info "If Docker commands fail, log out and back in to the box, then re-run install"
+fi
+
 # =============================================================================
 # STEP 1: SSH Key Setup
 # =============================================================================
