@@ -233,12 +233,21 @@ class PythonExecutor:
                 cwd=module_folder,  # Set working directory directly
                 env=full_env,       # Pass environment directly
                 bufsize=0,
+                start_new_session=detach,  # detached processes survive independently
             )
 
-            # Handle detached mode
+            # Handle detached mode — return immediately
             if detach:
-                proc.wait()
-                return None
+                lager_process_id = None
+                for var in (env_vars or []):
+                    if var.startswith('LAGER_PROCESS_ID='):
+                        lager_process_id = var.split('=', 1)[1]
+                        break
+                return {
+                    'status': 'detached',
+                    'pid': proc.pid,
+                    'lager_process_id': lager_process_id,
+                }
 
             # Stream output
             return stream_process_output(proc, output_channel, self.cleanup_fns)
@@ -424,10 +433,26 @@ def _kill_by_proc_id(sig, proc_id):
                 try:
                     os.kill(pid, sig)
                     logger.info(f"Successfully sent signal {sig} to PID {pid}")
-                    return
                 except (ProcessLookupError, PermissionError) as e:
                     logger.warning(f"Failed to kill PID {pid}: {e}")
                     continue
+
+                # If not SIGKILL, wait up to 3s then escalate
+                if sig != signal_module.SIGKILL:
+                    import time
+                    for _ in range(30):
+                        try:
+                            os.kill(pid, 0)  # check if alive
+                        except ProcessLookupError:
+                            return  # process exited
+                        time.sleep(0.1)
+                    # Still alive — escalate to SIGKILL
+                    try:
+                        logger.warning(f"Process {pid} did not exit after 3s, sending SIGKILL")
+                        os.kill(pid, signal_module.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+                return
 
         except (FileNotFoundError, ValueError, PermissionError):
             # Process exited or we can't read it

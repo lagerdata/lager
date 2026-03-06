@@ -463,7 +463,7 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         )
 
         if detach:
-            self.send_json_response(200, {'status': 'detached'})
+            self.send_json_response(200, output_generator or {'status': 'detached'})
         else:
             self.send_streaming_response(output_generator)
 
