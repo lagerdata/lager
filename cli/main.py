@@ -46,7 +46,7 @@ def terminal_cmd():
         raise SystemExit(1)
 
 # Communication commands (from cli.commands.communication)
-from .commands.communication import uart, ble, blufi, _wifi, usb, spi, i2c
+from .commands.communication import uart, ble, blufi, _wifi, usb, spi, i2c, mikrotik
 
 # Development commands (from cli.commands.development)
 from .commands.development import _debug, arm, python, devenv
@@ -156,6 +156,7 @@ cli.add_command(solar)
 cli.add_command(usb)
 cli.add_command(spi)
 cli.add_command(i2c)
+cli.add_command(mikrotik)
 cli.add_command(hello)
 cli.add_command(arm)
 cli.add_command(thermocouple)
