@@ -2,6 +2,38 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.7.0] - 2026-03-10
+
+### Added
+- `lager devenv terminal --attach <container_name>` to attach to a running Docker container
+- `lager devenv terminal --shell <path>` to override the shell when attaching
+- Jobs WebSocket client in control plane heartbeat for receiving and executing job dispatch commands
+
+### Changed
+- Default control plane URL changed to `https://api.stoutdata.ai`
+
+## [0.6.0] - 2026-03-06
+
+### Added
+- `lager python --reattach <ID>` to stream output from detached processes (replays from start)
+- `lager python --kill <ID>` to kill a specific detached process
+- `lager python --kill-all` to kill all running `lager python` processes on a box
+- Ctrl+D during `--reattach` detaches without killing the process
+- 10 MB log cap for detached process output to prevent disk abuse
+- Runtime warning when system-installed `lager` CLI shadows a virtual environment version
+
+### Fixed
+- Ctrl+C during `lager python` no longer breaks the Acroname USB hub (required box reboot before)
+- `--detach` no longer hangs; returns immediately with process ID and reattach/kill hints
+- `--kill` now actually kills the process (was silently doing nothing)
+- `--kill <invalid-id>` shows a friendly error instead of a traceback
+- Multi-user box provisioning: new users are always added to the docker group
+- `start_box.sh` uses `$HOME` instead of hardcoded `/home/lagerdata` paths
+
+### Changed
+- `--kill` changed from a boolean flag to an option that takes a process ID
+- Detached process output now shows box name instead of IP address
+
 ## [0.5.0] - 2026-03-05
 
 ### Added

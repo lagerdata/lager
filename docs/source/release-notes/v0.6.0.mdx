@@ -1,0 +1,39 @@
+---
+title: "Version 0.6.0"
+description: "March 06, 2026"
+---
+
+## <u>Features</u>
+
+- **Reattach to detached processes**: `lager python --reattach <ID>` streams all output from a detached process, replayed from the beginning. Press Ctrl+D to detach without killing, or Ctrl+C to kill.
+- **Kill detached processes**: `lager python --kill <ID>` kills a specific process; `lager python --kill-all` kills all running `lager python` processes on a Lager Box.
+- **Venv shadowing detection**: warns at startup if a system-installed `lager` CLI is running instead of the version in your active virtual environment, with instructions to fix.
+
+## <u>Bug Fixes</u>
+
+- **Ctrl+C no longer breaks Acroname hub**: previously, interrupting `lager python` with Ctrl+C left the Acroname USB hub in a broken state requiring a Lager Box reboot. The hub connection is now properly released on exit.
+- **`--detach` no longer hangs**: detached mode returns immediately with the process ID and hints for reattach/kill.
+- **`--kill` actually works**: was silently doing nothing; now correctly kills the targeted process.
+- **Invalid process IDs handled gracefully**: `--kill` and `--reattach` with invalid IDs show friendly error messages instead of tracebacks.
+- **Multi-user Lager Box provisioning**: new users are always added to the docker group, even if Docker was installed by a previous user. `start_box.sh` uses `$HOME` instead of hardcoded paths.
+
+## <u>Improvements</u>
+
+- Detached process output now shows Lager Box name instead of IP address
+- 10 MB log cap for detached process output prevents disk abuse on Lager Boxes
+
+## <u>Installation</u>
+
+```bash
+pip install lager-cli==0.6.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.6.0/)
