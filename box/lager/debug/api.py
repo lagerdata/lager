@@ -813,9 +813,10 @@ class RTT:
         import socket
         import time
 
-        # Check if debugger is connected
+        # Check if debugger is connected (check both PID file paths)
         status = get_jlink_status()
-        if not status['running']:
+        gdbserver_status = get_jlink_gdbserver_status()
+        if not status['running'] and not gdbserver_status['running']:
             raise JLinkNotRunning("J-Link must be connected before using RTT")
 
         # Auto-detect and configure RTT control block
