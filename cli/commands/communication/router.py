@@ -109,22 +109,6 @@ def interfaces(ctx, netname, box):
     _run_router(ctx, box_ip, {"action": "interfaces", "netname": netname})
 
 
-@router.command("wireless-clients")
-@click.argument("netname")
-@click.option("--box", required=False, help="Lagerbox name or IP")
-@click.pass_context
-def wireless_clients(ctx, netname, box):
-    """
-    List currently connected wireless clients on a router net.
-
-    Example:
-
-        lager router wireless-clients router1 --box mybox
-    """
-    box_ip = resolve_box(ctx, box)
-    _run_router(ctx, box_ip, {"action": "wireless_clients", "netname": netname})
-
-
 @router.command("wireless-interfaces")
 @click.argument("netname")
 @click.option("--box", required=False, help="Lagerbox name or IP")
@@ -139,6 +123,22 @@ def wireless_interfaces(ctx, netname, box):
     """
     box_ip = resolve_box(ctx, box)
     _run_router(ctx, box_ip, {"action": "wireless_interfaces", "netname": netname})
+
+
+@router.command("wireless-clients")
+@click.argument("netname")
+@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.pass_context
+def wireless_clients(ctx, netname, box):
+    """
+    List currently connected wireless clients on a router net.
+
+    Example:
+
+        lager router wireless-clients router1 --box mybox
+    """
+    box_ip = resolve_box(ctx, box)
+    _run_router(ctx, box_ip, {"action": "wireless_clients", "netname": netname})
 
 
 @router.command("dhcp-leases")
@@ -192,6 +192,94 @@ def reboot(ctx, netname, yes, box):
 
     box_ip = resolve_box(ctx, box)
     _run_router(ctx, box_ip, {"action": "reboot", "netname": netname})
+
+
+@router.command("enable-interface")
+@click.argument("netname")
+@click.argument("interface")
+@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.pass_context
+def enable_interface(ctx, netname, interface, box):
+    """
+    Enable a wireless interface on a router net.
+
+    Example:
+
+        lager router enable-interface router1 wlan1 --box mybox
+    """
+    box_ip = resolve_box(ctx, box)
+    _run_router(ctx, box_ip, {"action": "enable_interface", "netname": netname,
+                               "interface": interface})
+
+
+@router.command("disable-interface")
+@click.argument("netname")
+@click.argument("interface")
+@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.pass_context
+def disable_interface(ctx, netname, interface, box):
+    """
+    Disable a wireless interface on a router net.
+
+    Example:
+
+        lager router disable-interface router1 wlan1 --box mybox
+    """
+    box_ip = resolve_box(ctx, box)
+    _run_router(ctx, box_ip, {"action": "disable_interface", "netname": netname,
+                               "interface": interface})
+
+
+@router.command("block-internet")
+@click.argument("netname")
+@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.pass_context
+def block_internet(ctx, netname, box):
+    """
+    Block all internet access on a router net (drops forwarded traffic).
+
+    Use 'reset' to restore access.
+
+    Example:
+
+        lager router block-internet router1 --box mybox
+    """
+    box_ip = resolve_box(ctx, box)
+    _run_router(ctx, box_ip, {"action": "block_internet", "netname": netname})
+
+
+@router.command("reset")
+@click.argument("netname")
+@click.option("--ssid", default=None, help="Baseline SSID to restore on wireless interfaces")
+@click.option("--password", default=None, help="Baseline WPA2 password")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt")
+@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.pass_context
+def reset(ctx, netname, ssid, password, yes, box):
+    """
+    Reset a router net to a clean baseline state.
+
+    Removes all test-tagged firewall rules, bandwidth limits, and access list
+    entries. Re-enables DHCP and all wireless interfaces. If --ssid and
+    --password are provided, a fresh baseline WPA2 network is applied.
+
+    Example:
+
+        lager router reset router1 --box mybox
+        lager router reset router1 --ssid HomeNet --password secret123 --box mybox
+    """
+    if not yes and not click.confirm(f"Reset router '{netname}' to baseline?", default=False):
+        click.secho("Aborted.", fg="yellow")
+        return
+
+    box_ip = resolve_box(ctx, box)
+    _run_router(ctx, box_ip, {
+        "action": "reset_to_defaults",
+        "netname": netname,
+        "baseline_ssid": ssid,
+        "baseline_pass": password,
+    })
+    click.secho(f"Router '{netname}' reset to baseline.", fg="green")
 
 
 @router.command("run")
