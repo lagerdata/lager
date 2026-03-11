@@ -99,6 +99,22 @@ except Exception as e:
     logger.warning("Dashboard handlers not available: %s", e)
     _has_dashboard = False
 
+# Import nets handler
+try:
+    from lager.http_handlers.nets_handler import register_nets_routes
+    _has_nets = True
+except Exception as e:
+    logger.warning("Nets handlers not available: %s", e)
+    _has_nets = False
+
+# Import instruments handler
+try:
+    from lager.http_handlers.instruments_handler import register_instruments_routes
+    _has_instruments = True
+except Exception as e:
+    logger.warning("Instruments handlers not available: %s", e)
+    _has_instruments = False
+
 # Global dictionary to track active supply monitoring sessions
 # Format: {session_id: {'netname': str, 'stop_event': event_obj, 'thread': thread_obj, 'instrument_lock': Lock}}
 active_supply_sessions = {}
@@ -183,6 +199,22 @@ if _has_dashboard:
     print("[INIT] Dashboard REST endpoints registered", flush=True)
 else:
     print("[INIT] Dashboard REST endpoints NOT available", flush=True)
+
+# Register nets REST handlers (if available)
+if _has_nets:
+    register_nets_routes(app)
+    logger.info("Nets REST endpoints registered")
+    print("[INIT] Nets REST endpoints registered", flush=True)
+else:
+    print("[INIT] Nets REST endpoints NOT available", flush=True)
+
+# Register instruments REST handlers (if available)
+if _has_instruments:
+    register_instruments_routes(app)
+    logger.info("Instruments REST endpoints registered")
+    print("[INIT] Instruments REST endpoints registered", flush=True)
+else:
+    print("[INIT] Instruments REST endpoints NOT available", flush=True)
 
 
 # Supply HTTP endpoint (handled by supply.py module, this is now commented out)
