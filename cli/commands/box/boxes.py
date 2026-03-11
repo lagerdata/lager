@@ -681,7 +681,7 @@ def import_boxes(file, merge, yes):
 
 @boxes.command('connect')
 @click.option('--box', required=True, help='Name of the box to connect')
-@click.option('--url', required=True, help='Control plane URL (e.g., http://stout:3001)')
+@click.option('--url', default='https://api.stoutdata.ai', help='Control plane URL')
 @click.option('--api-key', required=True, help='API key for control plane authentication')
 @click.option('--heartbeat-interval', default=30, type=int, help='Heartbeat interval in seconds (default: 30)')
 @click.option('--yes', is_flag=True, help='Confirm the action without prompting.')
