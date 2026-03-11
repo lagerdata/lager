@@ -125,12 +125,15 @@ try:
                 return gdbserver_status
             return status
 
-        def rtt(self, channel=0):
+        def rtt(self, channel=0, search_addr=None, search_size=None, chunk_size=None):
             """
             Create RTT (Real-Time Transfer) session for bidirectional communication.
 
             Args:
                 channel: RTT channel number (default: 0)
+                search_addr: RAM start address for RTT control block search (default: 0x20000000)
+                search_size: Size of RAM region to search in bytes (default: 0x10000 / 64KB)
+                chunk_size: Size of each read chunk in bytes (default: 0x1000 / 4KB)
 
             Returns:
                 RTT context manager
@@ -142,7 +145,8 @@ try:
                         print(data.decode('utf-8'))
                     rtt.write(b'command\\n')
             """
-            return RTT(device=self.device, channel=channel)
+            return RTT(device=self.device, channel=channel,
+                       search_addr=search_addr, search_size=search_size, chunk_size=chunk_size)
 
     def make_debug(name, net_info=None):  # type: ignore
         """Factory function to create a DebugNet instance."""

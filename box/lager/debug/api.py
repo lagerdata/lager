@@ -143,7 +143,7 @@ def clean_logfile_content(logfile_content, max_length=2000):
     return cleaned.strip()
 
 
-def detect_and_configure_rtt(device_type=None):
+def detect_and_configure_rtt(device_type=None, search_addr=0x20000000, search_size=0x10000, chunk_size=0x1000):
     """
     Detect RTT control block in RAM and configure J-Link to use it.
 
@@ -156,6 +156,9 @@ def detect_and_configure_rtt(device_type=None):
 
     Args:
         device_type: Optional device type hint (not currently used)
+        search_addr: RAM start address to search (default: 0x20000000)
+        search_size: Size of RAM region to search in bytes (default: 0x10000 / 64KB)
+        chunk_size: Size of each read chunk in bytes (default: 0x1000 / 4KB)
 
     Returns:
         dict with 'found': bool, 'address': str (hex) if found, 'error': str if error
@@ -185,18 +188,12 @@ def detect_and_configure_rtt(device_type=None):
         rtt_signature = b'SEGGER RTT'
         rtt_address = None
 
-        # Define RAM search range
-        # This is generic for most ARM Cortex-M devices, not hardcoded for specific PCB
-        ram_start = 0x20000000
-        ram_size = 0x10000  # 64KB search window
-        chunk_size = 0x1000  # 4KB chunks
-
-        for offset in range(0, ram_size, chunk_size):
-            search_addr = ram_start + offset
+        for offset in range(0, search_size, chunk_size):
+            addr = search_addr + offset
             try:
                 # Read 4KB chunk from RAM using GDB MI command
                 # This is the same command format used by the working memrd implementation
-                mem_cmd = f'-data-read-memory-bytes {search_addr} {chunk_size}'
+                mem_cmd = f'-data-read-memory-bytes {addr} {chunk_size}'
                 mem_responses = gdbmi.write(mem_cmd, timeout_sec=2.0, raise_error_on_timeout=False)
 
                 # Parse memory dump and look for RTT signature
@@ -216,11 +213,11 @@ def detect_and_configure_rtt(device_type=None):
                 if len(memory_data) >= len(rtt_signature):
                     sig_index = memory_data.find(rtt_signature)
                     if sig_index != -1:
-                        rtt_address = hex(search_addr + sig_index)
+                        rtt_address = hex(addr + sig_index)
                         logger.info(f'Found RTT control block at {rtt_address}')
                         break
             except Exception as chunk_error:
-                logger.debug(f'Error searching RAM at {search_addr:#x}: {chunk_error}')
+                logger.debug(f'Error searching RAM at {addr:#x}: {chunk_error}')
                 continue
 
         if rtt_address:
@@ -795,16 +792,22 @@ class RTT:
             rtt.write(b'command\\n')
     """
 
-    def __init__(self, device=None, channel=0):
+    def __init__(self, device=None, channel=0, search_addr=None, search_size=None, chunk_size=None):
         """
         Initialize RTT session.
 
         Args:
             device: Device name (optional, for auto-detection)
             channel: RTT channel number (default: 0)
+            search_addr: RAM start address for RTT control block search (default: 0x20000000)
+            search_size: Size of RAM region to search in bytes (default: 0x10000 / 64KB)
+            chunk_size: Size of each read chunk in bytes (default: 0x1000 / 4KB)
         """
         self.device = device
         self.channel = channel
+        self.search_addr = search_addr
+        self.search_size = search_size
+        self.chunk_size = chunk_size
         self._socket = None
         self._port = 9090 + channel
 
@@ -820,7 +823,14 @@ class RTT:
             raise JLinkNotRunning("J-Link must be connected before using RTT")
 
         # Auto-detect and configure RTT control block
-        rtt_result = detect_and_configure_rtt(device_type=self.device)
+        rtt_kwargs = {'device_type': self.device}
+        if self.search_addr is not None:
+            rtt_kwargs['search_addr'] = self.search_addr
+        if self.search_size is not None:
+            rtt_kwargs['search_size'] = self.search_size
+        if self.chunk_size is not None:
+            rtt_kwargs['chunk_size'] = self.chunk_size
+        rtt_result = detect_and_configure_rtt(**rtt_kwargs)
         if rtt_result['found']:
             logger.info(f"RTT control block found at {rtt_result['address']}")
         elif rtt_result['error']:
