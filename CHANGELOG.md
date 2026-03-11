@@ -2,6 +2,16 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.7.0] - 2026-03-10
+
+### Added
+- `lager devenv terminal --attach <container_name>` to attach to a running Docker container
+- `lager devenv terminal --shell <path>` to override the shell when attaching
+- Jobs WebSocket client in control plane heartbeat for receiving and executing job dispatch commands
+
+### Changed
+- Default control plane URL changed to `https://api.stoutdata.ai`
+
 ## [0.6.0] - 2026-03-06
 
 ### Added

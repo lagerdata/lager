@@ -140,7 +140,9 @@ def create(ctx, image, mount_dir, shell):
 @click.option('--entrypoint', help='Container entrypoint', required=False)
 @click.option('--network', help='Network mode', required=False)
 @click.option('--platform', help='Platform', required=False)
-def terminal(ctx, mount, user, group, name, detach, port, entrypoint, network, platform):
+@click.option('--attach', '-a', 'attach_container', help='Attach to a running container by name', required=False, default=None)
+@click.option('--shell', '-s', help='Shell to use when attaching (default: config shell or /bin/bash)', required=False, default=None)
+def terminal(ctx, mount, user, group, name, detach, port, entrypoint, network, platform, attach_container, shell):
     """
     Start interactive terminal
     """
@@ -150,6 +152,16 @@ def terminal(ctx, mount, user, group, name, detach, port, entrypoint, network, p
         click.echo(f'Please run `lager devenv create` first to set up your development environment.', err=True)
         ctx.exit(1)
     devenv_config = data['DEVENV']
+
+    if attach_container:
+        shell_cmd = shell or devenv_config.get('shell', '/bin/bash')
+        attach_args = ['docker', 'exec', '-it', attach_container, shell_cmd]
+        try:
+            proc = subprocess.run(attach_args, check=False)
+        except FileNotFoundError:
+            click.secho("Error: Docker is not installed or not in PATH", fg='red', err=True)
+            ctx.exit(1)
+        ctx.exit(proc.returncode)
 
     image = devenv_config.get('image')
     source_dir = os.path.dirname(path)

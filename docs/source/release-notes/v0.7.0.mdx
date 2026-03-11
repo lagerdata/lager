@@ -1,0 +1,32 @@
+---
+title: "Version 0.7.0"
+description: "March 10, 2026"
+---
+
+## <u>Features</u>
+
+- `lager devenv terminal --attach <container_name>` to attach to a running Docker container via `docker exec`
+- `lager devenv terminal --shell <path>` to override the default shell when attaching
+- Jobs WebSocket client added to control plane heartbeat for receiving and executing job dispatch commands
+
+## <u>Improvements</u>
+
+- Default control plane URL updated to `https://api.stoutdata.ai`
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.7.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.7.0/)
