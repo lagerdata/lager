@@ -41,6 +41,7 @@ try:
         chip_erase,
         erase_flash,
         get_jlink_status,
+        get_jlink_gdbserver_status,
         read_memory as debug_read_memory,
         RTT,
     )
@@ -117,7 +118,12 @@ try:
 
         def status(self):
             """Get connection status"""
-            return get_jlink_status()
+            status = get_jlink_status()
+            gdbserver_status = get_jlink_gdbserver_status()
+            # Consider connected if either path shows running
+            if gdbserver_status['running'] and not status['running']:
+                return gdbserver_status
+            return status
 
         def rtt(self, channel=0):
             """
