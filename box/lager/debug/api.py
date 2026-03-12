@@ -143,7 +143,7 @@ def clean_logfile_content(logfile_content, max_length=2000):
     return cleaned.strip()
 
 
-def detect_and_configure_rtt(device_type=None):
+def detect_and_configure_rtt(device_type=None, search_addr=0x20000000, search_size=0x10000, chunk_size=0x1000):
     """
     Detect RTT control block in RAM and configure J-Link to use it.
 
@@ -156,6 +156,9 @@ def detect_and_configure_rtt(device_type=None):
 
     Args:
         device_type: Optional device type hint (not currently used)
+        search_addr: RAM start address to search (default: 0x20000000)
+        search_size: Size of RAM region to search in bytes (default: 0x10000 / 64KB)
+        chunk_size: Size of each read chunk in bytes (default: 0x1000 / 4KB)
 
     Returns:
         dict with 'found': bool, 'address': str (hex) if found, 'error': str if error
@@ -169,9 +172,10 @@ def detect_and_configure_rtt(device_type=None):
     }
 
     try:
-        # Check if debugger is connected
+        # Check if debugger is connected (check both PID file paths)
         jlink_status = get_jlink_status()
-        if not jlink_status['running']:
+        gdbserver_status = get_jlink_gdbserver_status()
+        if not jlink_status['running'] and not gdbserver_status['running']:
             result['error'] = 'No debugger connection'
             return result
 
@@ -185,18 +189,12 @@ def detect_and_configure_rtt(device_type=None):
         rtt_signature = b'SEGGER RTT'
         rtt_address = None
 
-        # Define RAM search range
-        # This is generic for most ARM Cortex-M devices, not hardcoded for specific PCB
-        ram_start = 0x20000000
-        ram_size = 0x10000  # 64KB search window
-        chunk_size = 0x1000  # 4KB chunks
-
-        for offset in range(0, ram_size, chunk_size):
-            search_addr = ram_start + offset
+        for offset in range(0, search_size, chunk_size):
+            addr = search_addr + offset
             try:
                 # Read 4KB chunk from RAM using GDB MI command
                 # This is the same command format used by the working memrd implementation
-                mem_cmd = f'-data-read-memory-bytes {search_addr} {chunk_size}'
+                mem_cmd = f'-data-read-memory-bytes {addr} {chunk_size}'
                 mem_responses = gdbmi.write(mem_cmd, timeout_sec=2.0, raise_error_on_timeout=False)
 
                 # Parse memory dump and look for RTT signature
@@ -216,11 +214,11 @@ def detect_and_configure_rtt(device_type=None):
                 if len(memory_data) >= len(rtt_signature):
                     sig_index = memory_data.find(rtt_signature)
                     if sig_index != -1:
-                        rtt_address = hex(search_addr + sig_index)
+                        rtt_address = hex(addr + sig_index)
                         logger.info(f'Found RTT control block at {rtt_address}')
                         break
             except Exception as chunk_error:
-                logger.debug(f'Error searching RAM at {search_addr:#x}: {chunk_error}')
+                logger.debug(f'Error searching RAM at {addr:#x}: {chunk_error}')
                 continue
 
         if rtt_address:
@@ -585,15 +583,28 @@ def erase_flash(start_addr, length, mcu=None):
     Raises:
         JLinkNotRunning: If J-Link is not running
     """
+    # Check both PID files (CLI uses gdbserver, Python API uses legacy)
     jlink_status = get_jlink_status()
-    if not jlink_status['running']:
-        raise JLinkNotRunning()
+    if jlink_status['running'] and jlink_status.get('cmdline'):
+        try:
+            jlink = JLink(jlink_status['cmdline'], script_file=_get_script_file())
+            return jlink.erase(start_addr, length)
+        except (ValueError, KeyError):
+            pass  # Fall through to gdbserver path
 
-    try:
-        jlink = JLink(jlink_status['cmdline'], script_file=_get_script_file())
-    except (ValueError, KeyError):
-        raise JLinkNotRunning()
-    return jlink.erase(start_addr, length)
+    gdbserver_status = get_jlink_gdbserver_status()
+    if gdbserver_status['running']:
+        pid = gdbserver_status.get('pid')
+        if pid:
+            try:
+                with open(f'/proc/{pid}/cmdline', 'rb') as f:
+                    cmdline = [part.decode() for part in f.read().split(b'\x00')]
+                jlink = JLink(cmdline, script_file=_get_script_file())
+                return jlink.erase(start_addr, length)
+            except (OSError, IOError, ValueError, KeyError):
+                pass  # Fall through to error
+
+    raise JLinkNotRunning()
 
 
 def chip_erase(device, speed='4000', transport='SWD', mcu=None):
@@ -739,9 +750,10 @@ def read_memory(address, length, mcu=None):
         JLinkNotRunning: If J-Link GDB server is not running
         DebugError: If memory read fails
     """
-    # Ensure J-Link is running
-    gdbserver_status = get_jlink_status()
-    if not gdbserver_status['running']:
+    # Ensure J-Link is running (check both PID file paths)
+    jlink_status = get_jlink_status()
+    gdbserver_status = get_jlink_gdbserver_status()
+    if not jlink_status['running'] and not gdbserver_status['running']:
         raise JLinkNotRunning("J-Link GDB server is not running. Call connect() first.")
 
     # Convert address to int if it's a string
@@ -749,20 +761,29 @@ def read_memory(address, length, mcu=None):
         address = int(address, 16 if address.startswith('0x') else 10)
 
     try:
-        # Use J-Link monitor command to read memory directly
-        # This is more reliable than GDB's 'x' command in MI mode
-        # J-Link syntax: "monitor mem8 <addr> <count>"
         # Use J-Link Commander directly for reliable memory reads
         # This bypasses GDB entirely and uses J-Link's native capabilities
-        # Note: JLink and get_jlink_status are already imported at top of file
 
-        # Get J-Link status to retrieve command line
-        jlink_status = get_jlink_status()
-        if not jlink_status['running']:
+        # Try legacy path first, then gdbserver path
+        jlink = None
+        if jlink_status['running'] and jlink_status.get('cmdline'):
+            try:
+                jlink = JLink(jlink_status['cmdline'], script_file=_get_script_file())
+            except (ValueError, KeyError):
+                pass
+
+        if jlink is None and gdbserver_status['running']:
+            pid = gdbserver_status.get('pid')
+            if pid:
+                try:
+                    with open(f'/proc/{pid}/cmdline', 'rb') as f:
+                        cmdline = [part.decode() for part in f.read().split(b'\x00')]
+                    jlink = JLink(cmdline, script_file=_get_script_file())
+                except (OSError, IOError, ValueError, KeyError):
+                    pass
+
+        if jlink is None:
             raise JLinkNotRunning("J-Link GDB server is not running. Call connect() first.")
-
-        # Create JLink instance from running server's command line
-        jlink = JLink(jlink_status['cmdline'], script_file=_get_script_file())
 
         # Use J-Link Commander to read memory directly
         memory_data = jlink.read_memory(address, length)
@@ -795,16 +816,22 @@ class RTT:
             rtt.write(b'command\\n')
     """
 
-    def __init__(self, device=None, channel=0):
+    def __init__(self, device=None, channel=0, search_addr=None, search_size=None, chunk_size=None):
         """
         Initialize RTT session.
 
         Args:
             device: Device name (optional, for auto-detection)
             channel: RTT channel number (default: 0)
+            search_addr: RAM start address for RTT control block search (default: 0x20000000)
+            search_size: Size of RAM region to search in bytes (default: 0x10000 / 64KB)
+            chunk_size: Size of each read chunk in bytes (default: 0x1000 / 4KB)
         """
         self.device = device
         self.channel = channel
+        self.search_addr = search_addr
+        self.search_size = search_size
+        self.chunk_size = chunk_size
         self._socket = None
         self._port = 9090 + channel
 
@@ -813,13 +840,21 @@ class RTT:
         import socket
         import time
 
-        # Check if debugger is connected
+        # Check if debugger is connected (check both PID file paths)
         status = get_jlink_status()
-        if not status['running']:
+        gdbserver_status = get_jlink_gdbserver_status()
+        if not status['running'] and not gdbserver_status['running']:
             raise JLinkNotRunning("J-Link must be connected before using RTT")
 
         # Auto-detect and configure RTT control block
-        rtt_result = detect_and_configure_rtt(device_type=self.device)
+        rtt_kwargs = {'device_type': self.device}
+        if self.search_addr is not None:
+            rtt_kwargs['search_addr'] = self.search_addr
+        if self.search_size is not None:
+            rtt_kwargs['search_size'] = self.search_size
+        if self.chunk_size is not None:
+            rtt_kwargs['chunk_size'] = self.chunk_size
+        rtt_result = detect_and_configure_rtt(**rtt_kwargs)
         if rtt_result['found']:
             logger.info(f"RTT control block found at {rtt_result['address']}")
         elif rtt_result['error']:
