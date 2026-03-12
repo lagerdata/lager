@@ -172,9 +172,10 @@ def detect_and_configure_rtt(device_type=None, search_addr=0x20000000, search_si
     }
 
     try:
-        # Check if debugger is connected
+        # Check if debugger is connected (check both PID file paths)
         jlink_status = get_jlink_status()
-        if not jlink_status['running']:
+        gdbserver_status = get_jlink_gdbserver_status()
+        if not jlink_status['running'] and not gdbserver_status['running']:
             result['error'] = 'No debugger connection'
             return result
 
@@ -582,15 +583,28 @@ def erase_flash(start_addr, length, mcu=None):
     Raises:
         JLinkNotRunning: If J-Link is not running
     """
+    # Check both PID files (CLI uses gdbserver, Python API uses legacy)
     jlink_status = get_jlink_status()
-    if not jlink_status['running']:
-        raise JLinkNotRunning()
+    if jlink_status['running'] and jlink_status.get('cmdline'):
+        try:
+            jlink = JLink(jlink_status['cmdline'], script_file=_get_script_file())
+            return jlink.erase(start_addr, length)
+        except (ValueError, KeyError):
+            pass  # Fall through to gdbserver path
 
-    try:
-        jlink = JLink(jlink_status['cmdline'], script_file=_get_script_file())
-    except (ValueError, KeyError):
-        raise JLinkNotRunning()
-    return jlink.erase(start_addr, length)
+    gdbserver_status = get_jlink_gdbserver_status()
+    if gdbserver_status['running']:
+        pid = gdbserver_status.get('pid')
+        if pid:
+            try:
+                with open(f'/proc/{pid}/cmdline', 'rb') as f:
+                    cmdline = [part.decode() for part in f.read().split(b'\x00')]
+                jlink = JLink(cmdline, script_file=_get_script_file())
+                return jlink.erase(start_addr, length)
+            except (OSError, IOError, ValueError, KeyError):
+                pass  # Fall through to error
+
+    raise JLinkNotRunning()
 
 
 def chip_erase(device, speed='4000', transport='SWD', mcu=None):
@@ -736,9 +750,10 @@ def read_memory(address, length, mcu=None):
         JLinkNotRunning: If J-Link GDB server is not running
         DebugError: If memory read fails
     """
-    # Ensure J-Link is running
-    gdbserver_status = get_jlink_status()
-    if not gdbserver_status['running']:
+    # Ensure J-Link is running (check both PID file paths)
+    jlink_status = get_jlink_status()
+    gdbserver_status = get_jlink_gdbserver_status()
+    if not jlink_status['running'] and not gdbserver_status['running']:
         raise JLinkNotRunning("J-Link GDB server is not running. Call connect() first.")
 
     # Convert address to int if it's a string
@@ -746,20 +761,29 @@ def read_memory(address, length, mcu=None):
         address = int(address, 16 if address.startswith('0x') else 10)
 
     try:
-        # Use J-Link monitor command to read memory directly
-        # This is more reliable than GDB's 'x' command in MI mode
-        # J-Link syntax: "monitor mem8 <addr> <count>"
         # Use J-Link Commander directly for reliable memory reads
         # This bypasses GDB entirely and uses J-Link's native capabilities
-        # Note: JLink and get_jlink_status are already imported at top of file
 
-        # Get J-Link status to retrieve command line
-        jlink_status = get_jlink_status()
-        if not jlink_status['running']:
+        # Try legacy path first, then gdbserver path
+        jlink = None
+        if jlink_status['running'] and jlink_status.get('cmdline'):
+            try:
+                jlink = JLink(jlink_status['cmdline'], script_file=_get_script_file())
+            except (ValueError, KeyError):
+                pass
+
+        if jlink is None and gdbserver_status['running']:
+            pid = gdbserver_status.get('pid')
+            if pid:
+                try:
+                    with open(f'/proc/{pid}/cmdline', 'rb') as f:
+                        cmdline = [part.decode() for part in f.read().split(b'\x00')]
+                    jlink = JLink(cmdline, script_file=_get_script_file())
+                except (OSError, IOError, ValueError, KeyError):
+                    pass
+
+        if jlink is None:
             raise JLinkNotRunning("J-Link GDB server is not running. Call connect() first.")
-
-        # Create JLink instance from running server's command line
-        jlink = JLink(jlink_status['cmdline'], script_file=_get_script_file())
 
         # Use J-Link Commander to read memory directly
         memory_data = jlink.read_memory(address, length)
