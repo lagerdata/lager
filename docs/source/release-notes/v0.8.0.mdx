@@ -1,0 +1,34 @@
+---
+title: "Version 0.8.0"
+description: "March 12, 2026"
+---
+
+## <u>Features</u>
+
+- RTT RAM search parameters for Python API: `dbg.rtt(search_addr=0x20000000, search_size=0x10000, chunk_size=0x1000)` allows specifying where to search for the SEGGER RTT control block in target RAM
+- RTT RAM search CLI flags: `--rtt-search-addr`, `--rtt-search-size`, `--rtt-chunk-size` for `lager debug <net> gdbserver --rtt`
+- Instruments and nets HTTP handlers on Lager Box for remote configuration queries
+
+## <u>Bug Fixes</u>
+
+- Fixed PID file path mismatch where `status()` and `rtt()` only checked `/tmp/jlink.pid` but `connect()` writes to `/tmp/jlink_gdbserver.pid` — both paths are now checked everywhere
+- Fixed `detect_and_configure_rtt()` always reporting "No debugger connection" even when the debugger was connected, preventing RTT control block auto-detection from running
+- Fixed `erase_flash()` and `read_memory()` failing to find a running debugger when connected via the GDB server PID path
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.8.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.8.0/)
