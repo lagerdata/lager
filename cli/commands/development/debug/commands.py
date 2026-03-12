@@ -482,7 +482,14 @@ def _debug(ctx, box):
               help='Reset the device after starting GDB server')
 @click.option('--gdb-port', type=int, default=2331,
               help='GDB server port (default: 2331)')
-def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, reset, gdb_port):
+@click.option('--rtt-search-addr', type=str, default=None,
+              help='RAM start address for RTT control block search (hex, e.g., 0x20020000)')
+@click.option('--rtt-search-size', type=str, default=None,
+              help='Size of RAM region to search for RTT control block (hex, e.g., 0x4000)')
+@click.option('--rtt-chunk-size', type=str, default=None,
+              help='Read chunk size for RTT search (hex, e.g., 0x1000)')
+def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, reset, gdb_port,
+              rtt_search_addr, rtt_search_size, rtt_chunk_size):
     """Start JLinkGDBServer for debugging"""
     # Validate GDB port range
     if gdb_port < 1 or gdb_port > 65535:
@@ -591,6 +598,30 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
                 click.secho(f"GDB server listening on {target_box}:{gdb_port}", fg='cyan', err=True)
                 click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{gdb_port}'", fg='cyan', err=True)
 
+    # Parse RTT search parameters (hex strings to integers)
+    rtt_search_params = {}
+    if rtt_search_addr is not None:
+        try:
+            rtt_search_params['search_addr'] = int(rtt_search_addr, 0)
+        except ValueError:
+            click.secho(f"Error: Invalid --rtt-search-addr value: {rtt_search_addr}", fg='red', err=True)
+            client.close()
+            ctx.exit(1)
+    if rtt_search_size is not None:
+        try:
+            rtt_search_params['search_size'] = int(rtt_search_size, 0)
+        except ValueError:
+            click.secho(f"Error: Invalid --rtt-search-size value: {rtt_search_size}", fg='red', err=True)
+            client.close()
+            ctx.exit(1)
+    if rtt_chunk_size is not None:
+        try:
+            rtt_search_params['chunk_size'] = int(rtt_chunk_size, 0)
+        except ValueError:
+            click.secho(f"Error: Invalid --rtt-chunk-size value: {rtt_chunk_size}", fg='red', err=True)
+            client.close()
+            ctx.exit(1)
+
     # Handle post-connect actions
     if rtt or rtt_reset:
         # Wait for GDB server to fully initialize before attempting reset/RTT
@@ -664,7 +695,7 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
 
         try:
             # Stream RTT data to stdout
-            for chunk in client.rtt(net=debug_net, channel=0, timeout=None):
+            for chunk in client.rtt(net=debug_net, channel=0, timeout=None, **rtt_search_params):
                 # Write directly to stdout in binary mode for maximum performance
                 import sys
                 try:

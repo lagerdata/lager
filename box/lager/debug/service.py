@@ -715,7 +715,14 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             net = data.get('net', {})
             device_type = _resolve_device_type(net)
 
-            rtt_result = detect_and_configure_rtt(device_type=device_type)
+            rtt_kwargs = {'device_type': device_type}
+            if 'search_addr' in data:
+                rtt_kwargs['search_addr'] = data['search_addr']
+            if 'search_size' in data:
+                rtt_kwargs['search_size'] = data['search_size']
+            if 'chunk_size' in data:
+                rtt_kwargs['chunk_size'] = data['chunk_size']
+            rtt_result = detect_and_configure_rtt(**rtt_kwargs)
             if rtt_result['found']:
                 logger.info(f"RTT auto-detection successful: {rtt_result['address']}")
             elif rtt_result['error']:

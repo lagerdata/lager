@@ -229,7 +229,8 @@ class DebugServiceClient:
         response.raise_for_status()
         return response.json()
 
-    def rtt(self, net: Optional[Dict[str, Any]] = None, channel: int = 0, timeout: Optional[int] = None):
+    def rtt(self, net: Optional[Dict[str, Any]] = None, channel: int = 0, timeout: Optional[int] = None,
+            search_addr: Optional[int] = None, search_size: Optional[int] = None, chunk_size: Optional[int] = None):
         """
         Stream RTT logs from target.
 
@@ -237,6 +238,9 @@ class DebugServiceClient:
             net: Debug net configuration
             channel: RTT channel (0 or 1)
             timeout: Timeout in seconds (None = stream until interrupted)
+            search_addr: RAM start address for RTT control block search
+            search_size: Size of RAM region to search in bytes
+            chunk_size: Size of each read chunk in bytes
 
         Yields:
             Bytes from RTT stream
@@ -246,6 +250,12 @@ class DebugServiceClient:
             'channel': channel,
             'timeout': timeout,
         }
+        if search_addr is not None:
+            data['search_addr'] = search_addr
+        if search_size is not None:
+            data['search_size'] = search_size
+        if chunk_size is not None:
+            data['chunk_size'] = chunk_size
 
         # Use streaming response to handle chunked transfer encoding
         response = self.session.post(
