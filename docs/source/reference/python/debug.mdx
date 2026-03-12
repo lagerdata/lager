@@ -24,7 +24,7 @@ The Net-based API provides methods for embedded debugging operations.
 | `erase()` | Perform full chip erase |
 | `read_memory(address, length)` | Read memory from device |
 | `status()` | Get connection status |
-| `rtt(channel)` | Create RTT session for bidirectional communication |
+| `rtt(channel, search_addr, search_size, chunk_size)` | Create RTT session for bidirectional communication |
 
 ## Method Reference
 
@@ -176,7 +176,7 @@ print(f"Connected: {status.get('connected', False)}")
 
 **Returns:** `dict` - Status dictionary with connection information
 
-### `rtt(channel=0)`
+### `rtt(channel=0, search_addr=None, search_size=None, chunk_size=None)`
 
 Create an RTT (Real-Time Transfer) session for bidirectional communication with the target device.
 
@@ -194,6 +194,10 @@ with dbg.rtt() as rtt:
 # Use different RTT channel
 with dbg.rtt(channel=1) as rtt:
     data = rtt.read_some(timeout=2.0)
+
+# Specify custom RAM search parameters for RTT control block detection
+with dbg.rtt(search_addr=0x20020000, search_size=0x4000, chunk_size=0x1000) as rtt:
+    data = rtt.read_some(timeout=1.0)
 ```
 
 **Parameters:**
@@ -201,6 +205,9 @@ with dbg.rtt(channel=1) as rtt:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `channel` | `int` | `0` | RTT channel number (typically 0-15) |
+| `search_addr` | `int` | `0x20000000` | RAM start address for RTT control block search |
+| `search_size` | `int` | `0x10000` | Size of RAM region to search for RTT control block |
+| `chunk_size` | `int` | `0x1000` | Size of each search chunk |
 
 **Returns:** RTT context manager with methods:
 - `read_some(timeout)` - Read available data with timeout (returns bytes or None)
@@ -327,6 +334,11 @@ with debug.rtt() as rtt:
 
     # Can also write commands to MCU
     rtt.write(b'start_test\n')
+
+# Customize RTT RAM search parameters if the control block is not
+# at the default location (e.g., device with non-standard RAM layout)
+with debug.rtt(search_addr=0x20020000, search_size=0x4000, chunk_size=0x1000) as rtt:
+    data = rtt.read_some(timeout=1.0)
 ```
 
 **RTT Methods:**
@@ -335,6 +347,16 @@ with debug.rtt() as rtt:
 |--------|-------------|
 | `read_some(timeout)` | Read available data with timeout (returns bytes or None) |
 | `write(data)` | Write data to RTT (accepts bytes or str) |
+
+**RTT Search Parameters:**
+
+The RTT control block is located by scanning a region of RAM. If your device has a non-standard memory layout, you can customize the search range:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `search_addr` | `0x20000000` | RAM start address for the search |
+| `search_size` | `0x10000` | Size of the RAM region to scan |
+| `chunk_size` | `0x1000` | Size of each search chunk |
 
 **CLI Alternative:** Use `lager debug <net> gdbserver --rtt-reset` to stream RTT logs directly.
 

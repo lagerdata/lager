@@ -50,6 +50,9 @@ lager debug [NET_NAME] gdbserver [OPTIONS]
 - `--json` - Output results in JSON format
 - `--rtt` - Automatically stream RTT logs after starting GDB server
 - `--rtt-reset` - Reset device then stream RTT (captures boot sequence)
+- `--rtt-search-addr HEX` - RAM start address for RTT control block search (e.g., 0x20020000)
+- `--rtt-search-size HEX` - Size of RAM region to search for RTT control block (e.g., 0x4000)
+- `--rtt-chunk-size HEX` - Size of each search chunk (e.g., 0x1000)
 - `--reset` - Reset device after starting GDB server
 - `--gdb-port PORT` - GDB server port (default: 2331)
 
@@ -326,7 +329,13 @@ lager debug gdbserver --box my-lager-box --rtt-reset
 
 # Pipe to defmt-print for formatted output
 lager debug gdbserver --box my-lager-box --rtt | defmt-print -e firmware.elf
+
+# Customize RTT RAM search parameters (for non-standard memory layouts)
+lager debug gdbserver --box my-lager-box --rtt \
+  --rtt-search-addr 0x20020000 --rtt-search-size 0x4000 --rtt-chunk-size 0x1000
 ```
+
+The RTT control block is located by scanning a region of RAM. The search parameters default to `0x20000000` / `0x10000` / `0x1000` (address / size / chunk size). Override these if your device has a non-standard RAM layout.
 
 ## Typical Workflows
 
