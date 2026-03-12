@@ -2,6 +2,18 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.8.0] - 2026-03-12
+
+### Added
+- RTT RAM search parameters for Python API: `dbg.rtt(search_addr=, search_size=, chunk_size=)`
+- RTT RAM search CLI flags: `--rtt-search-addr`, `--rtt-search-size`, `--rtt-chunk-size`
+- Instruments and nets HTTP handlers on Lager Box
+
+### Fixed
+- PID file path mismatch: `status()` and `rtt()` now check both `/tmp/jlink.pid` and `/tmp/jlink_gdbserver.pid`
+- `detect_and_configure_rtt()` now detects running debugger correctly (was always reporting "No debugger connection")
+- `erase_flash()` and `read_memory()` now check both PID file paths
+
 ## [0.7.0] - 2026-03-10
 
 ### Added
