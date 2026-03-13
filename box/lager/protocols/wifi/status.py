@@ -41,7 +41,7 @@ def get_wifi_status():
                     essid = essid_match.group(1)
                     if essid and essid != "":
                         interfaces[interface_name]['ssid'] = essid
-                        interfaces[interface_interface]['state'] = 'Connected'
+                        interfaces[current_interface]['state'] = 'Connected'
 
             elif current_interface and line.startswith('Access Point:'):
                 # Check connection status

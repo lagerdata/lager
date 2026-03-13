@@ -3,73 +3,56 @@ title: WiFi
 description: WiFi network management
 ---
 
-Manage WiFi network connections on Lager Boxes.
+Manage WiFi network connections on Lager Boxes. WiFi operations are box-level functions — they manage the box's own wireless interface, not a test net on a PCB.
 
 ## Import
 
 ```python
-from lager import Net, NetType
+from lager.protocols.wifi import scan_wifi, connect_to_wifi, get_wifi_status, disconnect_wifi
 ```
 
-## Method Reference
+## Function Reference
 
-### Getting a WiFi Net
+| Function | Description |
+|----------|-------------|
+| `scan_wifi(interface)` | Scan for available WiFi networks |
+| `connect_to_wifi(ssid, password, interface)` | Connect to a WiFi network |
+| `get_wifi_status()` | Get current WiFi connection status |
+| `disconnect_wifi(interface)` | Disconnect from WiFi network |
 
-Get a WiFi net instance by name and type.
-
-```python
-from lager import Net, NetType
-
-# Get the WiFi net
-wifi = Net.get('wifi1', type=NetType.Wifi)
-```
-
-**Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `name` | `str` | Net name (configured in Lager system) |
-| `type` | `NetType` | Must be `NetType.Wifi` |
-
-**Returns:** WiFi net instance with all methods listed below
-
-### Methods
-
-| Method | Description |
-|--------|-------------|
-| `scan()` | Scan for available WiFi networks |
-| `connect(ssid, password)` | Connect to a WiFi network |
-| `status()` | Get current WiFi connection status |
-| `disconnect()` | Disconnect from WiFi network |
-
-### `scan()`
+### `scan_wifi(interface='wlan0')`
 
 Scan for available WiFi networks.
 
 ```python
-from lager import Net, NetType
+from lager.protocols.wifi import scan_wifi
 
-wifi = Net.get('wifi1', type=NetType.Wifi)
-networks = wifi.scan()
+result = scan_wifi()
+networks = result.get('access_points', [])
 
 for network in networks:
     print(f"{network['ssid']}: {network['strength']}%")
 ```
 
-**Returns:** `list` of network dicts, each containing:
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `interface` | `str` | `'wlan0'` | Network interface to scan on |
+
+**Returns:** `dict` with key `access_points` containing a list of network dicts, each with:
 - `ssid` - Network name
 - `strength` - Signal strength as percentage (0-100)
 - `security` - Security type ('Open' or 'Secured')
 
-### `connect(ssid, password)`
+### `connect_to_wifi(ssid, password, interface='wlan0')`
 
 Connect to a WiFi network.
 
 ```python
-from lager import Net, NetType
+from lager.protocols.wifi import connect_to_wifi
 
-wifi = Net.get('wifi1', type=NetType.Wifi)
-result = wifi.connect(ssid='MyNetwork', password='secret123')
+result = connect_to_wifi('MyNetwork', 'secret123')
 
 if result['success']:
     print(f"Connected: {result['message']}")
@@ -79,44 +62,73 @@ else:
 
 **Parameters:**
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `ssid` | `str` | Network name |
-| `password` | `str` | Network password (empty string for open networks) |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `ssid` | `str` | | Network name |
+| `password` | `str` | | Network password (empty string for open networks) |
+| `interface` | `str` | `'wlan0'` | Network interface to use |
 
 **Returns:** `dict` with keys:
 - `success` - Boolean indicating connection success
 - `message` - Success message (when `success` is True)
 - `error` - Error message (when `success` is False)
 
-### `status()`
+### `get_wifi_status()`
 
-Get current WiFi connection status.
+Get current WiFi connection status for all interfaces.
 
 ```python
-from lager import Net, NetType
+from lager.protocols.wifi import get_wifi_status
 
-wifi = Net.get('wifi1', type=NetType.Wifi)
-status = wifi.status()
+interfaces = get_wifi_status()
 
-print(f"Connected: {status['connected']}")
-print(f"SSID: {status['ssid']}")
+for name, info in interfaces.items():
+    print(f"{name}: {info['state']} - {info['ssid']}")
 ```
 
-**Returns:** `dict` containing:
-- `connected` - Boolean indicating connection state
+**Returns:** `dict` keyed by interface name, each value containing:
+- `interface` - Interface name
 - `ssid` - Connected network name or 'Not Connected'
-- `strength` - Signal strength percentage (if connected)
+- `state` - 'Connected' or 'Disconnected'
 
-### `disconnect()`
+### `disconnect_wifi(interface='wlan0')`
 
-Disconnect from WiFi network.
+Disconnect from the current WiFi network.
+
+```python
+from lager.protocols.wifi import disconnect_wifi
+
+result = disconnect_wifi()
+
+if result['success']:
+    print(f"Disconnected: {result['message']}")
+else:
+    print(f"Failed: {result['error']}")
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `interface` | `str` | `'wlan0'` | Network interface to disconnect |
+
+**Returns:** `dict` with keys:
+- `success` - Boolean indicating disconnect success
+- `message` - Success message (when `success` is True)
+- `error` - Error message (when `success` is False)
+
+## Router Internet Access Control
+
+The `Wifi` net type controls internet access via an Asus router's parental control feature. This is a separate concern from box-level WiFi management — it blocks/unblocks a device's internet access by MAC address.
 
 ```python
 from lager import Net, NetType
 
+# Requires a wifi net configured with router credentials
 wifi = Net.get('wifi1', type=NetType.Wifi)
-wifi.disconnect()
+
+wifi.disable()   # Block internet access (parental control)
+wifi.enable()    # Restore internet access
 ```
 
 ## Examples
@@ -124,14 +136,12 @@ wifi.disconnect()
 ### Scan and Connect
 
 ```python
-from lager import Net, NetType
+from lager.protocols.wifi import scan_wifi, connect_to_wifi, get_wifi_status
 import time
 
-# Get the WiFi net
-wifi = Net.get('wifi1', type=NetType.Wifi)
-
 # Scan for networks
-networks = wifi.scan()
+result = scan_wifi()
+networks = result.get('access_points', [])
 
 # Find target network
 for network in networks:
@@ -140,7 +150,7 @@ for network in networks:
         break
 
 # Connect
-result = wifi.connect(ssid='TestNetwork', password='password123')
+result = connect_to_wifi('TestNetwork', 'password123')
 
 if result['success']:
     print(f"Connection successful: {result['message']}")
@@ -151,19 +161,20 @@ else:
 time.sleep(5)
 
 # Verify status
-status = wifi.status()
-if status['connected']:
-    print(f"Connected to {status['ssid']}")
+interfaces = get_wifi_status()
+for name, info in interfaces.items():
+    if info['state'] == 'Connected':
+        print(f"Connected to {info['ssid']} on {name}")
 ```
 
 ### Network Verification Test
 
 ```python
-from lager import Net, NetType
+from lager.protocols.wifi import scan_wifi
 
 def verify_network_visible(expected_ssid):
-    wifi = Net.get('wifi1', type=NetType.Wifi)
-    networks = wifi.scan()
+    result = scan_wifi()
+    networks = result.get('access_points', [])
     ssids = [n['ssid'] for n in networks]
 
     if expected_ssid in ssids:
@@ -177,12 +188,12 @@ def verify_network_visible(expected_ssid):
 ### Signal Strength Test
 
 ```python
-from lager import Net, NetType
+from lager.protocols.wifi import scan_wifi
 
 def check_signal_strength(ssid, min_strength=50):
     """Check if signal strength meets minimum threshold (0-100%)"""
-    wifi = Net.get('wifi1', type=NetType.Wifi)
-    networks = wifi.scan()
+    result = scan_wifi()
+    networks = result.get('access_points', [])
 
     for network in networks:
         if network['ssid'] == ssid:
@@ -201,12 +212,11 @@ def check_signal_strength(ssid, min_strength=50):
 ### Connection Test
 
 ```python
-from lager import Net, NetType
+from lager.protocols.wifi import connect_to_wifi, get_wifi_status
 import time
 
 def test_wifi_connection(ssid, password):
-    wifi = Net.get('wifi1', type=NetType.Wifi)
-    result = wifi.connect(ssid=ssid, password=password)
+    result = connect_to_wifi(ssid, password)
 
     if not result['success']:
         print(f"FAIL: Connection error - {result['error']}")
@@ -214,10 +224,11 @@ def test_wifi_connection(ssid, password):
 
     time.sleep(5)
 
-    status = wifi.status()
-    if status['connected'] and status['ssid'] == ssid:
-        print(f"PASS: Connected to {ssid}")
-        return True
+    interfaces = get_wifi_status()
+    for name, info in interfaces.items():
+        if info['state'] == 'Connected' and info['ssid'] == ssid:
+            print(f"PASS: Connected to {ssid}")
+            return True
 
     print(f"FAIL: Not connected to {ssid}")
     return False
@@ -239,4 +250,4 @@ def test_wifi_connection(ssid, password):
 - Open networks require empty password string (`''`)
 - Interface defaults to 'wlan0'
 - `get_wifi_status()` takes no parameters and returns all interfaces
-- Router management requires Asus router with parental control
+- Router management (enable/disable) requires Asus router with parental control and a configured wifi net

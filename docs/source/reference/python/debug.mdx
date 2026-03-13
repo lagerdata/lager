@@ -24,7 +24,7 @@ The Net-based API provides methods for embedded debugging operations.
 | `erase()` | Perform full chip erase |
 | `read_memory(address, length)` | Read memory from device |
 | `status()` | Get connection status |
-| `rtt(channel)` | Create RTT session for bidirectional communication |
+| `rtt(channel, search_addr, search_size, chunk_size)` | Create RTT session for bidirectional communication |
 
 ## Method Reference
 
@@ -176,7 +176,7 @@ print(f"Connected: {status.get('connected', False)}")
 
 **Returns:** `dict` - Status dictionary with connection information
 
-### `rtt(channel=0)`
+### `rtt(channel=0, search_addr=None, search_size=None, chunk_size=None)`
 
 Create an RTT (Real-Time Transfer) session for bidirectional communication with the target device.
 
@@ -194,6 +194,10 @@ with dbg.rtt() as rtt:
 # Use different RTT channel
 with dbg.rtt(channel=1) as rtt:
     data = rtt.read_some(timeout=2.0)
+
+# Specify RAM search region for RTT control block
+with dbg.rtt(search_addr=0x20000000, search_size=0x10000) as rtt:
+    data = rtt.read_some(timeout=1.0)
 ```
 
 **Parameters:**
@@ -201,6 +205,9 @@ with dbg.rtt(channel=1) as rtt:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `channel` | `int` | `0` | RTT channel number (typically 0-15) |
+| `search_addr` | `int` or `None` | `None` | RAM start address for RTT control block search |
+| `search_size` | `int` or `None` | `None` | Size of RAM region to search in bytes |
+| `chunk_size` | `int` or `None` | `None` | Size of each read chunk in bytes |
 
 **Returns:** RTT context manager with methods:
 - `read_some(timeout)` - Read available data with timeout (returns bytes or None)
@@ -242,14 +249,14 @@ from lager import Net, NetType
 # Get debug net
 dbg = Net.get('DUT', type=NetType.Debug)
 
+# Connect to target
+status = dbg.connect()
+print(f"Connected: {status}")
+
 # Erase entire chip first (ensures clean state)
 print("Erasing chip...")
 output = dbg.erase()
 print(output)
-
-# Connect after erase
-status = dbg.connect()
-print(f"Connected: {status}")
 
 # Flash new firmware
 output = dbg.flash('/etc/lager/firmware/app.hex')

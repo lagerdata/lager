@@ -46,6 +46,7 @@ The SDK supports various net types for different hardware:
 | `NetType.Actuate` | Actuator control | Dexarm actuator |
 | `NetType.SPI` | SPI bus communication | Aardvark, FT232H, LabJack T7 |
 | `NetType.I2C` | I2C bus communication | Aardvark, FT232H, LabJack T7 |
+| `NetType.EnergyAnalyzer` | Energy integration measurement | Joulescope JS220 |
 | `NetType.Webcam` | Video streaming | USB Webcam |
 
 ## Quick Start
@@ -116,7 +117,7 @@ debug = Net.get('jlink1', type=NetType.Debug)
 
 # Connect and flash firmware
 debug.connect()
-debug.flash(['firmware.hex'])
+debug.flash('firmware.hex')
 debug.reset()
 ```
 
@@ -143,7 +144,7 @@ import time
 # 1. Flash firmware
 debug = Net.get('jlink1', type=NetType.Debug)
 debug.connect()
-debug.flash(['firmware.hex'])
+debug.flash('firmware.hex')
 debug.reset()
 print("Firmware flashed")
 
