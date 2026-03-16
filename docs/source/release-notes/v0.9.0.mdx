@@ -1,0 +1,33 @@
+---
+title: "Version 0.9.0"
+description: "March 16, 2026"
+---
+
+## <u>Features</u>
+
+- `disconnect_wifi()` standalone function for the Python WiFi API
+- `lager boxes` now reads project-level `.lager` files in addition to the global `~/.lager` — boxes defined in a project `.lager` take precedence over global ones
+- WiFi Python API docs updated to use standalone functions instead of class-based patterns
+
+## <u>Bug Fixes</u>
+
+- Fixed `lager boxes` showing empty results in fresh Docker containers when boxes were defined in a project-level `.lager` file but no global `~/.lager` existed
+- Fixed typo in `wifi/status.py`
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.9.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.9.0/)

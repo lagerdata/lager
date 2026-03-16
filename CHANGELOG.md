@@ -2,6 +2,17 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.9.0] - 2026-03-16
+
+### Added
+- `disconnect_wifi()` standalone function for the Python WiFi API
+- `lager boxes` now reads project-level `.lager` files, not just the global `~/.lager`
+- WiFi Python API docs updated to use standalone functions
+
+### Fixed
+- `lager boxes` showing empty results in fresh Docker containers when boxes were defined in a project-level `.lager` file
+- Typo in `wifi/status.py`
+
 ## [0.8.0] - 2026-03-12
 
 ### Added
