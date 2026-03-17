@@ -1,0 +1,37 @@
+---
+title: "Version 0.10.0"
+description: "March 17, 2026"
+---
+
+## <u>Features</u>
+
+- **`lager router` command group** — manage routers as Lager nets
+- **`lager router add-net`** — register a router (MikroTik hAP or compatible) as a net on a Lager Box
+- **`lager router connect`** — verify connectivity to a router net
+- **`lager router interfaces`** / **`lager router wireless-interfaces`** — inspect network and wireless interfaces
+- **`lager router wireless-clients`** — list currently connected wireless clients
+- **`lager router dhcp-leases`** — list devices that have received IP addresses from the router
+- **`lager router system-info`** — query router CPU, memory, and uptime
+- **`lager router reboot`** — reboot a router net
+- **`lager router enable-interface`** / **`lager router disable-interface`** — toggle wireless interfaces on/off
+- **`lager router block-internet`** — drop all forwarded traffic for network isolation testing
+- **`lager router reset`** — restore a router to a clean baseline (removes test firewall rules, bandwidth limits, and access list entries; optionally re-applies a baseline SSID and WPA2 password)
+- **`lager router run`** — make arbitrary REST API GET calls against the router
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.10.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.10.0/)

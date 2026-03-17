@@ -66,6 +66,7 @@ from ..automation.arm.rotrics import Dexarm
 from ..rotation import Rotation
 from ..actuate import Actuate
 from ..protocols.wifi import Wifi
+from ..protocols.mikrotik.router import MikroTikRouter
 from ..protocols.uart.uart_net import UARTNet
 from ..protocols.spi.spi_net import SPINet
 from ..protocols.i2c.i2c_net import I2CNet
@@ -522,6 +523,19 @@ class Net:
                 if role == NetType.Wifi:
                     return Wifi(name, _norm_pin(item), _get_location(item))
 
+                if role == NetType.Router:
+                    address = item.get('address', '')
+                    location = _get_location(item)
+                    if isinstance(location, dict):
+                        username = location.get('username', 'admin')
+                        password = location.get('password', '')
+                        use_ssl = location.get('use_ssl', False)
+                    else:
+                        username = item.get('username', 'admin')
+                        password = item.get('password', '')
+                        use_ssl = False
+                    return MikroTikRouter(name, address, username, password, use_ssl=use_ssl)
+
                 if role == NetType.Actuate:
                     return Actuate(name, _norm_pin(item), _get_location(item))
 
@@ -601,6 +615,7 @@ class Net:
             NetType.EnergyAnalyzer,
             NetType.Rotation,
             NetType.Wifi,
+            NetType.Router,
             NetType.Actuate,
             NetType.Debug,
             NetType.Analog,
