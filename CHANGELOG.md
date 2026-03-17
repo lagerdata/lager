@@ -2,6 +2,22 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.10.0] - 2026-03-17
+
+### Added
+- `lager router` command group for managing routers as Lager nets
+- `lager router add-net` to register a router (MikroTik hAP or compatible) as a net on a Lager Box
+- `lager router connect` to verify connectivity to a router net
+- `lager router interfaces` and `lager router wireless-interfaces` to inspect network interfaces
+- `lager router wireless-clients` to list connected wireless clients
+- `lager router dhcp-leases` to list devices that have received IP addresses
+- `lager router system-info` to query router resource usage
+- `lager router reboot` to reboot a router net
+- `lager router enable-interface` / `lager router disable-interface` for wireless interface control
+- `lager router block-internet` to drop all forwarded traffic for network isolation testing
+- `lager router reset` to restore a router to a clean baseline state (removes test firewall rules, bandwidth limits, and access list entries)
+- `lager router run` for arbitrary REST API calls against the router
+
 ## [0.9.0] - 2026-03-16
 
 ### Added
