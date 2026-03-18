@@ -62,6 +62,8 @@ from ..measurement.thermocouple.phidget import PhidgetThermocouple
 from ..measurement.watt.yocto_watt import YoctoWatt
 from ..measurement.watt.joulescope_js220 import JoulescopeJS220
 from ..measurement.energy_analyzer.joulescope_energy import JoulescopeEnergyAnalyzer
+from ..measurement.watt.ppk2_watt import PPK2Watt
+from ..measurement.energy_analyzer.ppk2_energy import PPK2EnergyAnalyzer
 from ..automation.arm.rotrics import Dexarm
 from ..rotation import Rotation
 from ..actuate import Actuate
@@ -508,12 +510,16 @@ class Net:
                     instrument = (item.get('instrument') or '').lower()
                     if 'joulescope' in instrument or 'js220' in instrument:
                         return JoulescopeJS220(name, _norm_pin(item), _get_location(item))
+                    if 'ppk2' in instrument or 'ppk' in instrument or 'nordic' in instrument:
+                        return PPK2Watt(name, _norm_pin(item), _get_location(item))
                     return YoctoWatt(name, _norm_pin(item), _get_location(item))
 
                 if role == NetType.EnergyAnalyzer:
                     instrument = (item.get('instrument') or '').lower()
                     if 'joulescope' in instrument or 'js220' in instrument:
                         return JoulescopeEnergyAnalyzer(name, _norm_pin(item), _get_location(item))
+                    if 'ppk2' in instrument or 'ppk' in instrument or 'nordic' in instrument:
+                        return PPK2EnergyAnalyzer(name, _norm_pin(item), _get_location(item))
                     raise RuntimeError(f"Unsupported energy-analyzer instrument: {item.get('instrument')}")
 
                 if role == NetType.Rotation:
@@ -683,11 +689,15 @@ class Net:
                             instrument = (mapping.get('instrument') or '').lower()
                             if 'joulescope' in instrument or 'js220' in instrument:
                                 return JoulescopeJS220(name, int(pin), mapping.get("location"))
+                            if 'ppk2' in instrument or 'ppk' in instrument or 'nordic' in instrument:
+                                return PPK2Watt(name, int(pin), mapping.get("location"))
                             return YoctoWatt(name, int(pin), mapping.get("location"))
                         if mux_role == NetType.EnergyAnalyzer:
                             instrument = (mapping.get('instrument') or '').lower()
                             if 'joulescope' in instrument or 'js220' in instrument:
                                 return JoulescopeEnergyAnalyzer(name, int(pin), mapping.get("location"))
+                            if 'ppk2' in instrument or 'ppk' in instrument or 'nordic' in instrument:
+                                return PPK2EnergyAnalyzer(name, int(pin), mapping.get("location"))
                             raise RuntimeError(f"Unsupported energy-analyzer instrument: {mapping.get('instrument')}")
                         if mux_role == NetType.Rotation:
                             return Rotation(name, int(pin), mapping.get("location"))
