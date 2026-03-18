@@ -32,29 +32,26 @@ def _print_energy(netname, result):
     e_wh = result["energy_wh"]
     q_c = result["charge_c"]
     q_ah = result["charge_ah"]
-    sys.stdout.write(
-        f"{GREEN}Energy '{netname}': "
-        f"{e_j:.6f} J  ({e_wh:.9f} Wh)   "
-        f"charge: {q_c:.6f} C  ({q_ah:.9f} Ah)   "
-        f"[{dur:.1f}s]{RESET}\n"
-    )
+
+    w = sys.stdout.write
+    w(f"{GREEN}Energy '{netname}' ({dur:.1f}s integration):{RESET}\n")
+    w(f"  Energy:  {_fmt_si(e_j, 'J')}  ({_fmt_si(e_wh, 'Wh')})\n")
+    w(f"  Charge:  {_fmt_si(q_c, 'C')}  ({_fmt_si(q_ah, 'Ah')})\n")
     sys.stdout.flush()
 
 
 def _print_stats(netname, result):
     dur = result["duration_s"]
-    sys.stdout.write(f"{CYAN}Stats '{netname}' over {dur:.1f}s:{RESET}\n")
+    w = sys.stdout.write
+    w(f"{CYAN}Stats '{netname}' ({dur:.1f}s):{RESET}\n")
 
     labels = [("Current", "current", "A"), ("Voltage", "voltage", "V"), ("Power", "power", "W")]
     for label, key, unit in labels:
         s = result[key]
-        sys.stdout.write(
-            f"  {label}:  "
-            f"mean={_fmt_si(s['mean'], unit)}   "
-            f"min={_fmt_si(s['min'], unit)}   "
-            f"max={_fmt_si(s['max'], unit)}   "
-            f"std={_fmt_si(s['std'], unit)}\n"
-        )
+        w(f"  {label:<9s} mean={_fmt_si(s['mean'], unit):<14s}"
+          f"min={_fmt_si(s['min'], unit):<14s}"
+          f"max={_fmt_si(s['max'], unit):<14s}"
+          f"std={_fmt_si(s['std'], unit)}\n")
     sys.stdout.flush()
 
 
