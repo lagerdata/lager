@@ -168,8 +168,10 @@ class ControlPlaneClient:
         self._thread.start()
         logger.info("Control plane heartbeat thread started")
 
+
         self._jobs_client = JobsWebSocketClient(self._config, self._stop_event)
         self._jobs_client.start()
+
 
     def stop(self):
         self._stop_event.set()

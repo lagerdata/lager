@@ -32,6 +32,7 @@ class NetType(Enum):
     SPI = auto()
     I2C = auto()
     EnergyAnalyzer = auto()
+    Router = auto()
 
     @classmethod
     def from_role(cls, role):
@@ -60,6 +61,8 @@ class NetType(Enum):
             'spi': cls.SPI,
             'i2c': cls.I2C,
             'energy-analyzer': cls.EnergyAnalyzer,
+            'router': cls.Router,
+            'mikrotik': cls.Router,
         }
         return mapping[role]
 
@@ -89,5 +92,6 @@ class NetType(Enum):
             self.SPI: None,
             self.I2C: None,
             self.EnergyAnalyzer: None,
+            self.Router: None,
         }
         return mapping[self]
