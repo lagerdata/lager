@@ -23,6 +23,7 @@ from .wifi import _wifi
 from .usb import usb
 from .spi import spi
 from .i2c import i2c
+from .router import router
 
 __all__ = [
     "uart",
@@ -32,4 +33,5 @@ __all__ = [
     "usb",
     "spi",
     "i2c",
+    "router",
 ]
