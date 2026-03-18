@@ -1,0 +1,41 @@
+---
+title: "Version 0.11.0"
+description: "March 18, 2026"
+---
+
+## <u>Features</u>
+
+- **Nordic PPK2 instrument support** — The Nordic Semiconductor Power Profiler Kit II is now a supported watt-meter and energy-analyzer instrument, alongside the Joulescope JS220 and Yocto-Watt
+- `lager watt <net> --box <box>` reads instantaneous power (watts) from a PPK2
+- `lager energy <net> read --box <box> --duration <seconds>` integrates energy (J, Wh) and charge (C, Ah) over a configurable duration
+- `lager energy <net> stats --box <box> --duration <seconds>` computes mean/min/max/std statistics for current, voltage, and power
+- PPK2 devices are auto-detected by `lager instruments` and can be added with `lager nets add-all`
+- Full Python API via `Net.get(name, type=NetType.WattMeter)` and `Net.get(name, type=NetType.EnergyAnalyzer)`
+
+## <u>Bug Fixes</u>
+
+- Fixed webcam MJPEG stream returning 404 for dashboard `/stream/{netName}` requests
+- Fixed `Net.get()` not resolving instrument location when saved net config uses `address` instead of `location`
+
+## <u>Improvements</u>
+
+- `lager energy` command now uses consistent argument order: `lager energy <NETNAME> <subcommand> --options`
+- Cleaner formatted output for energy read and stats commands
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.11.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.11.0/)

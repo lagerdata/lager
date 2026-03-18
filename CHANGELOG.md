@@ -2,6 +2,26 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.11.0] - 2026-03-18
+
+### Added
+- Nordic PPK2 (Power Profiler Kit II) support as a watt-meter and energy-analyzer instrument
+- `lager watt` reads instantaneous power from PPK2 nets
+- `lager energy <net> read` integrates energy and charge over a configurable duration
+- `lager energy <net> stats` computes current/voltage/power statistics (mean, min, max, std)
+- PPK2 auto-detection via `lager instruments` and `lager nets add-all`
+- Python API: `Net.get(name, type=NetType.WattMeter)` and `Net.get(name, type=NetType.EnergyAnalyzer)` for PPK2 nets
+- Unit tests for PPK2 location parsing, dispatcher routing, singleton caching, and measurement math
+- Integration test suite for PPK2 hardware validation (`test/api/sensors/test_ppk2.py`)
+- Webcam start/stop HTTP endpoints for dashboard control
+
+### Changed
+- `lager energy` command now uses `lager energy <NETNAME> <subcommand> --options` argument order (consistent with other commands like `lager supply`)
+
+### Fixed
+- Webcam MJPEG stream 404 for dashboard `/stream/{netName}` requests
+- `Net.get()` now falls back to `address` field when `location` is not set in saved net config
+
 ## [0.10.0] - 2026-03-17
 
 ### Added
