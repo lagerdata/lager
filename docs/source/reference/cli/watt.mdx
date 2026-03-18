@@ -3,7 +3,7 @@ title: Watt Meter
 description: Read power consumption from watt meter
 ---
 
-Read power consumption measurements from watt meter Nets through the Lager CLI. Supports Yocto-Watt and Joulescope JS220 hardware.
+Read power consumption measurements from watt meter Nets through the Lager CLI. Supports Yocto-Watt, Joulescope JS220, and Nordic PPK2 hardware.
 
 ## Syntax
 
@@ -48,19 +48,20 @@ The reading timeout is 30 seconds. If no reading is received within that time, t
 |--------------|-------|---------------|----------|
 | Yoctopuce | Yocto-Watt | USB VID:PID `24e0:002a` | Real-time power measurement |
 | Joulescope | JS220 | USB VID:PID `16d0:10ba` | High-precision power, voltage, and current measurement |
+| Nordic Semiconductor | PPK2 | USB VID:PID `1915:c00a` | Current, voltage, and power measurement via source mode |
 
 ### Hardware Feature Comparison
 
-| Feature | Yocto-Watt | Joulescope JS220 |
-|---------|-----------|------------------|
-| Power reading (`read`) | Yes | Yes |
-| Voltage reading (`read_voltage`) | No | Yes (Python API) |
-| Current reading (`read_current`) | No | Yes (Python API) |
-| Combined reading (`read_all`) | No | Yes (Python API) |
-| Measurement method | Instantaneous | 0.1s averaged |
-| Device selection | Channel-based | Serial number-based |
+| Feature | Yocto-Watt | Joulescope JS220 | Nordic PPK2 |
+|---------|-----------|------------------|-------------|
+| Power reading (`read`) | Yes | Yes | Yes |
+| Voltage reading (`read_voltage`) | No | Yes (Python API) | Yes (Python API) |
+| Current reading (`read_current`) | No | Yes (Python API) | Yes (Python API) |
+| Combined reading (`read_all`) | No | Yes (Python API) | Yes (Python API) |
+| Measurement method | Instantaneous | 0.1s averaged | 0.3s averaged |
+| Device selection | Channel-based | Serial number-based | Serial number-based |
 
-The CLI `lager watt` command returns power (watts) for both devices. The Joulescope JS220's additional measurement capabilities (individual voltage and current readings) are available through the [Python API](/reference/python/watt).
+The CLI `lager watt` command returns power (watts) for all devices. The Joulescope JS220 and Nordic PPK2's additional measurement capabilities (individual voltage and current readings) are available through the [Python API](/reference/python/watt).
 
 ### Instrument Name Matching
 
@@ -69,6 +70,7 @@ The backend driver is selected based on the instrument name in the net configura
 | Pattern | Driver |
 |---------|--------|
 | Contains `joulescope` or `js220` (case-insensitive) | Joulescope JS220 |
+| Contains `ppk2`, `ppk`, or `nordic` (case-insensitive) | Nordic PPK2 |
 | All other watt meter instruments | Yocto-Watt |
 
 ## Default Net
@@ -146,6 +148,7 @@ done
 
 - Power is returned in watts (W) with 3 decimal places
 - Joulescope JS220 averages measurements over 0.1 seconds for higher precision
+- Nordic PPK2 averages measurements over 0.3 seconds; operates in source mode (supplies a configurable voltage 0.8–5V and measures current)
 - Net names refer to names assigned when setting up your testbed
 - Use `lager nets` to see available watt meter nets
 - Use `lager instruments --box <box>` to verify the device is detected

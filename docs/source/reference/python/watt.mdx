@@ -3,7 +3,7 @@ title: Watt Meter
 description: Read power consumption
 ---
 
-Measure power consumption from watt meter nets. Supports Yocto-Watt and Joulescope JS220 hardware.
+Measure power consumption from watt meter nets. Supports Yocto-Watt, Joulescope JS220, and Nordic PPK2 hardware.
 
 ## Import
 
@@ -16,9 +16,9 @@ from lager import Net, NetType
 | Method | Hardware | Description |
 |--------|----------|-------------|
 | `read()` | All | Read power in watts |
-| `read_current()` | Joulescope JS220 only | Read current in amps |
-| `read_voltage()` | Joulescope JS220 only | Read voltage in volts |
-| `read_all()` | Joulescope JS220 only | Read current, voltage, and power in a single operation |
+| `read_current()` | Joulescope JS220, Nordic PPK2 | Read current in amps |
+| `read_voltage()` | Joulescope JS220, Nordic PPK2 | Read voltage in volts |
+| `read_all()` | Joulescope JS220, Nordic PPK2 | Read current, voltage, and power in a single operation |
 
 ## Method Reference
 
@@ -54,7 +54,7 @@ print(f"Power: {watts}W")
 
 ### `read_current()`
 
-Read the current in amps. **Joulescope JS220 only.**
+Read the current in amps. **Joulescope JS220 and Nordic PPK2.**
 
 ```python
 amps = power.read_current()
@@ -65,7 +65,7 @@ print(f"Current: {amps}A")
 
 ### `read_voltage()`
 
-Read the voltage in volts. **Joulescope JS220 only.**
+Read the voltage in volts. **Joulescope JS220 and Nordic PPK2.**
 
 ```python
 volts = power.read_voltage()
@@ -76,7 +76,7 @@ print(f"Voltage: {volts}V")
 
 ### `read_all()`
 
-Read current, voltage, and power in a single atomic measurement. **Joulescope JS220 only.** This is more efficient than calling `read_current()`, `read_voltage()`, and `read()` separately, as all values come from the same sample window.
+Read current, voltage, and power in a single atomic measurement. **Joulescope JS220 and Nordic PPK2.** This is more efficient than calling `read_current()`, `read_voltage()`, and `read()` separately, as all values come from the same sample window.
 
 ```python
 measurements = power.read_all()
@@ -113,7 +113,7 @@ from lager import Net, NetType
 
 power = Net.get('DEVICE_POWER', type=NetType.WattMeter)
 
-# Read all measurements at once (Joulescope JS220 only)
+# Read all measurements at once (Joulescope JS220 and Nordic PPK2)
 data = power.read_all()
 print(f"Voltage: {data['voltage']:.3f}V")
 print(f"Current: {data['current']:.6f}A")
@@ -231,23 +231,25 @@ else:
 |--------------|-------|-------------|----------|
 | Yoctopuce | Yocto-Watt | Power only | Instantaneous reading |
 | Joulescope | JS220 | Power, voltage, current | 0.1s averaged, atomic multi-measurement |
+| Nordic Semiconductor | PPK2 | Power, voltage, current | 0.3s averaged, source mode constant voltage |
 
 ### Hardware Feature Comparison
 
-| Feature | Yocto-Watt | Joulescope JS220 |
-|---------|-----------|------------------|
-| `read()` (power) | Yes | Yes |
-| `read_current()` | No | Yes |
-| `read_voltage()` | No | Yes |
-| `read_all()` | No | Yes |
-| Measurement method | Instantaneous | 0.1s averaged |
-| Device selection | Channel-based | Serial number-based |
+| Feature | Yocto-Watt | Joulescope JS220 | Nordic PPK2 |
+|---------|-----------|------------------|-------------|
+| `read()` (power) | Yes | Yes | Yes |
+| `read_current()` | No | Yes | Yes |
+| `read_voltage()` | No | Yes | Yes |
+| `read_all()` | No | Yes | Yes |
+| Measurement method | Instantaneous | 0.1s averaged | 0.3s averaged |
+| Device selection | Channel-based | Serial number-based | Serial number-based |
 
 ## Notes
 
 - Power is returned in watts (W)
 - Joulescope JS220 averages measurements over 0.1 seconds for higher precision
-- `read_current()`, `read_voltage()`, and `read_all()` are only available on the Joulescope JS220; calling them on a Yocto-Watt will raise an error
+- Nordic PPK2 averages measurements over 0.3 seconds; operates in source mode (supplies a configurable voltage 0.8–5V), so voltage readings reflect the configured value, not an independent measurement
+- `read_current()`, `read_voltage()`, and `read_all()` are available on the Joulescope JS220 and Nordic PPK2; calling them on a Yocto-Watt will raise an error
 - For current on Yocto-Watt: calculate from power and known voltage (I = P / V)
 - Use multiple readings and averaging for stability
 - Allow settling time after device state changes

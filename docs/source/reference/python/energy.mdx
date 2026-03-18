@@ -1,9 +1,9 @@
 ---
 title: Energy Analyzer
-description: Integrate energy and charge, and compute power statistics using Joulescope JS220
+description: Integrate energy and charge, and compute power statistics using an energy-analyzer net
 ---
 
-Integrate energy and charge over time, or compute current/voltage/power statistics, from a Joulescope JS220 energy-analyzer net. Requires the `energy-analyzer` net type.
+Integrate energy and charge over time, or compute current/voltage/power statistics, from an energy-analyzer net. Requires the `energy-analyzer` net type.
 
 ## Import
 
@@ -209,12 +209,14 @@ if peak_ma > avg_ma * 10:
 | Manufacturer | Model | Net Type | USB VID:PID |
 |--------------|-------|----------|-------------|
 | Joulescope | JS220 | `energy-analyzer` | `16d0:10ba` |
+| Nordic Semiconductor | PPK2 | `energy-analyzer` | `1915:c00a` |
 
-The `energy-analyzer` net type is exclusive to the Joulescope JS220. For instantaneous power readings (also available on Yocto-Watt), see [Watt Meter](/source/reference/python/watt).
+For instantaneous power readings (also available on Yocto-Watt), see [Watt Meter](/source/reference/python/watt).
 
 ## Notes
 
 - The Joulescope JS220 samples at high frequency; longer durations yield more accurate statistics
+- The Nordic PPK2 operates in source mode (supplies a configurable voltage 0.8–5V and measures current); voltage readings reflect the configured value
 - `read_energy()` and `read_stats()` block for the full `duration` before returning
 - The same physical JS220 device is shared between `WattMeter` and `EnergyAnalyzer` net roles — opening both net types for the same device is safe
 - Use `lager instruments --box <box>` to verify the JS220 is detected before running scripts
