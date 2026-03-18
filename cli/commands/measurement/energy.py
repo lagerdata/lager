@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Energy analyzer commands for the Joulescope JS220.
+Energy analyzer commands.
 """
 from __future__ import annotations
 
@@ -21,11 +21,16 @@ ENERGY_ROLE = "energy-analyzer"
 ENERGY_TIMEOUT = 120  # allow up to 2 min for long integrations
 
 
-def _run_energy(ctx, box, duration, netname, mode):
-    """Shared implementation for energy and stats commands."""
+def _require_netname(ctx):
+    """Get the netname stored on ctx.obj by the group, or fall back to default."""
+    netname = getattr(ctx.obj, "energy_netname", None)
     if netname is None:
         netname = get_default_net(ctx, 'energy')
+    return netname
 
+
+def _run_energy(ctx, box, duration, netname, mode):
+    """Shared implementation for energy and stats commands."""
     box_ip = resolve_box(ctx, box)
 
     if netname is None:
@@ -74,21 +79,21 @@ def _run_energy(ctx, box, duration, netname, mode):
 @click.argument("netname", required=False)
 @click.pass_context
 def energy(ctx, netname):
-    # Store netname so subcommands can access it.
-    ctx.ensure_object(dict)
-    ctx.obj["energy_netname"] = netname
+    """Energy analyzer group.  Usage: lager energy <NETNAME> [read|stats] [OPTIONS]"""
+    if netname is None:
+        netname = get_default_net(ctx, 'energy')
+    if netname is not None:
+        ctx.obj.energy_netname = netname
 
-    if ctx.invoked_subcommand is not None:
-        return
-
-    # No subcommand → default "energy" read.
-    # Re-invoke ourselves as the read subcommand.
-    ctx.invoke(read_energy, box=None, duration=10.0)
+    if ctx.invoked_subcommand is None:
+        # No subcommand → list nets
+        box_ip = resolve_box(ctx, None)
+        display_nets(ctx, box_ip, None, ENERGY_ROLE, "energy analyzer")
 
 
 @energy.command(
     name="read",
-    help="Read energy/charge over a duration (default subcommand)",
+    help="Read energy/charge over a duration",
 )
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.option(
@@ -100,7 +105,7 @@ def energy(ctx, netname):
 )
 @click.pass_context
 def read_energy(ctx, box, duration):
-    netname = ctx.obj.get("energy_netname") if ctx.obj else None
+    netname = _require_netname(ctx)
     _run_energy(ctx, box, duration, netname, "energy")
 
 
@@ -118,5 +123,5 @@ def read_energy(ctx, box, duration):
 )
 @click.pass_context
 def stats(ctx, box, duration):
-    netname = ctx.obj.get("energy_netname") if ctx.obj else None
+    netname = _require_netname(ctx)
     _run_energy(ctx, box, duration, netname, "stats")
