@@ -124,12 +124,22 @@ class PPK2Watt(WattMeterBase):
 
                 # ppk2_api.list_devices() returns a flat list of port
                 # path strings, e.g. ['/dev/ttyACM0', '/dev/ttyACM1'].
-                # The PPK2 exposes two CDC ACM interfaces; the first
-                # (/dev/ttyACM0) is the data port we need.
-                port = devices[0]
+                # The PPK2 exposes two CDC ACM interfaces; only one is
+                # the data port.  Try each until get_modifiers() succeeds.
+                last_err = None
+                for port in devices:
+                    try:
+                        self._device = PPK2_API(port)
+                        self._device.get_modifiers()
+                        break  # success
+                    except Exception as e:
+                        self._device = None
+                        last_err = e
+                else:
+                    raise WattBackendError(
+                        f"No usable PPK2 port among {devices}: {last_err}"
+                    )
 
-                self._device = PPK2_API(port)
-                self._device.get_modifiers()
                 self._device.use_source_meter()
                 self._device.set_source_voltage(self._voltage_mv)
             except WattBackendError:

@@ -25,7 +25,8 @@ from lager.measurement.watt.ppk2_watt import PPK2Watt
 from lager.measurement.energy_analyzer.ppk2_energy import PPK2EnergyAnalyzer
 
 # PPK2 noise floor: values more negative than this are real failures.
-NOISE_FLOOR = -1e-6
+# The PPK2 reports slight negative current (~-1 to -3 uA) with no load.
+NOISE_FLOOR = -5e-6
 
 # ============================================================
 # Test harness

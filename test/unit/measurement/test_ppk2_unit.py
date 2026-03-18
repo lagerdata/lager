@@ -380,7 +380,7 @@ class TestPPK2WattErrors:
         mock_api_module.list_devices.return_value = ["/dev/ttyACM0"]
         mock_api_module.return_value.get_modifiers.side_effect = Exception("USB error")
 
-        with pytest.raises(WattBackendError, match="Failed to open PPK2 device"):
+        with pytest.raises(WattBackendError, match="No usable PPK2 port"):
             PPK2Watt("test_net", 0, None)
 
     @pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
