@@ -122,20 +122,11 @@ class PPK2Watt(WattMeterBase):
                 if not devices:
                     raise WattBackendError("No PPK2 devices found")
 
-                if serial:
-                    matching = [
-                        (port, sn) for port, sn in devices
-                        if serial in str(sn)
-                    ]
-                    if not matching:
-                        available = [sn for _, sn in devices]
-                        raise WattBackendError(
-                            f"PPK2 with serial '{serial}' not found. "
-                            f"Available devices: {available}"
-                        )
-                    port = matching[0][0]
-                else:
-                    port = devices[0][0]
+                # ppk2_api.list_devices() returns a flat list of port
+                # path strings, e.g. ['/dev/ttyACM0', '/dev/ttyACM1'].
+                # The PPK2 exposes two CDC ACM interfaces; the first
+                # (/dev/ttyACM0) is the data port we need.
+                port = devices[0]
 
                 self._device = PPK2_API(port)
                 self._device.get_modifiers()

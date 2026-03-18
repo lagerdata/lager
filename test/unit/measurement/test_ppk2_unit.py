@@ -121,7 +121,7 @@ def _make_mock_ppk2_api(serial="SN123", port="/dev/ttyACM0",
     mock_device.get_samples.return_value = samples
 
     mock_api = MagicMock()
-    mock_api.list_devices.return_value = [(port, serial)]
+    mock_api.list_devices.return_value = [port]
     mock_api.return_value = mock_device
 
     return mock_api, mock_device
@@ -263,8 +263,8 @@ class TestPPK2WattSingleton:
     @patch("lager.measurement.watt.ppk2_watt.PPK2_API")
     def test_different_serial_returns_different_instance(self, mock_api_module):
         mock_api_module.list_devices.return_value = [
-            ("/dev/ttyACM0", "SN123"),
-            ("/dev/ttyACM1", "SN456"),
+            "/dev/ttyACM0",
+            "/dev/ttyACM1",
         ]
         mock_device = MagicMock()
         mock_device.get_modifiers.return_value = None
@@ -374,14 +374,14 @@ class TestPPK2WattErrors:
         with pytest.raises(WattBackendError, match="No PPK2 devices found"):
             PPK2Watt("test_net", 0, None)
 
+    @pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
     @patch("lager.measurement.watt.ppk2_watt.PPK2_API")
-    def test_serial_not_found(self, mock_api_module):
-        mock_api_module.list_devices.return_value = [
-            ("/dev/ttyACM0", "OTHER_SERIAL"),
-        ]
+    def test_device_open_failure(self, mock_api_module):
+        mock_api_module.list_devices.return_value = ["/dev/ttyACM0"]
+        mock_api_module.return_value.get_modifiers.side_effect = Exception("USB error")
 
-        with pytest.raises(WattBackendError, match="not found"):
-            PPK2Watt("test_net", 0, "ppk2:MISSING_SERIAL")
+        with pytest.raises(WattBackendError, match="Failed to open PPK2 device"):
+            PPK2Watt("test_net", 0, None)
 
     @pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
     @patch("lager.measurement.watt.ppk2_watt.PPK2_API", None)
