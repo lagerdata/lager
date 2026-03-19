@@ -300,6 +300,16 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                 'version': version,
                 'nets': nets,
             })
+        elif self.path == '/nets/list':
+            # Return full saved net details for Stout dashboard
+            try:
+                with open('/etc/lager/saved_nets.json', 'r') as f:
+                    nets = json.load(f)
+                if not isinstance(nets, list):
+                    nets = []
+            except (FileNotFoundError, json.JSONDecodeError, TypeError):
+                nets = []
+            self.send_json_response(200, nets)
         elif self.path == '/test-stream':
             # Test endpoint to verify streaming format works
             def test_generator():
