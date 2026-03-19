@@ -32,6 +32,18 @@ RUN apt-get update && apt-get install -y ca-certificates libusb-1.0-0-dev libude
 
 
 
+# MCC uldaq C library -- required by uldaq Python bindings for USB-202 DAQ devices
+# See: https://github.com/mccdaq/uldaq
+RUN apt-get update && apt-get install -y autoconf automake libtool libusb-1.0-0-dev && rm -rf /var/lib/apt/lists/* \
+	&& git clone --depth 1 https://github.com/mccdaq/uldaq.git /tmp/uldaq \
+	&& cd /tmp/uldaq \
+	&& autoreconf -i \
+	&& ./configure \
+	&& make \
+	&& make install \
+	&& ldconfig \
+	&& rm -rf /tmp/uldaq
+
 # LabJack LJM SDK -- proprietary, downloaded at build time
 # See: https://support.labjack.com/docs/ljm-software-installer-downloads-t4-t7-t8-digit
 # Docker install pattern from: https://github.com/labjack/ljm_docker
@@ -75,6 +87,7 @@ RUN /usr/local/bin/python -m pip install --upgrade pip \
 	'ppk2-api' \
 	'aardvark_py' \
 	'pyftdi' \
+	'uldaq' \
 	'Flask==3.0.0' \
 	'flask-socketio==5.3.5' \
 	'python-socketio==5.10.0' \
