@@ -355,6 +355,88 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
             logger.error(f"Error reading version file: {e}")
             return None
 
+    def do_DELETE(self):
+        """Handle DELETE requests"""
+        try:
+            from urllib.parse import urlparse, parse_qs, unquote
+            parsed = urlparse(self.path)
+            path = parsed.path
+            if path.startswith('/nets/'):
+                name = unquote(path[len('/nets/'):])
+                role = parse_qs(parsed.query).get('role', [None])[0]
+                try:
+                    with open('/etc/lager/saved_nets.json', 'r') as f:
+                        nets = json.load(f)
+                    if not isinstance(nets, list):
+                        nets = []
+                except (FileNotFoundError, json.JSONDecodeError, TypeError):
+                    nets = []
+                if role:
+                    new_nets = [n for n in nets if not (n.get('name') == name and n.get('role') == role)]
+                else:
+                    new_nets = [n for n in nets if n.get('name') != name]
+                if len(new_nets) == len(nets):
+                    self.send_error_response(404, 'Net not found')
+                    return
+                tmp = '/etc/lager/saved_nets.json.tmp'
+                with open(tmp, 'w') as f:
+                    json.dump(new_nets, f, indent=2)
+                import os
+                os.replace(tmp, '/etc/lager/saved_nets.json')
+                self.send_json_response(200, {'ok': True})
+            else:
+                self.send_error_response(404, 'Not found')
+        except Exception as e:
+            logger.exception("Unexpected error handling DELETE request", exc_info=e)
+            self.send_error_response(500, f"Internal server error: {e}")
+
+    def do_PUT(self):
+        """Handle PUT requests"""
+        try:
+            from urllib.parse import urlparse, unquote
+            parsed = urlparse(self.path)
+            path = parsed.path
+            if path.startswith('/nets/'):
+                name = unquote(path[len('/nets/'):])
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length)
+                data = json.loads(body)
+                if not data.get('name') or not data.get('role') or not data.get('instrument'):
+                    self.send_error_response(400, 'name, role, and instrument are required')
+                    return
+                try:
+                    with open('/etc/lager/saved_nets.json', 'r') as f:
+                        nets = json.load(f)
+                    if not isinstance(nets, list):
+                        nets = []
+                except (FileNotFoundError, json.JSONDecodeError, TypeError):
+                    nets = []
+                # Remove old entry (handles renames too)
+                nets = [n for n in nets if not (n.get('name') == name and n.get('role') == data.get('role'))]
+                if data['name'] != name:
+                    nets = [n for n in nets if n.get('name') != name]
+                # Build mapping
+                pin = data.get('pin', 0)
+                mapping = {'net': data['name'], 'pin': pin, 'location': str(pin)}
+                if data.get('address'):
+                    mapping['device_override'] = data['address']
+                if data.get('serial') is not None:
+                    mapping['serial'] = data['serial']
+                data['mappings'] = [mapping]
+                data['scope_points'] = [[pin, str(pin)]]
+                nets.append(data)
+                tmp = '/etc/lager/saved_nets.json.tmp'
+                with open(tmp, 'w') as f:
+                    json.dump(nets, f, indent=2)
+                import os
+                os.replace(tmp, '/etc/lager/saved_nets.json')
+                self.send_json_response(200, {'ok': True})
+            else:
+                self.send_error_response(404, 'Not found')
+        except Exception as e:
+            logger.exception("Unexpected error handling PUT request", exc_info=e)
+            self.send_error_response(500, f"Internal server error: {e}")
+
     def do_POST(self):
         """Handle POST requests"""
         try:
