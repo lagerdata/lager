@@ -56,17 +56,22 @@ def _list_boxes_live(port=5000, timeout=5):
             ip = box_info
 
         if ip == 'unknown':
-            results.append((name, ip, '-', 'no IP'))
+            results.append((name, ip, '-', 'no IP', '', ''))
             failed_count += 1
             continue
 
         locked_by = ''
+        busy_info = ''
         try:
             lock_resp = requests.get(f'http://{ip}:{port}/lock', timeout=3, headers={'Cache-Control': 'no-cache'})
             if lock_resp.status_code == 200:
                 lock_data = lock_resp.json()
                 if lock_data.get('locked'):
                     locked_by = lock_data.get('user', '?')
+                if lock_data.get('busy'):
+                    busy_user = lock_data.get('busy_user', '?')
+                    busy_command = lock_data.get('busy_command', '')
+                    busy_info = f'{busy_user} ({busy_command})' if busy_command else busy_user
         except Exception:
             pass
 
@@ -86,35 +91,35 @@ def _list_boxes_live(port=5000, timeout=5):
                         version_cmp = compare_versions(box_version, cli_version)
 
                         if version_cmp == 0:
-                            results.append((name, ip, box_version, 'current', locked_by))
+                            results.append((name, ip, box_version, 'current', locked_by, busy_info))
                         elif version_cmp < 0:
-                            results.append((name, ip, box_version, 'needs update', locked_by))
+                            results.append((name, ip, box_version, 'needs update', locked_by, busy_info))
                             needs_update_count += 1
                         else:
-                            results.append((name, ip, box_version, 'newer', locked_by))
+                            results.append((name, ip, box_version, 'newer', locked_by, busy_info))
                             newer_count += 1
                     else:
-                        results.append((name, ip, '-', 'bad response', locked_by))
+                        results.append((name, ip, '-', 'bad response', locked_by, busy_info))
                         failed_count += 1
                 except ValueError:
-                    results.append((name, ip, '-', 'invalid JSON', locked_by))
+                    results.append((name, ip, '-', 'invalid JSON', locked_by, busy_info))
                     failed_count += 1
 
             elif response.status_code == 404:
-                results.append((name, ip, '-', 'old box', locked_by))
+                results.append((name, ip, '-', 'old box', locked_by, busy_info))
                 failed_count += 1
             else:
-                results.append((name, ip, '-', f'HTTP {response.status_code}', locked_by))
+                results.append((name, ip, '-', f'HTTP {response.status_code}', locked_by, busy_info))
                 failed_count += 1
 
         except requests.exceptions.Timeout:
-            results.append((name, ip, '-', 'timeout', locked_by))
+            results.append((name, ip, '-', 'timeout', locked_by, busy_info))
             failed_count += 1
         except requests.exceptions.ConnectionError:
-            results.append((name, ip, '-', 'unreachable', locked_by))
+            results.append((name, ip, '-', 'unreachable', locked_by, busy_info))
             failed_count += 1
         except Exception:
-            results.append((name, ip, '-', 'error', locked_by))
+            results.append((name, ip, '-', 'error', locked_by, busy_info))
             failed_count += 1
 
     spinner_stop.set()
@@ -123,6 +128,7 @@ def _list_boxes_live(port=5000, timeout=5):
     sys.stdout.flush()
 
     any_locked = any(r[4] for r in results)
+    any_busy = any(r[5] for r in results)
 
     name_width = max(len('name'), max(len(r[0]) for r in results))
     ip_width = max(len('ip'), max(len(r[1]) for r in results))
@@ -137,16 +143,17 @@ def _list_boxes_live(port=5000, timeout=5):
         header += f"   {'locked by':<{locked_width}}"
         total_width += locked_width + 3
 
+    if any_busy:
+        busy_width = max(len('busy'), max(len(r[5]) for r in results))
+        header += f"   {'busy':<{busy_width}}"
+        total_width += busy_width + 3
+
     click.echo(header)
     click.echo("=" * total_width)
 
-    for name, ip, version, status, locked_by in results:
+    for name, ip, version, status, locked_by, busy_info in results:
         row = f"{name:<{name_width}}   {ip:<{ip_width}}   {version:<{version_width}}   "
         click.echo(row, nl=False)
-
-        status_text = f"{status:<{status_width}}"
-        if any_locked:
-            status_text += f"   {locked_by:<{locked_width}}" if locked_by else f"   {'':<{locked_width}}"
 
         if status == 'current':
             click.secho(status, fg='green', nl=False)
@@ -157,12 +164,24 @@ def _list_boxes_live(port=5000, timeout=5):
         else:
             click.secho(status, fg='red', nl=False)
 
+        # Pad status to fixed width
+        click.echo(' ' * (status_width - len(status)), nl=False)
+
         if any_locked:
             if locked_by:
                 click.echo(f"   ", nl=False)
-                click.secho(locked_by, fg='magenta')
+                click.secho(f"{locked_by:<{locked_width}}", fg='magenta', nl=False)
             else:
-                click.echo(f"   {'':<{locked_width}}")
+                click.echo(f"   {'':<{locked_width}}", nl=False)
+
+        if any_busy:
+            if busy_info:
+                click.echo(f"   ", nl=False)
+                click.secho(busy_info, fg='yellow')
+            else:
+                click.echo(f"   {'':<{busy_width}}")
+        elif any_locked:
+            click.echo()
         else:
             click.echo()
 
@@ -714,11 +733,12 @@ CONTROL_PLANE_URL = 'https://api.stoutdata.ai'
 
 
 @boxes.command('connect')
+@click.pass_context
 @click.option('--box', required=True, help='Name of the box to connect')
 @click.option('--api-key', required=True, help='API key for control plane authentication')
 @click.option('--heartbeat-interval', default=30, type=int, help='Heartbeat interval in seconds (default: 30)')
 @click.option('--yes', is_flag=True, help='Confirm the action without prompting.')
-def connect(box, api_key, heartbeat_interval, yes):
+def connect(ctx, box, api_key, heartbeat_interval, yes):
     """Connect a box to a control plane for heartbeat reporting."""
     import subprocess
     import time
@@ -744,8 +764,8 @@ def connect(box, api_key, heartbeat_interval, yes):
         click.secho(f"Error: Box '{box}' not found in configuration", fg='red', err=True)
         raise click.Abort()
 
-    from ...box_storage import _check_box_lock
-    _check_box_lock(ip, box)
+    from ...box_storage import acquire_command_lock_with_cleanup
+    acquire_command_lock_with_cleanup(ctx, ip, box, 'connect')
 
     user = get_box_user(box) or 'lagerdata'
 

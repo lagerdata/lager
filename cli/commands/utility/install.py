@@ -100,8 +100,8 @@ def install(ctx, box, ip, user, branch, skip_jlink, skip_firewall, skip_verify, 
             ctx.exit(1)
         ip = stored_ip
 
-        from ...box_storage import _check_box_lock
-        _check_box_lock(ip, box)
+        from ...box_storage import acquire_command_lock_with_cleanup
+        acquire_command_lock_with_cleanup(ctx, ip, box, 'install')
 
         # Look up username from box storage (if not explicitly provided)
         if user is None:

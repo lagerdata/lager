@@ -526,14 +526,18 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
 @click.option('--org', default=None, hidden=True)
 @click.option('--add-file', type=click.Path(exists=True, dir_okay=False), multiple=True, help='File to upload with script')
 @click.option('--reattach', default=None, help='Reattach to detached process by process ID')
+@click.option('--force', 'force_command', is_flag=True, default=False, help='Bypass command-in-progress lock')
 @click.argument('args', nargs=-1)
-def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_overwrite, signum, timeout, detach, port, org, add_file, reattach, args):
+def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_overwrite, signum, timeout, detach, port, org, add_file, reattach, force_command, args):
     """Run Python script on box"""
-    from ...box_storage import resolve_and_validate_box
+    from ...box_storage import resolve_and_validate_box, _release_command_lock
+
+    # --kill, --kill-all, --reattach are management ops: skip lock check
+    skip_lock = bool(kill or kill_all or reattach)
 
     # Resolve and validate the box name
     box_name = box
-    box_ip = resolve_and_validate_box(ctx, box_name)
+    box_ip = resolve_and_validate_box(ctx, box_name, _skip_lock_check=skip_lock, _force=force_command)
 
     if not runnable and not kill and not kill_all and not reattach:
         raise click.UsageError('Please supply a RUNNABLE, --kill, --kill-all, or --reattach option')
@@ -579,3 +583,7 @@ def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_ove
         env.append(f'LAGER_BOX={box_name}')
 
     run_python_internal(ctx, runnable, box_ip, env, passenv, False, download, allow_overwrite, signum, timeout, detach, port, org, args, add_file, dut_name=box_name)
+
+    # If detached, release the command lock immediately so other users can use the box
+    if detach:
+        _release_command_lock(box_ip, box_name)
