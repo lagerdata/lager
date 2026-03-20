@@ -751,6 +751,9 @@ def connect(box, url, api_key, heartbeat_interval, yes):
         click.secho(f"Error: Box '{box}' not found in configuration", fg='red', err=True)
         raise click.Abort()
 
+    from ...box_storage import _check_box_lock
+    _check_box_lock(ip, box)
+
     user = get_box_user(box) or 'lagerdata'
 
     if not yes:
