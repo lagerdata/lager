@@ -114,7 +114,8 @@ def _decode_environment():
 @click.option('--debug', 'debug', is_flag=True, help='Show debug output', default=False)
 @click.option('--colorize', 'colorize', is_flag=True, help='Enable colored terminal output', default=False)
 @click.option('--interpreter', '-i', required=False, default=None, help='Select a specific interpreter / user interface', hidden=True)
-def cli(ctx=None, see_version=None, debug=False, colorize=False, interpreter=None):
+@click.option('--force-command', 'force_command', is_flag=True, hidden=True, help='Bypass command-in-progress lock')
+def cli(ctx=None, see_version=None, debug=False, colorize=False, interpreter=None, force_command=False):
     """
         Lager CLI
     """
@@ -131,7 +132,7 @@ def cli(ctx=None, see_version=None, debug=False, colorize=False, interpreter=Non
         if not _launch_terminal():
             click.echo(ctx.get_help())
     else:
-        setup_context(ctx, debug, colorize, interpreter)
+        setup_context(ctx, debug, colorize, interpreter, force_command)
         _schedule_update_check(ctx)
 
 cli.add_command(adc)
@@ -184,7 +185,7 @@ def _schedule_update_check(ctx):
     ctx.call_on_close(lambda: notify_if_update_available(__version__, thread, result_holder))
 
 
-def setup_context(ctx, debug, colorize, interpreter):
+def setup_context(ctx, debug, colorize, interpreter, force_command=False):
     """
         Setup the CLI context
     """
@@ -195,4 +196,5 @@ def setup_context(ctx, debug, colorize, interpreter):
         debug=debug,
         style=click.style if colorize else lambda string, **kwargs: string,
         interpreter=interpreter,
+        force_command=force_command,
     )

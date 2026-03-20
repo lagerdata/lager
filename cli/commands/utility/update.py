@@ -170,6 +170,19 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
                 click.secho('SKIPPED (no IP)', fg='yellow')
                 continue
 
+            # Check if box is locked or busy by another user
+            from ...box_storage import _acquire_command_lock, _release_command_lock, get_lager_user
+            try:
+                _acquire_command_lock(ip, name, 'update')
+            except SystemExit:
+                click.echo(f"  {name} ({ip}): ", nl=False)
+                click.secho('SKIPPED (locked or busy)', fg='yellow')
+                continue
+            else:
+                # Release immediately — we just wanted to check availability
+                # The actual update will re-acquire per box below
+                _release_command_lock(ip, name)
+
             # Query box version to determine if update is needed
             click.echo(f"  {name} ({ip}): ", nl=False)
             try:

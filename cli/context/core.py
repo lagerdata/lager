@@ -18,11 +18,12 @@ class LagerContext:  # pylint: disable=too-few-public-methods
     """
         Lager Context manager for direct box connections.
     """
-    def __init__(self, ctx, defaults, debug, style, interpreter=None):
+    def __init__(self, ctx, defaults, debug, style, interpreter=None, force_command=False):
         self.defaults = defaults
         self.style = style
         self.debug = debug
         self.interpreter = interpreter
+        self.force_command = force_command
 
     def get_session_for_box(self, box, box_name=None):
         """
