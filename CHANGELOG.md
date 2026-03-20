@@ -2,17 +2,30 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.13.0] - 2026-03-20
+
+### Added
+- `--force-command` is now a local flag on all subcommands that target a box, not just a global flag
+- `--force-command` added to `hello`, `install`, `uninstall`, and `boxes connect` commands
+
+### Changed
+- `lager python --detach` now keeps the command lock until the detached process finishes on the box. The lock is automatically released when the script completes
+- `acquire_command_lock_with_cleanup` now checks `ctx.obj.force_command` automatically, so all commands that acquire locks support `--force-command`
+
+### Fixed
+- Locking documentation updated to reflect current behavior
+
 ## [0.12.0] - 2026-03-20
 
 ### Added
-- **Command-in-progress lock** — When a `lager` command is running on a box, other users are blocked with a "Command in progress" error. Same user is allowed through. Locks auto-expire after 30 minutes to handle crashed CLI processes
-- **User lock (`lager boxes lock/unlock`)** — Explicitly lock a box so only you can run commands on it. Other users see a lock error until you unlock
+- **Command-in-progress lock** — When a `lager` command is running on a box, all other commands are blocked with a "Command in progress" error, including from the same user. Locks auto-expire after 30 minutes to handle crashed CLI processes
+- **User lock (`lager boxes lock/unlock`)** — Explicitly lock a box so only you can run commands on it. Other users see a lock error until you unlock. The user who locked it can still run commands
 - `--force-command` global flag to bypass command-in-progress locks
-- `lager boxes` list now shows a "busy" column when any box has a command in progress
+- `lager boxes` list now shows "locked by" and "busy" columns when any box has a lock or command in progress
 - `lager python --kill`, `--kill-all`, and `--reattach` skip lock checks (management operations)
-- `lager python --detach` releases the command lock immediately after detaching
 
 ### Changed
+- Command lock is process-based — same user cannot stomp on their own commands unless using `--force-command`
 - Hardcoded control plane URL, removed `--url` flag from `lager boxes connect`
 
 ## [0.11.0] - 2026-03-18
