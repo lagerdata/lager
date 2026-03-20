@@ -6,12 +6,10 @@
 
     Lock and unlock commands for shared box access control
 """
-import getpass
-
 import click
 import requests
 
-from ...box_storage import resolve_and_validate_box_with_name
+from ...box_storage import resolve_and_validate_box_with_name, get_lager_user
 
 
 @click.command()
@@ -22,7 +20,7 @@ def lock(ctx, box):
     ip, box_name = resolve_and_validate_box_with_name(ctx, box, _skip_lock_check=True)
     display_name = box_name or box
 
-    user = getpass.getuser()
+    user = get_lager_user()
 
     try:
         resp = requests.post(f'http://{ip}:5000/lock', json={'user': user}, timeout=5)
@@ -57,7 +55,7 @@ def unlock(ctx, box, force):
     ip, box_name = resolve_and_validate_box_with_name(ctx, box, _skip_lock_check=True)
     display_name = box_name or box
 
-    user = getpass.getuser()
+    user = get_lager_user()
 
     try:
         resp = requests.post(

@@ -18,13 +18,14 @@ def hello(ctx, box):
     """Test box connectivity and show version"""
     # Resolve and validate the box
     resolved_box, box_name = resolve_and_validate_box_with_name(ctx, box)
+    display_name = box_name or resolved_box
 
     # Port for the Python service
     port = 5000
 
     # Display header
     click.echo()
-    click.echo(f'Box: {box_name}')
+    click.echo(f'Box: {display_name}')
     click.echo(f'IP: {resolved_box}')
 
     try:
@@ -51,9 +52,9 @@ def hello(ctx, box):
 
         click.echo()
         if hello_response.status_code == 200:
-            click.secho(f'{box_name} is online and responding!', fg='green')
+            click.secho(f'{display_name} is online and responding!', fg='green')
         else:
-            click.secho(f'{box_name} responded with HTTP {hello_response.status_code}', fg='yellow')
+            click.secho(f'{display_name} responded with HTTP {hello_response.status_code}', fg='yellow')
 
     except requests.exceptions.Timeout:
         click.secho('Error: Connection timed out', fg='red', err=True)
