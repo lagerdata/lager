@@ -60,6 +60,16 @@ def _list_boxes_live(port=5000, timeout=5):
             failed_count += 1
             continue
 
+        locked_by = ''
+        try:
+            lock_resp = requests.get(f'http://{ip}:{port}/lock', timeout=3, headers={'Cache-Control': 'no-cache'})
+            if lock_resp.status_code == 200:
+                lock_data = lock_resp.json()
+                if lock_data.get('locked'):
+                    locked_by = lock_data.get('user', '?')
+        except Exception:
+            pass
+
         try:
             url = f'http://{ip}:{port}/cli-version'
             headers = {'Cache-Control': 'no-cache', 'Pragma': 'no-cache'}
@@ -76,41 +86,43 @@ def _list_boxes_live(port=5000, timeout=5):
                         version_cmp = compare_versions(box_version, cli_version)
 
                         if version_cmp == 0:
-                            results.append((name, ip, box_version, 'current'))
+                            results.append((name, ip, box_version, 'current', locked_by))
                         elif version_cmp < 0:
-                            results.append((name, ip, box_version, 'needs update'))
+                            results.append((name, ip, box_version, 'needs update', locked_by))
                             needs_update_count += 1
                         else:
-                            results.append((name, ip, box_version, 'newer'))
+                            results.append((name, ip, box_version, 'newer', locked_by))
                             newer_count += 1
                     else:
-                        results.append((name, ip, '-', 'bad response'))
+                        results.append((name, ip, '-', 'bad response', locked_by))
                         failed_count += 1
                 except ValueError:
-                    results.append((name, ip, '-', 'invalid JSON'))
+                    results.append((name, ip, '-', 'invalid JSON', locked_by))
                     failed_count += 1
 
             elif response.status_code == 404:
-                results.append((name, ip, '-', 'old box'))
+                results.append((name, ip, '-', 'old box', locked_by))
                 failed_count += 1
             else:
-                results.append((name, ip, '-', f'HTTP {response.status_code}'))
+                results.append((name, ip, '-', f'HTTP {response.status_code}', locked_by))
                 failed_count += 1
 
         except requests.exceptions.Timeout:
-            results.append((name, ip, '-', 'timeout'))
+            results.append((name, ip, '-', 'timeout', locked_by))
             failed_count += 1
         except requests.exceptions.ConnectionError:
-            results.append((name, ip, '-', 'unreachable'))
+            results.append((name, ip, '-', 'unreachable', locked_by))
             failed_count += 1
         except Exception:
-            results.append((name, ip, '-', 'error'))
+            results.append((name, ip, '-', 'error', locked_by))
             failed_count += 1
 
     spinner_stop.set()
     spinner_thread.join(timeout=1)
     sys.stdout.write('\r' + ' ' * 40 + '\r')
     sys.stdout.flush()
+
+    any_locked = any(r[4] for r in results)
 
     name_width = max(len('name'), max(len(r[0]) for r in results))
     ip_width = max(len('ip'), max(len(r[1]) for r in results))
@@ -119,21 +131,40 @@ def _list_boxes_live(port=5000, timeout=5):
 
     header = f"{'name':<{name_width}}   {'ip':<{ip_width}}   {'version':<{version_width}}   {'status':<{status_width}}"
     total_width = name_width + ip_width + version_width + status_width + 9
+
+    if any_locked:
+        locked_width = max(len('locked by'), max(len(r[4]) for r in results))
+        header += f"   {'locked by':<{locked_width}}"
+        total_width += locked_width + 3
+
     click.echo(header)
     click.echo("=" * total_width)
 
-    for name, ip, version, status in results:
+    for name, ip, version, status, locked_by in results:
         row = f"{name:<{name_width}}   {ip:<{ip_width}}   {version:<{version_width}}   "
         click.echo(row, nl=False)
 
+        status_text = f"{status:<{status_width}}"
+        if any_locked:
+            status_text += f"   {locked_by:<{locked_width}}" if locked_by else f"   {'':<{locked_width}}"
+
         if status == 'current':
-            click.secho(status, fg='green')
+            click.secho(status, fg='green', nl=False)
         elif status == 'needs update':
-            click.secho(status, fg='yellow')
+            click.secho(status, fg='yellow', nl=False)
         elif status == 'newer':
-            click.secho(status, fg='cyan')
+            click.secho(status, fg='cyan', nl=False)
         else:
-            click.secho(status, fg='red')
+            click.secho(status, fg='red', nl=False)
+
+        if any_locked:
+            if locked_by:
+                click.echo(f"   ", nl=False)
+                click.secho(locked_by, fg='magenta')
+            else:
+                click.echo(f"   {'':<{locked_width}}")
+        else:
+            click.echo()
 
     click.echo(f'\nYour CLI: {cli_version}')
 
@@ -774,6 +805,11 @@ def connect(box, url, api_key, heartbeat_interval, yes):
     except requests.exceptions.RequestException as e:
         click.secho(f"Warning: Could not verify box status: {e}", fg='yellow')
         click.echo("The config was written. The box may still be starting up.")
+
+
+from .lock import lock, unlock
+boxes.add_command(lock)
+boxes.add_command(unlock)
 
 
 def compare_versions(v1, v2):
