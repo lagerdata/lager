@@ -584,3 +584,8 @@ def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_ove
         env.append(f'LAGER_BOX={box_name}')
 
     run_python_internal(ctx, runnable, box_ip, env, passenv, False, download, allow_overwrite, signum, timeout, detach, port, org, args, add_file, dut_name=box_name)
+
+    # If detached, skip CLI-side lock release so the lock stays held until
+    # the box-side process finishes and releases it.
+    if detach:
+        ctx.obj._skip_lock_release = True
