@@ -196,6 +196,8 @@ def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
         # Check if this is a local box name first
         local_ip = get_box_ip(target_box)
         if local_ip:
+            from ...box_storage import _check_box_lock
+            _check_box_lock(local_ip, target_box)
             return local_ip
 
         # Check if it looks like an IP address

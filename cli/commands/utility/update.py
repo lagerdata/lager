@@ -168,6 +168,22 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
                 click.secho('SKIPPED (no IP)', fg='yellow')
                 continue
 
+            # Check if box is locked by another user
+            from ...box_storage import _check_box_lock, get_lager_user
+            try:
+                resp = requests.get(f'http://{ip}:5000/lock', timeout=3)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get('locked'):
+                        locked_by = data.get('user', 'unknown')
+                        current_user = get_lager_user()
+                        if locked_by != current_user:
+                            click.echo(f"  {name} ({ip}): ", nl=False)
+                            click.secho(f'SKIPPED (locked by {locked_by})', fg='yellow')
+                            continue
+            except requests.exceptions.RequestException:
+                pass  # Box unreachable - let the version check handle it
+
             # Query box version to determine if update is needed
             click.echo(f"  {name} ({ip}): ", nl=False)
             try:

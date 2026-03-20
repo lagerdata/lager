@@ -40,6 +40,9 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
             ctx.exit(1)
         ip = stored_ip
 
+        from ...box_storage import _check_box_lock
+        _check_box_lock(ip, box)
+
         if user is None:
             stored_user = get_box_user(box)
             user = stored_user or "lagerdata"
