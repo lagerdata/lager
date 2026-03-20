@@ -24,6 +24,9 @@ lager boxes COMMAND [OPTIONS]
 | `export` | Export box configuration to JSON |
 | `import` | Import box configuration from JSON |
 | `sync` | Sync Lager Box versions from all boxes |
+| `lock` | Lock a box to prevent others from using it |
+| `unlock` | Unlock a box |
+| `connect` | Connect a box to a control plane |
 
 ---
 
@@ -255,6 +258,62 @@ lager boxes sync [--port PORT] [--timeout SECONDS]
 - `--timeout` - HTTP request timeout in seconds (default: 5)
 
 This command queries each Lager Box's current version and updates the local configuration.
+
+### `lock`
+
+Lock a box to prevent other users from using it. See [Box Locking](/source/reference/cli/locking) for full details.
+
+```bash
+lager boxes lock --box NAME
+```
+
+**Options:**
+- `--box` (required) - Name of the box to lock
+
+**Example:**
+```bash
+lager boxes lock --box lab-box
+```
+
+### `unlock`
+
+Unlock a box to allow other users to use it. See [Box Locking](/source/reference/cli/locking) for full details.
+
+```bash
+lager boxes unlock --box NAME [--force]
+```
+
+**Options:**
+- `--box` (required) - Name of the box to unlock
+- `--force` - Force unlock even if locked by another user
+
+**Examples:**
+```bash
+# Unlock your own lock
+lager boxes unlock --box lab-box
+
+# Force unlock another user's lock
+lager boxes unlock --box lab-box --force
+```
+
+### `connect`
+
+Connect a box to a control plane for heartbeat reporting.
+
+```bash
+lager boxes connect --box NAME --api-key KEY [OPTIONS]
+```
+
+**Options:**
+- `--box` (required) - Name of the box to connect
+- `--api-key` (required) - API key for control plane authentication
+- `--heartbeat-interval` - Heartbeat interval in seconds (default: 30)
+- `--yes` - Confirm without prompting
+
+**Example:**
+```bash
+lager boxes connect --box lab-box --api-key YOUR_API_KEY
+```
 
 ---
 

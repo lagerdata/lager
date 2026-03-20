@@ -44,6 +44,7 @@
               "source/reference/cli/terminal",
               "source/reference/cli/hello",
               "source/reference/cli/boxes",
+              "source/reference/cli/locking",
               "source/reference/cli/install",
               "source/reference/cli/uninstall",
               "source/reference/cli/update",
