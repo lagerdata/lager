@@ -710,13 +710,15 @@ def import_boxes(file, merge, yes):
         click.echo(click.style(f"[OK] Successfully imported {len(import_boxes_data)} box(es) from {file}", fg='green'))
 
 
+CONTROL_PLANE_URL = 'https://api.stoutdata.ai'
+
+
 @boxes.command('connect')
 @click.option('--box', required=True, help='Name of the box to connect')
-@click.option('--url', default='https://api.stoutdata.ai', help='Control plane URL')
 @click.option('--api-key', required=True, help='API key for control plane authentication')
 @click.option('--heartbeat-interval', default=30, type=int, help='Heartbeat interval in seconds (default: 30)')
 @click.option('--yes', is_flag=True, help='Confirm the action without prompting.')
-def connect(box, url, api_key, heartbeat_interval, yes):
+def connect(box, api_key, heartbeat_interval, yes):
     """Connect a box to a control plane for heartbeat reporting."""
     import subprocess
     import time
@@ -725,21 +727,12 @@ def connect(box, url, api_key, heartbeat_interval, yes):
     from ...box_storage import get_box_ip, get_box_user
     from ...core.ssh_utils import get_reusable_ssh_command
 
-    # Validate URL
-    from urllib.parse import urlparse
-    parsed = urlparse(url)
-    if parsed.scheme not in ('http', 'https'):
-        click.secho(f"Error: URL scheme must be http or https, got '{parsed.scheme}'", fg='red', err=True)
-        raise click.Abort()
-    if not parsed.hostname:
-        click.secho("Error: URL must include a hostname", fg='red', err=True)
-        raise click.Abort()
+    url = CONTROL_PLANE_URL
 
     # Warn if control plane is unreachable from this machine (may still work from the box)
-    import requests as _req
     try:
-        _req.get(f'{url.rstrip("/")}/healthz', timeout=5)
-    except _req.exceptions.RequestException:
+        requests.get(f'{url}/healthz', timeout=5)
+    except requests.exceptions.RequestException:
         click.secho(
             f"Warning: Could not reach {url} from this machine. "
             "It may still be reachable from the box.",
