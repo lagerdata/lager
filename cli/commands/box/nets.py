@@ -197,7 +197,8 @@ def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
         local_ip = get_box_ip(target_box)
         if local_ip:
             from ...box_storage import acquire_command_lock_with_cleanup
-            acquire_command_lock_with_cleanup(ctx, local_ip, target_box, ctx.info_name or 'nets')
+            force = getattr(getattr(ctx, 'obj', None), 'force_command', False)
+            acquire_command_lock_with_cleanup(ctx, local_ip, target_box, ctx.info_name or 'nets', force=force)
             return local_ip
 
         # Check if it looks like an IP address
