@@ -71,9 +71,10 @@ def defaults(ctx):
 @click.option('--thermocouple-net', required=False, help='Set default thermocouple net name')
 @click.option('--uart-net', required=False, help='Set default UART net name')
 @click.option('--arm-net', required=False, help='Set default robotic arm net name')
+@click.option('--user', required=False, help='Set default username for box locking')
 def add(box, serial_port, supply_net, battery_net, solar_net, scope_net, logic_net,
         adc_net, dac_net, gpio_net, debug_net, eload_net, usb_net, webcam_net,
-        watt_meter_net, thermocouple_net, uart_net, arm_net):
+        watt_meter_net, thermocouple_net, uart_net, arm_net, user):
     """
         Set default values
     """
@@ -81,7 +82,7 @@ def add(box, serial_port, supply_net, battery_net, solar_net, scope_net, logic_n
     if all(v is None for v in [box, serial_port, supply_net, battery_net, solar_net,
                                 scope_net, logic_net, adc_net, dac_net, gpio_net, debug_net,
                                 eload_net, usb_net, webcam_net, watt_meter_net, thermocouple_net,
-                                uart_net, arm_net]):
+                                uart_net, arm_net, user]):
         click.secho("Error: You must specify at least one setting", fg='red', err=True)
         click.echo("\nAvailable options:", err=True)
         click.echo("  --box <name>              Set default box", err=True)
@@ -102,6 +103,7 @@ def add(box, serial_port, supply_net, battery_net, solar_net, scope_net, logic_n
         click.echo("  --thermocouple-net <name> Set default thermocouple net", err=True)
         click.echo("  --uart-net <name>         Set default UART net", err=True)
         click.echo("  --arm-net <name>          Set default robotic arm net", err=True)
+        click.echo("  --user <name>             Set default username for box locking", err=True)
         click.echo("\nExample: lager defaults add --box mybox --supply-net supply1", err=True)
         raise click.Abort()
 
@@ -133,6 +135,11 @@ def add(box, serial_port, supply_net, battery_net, solar_net, scope_net, logic_n
     if serial_port is not None:
         config.set('LAGER', 'serial_device', serial_port)
         changes.append(f"serial-port: {serial_port}")
+
+    # Handle user default
+    if user is not None:
+        config.set('LAGER', 'user', user)
+        changes.append(f"user: {user}")
 
     # Handle net defaults
     net_defaults = {
@@ -254,6 +261,32 @@ def serial_port(yes):
 
     write_config_file(config)
     click.secho(f"Deleted default serial port '{value}'", fg='green')
+
+
+@delete.command('user')
+@click.option('--yes', is_flag=True, help='Skip confirmation prompt')
+def delete_user_default(yes):
+    """Delete default user"""
+    config = read_config_file()
+
+    if not config.has_option('LAGER', 'user'):
+        click.echo("No default user is currently set.")
+        return
+
+    value = config.get('LAGER', 'user')
+
+    if not yes:
+        click.echo(f"\nYou are about to delete the following default:")
+        click.echo(f"  user: {value}")
+        click.echo()
+
+        if not click.confirm("Delete this default?", default=False):
+            click.echo("Cancelled. Default not deleted.")
+            return
+
+    config.remove_option('LAGER', 'user')
+    write_config_file(config)
+    click.secho(f"Deleted default user '{value}'", fg='green')
 
 
 # Helper function to create delete commands for net types

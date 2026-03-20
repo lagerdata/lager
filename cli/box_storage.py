@@ -268,6 +268,24 @@ def delete_all_boxes() -> int:
     return count
 
 
+def get_lager_user():
+    """Get the effective lager user.
+
+    Returns the user from 'lager defaults add --user', falling back to
+    the OS system username (getpass.getuser()).
+    """
+    import getpass
+    from .config import read_config_file
+
+    try:
+        config = read_config_file()
+        if config.has_option('LAGER', 'user'):
+            return config.get('LAGER', 'user')
+    except Exception:
+        pass
+    return getpass.getuser()
+
+
 def _check_box_lock(ip, box_name):
     """Check if a box is locked by another user. Exits if locked.
 
@@ -275,7 +293,6 @@ def _check_box_lock(ip, box_name):
         ip: Box IP address
         box_name: Box name for display purposes
     """
-    import getpass
     import click
     import requests
 
@@ -285,7 +302,7 @@ def _check_box_lock(ip, box_name):
             data = resp.json()
             if data.get('locked'):
                 locked_by = data.get('user', 'unknown')
-                current_user = getpass.getuser()
+                current_user = get_lager_user()
                 if locked_by != current_user:
                     display = box_name or ip
                     click.secho(
