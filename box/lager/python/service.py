@@ -308,6 +308,8 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                 # Send exit code 0
                 yield b'- 1 0'
             self.send_streaming_response(test_generator())
+        elif self.path == '/lock':
+            self._handle_lock_status()
         elif self.path.startswith('/download-file'):
             self._handle_download_file()
         else:
@@ -359,6 +361,10 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
             elif self.path == '/test-execute':
                 # Simple test endpoint: just run a hardcoded Python script
                 self._handle_test_execute()
+            elif self.path == '/lock':
+                self._handle_lock_acquire()
+            elif self.path == '/unlock':
+                self._handle_unlock()
             elif self.path == '/binaries/add':
                 self._handle_binaries_add()
             elif self.path == '/binaries/remove':
@@ -371,6 +377,107 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         except Exception as e:
             logger.exception("Unexpected error handling request", exc_info=e)
             self.send_error_response(500, f"Internal server error: {e}")
+
+    # --- Lock endpoints ---
+
+    LOCK_FILE = '/etc/lager/lock.json'
+
+    def _read_lock(self):
+        """Read lock state from disk. Returns dict if locked, None otherwise."""
+        try:
+            with open(self.LOCK_FILE, 'r') as f:
+                data = json.load(f)
+            if data.get('locked'):
+                return data
+        except (FileNotFoundError, json.JSONDecodeError, TypeError):
+            pass
+        return None
+
+    def _read_json_body(self):
+        """Read and parse JSON from request body."""
+        content_length = int(self.headers.get('Content-Length', 0))
+        if content_length == 0:
+            return {}
+        body = self.rfile.read(content_length)
+        return json.loads(body)
+
+    def _handle_lock_status(self):
+        """Handle GET /lock - Return lock status."""
+        lock = self._read_lock()
+        if lock:
+            self.send_json_response(200, lock)
+        else:
+            self.send_json_response(200, {'locked': False})
+
+    def _handle_lock_acquire(self):
+        """Handle POST /lock - Lock the box for a user."""
+        try:
+            data = self._read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json_response(400, {'error': 'Invalid JSON'})
+            return
+
+        user = data.get('user')
+        if not user:
+            self.send_json_response(400, {'error': 'user is required'})
+            return
+
+        lock = self._read_lock()
+        if lock:
+            if lock.get('user') == user:
+                self.send_json_response(200, lock)
+            else:
+                self.send_json_response(409, {
+                    'error': f'Box is locked by {lock["user"]}',
+                    'lock': lock,
+                })
+            return
+
+        from datetime import datetime, timezone
+        new_lock = {
+            'locked': True,
+            'user': user,
+            'locked_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        }
+        with open(self.LOCK_FILE, 'w') as f:
+            json.dump(new_lock, f, indent=2)
+        self.send_json_response(200, new_lock)
+
+    def _handle_unlock(self):
+        """Handle POST /unlock - Unlock the box."""
+        try:
+            data = self._read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json_response(400, {'error': 'Invalid JSON'})
+            return
+
+        user = data.get('user')
+        force = data.get('force', False)
+
+        if not user:
+            self.send_json_response(400, {'error': 'user is required'})
+            return
+
+        lock = self._read_lock()
+        if not lock:
+            self.send_json_response(200, {'locked': False, 'message': 'Box is already unlocked'})
+            return
+
+        if lock.get('user') != user and not force:
+            self.send_json_response(403, {
+                'error': f'Box is locked by {lock["user"]}',
+                'lock': lock,
+            })
+            return
+
+        import os
+        try:
+            os.remove(self.LOCK_FILE)
+        except FileNotFoundError:
+            pass
+        self.send_json_response(200, {'locked': False, 'message': 'Box unlocked'})
+
+    # --- End lock endpoints ---
 
     def _handle_python_execute(self):
         """Handle POST /python - Execute Python script"""
