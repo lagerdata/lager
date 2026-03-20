@@ -268,7 +268,42 @@ def delete_all_boxes() -> int:
     return count
 
 
-def resolve_and_validate_box_with_name(ctx, box_name: Optional[str] = None) -> tuple:
+def _check_box_lock(ip, box_name):
+    """Check if a box is locked by another user. Exits if locked.
+
+    Args:
+        ip: Box IP address
+        box_name: Box name for display purposes
+    """
+    import getpass
+    import click
+    import requests
+
+    try:
+        resp = requests.get(f'http://{ip}:5000/lock', timeout=3)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get('locked'):
+                locked_by = data.get('user', 'unknown')
+                current_user = getpass.getuser()
+                if locked_by != current_user:
+                    display = box_name or ip
+                    click.secho(
+                        f"Error: Box '{display}' is locked by {locked_by}",
+                        fg='red', err=True,
+                    )
+                    click.echo(
+                        f"To force unlock: lager boxes unlock --box {display} --force",
+                        err=True,
+                    )
+                    raise SystemExit(1)
+    except (requests.exceptions.RequestException, SystemExit) as e:
+        if isinstance(e, SystemExit):
+            raise
+        # Box unreachable - silently skip, command will fail on its own
+
+
+def resolve_and_validate_box_with_name(ctx, box_name: Optional[str] = None, _skip_lock_check=False) -> tuple:
     """
     Resolve and validate a box name, returning both IP and name.
 
@@ -291,16 +326,22 @@ def resolve_and_validate_box_with_name(ctx, box_name: Optional[str] = None) -> t
         # Get the default box name before resolving to IP
         default_name = os.getenv('LAGER_BOX') or getattr(ctx.obj, 'default_box', None)
         resolved_ip = get_default_box(ctx)
+        if not _skip_lock_check:
+            _check_box_lock(resolved_ip, default_name)
         return (resolved_ip, default_name)
 
     # Check if it's a saved box name
     saved_ip = get_box_ip(box_name)
     if saved_ip:
+        if not _skip_lock_check:
+            _check_box_lock(saved_ip, box_name)
         return (saved_ip, box_name)
 
     # Check if it's a valid IP address
     try:
         ipaddress.ip_address(box_name)
+        if not _skip_lock_check:
+            _check_box_lock(box_name, None)
         return (box_name, None)  # Direct IP, no box name
     except ValueError:
         # Not a valid IP and not in local boxes - Show helpful error
@@ -325,7 +366,7 @@ def resolve_and_validate_box_with_name(ctx, box_name: Optional[str] = None) -> t
         ctx.exit(1)
 
 
-def resolve_and_validate_box(ctx, box_name: Optional[str] = None) -> str:
+def resolve_and_validate_box(ctx, box_name: Optional[str] = None, _skip_lock_check=False) -> str:
     """
     Resolve and validate a box name.
 
@@ -344,16 +385,23 @@ def resolve_and_validate_box(ctx, box_name: Optional[str] = None) -> str:
 
     # If no box name provided, use default box
     if not box_name:
-        return get_default_box(ctx)
+        resolved_ip = get_default_box(ctx)
+        if not _skip_lock_check:
+            _check_box_lock(resolved_ip, None)
+        return resolved_ip
 
     # Check if it's a saved box name
     saved_ip = get_box_ip(box_name)
     if saved_ip:
+        if not _skip_lock_check:
+            _check_box_lock(saved_ip, box_name)
         return saved_ip
 
     # Check if it's a valid IP address
     try:
         ipaddress.ip_address(box_name)
+        if not _skip_lock_check:
+            _check_box_lock(box_name, None)
         return box_name
     except ValueError:
         # Not a valid IP and not in local boxes - Show helpful error
