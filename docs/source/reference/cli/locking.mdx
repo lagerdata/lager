@@ -1,0 +1,180 @@
+---
+title: Box Locking
+description: Shared access control for Lager Boxes
+---
+
+When multiple users share a Lager Box, locks prevent conflicting operations. Lager provides two locking mechanisms: automatic command locks that protect running commands, and user locks for explicit reservation.
+
+## How It Works
+
+### Automatic Command Lock
+
+Every command that targets a box automatically acquires a **command lock** before it runs. This prevents two users from issuing conflicting commands to the same box at the same time.
+
+- **All callers blocked**: Any command targeting the same box is blocked until the first command finishes, even from the same user
+- **Auto-expires**: After 30 minutes of inactivity, stale command locks are automatically cleaned up
+- **Released on completion**: The lock is released when the command finishes or when you press `Ctrl+C`
+
+If a command is already in progress, you'll see:
+
+```
+Error: Box 'lab-box' is busy — 'python' in progress by alice. Use --force-command to override.
+```
+
+### User Lock
+
+A **user lock** is an explicit, persistent lock you place on a box. Unlike command locks, user locks do not expire — you must manually unlock the box when you're done.
+
+Use cases:
+- Reserving a box for a long-running detached script
+- Claiming a box for an extended debugging session
+- Preventing others from using a box during maintenance
+
+## Commands
+
+### `lager boxes lock`
+
+Lock a box to prevent others from using it.
+
+```bash
+lager boxes lock --box NAME
+```
+
+**Options:**
+- `--box` (required) - Name of the box to lock
+
+**Example:**
+```bash
+lager boxes lock --box lab-box
+
+# Output:
+Box 'lab-box' locked by alice at 2026-03-20T14:30:00Z
+```
+
+If the box is already locked by another user:
+
+```
+Error: Box 'lab-box' is already locked by bob (since 2026-03-20T13:00:00Z)
+```
+
+### `lager boxes unlock`
+
+Unlock a box to allow others to use it.
+
+```bash
+lager boxes unlock --box NAME [--force]
+```
+
+**Options:**
+- `--box` (required) - Name of the box to unlock
+- `--force` - Force unlock even if the box was locked by another user
+
+**Examples:**
+```bash
+# Unlock your own lock
+lager boxes unlock --box lab-box
+
+# Force unlock a box locked by someone else
+lager boxes unlock --box lab-box --force
+```
+
+## Bypassing Locks
+
+### `--force-command`
+
+Use the global `--force-command` flag to bypass both command locks and user locks:
+
+```bash
+lager --force-command python run script.py --box lab-box
+```
+
+This is useful when you know it's safe to proceed despite an existing lock (e.g., a stale lock from a disconnected session).
+
+### Management operations
+
+The following operations skip lock checks entirely because they manage running processes rather than starting new ones:
+
+- `lager python --kill ID`
+- `lager python --kill-all`
+- `lager python --reattach ID`
+
+## `lager boxes list`
+
+When boxes are locked or busy, `lager boxes list` shows additional columns:
+
+```
+┌───────────┬──────────┬───────────┬─────────┬────────┬───────────┬──────────────────┐
+│ Name      │ IP       │ User      │ Version │ Status │ Locked By │ Busy             │
+├───────────┼──────────┼───────────┼─────────┼────────┼───────────┼──────────────────┤
+│ lab-box-1 │ <BOX_IP> │ lagerdata │ 0.12.0  │ current│ alice     │                  │
+│ lab-box-2 │ <BOX_IP> │ lagerdata │ 0.12.0  │ current│           │ bob (python)     │
+│ lab-box-3 │ <BOX_IP> │ lagerdata │ 0.12.0  │ current│           │                  │
+└───────────┴──────────┴───────────┴─────────┴────────┴───────────┴──────────────────┘
+```
+
+- **Locked By** — shows the user who placed an explicit lock (magenta)
+- **Busy** — shows the user and command currently in progress (yellow)
+
+These columns only appear when at least one box is locked or busy.
+
+## Special Cases
+
+### `--detach` releases the command lock
+
+When you run a command with `--detach`, the command lock is released immediately after the process detaches. This allows other users to use the box while your script continues running in the background.
+
+```bash
+# Lock is acquired, then released once detached
+lager python run long_test.py --box lab-box --detach
+```
+
+If you want to prevent others from using the box while a detached script runs, place a user lock first:
+
+```bash
+lager boxes lock --box lab-box
+lager python run long_test.py --box lab-box --detach
+# Box stays locked until you explicitly unlock it
+```
+
+### `lager update --all` skips locked boxes
+
+When updating all boxes at once, locked or busy boxes are skipped rather than blocking the update:
+
+```
+Updating all boxes...
+  lab-box-1: updated to 0.12.0
+  lab-box-2: SKIPPED (locked or busy)
+  lab-box-3: updated to 0.12.0
+```
+
+### Stale lock auto-expiry
+
+Command locks older than 30 minutes are automatically cleaned up. This handles cases where a client disconnects without releasing its lock (e.g., network failure, laptop sleep). User locks do not expire.
+
+## Examples
+
+### Multi-user workflow
+
+```bash
+# Alice starts a test
+alice$ lager python run test_suite.py --box lab-box
+
+# Bob tries to use the same box — blocked
+bob$ lager python run quick_check.py --box lab-box
+# Error: Box 'lab-box' is busy — 'python' in progress by alice. Use --force-command to override.
+
+# Alice's test finishes — lock released automatically
+# Bob can now use the box
+bob$ lager python run quick_check.py --box lab-box
+```
+
+### Reserving a box for a detached script
+
+```bash
+# Lock the box, then run a long script detached
+lager boxes lock --box lab-box
+lager python run overnight_test.py --box lab-box --detach
+
+# Later, when the script is done
+lager boxes unlock --box lab-box
+```
