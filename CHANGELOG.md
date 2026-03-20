@@ -2,6 +2,19 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.12.0] - 2026-03-20
+
+### Added
+- **Command-in-progress lock** — When a `lager` command is running on a box, other users are blocked with a "Command in progress" error. Same user is allowed through. Locks auto-expire after 30 minutes to handle crashed CLI processes
+- **User lock (`lager boxes lock/unlock`)** — Explicitly lock a box so only you can run commands on it. Other users see a lock error until you unlock
+- `--force-command` global flag to bypass command-in-progress locks
+- `lager boxes` list now shows a "busy" column when any box has a command in progress
+- `lager python --kill`, `--kill-all`, and `--reattach` skip lock checks (management operations)
+- `lager python --detach` releases the command lock immediately after detaching
+
+### Changed
+- Hardcoded control plane URL, removed `--url` flag from `lager boxes connect`
+
 ## [0.11.0] - 2026-03-18
 
 ### Added

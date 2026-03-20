@@ -21,6 +21,7 @@ Now runs in: box/python container (port 5000)
 import json
 import logging
 import signal
+import threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs
 import cgi
@@ -300,6 +301,16 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                 'version': version,
                 'nets': nets,
             })
+        elif self.path == '/nets/list':
+            # Return full saved net details for Stout dashboard
+            try:
+                with open('/etc/lager/saved_nets.json', 'r') as f:
+                    nets = json.load(f)
+                if not isinstance(nets, list):
+                    nets = []
+            except (FileNotFoundError, json.JSONDecodeError, TypeError):
+                nets = []
+            self.send_json_response(200, nets)
         elif self.path == '/test-stream':
             # Test endpoint to verify streaming format works
             def test_generator():
@@ -308,6 +319,8 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                 # Send exit code 0
                 yield b'- 1 0'
             self.send_streaming_response(test_generator())
+        elif self.path == '/lock':
+            self._handle_lock_status()
         elif self.path.startswith('/download-file'):
             self._handle_download_file()
         else:
@@ -345,6 +358,88 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
             logger.error(f"Error reading version file: {e}")
             return None
 
+    def do_DELETE(self):
+        """Handle DELETE requests"""
+        try:
+            from urllib.parse import urlparse, parse_qs, unquote
+            parsed = urlparse(self.path)
+            path = parsed.path
+            if path.startswith('/nets/'):
+                name = unquote(path[len('/nets/'):])
+                role = parse_qs(parsed.query).get('role', [None])[0]
+                try:
+                    with open('/etc/lager/saved_nets.json', 'r') as f:
+                        nets = json.load(f)
+                    if not isinstance(nets, list):
+                        nets = []
+                except (FileNotFoundError, json.JSONDecodeError, TypeError):
+                    nets = []
+                if role:
+                    new_nets = [n for n in nets if not (n.get('name') == name and n.get('role') == role)]
+                else:
+                    new_nets = [n for n in nets if n.get('name') != name]
+                if len(new_nets) == len(nets):
+                    self.send_error_response(404, 'Net not found')
+                    return
+                tmp = '/etc/lager/saved_nets.json.tmp'
+                with open(tmp, 'w') as f:
+                    json.dump(new_nets, f, indent=2)
+                import os
+                os.replace(tmp, '/etc/lager/saved_nets.json')
+                self.send_json_response(200, {'ok': True})
+            else:
+                self.send_error_response(404, 'Not found')
+        except Exception as e:
+            logger.exception("Unexpected error handling DELETE request", exc_info=e)
+            self.send_error_response(500, f"Internal server error: {e}")
+
+    def do_PUT(self):
+        """Handle PUT requests"""
+        try:
+            from urllib.parse import urlparse, unquote
+            parsed = urlparse(self.path)
+            path = parsed.path
+            if path.startswith('/nets/'):
+                name = unquote(path[len('/nets/'):])
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length)
+                data = json.loads(body)
+                if not data.get('name') or not data.get('role') or not data.get('instrument'):
+                    self.send_error_response(400, 'name, role, and instrument are required')
+                    return
+                try:
+                    with open('/etc/lager/saved_nets.json', 'r') as f:
+                        nets = json.load(f)
+                    if not isinstance(nets, list):
+                        nets = []
+                except (FileNotFoundError, json.JSONDecodeError, TypeError):
+                    nets = []
+                # Remove old entry (handles renames too)
+                nets = [n for n in nets if not (n.get('name') == name and n.get('role') == data.get('role'))]
+                if data['name'] != name:
+                    nets = [n for n in nets if n.get('name') != name]
+                # Build mapping
+                pin = data.get('pin', 0)
+                mapping = {'net': data['name'], 'pin': pin, 'location': str(pin)}
+                if data.get('address'):
+                    mapping['device_override'] = data['address']
+                if data.get('serial') is not None:
+                    mapping['serial'] = data['serial']
+                data['mappings'] = [mapping]
+                data['scope_points'] = [[pin, str(pin)]]
+                nets.append(data)
+                tmp = '/etc/lager/saved_nets.json.tmp'
+                with open(tmp, 'w') as f:
+                    json.dump(nets, f, indent=2)
+                import os
+                os.replace(tmp, '/etc/lager/saved_nets.json')
+                self.send_json_response(200, {'ok': True})
+            else:
+                self.send_error_response(404, 'Not found')
+        except Exception as e:
+            logger.exception("Unexpected error handling PUT request", exc_info=e)
+            self.send_error_response(500, f"Internal server error: {e}")
+
     def do_POST(self):
         """Handle POST requests"""
         try:
@@ -359,6 +454,14 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
             elif self.path == '/test-execute':
                 # Simple test endpoint: just run a hardcoded Python script
                 self._handle_test_execute()
+            elif self.path == '/lock':
+                self._handle_lock_acquire()
+            elif self.path == '/unlock':
+                self._handle_unlock()
+            elif self.path == '/command-lock':
+                self._handle_command_lock()
+            elif self.path == '/command-lock/release':
+                self._handle_command_lock_release()
             elif self.path == '/binaries/add':
                 self._handle_binaries_add()
             elif self.path == '/binaries/remove':
@@ -371,6 +474,220 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         except Exception as e:
             logger.exception("Unexpected error handling request", exc_info=e)
             self.send_error_response(500, f"Internal server error: {e}")
+
+    # --- Lock endpoints ---
+
+    LOCK_FILE = '/etc/lager/lock.json'
+    BUSY_FILE = '/etc/lager/busy.json'
+    _busy_file_lock = threading.Lock()
+
+    def _read_lock(self):
+        """Read lock state from disk. Returns dict if locked, None otherwise."""
+        try:
+            with open(self.LOCK_FILE, 'r') as f:
+                data = json.load(f)
+            if data.get('locked'):
+                return data
+        except (FileNotFoundError, json.JSONDecodeError, TypeError):
+            pass
+        return None
+
+    def _read_json_body(self):
+        """Read and parse JSON from request body."""
+        content_length = int(self.headers.get('Content-Length', 0))
+        if content_length == 0:
+            return {}
+        body = self.rfile.read(content_length)
+        return json.loads(body)
+
+    def _handle_lock_status(self):
+        """Handle GET /lock - Return lock status (includes busy info)."""
+        lock = self._read_lock()
+        response = dict(lock) if lock else {'locked': False}
+
+        busy = self._read_busy()
+        if busy:
+            response['busy'] = True
+            response['busy_user'] = busy.get('user', '')
+            response['busy_command'] = busy.get('command', '')
+        else:
+            response['busy'] = False
+
+        self.send_json_response(200, response)
+
+    def _handle_lock_acquire(self):
+        """Handle POST /lock - Lock the box for a user."""
+        try:
+            data = self._read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json_response(400, {'error': 'Invalid JSON'})
+            return
+
+        user = data.get('user')
+        if not user:
+            self.send_json_response(400, {'error': 'user is required'})
+            return
+
+        lock = self._read_lock()
+        if lock:
+            if lock.get('user') == user:
+                self.send_json_response(200, lock)
+            else:
+                self.send_json_response(409, {
+                    'error': f'Box is locked by {lock["user"]}',
+                    'lock': lock,
+                })
+            return
+
+        from datetime import datetime, timezone
+        new_lock = {
+            'locked': True,
+            'user': user,
+            'locked_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        }
+        with open(self.LOCK_FILE, 'w') as f:
+            json.dump(new_lock, f, indent=2)
+        self.send_json_response(200, new_lock)
+
+    def _handle_unlock(self):
+        """Handle POST /unlock - Unlock the box."""
+        try:
+            data = self._read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json_response(400, {'error': 'Invalid JSON'})
+            return
+
+        user = data.get('user')
+        force = data.get('force', False)
+
+        if not user:
+            self.send_json_response(400, {'error': 'user is required'})
+            return
+
+        lock = self._read_lock()
+        if not lock:
+            self.send_json_response(200, {'locked': False, 'message': 'Box is already unlocked'})
+            return
+
+        if lock.get('user') != user and not force:
+            self.send_json_response(403, {
+                'error': f'Box is locked by {lock["user"]}',
+                'lock': lock,
+            })
+            return
+
+        import os
+        try:
+            os.remove(self.LOCK_FILE)
+        except FileNotFoundError:
+            pass
+        self.send_json_response(200, {'locked': False, 'message': 'Box unlocked'})
+
+    # --- Busy / command-lock helpers ---
+
+    def _read_busy(self):
+        """Read busy state from disk. Returns dict if busy, None otherwise.
+
+        Auto-expires busy locks older than 30 minutes.
+        """
+        import os
+        from datetime import datetime, timezone
+
+        try:
+            with open(self.BUSY_FILE, 'r') as f:
+                data = json.load(f)
+            if data.get('busy'):
+                # Check for stale lock (> 30 minutes)
+                started_at = data.get('started_at', '')
+                try:
+                    started = datetime.strptime(started_at, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+                    elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+                    if elapsed > 1800:  # 30 minutes
+                        logger.info(f"Auto-expiring stale busy lock (started {elapsed:.0f}s ago)")
+                        try:
+                            os.remove(self.BUSY_FILE)
+                        except FileNotFoundError:
+                            pass
+                        return None
+                except (ValueError, TypeError):
+                    pass  # Can't parse timestamp, treat as valid
+                return data
+        except (FileNotFoundError, json.JSONDecodeError, TypeError):
+            pass
+        return None
+
+    def _handle_command_lock(self):
+        """Handle POST /command-lock - Acquire command-in-progress lock."""
+        try:
+            data = self._read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json_response(400, {'error': 'Invalid JSON'})
+            return
+
+        user = data.get('user')
+        command = data.get('command', '')
+        force = data.get('force', False)
+
+        if not user:
+            self.send_json_response(400, {'error': 'user is required'})
+            return
+
+        with self._busy_file_lock:
+            # Check user lock first
+            lock = self._read_lock()
+            if lock and not force:
+                locked_by = lock.get('user', 'unknown')
+                if locked_by != user:
+                    self.send_json_response(409, {
+                        'error': f'Box is locked by {locked_by}',
+                        'type': 'user_lock',
+                        'lock': lock,
+                    })
+                    return
+
+            # Check busy lock
+            busy = self._read_busy()
+            if busy and not force:
+                busy_user = busy.get('user', 'unknown')
+                self.send_json_response(409, {
+                    'error': f'Command in progress by {busy_user}',
+                    'type': 'command_lock',
+                    'busy': busy,
+                })
+                return
+
+            # Acquire busy lock
+            from datetime import datetime, timezone
+            new_busy = {
+                'busy': True,
+                'user': user,
+                'command': command,
+                'started_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            }
+            with open(self.BUSY_FILE, 'w') as f:
+                json.dump(new_busy, f, indent=2)
+
+        self.send_json_response(200, new_busy)
+
+    def _handle_command_lock_release(self):
+        """Handle POST /command-lock/release - Release command-in-progress lock."""
+        import os
+
+        try:
+            data = self._read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json_response(400, {'error': 'Invalid JSON'})
+            return
+
+        with self._busy_file_lock:
+            try:
+                os.remove(self.BUSY_FILE)
+            except FileNotFoundError:
+                pass
+
+        self.send_json_response(200, {'busy': False, 'message': 'Command lock released'})
+
+    # --- End lock endpoints ---
 
     def _handle_python_execute(self):
         """Handle POST /python - Execute Python script"""

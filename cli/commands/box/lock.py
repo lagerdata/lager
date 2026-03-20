@@ -6,25 +6,21 @@
 
     Lock and unlock commands for shared box access control
 """
-import getpass
-
 import click
 import requests
 
-from ...box_storage import resolve_and_validate_box_with_name
+from ...box_storage import resolve_and_validate_box_with_name, get_lager_user
 
 
 @click.command()
 @click.option('--box', required=True, help='Name of the box to lock')
-@click.option('--user', default=None, help='User to lock as (defaults to current system user)')
 @click.pass_context
-def lock(ctx, box, user):
+def lock(ctx, box):
     """Lock a box to prevent others from using it."""
     ip, box_name = resolve_and_validate_box_with_name(ctx, box, _skip_lock_check=True)
     display_name = box_name or box
 
-    if user is None:
-        user = getpass.getuser()
+    user = get_lager_user()
 
     try:
         resp = requests.post(f'http://{ip}:5000/lock', json={'user': user}, timeout=5)
@@ -59,7 +55,7 @@ def unlock(ctx, box, force):
     ip, box_name = resolve_and_validate_box_with_name(ctx, box, _skip_lock_check=True)
     display_name = box_name or box
 
-    user = getpass.getuser()
+    user = get_lager_user()
 
     try:
         resp = requests.post(

@@ -42,6 +42,9 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
             ctx.exit(1)
         ip = stored_ip
 
+        from ...box_storage import acquire_command_lock_with_cleanup
+        acquire_command_lock_with_cleanup(ctx, ip, box, 'uninstall')
+
         if user is None:
             stored_user = get_box_user(box)
             user = stored_user or "lagerdata"
