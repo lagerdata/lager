@@ -109,7 +109,8 @@ class ProgressBar:
 @click.option('--version', required=False, help='Box version/branch to update to (e.g., staging, main)')
 @click.option('--verbose', '-v', is_flag=True, help='Show detailed output (default shows progress bar only)')
 @click.option('--force', is_flag=True, help='Force fresh Docker build by removing cached image (use for major code changes)')
-def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
+@click.option('--force-command', 'force_cmd', is_flag=True, hidden=True, help='Bypass command-in-progress lock')
+def update(ctx, box, update_all, yes, skip_restart, version, verbose, force, force_cmd):
     """Update box code from GitHub repository"""
     from ...box_storage import update_box_version
     from ... import __version__ as cli_version
@@ -168,21 +169,18 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
                 click.secho('SKIPPED (no IP)', fg='yellow')
                 continue
 
-            # Check if box is locked by another user
-            from ...box_storage import _check_box_lock, get_lager_user
+            # Check if box is locked or busy by another user
+            from ...box_storage import _acquire_command_lock, _release_command_lock, get_lager_user
             try:
-                resp = requests.get(f'http://{ip}:5000/lock', timeout=3)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get('locked'):
-                        locked_by = data.get('user', 'unknown')
-                        current_user = get_lager_user()
-                        if locked_by != current_user:
-                            click.echo(f"  {name} ({ip}): ", nl=False)
-                            click.secho(f'SKIPPED (locked by {locked_by})', fg='yellow')
-                            continue
-            except requests.exceptions.RequestException:
-                pass  # Box unreachable - let the version check handle it
+                _acquire_command_lock(ip, name, 'update')
+            except SystemExit:
+                click.echo(f"  {name} ({ip}): ", nl=False)
+                click.secho('SKIPPED (locked or busy)', fg='yellow')
+                continue
+            else:
+                # Release immediately — we just wanted to check availability
+                # The actual update will re-acquire per box below
+                _release_command_lock(ip, name)
 
             # Query box version to determine if update is needed
             click.echo(f"  {name} ({ip}): ", nl=False)
@@ -247,7 +245,8 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
                     skip_restart=skip_restart,
                     version=version,
                     verbose=verbose,
-                    force=force
+                    force=force,
+                    force_cmd=True,  # Already checked availability above
                 )
                 results['success'].append(name)
             except SystemExit as e:
@@ -297,7 +296,7 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
     box_name = box
 
     # Resolve box name to IP address
-    resolved_box = resolve_and_validate_box(ctx, box)
+    resolved_box = resolve_and_validate_box(ctx, box, _force=force_cmd)
 
     # Get username (defaults to 'lagerdata' if not specified)
     username = get_box_user(box) or 'lagerdata'
