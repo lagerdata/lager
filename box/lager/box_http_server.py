@@ -115,6 +115,14 @@ except Exception as e:
     logger.warning("Instruments handlers not available: %s", e)
     _has_instruments = False
 
+# Import lock handler
+try:
+    from lager.http_handlers.lock_handler import register_lock_routes
+    _has_lock = True
+except Exception as e:
+    logger.warning("Lock handlers not available: %s", e)
+    _has_lock = False
+
 # Global dictionary to track active supply monitoring sessions
 # Format: {session_id: {'netname': str, 'stop_event': event_obj, 'thread': thread_obj, 'instrument_lock': Lock}}
 active_supply_sessions = {}
@@ -215,6 +223,14 @@ if _has_instruments:
     print("[INIT] Instruments REST endpoints registered", flush=True)
 else:
     print("[INIT] Instruments REST endpoints NOT available", flush=True)
+
+# Register lock REST handlers (if available)
+if _has_lock:
+    register_lock_routes(app)
+    logger.info("Lock REST endpoints registered")
+    print("[INIT] Lock REST endpoints registered", flush=True)
+else:
+    print("[INIT] Lock REST endpoints NOT available", flush=True)
 
 
 # Supply HTTP endpoint (handled by supply.py module, this is now commented out)
