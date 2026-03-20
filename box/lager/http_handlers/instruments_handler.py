@@ -4,15 +4,21 @@
 """Instruments HTTP handler for the Lager Box HTTP server.
 
 Provides a read-only endpoint to detect and return USB instruments
-connected to the box, reusing the scan logic from query_instruments.
+connected to the box. Runs the scan as a subprocess so that
+signal-based timeouts (SIGALRM) work correctly outside the main thread.
 """
 
+import json
 import logging
+import subprocess
 import sys
 
 from flask import Flask, jsonify
 
 logger = logging.getLogger(__name__)
+
+_SCAN_SCRIPT = '/app/box_python/cli/impl/query_instruments.py'
+_SCAN_TIMEOUT = 30  # seconds — matches CLI timeout
 
 
 def register_instruments_routes(app: Flask) -> None:
@@ -22,25 +28,23 @@ def register_instruments_routes(app: Flask) -> None:
     def instruments_list():
         """Scan USB devices and return detected instruments."""
         try:
-            # Import scan functions from CLI implementation
-            sys.path.insert(0, '/app/box_python')
-            from cli.impl.query_instruments import (
-                _scan_usb,
-                _by_handshake,
-                _by_camera,
-                _merge_or_append,
+            result = subprocess.run(
+                [sys.executable, _SCAN_SCRIPT],
+                capture_output=True,
+                text=True,
+                timeout=_SCAN_TIMEOUT,
             )
-
-            instruments = _scan_usb()
-            # Build exclusion list from already-identified UART devices
-            uart_ports = {dev.get("tty_path") for dev in instruments if dev.get("tty_path")}
-            for dex in _by_handshake(exclude=uart_ports):
-                _merge_or_append(dex, instruments)
-            for cam in _by_camera():
-                _merge_or_append(cam, instruments)
-
-            instruments.sort(key=lambda d: (d["name"], d.get("address", "")))
+            if result.returncode != 0:
+                logger.warning(
+                    "Instrument scan exited %d: %s",
+                    result.returncode,
+                    result.stderr[:500],
+                )
+            instruments = json.loads(result.stdout or '[]')
             return jsonify(instruments)
+        except subprocess.TimeoutExpired:
+            logger.error("Instrument scan timed out after %ds", _SCAN_TIMEOUT)
+            return jsonify({'error': 'Scan timed out'}), 504
         except Exception as e:
             logger.error("Failed to scan instruments: %s", e)
             return jsonify({'error': str(e)}), 500
