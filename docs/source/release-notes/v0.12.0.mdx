@@ -1,0 +1,35 @@
+---
+title: "Version 0.12.0"
+description: "March 20, 2026"
+---
+
+## <u>Features</u>
+
+- **Command-in-progress lock** — When a `lager` command is running on a Lager Box, other users are automatically blocked with a clear error message. Same user is allowed through. Locks auto-expire after 30 minutes to handle crashed CLI processes
+- **User lock (`lager boxes lock/unlock`)** — Explicitly lock a Lager Box so only you can run commands on it. Other users see a lock error until you unlock
+- `--force-command` global flag to bypass command-in-progress locks
+- `lager boxes` list now shows "locked by" and "busy" columns when applicable
+- `lager python --kill`, `--kill-all`, and `--reattach` skip lock checks so you can always manage running processes
+- `lager python --detach` releases the command lock immediately after detaching
+
+## <u>Improvements</u>
+
+- Hardcoded control plane URL for `lager boxes connect`, removing the `--url` flag
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.12.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.12.0/)

@@ -44,6 +44,7 @@
               "source/reference/cli/terminal",
               "source/reference/cli/hello",
               "source/reference/cli/boxes",
+              "source/reference/cli/locking",
               "source/reference/cli/install",
               "source/reference/cli/uninstall",
               "source/reference/cli/update",
@@ -192,6 +193,7 @@
           {
             "group": "Version History",
             "pages": [
+              "source/release-notes/v0.12.0",
               "source/release-notes/v0.11.0",
               "source/release-notes/v0.10.0",
               "source/release-notes/v0.9.0",

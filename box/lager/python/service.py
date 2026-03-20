@@ -649,13 +649,12 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
             busy = self._read_busy()
             if busy and not force:
                 busy_user = busy.get('user', 'unknown')
-                if busy_user != user:
-                    self.send_json_response(409, {
-                        'error': f'Command in progress by {busy_user}',
-                        'type': 'command_lock',
-                        'busy': busy,
-                    })
-                    return
+                self.send_json_response(409, {
+                    'error': f'Command in progress by {busy_user}',
+                    'type': 'command_lock',
+                    'busy': busy,
+                })
+                return
 
             # Acquire busy lock
             from datetime import datetime, timezone

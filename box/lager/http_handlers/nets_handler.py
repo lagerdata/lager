@@ -11,6 +11,8 @@ import logging
 
 from flask import Flask, jsonify, request
 
+from ..nets.net import Net
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,7 +36,6 @@ def register_nets_routes(app: Flask) -> None:
     @app.route('/nets/<name>', methods=['PUT'])
     def nets_update(name):
         """Create or replace a net by name."""
-        from ..nets.net import Net
         data = request.get_json(force=True, silent=True)
         if not data:
             return jsonify({'error': 'Invalid JSON body'}), 400
@@ -51,7 +52,6 @@ def register_nets_routes(app: Flask) -> None:
     @app.route('/nets/<name>', methods=['DELETE'])
     def nets_delete(name):
         """Delete a net by name."""
-        from ..nets.net import Net
         role = request.args.get('role') or None
         deleted = Net.delete_local_net(name, role)
         if not deleted:
