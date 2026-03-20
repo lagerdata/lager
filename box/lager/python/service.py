@@ -311,6 +311,24 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
             except (FileNotFoundError, json.JSONDecodeError, TypeError):
                 nets = []
             self.send_json_response(200, nets)
+        elif self.path == '/instruments/list':
+            # Run USB instrument scan and return detected instruments
+            import subprocess
+            import sys as _sys
+            _SCAN_SCRIPT = '/app/box_python/cli/impl/query_instruments.py'
+            try:
+                result = subprocess.run(
+                    [_sys.executable, _SCAN_SCRIPT],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                instruments = json.loads(result.stdout or '[]')
+                if not isinstance(instruments, list):
+                    instruments = []
+            except Exception:
+                instruments = []
+            self.send_json_response(200, instruments)
         elif self.path == '/test-stream':
             # Test endpoint to verify streaming format works
             def test_generator():
