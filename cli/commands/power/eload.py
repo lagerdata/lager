@@ -25,6 +25,7 @@ from ...core.net_helpers import (
     NET_ROLES,
 )
 from ...context import get_default_net
+from ...options import force_command_option
 
 
 ELOAD_ROLE = NET_ROLES["eload"]  # "eload"
@@ -72,6 +73,7 @@ def _validate_eload_value(ctx, mode, value):
 @click.argument('netname', required=False)
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.pass_context
+@force_command_option
 def eload(ctx, netname, box):
     """Control electronic load settings and modes"""
     # Use provided netname, or fall back to default if not provided

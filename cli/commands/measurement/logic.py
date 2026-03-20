@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import click
 from ...context import get_default_net
+from ...options import force_command_option
 from ...core.net_helpers import (
     require_netname,
     resolve_box,
@@ -43,6 +44,7 @@ def _validate_logic_net(ctx, box_ip: str, netname: str) -> bool:
 @click.argument("NETNAME", required=False)
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
+@force_command_option
 def logic(ctx, box, netname):
     """Control logic analyzer channels and triggers"""
     # Use provided netname, or fall back to default if not provided

@@ -24,6 +24,7 @@ from ...context import get_default_box, get_impl_path
 from ...sort_utils import natural_sort_key as _natural_sort_key
 from ..development.python import run_python_internal
 from .net_tui import launch_tui
+from ...options import force_command_option
 
 
 # --------------------------------------------------------------------------- #
@@ -379,6 +380,7 @@ def _save_nets_batch(ctx: click.Context, box: str, nets_data: List[dict]) -> Non
 )
 @click.option("--box", help="Lagerbox name or IP")
 @click.pass_context
+@force_command_option
 def nets(ctx: click.Context, box: str | None) -> None:  # noqa: D401
     """
     If no sub-command is supplied, default to "list".

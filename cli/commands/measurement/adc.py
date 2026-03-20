@@ -14,6 +14,7 @@ import json
 import click
 
 from ...context import get_default_net
+from ...options import force_command_option
 from ...core.net_helpers import (
     resolve_box,
     list_nets_by_role,
@@ -30,6 +31,7 @@ ADC_ROLE = "adc"
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.argument("netname", required=False)
+@force_command_option
 def adc(ctx, box, netname):
     """Read voltage from an ADC (analog-to-digital converter) net.
 

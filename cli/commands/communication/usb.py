@@ -26,6 +26,7 @@ from ...core.net_helpers import (
     validate_net_exists,
 )
 from ...context import get_default_net
+from ...options import force_command_option
 
 
 USB_ROLE = "usb"
@@ -97,6 +98,7 @@ def _invoke_remote(
 )
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.pass_context
+@force_command_option
 def usb(
     ctx: click.Context,
     net_name: str | None,

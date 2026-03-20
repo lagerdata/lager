@@ -11,6 +11,7 @@ import subprocess
 import ipaddress
 from ...box_storage import get_box_ip, get_box_user, get_box_name_by_ip, delete_box
 from ...core.ssh_utils import host_in_known_hosts, get_ssh_connection_pool
+from ...options import force_command_option
 
 
 @click.command()
@@ -23,6 +24,7 @@ from ...core.ssh_utils import host_in_known_hosts, get_ssh_connection_pool
 @click.option("--all", "remove_all", is_flag=True, help="Remove everything including udev rules, sudoers, third_party, and deploy keys")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompts")
 @click.option("--dry-run", is_flag=True, help="Show what would be removed without making changes")
+@force_command_option
 def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, yes, dry_run):
     """
     Uninstall Lager box code from a box.

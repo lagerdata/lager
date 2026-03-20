@@ -28,6 +28,7 @@ from ...core.net_helpers import (
 from ...context import get_impl_path, get_default_net
 from ..development.python import run_python_internal
 from ...box_storage import resolve_and_validate_box
+from ...options import force_command_option
 
 
 SOLAR_ROLE = NET_ROLES["solar"]  # "solar"
@@ -94,6 +95,7 @@ def _run_backend(ctx: click.Context, box: str | None, action: str, **params) -> 
 @click.argument("netname", required=False)
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.pass_context
+@force_command_option
 def solar(ctx, netname, box):
     """
     Top-level solar command: stores net & optional box.

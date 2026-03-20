@@ -14,6 +14,7 @@ import json
 import click
 
 from ...context import get_default_net
+from ...options import force_command_option
 from ...core.net_helpers import (
     resolve_box,
     list_nets_by_role,
@@ -34,6 +35,7 @@ GPIO_ROLE = "gpio"
 @click.argument("netname", required=False)
 @click.argument("level", required=False,
                 type=click.Choice(["low", "high", "on", "off", "0", "1", "toggle"], case_sensitive=False))
+@force_command_option
 def gpo(ctx, box, netname, level, hold):
     """Set the output level of a GPIO output net.
 

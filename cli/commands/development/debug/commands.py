@@ -21,6 +21,7 @@ from ....core.param_types import MemoryAddressType, HexArrayType, BinfileType
 from ....box_storage import get_box_ip, get_box_name_by_ip, get_box_user
 from .service_client import DebugServiceClient
 from .net_cache import get_net_cache
+from ....options import force_command_option
 
 DEBUG_ROLE = "debug"
 
@@ -452,6 +453,7 @@ class NetDebugGroup(click.MultiCommand):
 @click.command(name='debug', cls=NetDebugGroup, invoke_without_command=True)
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.pass_context
+@force_command_option
 def _debug(ctx, box):
     """
     Debug firmware and manage debug sessions
@@ -488,6 +490,7 @@ def _debug(ctx, box):
               help='Size of RAM region to search for RTT control block (hex, e.g., 0x4000)')
 @click.option('--rtt-chunk-size', type=str, default=None,
               help='Read chunk size for RTT search (hex, e.g., 0x1000)')
+@force_command_option
 def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, reset, gdb_port,
               rtt_search_addr, rtt_search_size, rtt_chunk_size):
     """Start JLinkGDBServer for debugging"""
@@ -732,6 +735,7 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.option('--keep-server', is_flag=True, default=False,
               help="Keep JLinkGDBServer running for external GDB client connections")
+@force_command_option
 def disconnect(ctx, box, keep_server):
     """Stop JLinkGDBServer"""
     target_box = box
@@ -772,6 +776,7 @@ def disconnect(ctx, box, keep_server):
               help='Erase all flash before flashing (ensures clean boot state for RTT)')
 @click.option('--halt/--no-halt', is_flag=True, default=False,
               help='Halt the device after flashing (keeps debugger connected)', show_default=True)
+@force_command_option
 def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, erase, halt):
     """Flash firmware to target"""
 
@@ -899,6 +904,7 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, erase, halt):
               help='Output results in JSON format')
 @click.option('--halt/--no-halt', is_flag=True, default=False,
               help='Halt the device after erase (keeps debugger connected)', show_default=True)
+@force_command_option
 def erase(ctx, box, speed, yes, quiet, json_output, halt):
     """Erase all flash memory on target"""
 
@@ -983,6 +989,7 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
               help='Halt the device after reset (keeps debugger connected)', show_default=True)
 @click.option('--force-reconnect', is_flag=True, default=False,
               help='Force disconnect and reconnect before reset for clean state')
+@force_command_option
 def reset(ctx, box, halt, force_reconnect):
     """Reset target"""
 
@@ -1045,6 +1052,7 @@ def reset(ctx, box, halt, force_reconnect):
               help='Output results in JSON format')
 @click.option('--halt/--no-halt', is_flag=True, default=False,
               help='Halt the device during memory read (keeps debugger connected)', show_default=True)
+@force_command_option
 def memrd(ctx, start_addr, length, box, json_output, halt):
     """Read memory from target"""
 
@@ -1139,6 +1147,7 @@ def memrd(ctx, start_addr, length, box, json_output, halt):
 @click.command()
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
+@force_command_option
 def status(ctx, box):
     """Show debug net status and information"""
     target_box = box
@@ -1173,6 +1182,7 @@ def status(ctx, box):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.option('--verbose', is_flag=True, default=False,
               help='Show detailed health information')
+@force_command_option
 def health(ctx, box, verbose):
     """
     Check debug service health

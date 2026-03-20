@@ -20,6 +20,7 @@ from texttable import Texttable
 # Import consolidated helpers from cli.core.net_helpers
 from ...core.net_helpers import resolve_box, run_backend
 from ...context import get_impl_path, get_default_net
+from ...options import force_command_option
 from ..development.python import run_python_internal
 
 UART_ROLE = "uart"
@@ -321,6 +322,7 @@ def _connect_uart_http(ctx, box_ip, netname, overrides, interactive):
 @click.option('-i', '--interactive', is_flag=True, help='Enable input mode for typing to serial port', show_default=True)
 @click.option('--opost/--no-opost', default=False, help=r'Convert \n to \r\n on output', show_default=True)
 @click.option('--line-ending', type=click.Choice(['lf', 'crlf', 'cr']), default='lf', help='Line ending format (lf=\\n, crlf=\\r\\n, cr=\\r)', show_default=True)
+@force_command_option
 def uart(ctx, netname, action, box, baudrate, bytesize, parity, stopbits, xonxoff, rtscts, dsrdtr,
          interactive, opost, line_ending):
     """Connect to UART serial port"""

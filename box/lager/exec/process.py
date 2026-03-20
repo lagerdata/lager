@@ -275,6 +275,11 @@ def stream_process_output_to_file(proc, output_channel, cleanup_fns, log_path, m
         logger.exception('stream_process_output_to_file failed', exc_info=exc)
     finally:
         do_cleanup(cleanup_fns)
+        # Release command lock when detached process finishes
+        try:
+            os.remove('/etc/lager/busy.json')
+        except (FileNotFoundError, OSError):
+            pass
 
 
 def stream_log_file(log_path, meta_path):

@@ -29,6 +29,7 @@ from ...core.net_helpers import (
     NET_ROLES,
 )
 from ...context import get_impl_path, get_default_net
+from ...options import force_command_option
 from ..development.python import run_python_internal
 
 
@@ -121,6 +122,7 @@ def _run_backend(ctx, box, action: str, **params):
 @click.argument('NETNAME', required=False)
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
+@force_command_option
 def battery(ctx, box, netname):
     """Control battery simulator settings and output"""
     # Use provided netname, or fall back to default if not provided

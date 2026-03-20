@@ -303,7 +303,102 @@ def _check_box_lock(ip, box_name):
         # Box unreachable - silently skip, command will fail on its own
 
 
-def resolve_and_validate_box_with_name(ctx, box_name: Optional[str] = None, _skip_lock_check=False) -> tuple:
+def _acquire_command_lock(ip, box_name, command_name, force=False):
+    """Acquire command-in-progress lock on a box. Exits if blocked.
+
+    Replaces _check_box_lock by combining user lock check + busy lock
+    acquisition in a single HTTP request.
+
+    Args:
+        ip: Box IP address
+        box_name: Box name for display purposes
+        command_name: Name of the command being run
+        force: If True, bypass command lock check
+    """
+    import click
+    import requests
+
+    current_user = get_lager_user()
+    try:
+        resp = requests.post(
+            f'http://{ip}:5000/command-lock',
+            json={'user': current_user, 'command': command_name, 'force': force},
+            timeout=3,
+        )
+        if resp.status_code == 409:
+            data = resp.json()
+            display = box_name or ip
+            lock_type = data.get('type', '')
+
+            if lock_type == 'user_lock':
+                lock_info = data.get('lock', {})
+                locked_by = lock_info.get('user', 'unknown')
+                click.secho(
+                    f"Error: Box '{display}' is locked by {locked_by}",
+                    fg='red', err=True,
+                )
+                click.echo(
+                    f"To force unlock: lager boxes unlock --box {display} --force",
+                    err=True,
+                )
+            elif lock_type == 'command_lock':
+                busy_info = data.get('busy', {})
+                busy_user = busy_info.get('user', 'unknown')
+                busy_command = busy_info.get('command', 'unknown')
+                click.secho(
+                    f"Error: Box '{display}' is busy — '{busy_command}' in progress by {busy_user}. "
+                    f"Use --force-command to override.",
+                    fg='red', err=True,
+                )
+            else:
+                click.secho(
+                    f"Error: Box '{display}' is unavailable: {data.get('error', 'unknown')}",
+                    fg='red', err=True,
+                )
+            raise SystemExit(1)
+    except (requests.exceptions.RequestException, SystemExit) as e:
+        if isinstance(e, SystemExit):
+            raise
+        # Box unreachable - silently skip, command will fail on its own
+
+
+def _release_command_lock(ip, box_name):
+    """Release command-in-progress lock on a box. Best-effort, silently ignores errors.
+
+    Args:
+        ip: Box IP address
+        box_name: Box name (unused, for consistency)
+    """
+    import requests
+
+    current_user = get_lager_user()
+    try:
+        requests.post(
+            f'http://{ip}:5000/command-lock/release',
+            json={'user': current_user},
+            timeout=3,
+        )
+    except Exception:
+        pass  # Best-effort cleanup
+
+
+def acquire_command_lock_with_cleanup(ctx, ip, box_name, command_name, force=False):
+    """Acquire command lock and register auto-release on context close.
+
+    Args:
+        ctx: Click context
+        ip: Box IP address
+        box_name: Box name for display purposes
+        command_name: Name of the command being run
+        force: If True, bypass command lock check
+    """
+    # Also check ctx.obj.force_command (set by --force-command flag)
+    force = force or getattr(getattr(ctx, 'obj', None), 'force_command', False)
+    _acquire_command_lock(ip, box_name, command_name, force=force)
+    ctx.call_on_close(lambda: _release_command_lock(ip, box_name))
+
+
+def resolve_and_validate_box_with_name(ctx, box_name: Optional[str] = None, _skip_lock_check=False, _force=False) -> tuple:
     """
     Resolve and validate a box name, returning both IP and name.
 
@@ -321,27 +416,33 @@ def resolve_and_validate_box_with_name(ctx, box_name: Optional[str] = None, _ski
     import os
     from .context import get_default_box
 
+    # Determine force from context if not explicitly passed
+    force = _force or getattr(getattr(ctx, 'obj', None), 'force_command', False)
+    # Get command name from click context
+    command_name = getattr(ctx, 'info_name', '') or ''
+
+    def _do_lock_check(ip, name):
+        if not _skip_lock_check:
+            acquire_command_lock_with_cleanup(ctx, ip, name, command_name, force=force)
+
     # If no box name provided, use default box
     if not box_name:
         # Get the default box name before resolving to IP
         default_name = os.getenv('LAGER_BOX') or getattr(ctx.obj, 'default_box', None)
         resolved_ip = get_default_box(ctx)
-        if not _skip_lock_check:
-            _check_box_lock(resolved_ip, default_name)
+        _do_lock_check(resolved_ip, default_name)
         return (resolved_ip, default_name)
 
     # Check if it's a saved box name
     saved_ip = get_box_ip(box_name)
     if saved_ip:
-        if not _skip_lock_check:
-            _check_box_lock(saved_ip, box_name)
+        _do_lock_check(saved_ip, box_name)
         return (saved_ip, box_name)
 
     # Check if it's a valid IP address
     try:
         ipaddress.ip_address(box_name)
-        if not _skip_lock_check:
-            _check_box_lock(box_name, None)
+        _do_lock_check(box_name, None)
         return (box_name, None)  # Direct IP, no box name
     except ValueError:
         # Not a valid IP and not in local boxes - Show helpful error
@@ -366,7 +467,7 @@ def resolve_and_validate_box_with_name(ctx, box_name: Optional[str] = None, _ski
         ctx.exit(1)
 
 
-def resolve_and_validate_box(ctx, box_name: Optional[str] = None, _skip_lock_check=False) -> str:
+def resolve_and_validate_box(ctx, box_name: Optional[str] = None, _skip_lock_check=False, _force=False) -> str:
     """
     Resolve and validate a box name.
 
@@ -383,25 +484,31 @@ def resolve_and_validate_box(ctx, box_name: Optional[str] = None, _skip_lock_che
     import ipaddress
     from .context import get_default_box
 
+    # Determine force from context if not explicitly passed
+    force = _force or getattr(getattr(ctx, 'obj', None), 'force_command', False)
+    # Get command name from click context
+    command_name = getattr(ctx, 'info_name', '') or ''
+
+    def _do_lock_check(ip, name):
+        if not _skip_lock_check:
+            acquire_command_lock_with_cleanup(ctx, ip, name, command_name, force=force)
+
     # If no box name provided, use default box
     if not box_name:
         resolved_ip = get_default_box(ctx)
-        if not _skip_lock_check:
-            _check_box_lock(resolved_ip, None)
+        _do_lock_check(resolved_ip, None)
         return resolved_ip
 
     # Check if it's a saved box name
     saved_ip = get_box_ip(box_name)
     if saved_ip:
-        if not _skip_lock_check:
-            _check_box_lock(saved_ip, box_name)
+        _do_lock_check(saved_ip, box_name)
         return saved_ip
 
     # Check if it's a valid IP address
     try:
         ipaddress.ip_address(box_name)
-        if not _skip_lock_check:
-            _check_box_lock(box_name, None)
+        _do_lock_check(box_name, None)
         return box_name
     except ValueError:
         # Not a valid IP and not in local boxes - Show helpful error

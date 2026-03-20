@@ -11,6 +11,7 @@ import json
 import click
 from ...context import get_default_net, get_impl_path
 from ..development.python import run_python_internal
+from ...options import force_command_option
 from ...core.net_helpers import (
     resolve_box,
     display_nets,
@@ -78,6 +79,7 @@ def _run_energy(ctx, box, duration, netname, mode):
 )
 @click.argument("netname", required=False)
 @click.pass_context
+@force_command_option
 def energy(ctx, netname):
     """Energy analyzer group.  Usage: lager energy <NETNAME> [read|stats] [OPTIONS]"""
     if netname is None:

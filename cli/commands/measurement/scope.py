@@ -11,6 +11,7 @@ import json
 import click
 from ...context import get_impl_path, get_default_net
 from ..development.python import run_python_internal
+from ...options import force_command_option
 from ...core.net_helpers import (
     require_netname,
     resolve_box,
@@ -113,6 +114,7 @@ def _run_backend(ctx, dut, action: str, **params):
 @click.argument("NETNAME", required=False)
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
+@force_command_option
 def scope(ctx, box, netname):
     """Control oscilloscope settings"""
     # Use provided netname, or fall back to default if not provided

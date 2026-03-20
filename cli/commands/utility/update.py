@@ -18,6 +18,7 @@ import threading
 from ...box_storage import resolve_and_validate_box, get_box_user, list_boxes
 from ...context import get_default_box
 from ..box.boxes import compare_versions
+from ...options import force_command_option
 
 
 class ProgressBar:
@@ -109,6 +110,7 @@ class ProgressBar:
 @click.option('--version', required=False, help='Box version/branch to update to (e.g., staging, main)')
 @click.option('--verbose', '-v', is_flag=True, help='Show detailed output (default shows progress bar only)')
 @click.option('--force', is_flag=True, help='Force fresh Docker build by removing cached image (use for major code changes)')
+@force_command_option
 def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
     """Update box code from GitHub repository"""
     from ...box_storage import update_box_version
@@ -223,6 +225,7 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
             # Call update recursively for this single box
             try:
                 # Invoke the update command for this box
+                ctx.obj.force_command = True  # Already checked availability above
                 result = ctx.invoke(
                     update,
                     box=name,
@@ -231,7 +234,7 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
                     skip_restart=skip_restart,
                     version=version,
                     verbose=verbose,
-                    force=force
+                    force=force,
                 )
                 results['success'].append(name)
             except SystemExit as e:

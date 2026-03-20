@@ -12,6 +12,7 @@ import json
 from texttable import Texttable
 from ...box_storage import add_box, delete_box, delete_all_boxes, list_boxes, load_boxes, save_boxes, get_lager_file_path
 from ...sort_utils import natural_sort_key
+from ...options import force_command_option
 
 
 def _list_boxes_live(port=5000, timeout=5):
@@ -711,12 +712,14 @@ def import_boxes(file, merge, yes):
 
 
 @boxes.command('connect')
+@click.pass_context
 @click.option('--box', required=True, help='Name of the box to connect')
 @click.option('--url', default='https://api.stoutdata.ai', help='Control plane URL')
 @click.option('--api-key', required=True, help='API key for control plane authentication')
 @click.option('--heartbeat-interval', default=30, type=int, help='Heartbeat interval in seconds (default: 30)')
 @click.option('--yes', is_flag=True, help='Confirm the action without prompting.')
-def connect(box, url, api_key, heartbeat_interval, yes):
+@force_command_option
+def connect(ctx, box, url, api_key, heartbeat_interval, yes):
     """Connect a box to a control plane for heartbeat reporting."""
     import subprocess
     import time
@@ -750,6 +753,9 @@ def connect(box, url, api_key, heartbeat_interval, yes):
     if not ip:
         click.secho(f"Error: Box '{box}' not found in configuration", fg='red', err=True)
         raise click.Abort()
+
+    from ...box_storage import acquire_command_lock_with_cleanup
+    acquire_command_lock_with_cleanup(ctx, ip, box, 'connect')
 
     user = get_box_user(box) or 'lagerdata'
 

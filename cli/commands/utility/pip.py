@@ -13,6 +13,7 @@ import os
 import re
 import click
 from ...context import get_default_box
+from ...options import force_command_option
 from ..development.python import run_python_internal_get_output, run_python_internal
 
 def _normalize_package_name(pkg):
@@ -322,6 +323,7 @@ except Exception as e:
         return False
 
 @click.group()
+@force_command_option
 def pip():
     """Manage pip packages in the python container"""
     pass

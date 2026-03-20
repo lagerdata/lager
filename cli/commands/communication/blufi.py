@@ -13,9 +13,11 @@ import json
 import click
 
 from ...core.net_helpers import resolve_box, run_impl_script
+from ...options import force_command_option
 
 
 @click.group(name='blufi')
+@force_command_option
 def blufi():
     """Provision ESP32 WiFi credentials over BLE (BluFi protocol)"""
     pass

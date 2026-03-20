@@ -13,6 +13,7 @@ import json
 import click
 
 from ...core.net_helpers import resolve_box, run_impl_script
+from ...options import force_command_option
 
 
 def _run_router(ctx: click.Context, box_ip: str, args_dict: dict) -> None:
@@ -35,6 +36,7 @@ def _run_router(ctx: click.Context, box_ip: str, args_dict: dict) -> None:
 
 
 @click.group(name="router")
+@force_command_option
 def router():
     """Manage routers as Lager nets."""
     pass

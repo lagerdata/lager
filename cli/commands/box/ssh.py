@@ -12,6 +12,7 @@ import sys
 import platform
 from ...box_storage import resolve_and_validate_box
 from ...context import get_default_box
+from ...options import force_command_option
 
 
 def _get_ssh_install_hint() -> str:
@@ -45,6 +46,7 @@ def _get_ssh_install_hint() -> str:
 @click.command()
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
+@force_command_option
 def ssh(ctx, box):
     """SSH into a box"""
     from ...box_storage import get_box_user
