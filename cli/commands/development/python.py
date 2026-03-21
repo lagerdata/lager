@@ -583,9 +583,11 @@ def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_ove
     if box_name:
         env.append(f'LAGER_BOX={box_name}')
 
-    run_python_internal(ctx, runnable, box_ip, env, passenv, False, download, allow_overwrite, signum, timeout, detach, port, org, args, add_file, dut_name=box_name)
-
-    # If detached, skip CLI-side lock release so the lock stays held until
-    # the box-side process finishes and releases it.
+    # If detaching, tell the cleanup callback to skip lock release BEFORE
+    # run_python_internal, so the command lock stays held on the box while
+    # the detached process runs.  The box-side daemon thread releases
+    # busy.json when the process finishes (see process.py).
     if detach:
         ctx.obj._skip_lock_release = True
+
+    run_python_internal(ctx, runnable, box_ip, env, passenv, False, download, allow_overwrite, signum, timeout, detach, port, org, args, add_file, dut_name=box_name)
