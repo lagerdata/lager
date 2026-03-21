@@ -2,6 +2,11 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.13.1] - 2026-03-20
+
+### Fixed
+- `lager ssh` now properly releases the command lock when the SSH session ends. Previously, `os.execvp` replaced the Python process, preventing cleanup handlers from running, which left boxes stuck in "busy" state until the 30-minute auto-expiry
+
 ## [0.13.0] - 2026-03-20
 
 ### Added
