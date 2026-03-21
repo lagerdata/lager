@@ -1,0 +1,36 @@
+---
+title: "Version 0.13.0"
+description: "March 20, 2026"
+---
+
+## <u>Features</u>
+
+- `--force-command` flag is now available on all subcommands that target a Lager Box (not just as a global flag). Place it anywhere after the subcommand name: `lager python script.py --box lab-box --force-command`
+- `--force-command` added to `hello`, `install`, `uninstall`, and `boxes connect` commands
+
+## <u>Improvements</u>
+
+- `lager python --detach` now keeps the command lock until the detached process finishes on the Lager Box, preventing others from accidentally interfering with running scripts. The lock is automatically released when the script completes
+- All commands that acquire locks now automatically support `--force-command` via shared decorator
+
+## <u>Bug Fixes</u>
+
+- Updated locking documentation to reflect current behavior (detach keeps lock, local flag syntax, correct `lager boxes` output format)
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.13.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.13.0/)
