@@ -409,15 +409,9 @@ def acquire_command_lock_with_cleanup(ctx, ip, box_name, command_name, force=Fal
         command_name: Name of the command being run
         force: If True, bypass command lock check
     """
-    # Also check ctx.obj.force_command (set by --force-command flag)
-    force = force or getattr(getattr(ctx, 'obj', None), 'force_command', False)
-    _acquire_command_lock(ip, box_name, command_name, force=force)
-
-    def _cleanup():
-        if not getattr(getattr(ctx, 'obj', None), '_skip_lock_release', False):
-            _release_command_lock(ip, box_name)
-
-    ctx.call_on_close(_cleanup)
+    effective_force = force or getattr(getattr(ctx, 'obj', None), 'force_command', False)
+    _acquire_command_lock(ip, box_name, command_name, force=effective_force)
+    ctx.call_on_close(lambda: _release_command_lock(ip, box_name))
 
 
 def resolve_and_validate_box_with_name(ctx, box_name: Optional[str] = None, _skip_lock_check=False, _force=False) -> tuple:
