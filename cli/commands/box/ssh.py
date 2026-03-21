@@ -65,11 +65,10 @@ def ssh(ctx, box):
     ssh_host = f'{username}@{resolved_box}'
 
     try:
-        # Use subprocess to execute SSH interactively
-        # We use os.execvp to replace the current process with SSH
-        # This allows full interactivity (shell, etc.)
-        import os
-        os.execvp('ssh', ['ssh', ssh_host])
+        # Use subprocess.run so the Python process stays alive and can
+        # release the command lock when the SSH session ends.
+        result = subprocess.run(['ssh', ssh_host])
+        sys.exit(result.returncode)
     except FileNotFoundError:
         click.secho('Error: SSH client not found', fg='red', err=True)
         click.secho(_get_ssh_install_hint(), err=True)
