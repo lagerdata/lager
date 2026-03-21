@@ -7,12 +7,11 @@
     SSH into boxes
 """
 import click
+from click.exceptions import Exit
 import subprocess
-import sys
 import platform
 from ...box_storage import resolve_and_validate_box
 from ...context import get_default_box
-from ...options import force_command_option
 
 
 def _get_ssh_install_hint() -> str:
@@ -46,7 +45,6 @@ def _get_ssh_install_hint() -> str:
 @click.command()
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
-@force_command_option
 def ssh(ctx, box):
     """SSH into a box"""
     from ...box_storage import get_box_user
@@ -65,10 +63,13 @@ def ssh(ctx, box):
     ssh_host = f'{username}@{resolved_box}'
 
     try:
-        # Use subprocess.run so the Python process stays alive and can
-        # release the command lock when the SSH session ends.
-        result = subprocess.run(['ssh', ssh_host])
-        sys.exit(result.returncode)
+        # Run SSH as a child process (not exec). exec replaces this process, so Click
+        # never runs ctx.call_on_close hooks and the box command-lock is never released.
+        try:
+            ret = subprocess.call(['ssh', ssh_host])
+        except KeyboardInterrupt:
+            ret = 130
+        ctx.exit(ret if ret is not None else 0)
     except FileNotFoundError:
         click.secho('Error: SSH client not found', fg='red', err=True)
         click.secho(_get_ssh_install_hint(), err=True)
@@ -85,6 +86,8 @@ def ssh(ctx, box):
         else:
             click.secho(f'Error: System error running SSH: {e}', fg='red', err=True)
         ctx.exit(1)
+    except Exit:
+        raise
     except Exception as e:
         click.secho(f'Error connecting to {ssh_host}: {e}', fg='red', err=True)
         click.secho('Troubleshooting tips:', err=True)
