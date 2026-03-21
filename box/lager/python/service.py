@@ -312,22 +312,37 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                 nets = []
             self.send_json_response(200, nets)
         elif self.path == '/instruments/list':
-            # Run USB instrument scan and return detected instruments
-            import subprocess
-            import sys as _sys
-            _SCAN_SCRIPT = '/app/box_python/cli/impl/query_instruments.py'
+            # Run USB instrument scan and return detected instruments.
+            # _scan_usb() uses pure sysfs — no signals, safe in any thread.
+            # _by_handshake/_by_camera use SIGALRM which only works in the main
+            # thread; ThreadingHTTPServer runs handlers in worker threads, so we
+            # wrap each phase independently to avoid losing _scan_usb() results.
+            instruments = []
             try:
-                result = subprocess.run(
-                    [_sys.executable, _SCAN_SCRIPT],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
+                import sys as _sys
+                if '/app/box_python' not in _sys.path:
+                    _sys.path.insert(0, '/app/box_python')
+                from cli.impl.query_instruments import (
+                    _scan_usb,
+                    _by_handshake,
+                    _by_camera,
+                    _merge_or_append,
                 )
-                instruments = json.loads(result.stdout or '[]')
-                if not isinstance(instruments, list):
-                    instruments = []
+                instruments = _scan_usb()
             except Exception:
                 instruments = []
+            try:
+                uart_ports = {dev.get('tty_path') for dev in instruments if dev.get('tty_path')}
+                for dex in _by_handshake(exclude=uart_ports):
+                    _merge_or_append(dex, instruments)
+            except Exception:
+                pass  # SIGALRM not available in worker threads — skip handshake scan
+            try:
+                for cam in _by_camera():
+                    _merge_or_append(cam, instruments)
+            except Exception:
+                pass  # Same — skip camera scan if signal not available
+            instruments.sort(key=lambda d: (d['name'], d.get('address', '')))
             self.send_json_response(200, instruments)
         elif self.path == '/test-stream':
             # Test endpoint to verify streaming format works
