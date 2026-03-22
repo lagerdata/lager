@@ -1,0 +1,24 @@
+---
+title: "Version 0.13.3"
+description: "March 21, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **`lager python --detach` now holds command lock**: Detached Python scripts now correctly keep the Lager Box marked as busy while the script runs. Previously, the command lock was released immediately after detaching, allowing other commands (e.g. `lager hello`) to run against a busy box. The lock is automatically released when the detached process finishes or is killed.
+
+## <u>Installation</u>
+
+```bash
+pip install lager-cli==0.13.3
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.13.3/)

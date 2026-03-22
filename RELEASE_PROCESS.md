@@ -217,6 +217,15 @@ Alternatively, go to [Releases](https://github.com/lagerdata/lager/releases) and
 - **Title**: `vX.Y.Z`
 - **Description**: Copy the relevant section from `CHANGELOG.md`
 
+### 10. Create Version Branch
+
+Create a branch from the release tag so boxes can be pinned to specific versions via `lager update --version`:
+
+```bash
+git branch vX.Y.Z vX.Y.Z
+git push upstream vX.Y.Z
+```
+
 ## Post-release
 
 1. Verify the release is live:

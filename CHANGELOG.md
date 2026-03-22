@@ -2,6 +2,11 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.13.3] - 2026-03-21
+
+### Fixed
+- `lager python --detach` now correctly holds the command lock while the detached process runs. Previously the lock was released immediately, allowing other commands to run against a busy box
+
 ## [0.13.2] - 2026-03-21
 
 ### Changed
