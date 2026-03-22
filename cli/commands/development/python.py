@@ -34,7 +34,6 @@ from ...core.utils import (
 )
 from ...core.param_types import EnvVarType, PortForwardType
 from ...exceptions import OutputFormatNotSupported
-from ...options import force_command_option
 
 MAX_ZIP_SIZE = 20_000_000  # Max size of zipped folder in bytes
 
@@ -527,9 +526,16 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
 @click.option('--org', default=None, hidden=True)
 @click.option('--add-file', type=click.Path(exists=True, dir_okay=False), multiple=True, help='File to upload with script')
 @click.option('--reattach', default=None, help='Reattach to detached process by process ID')
-@force_command_option
+@click.option(
+    '--force',
+    '--force-command',
+    'force_command',
+    is_flag=True,
+    default=False,
+    help='Bypass command-in-progress lock',
+)
 @click.argument('args', nargs=-1)
-def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_overwrite, signum, timeout, detach, port, org, add_file, reattach, args):
+def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_overwrite, signum, timeout, detach, port, org, add_file, reattach, force_command, args):
     """Run Python script on box"""
     from ...box_storage import resolve_and_validate_box
 
@@ -538,7 +544,7 @@ def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_ove
 
     # Resolve and validate the box name
     box_name = box
-    box_ip = resolve_and_validate_box(ctx, box_name, _skip_lock_check=skip_lock)
+    box_ip = resolve_and_validate_box(ctx, box_name, _skip_lock_check=skip_lock, _force=force_command)
 
     if not runnable and not kill and not kill_all and not reattach:
         raise click.UsageError('Please supply a RUNNABLE, --kill, --kill-all, or --reattach option')
