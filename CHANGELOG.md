@@ -2,6 +2,11 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.13.2] - 2026-03-21
+
+### Changed
+- Maintenance release: updated repository configuration
+
 ## [0.13.1] - 2026-03-20
 
 ### Fixed

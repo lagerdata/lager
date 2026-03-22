@@ -626,15 +626,22 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
     result = run_ssh_command_with_output(f'cd ~/box && git rev-list HEAD..origin/{target_version} --count')
 
     needs_pull = False
+    # Only trust "already up to date" for fast-path if rev-list succeeds with an integer count
+    git_sync_confirmed = False
     if result.returncode == 0:
-        commits_behind = int(result.stdout.strip())
-        if commits_behind == 0:
-            if verbose:
-                click.secho('Box code is already up to date!', fg='green')
-            needs_pull = False
-        else:
-            log(f'Updates available: {commits_behind} new commit(s)')
-            needs_pull = True
+        try:
+            commits_behind = int(result.stdout.strip())
+        except ValueError:
+            commits_behind = None
+        if commits_behind is not None:
+            git_sync_confirmed = True
+            if commits_behind == 0:
+                if verbose:
+                    click.secho('Box code is already up to date!', fg='green')
+                needs_pull = False
+            else:
+                log(f'Updates available: {commits_behind} new commit(s)')
+                needs_pull = True
 
     if needs_pull:
         # Step 5: Update git repo
@@ -828,6 +835,28 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
             log_status('Checking sudoers file ownership...', 'OK', 'green')
     else:
         log_status('Checking sudoers file ownership...', 'SKIPPED', 'yellow')
+
+    # No git updates and no box/→root flatten work: a second consecutive `lager update`
+    # would otherwise still stop every Docker container on the box, remove them, and
+    # rebuild — redundant after a successful run and a common source of flaky behavior.
+    if git_sync_confirmed and not needs_pull and not needs_flatten and not force:
+        if progress:
+            progress.finish(success=True)
+        import re as _re
+
+        _vp = _re.match(r'^v?(\d+\.\d+\.\d+)$', target_version)
+        _box_v = _vp.group(1) if _vp else cli_version
+        if _box_v and box:
+            update_box_version(box, _box_v)
+        click.echo()
+        click.secho(
+            'Box code is already up to date; skipping container stop/rebuild.',
+            fg='green',
+            bold=True,
+        )
+        click.echo(f'Verify with: lager hello --box {box_name}')
+        click.echo()
+        ctx.exit(0)
 
     # Skip container restart if requested
     if skip_restart:
