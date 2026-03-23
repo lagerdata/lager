@@ -245,6 +245,8 @@ docker run -d \
     --privileged \
     -v /tmp:/tmp \
     -v /dev:/dev \
+    -v /sys/bus/usb:/sys/bus/usb:ro \
+    -v /sys/devices:/sys/devices:ro \
     -v /var/run/dbus:/var/run/dbus \
     -v /etc/lager:/etc/lager \
     -v /etc/hostname:/host/etc/hostname:ro \
