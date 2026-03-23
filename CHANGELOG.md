@@ -2,6 +2,15 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.13.4] - 2026-03-23
+
+### Removed
+- **Ephemeral command lock** — The automatic command-in-progress lock that fired on every CLI command has been removed. It had multiple corner cases: supply commands never released the lock, long-running commands (like `gdbserver`) blocked all other commands, etc.
+- `--force-command` flag removed from all commands (no longer needed)
+
+### Note
+- User lock (`lager boxes lock/unlock`) is unchanged — use it to reserve a box for yourself
+
 ## [0.13.3] - 2026-03-21
 
 ### Fixed
