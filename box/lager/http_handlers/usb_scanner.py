@@ -12,9 +12,9 @@ CLI usage; this module keeps the box HTTP server self-contained.
 import glob
 import os
 import re
-import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, TypeVar
@@ -23,32 +23,34 @@ T = TypeVar('T')
 
 
 # ---------------------------------------------------------------------------
-#  Timeout helper
+#  Timeout helper (thread-safe — works from any thread, not just main)
 # ---------------------------------------------------------------------------
 
-class _ScanTimeoutError(Exception):
-    pass
-
-
-def _timeout_handler(signum, frame):
-    raise _ScanTimeoutError("Operation timed out")
-
-
 def with_timeout(seconds: int, default: T = None) -> Callable[[Callable[..., T]], Callable[..., T]]:
-    """Decorator that aborts a function after *seconds* and returns *default*."""
+    """Decorator that aborts a function after *seconds* and returns *default*.
+
+    Uses a daemon thread rather than SIGALRM so it is safe to call from any
+    thread (Flask/ThreadingHTTPServer worker threads included).
+    """
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
         def wrapper(*args, **kwargs) -> T:
-            old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
-            signal.alarm(seconds)
-            try:
-                result = func(*args, **kwargs)
-                signal.alarm(0)
-                return result
-            except _ScanTimeoutError:
+            result = [default]
+            exc: List[Optional[BaseException]] = [None]
+
+            def target() -> None:
+                try:
+                    result[0] = func(*args, **kwargs)
+                except Exception as e:
+                    exc[0] = e
+
+            t = threading.Thread(target=target, daemon=True)
+            t.start()
+            t.join(seconds)
+            if t.is_alive():
                 return default
-            finally:
-                signal.alarm(0)
-                signal.signal(signal.SIGALRM, old_handler)
+            if exc[0] is not None:
+                raise exc[0]
+            return result[0]
         return wrapper
     return decorator
 
