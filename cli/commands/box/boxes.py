@@ -10,7 +10,7 @@ import click
 import ipaddress
 import json
 from texttable import Texttable
-from ...box_storage import add_box, delete_box, delete_all_boxes, list_boxes, load_boxes, save_boxes, get_lager_file_path
+from ...box_storage import add_box, delete_box, delete_all_boxes, list_boxes, load_boxes, save_boxes, get_lager_file_path, format_lock_user
 from ...sort_utils import natural_sort_key
 
 
@@ -67,7 +67,7 @@ def _list_boxes_live(port=5000, timeout=5):
             if lock_resp.status_code == 200:
                 lock_data = lock_resp.json()
                 if lock_data.get('locked'):
-                    locked_by = lock_data.get('user', '?')
+                    locked_by = format_lock_user(lock_data.get('user', '?'))
         except Exception:
             pass
 

@@ -286,6 +286,19 @@ def get_lager_user():
     return getpass.getuser()
 
 
+def format_lock_user(user):
+    """Format a lock user string for display.
+
+    Stout dashboard locks use format 'stout:<uuid>:<email>'.
+    Returns just the email for stout locks, or the string as-is otherwise.
+    """
+    if user and user.startswith('stout:'):
+        parts = user.split(':', 2)
+        if len(parts) == 3:
+            return parts[2]
+    return user
+
+
 def _check_box_lock(ip, box_name):
     """Check if a box is locked by another user. Exits if locked.
 
@@ -305,8 +318,9 @@ def _check_box_lock(ip, box_name):
                 current_user = get_lager_user()
                 if locked_by != current_user:
                     display = box_name or ip
+                    display_user = format_lock_user(locked_by)
                     click.secho(
-                        f"Error: Box '{display}' is locked by {locked_by}",
+                        f"Error: Box '{display}' is locked by {display_user}",
                         fg='red', err=True,
                     )
                     click.echo(

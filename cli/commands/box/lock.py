@@ -9,7 +9,7 @@
 import click
 import requests
 
-from ...box_storage import resolve_and_validate_box_with_name, get_lager_user
+from ...box_storage import resolve_and_validate_box_with_name, get_lager_user, format_lock_user
 
 
 @click.command()
@@ -31,12 +31,12 @@ def lock(ctx, box):
 
     if resp.status_code == 200:
         data = resp.json()
-        click.secho(f"Box '{display_name}' is locked by {data.get('user')}", fg='green')
+        click.secho(f"Box '{display_name}' is locked by {format_lock_user(data.get('user'))}", fg='green')
     elif resp.status_code == 409:
         data = resp.json()
         lock_info = data.get('lock', {})
         click.secho(
-            f"Box '{display_name}' is already locked by {lock_info.get('user')} "
+            f"Box '{display_name}' is already locked by {format_lock_user(lock_info.get('user'))} "
             f"(since {lock_info.get('locked_at', 'unknown')})",
             fg='red', err=True,
         )
@@ -73,7 +73,7 @@ def unlock(ctx, box, force):
     elif resp.status_code == 403:
         data = resp.json()
         lock_info = data.get('lock', {})
-        locked_by = lock_info.get('user', 'unknown')
+        locked_by = format_lock_user(lock_info.get('user', 'unknown'))
         click.secho(
             f"Box '{display_name}' is locked by {locked_by}. "
             f"To force unlock: lager boxes unlock --box {display_name} --force",
