@@ -63,8 +63,7 @@ def ssh(ctx, box):
     ssh_host = f'{username}@{resolved_box}'
 
     try:
-        # Run SSH as a child process (not exec). exec replaces this process, so Click
-        # never runs ctx.call_on_close hooks and the box command-lock is never released.
+        # Run SSH as a child process (not exec) so Click ctx.call_on_close hooks run.
         try:
             ret = subprocess.call(['ssh', ssh_host])
         except KeyboardInterrupt:

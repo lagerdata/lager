@@ -17,7 +17,6 @@ from texttable import Texttable
 from ...context import get_default_box, get_impl_path, get_default_net
 from ..development.python import run_python_internal
 from ...box_storage import get_box_ip
-from ...options import force_command_option
 
 WEBCAM_ROLE = "camera"
 
@@ -252,7 +251,6 @@ class WebcamGroup(click.Group):
 @click.group(name="webcam", cls=WebcamGroup, invoke_without_command=True)
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.pass_context
-@force_command_option
 def webcam(ctx, box):
     """Manage webcam streams"""
     # If no subcommand was provided

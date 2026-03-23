@@ -12,7 +12,6 @@ import json
 from texttable import Texttable
 from ...box_storage import add_box, delete_box, delete_all_boxes, list_boxes, load_boxes, save_boxes, get_lager_file_path
 from ...sort_utils import natural_sort_key
-from ...options import force_command_option
 
 
 def _list_boxes_live(port=5000, timeout=5):
@@ -69,10 +68,6 @@ def _list_boxes_live(port=5000, timeout=5):
                 lock_data = lock_resp.json()
                 if lock_data.get('locked'):
                     locked_by = lock_data.get('user', '?')
-                if lock_data.get('busy'):
-                    busy_user = lock_data.get('busy_user', '?')
-                    busy_command = lock_data.get('busy_command', '')
-                    busy_info = f'{busy_user} ({busy_command})' if busy_command else busy_user
         except Exception:
             pass
 
@@ -739,7 +734,6 @@ CONTROL_PLANE_URL = 'https://api.stoutdata.ai'
 @click.option('--api-key', required=True, help='API key for control plane authentication')
 @click.option('--heartbeat-interval', default=30, type=int, help='Heartbeat interval in seconds (default: 30)')
 @click.option('--yes', is_flag=True, help='Confirm the action without prompting.')
-@force_command_option
 def connect(ctx, box, api_key, heartbeat_interval, yes):
     """Connect a box to a control plane for heartbeat reporting."""
     import subprocess

@@ -7,7 +7,6 @@
     LagerContext class and core utility functions for CLI context management.
 """
 import os
-import sys
 
 import click
 
@@ -15,35 +14,15 @@ from .session import DirectHTTPSession
 from ..sort_utils import natural_sort_key
 
 
-def argv_declares_force_command(argv=None):
-    """
-    True if ``--force-command`` appears in argv before a ``--`` sentinel.
-
-    Click only binds the root group's ``--force-command`` when it appears before
-    the subcommand name. Users expect ``lager <cmd> ... --force-command`` (as
-    documented); scanning argv matches that without adding the flag to every
-    subcommand. Text after ``--`` is ignored so ``lager python ... -- ...`` passthrough
-    args cannot accidentally set this.
-    """
-    if argv is None:
-        argv = sys.argv[1:]
-    else:
-        argv = list(argv)
-    if '--' in argv:
-        argv = argv[: argv.index('--')]
-    return '--force-command' in argv
-
-
 class LagerContext:  # pylint: disable=too-few-public-methods
     """
         Lager Context manager for direct box connections.
     """
-    def __init__(self, ctx, defaults, debug, style, interpreter=None, force_command=False):
+    def __init__(self, ctx, defaults, debug, style, interpreter=None):
         self.defaults = defaults
         self.style = style
         self.debug = debug
         self.interpreter = interpreter
-        self.force_command = force_command
 
     def get_session_for_box(self, box, box_name=None):
         """
