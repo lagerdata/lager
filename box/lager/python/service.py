@@ -311,6 +311,14 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
             except (FileNotFoundError, json.JSONDecodeError, TypeError):
                 nets = []
             self.send_json_response(200, nets)
+        elif self.path == '/instruments/list':
+            # Scan USB devices and return detected instruments
+            try:
+                from lager.http_handlers.usb_scanner import list_instruments
+                self.send_json_response(200, list_instruments())
+            except Exception as e:
+                logger.error("Instrument scan failed: %s", e)
+                self.send_json_response(200, [])
         elif self.path == '/test-stream':
             # Test endpoint to verify streaming format works
             def test_generator():
