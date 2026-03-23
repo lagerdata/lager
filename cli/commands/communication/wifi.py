@@ -15,7 +15,6 @@ from texttable import Texttable
 
 # Import consolidated helpers from cli.core.net_helpers
 from ...core.net_helpers import resolve_box, run_impl_script
-from ...options import force_command_option
 
 # WiFi constraints
 MAX_SSID_LENGTH = 32  # IEEE 802.11 maximum SSID length
@@ -105,7 +104,6 @@ def _run_wifi_command(ctx: click.Context, box_ip: str, args_dict: dict) -> None:
 
 
 @click.group(name='wifi', hidden=True)
-@force_command_option
 def _wifi():
     """Manage WiFi network settings"""
     pass

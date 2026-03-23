@@ -11,7 +11,6 @@ import json
 import click
 from ...context import get_default_net, get_impl_path
 from ..development.python import run_python_internal
-from ...options import force_command_option
 from ...core.net_helpers import (
     resolve_box,
     display_nets,
@@ -28,7 +27,6 @@ WATT_TIMEOUT = 30
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.argument("netname", required=False)
-@force_command_option
 def watt(ctx, box, netname):
     # Use provided netname, or fall back to default if not provided
     if netname is None:

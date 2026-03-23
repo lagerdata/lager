@@ -18,7 +18,6 @@ import threading
 from ...box_storage import resolve_and_validate_box, get_box_user, list_boxes
 from ...context import get_default_box
 from ..box.boxes import compare_versions
-from ...options import force_command_option
 
 
 class ProgressBar:
@@ -110,7 +109,6 @@ class ProgressBar:
 @click.option('--version', required=False, help='Box version/branch to update to (e.g., staging, main)')
 @click.option('--verbose', '-v', is_flag=True, help='Show detailed output (default shows progress bar only)')
 @click.option('--force', is_flag=True, help='Force fresh Docker build by removing cached image (use for major code changes)')
-@force_command_option
 def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
     """Update box code from GitHub repository"""
     from ...box_storage import update_box_version
@@ -170,18 +168,14 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
                 click.secho('SKIPPED (no IP)', fg='yellow')
                 continue
 
-            # Check if box is locked or busy by another user
-            from ...box_storage import _acquire_command_lock, _release_command_lock, get_lager_user
+            # Check if box is locked by another user
+            from ...box_storage import _check_box_lock
             try:
-                _acquire_command_lock(ip, name, 'update')
+                _check_box_lock(ip, name)
             except SystemExit:
                 click.echo(f"  {name} ({ip}): ", nl=False)
-                click.secho('SKIPPED (locked or busy)', fg='yellow')
+                click.secho('SKIPPED (locked)', fg='yellow')
                 continue
-            else:
-                # Release immediately — we just wanted to check availability
-                # The actual update will re-acquire per box below
-                _release_command_lock(ip, name)
 
             # Query box version to determine if update is needed
             click.echo(f"  {name} ({ip}): ", nl=False)
@@ -238,7 +232,6 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
             # Call update recursively for this single box
             try:
                 # Invoke the update command for this box
-                ctx.obj.force_command = True  # Already checked availability above
                 result = ctx.invoke(
                     update,
                     box=name,

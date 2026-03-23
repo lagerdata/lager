@@ -17,11 +17,9 @@ from texttable import Texttable
 # Import consolidated helpers from cli.core.net_helpers
 from ...core.net_helpers import resolve_box, run_impl_script
 from ...context import get_impl_path
-from ...options import force_command_option
 
 
 @click.group(name='ble')
-@force_command_option
 def ble():
     """Scan and connect to Bluetooth Low Energy devices"""
     pass
