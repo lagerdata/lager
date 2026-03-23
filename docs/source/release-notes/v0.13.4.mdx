@@ -1,0 +1,31 @@
+---
+title: "Version 0.13.4"
+description: "March 23, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- Removed the automatic command-in-progress lock (ephemeral lock) that fired on every CLI command. The feature had multiple corner cases — supply commands never released the lock, long-running commands blocked all other commands on the same box, and detached processes left stale locks
+- Removed `--force-command` flag from all commands (no longer needed)
+
+## <u>Improvements</u>
+
+- User lock (`lager boxes lock` / `lager boxes unlock`) is unchanged and remains the recommended way to reserve a Lager Box
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.13.4
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.13.4/)
