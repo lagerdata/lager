@@ -15,7 +15,6 @@ from pathlib import Path
 from importlib import resources
 from ...box_storage import add_box, get_box_ip, get_box_user
 from ...core.ssh_utils import host_in_known_hosts
-from ...options import force_command_option
 
 
 def get_script_path(script_name: str, subdir: str = "scripts") -> Path:
@@ -83,7 +82,6 @@ def get_script_path(script_name: str, subdir: str = "scripts") -> Path:
 @click.option("--skip-verify", is_flag=True, help="Skip post-deployment verification")
 @click.option("--corporate-vpn", default=None, help="Corporate VPN interface name (e.g., tun0)")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompts")
-@force_command_option
 def install(ctx, box, ip, user, branch, skip_jlink, skip_firewall, skip_verify, corporate_vpn, yes):
     """
     Install lager box code onto a new box.

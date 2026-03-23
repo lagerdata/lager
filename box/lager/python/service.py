@@ -458,10 +458,6 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                 self._handle_lock_acquire()
             elif self.path == '/unlock':
                 self._handle_unlock()
-            elif self.path == '/command-lock':
-                self._handle_command_lock()
-            elif self.path == '/command-lock/release':
-                self._handle_command_lock_release()
             elif self.path == '/binaries/add':
                 self._handle_binaries_add()
             elif self.path == '/binaries/remove':
@@ -478,8 +474,6 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
     # --- Lock endpoints ---
 
     LOCK_FILE = '/etc/lager/lock.json'
-    BUSY_FILE = '/etc/lager/busy.json'
-    _busy_file_lock = threading.Lock()
 
     def _read_lock(self):
         """Read lock state from disk. Returns dict if locked, None otherwise."""
@@ -501,18 +495,10 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         return json.loads(body)
 
     def _handle_lock_status(self):
-        """Handle GET /lock - Return lock status (includes busy info)."""
+        """Handle GET /lock - Return lock status."""
         lock = self._read_lock()
         response = dict(lock) if lock else {'locked': False}
-
-        busy = self._read_busy()
-        if busy:
-            response['busy'] = True
-            response['busy_user'] = busy.get('user', '')
-            response['busy_command'] = busy.get('command', '')
-        else:
-            response['busy'] = False
-
+        response['busy'] = False
         self.send_json_response(200, response)
 
     def _handle_lock_acquire(self):
@@ -582,110 +568,6 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         except FileNotFoundError:
             pass
         self.send_json_response(200, {'locked': False, 'message': 'Box unlocked'})
-
-    # --- Busy / command-lock helpers ---
-
-    def _read_busy(self):
-        """Read busy state from disk. Returns dict if busy, None otherwise.
-
-        Auto-expires busy locks older than 30 minutes.
-        """
-        import os
-        from datetime import datetime, timezone
-
-        try:
-            with open(self.BUSY_FILE, 'r') as f:
-                data = json.load(f)
-            if data.get('busy'):
-                # Check for stale lock (> 30 minutes)
-                started_at = data.get('started_at', '')
-                try:
-                    started = datetime.strptime(started_at, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
-                    elapsed = (datetime.now(timezone.utc) - started).total_seconds()
-                    if elapsed > 1800:  # 30 minutes
-                        logger.info(f"Auto-expiring stale busy lock (started {elapsed:.0f}s ago)")
-                        try:
-                            os.remove(self.BUSY_FILE)
-                        except FileNotFoundError:
-                            pass
-                        return None
-                except (ValueError, TypeError):
-                    pass  # Can't parse timestamp, treat as valid
-                return data
-        except (FileNotFoundError, json.JSONDecodeError, TypeError):
-            pass
-        return None
-
-    def _handle_command_lock(self):
-        """Handle POST /command-lock - Acquire command-in-progress lock."""
-        try:
-            data = self._read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json_response(400, {'error': 'Invalid JSON'})
-            return
-
-        user = data.get('user')
-        command = data.get('command', '')
-        force = data.get('force', False)
-
-        if not user:
-            self.send_json_response(400, {'error': 'user is required'})
-            return
-
-        with self._busy_file_lock:
-            # Check user lock first
-            lock = self._read_lock()
-            if lock and not force:
-                locked_by = lock.get('user', 'unknown')
-                if locked_by != user:
-                    self.send_json_response(409, {
-                        'error': f'Box is locked by {locked_by}',
-                        'type': 'user_lock',
-                        'lock': lock,
-                    })
-                    return
-
-            # Check busy lock
-            busy = self._read_busy()
-            if busy and not force:
-                busy_user = busy.get('user', 'unknown')
-                self.send_json_response(409, {
-                    'error': f'Command in progress by {busy_user}',
-                    'type': 'command_lock',
-                    'busy': busy,
-                })
-                return
-
-            # Acquire busy lock
-            from datetime import datetime, timezone
-            new_busy = {
-                'busy': True,
-                'user': user,
-                'command': command,
-                'started_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-            }
-            with open(self.BUSY_FILE, 'w') as f:
-                json.dump(new_busy, f, indent=2)
-
-        self.send_json_response(200, new_busy)
-
-    def _handle_command_lock_release(self):
-        """Handle POST /command-lock/release - Release command-in-progress lock."""
-        import os
-
-        try:
-            data = self._read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json_response(400, {'error': 'Invalid JSON'})
-            return
-
-        with self._busy_file_lock:
-            try:
-                os.remove(self.BUSY_FILE)
-            except FileNotFoundError:
-                pass
-
-        self.send_json_response(200, {'busy': False, 'message': 'Command lock released'})
 
     # --- End lock endpoints ---
 

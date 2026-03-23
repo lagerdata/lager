@@ -9,13 +9,11 @@
 import click
 import requests
 from ...box_storage import resolve_and_validate_box_with_name
-from ...options import force_command_option
 
 
 @click.command()
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
-@force_command_option
 def hello(ctx, box):
     """Test box connectivity and show version"""
     # Resolve and validate the box

@@ -11,7 +11,6 @@ import requests
 from pathlib import Path
 from ...box_storage import resolve_and_validate_box
 from ...context import get_default_box
-from ...options import force_command_option
 
 # Container path where customer binaries are mounted
 CONTAINER_BINARIES_PATH = '/home/www-data/customer-binaries'
@@ -28,7 +27,6 @@ def _format_size(size_bytes):
 
 @click.group(invoke_without_command=True)
 @click.pass_context
-@force_command_option
 def binaries(ctx):
     """
         Manage custom binaries on boxes
