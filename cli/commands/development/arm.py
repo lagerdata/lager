@@ -14,7 +14,6 @@ from texttable import Texttable
 
 from ...context import get_default_box, get_default_net, get_impl_path
 from ...core.net_helpers import resolve_box, run_net_py, list_nets_by_role, validate_net_exists
-from ...options import force_command_option
 
 ARM_ROLE = "arm"
 
@@ -110,7 +109,6 @@ def _resolve_box_for_command(ctx, target_box):
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.argument("netname", required=False)
-@force_command_option
 def arm(ctx, box, netname):
     """
     Usage: lager arm [OPTIONS] [NETNAME] COMMAND [ARGS]

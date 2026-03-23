@@ -24,7 +24,6 @@ from ...context import get_default_box, get_impl_path
 from ...sort_utils import natural_sort_key as _natural_sort_key
 from ..development.python import run_python_internal
 from .net_tui import launch_tui
-from ...options import force_command_option
 
 
 # --------------------------------------------------------------------------- #
@@ -198,8 +197,7 @@ def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
         local_ip = get_box_ip(target_box)
         if local_ip:
             from ...box_storage import acquire_command_lock_with_cleanup
-            force = getattr(getattr(ctx, 'obj', None), 'force_command', False)
-            acquire_command_lock_with_cleanup(ctx, local_ip, target_box, ctx.info_name or 'nets', force=force)
+            acquire_command_lock_with_cleanup(ctx, local_ip, target_box, ctx.info_name or 'nets')
             return local_ip
 
         # Check if it looks like an IP address
@@ -383,7 +381,6 @@ def _save_nets_batch(ctx: click.Context, box: str, nets_data: List[dict]) -> Non
 )
 @click.option("--box", help="Lagerbox name or IP")
 @click.pass_context
-@force_command_option
 def nets(ctx: click.Context, box: str | None) -> None:  # noqa: D401
     """
     If no sub-command is supplied, default to "list".

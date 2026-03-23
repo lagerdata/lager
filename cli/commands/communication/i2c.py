@@ -26,7 +26,6 @@ from texttable import Texttable
 
 from ...core.net_helpers import resolve_box
 from ...context import get_impl_path, get_default_net
-from ...options import force_command_option
 from ..development.python import run_python_internal
 
 I2C_ROLE = "i2c"
@@ -312,7 +311,6 @@ def _run_i2c_backend(ctx, box_ip, action: str, **params):
 @click.argument("NETNAME", required=False)
 @click.pass_context
 @click.option('--box', required=False, help="Lagerbox name or IP")
-@force_command_option
 def i2c(ctx, netname, box):
     """Perform I2C data transfers"""
     if netname is None:

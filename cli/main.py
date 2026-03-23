@@ -22,36 +22,6 @@ import click
 from . import __version__
 from .config import read_config_file
 from .context import LagerContext
-from .context.core import argv_declares_force_command
-
-# Set by strip_force_command_for_click() when --force-command was removed from argv
-_STRIP_FORCE_COMMAND = False
-
-
-def strip_force_command_for_click():
-    """
-    Remove ``--force-command`` from ``sys.argv`` before Click parses.
-
-    Click only accepts the root group's ``--force-command`` before the subcommand
-    name. Users often place it after the subcommand; stripping here avoids adding
-    the flag to every subcommand while still setting ``ctx.obj.force_command`` via
-    ``_STRIP_FORCE_COMMAND`` + :func:`setup_context`.
-    Text after ``--`` is left unchanged (e.g. ``lager python ... -- ...``).
-    """
-    global _STRIP_FORCE_COMMAND
-    _STRIP_FORCE_COMMAND = False
-    argv = sys.argv
-    if '--' in argv:
-        dd = argv.index('--')
-        head, tail = argv[:dd], argv[dd:]
-    else:
-        head, tail = argv[:], []
-    head = list(head)
-    if '--force-command' not in head:
-        return
-    _STRIP_FORCE_COMMAND = True
-    new_head = [a for a in head if a != '--force-command']
-    sys.argv[:] = new_head + tail
 from .update_check import start_background_check, notify_if_update_available
 
 
@@ -144,8 +114,7 @@ def _decode_environment():
 @click.option('--debug', 'debug', is_flag=True, help='Show debug output', default=False)
 @click.option('--colorize', 'colorize', is_flag=True, help='Enable colored terminal output', default=False)
 @click.option('--interpreter', '-i', required=False, default=None, help='Select a specific interpreter / user interface', hidden=True)
-@click.option('--force-command', 'force_command', is_flag=True, hidden=True, help='Bypass command-in-progress lock')
-def cli(ctx=None, see_version=None, debug=False, colorize=False, interpreter=None, force_command=False):
+def cli(ctx=None, see_version=None, debug=False, colorize=False, interpreter=None):
     """
         Lager CLI
     """
@@ -162,7 +131,7 @@ def cli(ctx=None, see_version=None, debug=False, colorize=False, interpreter=Non
         if not _launch_terminal():
             click.echo(ctx.get_help())
     else:
-        setup_context(ctx, debug, colorize, interpreter, force_command)
+        setup_context(ctx, debug, colorize, interpreter)
         _schedule_update_check(ctx)
 
 cli.add_command(adc)
@@ -215,7 +184,7 @@ def _schedule_update_check(ctx):
     ctx.call_on_close(lambda: notify_if_update_available(__version__, thread, result_holder))
 
 
-def setup_context(ctx, debug, colorize, interpreter, force_command=False):
+def setup_context(ctx, debug, colorize, interpreter):
     """
         Setup the CLI context
     """
@@ -226,13 +195,11 @@ def setup_context(ctx, debug, colorize, interpreter, force_command=False):
         debug=debug,
         style=click.style if colorize else lambda string, **kwargs: string,
         interpreter=interpreter,
-        force_command=force_command or _STRIP_FORCE_COMMAND or argv_declares_force_command(),
     )
 
 
 def main():
-    """Console script entry point: normalize argv, then run the Click CLI."""
-    strip_force_command_for_click()
+    """Console script entry point: run the Click CLI."""
     cli()
 
 
