@@ -14,7 +14,6 @@ import json
 import click
 
 from ...context import get_default_net
-from ...options import force_command_option
 from ...core.net_helpers import (
     resolve_box,
     list_nets_by_role,
@@ -42,7 +41,6 @@ GPIO_ROLE = "gpio"
 @click.option("--scans-per-read", type=int, default=None, help="LabJack scans per read batch (advanced)")
 @click.option("--poll-interval", type=float, default=None, help="Poll interval in seconds for non-streaming drivers (advanced)")
 @click.argument("netname", required=False)
-@force_command_option
 def gpi(ctx, box, wait_for, timeout, scan_rate, scans_per_read, poll_interval, netname):
     """Read the state of a GPIO input net.
 

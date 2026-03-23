@@ -16,7 +16,6 @@ from ...context import get_default_box
 from ...box_storage import resolve_and_validate_box
 from collections import defaultdict
 from ...sort_utils import natural_sort_key
-from ...options import force_command_option
 
 import io
 from contextlib import redirect_stdout
@@ -26,7 +25,6 @@ _MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port"}
 @click.command()
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.pass_context
-@force_command_option
 def instruments(ctx, box: str | None) -> None:
     """List attached instruments"""
     # Resolve and validate the box name
