@@ -147,10 +147,12 @@ class ControlPlaneClient:
                 interval = self._config.get('heartbeat_interval_seconds', 30)
 
                 while not self._stop_event.is_set():
+                    status = self._get_status()
                     heartbeat = {
                         'type': 'heartbeat',
-                        'status': self._get_status(),
+                        'status': status,
                         'devices': self._get_devices(),
+                        'agentVersion': status.get('version'),
                     }
                     ws.send(json.dumps(heartbeat))
 
