@@ -49,7 +49,6 @@ This component provides the core Python functionality for box devices, including
 - **`python/`** - User script executor (`lager python`)
 - **`binaries/`** - Firmware binary management
 - **`scripts/`** - Utility scripts
-- **`dashboard_db.py`** - Local data storage
 
 ## Usage
 
