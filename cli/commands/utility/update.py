@@ -283,6 +283,12 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
     # Default to 'main' version if not specified
     target_version = version or 'main'
 
+    # Determine the correct git ref for reset/rev-list operations.
+    # Tags (e.g. v0.14.0) must be referenced directly; branches use origin/<name>.
+    import re as _re_version
+    _is_tag = bool(_re_version.match(r'^v?\d+\.\d+\.\d+', target_version))
+    git_ref = target_version if _is_tag else f'origin/{target_version}'
+
     # Use default box if none specified
     if not box:
         box = get_default_box(ctx)
@@ -541,7 +547,7 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
             'rm -rf lager oscilloscope-daemon start_box.sh third_party udev_rules verify_restart_policy.sh README.md 2>/dev/null; '
             # Reset git to restore box/ directory
             f'git fetch origin {target_version} && '
-            f'git reset --hard origin/{target_version}'
+            f'git reset --hard {git_ref}'
         )
 
         if fix_result.returncode != 0:
@@ -574,7 +580,7 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
     # Step 4: Fetch and check for updates
     if progress:
         progress.update("Fetching updates...")
-    log(f'Fetching updates from origin/{target_version}...', nl=False)
+    log(f'Fetching updates from {git_ref}...', nl=False)
 
     result = run_ssh_command_with_output(f'cd ~/box && git fetch origin {target_version}')
     if result.returncode != 0:
@@ -613,10 +619,10 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
             if stderr:
                 click.secho(f"Git error: {stderr}", err=True)
         ctx.exit(1)
-    log_status(f'Fetching updates from origin/{target_version}...', 'OK', 'green')
+    log_status(f'Fetching updates from {git_ref}...', 'OK', 'green')
 
     # Check if there are updates available
-    result = run_ssh_command_with_output(f'cd ~/box && git rev-list HEAD..origin/{target_version} --count')
+    result = run_ssh_command_with_output(f'cd ~/box && git rev-list HEAD..{git_ref} --count')
 
     needs_pull = False
     # Only trust "already up to date" for fast-path if rev-list succeeds with an integer count
@@ -658,14 +664,14 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
             ctx.exit(1)
         log_status(f'Checking out version {target_version}...', 'OK', 'green')
 
-        log(f'Updating to match origin/{target_version}...', nl=False)
-        result = run_ssh_command_with_output(f'cd ~/box && git reset --hard origin/{target_version}')
+        log(f'Updating to match {git_ref}...', nl=False)
+        result = run_ssh_command_with_output(f'cd ~/box && git reset --hard {git_ref}')
         if result.returncode != 0:
             if progress:
                 progress.finish(success=False)
             log_error('Error: Failed to update branch')
             ctx.exit(1)
-        log_status(f'Updating to match origin/{target_version}...', 'OK', 'green')
+        log_status(f'Updating to match {git_ref}...', 'OK', 'green')
 
         if verbose:
             click.echo('New version:', nl=False)

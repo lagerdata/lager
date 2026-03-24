@@ -2,6 +2,11 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.14.1] - 2026-03-24
+
+### Fixed
+- `lager update --version v0.14.0` (and any version tag) now works correctly. Previously, version tags were incorrectly resolved as remote branch refs (`origin/v0.14.0`), causing the update to fail when git could not find the ref. Tags are now resolved directly.
+
 ## [0.14.0] - 2026-03-24
 
 ### Added
