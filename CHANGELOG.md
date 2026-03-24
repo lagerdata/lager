@@ -2,6 +2,11 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.14.0] - 2026-03-24
+
+### Added
+- `lager install-wheel` command to install a local Python wheel file on a Lager Box. Automatically uninstalls any previously installed version of the package before installing, so the version number does not need to be bumped on every rebuild. The package name is parsed from the wheel filename per the wheel specification.
+
 ## [0.13.4] - 2026-03-23
 
 ### Removed

@@ -72,7 +72,7 @@ from .commands.measurement.energy import energy
 from .commands.box import hello, boxes, instruments, nets, ssh
 
 # Utility commands (from commands.utility package)
-from .commands.utility import defaults, binaries, update, pip, exec_, logs, webcam, install, uninstall
+from .commands.utility import defaults, binaries, update, pip, exec_, logs, webcam, install, uninstall, install_wheel
 
 def _check_venv_shadowing():
     """Warn if a system-installed lager is shadowing the venv version."""
@@ -173,6 +173,7 @@ cli.add_command(logs)
 cli.add_command(binaries)
 cli.add_command(install)
 cli.add_command(uninstall)
+cli.add_command(install_wheel)
 cli.add_command(terminal_cmd)
 
 def _schedule_update_check(ctx):
