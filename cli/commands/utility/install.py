@@ -401,6 +401,61 @@ def install(ctx, box, ip, user, branch, skip_jlink, skip_firewall, skip_verify, 
     click.secho("Box deployment complete!", fg='green', bold=True)
     click.echo()
 
+    # 6.6. Install SSH key sync systemd units
+    import base64
+
+    click.echo("Installing SSH key sync service...")
+
+    path_unit = (
+        "[Unit]\n"
+        "Description=Watch for new SSH public keys in /etc/lager/authorized_keys.d/\n"
+        "\n"
+        "[Path]\n"
+        "PathChanged=/etc/lager/authorized_keys.d\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n"
+    )
+
+    service_unit = (
+        "[Unit]\n"
+        "Description=Sync SSH public keys from /etc/lager/authorized_keys.d/ into authorized_keys\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        "User=lagerdata\n"
+        "ExecStart=/bin/sh -c "
+        "'mkdir -p $HOME/.ssh && touch $HOME/.ssh/authorized_keys && chmod 700 $HOME/.ssh"
+        " && for f in /etc/lager/authorized_keys.d/*.pub;"
+        " do [ -f \"$f\" ] && grep -qF \"$(cat \"$f\")\" $HOME/.ssh/authorized_keys"
+        " || cat \"$f\" >> $HOME/.ssh/authorized_keys; done;"
+        " chmod 600 $HOME/.ssh/authorized_keys'\n"
+    )
+
+    path_b64 = base64.b64encode(path_unit.encode()).decode()
+    svc_b64 = base64.b64encode(service_unit.encode()).decode()
+
+    ssh_key_setup_cmd = (
+        'sudo mkdir -p /etc/lager/authorized_keys.d && '
+        'sudo chmod 777 /etc/lager/authorized_keys.d && '
+        f'echo {path_b64} | base64 -d | sudo tee /etc/systemd/system/lager-ssh-keys.path > /dev/null && '
+        f'echo {svc_b64} | base64 -d | sudo tee /etc/systemd/system/lager-ssh-keys.service > /dev/null && '
+        'sudo systemctl daemon-reload && '
+        'sudo systemctl enable --now lager-ssh-keys.path'
+    )
+
+    try:
+        subprocess.run(
+            ["ssh", "-t", ssh_host, ssh_key_setup_cmd],
+            timeout=60,
+            stderr=subprocess.DEVNULL,
+        )
+        click.secho("SSH key sync service installed", fg='green')
+    except Exception as e:
+        click.secho(f"Warning: Could not install SSH key sync service: {e}", fg='yellow')
+
+    click.echo()
+
     # 6.5. Store version information on the box
     from ... import __version__ as cli_version
     from ...box_storage import update_box_version
