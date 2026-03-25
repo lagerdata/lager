@@ -271,11 +271,16 @@ def delete_all_boxes() -> int:
 def get_lager_user():
     """Get the effective lager user.
 
-    Returns the user from 'lager defaults add --user', falling back to
-    the OS system username (getpass.getuser()).
+    Resolution order:
+    1. LAGER_USER environment variable
+    2. 'user' from 'lager defaults add --user' (stored in ~/.lager)
+    3. OS system username (getpass.getuser())
     """
     import getpass
     from .config import read_config_file
+
+    if env_user := os.getenv('LAGER_USER'):
+        return env_user
 
     try:
         config = read_config_file()
