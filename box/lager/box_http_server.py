@@ -91,14 +91,6 @@ from lager.http_handlers.supply import (
     cleanup_supply_sessions,
 )
 
-# Import webcam handlers (Stout enterprise feature — depends on lager.nets and lager.automation.webcam)
-try:
-    from lager.http_handlers.webcam_handler import register_webcam_routes
-    _has_webcam = True
-except Exception as e:
-    logger.warning("Webcam handlers not available: %s", e)
-    _has_webcam = False
-
 # Import nets handler
 try:
     from lager.http_handlers.nets_handler import register_nets_routes
@@ -199,14 +191,6 @@ def status():
 # Register supply HTTP and WebSocket handlers from modular http package
 register_supply_routes(app)
 register_supply_socketio(socketio)
-
-# Register webcam REST handlers (Stout enterprise feature, if available)
-if _has_webcam:
-    register_webcam_routes(app)
-    logger.info("Webcam REST endpoints registered")
-    print("[INIT] Webcam REST endpoints registered", flush=True)
-else:
-    print("[INIT] Webcam REST endpoints NOT available", flush=True)
 
 # Register nets REST handlers (if available)
 if _has_nets:
