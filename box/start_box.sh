@@ -117,6 +117,22 @@ if [ ! -f /etc/lager/saved_nets.json ]; then
     chmod 666 /etc/lager/saved_nets.json
 fi
 
+# --- SSH authorized_keys sync from /etc/lager/authorized_keys.d/ ---
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+touch ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+mkdir -p /etc/lager/authorized_keys.d
+for pub_file in /etc/lager/authorized_keys.d/*.pub; do
+    [ -f "$pub_file" ] || continue
+    if ! grep -qF "$(cat "$pub_file")" ~/.ssh/authorized_keys; then
+        cat "$pub_file" >> ~/.ssh/authorized_keys
+    fi
+done
+chown "$(whoami)" ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+# --- end SSH authorized_keys sync ---
+
 # Check for JLink directory
 # Look for J-Link using the THIRD_PARTY_DIR variable (works for any user)
 JL_MOUNT_PYTHON=""
