@@ -193,6 +193,12 @@ def _list_boxes_live(port=5000, timeout=5):
         box_word = 'box' if failed_count == 1 else 'boxes'
         click.secho(f'{failed_count} {box_word} could not be reached', fg='red')
 
+    root_locked = [r[0] for r in results if r[4] == 'root']
+    if root_locked:
+        box_word = 'box is' if len(root_locked) == 1 else 'boxes are'
+        click.secho(f'\nWarning: {len(root_locked)} {box_word} locked as root (likely locked from inside a Docker container).', fg='yellow')
+        click.secho('Use --user to specify your username next time: lager boxes lock --box <box> --user <username>', fg='yellow')
+
 
 @click.group(invoke_without_command=True)
 @click.pass_context
