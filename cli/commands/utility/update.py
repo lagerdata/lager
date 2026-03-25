@@ -897,6 +897,8 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
     log('Rebuilding Docker container (this may take several minutes)...')
 
     ssh_cmd = ['ssh']
+    if use_explicit_key:
+        ssh_cmd.extend(['-i', key_file])
     if not use_interactive_ssh:
         ssh_cmd.extend(['-o', 'BatchMode=yes'])
     ssh_cmd.extend([ssh_host,

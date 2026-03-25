@@ -14,13 +14,20 @@ from ...box_storage import resolve_and_validate_box_with_name, get_lager_user, f
 
 @click.command()
 @click.option('--box', required=True, help='Name of the box to lock')
+@click.option('--user', 'lock_user', default=None, help='Username to lock as (useful when running inside Docker where user would otherwise be root)')
 @click.pass_context
-def lock(ctx, box):
+def lock(ctx, box, lock_user):
     """Lock a box to prevent others from using it."""
     ip, box_name = resolve_and_validate_box_with_name(ctx, box, _skip_lock_check=True)
     display_name = box_name or box
 
-    user = get_lager_user()
+    user = lock_user if lock_user else get_lager_user()
+
+    if user == 'root':
+        click.secho('Warning: locking as root (likely running inside a Docker container).', fg='yellow', err=True)
+        click.secho('To lock as yourself, use: lager boxes lock --box ' + display_name + ' --user <username>', fg='yellow', err=True)
+        click.secho('Or set permanently: lager defaults add --user <username>', fg='yellow', err=True)
+        click.echo()
 
     try:
         resp = requests.post(f'http://{ip}:5000/lock', json={'user': user}, timeout=5)
