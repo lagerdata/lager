@@ -3,11 +3,13 @@ title: "Version 0.5.0"
 description: "March 05, 2026"
 ---
 
+> Historical note: this release captured an earlier migration window where control-plane bootstrap lived in Lager. Current open-source Lager keeps shared box primitives such as `/status`, while Stout owns enterprise control-plane install/bootstrap.
+
 ## <u>Features</u>
 
 - **Control plane heartbeat**: WebSocket-based heartbeat client reports Lager Box status (health, version, nets) to the control plane
 - **Box status endpoint**: `/status` endpoint on both Flask and Python HTTP servers returning box health, version, and connected nets
-- **`lager boxes connect`**: new command to configure a Lager Box for control plane heartbeat reporting
+- **`lager boxes connect`**: historical migration command to configure a Lager Box for control plane heartbeat reporting
 
 ## <u>Improvements</u>
 
