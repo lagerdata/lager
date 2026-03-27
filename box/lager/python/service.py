@@ -317,6 +317,16 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                 # Send exit code 0
                 yield b'- 1 0'
             self.send_streaming_response(test_generator())
+        elif self.path == '/nets/list':
+            # Return full saved net details (instrument, address, pin, role, etc.)
+            try:
+                with open('/etc/lager/saved_nets.json', 'r') as f:
+                    nets = json.load(f)
+                if not isinstance(nets, list):
+                    nets = []
+                self.send_json_response(200, nets)
+            except (FileNotFoundError, json.JSONDecodeError, TypeError):
+                self.send_json_response(200, [])
         elif self.path == '/lock':
             self._handle_lock_status()
         elif self.path.startswith('/download-file'):
