@@ -3,10 +3,12 @@ title: "Version 0.13.0"
 description: "March 20, 2026"
 ---
 
+> Historical note: `boxes connect` was a temporary migration seam. Current open-source Lager no longer exposes that command; Stout owns box install/bootstrap.
+
 ## <u>Features</u>
 
 - `--force-command` flag is now available on all subcommands that target a Lager Box (not just as a global flag). Place it anywhere after the subcommand name: `lager python script.py --box lab-box --force-command`
-- `--force-command` added to `hello`, `install`, `uninstall`, and `boxes connect` commands
+- `--force-command` added to `hello`, `install`, `uninstall`, and the historical `boxes connect` command
 
 ## <u>Improvements</u>
 

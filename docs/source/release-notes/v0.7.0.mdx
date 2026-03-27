@@ -3,15 +3,17 @@ title: "Version 0.7.0"
 description: "March 10, 2026"
 ---
 
+> Historical note: the control-plane items in this release were part of a migration stage before Stout install/bootstrap was separated from open-source Lager.
+
 ## <u>Features</u>
 
 - `lager devenv terminal --attach <container_name>` to attach to a running Docker container via `docker exec`
 - `lager devenv terminal --shell <path>` to override the default shell when attaching
-- Jobs WebSocket client added to control plane heartbeat for receiving and executing job dispatch commands
+- Jobs WebSocket client added to control plane heartbeat for receiving and executing job dispatch commands during the migration window
 
 ## <u>Improvements</u>
 
-- Default control plane URL updated to `https://api.stoutdata.ai`
+- Default control plane URL updated to `https://api.stoutdata.ai` during the migration window
 
 ## <u>Installation</u>
 

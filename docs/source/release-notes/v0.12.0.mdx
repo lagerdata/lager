@@ -3,6 +3,8 @@ title: "Version 0.12.0"
 description: "March 20, 2026"
 ---
 
+> Historical note: `lager boxes connect` was later removed from open-source Lager once Stout became the canonical box bootstrap and orchestration layer.
+
 ## <u>Features</u>
 
 - **Command-in-progress lock** — When a `lager` command is running on a Lager Box, all other commands are automatically blocked with a clear error message, including from the same user. Locks auto-expire after 30 minutes to handle crashed CLI processes
@@ -13,7 +15,7 @@ description: "March 20, 2026"
 
 ## <u>Improvements</u>
 
-- Hardcoded control plane URL for `lager boxes connect`, removing the `--url` flag
+- Hardcoded control plane URL for the historical `lager boxes connect` flow, removing the `--url` flag
 
 ## <u>Installation</u>
 
