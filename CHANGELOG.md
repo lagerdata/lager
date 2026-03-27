@@ -2,6 +2,8 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+Historical note: versions `0.5.0` through `0.13.0` include migration-era entries for Stout control-plane integration. Current open-source Lager keeps shared runtime primitives such as `/status`, `/lock`, `/nets/list`, and `/python`, while Stout owns enterprise bootstrap and orchestration.
+
 ## [0.13.2] - 2026-03-21
 
 ### Changed
@@ -16,7 +18,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Added
 - `--force-command` is now a local flag on all subcommands that target a box, not just a global flag
-- `--force-command` added to `hello`, `install`, `uninstall`, and `boxes connect` commands
+- `--force-command` added to `hello`, `install`, `uninstall`, and the historical `boxes connect` command
 
 ### Changed
 - `lager python --detach` now keeps the command lock until the detached process finishes on the box. The lock is automatically released when the script completes
@@ -36,7 +38,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Changed
 - Command lock is process-based — same user cannot stomp on their own commands unless using `--force-command`
-- Hardcoded control plane URL, removed `--url` flag from `lager boxes connect`
+- Hardcoded control plane URL, removed `--url` flag from the historical `lager boxes connect` flow
 
 ## [0.11.0] - 2026-03-18
 
@@ -102,10 +104,10 @@ All notable changes to the Lager platform are documented here. For detailed rele
 ### Added
 - `lager devenv terminal --attach <container_name>` to attach to a running Docker container
 - `lager devenv terminal --shell <path>` to override the shell when attaching
-- Jobs WebSocket client in control plane heartbeat for receiving and executing job dispatch commands
+- Jobs WebSocket client in control plane heartbeat for receiving and executing job dispatch commands during the migration window
 
 ### Changed
-- Default control plane URL changed to `https://api.stoutdata.ai`
+- Default control plane URL changed to `https://api.stoutdata.ai` during the migration window
 
 ## [0.6.0] - 2026-03-06
 
@@ -134,7 +136,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
 ### Added
 - Control plane heartbeat client (`control_plane_client.py`) for WebSocket-based box status reporting
 - `/status` endpoint on both Flask and Python HTTP servers returning box health, version, and nets
-- `lager boxes connect` command to configure a box for control plane heartbeat reporting
+- `lager boxes connect` command to configure a box for control plane heartbeat reporting during the migration window
 - `websocket-client` dependency added to box Docker image
 
 ### Changed

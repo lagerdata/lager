@@ -26,7 +26,6 @@ lager boxes COMMAND [OPTIONS]
 | `sync` | Sync Lager Box versions from all boxes |
 | `lock` | Lock a box to prevent others from using it |
 | `unlock` | Unlock a box |
-| `connect` | Connect a box to a control plane |
 
 ---
 
@@ -294,25 +293,6 @@ lager boxes unlock --box lab-box
 
 # Force unlock another user's lock
 lager boxes unlock --box lab-box --force
-```
-
-### `connect`
-
-Connect a box to a control plane for heartbeat reporting.
-
-```bash
-lager boxes connect --box NAME --api-key KEY [OPTIONS]
-```
-
-**Options:**
-- `--box` (required) - Name of the box to connect
-- `--api-key` (required) - API key for control plane authentication
-- `--heartbeat-interval` - Heartbeat interval in seconds (default: 30)
-- `--yes` - Confirm without prompting
-
-**Example:**
-```bash
-lager boxes connect --box lab-box --api-key YOUR_API_KEY
 ```
 
 ---
