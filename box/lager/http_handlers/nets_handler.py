@@ -49,6 +49,12 @@ def register_nets_routes(app: Flask) -> None:
         Net.save_local_net(data)
         return jsonify({'ok': True})
 
+    @app.route('/nets', methods=['DELETE'])
+    def nets_delete_all():
+        """Delete all saved nets in a single atomic write."""
+        Net.delete_all_local_nets()
+        return jsonify({'ok': True})
+
     @app.route('/nets/<name>', methods=['DELETE'])
     def nets_delete(name):
         """Delete a net by name."""
