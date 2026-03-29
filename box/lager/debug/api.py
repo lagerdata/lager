@@ -630,8 +630,12 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None):
     # Lazy import to avoid circular dependencies
     from .jlink import JLink
 
-    # Stop any running GDB server to free the J-Link hardware for JLinkExe
+    # Stop ALL running J-Link processes to free the USB probe for JLinkExe.
+    # Legacy start_jlink() uses /tmp/jlink.pid; the debug service uses
+    # JLinkGDBServer (/tmp/jlink_gdbserver.pid). Both must be stopped or
+    # JLinkExe cannot get exclusive USB access (erase may fail or hit wrong flash).
     stop_jlink()
+    stop_jlink_gdbserver()
 
     # Give the hardware time to be released
     time.sleep(0.5)
@@ -676,11 +680,12 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
         Generator yielding output from flash operation
     """
     from .jlink import JLink
-    from .process import stop_jlink
 
-    # Stop any running GDB server to free the J-Link hardware for JLinkExe
-    # (flash works with or without a running GDB server)
+    # Stop ALL running J-Link processes to free the USB probe for JLinkExe.
+    # Both the legacy path (jlink.pid) and JLinkGDBServer (jlink_gdbserver.pid)
+    # must be stopped; otherwise JLinkExe cannot get exclusive USB access.
     stop_jlink()
+    stop_jlink_gdbserver()
 
     # Give the hardware time to be released
     time.sleep(0.5)
