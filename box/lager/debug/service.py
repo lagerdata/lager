@@ -56,23 +56,54 @@ def _resolve_device_type(net: Dict[str, Any]) -> str:
     return device
 
 
-def _get_script_file(net_name=None):
-    """Return script file path if it exists, reconstructing from NetsCache if needed."""
+def _get_script_file(net=None):
+    """Write J-Link script to temp path and return it, or None.
+
+    When *net* is a dict, prefer (in order): embedded ``jlink_script`` from the
+    request body, then NetsCache by ``net['name']``. Only then fall back to an
+    existing temp file from a previous connect — this avoids stale scripts and
+    fixes erase/flash when the POST body carries the script but NetsCache lags.
+
+    When *net* is a str, treat it as a net name (legacy callers).
+
+    When *net* is None, only return the temp path if it already exists.
+    """
     import os
-    if os.path.exists(JLINK_SCRIPT_TEMP_PATH):
+    import base64
+    from lager.cache import get_nets_cache
+
+    def _write_b64_script(b64: str, source: str) -> str:
+        with open(JLINK_SCRIPT_TEMP_PATH, 'wb') as f:
+            f.write(base64.b64decode(b64))
+        logger.info(f'Wrote J-Link script to {JLINK_SCRIPT_TEMP_PATH} ({source})')
         return JLINK_SCRIPT_TEMP_PATH
-    if net_name:
+
+    if isinstance(net, dict):
+        emb = net.get('jlink_script')
+        if isinstance(emb, str) and emb.strip():
+            try:
+                return _write_b64_script(emb, 'POST net body')
+            except Exception as e:
+                logger.warning(f'Failed to write embedded jlink_script: {e}')
+        name = net.get('name')
+        if name:
+            try:
+                saved = get_nets_cache().find_by_name(name)
+                if saved and saved.get('jlink_script'):
+                    return _write_b64_script(saved['jlink_script'], f'NetsCache:{name}')
+            except Exception as e:
+                logger.warning(f'Failed to reconstruct J-Link script from NetsCache: {e}')
+    elif isinstance(net, str) and net.strip():
         try:
-            import base64
-            from lager.cache import get_nets_cache
-            saved_net = get_nets_cache().find_by_name(net_name)
-            if saved_net and saved_net.get('jlink_script'):
-                with open(JLINK_SCRIPT_TEMP_PATH, 'wb') as f:
-                    f.write(base64.b64decode(saved_net['jlink_script']))
-                logger.info(f'Reconstructed J-Link script from NetsCache for net {net_name}')
-                return JLINK_SCRIPT_TEMP_PATH
+            saved = get_nets_cache().find_by_name(net)
+            if saved and saved.get('jlink_script'):
+                return _write_b64_script(saved['jlink_script'], f'NetsCache:{net}')
         except Exception as e:
             logger.warning(f'Failed to reconstruct J-Link script from NetsCache: {e}')
+
+    if os.path.exists(JLINK_SCRIPT_TEMP_PATH):
+        logger.debug(f'Using existing J-Link script file {JLINK_SCRIPT_TEMP_PATH}')
+        return JLINK_SCRIPT_TEMP_PATH
     return None
 
 
@@ -429,8 +460,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             # Use J-Link Commander approach (same as Python API)
             # This avoids the device type resolution issue with the GDB-based approach
             try:
-                net_name = data.get('net', {}).get('name')
-                jlink = JLink(cmdline, script_file=_get_script_file(net_name))
+                jlink = JLink(cmdline, script_file=_get_script_file(data.get('net') or {}))
             except (ValueError, KeyError) as e:
                 logger.error(f"Failed to create JLink from cmdline: {e}")
                 raise JLinkNotRunning()
@@ -532,7 +562,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                     raise ValueError("No firmware file provided")
 
                 # Ensure J-Link script temp file exists for flash operation
-                _get_script_file(net.get('name'))
+                script_path = _get_script_file(net)
 
                 # Call flash_device with correct parameters
                 # files parameter is a tuple: (hexfiles, binfiles, elffiles)
@@ -540,7 +570,9 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 # Collect all output from the flash_device generator
                 flash_output = []
                 files = (hexfiles, binfiles, elffiles)
-                for output in flash_device(files, run_after=True, mcu=device_type, use_gdb=(not verbose)):
+                for output in flash_device(
+                    files, run_after=True, mcu=device_type, use_gdb=(not verbose), script_file=script_path
+                ):
                     logger.info(f"[FLASH] {output}")  # Log flash progress
                     flash_output.append(output)  # Collect for client
 
@@ -573,8 +605,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             speed = data.get('speed', '4000')
             transport = data.get('transport', 'SWD')
 
-            # Ensure J-Link script temp file exists for erase operation
-            _get_script_file(net.get('name'))
+            script_path = _get_script_file(net)
 
             # chip_erase() returns a generator - must consume it to execute
             # NOTE: chip_erase() stops running J-Link / JLinkGDBServer so JLinkExe
@@ -583,7 +614,8 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 device=device_type,
                 speed=speed,
                 transport=transport,
-                mcu=None
+                mcu=None,
+                script_file=script_path,
             ))
 
             with connections_lock:
@@ -635,8 +667,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
 
             # Create JLink instance from the running GDB server's configuration
             try:
-                net_name = data.get('net', {}).get('name')
-                jlink = JLink(cmdline, script_file=_get_script_file(net_name))
+                jlink = JLink(cmdline, script_file=_get_script_file(data.get('net') or {}))
             except (ValueError, KeyError) as e:
                 logger.error(f"Failed to create JLink from cmdline: {e}")
                 self.send_error_response(500, f"Failed to initialize J-Link: {e}")
