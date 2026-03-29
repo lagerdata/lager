@@ -608,11 +608,16 @@ def erase_flash(start_addr, length, mcu=None):
 
 def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None):
     """
-    Perform full chip erase (J-Link only)
+    Erase flash via J-Link Commander.
 
-    This will erase the entire flash memory on the device.
-    WARNING: This will erase ALL data on the chip, including any
-    protection settings on Renesas devices.
+    Most devices: full chip ``erase``. **DA1469x** uses **address-range** erase over the
+    external QSPI XIP map (default 1 MiB @ 0x16000000 — loader-style bank 0 — or
+    ``LAGER_ERASE_RANGE`` in the J-Link script). Commander enables that QSPI flash bank
+    (``SetEnableFlashbank``), then unlocks external erase (``EnableEraseAllFlashBanks``),
+    then ``erase <start> <end>`` — not a global chip erase — to avoid wiping internal
+    flash. No extra Commander steps after the range erase (connect, erase, disconnect).
+
+    WARNING: On non-DA1469 devices, full chip erase erases ALL data on the chip.
 
     Args:
         device: J-Link device name (e.g., 'R7FA0E107', 'NRF52840_XXAA')
@@ -676,11 +681,8 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
     for reliability. The GDB-based flash method was removed due to unreliable behavior
     where it would report success but not actually program the device.
 
-    For DA1469x, the J-Link script's ``ResetTarget()`` must return with the CPU **halted**
-    (SEGGER contract). After ``monitor reset`` + ``monitor go``, we **stop
-    JLinkGDBServer** — disconnect often **halts** the core again — then run a short
-    J-Link Commander ``connect`` + ``g`` so the CPU runs with no GDB attached (same goal
-    as Mynewt ``flash_loader`` exiting).
+    For DA1469x, post-flash may run the target via GDB then stop the server so the MCU is
+    not left halted under attach. Other devices: reconnect GDB server only.
 
     Args:
         files: Tuple of (hexfiles, binfiles, elffiles)
@@ -730,12 +732,6 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
 
     yield from jlink.flash(files, preverify, verify)
 
-    # DA1469x: after loadfile the core may still be halted; boot ROM remap + app entry
-    # need a reset-without-halt so firmware runs (matches power-cycle recovery users see).
-    if 'DA1469' in (device or '').upper():
-        yield 'Resetting target after flash (run mode)...'
-        yield from jlink.reset(halt=False)
-
     # Use the same JLinkGDBServer + PID file as handle_connect (not process.start_jlink /
     # /tmp/jlink.pid), otherwise the debug service thinks no server is running and the
     # next connect can fail or leave the target in a bad state.
@@ -753,42 +749,22 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
             script_file=resolved_script,
         )
         yield "GDB server reconnected"
-        # DA1469x: ResetTarget() in the user's J-Link script returns with CPU halted.
-        # monitor go starts execution, but a live JLinkGDBServer + GDB client session
-        # often leaves the core stopped again on disconnect — same class of issue as
-        # flash_loader leaving the target free. Run, then release the probe.
+        # DA1469x: start server, monitor reset + go (same as connect attach reset), then
+        # stop server so the target can run without the GDB session attached.
         if 'DA1469' in (device or '').upper():
             time.sleep(1.0)
             try:
                 gdb_reset(halt=False, device=device)
-                yield "Target running after flash (monitor reset + go)"
+                yield "Target running after flash"
             except Exception as e:
                 logger.warning("DA1469x post-flash gdb_reset failed: %s", e)
-                yield f"Warning: Could not run target after flash (monitor go): {e}"
+                yield f"Warning: Could not run target after flash: {e}"
             else:
                 try:
                     stop_jlink_gdbserver()
-                    yield (
-                        "Released J-Link GDB server so the MCU can run without debug "
-                        "attach (DA1469x). Reconnect with: lager debug <net> connect"
-                    )
                 except Exception as e:
                     logger.warning("DA1469x stop_jlink_gdbserver after flash: %s", e)
                     yield f"Warning: Could not stop GDB server after flash: {e}"
-                else:
-                    # Killing JLinkGDBServer often halts the core on disconnect; issue
-                    # Commander connect + g with no GDB so the app can run (rnh/monitor go
-                    # alone are undone by that teardown).
-                    time.sleep(0.3)
-                    try:
-                        yield (
-                            'Ensuring CPU run after probe disconnect '
-                            '(J-Link Commander go)...'
-                        )
-                        yield from jlink.go()
-                    except Exception as e:
-                        logger.warning("DA1469x Commander go after flash: %s", e)
-                        yield f"Warning: Commander go after probe release failed: {e}"
     except Exception as e:
         yield f"Warning: Failed to reconnect GDB server: {e}"
 
