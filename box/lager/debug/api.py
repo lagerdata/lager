@@ -676,8 +676,9 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
     for reliability. The GDB-based flash method was removed due to unreliable behavior
     where it would report success but not actually program the device.
 
-    For DA1469x, ``loadfile`` plus post-flash ``rnh`` (and the box ``-JLinkScriptFile``)
-    replace Apache Mynewt's RAM ``flash_loader`` + GDB ``fl_load`` style programming.
+    For DA1469x, ``loadfile`` plus post-flash ``rnh``, then after JLinkGDBServer restarts
+    ``gdb_reset(halt=False)`` (``monitor reset`` + ``monitor go``), matching ``connect``
+    with attach reset — so the core is not left halted when the debugger reattaches.
 
     Args:
         files: Tuple of (hexfiles, binfiles, elffiles)
@@ -750,6 +751,17 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
             script_file=resolved_script,
         )
         yield "GDB server reconnected"
+        # DA1469x: Commander rnh runs before the server restarts; JLinkGDBServer can still
+        # leave the core halted on attach even with -nohalt. connect() fixes this with
+        # gdb_reset (monitor reset + monitor go) after start — do the same so the unit runs.
+        if 'DA1469' in (device or '').upper():
+            time.sleep(1.0)
+            try:
+                gdb_reset(halt=False, device=device)
+                yield "Target running after flash (monitor reset + go)"
+            except Exception as e:
+                logger.warning("DA1469x post-flash gdb_reset failed: %s", e)
+                yield f"Warning: Could not run target after flash (monitor go): {e}"
     except Exception as e:
         yield f"Warning: Failed to reconnect GDB server: {e}"
 
