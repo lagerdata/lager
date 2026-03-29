@@ -607,7 +607,7 @@ def erase_flash(start_addr, length, mcu=None):
     raise JLinkNotRunning()
 
 
-def chip_erase(device, speed='4000', transport='SWD', mcu=None):
+def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None):
     """
     Perform full chip erase (J-Link only)
 
@@ -620,6 +620,8 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None):
         speed: Interface speed in kHz (default: 4000)
         transport: Transport protocol ('SWD' or 'JTAG', default: 'SWD')
         mcu: MCU identifier (optional, unused for J-Link)
+        script_file: Optional path to J-Link script (from debug service); if None,
+            uses a temp file left by connect or api._get_script_file().
 
     Returns:
         Generator yielding output from erase operation
@@ -654,13 +656,20 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None):
             self.args = args
             self.script_file = script_file
 
-    jlink = TempJLink(cmd_args, script_file=_get_script_file())
+    resolved_script = script_file if (script_file and os.path.exists(script_file)) else _get_script_file()
+    if not resolved_script:
+        logger.warning(
+            'chip_erase: no J-Link script file; DA1469x external QSPI may not be erased'
+        )
+
+    jlink = TempJLink(cmd_args, script_file=resolved_script)
     jlink.__class__ = JLink
 
     return jlink.chip_erase()
 
 
-def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None, use_gdb=True):
+def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None, use_gdb=True,
+                 script_file=None):
     """
     Flash firmware to device using JLinkExe.
 
@@ -675,6 +684,7 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
         run_after: Reset and run after flashing (JLinkExe does this automatically)
         mcu: MCU identifier (e.g., 'nRF52833_XXAA')
         use_gdb: DEPRECATED - ignored, always uses JLinkExe
+        script_file: Optional path to J-Link script file (from debug service)
 
     Returns:
         Generator yielding output from flash operation
@@ -709,7 +719,8 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
             self.args = args
             self.script_file = script_file
 
-    jlink = TempJLink(jlink_args, script_file=_get_script_file())
+    resolved_script = script_file if (script_file and os.path.exists(script_file)) else _get_script_file()
+    jlink = TempJLink(jlink_args, script_file=resolved_script)
     jlink.__class__ = JLink
 
     yield from jlink.flash(files, preverify, verify)
