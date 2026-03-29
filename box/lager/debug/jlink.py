@@ -160,7 +160,10 @@ class JLink:
 
     def chip_erase(self, *, close=True):
         """
-        Perform full chip erase
+        Perform full chip erase.
+
+        For DA1469x, runs ``Exec EnableEraseAllFlashBanks`` (SEGGER: required so external
+        QSPI is not skipped), then ``erase``, then an optional XIP range erase.
 
         Args:
             close: Whether to close connection after operation (unused for J-Link)
@@ -170,17 +173,21 @@ class JLink:
         """
         with commander(self.args, script_file=self.script_file) as jl:
             yield jl.run_command('connect')
-            # Full chip erase — erases flash sectors J-Link associates with the device.
-            yield jl.run_command('erase')
-            # DA1469x: also erase the external QSPI region used for binary/XIP (see
-            # _DA1469X_QSPI_XIP_*), otherwise the application may survive a generic erase.
             dev = ''
             try:
                 di = self.args.index('-device')
                 dev = self.args[di + 1]
             except (ValueError, IndexError):
                 pass
-            if 'DA1469' in (dev or '').upper():
+            is_da1469 = 'DA1469' in (dev or '').upper()
+            # SEGGER: without this, J-Link only erases the default (e.g. internal) bank;
+            # external (Q)SPI is skipped — see EnableEraseAllFlashBanks in J-Link Command Strings.
+            if is_da1469:
+                yield jl.run_command('Exec EnableEraseAllFlashBanks')
+            # Full chip erase — all banks enabled above for DA1469x.
+            yield jl.run_command('erase')
+            # DA1469x: explicit XIP range — belt-and-suspenders vs generic erase alone.
+            if is_da1469:
                 qspi_start, qspi_end = _DA1469X_QSPI_XIP_START, _DA1469X_QSPI_XIP_END
                 src = 'defaults in jlink.py'
                 parsed = parse_lager_erase_range_from_script(self.script_file)
