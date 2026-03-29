@@ -11,6 +11,7 @@ debug probes using the J-Link Commander (JLinkExe).
 import logging
 import os
 import re
+import time
 from contextlib import closing, contextmanager
 import pexpect
 from pexpect import replwrap
@@ -270,11 +271,31 @@ class JLink:
         Yields:
             Output from J-Link commands, plus a WARNING line if loadfile was skipped
             because flash already matched (no bytes written).
+
+        **DA1469x:** See ``rnh`` / ``h`` before ``loadfile`` in implementation; opt out via
+        ``LAGER_DA1469_PRE_FLASH_RUN_HALT=0``.
         """
         (hexfiles, binfiles, elffiles) = files
         with commander(self.args, script_file=self.script_file) as jl:
             # Yield connect output to show device discovery details
             yield jl.run_command('connect')
+
+            # DA1469x: Commander attach is halted; after SEGGER erase the first loadfile can
+            # misbehave until the core has run briefly (same idea as XIP memrd: running vs
+            # halted sees different bus/QSPIC behavior). Reset+run, short settle, halt, then program.
+            dev = ''
+            try:
+                di = self.args.index('-device')
+                dev = self.args[di + 1]
+            except (ValueError, IndexError):
+                pass
+            if 'DA1469' in (dev or '').upper():
+                pre = os.environ.get('LAGER_DA1469_PRE_FLASH_RUN_HALT', '1').strip().lower()
+                if pre not in ('0', 'false', 'no', 'off'):
+                    logger.info('DA1469x: rnh, settle, h before loadfile')
+                    yield jl.run_command('rnh')
+                    time.sleep(0.1)
+                    yield jl.run_command('h')
 
             # Yield loadfile output
             for file in hexfiles:
