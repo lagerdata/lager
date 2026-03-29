@@ -576,6 +576,11 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                     logger.info(f"[FLASH] {output}")  # Log flash progress
                     flash_output.append(output)  # Collect for client
 
+                # DA1469x post-flash may stop JLinkGDBServer; drop stale connection state.
+                if 'DA1469' in device_type.upper():
+                    with connections_lock:
+                        active_connections.clear()
+
                 self.send_json_response(200, {
                     'status': 'flash_complete',
                     'output': flash_output,  # Include verbose output
