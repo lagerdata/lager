@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for MCP oscilloscope tools (cli.mcp.tools.scope)."""
+"""Unit tests for MCP oscilloscope tools (lager.mcp.tools.scope)."""
 
 import pytest
 from test.mcp.conftest import assert_lager_called_with
@@ -12,26 +12,26 @@ class TestScopeBasicTools:
     """Verify basic scope tools: list_nets, autoscale, enable, disable."""
 
     def test_list_nets(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_list_nets
+        from lager.mcp.tools.scope import lager_scope_list_nets
         lager_scope_list_nets(box="X")
         assert_lager_called_with(mock_subprocess, "scope", "--box", "X")
 
     def test_autoscale(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_autoscale
+        from lager.mcp.tools.scope import lager_scope_autoscale
         lager_scope_autoscale(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess, "scope", "scope1", "autoscale", "--box", "X",
         )
 
     def test_enable(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_enable
+        from lager.mcp.tools.scope import lager_scope_enable
         lager_scope_enable(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess, "scope", "scope1", "enable", "--box", "X",
         )
 
     def test_disable(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_disable
+        from lager.mcp.tools.scope import lager_scope_disable
         lager_scope_disable(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess, "scope", "scope1", "disable", "--box", "X",
@@ -42,28 +42,28 @@ class TestScopeBasicTools:
     def test_scope_enable_subprocess_failure(self, mock_subprocess):
         from unittest.mock import MagicMock
         mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.scope import lager_scope_enable
+        from lager.mcp.tools.scope import lager_scope_enable
         result = lager_scope_enable(box="B", net="scope1")
         assert "Error" in result
 
     def test_scope_measure_freq_subprocess_failure(self, mock_subprocess):
         from unittest.mock import MagicMock
         mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.scope import lager_scope_measure_freq
+        from lager.mcp.tools.scope import lager_scope_measure_freq
         result = lager_scope_measure_freq(box="B", net="scope1")
         assert "Error" in result
 
     def test_scope_trigger_edge_subprocess_failure(self, mock_subprocess):
         from unittest.mock import MagicMock
         mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.scope import lager_scope_trigger_edge
+        from lager.mcp.tools.scope import lager_scope_trigger_edge
         result = lager_scope_trigger_edge(box="B", net="scope1")
         assert "Error" in result
 
     def test_scope_stream_start_subprocess_failure(self, mock_subprocess):
         from unittest.mock import MagicMock
         mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.scope import lager_scope_stream_start
+        from lager.mcp.tools.scope import lager_scope_stream_start
         result = lager_scope_stream_start(box="B", net="scope1")
         assert "Error" in result
 
@@ -73,7 +73,7 @@ class TestScopeMeasurements:
     """Verify measurement tools build correct commands via _measure helper."""
 
     def test_measure_freq(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_measure_freq
+        from lager.mcp.tools.scope import lager_scope_measure_freq
         lager_scope_measure_freq(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess,
@@ -81,7 +81,7 @@ class TestScopeMeasurements:
         )
 
     def test_measure_vpp(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_measure_vpp
+        from lager.mcp.tools.scope import lager_scope_measure_vpp
         lager_scope_measure_vpp(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess,
@@ -89,7 +89,7 @@ class TestScopeMeasurements:
         )
 
     def test_measure_vrms(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_measure_vrms
+        from lager.mcp.tools.scope import lager_scope_measure_vrms
         lager_scope_measure_vrms(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess,
@@ -97,7 +97,7 @@ class TestScopeMeasurements:
         )
 
     def test_measure_vmax_with_display(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_measure_vmax
+        from lager.mcp.tools.scope import lager_scope_measure_vmax
         lager_scope_measure_vmax(box="X", net="scope1", display=True)
         assert_lager_called_with(
             mock_subprocess,
@@ -105,7 +105,7 @@ class TestScopeMeasurements:
         )
 
     def test_measure_vmin_with_cursor(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_measure_vmin
+        from lager.mcp.tools.scope import lager_scope_measure_vmin
         lager_scope_measure_vmin(box="X", net="scope1", cursor=True)
         assert_lager_called_with(
             mock_subprocess,
@@ -113,7 +113,7 @@ class TestScopeMeasurements:
         )
 
     def test_measure_vavg_with_display_and_cursor(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_measure_vavg
+        from lager.mcp.tools.scope import lager_scope_measure_vavg
         lager_scope_measure_vavg(box="X", net="scope1", display=True, cursor=True)
         assert_lager_called_with(
             mock_subprocess,
@@ -122,7 +122,7 @@ class TestScopeMeasurements:
         )
 
     def test_measure_period(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_measure_period
+        from lager.mcp.tools.scope import lager_scope_measure_period
         lager_scope_measure_period(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess,
@@ -130,7 +130,7 @@ class TestScopeMeasurements:
         )
 
     def test_measure_pw_pos(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_measure_pw_pos
+        from lager.mcp.tools.scope import lager_scope_measure_pw_pos
         lager_scope_measure_pw_pos(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess,
@@ -138,7 +138,7 @@ class TestScopeMeasurements:
         )
 
     def test_measure_pw_neg(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_measure_pw_neg
+        from lager.mcp.tools.scope import lager_scope_measure_pw_neg
         lager_scope_measure_pw_neg(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess,
@@ -146,7 +146,7 @@ class TestScopeMeasurements:
         )
 
     def test_measure_duty_pos(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_measure_duty_pos
+        from lager.mcp.tools.scope import lager_scope_measure_duty_pos
         lager_scope_measure_duty_pos(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess,
@@ -154,7 +154,7 @@ class TestScopeMeasurements:
         )
 
     def test_measure_duty_neg(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_measure_duty_neg
+        from lager.mcp.tools.scope import lager_scope_measure_duty_neg
         lager_scope_measure_duty_neg(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess,
@@ -167,14 +167,14 @@ class TestScopeCapture:
     """Verify capture control tools: start, stop, force."""
 
     def test_start(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_start
+        from lager.mcp.tools.scope import lager_scope_start
         lager_scope_start(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess, "scope", "scope1", "start", "--box", "X",
         )
 
     def test_start_single(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_start
+        from lager.mcp.tools.scope import lager_scope_start
         lager_scope_start(box="X", net="scope1", single=True)
         assert_lager_called_with(
             mock_subprocess,
@@ -182,14 +182,14 @@ class TestScopeCapture:
         )
 
     def test_stop(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_stop
+        from lager.mcp.tools.scope import lager_scope_stop
         lager_scope_stop(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess, "scope", "scope1", "stop", "--box", "X",
         )
 
     def test_force(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_force
+        from lager.mcp.tools.scope import lager_scope_force
         lager_scope_force(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess, "scope", "scope1", "force", "--box", "X",
@@ -201,7 +201,7 @@ class TestScopeChannelSettings:
     """Verify channel setting tools: scale, coupling, probe, timebase."""
 
     def test_scale(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_scale
+        from lager.mcp.tools.scope import lager_scope_scale
         lager_scope_scale(box="X", net="scope1", volts_per_div=0.5)
         assert_lager_called_with(
             mock_subprocess,
@@ -209,7 +209,7 @@ class TestScopeChannelSettings:
         )
 
     def test_coupling(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_coupling
+        from lager.mcp.tools.scope import lager_scope_coupling
         lager_scope_coupling(box="X", net="scope1", mode="ac")
         assert_lager_called_with(
             mock_subprocess,
@@ -217,7 +217,7 @@ class TestScopeChannelSettings:
         )
 
     def test_probe(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_probe
+        from lager.mcp.tools.scope import lager_scope_probe
         lager_scope_probe(box="X", net="scope1", attenuation="10x")
         assert_lager_called_with(
             mock_subprocess,
@@ -225,7 +225,7 @@ class TestScopeChannelSettings:
         )
 
     def test_timebase(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_timebase
+        from lager.mcp.tools.scope import lager_scope_timebase
         lager_scope_timebase(box="X", net="scope1", seconds_per_div=0.001)
         assert_lager_called_with(
             mock_subprocess,
@@ -238,7 +238,7 @@ class TestScopeTriggers:
     """Verify trigger configuration tools."""
 
     def test_trigger_edge_defaults(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_trigger_edge
+        from lager.mcp.tools.scope import lager_scope_trigger_edge
         lager_scope_trigger_edge(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess,
@@ -246,7 +246,7 @@ class TestScopeTriggers:
         )
 
     def test_trigger_edge_with_all_options(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_trigger_edge
+        from lager.mcp.tools.scope import lager_scope_trigger_edge
         lager_scope_trigger_edge(
             box="X", net="scope1",
             source="CH1", slope="rising", level=1.5,
@@ -258,7 +258,7 @@ class TestScopeTriggers:
         )
 
     def test_trigger_uart_defaults(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_trigger_uart
+        from lager.mcp.tools.scope import lager_scope_trigger_uart
         lager_scope_trigger_uart(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess,
@@ -269,7 +269,7 @@ class TestScopeTriggers:
         )
 
     def test_trigger_uart_with_optional_params(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_trigger_uart
+        from lager.mcp.tools.scope import lager_scope_trigger_uart
         lager_scope_trigger_uart(
             box="X", net="scope1",
             baud=115200, source="CH2", level=2.0, data="0xAB",
@@ -284,7 +284,7 @@ class TestScopeTriggers:
         )
 
     def test_trigger_i2c_defaults(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_trigger_i2c
+        from lager.mcp.tools.scope import lager_scope_trigger_i2c
         lager_scope_trigger_i2c(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess,
@@ -295,7 +295,7 @@ class TestScopeTriggers:
         )
 
     def test_trigger_i2c_with_optional_params(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_trigger_i2c
+        from lager.mcp.tools.scope import lager_scope_trigger_i2c
         lager_scope_trigger_i2c(
             box="X", net="scope1",
             source_scl="CH1", source_sda="CH2",
@@ -314,7 +314,7 @@ class TestScopeTriggers:
         )
 
     def test_trigger_spi_defaults(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_trigger_spi
+        from lager.mcp.tools.scope import lager_scope_trigger_spi
         lager_scope_trigger_spi(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess,
@@ -325,7 +325,7 @@ class TestScopeTriggers:
         )
 
     def test_trigger_spi_with_optional_params(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_trigger_spi
+        from lager.mcp.tools.scope import lager_scope_trigger_spi
         lager_scope_trigger_spi(
             box="X", net="scope1",
             source_mosi_miso="CH1", source_sck="CH2", source_cs="CH3",
@@ -346,7 +346,7 @@ class TestScopeTriggers:
         )
 
     def test_trigger_pulse_defaults(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_trigger_pulse
+        from lager.mcp.tools.scope import lager_scope_trigger_pulse
         lager_scope_trigger_pulse(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess,
@@ -355,7 +355,7 @@ class TestScopeTriggers:
         )
 
     def test_trigger_pulse_with_optional_params(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_trigger_pulse
+        from lager.mcp.tools.scope import lager_scope_trigger_pulse
         lager_scope_trigger_pulse(
             box="X", net="scope1",
             source="CH1", level=2.0, upper=0.001, lower=0.0001,
@@ -374,7 +374,7 @@ class TestScopeCursors:
     """Verify cursor control tools."""
 
     def test_cursor_set_a_with_x_and_y(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_cursor_set_a
+        from lager.mcp.tools.scope import lager_scope_cursor_set_a
         lager_scope_cursor_set_a(box="X", net="scope1", x=0.001, y=1.5)
         assert_lager_called_with(
             mock_subprocess,
@@ -383,7 +383,7 @@ class TestScopeCursors:
         )
 
     def test_cursor_set_b_x_only(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_cursor_set_b
+        from lager.mcp.tools.scope import lager_scope_cursor_set_b
         lager_scope_cursor_set_b(box="X", net="scope1", x=0.002)
         assert_lager_called_with(
             mock_subprocess,
@@ -392,7 +392,7 @@ class TestScopeCursors:
         )
 
     def test_cursor_move_a(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_cursor_move_a
+        from lager.mcp.tools.scope import lager_scope_cursor_move_a
         lager_scope_cursor_move_a(box="X", net="scope1", x=0.5, y=-0.3)
         assert_lager_called_with(
             mock_subprocess,
@@ -401,7 +401,7 @@ class TestScopeCursors:
         )
 
     def test_cursor_move_b(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_cursor_move_b
+        from lager.mcp.tools.scope import lager_scope_cursor_move_b
         lager_scope_cursor_move_b(box="X", net="scope1", y=1.0)
         assert_lager_called_with(
             mock_subprocess,
@@ -410,7 +410,7 @@ class TestScopeCursors:
         )
 
     def test_cursor_hide(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_cursor_hide
+        from lager.mcp.tools.scope import lager_scope_cursor_hide
         lager_scope_cursor_hide(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess,
@@ -423,7 +423,7 @@ class TestScopeStreaming:
     """Verify PicoScope streaming tools."""
 
     def test_stream_start_defaults(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_stream_start
+        from lager.mcp.tools.scope import lager_scope_stream_start
         lager_scope_stream_start(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess,
@@ -438,7 +438,7 @@ class TestScopeStreaming:
         )
 
     def test_stream_start_custom(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_stream_start
+        from lager.mcp.tools.scope import lager_scope_stream_start
         lager_scope_stream_start(
             box="X", net="scope1",
             channel="B", volts_per_div=2.0, time_per_div=0.01,
@@ -458,7 +458,7 @@ class TestScopeStreaming:
         )
 
     def test_stream_stop(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_stream_stop
+        from lager.mcp.tools.scope import lager_scope_stream_stop
         lager_scope_stream_stop(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess,
@@ -466,7 +466,7 @@ class TestScopeStreaming:
         )
 
     def test_stream_status(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_stream_status
+        from lager.mcp.tools.scope import lager_scope_stream_status
         lager_scope_stream_status(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess,
@@ -474,7 +474,7 @@ class TestScopeStreaming:
         )
 
     def test_stream_capture_defaults(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_stream_capture
+        from lager.mcp.tools.scope import lager_scope_stream_capture
         lager_scope_stream_capture(box="X", net="scope1")
         assert_lager_called_with(
             mock_subprocess,
@@ -483,7 +483,7 @@ class TestScopeStreaming:
         )
 
     def test_stream_capture_with_samples(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_stream_capture
+        from lager.mcp.tools.scope import lager_scope_stream_capture
         lager_scope_stream_capture(
             box="X", net="scope1",
             output="data.csv", duration=2.0, samples=5000,
@@ -496,7 +496,7 @@ class TestScopeStreaming:
         )
 
     def test_stream_config_enable_true(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_stream_config
+        from lager.mcp.tools.scope import lager_scope_stream_config
         lager_scope_stream_config(box="X", net="scope1", enable=True)
         assert_lager_called_with(
             mock_subprocess,
@@ -505,7 +505,7 @@ class TestScopeStreaming:
         )
 
     def test_stream_config_enable_false(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_stream_config
+        from lager.mcp.tools.scope import lager_scope_stream_config
         lager_scope_stream_config(box="X", net="scope1", enable=False)
         assert_lager_called_with(
             mock_subprocess,
@@ -514,7 +514,7 @@ class TestScopeStreaming:
         )
 
     def test_stream_config_enable_none(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_stream_config
+        from lager.mcp.tools.scope import lager_scope_stream_config
         lager_scope_stream_config(box="X", net="scope1", channel="B")
         assert_lager_called_with(
             mock_subprocess,
@@ -523,7 +523,7 @@ class TestScopeStreaming:
         )
 
     def test_stream_config_multiple_params(self, mock_subprocess):
-        from cli.mcp.tools.scope import lager_scope_stream_config
+        from lager.mcp.tools.scope import lager_scope_stream_config
         lager_scope_stream_config(
             box="X", net="scope1",
             channel="A", volts_per_div=0.5, coupling="ac",

@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for MCP logic analyzer tools (cli.mcp.tools.logic)."""
+"""Unit tests for MCP logic analyzer tools (lager.mcp.tools.logic)."""
 
 import pytest
 from test.mcp.conftest import assert_lager_called_with
@@ -12,19 +12,19 @@ class TestLogicBasicTools:
     """Verify basic logic tools: list_nets, enable, disable."""
 
     def test_list_nets(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_list_nets
+        from lager.mcp.tools.logic import lager_logic_list_nets
         lager_logic_list_nets(box="X")
         assert_lager_called_with(mock_subprocess, "logic", "--box", "X")
 
     def test_enable(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_enable
+        from lager.mcp.tools.logic import lager_logic_enable
         lager_logic_enable(box="X", net="logic1")
         assert_lager_called_with(
             mock_subprocess, "logic", "logic1", "enable", "--box", "X",
         )
 
     def test_disable(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_disable
+        from lager.mcp.tools.logic import lager_logic_disable
         lager_logic_disable(box="X", net="logic1")
         assert_lager_called_with(
             mock_subprocess, "logic", "logic1", "disable", "--box", "X",
@@ -35,14 +35,14 @@ class TestLogicBasicTools:
     def test_logic_enable_subprocess_failure(self, mock_subprocess):
         from unittest.mock import MagicMock
         mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.logic import lager_logic_enable
+        from lager.mcp.tools.logic import lager_logic_enable
         result = lager_logic_enable(box="B", net="logic1")
         assert "Error" in result
 
     def test_logic_measure_freq_subprocess_failure(self, mock_subprocess):
         from unittest.mock import MagicMock
         mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.logic import lager_logic_measure_freq
+        from lager.mcp.tools.logic import lager_logic_measure_freq
         result = lager_logic_measure_freq(box="B", net="logic1")
         assert "Error" in result
 
@@ -52,21 +52,21 @@ class TestLogicCapture:
     """Verify capture control tools: start, start_single, stop."""
 
     def test_start(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_start
+        from lager.mcp.tools.logic import lager_logic_start
         lager_logic_start(box="X", net="logic1")
         assert_lager_called_with(
             mock_subprocess, "logic", "logic1", "start", "--box", "X",
         )
 
     def test_start_single(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_start_single
+        from lager.mcp.tools.logic import lager_logic_start_single
         lager_logic_start_single(box="X", net="logic1")
         assert_lager_called_with(
             mock_subprocess, "logic", "logic1", "start-single", "--box", "X",
         )
 
     def test_stop(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_stop
+        from lager.mcp.tools.logic import lager_logic_stop
         lager_logic_stop(box="X", net="logic1")
         assert_lager_called_with(
             mock_subprocess, "logic", "logic1", "stop", "--box", "X",
@@ -78,7 +78,7 @@ class TestLogicMeasurements:
     """Verify measurement tools build correct commands via _measure helper."""
 
     def test_measure_period(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_measure_period
+        from lager.mcp.tools.logic import lager_logic_measure_period
         lager_logic_measure_period(box="X", net="logic1")
         assert_lager_called_with(
             mock_subprocess,
@@ -86,7 +86,7 @@ class TestLogicMeasurements:
         )
 
     def test_measure_freq(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_measure_freq
+        from lager.mcp.tools.logic import lager_logic_measure_freq
         lager_logic_measure_freq(box="X", net="logic1")
         assert_lager_called_with(
             mock_subprocess,
@@ -94,7 +94,7 @@ class TestLogicMeasurements:
         )
 
     def test_measure_dc_pos(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_measure_dc_pos
+        from lager.mcp.tools.logic import lager_logic_measure_dc_pos
         lager_logic_measure_dc_pos(box="X", net="logic1")
         assert_lager_called_with(
             mock_subprocess,
@@ -102,7 +102,7 @@ class TestLogicMeasurements:
         )
 
     def test_measure_dc_neg(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_measure_dc_neg
+        from lager.mcp.tools.logic import lager_logic_measure_dc_neg
         lager_logic_measure_dc_neg(box="X", net="logic1")
         assert_lager_called_with(
             mock_subprocess,
@@ -110,7 +110,7 @@ class TestLogicMeasurements:
         )
 
     def test_measure_pw_pos(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_measure_pw_pos
+        from lager.mcp.tools.logic import lager_logic_measure_pw_pos
         lager_logic_measure_pw_pos(box="X", net="logic1")
         assert_lager_called_with(
             mock_subprocess,
@@ -118,7 +118,7 @@ class TestLogicMeasurements:
         )
 
     def test_measure_pw_neg(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_measure_pw_neg
+        from lager.mcp.tools.logic import lager_logic_measure_pw_neg
         lager_logic_measure_pw_neg(box="X", net="logic1")
         assert_lager_called_with(
             mock_subprocess,
@@ -126,7 +126,7 @@ class TestLogicMeasurements:
         )
 
     def test_measure_freq_with_display(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_measure_freq
+        from lager.mcp.tools.logic import lager_logic_measure_freq
         lager_logic_measure_freq(box="X", net="logic1", display=True)
         assert_lager_called_with(
             mock_subprocess,
@@ -134,7 +134,7 @@ class TestLogicMeasurements:
         )
 
     def test_measure_period_with_cursor(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_measure_period
+        from lager.mcp.tools.logic import lager_logic_measure_period
         lager_logic_measure_period(box="X", net="logic1", cursor=True)
         assert_lager_called_with(
             mock_subprocess,
@@ -142,7 +142,7 @@ class TestLogicMeasurements:
         )
 
     def test_measure_dc_pos_with_display_and_cursor(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_measure_dc_pos
+        from lager.mcp.tools.logic import lager_logic_measure_dc_pos
         lager_logic_measure_dc_pos(
             box="X", net="logic1", display=True, cursor=True,
         )
@@ -158,7 +158,7 @@ class TestLogicTriggers:
     """Verify trigger configuration tools."""
 
     def test_trigger_edge_defaults(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_trigger_edge
+        from lager.mcp.tools.logic import lager_logic_trigger_edge
         lager_logic_trigger_edge(box="X", net="logic1")
         assert_lager_called_with(
             mock_subprocess,
@@ -167,7 +167,7 @@ class TestLogicTriggers:
         )
 
     def test_trigger_edge_with_all_options(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_trigger_edge
+        from lager.mcp.tools.logic import lager_logic_trigger_edge
         lager_logic_trigger_edge(
             box="X", net="logic1",
             source="CH1", slope="rising", level=1.5,
@@ -181,7 +181,7 @@ class TestLogicTriggers:
         )
 
     def test_trigger_pulse_defaults(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_trigger_pulse
+        from lager.mcp.tools.logic import lager_logic_trigger_pulse
         lager_logic_trigger_pulse(box="X", net="logic1")
         assert_lager_called_with(
             mock_subprocess,
@@ -190,7 +190,7 @@ class TestLogicTriggers:
         )
 
     def test_trigger_pulse_with_options(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_trigger_pulse
+        from lager.mcp.tools.logic import lager_logic_trigger_pulse
         lager_logic_trigger_pulse(
             box="X", net="logic1",
             trigger_on="gt", source="CH1", level=2.0,
@@ -205,7 +205,7 @@ class TestLogicTriggers:
         )
 
     def test_trigger_i2c_defaults(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_trigger_i2c
+        from lager.mcp.tools.logic import lager_logic_trigger_i2c
         lager_logic_trigger_i2c(box="X", net="logic1")
         assert_lager_called_with(
             mock_subprocess,
@@ -214,7 +214,7 @@ class TestLogicTriggers:
         )
 
     def test_trigger_i2c_with_options(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_trigger_i2c
+        from lager.mcp.tools.logic import lager_logic_trigger_i2c
         lager_logic_trigger_i2c(
             box="X", net="logic1",
             trigger_on="address", addr_width="7",
@@ -235,7 +235,7 @@ class TestLogicTriggers:
         )
 
     def test_trigger_uart_defaults(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_trigger_uart
+        from lager.mcp.tools.logic import lager_logic_trigger_uart
         lager_logic_trigger_uart(box="X", net="logic1")
         assert_lager_called_with(
             mock_subprocess,
@@ -244,7 +244,7 @@ class TestLogicTriggers:
         )
 
     def test_trigger_uart_with_options(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_trigger_uart
+        from lager.mcp.tools.logic import lager_logic_trigger_uart
         lager_logic_trigger_uart(
             box="X", net="logic1",
             trigger_on="data", parity="even", stop_bits="2",
@@ -262,7 +262,7 @@ class TestLogicTriggers:
         )
 
     def test_trigger_spi_defaults(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_trigger_spi
+        from lager.mcp.tools.logic import lager_logic_trigger_spi
         lager_logic_trigger_spi(box="X", net="logic1")
         assert_lager_called_with(
             mock_subprocess,
@@ -271,7 +271,7 @@ class TestLogicTriggers:
         )
 
     def test_trigger_spi_with_options(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_trigger_spi
+        from lager.mcp.tools.logic import lager_logic_trigger_spi
         lager_logic_trigger_spi(
             box="X", net="logic1",
             trigger_on="cs", data_width=8,
@@ -299,7 +299,7 @@ class TestLogicCursors:
     """Verify cursor control tools."""
 
     def test_cursor_set_a_with_x_and_y(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_cursor_set_a
+        from lager.mcp.tools.logic import lager_logic_cursor_set_a
         lager_logic_cursor_set_a(box="X", net="logic1", x=0.001, y=1.5)
         assert_lager_called_with(
             mock_subprocess,
@@ -308,7 +308,7 @@ class TestLogicCursors:
         )
 
     def test_cursor_set_a_no_args(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_cursor_set_a
+        from lager.mcp.tools.logic import lager_logic_cursor_set_a
         lager_logic_cursor_set_a(box="X", net="logic1")
         assert_lager_called_with(
             mock_subprocess,
@@ -316,7 +316,7 @@ class TestLogicCursors:
         )
 
     def test_cursor_set_b_x_only(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_cursor_set_b
+        from lager.mcp.tools.logic import lager_logic_cursor_set_b
         lager_logic_cursor_set_b(box="X", net="logic1", x=0.002)
         assert_lager_called_with(
             mock_subprocess,
@@ -325,7 +325,7 @@ class TestLogicCursors:
         )
 
     def test_cursor_move_a(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_cursor_move_a
+        from lager.mcp.tools.logic import lager_logic_cursor_move_a
         lager_logic_cursor_move_a(box="X", net="logic1", x=0.5, y=-0.3)
         assert_lager_called_with(
             mock_subprocess,
@@ -334,7 +334,7 @@ class TestLogicCursors:
         )
 
     def test_cursor_move_b(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_cursor_move_b
+        from lager.mcp.tools.logic import lager_logic_cursor_move_b
         lager_logic_cursor_move_b(box="X", net="logic1", y=1.0)
         assert_lager_called_with(
             mock_subprocess,
@@ -343,7 +343,7 @@ class TestLogicCursors:
         )
 
     def test_cursor_hide(self, mock_subprocess):
-        from cli.mcp.tools.logic import lager_logic_cursor_hide
+        from lager.mcp.tools.logic import lager_logic_cursor_hide
         lager_logic_cursor_hide(box="X", net="logic1")
         assert_lager_called_with(
             mock_subprocess,

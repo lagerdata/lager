@@ -5,7 +5,7 @@
 
 import pytest
 
-from cli.mcp.tools.spi import (
+from lager.mcp.tools.spi import (
     lager_spi_list_nets,
     lager_spi_config,
     lager_spi_transfer,

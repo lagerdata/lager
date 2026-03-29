@@ -5,7 +5,7 @@
 
 import pytest
 
-from cli.mcp.tools.defaults import (
+from lager.mcp.tools.defaults import (
     lager_defaults_show,
     lager_defaults_set,
     lager_defaults_delete,

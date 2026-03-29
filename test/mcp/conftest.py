@@ -3,6 +3,13 @@
 
 """Shared fixtures, marks, and config for MCP server tests."""
 
+import sys
+from pathlib import Path
+
+_box_dir = str(Path(__file__).resolve().parents[2] / "box")
+if _box_dir not in sys.path:
+    sys.path.insert(0, _box_dir)
+
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -48,7 +55,7 @@ def box3(request):
 @pytest.fixture
 def mock_subprocess():
     """Patch subprocess.run and return the mock for assertion."""
-    with patch("cli.mcp.server.subprocess.run") as mock_run:
+    with patch("lager.mcp.server.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(
             returncode=0,
             stdout="mock output",
