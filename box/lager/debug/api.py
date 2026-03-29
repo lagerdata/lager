@@ -681,8 +681,10 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
     for reliability. The GDB-based flash method was removed due to unreliable behavior
     where it would report success but not actually program the device.
 
-    For DA1469x, post-flash may run the target via GDB then stop the server so the MCU is
-    not left halted under attach. Other devices: reconnect GDB server only.
+    For DA1469x, before ``loadfile`` Commander runs ``rnh`` — brief sleep — ``h`` so the
+    first program after erase is not done straight from a cold halted attach (disable with
+    ``LAGER_DA1469_PRE_FLASH_RUN_HALT=0`` on the box). Post-flash may run the target via GDB
+    then stop the server. Other devices: reconnect GDB server only.
 
     Args:
         files: Tuple of (hexfiles, binfiles, elffiles)
