@@ -825,11 +825,18 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, erase, halt):
             client.erase(debug_net, speed='4000', transport='SWD')
             click.secho("Erase complete!", fg='green', err=True)
 
-            # Reconnect after erase (erase auto-disconnects)
-            # Always reconnect here to continue with flash operation
+            # Chip erase tears down J-Link; force a full reconnect before loadfile.
+            # force=False can reuse a stale gdbserver session — DA1469x then fails to
+            # boot after flash until power cycle. Disconnect + force=True matches
+            # erase → power cycle → flash.
             import time
-            time.sleep(0.3)
-            client.connect(debug_net, force=False, halt=False, jlink_script=jlink_script)
+            time.sleep(0.5)
+            try:
+                client.disconnect(debug_net)
+            except Exception:
+                pass
+            time.sleep(0.5)
+            client.connect(debug_net, force=True, halt=False, jlink_script=jlink_script)
         except Exception as e:
             click.secho(f"Flash erase failed: {e}", fg='red', err=True)
             client.close()
@@ -983,13 +990,19 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
         click.secho("Erase complete!", fg='green')
 
     # Erase internally disconnects (requires exclusive hardware access via JLinkExe)
-    # Always reconnect to restore debugger connection
+    # Always reconnect to restore debugger connection (force=True so gdbserver + script
+    # re-init cleanly; avoids stale session after JLinkExe on DA1469x).
     import time
     time.sleep(0.5)  # Give hardware time to be released
     if not quiet:
         click.secho("Reconnecting debugger after erase...", fg='cyan', dim=True)
     try:
-        client.connect(debug_net, speed=None, force=False, halt=halt, jlink_script=jlink_script)
+        try:
+            client.disconnect(debug_net)
+        except Exception:
+            pass
+        time.sleep(0.3)
+        client.connect(debug_net, speed=None, force=True, halt=halt, jlink_script=jlink_script)
         if halt:
             if not quiet:
                 click.secho("Reconnected and halted!", fg='cyan', dim=True)
