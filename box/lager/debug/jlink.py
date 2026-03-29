@@ -11,21 +11,21 @@ debug probes using the J-Link Commander (JLinkExe).
 import logging
 import os
 import re
-import time
 from contextlib import closing, contextmanager
 import pexpect
 from pexpect import replwrap
 
 logger = logging.getLogger(__name__)
 
-# DA1469x fallback when the J-Link script does not define LAGER_ERASE_RANGE (see below).
-_DA1469X_QSPI_RANGE_BYTES = 8 * 1024 * 1024
+# DA1469x external QSPI XIP default: 1 MiB at XIP base (matches common loader erase size).
+# Off-chip "offset 0" for the slot maps to CPU XIP 0x16000000 — Commander uses absolute XIP.
+# Loader-style "bank 0" targets this window; J-Link uses SetEnableFlashbank(<base>, 1) for that bank.
+_DA1469X_QSPI_RANGE_BYTES = 1048576
 _DA1469X_QSPI_XIP_START = 0x16000000
+_DA1469X_QSPI_FLASH_BANK0_BASE = _DA1469X_QSPI_XIP_START
 _DA1469X_QSPI_XIP_END = _DA1469X_QSPI_XIP_START + _DA1469X_QSPI_RANGE_BYTES - 1
 
-# Optional line anywhere in your project .JLinkScript (C-style comments are fine):
-#   LAGER_ERASE_RANGE: 0x16000000 0x167FFFFF
-# Lager parses this text so the extra Commander erase matches your binary/XIP map.
+# Optional in .JLinkScript: LAGER_ERASE_RANGE: 0x16000000 0x160FFFFF
 _LAGER_ERASE_RANGE_PATTERN = re.compile(
     r'LAGER_ERASE_RANGE\s*:\s*(0x[0-9A-Fa-f]+)\s+(0x[0-9A-Fa-f]+)',
     re.IGNORECASE,
@@ -33,12 +33,7 @@ _LAGER_ERASE_RANGE_PATTERN = re.compile(
 
 
 def parse_lager_erase_range_from_script(script_path):
-    """
-    Read optional LAGER_ERASE_RANGE from a J-Link script on disk.
-
-    Returns:
-        (start_int, end_int) inclusive, or None if missing/invalid.
-    """
+    """Return (start, end) inclusive from LAGER_ERASE_RANGE in script, or None."""
     if not script_path or not os.path.isfile(script_path):
         return None
     try:
@@ -59,6 +54,21 @@ def parse_lager_erase_range_from_script(script_path):
         logger.warning('LAGER_ERASE_RANGE: start > end (%#x > %#x), ignoring', start, end)
         return None
     return (start, end)
+
+
+def _loadfile_skipped_programming(output):
+    """True if J-Link chose not to program because on-device data already matched."""
+    if not output:
+        return False
+    o = output.lower()
+    return 'skipped' in o and ('match' in o or 'already' in o)
+
+
+_LOADFILE_SKIPPED_MSG = (
+    'WARNING: J-Link did not write this file (on-device flash already '
+    'matched). If you expected a new build, use --erase or fix the path; '
+    'after a power cycle the DUT still runs the old image.'
+)
 
 
 # JLinkExe paths (checked in order)
@@ -160,10 +170,17 @@ class JLink:
 
     def chip_erase(self, *, close=True):
         """
-        Perform full chip erase.
+        Perform chip erase (non-DA1469) or **address-range erase** on DA1469x external QSPI.
 
-        For DA1469x, runs ``Exec EnableEraseAllFlashBanks`` (SEGGER: required so external
-        QSPI is not skipped), then ``erase``, then an optional XIP range erase.
+        SEGGER Commander supports ``erase <SAddr> <EAddr>`` for a range only (see J-Link
+        Commander docs). For **DA1469x** we use that instead of a global ``erase``:
+        full chip erase wipes internal + external and can interact badly with the next
+        ``loadfile``; slot-style erase over the XIP map (default 1 MiB @ 0x16000000, or
+        ``LAGER_ERASE_RANGE`` in the J-Link script) is closer to typical loader behavior.
+        Sequence: ``Exec SetEnableFlashbank``, ``Exec EnableEraseAllFlashBanks``,
+        ``erase <start> <end>`` — then disconnect (no extra Commander reset hooks).
+
+        Other devices: plain ``erase`` (whole chip).
 
         Args:
             close: Whether to close connection after operation (unused for J-Link)
@@ -180,29 +197,30 @@ class JLink:
             except (ValueError, IndexError):
                 pass
             is_da1469 = 'DA1469' in (dev or '').upper()
-            # SEGGER: without this, J-Link only erases the default (e.g. internal) bank;
-            # external (Q)SPI is skipped — see EnableEraseAllFlashBanks in J-Link Command Strings.
             if is_da1469:
+                # Address-range erase only — never Commander ``erase`` without addresses
+                # (that would be full chip erase on this device family).
+                logger.info('DA1469x: address-range erase only (no full chip erase)')
+                # External QSPI flash bank for XIP 0x16000000 (loader "bank 0"); not internal flash.
+                yield jl.run_command(
+                    f'Exec SetEnableFlashbank {hex(_DA1469X_QSPI_FLASH_BANK0_BASE)}=1'
+                )
                 yield jl.run_command('Exec EnableEraseAllFlashBanks')
-            # Full chip erase — all banks enabled above for DA1469x.
-            yield jl.run_command('erase')
-            # DA1469x: explicit XIP range — belt-and-suspenders vs generic erase alone.
-            if is_da1469:
                 qspi_start, qspi_end = _DA1469X_QSPI_XIP_START, _DA1469X_QSPI_XIP_END
-                src = 'defaults in jlink.py'
                 parsed = parse_lager_erase_range_from_script(self.script_file)
                 if parsed:
                     qspi_start, qspi_end = parsed
-                    src = 'LAGER_ERASE_RANGE in J-Link script'
                 logger.info(
-                    'DA1469x: additional QSPI range erase (%s): %s–%s',
-                    src,
+                    'DA1469x: QSPI bank0 base %#x; range erase %s–%s',
+                    _DA1469X_QSPI_FLASH_BANK0_BASE,
                     hex(qspi_start),
                     hex(qspi_end),
                 )
                 yield jl.run_command(
-                    f'erase {hex(qspi_start)} {hex(qspi_end)} noreset'
+                    f'erase {hex(qspi_start)} {hex(qspi_end)}'
                 )
+            else:
+                yield jl.run_command('erase')
 
     def read_memory(self, address, length, *, close=True):
         """
@@ -250,7 +268,8 @@ class JLink:
             close: Whether to close connection after operation (unused for J-Link)
 
         Yields:
-            Output from J-Link commands
+            Output from J-Link commands, plus a WARNING line if loadfile was skipped
+            because flash already matched (no bytes written).
         """
         (hexfiles, binfiles, elffiles) = files
         with commander(self.args, script_file=self.script_file) as jl:
@@ -259,11 +278,20 @@ class JLink:
 
             # Yield loadfile output
             for file in hexfiles:
-                yield jl.run_command(f'loadfile {file}')
+                out = jl.run_command(f'loadfile {file}')
+                yield out
+                if _loadfile_skipped_programming(out):
+                    yield _LOADFILE_SKIPPED_MSG
             for (file, address) in binfiles:
-                yield jl.run_command(f'loadfile {file} {hex(address)}')
+                out = jl.run_command(f'loadfile {file} {hex(address)}')
+                yield out
+                if _loadfile_skipped_programming(out):
+                    yield _LOADFILE_SKIPPED_MSG
             for file in elffiles:
-                yield jl.run_command(f'loadfile {file}')
+                out = jl.run_command(f'loadfile {file}')
+                yield out
+                if _loadfile_skipped_programming(out):
+                    yield _LOADFILE_SKIPPED_MSG
 
     def reset(self, halt, *, close=True):
         """

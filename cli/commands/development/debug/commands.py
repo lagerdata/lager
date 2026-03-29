@@ -186,6 +186,24 @@ def _get_debug_net(ctx, box, net_name=None):
         click.secho("Failed to parse nets information.", fg='red', err=True)
         ctx.exit(1)
 
+
+def _debug_net_jlink_device(debug_net):
+    """
+    J-Link device / MCU name from saved net config.
+
+    Matches ``DebugNet`` resolution: ``channel`` if set, else legacy ``pin``.
+    """
+    if not debug_net:
+        return ''
+    ch = debug_net.get('channel')
+    if ch is not None and str(ch).strip():
+        return str(ch).strip()
+    pin = debug_net.get('pin')
+    if pin is not None and str(pin).strip():
+        return str(pin).strip()
+    return ''
+
+
 def _get_service_client(box):
     """
     Create and return a debug service client for the given box.
@@ -792,7 +810,8 @@ def disconnect(ctx, box, keep_server):
 @click.option('--force-reconnect', is_flag=True, default=False,
               help='Force disconnect and reconnect before flash for clean state')
 @click.option('--erase', is_flag=True, default=False,
-              help='Erase all flash before flashing (ensures clean boot state for RTT)')
+              help='Erase before programming (J-Link; DA1469x erases external QSPI XIP '
+                   'range only, not full chip)')
 @click.option('--halt/--no-halt', is_flag=True, default=False,
               help='Halt the device after flashing (keeps debugger connected)', show_default=True)
 def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, erase, halt):
@@ -825,10 +844,8 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, erase, halt):
             client.erase(debug_net, speed='4000', transport='SWD')
             click.secho("Erase complete!", fg='green', err=True)
 
-            # Chip erase tears down J-Link; force a full reconnect before loadfile.
-            # force=False can reuse a stale gdbserver session — DA1469x then fails to
-            # boot after flash until power cycle. Disconnect + force=True matches
-            # erase → power cycle → flash.
+            # Erase runs JLinkExe (same as standalone erase); force reconnect before loadfile.
+            # force=False can reuse a stale gdbserver session (gdbserver died during erase).
             import time
             time.sleep(0.5)
             try:
@@ -942,11 +959,17 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
 
     debug_net = _get_debug_net(ctx, target_box, net_name)
     jlink_script = _get_jlink_script_content(ctx, net_name or debug_net.get('name'), debug_net)
-    device_type = debug_net.get('pin', 'unknown')
+    device_type = _debug_net_jlink_device(debug_net) or 'unknown'
 
     # Confirm the erase operation (skip if quiet or json mode)
     if not yes and not quiet and not json_output:
-        click.echo(f"WARNING: This will erase ALL flash memory on {device_type}")
+        if 'DA1469' in str(device_type).upper():
+            click.echo(
+                f"WARNING: On {device_type} this erases the external QSPI XIP range "
+                f"(J-Link address-range erase), not internal flash."
+            )
+        else:
+            click.echo(f"WARNING: This will erase ALL flash memory on {device_type}")
         click.echo("This operation cannot be undone!")
         if not click.confirm("Do you want to continue?"):
             click.echo("Chip erase cancelled.")
@@ -1084,10 +1107,12 @@ def reset(ctx, box, halt, force_reconnect):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.option('--json', 'json_output', is_flag=True, default=False,
               help='Output results in JSON format')
-@click.option('--halt/--no-halt', is_flag=True, default=False,
-              help='Halt the device during memory read (keeps debugger connected)', show_default=True)
-def memrd(ctx, start_addr, length, box, json_output, halt):
-    """Read memory from target"""
+@click.option('--halt', is_flag=True, default=False,
+              help='Halt the device during memory read (keeps debugger connected).')
+@click.option('--no-halt', 'no_halt', is_flag=True, default=False,
+              help='Leave the target running; overrides auto-halt for DA1469 QSPI XIP.')
+def memrd(ctx, start_addr, length, box, json_output, halt, no_halt):
+    """Read memory from target (DA1469x QSPI XIP: auto-halts unless --no-halt)."""
 
     target_box = box
 
@@ -1104,16 +1129,50 @@ def memrd(ctx, start_addr, length, box, json_output, halt):
         click.secho("Error: Failed to create debug service client", fg='red', err=True)
         ctx.exit(1)
 
+    if halt and no_halt:
+        click.secho("Error: use only one of --halt or --no-halt", fg='red', err=True)
+        client.close()
+        ctx.exit(1)
+
+    device_jlink = str(_debug_net_jlink_device(debug_net) or '').upper()
+    da1469_qspi_xip = (
+        'DA1469' in device_jlink
+        and 0x16000000 <= start_addr < 0x18000000
+    )
+    if halt:
+        effective_halt = True
+    elif no_halt:
+        effective_halt = False
+    else:
+        # Unhalted XIP reads often show 0xfc / garbage; default to halt for verify-style reads.
+        effective_halt = da1469_qspi_xip
+
+    if da1469_qspi_xip and effective_halt and not halt and not no_halt:
+        click.secho(
+            "DA1469x QSPI XIP: auto-halting for this read (use --no-halt to leave CPU running).",
+            fg='cyan',
+            dim=True,
+            err=True,
+        )
+
+    # Ensure halted attach when we need it (reconnect if already connected running).
+    if effective_halt and _is_connected(client):
+        try:
+            client.connect(debug_net, speed=None, force=True, halt=True, jlink_script=jlink_script)
+        except Exception as e:
+            click.secho(f"Warning: could not re-connect halted for memrd: {e}", fg='yellow', err=True)
+
     # Auto-connect if not already connected
     if not _is_connected(client):
-        # Not connected - auto-connect (with halt if --halt specified)
-        if halt:
+        if effective_halt:
             click.secho("Auto-connecting to debugger (with halt for memory read)...", fg='cyan', dim=True)
         else:
             click.secho("Auto-connecting to debugger...", fg='cyan', dim=True)
         try:
-            client.connect(debug_net, speed=None, force=False, halt=halt, jlink_script=jlink_script)
-            if halt:
+            client.connect(
+                debug_net, speed=None, force=False, halt=effective_halt, jlink_script=jlink_script
+            )
+            if effective_halt:
                 click.secho("Auto-connected and halted!", fg='cyan', dim=True)
             else:
                 click.secho("Auto-connected!", fg='cyan', dim=True)
@@ -1148,7 +1207,11 @@ def memrd(ctx, start_addr, length, box, json_output, halt):
     if not memory_data or len(memory_data) == 0:
         click.secho(f"Error: Memory read returned no data from address 0x{start_addr:08x}", fg='red', err=True)
         click.secho("Possible causes:", fg='yellow', err=True)
-        click.secho("  • Device is not halted (use: lager debug <net> memrd <addr> <len> --box <box> --halt)", fg='yellow', err=True)
+        click.secho(
+            "  • Device is not halted (DA1469 QSPI XIP auto-halts; else use --halt)",
+            fg='yellow',
+            err=True,
+        )
         click.secho("  • Invalid memory address for this device", fg='yellow', err=True)
         click.secho("  • Memory region is not accessible or not mapped", fg='yellow', err=True)
         client.close()
