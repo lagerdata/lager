@@ -27,19 +27,20 @@ DEBUG_ROLE = "debug"
 
 def _get_jlink_script_content(ctx, net_name, debug_net):
     """
-    Get base64-encoded J-Link script content only if a local override exists.
+    Get base64-encoded J-Link script for /debug/connect.
 
-    The box debug service now reads the stored script directly from NetsCache
-    (saved_nets.json), so the CLI only needs to send the script when there's
-    a local .lager config override.
+    Resolution order:
+    1. Local .lager DEBUG section (project override)
+    2. ``jlink_script`` on the debug net dict (from ``net list`` / saved_nets on the box)
+    3. None — the debug service can still load from NetsCache by net name
 
     Args:
         ctx: Click context
         net_name: Name of the debug net
-        debug_net: Debug net configuration dict (unused, kept for API compat)
+        debug_net: Debug net configuration dict from ``_get_debug_net``
 
     Returns:
-        Base64-encoded script content, or None if no local override
+        Base64-encoded script content, or None
     """
     import base64
     from ....config import get_debug_script_for_net
@@ -51,6 +52,11 @@ def _get_jlink_script_content(ctx, net_name, debug_net):
                 return base64.b64encode(f.read()).decode('ascii')
         except Exception as e:
             click.secho(f"Warning: Could not read J-Link script from config: {e}", fg='yellow', err=True)
+
+    if debug_net:
+        embedded = debug_net.get('jlink_script')
+        if isinstance(embedded, str) and embedded.strip():
+            return embedded
 
     return None
 
@@ -250,7 +256,7 @@ def _auto_connect_if_needed(client, debug_net, ctx, quiet=False, jlink_script=No
         debug_net: Debug net configuration
         ctx: Click context
         quiet: Suppress informational messages
-        jlink_script: Optional base64-encoded J-Link script (local .lager override)
+        jlink_script: Optional base64-encoded J-Link script (override or net-embedded)
 
     Returns:
         True if connected (either already or newly), False on failure
@@ -281,6 +287,22 @@ def _auto_connect_if_needed(client, debug_net, ctx, quiet=False, jlink_script=No
             click.secho("Could not resolve the box hostname.", err=True)
         else:
             click.secho(f"Details: {e}", err=True)
+        return False
+    except requests.exceptions.HTTPError as e:
+        err_detail = str(e)
+        try:
+            if e.response is not None:
+                body = e.response.json()
+                if isinstance(body, dict) and body.get('error'):
+                    err_detail = body['error']
+        except Exception:
+            pass
+        click.secho("Error: Failed to auto-connect to debugger", fg='red', err=True)
+        click.secho(f"Details: {err_detail}", fg='red', err=True)
+        click.secho("\nTroubleshooting steps:", fg='cyan', err=True)
+        click.secho("  1. Check physical debug cable connection", fg='cyan', err=True)
+        click.secho("  2. Verify target device is powered on", fg='cyan', err=True)
+        click.secho("  3. Check debug probe LED status", fg='cyan', err=True)
         return False
     except Exception as e:
         click.secho("Error: Failed to auto-connect to debugger", fg='red', err=True)
@@ -1062,6 +1084,8 @@ def memrd(ctx, start_addr, length, box, json_output, halt):
 
     debug_net = _get_debug_net(ctx, target_box, net_name)
 
+    jlink_script = _get_jlink_script_content(ctx, net_name or debug_net.get('name'), debug_net)
+
     client = _get_service_client(target_box)
     if not client:
         click.secho("Error: Failed to create debug service client", fg='red', err=True)
@@ -1075,7 +1099,7 @@ def memrd(ctx, start_addr, length, box, json_output, halt):
         else:
             click.secho("Auto-connecting to debugger...", fg='cyan', dim=True)
         try:
-            client.connect(debug_net, speed=None, force=False, halt=halt)
+            client.connect(debug_net, speed=None, force=False, halt=halt, jlink_script=jlink_script)
             if halt:
                 click.secho("Auto-connected and halted!", fg='cyan', dim=True)
             else:

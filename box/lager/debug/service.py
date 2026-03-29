@@ -234,7 +234,12 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             self.send_error_response(500, str(e))
 
     def _get_jlink_script_from_net(self, net):
-        """Look up jlink_script from saved_nets.json via NetsCache."""
+        """Resolve jlink_script: POST net body first, then saved_nets via NetsCache."""
+        if not net:
+            return None
+        embedded = net.get('jlink_script')
+        if isinstance(embedded, str) and embedded.strip():
+            return embedded
         net_name = net.get('name')
         if not net_name:
             return None
