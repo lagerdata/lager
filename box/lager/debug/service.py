@@ -562,7 +562,11 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             self.send_error_response(500, str(e))
 
     def handle_erase(self, data: Dict[str, Any]):
-        """Handle debug erase command."""
+        """Handle debug erase command.
+
+        chip_erase() stops J-Link processes so JLinkExe can use the probe; the CLI
+        reconnects afterwards. Clear active_connections since the GDB server is gone.
+        """
         try:
             net = data.get('net', {})
             device_type = _resolve_device_type(net)
@@ -573,13 +577,17 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             _get_script_file(net.get('name'))
 
             # chip_erase() returns a generator - must consume it to execute
-            # Collect all output from the erase operation
+            # NOTE: chip_erase() stops running J-Link / JLinkGDBServer so JLinkExe
+            # has exclusive USB access.
             erase_output = list(chip_erase(
                 device=device_type,
                 speed=speed,
                 transport=transport,
                 mcu=None
             ))
+
+            with connections_lock:
+                active_connections.clear()
 
             self.send_json_response(200, {
                 'status': 'erase_complete',
