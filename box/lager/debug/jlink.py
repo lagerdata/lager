@@ -8,11 +8,57 @@ This module provides a Python interface for communicating with J-Link
 debug probes using the J-Link Commander (JLinkExe).
 """
 
+import logging
 import os
+import re
 import time
 from contextlib import closing, contextmanager
 import pexpect
 from pexpect import replwrap
+
+logger = logging.getLogger(__name__)
+
+# DA1469x fallback when the J-Link script does not define LAGER_ERASE_RANGE (see below).
+_DA1469X_QSPI_RANGE_BYTES = 8 * 1024 * 1024
+_DA1469X_QSPI_XIP_START = 0x16000000
+_DA1469X_QSPI_XIP_END = _DA1469X_QSPI_XIP_START + _DA1469X_QSPI_RANGE_BYTES - 1
+
+# Optional line anywhere in your project .JLinkScript (C-style comments are fine):
+#   LAGER_ERASE_RANGE: 0x16000000 0x167FFFFF
+# Lager parses this text so the extra Commander erase matches your binary/XIP map.
+_LAGER_ERASE_RANGE_PATTERN = re.compile(
+    r'LAGER_ERASE_RANGE\s*:\s*(0x[0-9A-Fa-f]+)\s+(0x[0-9A-Fa-f]+)',
+    re.IGNORECASE,
+)
+
+
+def parse_lager_erase_range_from_script(script_path):
+    """
+    Read optional LAGER_ERASE_RANGE from a J-Link script on disk.
+
+    Returns:
+        (start_int, end_int) inclusive, or None if missing/invalid.
+    """
+    if not script_path or not os.path.isfile(script_path):
+        return None
+    try:
+        with open(script_path, 'r', encoding='utf-8', errors='replace') as f:
+            text = f.read()
+    except OSError as e:
+        logger.debug('Could not read script for LAGER_ERASE_RANGE: %s', e)
+        return None
+    m = _LAGER_ERASE_RANGE_PATTERN.search(text)
+    if not m:
+        return None
+    try:
+        start = int(m.group(1), 16)
+        end = int(m.group(2), 16)
+    except ValueError:
+        return None
+    if start > end:
+        logger.warning('LAGER_ERASE_RANGE: start > end (%#x > %#x), ignoring', start, end)
+        return None
+    return (start, end)
 
 
 # JLinkExe paths (checked in order)
@@ -61,6 +107,8 @@ def commander(args, script_file=None):
     full_args = list(args)
     if script_file and os.path.exists(script_file):
         full_args.extend(['-JLinkScriptFile', script_file])
+    elif script_file:
+        logger.warning('JLink commander: script_file %r missing on disk; continuing without', script_file)
 
     child = pexpect.spawn(jlink_exe, full_args, encoding='utf-8')
     with closing(child):
@@ -122,8 +170,32 @@ class JLink:
         """
         with commander(self.args, script_file=self.script_file) as jl:
             yield jl.run_command('connect')
-            # Full chip erase - no parameters erases entire chip
+            # Full chip erase — erases flash sectors J-Link associates with the device.
             yield jl.run_command('erase')
+            # DA1469x: also erase the external QSPI region used for binary/XIP (see
+            # _DA1469X_QSPI_XIP_*), otherwise the application may survive a generic erase.
+            dev = ''
+            try:
+                di = self.args.index('-device')
+                dev = self.args[di + 1]
+            except (ValueError, IndexError):
+                pass
+            if 'DA1469' in (dev or '').upper():
+                qspi_start, qspi_end = _DA1469X_QSPI_XIP_START, _DA1469X_QSPI_XIP_END
+                src = 'defaults in jlink.py'
+                parsed = parse_lager_erase_range_from_script(self.script_file)
+                if parsed:
+                    qspi_start, qspi_end = parsed
+                    src = 'LAGER_ERASE_RANGE in J-Link script'
+                logger.info(
+                    'DA1469x: additional QSPI range erase (%s): %s–%s',
+                    src,
+                    hex(qspi_start),
+                    hex(qspi_end),
+                )
+                yield jl.run_command(
+                    f'erase {hex(qspi_start)} {hex(qspi_end)} noreset'
+                )
 
     def read_memory(self, address, length, *, close=True):
         """
@@ -137,7 +209,6 @@ class JLink:
         Returns:
             bytes object containing the memory data
         """
-        import re
         memory_data = []
 
         with commander(self.args, script_file=self.script_file) as jl:
