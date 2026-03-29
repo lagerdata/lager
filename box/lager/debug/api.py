@@ -677,10 +677,10 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
     where it would report success but not actually program the device.
 
     For DA1469x, the J-Link script's ``ResetTarget()`` must return with the CPU **halted**
-    (SEGGER contract), so the chip is always left debug-ready — unlike Mynewt's
-    ``flash_loader``, which ends with the app running and no debugger. After
-    ``monitor reset`` + ``monitor go``, we **stop JLinkGDBServer** so the probe releases
-    SWD and the firmware can run without an attached debug session halting the core.
+    (SEGGER contract). After ``monitor reset`` + ``monitor go``, we **stop
+    JLinkGDBServer** — disconnect often **halts** the core again — then run a short
+    J-Link Commander ``connect`` + ``g`` so the CPU runs with no GDB attached (same goal
+    as Mynewt ``flash_loader`` exiting).
 
     Args:
         files: Tuple of (hexfiles, binfiles, elffiles)
@@ -775,6 +775,20 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
                 except Exception as e:
                     logger.warning("DA1469x stop_jlink_gdbserver after flash: %s", e)
                     yield f"Warning: Could not stop GDB server after flash: {e}"
+                else:
+                    # Killing JLinkGDBServer often halts the core on disconnect; issue
+                    # Commander connect + g with no GDB so the app can run (rnh/monitor go
+                    # alone are undone by that teardown).
+                    time.sleep(0.3)
+                    try:
+                        yield (
+                            'Ensuring CPU run after probe disconnect '
+                            '(J-Link Commander go)...'
+                        )
+                        yield from jlink.go()
+                    except Exception as e:
+                        logger.warning("DA1469x Commander go after flash: %s", e)
+                        yield f"Warning: Commander go after probe release failed: {e}"
     except Exception as e:
         yield f"Warning: Failed to reconnect GDB server: {e}"
 

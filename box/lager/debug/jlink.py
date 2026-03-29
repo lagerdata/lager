@@ -32,6 +32,14 @@ _LAGER_ERASE_RANGE_PATTERN = re.compile(
 )
 
 
+def _loadfile_skipped_programming(output):
+    """True if J-Link chose not to program because on-device data already matched."""
+    if not output:
+        return False
+    o = output.lower()
+    return 'skipped' in o and ('match' in o or 'already' in o)
+
+
 def parse_lager_erase_range_from_script(script_path):
     """
     Read optional LAGER_ERASE_RANGE from a J-Link script on disk.
@@ -260,7 +268,8 @@ class JLink:
             close: Whether to close connection after operation (unused for J-Link)
 
         Yields:
-            Output from J-Link commands
+            Output from J-Link commands, plus a WARNING line if loadfile was skipped
+            because flash already matched (no bytes written).
         """
         (hexfiles, binfiles, elffiles) = files
         with commander(self.args, script_file=self.script_file) as jl:
@@ -269,11 +278,32 @@ class JLink:
 
             # Yield loadfile output
             for file in hexfiles:
-                yield jl.run_command(f'loadfile {file}')
+                out = jl.run_command(f'loadfile {file}')
+                yield out
+                if _loadfile_skipped_programming(out):
+                    yield (
+                        'WARNING: J-Link did not write this file (on-device flash already '
+                        'matched). If you expected a new build, use --erase or fix the path; '
+                        'after a power cycle the DUT still runs the old image.'
+                    )
             for (file, address) in binfiles:
-                yield jl.run_command(f'loadfile {file} {hex(address)}')
+                out = jl.run_command(f'loadfile {file} {hex(address)}')
+                yield out
+                if _loadfile_skipped_programming(out):
+                    yield (
+                        'WARNING: J-Link did not write this file (on-device flash already '
+                        'matched). If you expected a new build, use --erase or fix the path; '
+                        'after a power cycle the DUT still runs the old image.'
+                    )
             for file in elffiles:
-                yield jl.run_command(f'loadfile {file}')
+                out = jl.run_command(f'loadfile {file}')
+                yield out
+                if _loadfile_skipped_programming(out):
+                    yield (
+                        'WARNING: J-Link did not write this file (on-device flash already '
+                        'matched). If you expected a new build, use --erase or fix the path; '
+                        'after a power cycle the DUT still runs the old image.'
+                    )
 
     def reset(self, halt, *, close=True):
         """
@@ -294,6 +324,19 @@ class JLink:
             else:
                 # rnh == reset no halt
                 yield jl.run_command('rnh')
+
+    def go(self, *, close=True):
+        """
+        Start the CPU if halted (J-Link Commander ``g``).
+
+        Use after probe disconnect if the target was left stopped on GDB server exit.
+
+        Yields:
+            Output from J-Link commands
+        """
+        with commander(self.args, script_file=self.script_file) as jl:
+            yield jl.run_command('connect')
+            yield jl.run_command('g')
 
     def run(self, *, close=True):
         """
