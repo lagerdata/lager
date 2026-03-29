@@ -416,6 +416,24 @@ def get_controller(device=None, host='127.0.0.1', port=2331, max_retries=3):
     raise DebuggerNotConnectedError(f"Failed to connect after {max_retries} attempts: {last_error}")
 
 
+def _jlink_monitor_reset(device):
+    """
+    J-Link ``monitor reset`` variant for the target.
+
+    DA1469x: by default use ``monitor reset 2`` (pin reset). Set environment
+    ``LAGER_DA1469_PIN_RESET=0`` (or ``false``) on the **box** to use plain
+    ``monitor reset`` (SEGGER type 0 / SYSRESETREQ) for boards where pin reset
+    misbehaves or nRESET is not wired.
+    """
+    if device and 'DA1469' in device.upper():
+        pin = os.environ.get('LAGER_DA1469_PIN_RESET', '1').strip().lower()
+        if pin in ('0', 'false', 'no', 'off'):
+            logger.info('DA1469x: LAGER_DA1469_PIN_RESET disabled — using monitor reset (type 0)')
+            return 'monitor reset'
+        return 'monitor reset 2'
+    return 'monitor reset'
+
+
 def reset(halt=False, device=None):
     """
     Reset device via GDB
@@ -429,13 +447,14 @@ def reset(halt=False, device=None):
     """
     gdbmi = get_controller(device)
     output = []
+    mon_reset = _jlink_monitor_reset(device)
 
     try:
         if halt:
-            output += gdbmi.write('monitor reset', timeout_sec=GDB_TIMEOUT)
+            output += gdbmi.write(mon_reset, timeout_sec=GDB_TIMEOUT)
             output += gdbmi.write('monitor halt', timeout_sec=GDB_TIMEOUT)
         else:
-            output += gdbmi.write('monitor reset', timeout_sec=GDB_TIMEOUT)
+            output += gdbmi.write(mon_reset, timeout_sec=GDB_TIMEOUT)
             output += gdbmi.write('monitor go', timeout_sec=GDB_TIMEOUT)
 
         return output
@@ -446,7 +465,7 @@ def reset(halt=False, device=None):
                 # For running device: Give monitor go command time to execute
                 # before we disconnect GDB
                 import time
-                time.sleep(0.1)
+                time.sleep(0.2 if device and 'DA1469' in device.upper() else 0.1)
             gdbmi.exit()
             # Reap zombie gdb-multiarch processes
             reap_gdb_zombies()
