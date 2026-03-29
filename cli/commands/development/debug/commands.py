@@ -998,6 +998,8 @@ def reset(ctx, box, halt, force_reconnect):
 
     debug_net = _get_debug_net(ctx, target_box, net_name)
 
+    jlink_script = _get_jlink_script_content(ctx, net_name or debug_net.get('name'), debug_net)
+
     client = _get_service_client(target_box)
     if not client:
         click.secho("Error: Failed to create debug service client", fg='red', err=True)
@@ -1005,7 +1007,7 @@ def reset(ctx, box, halt, force_reconnect):
 
     # Auto-connect if not already connected (unless force-reconnect, which handles its own connection)
     if not force_reconnect:
-        if not _auto_connect_if_needed(client, debug_net, ctx):
+        if not _auto_connect_if_needed(client, debug_net, ctx, jlink_script=jlink_script):
             client.close()
             ctx.exit(1)
 
@@ -1016,7 +1018,7 @@ def reset(ctx, box, halt, force_reconnect):
             client.disconnect(debug_net)
             import time
             time.sleep(0.5)
-            client.connect(debug_net, force=True, halt=False)
+            client.connect(debug_net, force=True, halt=False, jlink_script=jlink_script)
             click.echo("Reconnect complete", err=True)
         except Exception as e:
             click.secho(f"Warning: Force reconnect failed: {e}", fg='yellow', err=True)
