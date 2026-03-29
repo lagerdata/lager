@@ -70,9 +70,42 @@ def stop_jlink_gdbserver():
 
     Uses pkill to properly terminate the process and all its children,
     avoiding zombie processes.
+
+    If the PID file is missing, a JLinkGDBServer may still be running (crash,
+    manual start, or stale cleanup) and will keep the GDB port busy — try pkill
+    when pgrep finds a process.
     """
     if not os.path.exists(JLINK_PIDFILE):
-        logger.debug('JLinkGDBServer PID file not found, assuming not running')
+        should_pkill = False
+        try:
+            check = subprocess.run(
+                ['pgrep', '-f', 'JLinkGDBServerCLExe'],
+                capture_output=True,
+                timeout=2.0,
+                check=False,
+            )
+            should_pkill = check.returncode == 0
+        except FileNotFoundError:
+            should_pkill = True  # no pgrep: best-effort pkill only
+        if not should_pkill:
+            logger.debug('JLinkGDBServer PID file missing and no matching process')
+            return
+        logger.info('JLinkGDBServer has no PID file but process exists; stopping orphan')
+        try:
+            subprocess.run(
+                ['pkill', '-TERM', '-f', 'JLinkGDBServerCLExe'],
+                timeout=1.0,
+                check=False,
+            )
+            time.sleep(0.5)
+            subprocess.run(
+                ['pkill', '-KILL', '-f', 'JLinkGDBServerCLExe'],
+                timeout=1.0,
+                check=False,
+            )
+            time.sleep(0.2)
+        except FileNotFoundError:
+            pass
         return
 
     try:
@@ -164,6 +197,10 @@ def start_jlink_gdbserver(device, speed='adaptive', transport='SWD', halt=False,
     jlink_exe = get_jlink_gdb_server_path()
     if not jlink_exe:
         raise Exception('JLinkGDBServerCLExe not found')
+
+    # Ensure gdb_port is free: orphan server may hold 2331 without a PID file.
+    stop_jlink_gdbserver()
+    time.sleep(0.15)
 
     # Build command arguments
     halt_arg = '-halt' if halt else '-nohalt'
