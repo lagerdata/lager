@@ -22,7 +22,6 @@ from .mappings import (
     JL_LOGFILE,
 )
 from .process import (
-    start_jlink,
     stop_jlink,
 )
 from .gdbserver import get_jlink_gdbserver_status, stop_jlink_gdbserver, start_jlink_gdbserver
@@ -725,22 +724,28 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
 
     yield from jlink.flash(files, preverify, verify)
 
-    # Note: JLinkExe's loadfile command automatically resets and runs the device
-    # Reconnect GDB server after JLinkExe finishes
+    # DA1469x: after loadfile the core may still be halted; boot ROM remap + app entry
+    # need a reset-without-halt so firmware runs (matches power-cycle recovery users see).
+    if 'DA1469' in (device or '').upper():
+        yield 'Resetting target after flash (run mode)...'
+        yield from jlink.reset(halt=False)
+
+    # Use the same JLinkGDBServer + PID file as handle_connect (not process.start_jlink /
+    # /tmp/jlink.pid), otherwise the debug service thinks no server is running and the
+    # next connect can fail or leave the target in a bad state.
     yield "Reconnecting GDB server..."
 
     time.sleep(1.0)  # Give JLinkExe time to fully disconnect
 
     try:
-        # Use start_jlink() to match the PID file checked by get_jlink_status()
-        from .process import start_jlink
-        cmd_args = [
-            '-nohalt',  # Don't halt after reset
-            '-device', device,
-            '-if', transport,
-            '-speed', speed
-        ]
-        start_jlink(cmd_args)
+        start_jlink_gdbserver(
+            device=device,
+            speed=speed,
+            transport=transport,
+            halt=False,
+            gdb_port=2331,
+            script_file=resolved_script,
+        )
         yield "GDB server reconnected"
     except Exception as e:
         yield f"Warning: Failed to reconnect GDB server: {e}"
