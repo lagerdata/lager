@@ -240,7 +240,7 @@ def _is_connected(client):
     except Exception:
         return False
 
-def _auto_connect_if_needed(client, debug_net, ctx, quiet=False):
+def _auto_connect_if_needed(client, debug_net, ctx, quiet=False, jlink_script=None):
     """
     Auto-connect to debugger if not already connected.
     Does NOT reconnect if already connected.
@@ -250,6 +250,7 @@ def _auto_connect_if_needed(client, debug_net, ctx, quiet=False):
         debug_net: Debug net configuration
         ctx: Click context
         quiet: Suppress informational messages
+        jlink_script: Optional base64-encoded J-Link script (local .lager override)
 
     Returns:
         True if connected (either already or newly), False on failure
@@ -263,7 +264,7 @@ def _auto_connect_if_needed(client, debug_net, ctx, quiet=False):
         click.secho("Auto-connecting to debugger...", fg='cyan', dim=True)
 
     try:
-        client.connect(debug_net, speed=None, force=False, halt=False)
+        client.connect(debug_net, speed=None, force=False, halt=False, jlink_script=jlink_script)
         if not quiet:
             click.secho("Auto-connected!", fg='cyan', dim=True)
         return True
@@ -783,13 +784,15 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, erase, halt):
 
     debug_net = _get_debug_net(ctx, target_box, net_name)
 
+    jlink_script = _get_jlink_script_content(ctx, net_name or debug_net.get('name'), debug_net)
+
     client = _get_service_client(target_box)
     if not client:
         click.secho("Error: Failed to create debug service client", fg='red', err=True)
         ctx.exit(1)
 
     # Auto-connect if not already connected
-    if not _auto_connect_if_needed(client, debug_net, ctx):
+    if not _auto_connect_if_needed(client, debug_net, ctx, jlink_script=jlink_script):
         client.close()
         ctx.exit(1)
 
@@ -804,7 +807,7 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, erase, halt):
             # Always reconnect here to continue with flash operation
             import time
             time.sleep(0.3)
-            client.connect(debug_net, force=False, halt=False)
+            client.connect(debug_net, force=False, halt=False, jlink_script=jlink_script)
         except Exception as e:
             click.secho(f"Flash erase failed: {e}", fg='red', err=True)
             client.close()
@@ -819,7 +822,7 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, erase, halt):
             import time
             time.sleep(0.5)
             # Reconnect with force
-            client.connect(debug_net, force=True, halt=False)
+            client.connect(debug_net, force=True, halt=False, jlink_script=jlink_script)
             click.echo("Reconnect complete", err=True)
         except Exception as e:
             click.secho(f"Warning: Force reconnect failed: {e}", fg='yellow', err=True)
@@ -909,6 +912,7 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
     target_box, username = _resolve_box_with_username(ctx, target_box)
 
     debug_net = _get_debug_net(ctx, target_box, net_name)
+    jlink_script = _get_jlink_script_content(ctx, net_name or debug_net.get('name'), debug_net)
     device_type = debug_net.get('pin', 'unknown')
 
     # Confirm the erase operation (skip if quiet or json mode)
@@ -925,7 +929,7 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
         ctx.exit(1)
 
     # Auto-connect if not already connected
-    if not _auto_connect_if_needed(client, debug_net, ctx, quiet=quiet):
+    if not _auto_connect_if_needed(client, debug_net, ctx, quiet=quiet, jlink_script=jlink_script):
         client.close()
         ctx.exit(1)
 
@@ -963,7 +967,7 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
     if not quiet:
         click.secho("Reconnecting debugger after erase...", fg='cyan', dim=True)
     try:
-        client.connect(debug_net, speed=None, force=False, halt=halt)
+        client.connect(debug_net, speed=None, force=False, halt=halt, jlink_script=jlink_script)
         if halt:
             if not quiet:
                 click.secho("Reconnected and halted!", fg='cyan', dim=True)
