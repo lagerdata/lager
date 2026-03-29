@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for cli.mcp.tools.box -- box and nets management MCP tools."""
+"""Unit tests for lager.mcp.tools.box -- box and nets management MCP tools."""
 
 import pytest
 
@@ -13,17 +13,17 @@ class TestBoxTools:
     """Tests for box connectivity tools."""
 
     def test_hello(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_hello
+        from lager.mcp.tools.box import lager_hello
         lager_hello(box="DEMO")
         assert_lager_called_with(mock_subprocess, "hello", "--box", "DEMO")
 
     def test_instruments(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_instruments
+        from lager.mcp.tools.box import lager_instruments
         lager_instruments(box="DEMO")
         assert_lager_called_with(mock_subprocess, "instruments", "--box", "DEMO")
 
     def test_list_nets(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_list_nets
+        from lager.mcp.tools.box import lager_list_nets
         lager_list_nets(box="MY-BOX")
         assert_lager_called_with(mock_subprocess, "nets", "--box", "MY-BOX")
 
@@ -32,28 +32,28 @@ class TestBoxTools:
     def test_hello_subprocess_failure(self, mock_subprocess):
         from unittest.mock import MagicMock
         mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.box import lager_hello
+        from lager.mcp.tools.box import lager_hello
         result = lager_hello(box="B")
         assert "Error" in result
 
     def test_list_nets_subprocess_failure(self, mock_subprocess):
         from unittest.mock import MagicMock
         mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.box import lager_list_nets
+        from lager.mcp.tools.box import lager_list_nets
         result = lager_list_nets(box="B")
         assert "Error" in result
 
     def test_boxes_list_subprocess_failure(self, mock_subprocess):
         from unittest.mock import MagicMock
         mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.box import lager_boxes_list
+        from lager.mcp.tools.box import lager_boxes_list
         result = lager_boxes_list()
         assert "Error" in result
 
     def test_nets_add_subprocess_failure(self, mock_subprocess):
         from unittest.mock import MagicMock
         mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.box import lager_nets_add
+        from lager.mcp.tools.box import lager_nets_add
         result = lager_nets_add(box="B", name="test-net", role="gpio", channel="0", address="1")
         assert "Error" in result
 
@@ -63,12 +63,12 @@ class TestBoxesManagement:
     """Tests for boxes list/add/delete/edit/export/import."""
 
     def test_boxes_list(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_list
+        from lager.mcp.tools.box import lager_boxes_list
         lager_boxes_list()
         assert_lager_called_with(mock_subprocess, "boxes")
 
     def test_boxes_add(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_add
+        from lager.mcp.tools.box import lager_boxes_add
         lager_boxes_add(name="NEW-BOX", ip="100.64.0.1")
         assert_lager_called_with(
             mock_subprocess,
@@ -76,7 +76,7 @@ class TestBoxesManagement:
         )
 
     def test_boxes_delete(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_delete
+        from lager.mcp.tools.box import lager_boxes_delete
         lager_boxes_delete(name="OLD-BOX")
         assert_lager_called_with(
             mock_subprocess,
@@ -84,17 +84,17 @@ class TestBoxesManagement:
         )
 
     def test_boxes_add_all(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_add_all
+        from lager.mcp.tools.box import lager_boxes_add_all
         lager_boxes_add_all()
         assert_lager_called_with(mock_subprocess, "boxes", "add-all", "--yes")
 
     def test_boxes_delete_all(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_delete_all
+        from lager.mcp.tools.box import lager_boxes_delete_all
         lager_boxes_delete_all()
         assert_lager_called_with(mock_subprocess, "boxes", "delete-all", "--yes")
 
     def test_boxes_edit_ip_only(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_edit
+        from lager.mcp.tools.box import lager_boxes_edit
         lager_boxes_edit(name="DEMO", ip="100.64.0.2")
         assert_lager_called_with(
             mock_subprocess,
@@ -102,7 +102,7 @@ class TestBoxesManagement:
         )
 
     def test_boxes_edit_new_name_only(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_edit
+        from lager.mcp.tools.box import lager_boxes_edit
         lager_boxes_edit(name="DEMO", new_name="DEMO-2")
         assert_lager_called_with(
             mock_subprocess,
@@ -110,7 +110,7 @@ class TestBoxesManagement:
         )
 
     def test_boxes_edit_all_fields(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_edit
+        from lager.mcp.tools.box import lager_boxes_edit
         lager_boxes_edit(
             name="DEMO", ip="192.0.2.1", new_name="PROD",
             user="admin", version="staging",
@@ -123,7 +123,7 @@ class TestBoxesManagement:
         )
 
     def test_boxes_edit_no_optional_fields(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_edit
+        from lager.mcp.tools.box import lager_boxes_edit
         lager_boxes_edit(name="DEMO")
         assert_lager_called_with(
             mock_subprocess,
@@ -131,7 +131,7 @@ class TestBoxesManagement:
         )
 
     def test_boxes_export_to_file(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_export
+        from lager.mcp.tools.box import lager_boxes_export
         lager_boxes_export(output="/tmp/boxes.json")
         assert_lager_called_with(
             mock_subprocess,
@@ -139,17 +139,17 @@ class TestBoxesManagement:
         )
 
     def test_boxes_export_to_stdout(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_export
+        from lager.mcp.tools.box import lager_boxes_export
         lager_boxes_export()
         assert_lager_called_with(mock_subprocess, "boxes", "export")
 
     def test_boxes_export_empty_string(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_export
+        from lager.mcp.tools.box import lager_boxes_export
         lager_boxes_export(output="")
         assert_lager_called_with(mock_subprocess, "boxes", "export")
 
     def test_boxes_import_basic(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_import
+        from lager.mcp.tools.box import lager_boxes_import
         lager_boxes_import(file="/tmp/boxes.json")
         assert_lager_called_with(
             mock_subprocess,
@@ -157,7 +157,7 @@ class TestBoxesManagement:
         )
 
     def test_boxes_import_with_merge(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_import
+        from lager.mcp.tools.box import lager_boxes_import
         lager_boxes_import(file="/tmp/boxes.json", merge=True)
         assert_lager_called_with(
             mock_subprocess,
@@ -165,7 +165,7 @@ class TestBoxesManagement:
         )
 
     def test_boxes_import_merge_false(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_import
+        from lager.mcp.tools.box import lager_boxes_import
         lager_boxes_import(file="/tmp/boxes.json", merge=False)
         assert_lager_called_with(
             mock_subprocess,
@@ -178,7 +178,7 @@ class TestNetsManagement:
     """Tests for nets add/delete/rename/batch/script tools."""
 
     def test_nets_add(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_nets_add
+        from lager.mcp.tools.box import lager_nets_add
         lager_nets_add(
             box="DEMO", name="i2c1", role="i2c",
             channel="0", address="0x76",
@@ -189,7 +189,7 @@ class TestNetsManagement:
         )
 
     def test_nets_delete(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_nets_delete
+        from lager.mcp.tools.box import lager_nets_delete
         lager_nets_delete(box="DEMO", name="i2c1", net_type="i2c")
         assert_lager_called_with(
             mock_subprocess,
@@ -197,7 +197,7 @@ class TestNetsManagement:
         )
 
     def test_nets_rename(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_nets_rename
+        from lager.mcp.tools.box import lager_nets_rename
         lager_nets_rename(box="DEMO", name="i2c1", new_name="sensor_bus")
         assert_lager_called_with(
             mock_subprocess,
@@ -205,7 +205,7 @@ class TestNetsManagement:
         )
 
     def test_nets_add_all(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_nets_add_all
+        from lager.mcp.tools.box import lager_nets_add_all
         lager_nets_add_all(box="DEMO")
         assert_lager_called_with(
             mock_subprocess,
@@ -213,7 +213,7 @@ class TestNetsManagement:
         )
 
     def test_nets_add_batch(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_nets_add_batch
+        from lager.mcp.tools.box import lager_nets_add_batch
         lager_nets_add_batch(box="DEMO", json_file="/tmp/nets.json")
         assert_lager_called_with(
             mock_subprocess,
@@ -221,7 +221,7 @@ class TestNetsManagement:
         )
 
     def test_nets_delete_all(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_nets_delete_all
+        from lager.mcp.tools.box import lager_nets_delete_all
         lager_nets_delete_all(box="DEMO")
         assert_lager_called_with(
             mock_subprocess,
@@ -229,7 +229,7 @@ class TestNetsManagement:
         )
 
     def test_nets_set_script(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_nets_set_script
+        from lager.mcp.tools.box import lager_nets_set_script
         lager_nets_set_script(
             box="DEMO", name="debug1", script_path="/tmp/connect.jlink",
         )
@@ -239,7 +239,7 @@ class TestNetsManagement:
         )
 
     def test_nets_remove_script(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_nets_remove_script
+        from lager.mcp.tools.box import lager_nets_remove_script
         lager_nets_remove_script(box="DEMO", name="debug1")
         assert_lager_called_with(
             mock_subprocess,
@@ -247,7 +247,7 @@ class TestNetsManagement:
         )
 
     def test_nets_show_script(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_nets_show_script
+        from lager.mcp.tools.box import lager_nets_show_script
         lager_nets_show_script(box="DEMO", name="debug1")
         assert_lager_called_with(
             mock_subprocess,

@@ -15,7 +15,7 @@ class TestBlufiTools:
     # -- scan --------------------------------
 
     def test_scan_defaults(self, mock_subprocess):
-        from cli.mcp.tools.blufi import lager_blufi_scan
+        from lager.mcp.tools.blufi import lager_blufi_scan
         lager_blufi_scan(box="DEMO")
         assert_lager_called_with(
             mock_subprocess,
@@ -23,7 +23,7 @@ class TestBlufiTools:
         )
 
     def test_scan_with_name_contains(self, mock_subprocess):
-        from cli.mcp.tools.blufi import lager_blufi_scan
+        from lager.mcp.tools.blufi import lager_blufi_scan
         lager_blufi_scan(box="DEMO", timeout=15.0, name_contains="ESP")
         assert_lager_called_with(
             mock_subprocess,
@@ -32,7 +32,7 @@ class TestBlufiTools:
         )
 
     def test_scan_name_contains_none_omitted(self, mock_subprocess):
-        from cli.mcp.tools.blufi import lager_blufi_scan
+        from lager.mcp.tools.blufi import lager_blufi_scan
         lager_blufi_scan(box="DEMO", timeout=5.0, name_contains=None)
         assert_lager_called_with(
             mock_subprocess,
@@ -42,7 +42,7 @@ class TestBlufiTools:
     # -- connect --------------------------------
 
     def test_connect_defaults(self, mock_subprocess):
-        from cli.mcp.tools.blufi import lager_blufi_connect
+        from lager.mcp.tools.blufi import lager_blufi_connect
         lager_blufi_connect(box="DEMO", device_name="BLUFI_DEV")
         assert_lager_called_with(
             mock_subprocess,
@@ -51,7 +51,7 @@ class TestBlufiTools:
         )
 
     def test_connect_custom_timeout(self, mock_subprocess):
-        from cli.mcp.tools.blufi import lager_blufi_connect
+        from lager.mcp.tools.blufi import lager_blufi_connect
         lager_blufi_connect(box="DEMO", device_name="BLUFI_DEV", timeout=30.0)
         assert_lager_called_with(
             mock_subprocess,
@@ -62,7 +62,7 @@ class TestBlufiTools:
     # -- provision --------------------------------
 
     def test_provision(self, mock_subprocess):
-        from cli.mcp.tools.blufi import lager_blufi_provision
+        from lager.mcp.tools.blufi import lager_blufi_provision
         lager_blufi_provision(
             box="DEMO", device_name="BLUFI_DEV",
             ssid="MyWiFi", password="secret123",
@@ -75,7 +75,7 @@ class TestBlufiTools:
         )
 
     def test_provision_custom_timeout(self, mock_subprocess):
-        from cli.mcp.tools.blufi import lager_blufi_provision
+        from lager.mcp.tools.blufi import lager_blufi_provision
         lager_blufi_provision(
             box="DEMO", device_name="BLUFI_DEV",
             ssid="Net", password="pass", timeout=60.0,
@@ -90,7 +90,7 @@ class TestBlufiTools:
     # -- wifi-scan --------------------------------
 
     def test_wifi_scan_defaults(self, mock_subprocess):
-        from cli.mcp.tools.blufi import lager_blufi_wifi_scan
+        from lager.mcp.tools.blufi import lager_blufi_wifi_scan
         lager_blufi_wifi_scan(box="DEMO", device_name="BLUFI_DEV")
         assert_lager_called_with(
             mock_subprocess,
@@ -100,7 +100,7 @@ class TestBlufiTools:
         )
 
     def test_wifi_scan_custom_timeouts(self, mock_subprocess):
-        from cli.mcp.tools.blufi import lager_blufi_wifi_scan
+        from lager.mcp.tools.blufi import lager_blufi_wifi_scan
         lager_blufi_wifi_scan(
             box="DEMO", device_name="BLUFI_DEV",
             timeout=30.0, scan_timeout=25.0,
@@ -115,7 +115,7 @@ class TestBlufiTools:
     # -- status --------------------------------
 
     def test_status(self, mock_subprocess):
-        from cli.mcp.tools.blufi import lager_blufi_status
+        from lager.mcp.tools.blufi import lager_blufi_status
         lager_blufi_status(box="DEMO", device_name="BLUFI_DEV")
         assert_lager_called_with(
             mock_subprocess,
@@ -126,7 +126,7 @@ class TestBlufiTools:
     # -- version --------------------------------
 
     def test_version(self, mock_subprocess):
-        from cli.mcp.tools.blufi import lager_blufi_version
+        from lager.mcp.tools.blufi import lager_blufi_version
         lager_blufi_version(box="DEMO", device_name="BLUFI_DEV")
         assert_lager_called_with(
             mock_subprocess,
@@ -138,36 +138,36 @@ class TestBlufiTools:
 
     def test_scan_subprocess_failure(self, mock_subprocess):
         mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="scan failed")
-        from cli.mcp.tools.blufi import lager_blufi_scan
+        from lager.mcp.tools.blufi import lager_blufi_scan
         result = lager_blufi_scan(box="B")
         assert "Error" in result
 
     def test_connect_subprocess_failure(self, mock_subprocess):
         mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="connection failed")
-        from cli.mcp.tools.blufi import lager_blufi_connect
+        from lager.mcp.tools.blufi import lager_blufi_connect
         result = lager_blufi_connect(box="B", device_name="X")
         assert "Error" in result
 
     def test_provision_subprocess_failure(self, mock_subprocess):
         mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="provision failed")
-        from cli.mcp.tools.blufi import lager_blufi_provision
+        from lager.mcp.tools.blufi import lager_blufi_provision
         result = lager_blufi_provision(box="B", device_name="X", ssid="s", password="p")
         assert "Error" in result
 
     def test_wifi_scan_subprocess_failure(self, mock_subprocess):
         mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="wifi scan failed")
-        from cli.mcp.tools.blufi import lager_blufi_wifi_scan
+        from lager.mcp.tools.blufi import lager_blufi_wifi_scan
         result = lager_blufi_wifi_scan(box="B", device_name="X")
         assert "Error" in result
 
     def test_status_subprocess_failure(self, mock_subprocess):
         mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="status failed")
-        from cli.mcp.tools.blufi import lager_blufi_status
+        from lager.mcp.tools.blufi import lager_blufi_status
         result = lager_blufi_status(box="B", device_name="X")
         assert "Error" in result
 
     def test_version_subprocess_failure(self, mock_subprocess):
         mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="version failed")
-        from cli.mcp.tools.blufi import lager_blufi_version
+        from lager.mcp.tools.blufi import lager_blufi_version
         result = lager_blufi_version(box="B", device_name="X")
         assert "Error" in result

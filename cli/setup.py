@@ -76,7 +76,7 @@ if __name__ == "__main__":
         entry_points={
             'console_scripts': [
                 'lager=cli.main:main',
-                'lager-mcp=cli.mcp.server:main',
+                'lager-mcp=lager.mcp.server:main',
             ],
         }
     )

@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for MCP Python run tools (cli.mcp.tools.python_run)."""
+"""Unit tests for MCP Python run tools (lager.mcp.tools.python_run)."""
 
 import pytest
 from test.mcp.conftest import assert_lager_called_with
@@ -14,7 +14,7 @@ class TestPythonTools:
     # -- python run ----------------------------------------------------------
 
     def test_run_default_timeout(self, mock_subprocess):
-        from cli.mcp.tools.python_run import lager_python_run
+        from lager.mcp.tools.python_run import lager_python_run
         lager_python_run(box="X", script_path="test.py")
         # Default timeout=60: no --timeout flag in CLI args
         assert_lager_called_with(
@@ -24,7 +24,7 @@ class TestPythonTools:
         assert mock_subprocess.call_args.kwargs["timeout"] == 120
 
     def test_run_custom_timeout(self, mock_subprocess):
-        from cli.mcp.tools.python_run import lager_python_run
+        from lager.mcp.tools.python_run import lager_python_run
         lager_python_run(box="X", script_path="test.py", timeout=200)
         # Custom timeout=200: --timeout 200 added to CLI args
         assert_lager_called_with(
@@ -35,14 +35,14 @@ class TestPythonTools:
         assert mock_subprocess.call_args.kwargs["timeout"] == 210
 
     def test_run_with_detach(self, mock_subprocess):
-        from cli.mcp.tools.python_run import lager_python_run
+        from lager.mcp.tools.python_run import lager_python_run
         lager_python_run(box="X", script_path="test.py", detach=True)
         assert_lager_called_with(
             mock_subprocess, "python", "test.py", "--box", "X", "--detach",
         )
 
     def test_run_custom_timeout_and_detach(self, mock_subprocess):
-        from cli.mcp.tools.python_run import lager_python_run
+        from lager.mcp.tools.python_run import lager_python_run
         lager_python_run(box="X", script_path="test.py", timeout=300, detach=True)
         assert_lager_called_with(
             mock_subprocess, "python", "test.py", "--box", "X",
@@ -53,7 +53,7 @@ class TestPythonTools:
     # -- python kill ---------------------------------------------------------
 
     def test_kill_default_signal(self, mock_subprocess):
-        from cli.mcp.tools.python_run import lager_python_kill
+        from lager.mcp.tools.python_run import lager_python_kill
         lager_python_kill(box="X")
         # Default signal=SIGTERM: no --signal flag
         assert_lager_called_with(
@@ -61,7 +61,7 @@ class TestPythonTools:
         )
 
     def test_kill_custom_signal(self, mock_subprocess):
-        from cli.mcp.tools.python_run import lager_python_kill
+        from lager.mcp.tools.python_run import lager_python_kill
         lager_python_kill(box="X", signal="SIGKILL")
         assert_lager_called_with(
             mock_subprocess, "python", "--kill", "--box", "X",
@@ -73,13 +73,13 @@ class TestPythonTools:
     def test_run_subprocess_failure(self, mock_subprocess):
         from unittest.mock import MagicMock
         mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="command failed")
-        from cli.mcp.tools.python_run import lager_python_run
+        from lager.mcp.tools.python_run import lager_python_run
         result = lager_python_run(box="B", script_path="test.py")
         assert "Error" in result
 
     def test_kill_subprocess_failure(self, mock_subprocess):
         from unittest.mock import MagicMock
         mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="command failed")
-        from cli.mcp.tools.python_run import lager_python_kill
+        from lager.mcp.tools.python_run import lager_python_kill
         result = lager_python_kill(box="B")
         assert "Error" in result
