@@ -163,7 +163,12 @@ class JLink:
         Perform full chip erase.
 
         For DA1469x, runs ``Exec EnableEraseAllFlashBanks`` (SEGGER: required so external
-        QSPI is not skipped), then ``erase``, then an optional XIP range erase.
+        QSPI is not skipped), then ``erase``, then an optional XIP range erase with
+        ``noreset``, then ``rnh`` so the target is not left mid-erase without reset.
+
+        This path (with ``LAGER_ERASE_RANGE`` etc. from the box J-Link script) is intended
+        to replace loading Apache Mynewt's RAM ``flash_loader`` app plus GDB macros for
+        erase on DA1469x — see https://github.com/apache/mynewt-core/tree/master/apps/flash_loader
 
         Args:
             close: Whether to close connection after operation (unused for J-Link)
@@ -203,6 +208,11 @@ class JLink:
                 yield jl.run_command(
                     f'erase {hex(qspi_start)} {hex(qspi_end)} noreset'
                 )
+                # noreset skips the post-erase target reset; the OQSPI / XIP path can stay
+                # in a state where the next J-Link loadfile fails until real power cycle.
+                # Mynewt's flash_loader flow ends with mon reset / loader exit; rnh is the
+                # Commander equivalent so the next flash_device session sees a clean target.
+                yield jl.run_command('rnh')
 
     def read_memory(self, address, length, *, close=True):
         """

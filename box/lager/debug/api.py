@@ -676,6 +676,9 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
     for reliability. The GDB-based flash method was removed due to unreliable behavior
     where it would report success but not actually program the device.
 
+    For DA1469x, ``loadfile`` plus post-flash ``rnh`` (and the box ``-JLinkScriptFile``)
+    replace Apache Mynewt's RAM ``flash_loader`` + GDB ``fl_load`` style programming.
+
     Args:
         files: Tuple of (hexfiles, binfiles, elffiles)
         preverify: Verify before flashing (unused)

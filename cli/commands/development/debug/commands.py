@@ -827,8 +827,8 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, erase, halt):
 
             # Chip erase tears down J-Link; force a full reconnect before loadfile.
             # force=False can reuse a stale gdbserver session — DA1469x then fails to
-            # boot after flash until power cycle. Disconnect + force=True matches
-            # erase → power cycle → flash.
+            # boot after flash until a clean probe session (chip_erase now ends with rnh
+            # after the QSPI noreset erase; reconnect still required because gdbserver died).
             import time
             time.sleep(0.5)
             try:
