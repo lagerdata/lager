@@ -236,7 +236,7 @@ docker run -d \
     -v /etc/hostname:/host/etc/hostname:ro \
     -v /opt/SEGGER:/opt/SEGGER:ro \
     -v /opt/picoscope/lib:/opt/picoscope/lib:ro \
-    -v "$HOME/.ssh:/home/www-data/.ssh" \
+    --env "HOST_HOME=$HOME" \
     ${JL_MOUNT_PYTHON} \
     ${CUSTOMER_BINARIES_MOUNT} \
     ${OSCILLOSCOPE_MOUNT} \

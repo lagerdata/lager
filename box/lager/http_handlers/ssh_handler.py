@@ -23,8 +23,12 @@ from flask import Flask, jsonify, request
 
 logger = logging.getLogger(__name__)
 
-# Path inside the container that is bind-mounted from the host user's ~/.ssh
-_SSH_DIR = pathlib.Path('/home/www-data/.ssh')
+# In a --privileged container, /proc/1/root is the host's root filesystem.
+# We use HOST_HOME (passed from start_box.sh) to locate the SSH directory of
+# whoever started the box, which is the user whose authorized_keys we want.
+_HOST_HOME = os.environ.get('HOST_HOME', '/home/lagerdata')
+_HOST_ROOT = pathlib.Path('/proc/1/root')
+_SSH_DIR = _HOST_ROOT / _HOST_HOME.lstrip('/') / '.ssh'
 _AUTHORIZED_KEYS = _SSH_DIR / 'authorized_keys'
 
 # Secondary location for the systemd-based sync mechanism
@@ -87,20 +91,17 @@ def register_ssh_routes(app: Flask) -> None:
 
         added_to_auth_keys = False
 
-        # --- Write 1: ~/.ssh/authorized_keys (direct, immediate SSH effect) ---
-        if _SSH_DIR.exists():
-            try:
-                _SSH_DIR.chmod(0o700)
-                _AUTHORIZED_KEYS.touch(mode=0o600)
-                _AUTHORIZED_KEYS.chmod(0o600)
-                added_to_auth_keys = _append_key_idempotent(_AUTHORIZED_KEYS, public_key)
-                logger.info('authorize-key: %s key %r to authorized_keys',
-                            'added' if added_to_auth_keys else 'key already present in', label)
-            except OSError as exc:
-                logger.warning('authorize-key: could not write authorized_keys: %s', exc)
-        else:
-            logger.info('authorize-key: %s not mounted, skipping direct authorized_keys write',
-                        _SSH_DIR)
+        # --- Write 1: ~/.ssh/authorized_keys via host filesystem ---
+        # The container runs --privileged so /proc/1/root exposes the host FS as root,
+        # bypassing uid/permission issues between www-data and the host user.
+        try:
+            _SSH_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+            _AUTHORIZED_KEYS.touch(mode=0o600)
+            added_to_auth_keys = _append_key_idempotent(_AUTHORIZED_KEYS, public_key)
+            logger.info('authorize-key: %s key %r to authorized_keys',
+                        'added' if added_to_auth_keys else 'key already present in', label)
+        except OSError as exc:
+            logger.warning('authorize-key: could not write authorized_keys via /proc/1/root: %s', exc)
 
         # --- Write 2: /etc/lager/authorized_keys.d/<label>.pub (systemd-sync fallback) ---
         added_to_keys_d = False
