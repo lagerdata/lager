@@ -15,23 +15,17 @@ Both writes are idempotent: if the key already exists it is not duplicated.
 """
 
 import logging
-import os
 import pathlib
 import re
+import subprocess
 
 from flask import Flask, jsonify, request
 
 logger = logging.getLogger(__name__)
 
-# In a --privileged container, /proc/1/root is the host's root filesystem.
-# We use HOST_HOME (passed from start_box.sh) to locate the SSH directory of
-# whoever started the box, which is the user whose authorized_keys we want.
-_HOST_HOME = os.environ.get('HOST_HOME', '/home/lagerdata')
-_HOST_ROOT = pathlib.Path('/proc/1/root')
-_SSH_DIR = _HOST_ROOT / _HOST_HOME.lstrip('/') / '.ssh'
-_AUTHORIZED_KEYS = _SSH_DIR / 'authorized_keys'
-
-# Secondary location for the systemd-based sync mechanism
+# Keys are written here; the host-side lager-ssh-keys.path systemd unit
+# watches this directory and syncs any .pub files into authorized_keys.
+# start_box.sh installs the units so they're in place before the container starts.
 _AUTHORIZED_KEYS_D = pathlib.Path('/etc/lager/authorized_keys.d')
 
 _LABEL_RE = re.compile(r'^[a-zA-Z0-9._-]{1,64}$')
@@ -89,32 +83,33 @@ def register_ssh_routes(app: Flask) -> None:
         except ValueError as exc:
             return jsonify({'error': str(exc)}), 400
 
-        added_to_auth_keys = False
-
-        # --- Write 1: ~/.ssh/authorized_keys via host filesystem ---
-        # The container runs --privileged so /proc/1/root exposes the host FS as root,
-        # bypassing uid/permission issues between www-data and the host user.
-        try:
-            _SSH_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-            _AUTHORIZED_KEYS.touch(mode=0o600)
-            added_to_auth_keys = _append_key_idempotent(_AUTHORIZED_KEYS, public_key)
-            logger.info('authorize-key: %s key %r to authorized_keys',
-                        'added' if added_to_auth_keys else 'key already present in', label)
-        except OSError as exc:
-            logger.warning('authorize-key: could not write authorized_keys via /proc/1/root: %s', exc)
-
-        # --- Write 2: /etc/lager/authorized_keys.d/<label>.pub (systemd-sync fallback) ---
-        added_to_keys_d = False
+        # Write to /etc/lager/authorized_keys.d/<label>.pub.
+        # The host-side lager-ssh-keys.path systemd unit (installed by start_box.sh)
+        # watches this directory and syncs .pub files into authorized_keys within ~1s.
+        added = False
         try:
             _AUTHORIZED_KEYS_D.mkdir(parents=True, exist_ok=True)
             pub_file = _AUTHORIZED_KEYS_D / f'{label}.pub'
             existing_pub = pub_file.read_text().strip() if pub_file.exists() else ''
             if existing_pub != public_key.strip():
                 pub_file.write_text(public_key.strip() + '\n')
-                added_to_keys_d = True
+                added = True
                 logger.info('authorize-key: wrote %s to authorized_keys.d', pub_file.name)
+            else:
+                logger.info('authorize-key: key %r already present in authorized_keys.d', label)
         except OSError as exc:
             logger.warning('authorize-key: could not write authorized_keys.d: %s', exc)
+            return jsonify({'error': f'Failed to write key: {exc}'}), 500
 
-        added = added_to_auth_keys or added_to_keys_d
+        # Best-effort: trigger the sync service immediately via D-Bus so the key
+        # lands in authorized_keys before the SSH phase runs, rather than waiting
+        # for the path unit's inotify event (which fires within ~1s anyway).
+        try:
+            subprocess.run(
+                ['systemctl', 'start', 'lager-ssh-keys.service'],
+                timeout=5, capture_output=True, check=False,
+            )
+        except Exception as exc:
+            logger.debug('authorize-key: systemctl trigger skipped: %s', exc)
+
         return jsonify({'authorized': True, 'added': added, 'label': label})
