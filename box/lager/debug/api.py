@@ -40,6 +40,13 @@ def _get_script_file():
     return None
 
 
+def _resolve_script_file(script_file=None):
+    """Resolve caller-provided script path with temp-file fallback."""
+    if script_file and os.path.exists(script_file):
+        return script_file
+    return _get_script_file()
+
+
 class DebugError(Exception):
     """Base class for debug errors"""
     pass
@@ -660,7 +667,7 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None
             self.args = args
             self.script_file = script_file
 
-    resolved_script = script_file if (script_file and os.path.exists(script_file)) else _get_script_file()
+    resolved_script = _resolve_script_file(script_file)
     if not resolved_script:
         logger.warning(
             'chip_erase: no J-Link script file; DA1469x external QSPI may not be erased'
@@ -727,7 +734,7 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
             self.args = args
             self.script_file = script_file
 
-    resolved_script = script_file if (script_file and os.path.exists(script_file)) else _get_script_file()
+    resolved_script = _resolve_script_file(script_file)
     jlink = TempJLink(jlink_args, script_file=resolved_script)
     jlink.__class__ = JLink
 
