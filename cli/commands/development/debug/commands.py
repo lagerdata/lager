@@ -916,9 +916,8 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, erase, halt):
         click.secho("\nFlashed!", fg='green')
         if erase and 'DA1469' in str(_debug_net_jlink_device(debug_net) or '').upper():
             click.secho(
-                "DA1469x: SEGGER erase leaves ROM without a running RAM loader (unlike Mynewt). "
-                "If boot fails after erase+flash, power cycle and flash again, or set "
-                "LAGER_DA1469_DOUBLE_LOADFILE=1 on the box for a second loadfile in one session.",
+                "DA1469x: after erase, a cold halted attach before loadfile can fail. "
+                "If boot fails after erase+flash, power cycle and flash again.",
                 fg='cyan',
                 dim=True,
                 err=True,

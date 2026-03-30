@@ -292,20 +292,16 @@ class JLink:
             because flash already matched (no bytes written).
 
         **DA1469x:** ``rnh`` / ``h`` before ``loadfile`` (``LAGER_DA1469_PRE_FLASH_RUN_HALT=0`` to
-        skip). Optional second pass: ``LAGER_DA1469_DOUBLE_LOADFILE=1`` on the box (mimics
-        erase→flash→POR→flash without POR).
+        skip).
         """
         (hexfiles, binfiles, elffiles) = files
         with commander(self.args, script_file=self.script_file) as jl:
             # Yield connect output to show device discovery details
             yield jl.run_command('connect')
 
-            # DA1469x boot vs Mynewt loader: on-target erase leaves a RAM app running, so flash
-            # can proceed immediately. SEGGER erase does not — after erase, reset/POR runs ROM
-            # against erased XIP (0xFF) with no valid image, so erase→POR→first loadfile does not
-            # magically fix ROM. QSPI is still OK (no-halt memrd). First loadfile may still lay
-            # down enough that erase→flash→POR→second loadfile works. Here: brief rnh then h so
-            # we do not program straight from a cold halted attach only.
+            # DA1469x: after erase, programming from a cold halted attach can fail even though
+            # QSPI itself still reads erased data. Run briefly, then halt before loadfile so the
+            # first flash starts from a known-good controller/boot state.
             dev = ''
             try:
                 di = self.args.index('-device')
@@ -321,14 +317,6 @@ class JLink:
                     yield jl.run_command('h')
 
             yield from _yield_loadfile_outputs(jl, hexfiles, binfiles, elffiles)
-            if 'DA1469' in (dev or '').upper():
-                dbl = os.environ.get('LAGER_DA1469_DOUBLE_LOADFILE', '0').strip().lower()
-                if dbl in ('1', 'true', 'yes', 'on'):
-                    logger.info('DA1469x: second loadfile pass (LAGER_DA1469_DOUBLE_LOADFILE)')
-                    yield (
-                        'DA1469x: second loadfile pass (LAGER_DA1469_DOUBLE_LOADFILE=1 on box)'
-                    )
-                    yield from _yield_loadfile_outputs(jl, hexfiles, binfiles, elffiles)
 
     def reset(self, halt, *, close=True):
         """
