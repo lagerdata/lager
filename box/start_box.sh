@@ -227,6 +227,7 @@ fi
 docker run -d \
     --network lagernet \
     --privileged \
+    --pid=host \
     -v /tmp:/tmp \
     -v /dev:/dev \
     -v /sys/bus/usb:/sys/bus/usb:ro \
