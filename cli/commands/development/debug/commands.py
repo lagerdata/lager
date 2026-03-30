@@ -837,23 +837,28 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, erase, halt):
         client.close()
         ctx.exit(1)
 
+    device_type = str(_debug_net_jlink_device(debug_net) or '').upper()
+
     # Erase flash if requested (ensures clean state for RTT and firmware initialization)
     if erase:
         try:
             click.echo("Erasing flash memory...", err=True)
             client.erase(debug_net, speed='4000', transport='SWD')
             click.secho("Erase complete!", fg='green', err=True)
-
-            # Erase runs JLinkExe (same as standalone erase); force reconnect before loadfile.
-            # force=False can reuse a stale gdbserver session (gdbserver died during erase).
-            import time
-            time.sleep(0.5)
-            try:
-                client.disconnect(debug_net)
-            except Exception:
+            if 'DA1469' in device_type:
+                # DA1469x: keep detach state after erase and let /debug/flash run JLinkExe directly.
+                # This avoids an extra attach/halt cycle before loadfile.
                 pass
-            time.sleep(0.5)
-            client.connect(debug_net, force=True, halt=False, jlink_script=jlink_script)
+            else:
+                # Non-DA1469x: preserve existing reconnect behavior.
+                import time
+                time.sleep(0.5)
+                try:
+                    client.disconnect(debug_net)
+                except Exception:
+                    pass
+                time.sleep(0.5)
+                client.connect(debug_net, force=True, halt=False, jlink_script=jlink_script)
         except Exception as e:
             click.secho(f"Flash erase failed: {e}", fg='red', err=True)
             client.close()
@@ -909,6 +914,15 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, erase, halt):
             click.echo(output)
 
         click.secho("\nFlashed!", fg='green')
+        if erase and 'DA1469' in str(_debug_net_jlink_device(debug_net) or '').upper():
+            click.secho(
+                "DA1469x: SEGGER erase leaves ROM without a running RAM loader (unlike Mynewt). "
+                "If boot fails after erase+flash, power cycle and flash again, or set "
+                "LAGER_DA1469_DOUBLE_LOADFILE=1 on the box for a second loadfile in one session.",
+                fg='cyan',
+                dim=True,
+                err=True,
+            )
     except requests.exceptions.HTTPError as e:
         # Extract error message from response if available
         try:
