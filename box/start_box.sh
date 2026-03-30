@@ -117,6 +117,47 @@ if [ ! -f /etc/lager/saved_nets.json ]; then
     chmod 666 /etc/lager/saved_nets.json
 fi
 
+# Sync SSH keys from /etc/lager/authorized_keys.d/ into ~/.ssh/authorized_keys.
+# Runs as lagerdata (no sudo needed). After the first successful Stout install,
+# systemd units handle this automatically; this is the bootstrap path for first install.
+_sync_authorized_keys() {
+    local keys_dir="/etc/lager/authorized_keys.d"
+    [ -d "$keys_dir" ] || return 0
+    local auth_keys="$HOME/.ssh/authorized_keys"
+    mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+    touch "$auth_keys" && chmod 600 "$auth_keys"
+    local added=0
+    for f in "$keys_dir"/*.pub; do
+        [ -f "$f" ] || continue
+        local key
+        key=$(cat "$f")
+        grep -qxF "$key" "$auth_keys" || { echo "$key" >> "$auth_keys"; added=$((added + 1)); }
+    done
+    [ "$added" -gt 0 ] && echo "  Synced $added SSH key(s) from authorized_keys.d"
+    return 0
+}
+
+echo "Syncing SSH authorized keys..."
+_sync_authorized_keys
+
+# Background poller: catches keys written to authorized_keys.d while the box is running
+# (e.g., during a Stout install). Exits on next start_box.sh run via PID file cleanup.
+_SSH_SYNC_PID_FILE="/tmp/lager-ssh-sync.pid"
+if [ -f "$_SSH_SYNC_PID_FILE" ]; then
+    _old_pid=$(cat "$_SSH_SYNC_PID_FILE" 2>/dev/null || true)
+    [ -n "$_old_pid" ] && kill "$_old_pid" 2>/dev/null || true
+    rm -f "$_SSH_SYNC_PID_FILE"
+fi
+(
+    while true; do
+        sleep 5
+        _sync_authorized_keys
+    done
+) &
+echo "$!" > "$_SSH_SYNC_PID_FILE"
+disown "$!"
+echo ""
+
 # Check for JLink directory
 # Look for J-Link using the THIRD_PARTY_DIR variable (works for any user)
 JL_MOUNT_PYTHON=""
