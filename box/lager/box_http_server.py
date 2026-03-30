@@ -115,6 +115,14 @@ except Exception as e:
     logger.warning("Lock handlers not available: %s", e)
     _has_lock = False
 
+# Import SSH authorization handler
+try:
+    from lager.http_handlers.ssh_handler import register_ssh_routes
+    _has_ssh = True
+except Exception as e:
+    logger.warning("SSH handlers not available: %s", e)
+    _has_ssh = False
+
 # Global dictionary to track active supply monitoring sessions
 # Format: {session_id: {'netname': str, 'stop_event': event_obj, 'thread': thread_obj, 'instrument_lock': Lock}}
 active_supply_sessions = {}
@@ -215,6 +223,14 @@ if _has_lock:
     print("[INIT] Lock REST endpoints registered", flush=True)
 else:
     print("[INIT] Lock REST endpoints NOT available", flush=True)
+
+# Register SSH authorization REST handlers (if available)
+if _has_ssh:
+    register_ssh_routes(app)
+    logger.info("SSH authorization REST endpoints registered")
+    print("[INIT] SSH authorization REST endpoints registered", flush=True)
+else:
+    print("[INIT] SSH authorization REST endpoints NOT available", flush=True)
 
 
 # Supply HTTP endpoint (handled by supply.py module, this is now commented out)
