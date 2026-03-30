@@ -492,11 +492,12 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             import tempfile
             import os
 
+            net = data.get('net', {})
+            device_type = _resolve_device_type(net)
+
             gdbserver_status = get_jlink_gdbserver_status()
             if gdbserver_status['running']:
                 try:
-                    net = data.get('net', {})
-                    device_type = _resolve_device_type(net)
                     from lager.debug.gdb import get_controller
                     gdbmi = get_controller(device=device_type)
 
