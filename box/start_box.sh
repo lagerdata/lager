@@ -151,9 +151,9 @@ fi
 (
     while true; do
         sleep 5
-        _sync_authorized_keys
+        _sync_authorized_keys 2>/dev/null
     done
-) &
+) > /dev/null 2>&1 &
 echo "$!" > "$_SSH_SYNC_PID_FILE"
 disown "$!"
 echo ""
