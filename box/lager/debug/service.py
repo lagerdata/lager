@@ -78,15 +78,6 @@ def _get_script_file(net=None):
         logger.info(f'Wrote J-Link script to {JLINK_SCRIPT_TEMP_PATH} ({source})')
         return JLINK_SCRIPT_TEMP_PATH
 
-    def _script_from_cache_name(name: str):
-        try:
-            saved = get_nets_cache().find_by_name(name)
-            if saved and saved.get('jlink_script'):
-                return _write_b64_script(saved['jlink_script'], f'NetsCache:{name}')
-        except Exception as e:
-            logger.warning(f'Failed to reconstruct J-Link script from NetsCache: {e}')
-        return None
-
     if isinstance(net, dict):
         emb = net.get('jlink_script')
         if isinstance(emb, str) and emb.strip():
@@ -96,13 +87,19 @@ def _get_script_file(net=None):
                 logger.warning(f'Failed to write embedded jlink_script: {e}')
         name = net.get('name')
         if name:
-            cached = _script_from_cache_name(name)
-            if cached:
-                return cached
+            try:
+                saved = get_nets_cache().find_by_name(name)
+                if saved and saved.get('jlink_script'):
+                    return _write_b64_script(saved['jlink_script'], f'NetsCache:{name}')
+            except Exception as e:
+                logger.warning(f'Failed to reconstruct J-Link script from NetsCache: {e}')
     elif isinstance(net, str) and net.strip():
-        cached = _script_from_cache_name(net)
-        if cached:
-            return cached
+        try:
+            saved = get_nets_cache().find_by_name(net)
+            if saved and saved.get('jlink_script'):
+                return _write_b64_script(saved['jlink_script'], f'NetsCache:{net}')
+        except Exception as e:
+            logger.warning(f'Failed to reconstruct J-Link script from NetsCache: {e}')
 
     if os.path.exists(JLINK_SCRIPT_TEMP_PATH):
         logger.debug(f'Using existing J-Link script file {JLINK_SCRIPT_TEMP_PATH}')

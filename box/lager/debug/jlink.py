@@ -171,12 +171,6 @@ class JLink:
         args = args[:speed_idx + 2]
         self.args = args
         self.script_file = script_file
-        self.device = ''
-        try:
-            device_idx = self.args.index('-device')
-            self.device = self.args[device_idx + 1]
-        except (ValueError, IndexError):
-            pass
 
     def erase(self, start_addr, length, *, close=True):
         """
@@ -216,7 +210,13 @@ class JLink:
         """
         with commander(self.args, script_file=self.script_file) as jl:
             yield jl.run_command('connect')
-            is_da1469 = 'DA1469' in (self.device or '').upper()
+            dev = ''
+            try:
+                di = self.args.index('-device')
+                dev = self.args[di + 1]
+            except (ValueError, IndexError):
+                pass
+            is_da1469 = 'DA1469' in (dev or '').upper()
             if is_da1469:
                 # Address-range erase only — never Commander ``erase`` without addresses
                 # (that would be full chip erase on this device family).
@@ -302,7 +302,13 @@ class JLink:
             # DA1469x: after erase, programming from a cold halted attach can fail even though
             # QSPI itself still reads erased data. Run briefly, then halt before loadfile so the
             # first flash starts from a known-good controller/boot state.
-            if 'DA1469' in (self.device or '').upper():
+            dev = ''
+            try:
+                di = self.args.index('-device')
+                dev = self.args[di + 1]
+            except (ValueError, IndexError):
+                pass
+            if 'DA1469' in (dev or '').upper():
                 pre = os.environ.get('LAGER_DA1469_PRE_FLASH_RUN_HALT', '1').strip().lower()
                 if pre not in ('0', 'false', 'no', 'off'):
                     logger.info('DA1469x: rnh, settle, h before loadfile')
