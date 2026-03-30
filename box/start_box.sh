@@ -210,46 +210,6 @@ fi
 echo "  PIGPIO Address: $PIGPIO_ADDR"
 echo ""
 
-# Set up SSH key sync from /etc/lager/authorized_keys.d/ into authorized_keys.
-# This runs on the host as the current user so it has the right permissions.
-# The path unit fires within ~1s of any .pub file being added or changed,
-# enabling dashboard-driven SSH key authorization via POST /authorize-key.
-setup_ssh_key_sync() {
-    echo "Setting up SSH key sync service..."
-
-    sudo tee /etc/systemd/system/lager-ssh-keys.path > /dev/null << 'UNIT'
-[Unit]
-Description=Watch for new SSH public keys in /etc/lager/authorized_keys.d/
-
-[Path]
-PathChanged=/etc/lager/authorized_keys.d
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
-    sudo tee /etc/systemd/system/lager-ssh-keys.service > /dev/null << UNIT
-[Unit]
-Description=Sync SSH public keys from /etc/lager/authorized_keys.d/ into authorized_keys
-
-[Service]
-Type=oneshot
-User=$(whoami)
-ExecStart=/bin/sh -c 'mkdir -p \$HOME/.ssh && touch \$HOME/.ssh/authorized_keys && chmod 700 \$HOME/.ssh && for f in /etc/lager/authorized_keys.d/*.pub; do [ -f "\$f" ] && grep -qF "\$(cat "\$f")" \$HOME/.ssh/authorized_keys || cat "\$f" >> \$HOME/.ssh/authorized_keys; done; chmod 600 \$HOME/.ssh/authorized_keys'
-UNIT
-
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now lager-ssh-keys.path
-    sudo systemctl start lager-ssh-keys.service
-    echo "SSH key sync service ready."
-}
-
-if ! systemctl is-active --quiet lager-ssh-keys.path 2>/dev/null; then
-    setup_ssh_key_sync
-else
-    echo "SSH key sync service already active."
-fi
-
 # Stop existing container if running
 if docker ps -a --format '{{.Names}}' | grep -q '^lager$'; then
     echo "Stopping existing lager container..."
