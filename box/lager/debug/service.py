@@ -481,46 +481,43 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             self.send_error_response(500, str(e))
 
     def handle_flash(self, data: Dict[str, Any]):
-        """Handle debug flash command."""
+        """Handle debug flash command.
+
+        Programming uses JLinkExe (``flash_device``), not GDB. A GDB server is optional:
+        when absent (e.g. immediately after ``/debug/erase`` on DA1469x), we skip GDB health
+        checks and flash anyway.
+        """
         try:
             import base64
             import tempfile
             import os
 
-            # HEALTH CHECK: Verify GDB server is running before flashing
             gdbserver_status = get_jlink_gdbserver_status()
-            if not gdbserver_status['running']:
-                self.send_error_response(400, 'No debugger connection found. Connect first with: lager debug <net> connect')
-                return
+            if gdbserver_status['running']:
+                try:
+                    net = data.get('net', {})
+                    device_type = _resolve_device_type(net)
+                    from lager.debug.gdb import get_controller
+                    gdbmi = get_controller(device=device_type)
 
-            # HEALTH CHECK: Verify target is still responsive via GDB
-            # Note: Some debug probes (e.g., J-Link) don't return 'console' type responses
-            # for 'monitor version', so we make this check informational only.
-            # The J-Link status check above is the primary health indicator.
-            try:
-                net = data.get('net', {})
-                device_type = _resolve_device_type(net)
-                from lager.debug.gdb import get_controller
-                gdbmi = get_controller(device=device_type)
+                    test_responses = gdbmi.write('monitor version', timeout_sec=2.0, raise_error_on_timeout=False)
+                    connection_ok = False
+                    for resp in test_responses:
+                        if resp.get('type') in ('console', 'result', 'done'):
+                            connection_ok = True
+                            break
 
-                # Test connection with a simple monitor command (fast, non-intrusive)
-                # This is primarily to ensure the GDB controller is still alive
-                test_responses = gdbmi.write('monitor version', timeout_sec=2.0, raise_error_on_timeout=False)
-                connection_ok = False
-                for resp in test_responses:
-                    # Accept any non-error response type as success
-                    # J-Link may not return 'console' but will return other response types
-                    if resp.get('type') in ('console', 'result', 'done'):
-                        connection_ok = True
-                        break
+                    if not connection_ok:
+                        logger.warning(
+                            'GDB health check did not return expected response, but continuing since J-Link is running'
+                        )
 
-                if not connection_ok:
-                    # Log warning but don't fail - J-Link is running and that's sufficient
-                    logger.warning('GDB health check did not return expected response, but continuing since J-Link is running')
-
-            except Exception as e:
-                # Log warning but don't fail - if J-Link is running (checked above), flash should work
-                logger.warning(f"GDB health check failed: {e}, but continuing since J-Link is running")
+                except Exception as e:
+                    logger.warning(f'GDB health check failed: {e}, but continuing since J-Link is running')
+            else:
+                logger.info(
+                    '[FLASH] No GDB server; proceeding with JLinkExe-only flash'
+                )
 
             hexfile = data.get('hexfile')
             elffile = data.get('elffile')
@@ -601,8 +598,9 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
     def handle_erase(self, data: Dict[str, Any]):
         """Handle debug erase command.
 
-        chip_erase() stops J-Link processes so JLinkExe can use the probe; the CLI
-        reconnects afterwards. Clear active_connections since the GDB server is gone.
+        chip_erase() stops J-Link processes so JLinkExe can use the probe. Clear
+        active_connections since the GDB server is gone. ``flash`` does not require
+        reconnecting before ``/debug/flash`` (JLinkExe-only).
         """
         try:
             net = data.get('net', {})
