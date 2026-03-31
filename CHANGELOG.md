@@ -2,6 +2,11 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.14.4] - 2026-03-31
+
+### Changed
+- `lager debug flash` now erases flash by default before programming, ensuring a clean boot state. Use `--no-erase` to skip. The `--erase` flag is retained for backwards compatibility.
+
 ## [0.14.3] - 2026-03-31
 
 ### Fixed
