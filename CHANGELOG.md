@@ -2,6 +2,14 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.14.2] - 2026-03-30
+
+### Fixed
+- `lager debug erase` and `lager debug flash` now correctly pass the JLinkScript to J-Link during the connect step. Previously only `gdbserver` passed the script, causing erase/flash to fail on MCUs that require a JLinkScript to load the correct flash algorithm (e.g. DA1469x with external QSPI flash)
+- For DA1469x targets, erase now uses address-range erase instead of chip erase, and no longer halts after erase when flashing
+- Fixed crash in `flash_device` when RTT is subsequently run after flashing
+- Improved J-Link process management: stale PID files are now cleaned up, and JLinkGDBServer is stopped before chip erase operations to ensure exclusive hardware access
+
 ## [0.14.1] - 2026-03-24
 
 ### Fixed
