@@ -44,6 +44,7 @@ import os
 import subprocess
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +188,9 @@ def main():
 
     mcp.settings.host = host
     mcp.settings.port = MCP_PORT
+    mcp.settings.transport_security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
+    )
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
