@@ -43,7 +43,14 @@ def list_nets() -> str:
         {"name": n.name, "type": n.net_type, "instrument": n.instrument, "channel": n.channel}
         for n in bench.nets
     ]
-    return json.dumps({"status": "ok", "nets": nets, "count": len(nets)}, indent=2)
+    result: dict = {"status": "ok", "nets": nets, "count": len(nets)}
+    if not nets:
+        result["warning"] = (
+            "No nets configured. Run 'lager nets add-all' on the box to "
+            "auto-discover connected instruments, then call "
+            "reload_bench_config() to refresh."
+        )
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool()

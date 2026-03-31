@@ -269,6 +269,7 @@ fi
 
 # Start the Lager container with ALL necessary ports exposed
 # Port 5000: Python Execution Service (replaces controller)
+# Port 8100: MCP Server (AI agent integration)
 # Port 8765: Debug Service
 # Port 9000: UART HTTP+WebSocket Server
 # Port 8081-8090: Remote debugging (PDB, etc.)
@@ -294,6 +295,7 @@ docker run -d \
     -p 8301:5000 \
     -p 8080:8080 \
     -p 8081-8090:8081-8090 \
+    -p 8100:8100 \
     -p 8765:8765 \
     -p 9000:9000 \
     -p 2331:2331 \
@@ -320,6 +322,7 @@ echo "========================================"
 echo ""
 echo "Services running:"
 echo "  - Python Execution Service: port 5000 (and 8301 for backwards compatibility)"
+echo "  - MCP Server (AI): port 8100 (Cursor: http://<box-ip>:8100/mcp)"
 echo "  - Debug Service: port 8765"
 echo "  - UART HTTP+WebSocket: port 9000"
 echo "  - Remote PDB: ports 8081-8090"

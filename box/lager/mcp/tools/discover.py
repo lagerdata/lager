@@ -25,7 +25,7 @@ def get_bench_summary() -> str:
     for node in graph.nodes:
         role_counts[node.role.value] = role_counts.get(node.role.value, 0) + 1
 
-    summary = {
+    summary: dict = {
         "box_id": bench.box_id,
         "hostname": bench.hostname,
         "version": bench.version,
@@ -48,6 +48,16 @@ def get_bench_summary() -> str:
         "capability_summary": role_counts,
         "total_capabilities": len(graph.nodes),
     }
+
+    if not bench.nets:
+        summary["warning"] = (
+            "No nets configured on this box. Hardware tools will not work until "
+            "nets are registered. Ask the user to run 'lager nets add-all' on "
+            "the box (or 'lager nets add <name>' for individual nets) to "
+            "auto-discover connected instruments, then call get_bench_summary() "
+            "again."
+        )
+
     return json.dumps(summary, indent=2)
 
 
