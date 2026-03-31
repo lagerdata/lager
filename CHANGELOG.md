@@ -2,6 +2,15 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.14.3] - 2026-03-31
+
+### Fixed
+- Supply net current limit no longer gets automatically reset to 1A on TUI startup or any CLI command
+- OVP value now correctly displays in `lager supply state` output
+
+### Changed
+- Release version branches are now named `X.Y.Z` (without the `v` prefix) to distinguish them from the `vX.Y.Z` tag
+
 ## [0.14.2] - 2026-03-30
 
 ### Fixed

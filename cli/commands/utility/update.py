@@ -284,9 +284,10 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
     target_version = version or 'main'
 
     # Determine the correct git ref for reset/rev-list operations.
-    # Tags (e.g. v0.14.0) must be referenced directly; branches use origin/<name>.
+    # Tags (e.g. v0.14.0) start with 'v' and must be referenced directly;
+    # version branches (e.g. 0.14.0) and named branches use origin/<name>.
     import re as _re_version
-    _is_tag = bool(_re_version.match(r'^v?\d+\.\d+\.\d+', target_version))
+    _is_tag = bool(_re_version.match(r'^v\d+\.\d+\.\d+', target_version))
     git_ref = target_version if _is_tag else f'origin/{target_version}'
 
     # Use default box if none specified

@@ -222,12 +222,12 @@ Alternatively, go to [Releases](https://github.com/lagerdata/lager/releases) and
 Create a branch from the release tag so boxes can be pinned to specific versions via `lager update --version vX.Y.Z`:
 
 ```bash
-git checkout -b vX.Y.Z
-git push upstream refs/heads/vX.Y.Z
+git checkout -b X.Y.Z
+git push upstream X.Y.Z
 git checkout main
 ```
 
-> **Note:** You must use `refs/heads/vX.Y.Z` (not just `vX.Y.Z`) because the tag and branch share the same name, which causes git to report "src refspec matches more than one" if you use the short form.
+> **Note:** The branch is named `X.Y.Z` (without the `v` prefix) to distinguish it from the tag `vX.Y.Z`.
 
 ## Post-release
 
@@ -242,7 +242,7 @@ git checkout main
    git checkout main
    git reset --hard upstream/main
    git push origin main
-   git push origin refs/heads/vX.Y.Z
+   git push origin X.Y.Z
    ```
 
 ## Versioning Policy
