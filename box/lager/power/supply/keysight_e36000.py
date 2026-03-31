@@ -247,16 +247,18 @@ class KeysightE36000(SupplyNet):
         # Verify instrument identity
         self.check_instrument()
 
-        # Safe default: output off and safe current limit
+        # Safe default: output off.
+        # Keep existing protection settings unless explicitly resetting.
         try:
             self.disable_output(self.chan)
         except Exception:
             pass
-        try:
-            self.set_overcurrent_protection(LAGER_CURRENT_LIMIT, self.chan)
-            self.enable_overcurrent_protection(self.chan)
-        except Exception:
-            pass
+        if reset:
+            try:
+                self.set_overcurrent_protection(LAGER_CURRENT_LIMIT, self.chan)
+                self.enable_overcurrent_protection(self.chan)
+            except Exception:
+                pass
 
     def _detect_model(self):
         """Detect model from IDN string and set internal model identifier."""
