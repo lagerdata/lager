@@ -3,162 +3,219 @@
 
 """Unit tests for MCP power supply tools (lager.mcp.tools.power)."""
 
+import json
+from unittest.mock import patch, MagicMock
+
 import pytest
-from test.mcp.conftest import assert_lager_called_with
+from lager import NetType
 
 
 @pytest.mark.unit
 @pytest.mark.power
 class TestPowerTools:
-    """Verify each power supply tool builds the correct lager CLI command."""
+    """Verify each power supply tool calls the correct Net API."""
 
     # -- voltage ---------------------------------------------------------
 
-    def test_voltage_read(self, mock_subprocess):
-        from lager.mcp.tools.power import lager_supply_voltage
-        lager_supply_voltage(box="X", net="psu1")
-        assert_lager_called_with(
-            mock_subprocess, "supply", "psu1", "voltage", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_voltage_read(self, mock_get):
+        supply = MagicMock()
+        supply.voltage.return_value = 3.3
+        mock_get.return_value = supply
+        from lager.mcp.tools.power import supply_measure
 
-    def test_voltage_set(self, mock_subprocess):
-        from lager.mcp.tools.power import lager_supply_voltage
-        lager_supply_voltage(box="X", net="psu1", voltage=3.3)
-        assert_lager_called_with(
-            mock_subprocess,
-            "supply", "psu1", "voltage", "3.3", "--yes", "--box", "X",
-        )
+        result = json.loads(supply_measure(net="psu1", measurement="voltage"))
+        mock_get.assert_called_once_with("psu1", type=NetType.PowerSupply)
+        supply.voltage.assert_called_once_with()
+        assert result["status"] == "ok"
+        assert result["value"] == 3.3
 
-    def test_voltage_set_with_ocp_and_ovp(self, mock_subprocess):
-        from lager.mcp.tools.power import lager_supply_voltage
-        lager_supply_voltage(box="X", net="psu1", voltage=5.0, ocp=1.5, ovp=6.0)
-        assert_lager_called_with(
-            mock_subprocess,
-            "supply", "psu1", "voltage", "5.0", "--yes", "--box", "X",
-            "--ocp", "1.5", "--ovp", "6.0",
-        )
+    @patch("lager.Net.get")
+    def test_voltage_set(self, mock_get):
+        supply = MagicMock()
+        mock_get.return_value = supply
+        from lager.mcp.tools.power import supply_set_voltage
+
+        result = json.loads(supply_set_voltage(net="psu1", voltage=3.3))
+        mock_get.assert_called_once_with("psu1", type=NetType.PowerSupply)
+        supply.set_voltage.assert_called_once_with(3.3)
+        assert result["status"] == "ok"
+        assert result["voltage"] == 3.3
+
+    @patch("lager.Net.get")
+    def test_voltage_set_with_ocp_and_ovp(self, mock_get):
+        supply = MagicMock()
+        mock_get.return_value = supply
+        from lager.mcp.tools.power import supply_set_voltage, supply_ocp, supply_ovp
+
+        json.loads(supply_set_voltage(net="psu1", voltage=5.0))
+        json.loads(supply_ocp(net="psu1", value=1.5))
+        json.loads(supply_ovp(net="psu1", value=6.0))
+        assert mock_get.call_count == 3
+        supply.set_voltage.assert_called_once_with(5.0)
+        supply.ocp.assert_called_once_with(1.5)
+        supply.ovp.assert_called_once_with(6.0)
 
     # -- current ---------------------------------------------------------
 
-    def test_current_read(self, mock_subprocess):
-        from lager.mcp.tools.power import lager_supply_current
-        lager_supply_current(box="X", net="psu1")
-        assert_lager_called_with(
-            mock_subprocess, "supply", "psu1", "current", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_current_read(self, mock_get):
+        supply = MagicMock()
+        supply.current.return_value = 0.42
+        mock_get.return_value = supply
+        from lager.mcp.tools.power import supply_measure
 
-    def test_current_set(self, mock_subprocess):
-        from lager.mcp.tools.power import lager_supply_current
-        lager_supply_current(box="X", net="psu1", current=0.5)
-        assert_lager_called_with(
-            mock_subprocess,
-            "supply", "psu1", "current", "0.5", "--yes", "--box", "X",
-        )
+        result = json.loads(supply_measure(net="psu1", measurement="current"))
+        supply.current.assert_called_once_with()
+        assert result["value"] == 0.42
+
+    @patch("lager.Net.get")
+    def test_current_set(self, mock_get):
+        supply = MagicMock()
+        mock_get.return_value = supply
+        from lager.mcp.tools.power import supply_set_current
+
+        result = json.loads(supply_set_current(net="psu1", current=0.5))
+        supply.set_current.assert_called_once_with(0.5)
+        assert result["current"] == 0.5
 
     # -- enable / disable ------------------------------------------------
 
-    def test_enable(self, mock_subprocess):
-        from lager.mcp.tools.power import lager_supply_enable
-        lager_supply_enable(box="X", net="psu1")
-        assert_lager_called_with(
-            mock_subprocess, "supply", "psu1", "enable", "--yes", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_enable(self, mock_get):
+        supply = MagicMock()
+        mock_get.return_value = supply
+        from lager.mcp.tools.power import supply_enable
 
-    def test_disable(self, mock_subprocess):
-        from lager.mcp.tools.power import lager_supply_disable
-        lager_supply_disable(box="X", net="psu1")
-        assert_lager_called_with(
-            mock_subprocess, "supply", "psu1", "disable", "--yes", "--box", "X",
-        )
+        result = json.loads(supply_enable(net="psu1"))
+        supply.enable.assert_called_once_with()
+        assert result["enabled"] is True
+
+    @patch("lager.Net.get")
+    def test_disable(self, mock_get):
+        supply = MagicMock()
+        mock_get.return_value = supply
+        from lager.mcp.tools.power import supply_disable
+
+        result = json.loads(supply_disable(net="psu1"))
+        supply.disable.assert_called_once_with()
+        assert result["enabled"] is False
 
     # -- state -----------------------------------------------------------
 
-    def test_state(self, mock_subprocess):
-        from lager.mcp.tools.power import lager_supply_state
-        lager_supply_state(box="X", net="psu1")
-        assert_lager_called_with(
-            mock_subprocess, "supply", "psu1", "state", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_state(self, mock_get):
+        supply = MagicMock()
+        supply.voltage.return_value = 5.0
+        supply.current.return_value = 0.1
+        supply.power.return_value = 0.5
+        supply.output_is_enabled.return_value = True
+        mock_get.return_value = supply
+        from lager.mcp.tools.power import supply_state
+
+        result = json.loads(supply_state(net="psu1"))
+        assert result["status"] == "ok"
+        assert result["voltage"] == 5.0
+        assert result["current"] == 0.1
+        assert result["power"] == 0.5
+        assert result["enabled"] is True
 
     # -- clear faults ----------------------------------------------------
 
-    def test_clear_ocp(self, mock_subprocess):
-        from lager.mcp.tools.power import lager_supply_clear_ocp
-        lager_supply_clear_ocp(box="X", net="psu1")
-        assert_lager_called_with(
-            mock_subprocess, "supply", "psu1", "clear-ocp", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_clear_ocp(self, mock_get):
+        supply = MagicMock()
+        mock_get.return_value = supply
+        from lager.mcp.tools.power import supply_clear_ocp
 
-    def test_clear_ovp(self, mock_subprocess):
-        from lager.mcp.tools.power import lager_supply_clear_ovp
-        lager_supply_clear_ovp(box="X", net="psu1")
-        assert_lager_called_with(
-            mock_subprocess, "supply", "psu1", "clear-ovp", "--box", "X",
-        )
+        result = json.loads(supply_clear_ocp(net="psu1"))
+        supply.clear_ocp.assert_called_once_with()
+        assert result["cleared"] == "ocp"
 
-    # -- set (apply config) ----------------------------------------------
+    @patch("lager.Net.get")
+    def test_clear_ovp(self, mock_get):
+        supply = MagicMock()
+        mock_get.return_value = supply
+        from lager.mcp.tools.power import supply_clear_ovp
 
-    def test_set(self, mock_subprocess):
-        from lager.mcp.tools.power import lager_supply_set
-        lager_supply_set(box="X", net="psu1")
-        assert_lager_called_with(
-            mock_subprocess, "supply", "psu1", "set", "--box", "X",
-        )
+        result = json.loads(supply_clear_ovp(net="psu1"))
+        supply.clear_ovp.assert_called_once_with()
+        assert result["cleared"] == "ovp"
 
-    # -- subprocess failure error handling -----------------------------------
+    # -- set mode (apply supply mode) ------------------------------------
 
-    def test_voltage_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.power import lager_supply_voltage
-        result = lager_supply_voltage(box="B", net="psu1")
-        assert "Error" in result
+    @patch("lager.Net.get")
+    def test_set_mode(self, mock_get):
+        supply = MagicMock()
+        mock_get.return_value = supply
+        from lager.mcp.tools.power import supply_set_mode
 
-    def test_current_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.power import lager_supply_current
-        result = lager_supply_current(box="B", net="psu1")
-        assert "Error" in result
+        result = json.loads(supply_set_mode(net="psu1"))
+        supply.set_mode.assert_called_once_with()
+        assert result["action"] == "set_mode"
 
-    def test_enable_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.power import lager_supply_enable
-        result = lager_supply_enable(box="B", net="psu1")
-        assert "Error" in result
+    # -- Net.get / device errors -----------------------------------------
 
-    def test_disable_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.power import lager_supply_disable
-        result = lager_supply_disable(box="B", net="psu1")
-        assert "Error" in result
+    @patch("lager.Net.get")
+    def test_voltage_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.power import supply_measure
 
-    def test_state_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.power import lager_supply_state
-        result = lager_supply_state(box="B", net="psu1")
-        assert "Error" in result
+        with pytest.raises(RuntimeError, match="device not found"):
+            supply_measure(net="psu1", measurement="voltage")
 
-    def test_clear_ocp_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.power import lager_supply_clear_ocp
-        result = lager_supply_clear_ocp(box="B", net="psu1")
-        assert "Error" in result
+    @patch("lager.Net.get")
+    def test_current_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.power import supply_measure
 
-    def test_clear_ovp_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.power import lager_supply_clear_ovp
-        result = lager_supply_clear_ovp(box="B", net="psu1")
-        assert "Error" in result
+        with pytest.raises(RuntimeError, match="device not found"):
+            supply_measure(net="psu1", measurement="current")
 
-    def test_set_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.power import lager_supply_set
-        result = lager_supply_set(box="B", net="psu1")
-        assert "Error" in result
+    @patch("lager.Net.get")
+    def test_enable_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.power import supply_enable
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            supply_enable(net="psu1")
+
+    @patch("lager.Net.get")
+    def test_disable_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.power import supply_disable
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            supply_disable(net="psu1")
+
+    @patch("lager.Net.get")
+    def test_state_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.power import supply_state
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            supply_state(net="psu1")
+
+    @patch("lager.Net.get")
+    def test_clear_ocp_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.power import supply_clear_ocp
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            supply_clear_ocp(net="psu1")
+
+    @patch("lager.Net.get")
+    def test_clear_ovp_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.power import supply_clear_ovp
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            supply_clear_ovp(net="psu1")
+
+    @patch("lager.Net.get")
+    def test_set_mode_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.power import supply_set_mode
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            supply_set_mode(net="psu1")

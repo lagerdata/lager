@@ -3,160 +3,230 @@
 
 """Unit tests for MCP solar simulator tools (lager.mcp.tools.solar)."""
 
+import json
+from unittest.mock import MagicMock, patch
+
 import pytest
-from test.mcp.conftest import assert_lager_called_with
 
 
 @pytest.mark.unit
 class TestSolarTools:
-    """Verify each solar simulator tool builds the correct lager CLI command."""
+    """Verify each solar simulator tool calls SolarDispatcher and driver APIs."""
+
+    @staticmethod
+    def _mock_dispatcher_chain(mock_dispatcher_class, mock_drv):
+        dispatcher = MagicMock()
+        dispatcher.resolve_driver.return_value = mock_drv
+        mock_dispatcher_class.return_value = dispatcher
+        return dispatcher
 
     # -- set / stop ------------------------------------------------------
 
-    def test_set(self, mock_subprocess):
-        from lager.mcp.tools.solar import lager_solar_set
-        lager_solar_set(box="S", net="solar1")
-        assert_lager_called_with(
-            mock_subprocess, "solar", "solar1", "set", "--box", "S",
-        )
+    @patch("lager.power.solar.dispatcher.SolarDispatcher")
+    def test_set(self, mock_dispatcher_class):
+        mock_drv = MagicMock()
+        self._mock_dispatcher_chain(mock_dispatcher_class, mock_drv)
+        from lager.mcp.tools.solar import solar_set
 
-    def test_stop(self, mock_subprocess):
-        from lager.mcp.tools.solar import lager_solar_stop
-        lager_solar_stop(box="S", net="solar1")
-        assert_lager_called_with(
-            mock_subprocess, "solar", "solar1", "stop", "--box", "S",
-        )
+        result = json.loads(solar_set(net="solar1"))
+        mock_dispatcher_class.assert_called()
+        dispatcher = mock_dispatcher_class.return_value
+        dispatcher.resolve_driver.assert_called_with("solar1")
+        mock_drv.connect_instrument.assert_called_once_with()
+        assert result["status"] == "ok"
+        assert result["net"] == "solar1"
+        assert result["action"] == "set_solar_mode"
+
+    @patch("lager.power.solar.dispatcher.SolarDispatcher")
+    def test_stop(self, mock_dispatcher_class):
+        mock_drv = MagicMock()
+        self._mock_dispatcher_chain(mock_dispatcher_class, mock_drv)
+        from lager.mcp.tools.solar import solar_stop
+
+        result = json.loads(solar_stop(net="solar1"))
+        dispatcher = mock_dispatcher_class.return_value
+        dispatcher.resolve_driver.assert_called_with("solar1")
+        mock_drv.disconnect_instrument.assert_called_once_with()
+        assert result["status"] == "ok"
+        assert result["net"] == "solar1"
+        assert result["action"] == "stop"
 
     # -- irradiance ------------------------------------------------------
 
-    def test_irradiance_read(self, mock_subprocess):
-        from lager.mcp.tools.solar import lager_solar_irradiance
-        lager_solar_irradiance(box="S", net="solar1")
-        assert_lager_called_with(
-            mock_subprocess, "solar", "solar1", "irradiance", "--box", "S",
-        )
+    @patch("lager.power.solar.dispatcher.SolarDispatcher")
+    def test_irradiance_read(self, mock_dispatcher_class):
+        mock_drv = MagicMock()
+        mock_drv.irradiance.return_value = " 950.0 "
+        self._mock_dispatcher_chain(mock_dispatcher_class, mock_drv)
+        from lager.mcp.tools.solar import solar_irradiance
 
-    def test_irradiance_set(self, mock_subprocess):
-        from lager.mcp.tools.solar import lager_solar_irradiance
-        lager_solar_irradiance(box="S", net="solar1", value=1000.0)
-        assert_lager_called_with(
-            mock_subprocess,
-            "solar", "solar1", "irradiance", "1000.0", "--box", "S",
-        )
+        result = json.loads(solar_irradiance(net="solar1"))
+        mock_drv.irradiance.assert_called_once_with(value=None)
+        assert result["status"] == "ok"
+        assert result["net"] == "solar1"
+        assert result["irradiance"] == "950.0"
+
+    @patch("lager.power.solar.dispatcher.SolarDispatcher")
+    def test_irradiance_set(self, mock_dispatcher_class):
+        mock_drv = MagicMock()
+        self._mock_dispatcher_chain(mock_dispatcher_class, mock_drv)
+        from lager.mcp.tools.solar import solar_irradiance
+
+        result = json.loads(solar_irradiance(net="solar1", value=1000.0))
+        mock_drv.irradiance.assert_called_once_with(value=1000.0)
+        assert result["irradiance"] == 1000.0
 
     # -- mpp_current / mpp_voltage (read-only) ---------------------------
 
-    def test_mpp_current(self, mock_subprocess):
-        from lager.mcp.tools.solar import lager_solar_mpp_current
-        lager_solar_mpp_current(box="S", net="solar1")
-        assert_lager_called_with(
-            mock_subprocess, "solar", "solar1", "mpp-current", "--box", "S",
-        )
+    @patch("lager.power.solar.dispatcher.SolarDispatcher")
+    def test_mpp_current(self, mock_dispatcher_class):
+        mock_drv = MagicMock()
+        mock_drv.mpp_current.return_value = 1.23
+        self._mock_dispatcher_chain(mock_dispatcher_class, mock_drv)
+        from lager.mcp.tools.solar import solar_mpp_current
 
-    def test_mpp_voltage(self, mock_subprocess):
-        from lager.mcp.tools.solar import lager_solar_mpp_voltage
-        lager_solar_mpp_voltage(box="S", net="solar1")
-        assert_lager_called_with(
-            mock_subprocess, "solar", "solar1", "mpp-voltage", "--box", "S",
-        )
+        result = json.loads(solar_mpp_current(net="solar1"))
+        mock_drv.mpp_current.assert_called_once_with()
+        assert result["mpp_current"] == 1.23
+
+    @patch("lager.power.solar.dispatcher.SolarDispatcher")
+    def test_mpp_voltage(self, mock_dispatcher_class):
+        mock_drv = MagicMock()
+        mock_drv.mpp_voltage.return_value = 18.7
+        self._mock_dispatcher_chain(mock_dispatcher_class, mock_drv)
+        from lager.mcp.tools.solar import solar_mpp_voltage
+
+        result = json.loads(solar_mpp_voltage(net="solar1"))
+        mock_drv.mpp_voltage.assert_called_once_with()
+        assert result["mpp_voltage"] == 18.7
 
     # -- resistance ------------------------------------------------------
 
-    def test_resistance_read(self, mock_subprocess):
-        from lager.mcp.tools.solar import lager_solar_resistance
-        lager_solar_resistance(box="S", net="solar1")
-        assert_lager_called_with(
-            mock_subprocess, "solar", "solar1", "resistance", "--box", "S",
-        )
+    @patch("lager.power.solar.dispatcher.SolarDispatcher")
+    def test_resistance_read(self, mock_dispatcher_class):
+        mock_drv = MagicMock()
+        mock_drv.resistance.return_value = " 0.42 "
+        self._mock_dispatcher_chain(mock_dispatcher_class, mock_drv)
+        from lager.mcp.tools.solar import solar_resistance
 
-    def test_resistance_set(self, mock_subprocess):
-        from lager.mcp.tools.solar import lager_solar_resistance
-        lager_solar_resistance(box="S", net="solar1", value=0.5)
-        assert_lager_called_with(
-            mock_subprocess,
-            "solar", "solar1", "resistance", "0.5", "--box", "S",
-        )
+        result = json.loads(solar_resistance(net="solar1"))
+        mock_drv.resistance.assert_called_once_with(value=None)
+        assert result["resistance"] == "0.42"
+
+    @patch("lager.power.solar.dispatcher.SolarDispatcher")
+    def test_resistance_set(self, mock_dispatcher_class):
+        mock_drv = MagicMock()
+        self._mock_dispatcher_chain(mock_dispatcher_class, mock_drv)
+        from lager.mcp.tools.solar import solar_resistance
+
+        result = json.loads(solar_resistance(net="solar1", value=0.5))
+        mock_drv.resistance.assert_called_once_with(0.5)
+        assert result["resistance"] == 0.5
 
     # -- temperature (read-only) -----------------------------------------
 
-    def test_temperature(self, mock_subprocess):
-        from lager.mcp.tools.solar import lager_solar_temperature
-        lager_solar_temperature(box="S", net="solar1")
-        assert_lager_called_with(
-            mock_subprocess, "solar", "solar1", "temperature", "--box", "S",
-        )
+    @patch("lager.power.solar.dispatcher.SolarDispatcher")
+    def test_temperature(self, mock_dispatcher_class):
+        mock_drv = MagicMock()
+        mock_drv.temperature.return_value = 25.0
+        self._mock_dispatcher_chain(mock_dispatcher_class, mock_drv)
+        from lager.mcp.tools.solar import solar_temperature
+
+        result = json.loads(solar_temperature(net="solar1"))
+        mock_drv.temperature.assert_called_once_with()
+        assert result["temperature"] == 25.0
 
     # -- voc -------------------------------------------------------------
 
-    def test_voc_read(self, mock_subprocess):
-        from lager.mcp.tools.solar import lager_solar_voc
-        lager_solar_voc(box="S", net="solar1")
-        assert_lager_called_with(
-            mock_subprocess, "solar", "solar1", "voc", "--box", "S",
-        )
+    @patch("lager.power.solar.dispatcher.SolarDispatcher")
+    def test_voc_read(self, mock_dispatcher_class):
+        mock_drv = MagicMock()
+        mock_drv.voc.return_value = 21.5
+        self._mock_dispatcher_chain(mock_dispatcher_class, mock_drv)
+        from lager.mcp.tools.solar import solar_voc
 
-    def test_voc_set(self, mock_subprocess):
-        from lager.mcp.tools.solar import lager_solar_voc
-        lager_solar_voc(box="S", net="solar1", value=21.5)
-        assert_lager_called_with(
-            mock_subprocess,
-            "solar", "solar1", "voc", "21.5", "--box", "S",
-        )
+        result = json.loads(solar_voc(net="solar1"))
+        mock_drv.voc.assert_called_once_with()
+        assert result["voc"] == 21.5
 
-    # -- subprocess failure error handling -----------------------------------
+    # -- dispatcher / driver errors --------------------------------------
 
-    def test_set_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.solar import lager_solar_set
-        result = lager_solar_set(box="B", net="solar1")
-        assert "Error" in result
+    @patch("lager.power.solar.dispatcher.SolarDispatcher")
+    def test_set_resolve_failure(self, mock_dispatcher_class):
+        dispatcher = MagicMock()
+        dispatcher.resolve_driver.side_effect = RuntimeError("device not found")
+        mock_dispatcher_class.return_value = dispatcher
+        from lager.mcp.tools.solar import solar_set
 
-    def test_stop_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.solar import lager_solar_stop
-        result = lager_solar_stop(box="B", net="solar1")
-        assert "Error" in result
+        with pytest.raises(RuntimeError, match="device not found"):
+            solar_set(net="solar1")
 
-    def test_irradiance_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.solar import lager_solar_irradiance
-        result = lager_solar_irradiance(box="B", net="solar1")
-        assert "Error" in result
+    @patch("lager.power.solar.dispatcher.SolarDispatcher")
+    def test_stop_resolve_failure(self, mock_dispatcher_class):
+        dispatcher = MagicMock()
+        dispatcher.resolve_driver.side_effect = RuntimeError("device not found")
+        mock_dispatcher_class.return_value = dispatcher
+        from lager.mcp.tools.solar import solar_stop
 
-    def test_mpp_current_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.solar import lager_solar_mpp_current
-        result = lager_solar_mpp_current(box="B", net="solar1")
-        assert "Error" in result
+        with pytest.raises(RuntimeError, match="device not found"):
+            solar_stop(net="solar1")
 
-    def test_mpp_voltage_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.solar import lager_solar_mpp_voltage
-        result = lager_solar_mpp_voltage(box="B", net="solar1")
-        assert "Error" in result
+    @patch("lager.power.solar.dispatcher.SolarDispatcher")
+    def test_irradiance_resolve_failure(self, mock_dispatcher_class):
+        dispatcher = MagicMock()
+        dispatcher.resolve_driver.side_effect = RuntimeError("device not found")
+        mock_dispatcher_class.return_value = dispatcher
+        from lager.mcp.tools.solar import solar_irradiance
 
-    def test_resistance_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.solar import lager_solar_resistance
-        result = lager_solar_resistance(box="B", net="solar1")
-        assert "Error" in result
+        with pytest.raises(RuntimeError, match="device not found"):
+            solar_irradiance(net="solar1")
 
-    def test_temperature_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.solar import lager_solar_temperature
-        result = lager_solar_temperature(box="B", net="solar1")
-        assert "Error" in result
+    @patch("lager.power.solar.dispatcher.SolarDispatcher")
+    def test_mpp_current_resolve_failure(self, mock_dispatcher_class):
+        dispatcher = MagicMock()
+        dispatcher.resolve_driver.side_effect = RuntimeError("device not found")
+        mock_dispatcher_class.return_value = dispatcher
+        from lager.mcp.tools.solar import solar_mpp_current
 
-    def test_voc_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.solar import lager_solar_voc
-        result = lager_solar_voc(box="B", net="solar1")
-        assert "Error" in result
+        with pytest.raises(RuntimeError, match="device not found"):
+            solar_mpp_current(net="solar1")
+
+    @patch("lager.power.solar.dispatcher.SolarDispatcher")
+    def test_mpp_voltage_resolve_failure(self, mock_dispatcher_class):
+        dispatcher = MagicMock()
+        dispatcher.resolve_driver.side_effect = RuntimeError("device not found")
+        mock_dispatcher_class.return_value = dispatcher
+        from lager.mcp.tools.solar import solar_mpp_voltage
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            solar_mpp_voltage(net="solar1")
+
+    @patch("lager.power.solar.dispatcher.SolarDispatcher")
+    def test_resistance_resolve_failure(self, mock_dispatcher_class):
+        dispatcher = MagicMock()
+        dispatcher.resolve_driver.side_effect = RuntimeError("device not found")
+        mock_dispatcher_class.return_value = dispatcher
+        from lager.mcp.tools.solar import solar_resistance
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            solar_resistance(net="solar1")
+
+    @patch("lager.power.solar.dispatcher.SolarDispatcher")
+    def test_temperature_resolve_failure(self, mock_dispatcher_class):
+        dispatcher = MagicMock()
+        dispatcher.resolve_driver.side_effect = RuntimeError("device not found")
+        mock_dispatcher_class.return_value = dispatcher
+        from lager.mcp.tools.solar import solar_temperature
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            solar_temperature(net="solar1")
+
+    @patch("lager.power.solar.dispatcher.SolarDispatcher")
+    def test_voc_resolve_failure(self, mock_dispatcher_class):
+        dispatcher = MagicMock()
+        dispatcher.resolve_driver.side_effect = RuntimeError("device not found")
+        mock_dispatcher_class.return_value = dispatcher
+        from lager.mcp.tools.solar import solar_voc
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            solar_voc(net="solar1")

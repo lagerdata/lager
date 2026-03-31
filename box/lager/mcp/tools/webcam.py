@@ -1,67 +1,80 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""MCP tools for webcam streaming and snapshots."""
+"""MCP tools for webcam streaming via direct on-box Net API."""
 
-from ..server import mcp, run_lager
+import json
+import socket
+
+from ..server import mcp
+
+
+def _box_ip() -> str:
+    """Best-effort detection of this box's routable IP address."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
 
 @mcp.tool()
-def lager_webcam_start(box: str, net: str = "") -> str:
+def webcam_start(net: str) -> str:
     """Start a webcam stream on the box.
 
     Returns the URL where the stream can be viewed.
 
     Args:
-        box: Box name (e.g., 'DEMO')
-        net: Webcam net name (optional, uses default if omitted)
+        net: Webcam net name (e.g., 'camera1')
     """
-    if net:
-        return run_lager("webcam", net, "start", "--box", box)
-    return run_lager("webcam", "start", "--box", box)
+    from lager import Net, NetType
+
+    cam = Net.get(net, type=NetType.Webcam)
+    result = cam.start(box_ip=_box_ip())
+    return json.dumps({"status": "ok", "net": net, **result})
 
 
 @mcp.tool()
-def lager_webcam_stop(box: str, net: str = "") -> str:
+def webcam_stop(net: str) -> str:
     """Stop a webcam stream on the box.
 
     Args:
-        box: Box name (e.g., 'DEMO')
-        net: Webcam net name (optional, uses default if omitted)
+        net: Webcam net name (e.g., 'camera1')
     """
-    if net:
-        return run_lager("webcam", net, "stop", "--box", box)
-    return run_lager("webcam", "stop", "--box", box)
+    from lager import Net, NetType
+
+    stopped = Net.get(net, type=NetType.Webcam).stop()
+    return json.dumps({"status": "ok", "net": net, "stopped": stopped})
 
 
 @mcp.tool()
-def lager_webcam_url(box: str, net: str = "") -> str:
+def webcam_url(net: str) -> str:
     """Get the streaming URL for a webcam on the box.
 
     Args:
-        box: Box name (e.g., 'DEMO')
-        net: Webcam net name (optional, uses default if omitted)
+        net: Webcam net name (e.g., 'camera1')
     """
-    if net:
-        return run_lager("webcam", net, "url", "--box", box)
-    return run_lager("webcam", "url", "--box", box)
+    from lager import Net, NetType
+
+    url = Net.get(net, type=NetType.Webcam).get_url(box_ip=_box_ip())
+    return json.dumps({"status": "ok", "net": net, "url": url})
 
 
 @mcp.tool()
-def lager_webcam_start_all(box: str) -> str:
-    """Start all webcam streams on a Lager box.
+def webcam_info(net: str) -> str:
+    """Get stream information for a webcam.
 
     Args:
-        box: Box name (e.g., 'DEMO')
+        net: Webcam net name (e.g., 'camera1')
     """
-    return run_lager("webcam", "start-all", "--box", box)
+    from lager import Net, NetType
 
-
-@mcp.tool()
-def lager_webcam_stop_all(box: str) -> str:
-    """Stop all webcam streams on a Lager box.
-
-    Args:
-        box: Box name (e.g., 'DEMO')
-    """
-    return run_lager("webcam", "stop-all", "--box", box)
+    cam = Net.get(net, type=NetType.Webcam)
+    info = cam.get_info(box_ip=_box_ip())
+    resp = {"status": "ok", "net": net, "active": cam.is_active()}
+    if info:
+        resp["info"] = info
+    return json.dumps(resp)

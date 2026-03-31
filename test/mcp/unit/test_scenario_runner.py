@@ -19,6 +19,7 @@ from lager.mcp.engine.scenario_runner import (
     _uart_serials,
     _rtt_sessions,
     _cleanup_all,
+    _safe_eval,
     execute_step,
     evaluate_assertions,
     run,
@@ -68,6 +69,10 @@ class TestHandlerRegistry:
         "debug_reset", "debug_erase", "debug_read_memory",
         "rtt_write", "rtt_expect",
         "watt_read", "watt_read_all", "tc_read",
+        "battery_enable", "battery_disable", "battery_soc", "battery_voc",
+        "battery_set", "battery_state",
+        "eload_set", "eload_enable", "eload_disable", "eload_state",
+        "energy_read", "energy_stats",
         "wait",
     ])
 
@@ -726,3 +731,281 @@ class TestRunFunction:
         result = run(json.dumps(scenario))
         assert result["status"] == "passed"
         assert len(result["step_results"]) == 2
+
+    @patch("lager.Net.get")
+    def test_scenario_timeout(self, mock_get):
+        """Scenario-level timeout_s triggers 'timeout' status.
+
+        The deadline check runs *between* steps, so we use two steps
+        whose combined duration exceeds the budget.
+        """
+        scenario = {
+            "name": "timeout_test",
+            "timeout_s": 1,
+            "steps": [
+                {"action": "wait", "params": {"ms": 800}},
+                {"action": "wait", "params": {"ms": 800}},
+                {"action": "wait", "params": {"ms": 800}},
+            ],
+        }
+        result = run(json.dumps(scenario))
+        assert result["status"] == "timeout"
+
+
+# ---------------------------------------------------------------------------
+# Battery handler tests
+# ---------------------------------------------------------------------------
+
+class TestBatteryHandlers:
+    @patch("lager.Net.get")
+    def test_battery_enable(self, mock_get):
+        batt = MagicMock()
+        mock_get.return_value = batt
+        data = _HANDLER_REGISTRY["battery_enable"]("bat1", {}, {})
+        batt.enable.assert_called_once()
+        assert data["enabled"] is True
+
+    @patch("lager.Net.get")
+    def test_battery_disable(self, mock_get):
+        batt = MagicMock()
+        mock_get.return_value = batt
+        data = _HANDLER_REGISTRY["battery_disable"]("bat1", {}, {})
+        batt.disable.assert_called_once()
+        assert data["enabled"] is False
+
+    @patch("lager.Net.get")
+    def test_battery_soc_set(self, mock_get):
+        batt = MagicMock()
+        mock_get.return_value = batt
+        data = _HANDLER_REGISTRY["battery_soc"]("bat1", {"value": 75.0}, {})
+        batt.soc.assert_called_once_with(75.0)
+        assert data["soc"] == 75.0
+
+    @patch("lager.Net.get")
+    def test_battery_soc_read(self, mock_get):
+        batt = MagicMock()
+        mock_get.return_value = batt
+        results = {}
+        data = _HANDLER_REGISTRY["battery_soc"]("bat1", {"label": "soc_reading"}, results)
+        batt.soc.assert_called_once_with(None)
+        assert "soc_reading" in results
+
+    @patch("lager.Net.get")
+    def test_battery_voc(self, mock_get):
+        batt = MagicMock()
+        mock_get.return_value = batt
+        data = _HANDLER_REGISTRY["battery_voc"]("bat1", {"value": 4.2}, {})
+        batt.voc.assert_called_once_with(4.2)
+        assert data["voc"] == 4.2
+
+    @patch("lager.Net.get")
+    def test_battery_set(self, mock_get):
+        batt = MagicMock()
+        mock_get.return_value = batt
+        data = _HANDLER_REGISTRY["battery_set"]("bat1", {}, {})
+        batt.set_mode_battery.assert_called_once()
+
+    @patch("lager.Net.get")
+    def test_battery_state(self, mock_get):
+        batt = MagicMock()
+        batt.terminal_voltage.return_value = 3.7
+        batt.current.return_value = 0.5
+        batt.esr.return_value = 0.1
+        mock_get.return_value = batt
+        results = {}
+        data = _HANDLER_REGISTRY["battery_state"]("bat1", {"label": "state"}, results)
+        assert data["terminal_voltage"] == 3.7
+        assert data["current"] == 0.5
+        assert results["state"]["esr"] == 0.1
+
+
+# ---------------------------------------------------------------------------
+# ELoad handler tests
+# ---------------------------------------------------------------------------
+
+class TestELoadHandlers:
+    @patch("lager.Net.get")
+    def test_eload_set_cc(self, mock_get):
+        eload = MagicMock()
+        mock_get.return_value = eload
+        data = _HANDLER_REGISTRY["eload_set"]("eload1", {"mode": "cc", "value": 1.5}, {})
+        eload.current.assert_called_once_with(1.5)
+        assert data["mode"] == "cc"
+        assert data["current"] == 1.5
+
+    @patch("lager.Net.get")
+    def test_eload_set_cv(self, mock_get):
+        eload = MagicMock()
+        mock_get.return_value = eload
+        data = _HANDLER_REGISTRY["eload_set"]("eload1", {"mode": "cv", "value": 5.0}, {})
+        eload.voltage.assert_called_once_with(5.0)
+
+    @patch("lager.Net.get")
+    def test_eload_set_invalid_mode(self, mock_get):
+        eload = MagicMock()
+        mock_get.return_value = eload
+        with pytest.raises(ValueError, match="Unknown eload mode"):
+            _HANDLER_REGISTRY["eload_set"]("eload1", {"mode": "xx"}, {})
+
+    @patch("lager.Net.get")
+    def test_eload_enable(self, mock_get):
+        eload = MagicMock()
+        mock_get.return_value = eload
+        data = _HANDLER_REGISTRY["eload_enable"]("eload1", {}, {})
+        eload.enable.assert_called_once()
+        assert data["enabled"] is True
+
+    @patch("lager.Net.get")
+    def test_eload_disable(self, mock_get):
+        eload = MagicMock()
+        mock_get.return_value = eload
+        data = _HANDLER_REGISTRY["eload_disable"]("eload1", {}, {})
+        eload.disable.assert_called_once()
+
+    @patch("lager.Net.get")
+    def test_eload_state(self, mock_get):
+        eload = MagicMock()
+        eload.measured_voltage.return_value = 5.0
+        eload.measured_current.return_value = 1.0
+        eload.measured_power.return_value = 5.0
+        eload.mode.return_value = "cc"
+        mock_get.return_value = eload
+        results = {}
+        data = _HANDLER_REGISTRY["eload_state"]("eload1", {"label": "state"}, results)
+        assert data["measured_voltage"] == 5.0
+        assert data["mode"] == "cc"
+        assert results["state"]["measured_current"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Energy handler tests
+# ---------------------------------------------------------------------------
+
+class TestEnergyHandlers:
+    @patch("lager.Net.get")
+    def test_energy_read(self, mock_get):
+        ea = MagicMock()
+        ea.read_energy.return_value = {"energy_j": 0.5, "charge_c": 0.15}
+        mock_get.return_value = ea
+        results = {}
+        data = _HANDLER_REGISTRY["energy_read"]("energy1", {"duration": 2.0, "label": "e"}, results)
+        ea.read_energy.assert_called_once_with(2.0)
+        assert data["reading"]["energy_j"] == 0.5
+        assert results["e"]["duration"] == 2.0
+
+    @patch("lager.Net.get")
+    def test_energy_stats(self, mock_get):
+        ea = MagicMock()
+        ea.read_stats.return_value = {"current": {"mean": 0.1}}
+        mock_get.return_value = ea
+        results = {}
+        data = _HANDLER_REGISTRY["energy_stats"]("energy1", {"duration": 1.0, "label": "s"}, results)
+        ea.read_stats.assert_called_once_with(1.0)
+        assert data["stats"]["current"]["mean"] == 0.1
+
+
+# ---------------------------------------------------------------------------
+# Retry and timeout tests
+# ---------------------------------------------------------------------------
+
+class TestRetryAndTimeout:
+    @patch("lager.Net.get")
+    def test_max_retries_succeeds_on_second_try(self, mock_get):
+        gpio = MagicMock()
+        gpio.output.side_effect = [RuntimeError("flaky"), None]
+        mock_get.return_value = gpio
+        step = {
+            "action": "gpio_set", "target": "pin0",
+            "params": {"level": 1},
+            "max_retries": 1,
+        }
+        results, step_results, errors = {}, [], []
+        execute_step(step, results, step_results, errors)
+        assert len(step_results) == 1
+        assert step_results[0]["success"] is True
+        assert step_results[0].get("attempt") == 2
+
+    @patch("lager.Net.get")
+    def test_max_retries_exhausted(self, mock_get):
+        gpio = MagicMock()
+        gpio.output.side_effect = RuntimeError("always fails")
+        mock_get.return_value = gpio
+        step = {
+            "action": "gpio_set", "target": "pin0",
+            "params": {"level": 1},
+            "max_retries": 2, "on_failure": "continue",
+        }
+        results, step_results, errors = {}, [], []
+        execute_step(step, results, step_results, errors)
+        assert step_results[0]["success"] is False
+        assert step_results[0]["attempts"] == 3
+
+    def test_step_timeout_fires(self):
+        step = {
+            "action": "wait", "params": {"ms": 5000},
+            "timeout_s": 1, "on_failure": "continue",
+        }
+        results, step_results, errors = {}, [], []
+        t0 = time.time()
+        execute_step(step, results, step_results, errors)
+        elapsed = time.time() - t0
+        assert step_results[0]["success"] is False
+        assert "timed out" in step_results[0]["error"].lower()
+        assert elapsed < 3.0
+
+
+# ---------------------------------------------------------------------------
+# Safe eval tests
+# ---------------------------------------------------------------------------
+
+class TestSafeEval:
+    def test_simple_comparison(self):
+        from lager.mcp.engine.scenario_runner import _safe_eval
+        assert _safe_eval("results['v'] == 3.3", {"v": 3.3}) is True
+
+    def test_nested_access(self):
+        from lager.mcp.engine.scenario_runner import _safe_eval
+        assert _safe_eval("results['a']['b'] > 1", {"a": {"b": 5}}) is True
+
+    def test_boolean_and(self):
+        from lager.mcp.engine.scenario_runner import _safe_eval
+        assert _safe_eval("results['x'] > 0 and results['x'] < 10", {"x": 5}) is True
+
+    def test_boolean_or(self):
+        from lager.mcp.engine.scenario_runner import _safe_eval
+        assert _safe_eval("results['x'] < 0 or results['x'] > 10", {"x": 5}) is False
+
+    def test_not(self):
+        from lager.mcp.engine.scenario_runner import _safe_eval
+        assert _safe_eval("not results['flag']", {"flag": False}) is True
+
+    def test_builtin_abs(self):
+        from lager.mcp.engine.scenario_runner import _safe_eval
+        assert _safe_eval("abs(results['v']) < 0.1", {"v": -0.05}) is True
+
+    def test_builtin_len(self):
+        from lager.mcp.engine.scenario_runner import _safe_eval
+        assert _safe_eval("len(results['items']) == 3", {"items": [1, 2, 3]}) is True
+
+    def test_in_operator(self):
+        from lager.mcp.engine.scenario_runner import _safe_eval
+        assert _safe_eval("'ok' in results['msg']", {"msg": "all ok"}) is True
+
+    def test_rejects_import(self):
+        from lager.mcp.engine.scenario_runner import _safe_eval
+        with pytest.raises(Exception):
+            _safe_eval("__import__('os').system('echo pwned')", {})
+
+    def test_rejects_arbitrary_names(self):
+        from lager.mcp.engine.scenario_runner import _safe_eval
+        with pytest.raises(NameError):
+            _safe_eval("open('/etc/passwd')", {})
+
+    def test_literal_true(self):
+        from lager.mcp.engine.scenario_runner import _safe_eval
+        assert _safe_eval("True", {}) is True
+
+    def test_undefined_var_raises(self):
+        from lager.mcp.engine.scenario_runner import _safe_eval
+        with pytest.raises(NameError):
+            _safe_eval("undefined_var", {})

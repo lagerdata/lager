@@ -1,141 +1,114 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""MCP tools for robotic arm control."""
+"""MCP tools for robotic arm control via direct on-box Net API."""
 
-from ..server import mcp, run_lager
+import json
+
+from ..server import mcp
 
 
 @mcp.tool()
-def lager_arm_position(box: str, net: str) -> str:
-    """Read the current position of the robotic arm.
-
-    Returns the current X, Y, Z coordinates.
+def arm_position(net: str) -> str:
+    """Read the current X, Y, Z position of the robotic arm.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Arm net name (e.g., 'arm1')
     """
-    return run_lager("arm", net, "position", "--box", box)
+    from lager import Net, NetType
+
+    x, y, z = Net.get(net, type=NetType.Arm).position()
+    return json.dumps({"status": "ok", "net": net, "x": x, "y": y, "z": z})
 
 
 @mcp.tool()
-def lager_arm_move(
-    box: str, net: str,
-    x: float, y: float, z: float,
-    timeout: float = 15,
-) -> str:
+def arm_move(net: str, x: float, y: float, z: float, timeout: float = 15.0) -> str:
     """Move the robotic arm to an absolute position.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Arm net name (e.g., 'arm1')
-        x: Target X coordinate
-        y: Target Y coordinate
-        z: Target Z coordinate
+        x: Target X coordinate (mm)
+        y: Target Y coordinate (mm)
+        z: Target Z coordinate (mm)
         timeout: Movement timeout in seconds (default: 15)
     """
-    args = [
-        "arm", net, "move",
-        "--x", str(x), "--y", str(y), "--z", str(z),
-        "--timeout", str(timeout),
-        "--yes", "--box", box,
-    ]
-    return run_lager(*args, timeout=int(timeout) + 10)
+    from lager import Net, NetType
+
+    Net.get(net, type=NetType.Arm).move_to(x, y, z, timeout=timeout)
+    return json.dumps({"status": "ok", "net": net, "x": x, "y": y, "z": z})
 
 
 @mcp.tool()
-def lager_arm_move_by(
-    box: str, net: str,
-    dx: float = 0, dy: float = 0, dz: float = 0,
-    timeout: float = 15,
+def arm_move_relative(
+    net: str,
+    dx: float = 0.0,
+    dy: float = 0.0,
+    dz: float = 0.0,
+    timeout: float = 15.0,
 ) -> str:
     """Move the robotic arm by a relative offset from its current position.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Arm net name (e.g., 'arm1')
-        dx: X offset (default: 0)
-        dy: Y offset (default: 0)
-        dz: Z offset (default: 0)
+        dx: X offset in mm (default: 0)
+        dy: Y offset in mm (default: 0)
+        dz: Z offset in mm (default: 0)
         timeout: Movement timeout in seconds (default: 15)
     """
-    args = ["arm", net, "move-by", "--yes", "--box", box]
-    if dx != 0:
-        args.extend(["--dx", str(dx)])
-    if dy != 0:
-        args.extend(["--dy", str(dy)])
-    if dz != 0:
-        args.extend(["--dz", str(dz)])
-    args.extend(["--timeout", str(timeout)])
-    return run_lager(*args, timeout=int(timeout) + 10)
+    from lager import Net, NetType
+
+    new_pos = Net.get(net, type=NetType.Arm).move_relative(dx, dy, dz, timeout=timeout)
+    x, y, z = new_pos
+    return json.dumps({"status": "ok", "net": net, "x": x, "y": y, "z": z})
 
 
 @mcp.tool()
-def lager_arm_go_home(box: str, net: str) -> str:
+def arm_go_home(net: str) -> str:
     """Move the robotic arm to its home position.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Arm net name (e.g., 'arm1')
     """
-    return run_lager("arm", net, "go-home", "--yes", "--box", box)
+    from lager import Net, NetType
+
+    Net.get(net, type=NetType.Arm).go_home()
+    return json.dumps({"status": "ok", "net": net, "action": "go_home"})
 
 
 @mcp.tool()
-def lager_arm_enable_motor(box: str, net: str) -> str:
+def arm_enable_motor(net: str) -> str:
     """Enable the robotic arm motor.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Arm net name (e.g., 'arm1')
     """
-    return run_lager("arm", net, "enable-motor", "--box", box)
+    from lager import Net, NetType
+
+    Net.get(net, type=NetType.Arm).enable_motor()
+    return json.dumps({"status": "ok", "net": net, "motor": "enabled"})
 
 
 @mcp.tool()
-def lager_arm_disable_motor(box: str, net: str) -> str:
+def arm_disable_motor(net: str) -> str:
     """Disable the robotic arm motor.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Arm net name (e.g., 'arm1')
     """
-    return run_lager("arm", net, "disable-motor", "--box", box)
+    from lager import Net, NetType
+
+    Net.get(net, type=NetType.Arm).disable_motor()
+    return json.dumps({"status": "ok", "net": net, "motor": "disabled"})
 
 
 @mcp.tool()
-def lager_arm_set_acceleration(
-    box: str, net: str,
-    acceleration: float, travel: float,
-    retract: float = 60,
-) -> str:
-    """Set robotic arm acceleration parameters.
-
-    Args:
-        box: Box name (e.g., 'DEMO')
-        net: Arm net name (e.g., 'arm1')
-        acceleration: Acceleration value
-        travel: Travel speed
-        retract: Retract speed (default: 60)
-    """
-    return run_lager(
-        "arm", net, "set-acceleration",
-        "--acceleration", str(acceleration),
-        "--travel", str(travel),
-        "--retract", str(retract),
-        "--box", box,
-    )
-
-
-@mcp.tool()
-def lager_arm_read_and_save_position(box: str, net: str) -> str:
+def arm_save_position(net: str) -> str:
     """Save the current arm position as a calibration reference.
 
-    Reads the current position and stores it for future reference.
-
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Arm net name (e.g., 'arm1')
     """
-    return run_lager("arm", net, "read-and-save-position", "--box", box)
+    from lager import Net, NetType
+
+    Net.get(net, type=NetType.Arm).save_position()
+    return json.dumps({"status": "ok", "net": net, "action": "save_position"})

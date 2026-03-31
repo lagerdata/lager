@@ -1,157 +1,217 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""MCP tools for firmware debugging (flash, reset, erase, memory read)."""
+"""MCP tools for firmware debugging, RTT, and GDB server via direct on-box Net API."""
 
-from ..server import mcp, run_lager
+import json
+import time
 
-
-@mcp.tool()
-def lager_debug_list_nets(box: str) -> str:
-    """List available debug nets on a box.
-
-    Shows all configured debug nets with their probe type and
-    target device information.
-
-    Args:
-        box: Box name (e.g., 'DEMO')
-    """
-    return run_lager("debug", "--box", box)
+from ..server import mcp
 
 
 @mcp.tool()
-def lager_debug_flash(
-    box: str, net: str,
-    hex_file: str = "", elf_file: str = "", bin_file: str = "",
-    erase: bool = False,
-) -> str:
-    """Flash firmware to a debug target.
-
-    Provide exactly one firmware file (hex, elf, or bin).
+def debug_flash(net: str, firmware_path: str) -> str:
+    """Flash firmware to the DUT via the debug probe.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Debug net name (e.g., 'debug1')
-        hex_file: Path to .hex firmware file
-        elf_file: Path to .elf firmware file
-        bin_file: Path to .bin firmware file (format: 'file.bin@0x08000000')
-        erase: Erase all flash before programming (default: false)
+        firmware_path: Path to firmware file (.elf, .hex, .bin) on the box filesystem
     """
-    args = ["debug", net, "flash", "--box", box]
-    if hex_file:
-        args.extend(["--hex", hex_file])
-    if elf_file:
-        args.extend(["--elf", elf_file])
-    if bin_file:
-        args.extend(["--bin", bin_file])
-    if erase:
-        args.append("--erase")
-    return run_lager(*args)
+    from lager import Net, NetType
+
+    Net.get(net, type=NetType.Debug).flash(firmware_path)
+    return json.dumps({"status": "ok", "net": net, "firmware_path": firmware_path})
 
 
 @mcp.tool()
-def lager_debug_reset(box: str, net: str) -> str:
-    """Reset the debug target device.
-
-    Performs a hardware reset via the debug probe.
+def debug_reset(net: str, halt: bool = False) -> str:
+    """Reset the DUT via the debug probe.
 
     Args:
-        box: Box name (e.g., 'DEMO')
+        net: Debug net name (e.g., 'debug1')
+        halt: Halt the CPU after reset (default: false)
+    """
+    from lager import Net, NetType
+
+    Net.get(net, type=NetType.Debug).reset(halt=halt)
+    return json.dumps({"status": "ok", "net": net, "halt": halt})
+
+
+@mcp.tool()
+def debug_erase(net: str) -> str:
+    """Erase the DUT's flash memory.
+
+    WARNING: The device will have no firmware after this operation.
+
+    Args:
         net: Debug net name (e.g., 'debug1')
     """
-    return run_lager("debug", net, "reset", "--box", box)
+    from lager import Net, NetType
+
+    Net.get(net, type=NetType.Debug).erase()
+    return json.dumps({"status": "ok", "net": net, "erased": True})
 
 
 @mcp.tool()
-def lager_debug_erase(box: str, net: str) -> str:
-    """Erase all flash memory on the debug target.
-
-    WARNING: This erases the entire flash. The device will have no firmware
-    after this operation.
+def debug_connect(net: str, speed: int = 0) -> str:
+    """Connect the debug probe to the DUT.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Debug net name (e.g., 'debug1')
+        speed: SWD/JTAG speed in kHz (0 = auto)
     """
-    return run_lager("debug", net, "erase", "--yes", "--box", box)
+    from lager import Net, NetType
+
+    kwargs = {}
+    if speed:
+        kwargs["speed"] = speed
+    Net.get(net, type=NetType.Debug).connect(**kwargs)
+    return json.dumps({"status": "ok", "net": net, "connected": True})
 
 
 @mcp.tool()
-def lager_debug_status(box: str, net: str) -> str:
-    """Show debug net status and connection information.
+def debug_disconnect(net: str) -> str:
+    """Disconnect the debug probe from the DUT.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Debug net name (e.g., 'debug1')
     """
-    return run_lager("debug", net, "status", "--box", box)
+    from lager import Net, NetType
+
+    Net.get(net, type=NetType.Debug).disconnect()
+    return json.dumps({"status": "ok", "net": net, "connected": False})
 
 
 @mcp.tool()
-def lager_debug_memrd(box: str, net: str, start_addr: str, length: str) -> str:
-    """Read memory from the debug target.
+def debug_read_memory(net: str, address: int, length: int = 4) -> str:
+    """Read a region of DUT memory.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Debug net name (e.g., 'debug1')
-        start_addr: Start address in hex (e.g., '0x08000000')
-        length: Number of bytes to read in hex or decimal (e.g., '0x100' or '256')
+        address: Start address (e.g., 0x08000000)
+        length: Number of bytes to read (default: 4)
     """
-    return run_lager("debug", net, "memrd", start_addr, length, "--box", box)
+    from lager import Net, NetType
+
+    data = Net.get(net, type=NetType.Debug).read_memory(address, length)
+    return json.dumps({
+        "status": "ok",
+        "net": net,
+        "address": hex(address),
+        "length": length,
+        "data": data,
+    }, default=str)
+
+
+# ── RTT (Real-Time Transfer) tools ──────────────────────────────────
+
+_rtt_sessions: dict = {}
+
+
+def _get_rtt(net: str, channel: int = 0):
+    """Get or create a cached RTT session via the debug net's context manager."""
+    from lager import Net, NetType
+
+    key = f"{net}:{channel}"
+    if key not in _rtt_sessions:
+        dbg = Net.get(net, type=NetType.Debug)
+        ctx = dbg.rtt(channel=channel)
+        _rtt_sessions[key] = ctx.__enter__()
+    return _rtt_sessions[key]
 
 
 @mcp.tool()
-def lager_debug_health(box: str, net: str) -> str:
-    """Run a health check on the debug probe connection.
+def rtt_write(net: str, data: str, channel: int = 0) -> str:
+    """Write data to a DUT RTT channel.
+
+    Requires an active debug connection. The RTT session is created
+    automatically on first use and cached for subsequent calls.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Debug net name (e.g., 'debug1')
+        data: UTF-8 string to send
+        channel: RTT channel number (default: 0)
     """
-    return run_lager("debug", net, "health", "--box", box)
+    rtt = _get_rtt(net, channel)
+    rtt.write(data.encode("utf-8", errors="ignore"))
+    return json.dumps({"status": "ok", "net": net, "channel": channel, "bytes_written": len(data)})
 
 
 @mcp.tool()
-def lager_debug_disconnect(box: str, net: str) -> str:
-    """Disconnect the debug probe from the target.
+def rtt_read(net: str, channel: int = 0, timeout_ms: int = 1000) -> str:
+    """Read available data from a DUT RTT channel.
+
+    Returns whatever data is available within the timeout window.
+    Does not wait for a specific pattern — use rtt_expect() for that.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Debug net name (e.g., 'debug1')
+        channel: RTT channel number (default: 0)
+        timeout_ms: Read timeout in milliseconds (default: 1000)
     """
-    return run_lager("debug", net, "disconnect", "--box", box)
+    rtt = _get_rtt(net, channel)
+    timeout_s = timeout_ms / 1000.0
+    chunks: list[str] = []
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        raw = rtt.read_some(timeout=min(0.25, deadline - time.time()))
+        if raw:
+            chunks.append(raw.decode("utf-8", errors="ignore"))
+        elif chunks:
+            break
+    output = "".join(chunks)
+    return json.dumps({"status": "ok", "net": net, "channel": channel, "output": output})
 
 
 @mcp.tool()
-def lager_debug_gdbserver(
-    box: str, net: str,
-    speed: str = None, force: bool = False,
-    halt: bool = False, reset: bool = False,
-    gdb_port: int = 2331,
-) -> str:
-    """Start JLinkGDBServer for firmware debugging.
-
-    Starts a GDB server that listens for connections from arm-none-eabi-gdb.
-    The server remains running until explicitly disconnected.
-    Note: Interactive RTT streaming (--rtt/--rtt-reset) is excluded.
+def rtt_expect(net: str, pattern: str, channel: int = 0, timeout_ms: int = 5000) -> str:
+    """Read from an RTT channel until a pattern matches or timeout.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Debug net name (e.g., 'debug1')
-        speed: SWD/JTAG speed in kHz (e.g., '4000') or 'adaptive'
-        force: Force new connection even if already connected (default: false)
-        halt: Halt the device when connecting (default: false)
-        reset: Reset the device after starting GDB server (default: false)
-        gdb_port: GDB server port (default: 2331)
+        pattern: String to search for in the RTT output
+        channel: RTT channel number (default: 0)
+        timeout_ms: Maximum wait time in milliseconds (default: 5000)
     """
-    args = ["debug", net, "gdbserver", "--box", box,
-            "--gdb-port", str(gdb_port)]
-    if speed is not None:
-        args.extend(["--speed", speed])
-    if force:
-        args.append("--force")
-    if halt:
-        args.append("--halt")
-    if reset:
-        args.append("--reset")
-    return run_lager(*args)
+    rtt = _get_rtt(net, channel)
+    timeout_s = timeout_ms / 1000.0
+    chunks: list[str] = []
+    matched = False
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        raw = rtt.read_some(timeout=min(0.5, deadline - time.time()))
+        if raw:
+            chunks.append(raw.decode("utf-8", errors="ignore"))
+            if pattern in "".join(chunks):
+                matched = True
+                break
+    output = "".join(chunks)
+    return json.dumps({
+        "status": "ok",
+        "net": net,
+        "channel": channel,
+        "pattern": pattern,
+        "matched": matched,
+        "output": output,
+    })
+
+
+# ── GDB server ──────────────────────────────────────────────────────
+
+@mcp.tool()
+def debug_gdbserver(net: str, port: int = 3333) -> str:
+    """Start a GDB server connected to the DUT via the debug probe.
+
+    The GDB server listens on the specified port and can be connected
+    to from ``arm-none-eabi-gdb`` or any GDB-compatible client with
+    ``target remote :<port>``.
+
+    Args:
+        net: Debug net name (e.g., 'debug1')
+        port: TCP port for the GDB server (default: 3333)
+    """
+    from lager import Net, NetType
+
+    dbg = Net.get(net, type=NetType.Debug)
+    dbg.gdbserver(port=port)
+    return json.dumps({"status": "ok", "net": net, "gdbserver_port": port})

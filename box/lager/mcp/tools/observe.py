@@ -1,67 +1,107 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""MCP observation tools -- logs and power measurements."""
-
-from __future__ import annotations
+"""MCP observation tools — UART logs and power measurements via direct Net API."""
 
 import json
 
-from ..server import mcp, run_lager
+from ..server import mcp
+
+_POWER_ROLE_TO_NETTYPE = {
+    "power-supply": "PowerSupply",
+    "power-supply-2q": "PowerSupply2Q",
+    "battery": "Battery",
+    "watt-meter": "WattMeter",
+}
 
 
 @mcp.tool()
-def read_logs(box: str = "", uart_net: str = "", lines: int = 100) -> str:
-    """Read recent UART/debug logs from the DUT.
+def read_uart(net: str = "", timeout_s: float = 2.0, baudrate: int = 115200) -> str:
+    """Read available data from a UART net (DUT serial output).
 
     Args:
-        box: Box name (leave empty for configured box).
-        uart_net: UART net name (leave empty to auto-select).
-        lines: Number of lines to return (default: 100).
+        net: UART net name (leave empty to auto-select first UART net).
+        timeout_s: Read timeout in seconds (default: 2.0).
+        baudrate: Baud rate (default: 115200).
     """
-    from ..server_state import get_bench
-    from ..config import resolve_box_name
+    from lager import Net, NetType
 
-    box_name = box or resolve_box_name()
-    if not box_name:
-        return json.dumps({"error": "No box configured."})
-
-    if not uart_net:
-        bench = get_bench()
-        for net in bench.nets:
-            if net.net_type == "uart":
-                uart_net = net.name
+    if not net:
+        from ..server_state import get_bench
+        for n in get_bench().nets:
+            if n.net_type == "uart":
+                net = n.name
                 break
-    if not uart_net:
-        return json.dumps({"error": "No UART net found on this bench."})
+    if not net:
+        return json.dumps({"status": "error", "error": "No UART net found on this bench."})
 
-    output = run_lager("uart", uart_net, "read", "--lines", str(lines), "--box", box_name)
-    return json.dumps({"net": uart_net, "lines": lines, "output": output})
+    uart = Net.get(net, type=NetType.UART)
+    ser = uart.connect(baudrate=baudrate, timeout=timeout_s)
+
+    lines = []
+    try:
+        while True:
+            line = ser.readline()
+            if not line:
+                break
+            lines.append(line.decode("utf-8", errors="ignore").strip())
+    finally:
+        ser.close()
+
+    return json.dumps({"status": "ok", "net": net, "lines": lines, "count": len(lines)})
 
 
 @mcp.tool()
-def measure_power(box: str = "", supply_net: str = "") -> str:
+def measure_power(net: str = "") -> str:
     """Take a single power measurement (voltage, current, power).
 
+    Works with power-supply, power-supply-2q, battery, and watt-meter nets.
+
     Args:
-        box: Box name (leave empty for configured box).
-        supply_net: Power supply net name (leave empty to auto-select).
+        net: Power-related net name (leave empty to auto-select).
     """
-    from ..server_state import get_bench
-    from ..config import resolve_box_name
+    from lager import Net, NetType
 
-    box_name = box or resolve_box_name()
-    if not box_name:
-        return json.dumps({"error": "No box configured."})
-
-    if not supply_net:
-        bench = get_bench()
-        for net in bench.nets:
-            if net.net_type in ("power-supply", "battery", "watt-meter"):
-                supply_net = net.name
+    resolved_role = None
+    if not net:
+        from ..server_state import get_bench
+        for n in get_bench().nets:
+            if n.net_type in _POWER_ROLE_TO_NETTYPE:
+                net = n.name
+                resolved_role = n.net_type
                 break
-    if not supply_net:
-        return json.dumps({"error": "No power/supply net found on this bench."})
+    if not net:
+        return json.dumps({"status": "error", "error": "No power/supply net found."})
 
-    output = run_lager("supply", supply_net, "state", "--box", box_name)
-    return json.dumps({"net": supply_net, "output": output})
+    if not resolved_role:
+        from ..server_state import get_bench
+        for n in get_bench().nets:
+            if n.name == net:
+                resolved_role = n.net_type
+                break
+
+    net_type_name = _POWER_ROLE_TO_NETTYPE.get(resolved_role, "PowerSupply")
+    net_type = getattr(NetType, net_type_name, NetType.PowerSupply)
+    device = Net.get(net, type=net_type)
+
+    result = {"status": "ok", "net": net, "net_type": resolved_role or "unknown"}
+    try:
+        result["voltage"] = device.voltage()
+    except Exception:
+        pass
+    try:
+        result["current"] = device.current()
+    except Exception:
+        pass
+    try:
+        result["power"] = device.power()
+    except Exception:
+        pass
+
+    if net_type_name == "WattMeter":
+        try:
+            result["power"] = device.read()
+        except Exception:
+            pass
+
+    return json.dumps(result)

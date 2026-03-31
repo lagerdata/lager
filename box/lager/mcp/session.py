@@ -11,6 +11,14 @@ POST /lock endpoint (box/lager/http_handlers/lock_handler.py) to
 acquire an exclusive reservation on session init and release it on
 shutdown.
 
+TODO — proper lock integration requires:
+  - Per-MCP-session locking (acquire on client connect, release on disconnect),
+    not per-process locking at startup.
+  - A heartbeat or lease TTL so stale locks auto-expire if the server
+    crashes without running atexit.
+  - Graceful SIGTERM handler that releases the lock before exit.
+  - Integration tests against the real box HTTP server on port 9000.
+
 For now we only track a random session ID for correlation.
 """
 

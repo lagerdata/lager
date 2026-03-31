@@ -1,46 +1,49 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""MCP tools for USB hub port control."""
+"""MCP tools for USB hub port control via direct on-box Net API."""
 
-from ..server import mcp, run_lager
+import json
 
-
-@mcp.tool()
-def lager_usb_enable(box: str, net: str) -> str:
-    """Enable a USB hub port.
-
-    Powers on the specified USB hub port.
-
-    Args:
-        box: Box name (e.g., 'DEMO')
-        net: USB net name (e.g., 'usb1')
-    """
-    return run_lager("usb", net, "enable", "--box", box)
+from ..server import mcp
 
 
 @mcp.tool()
-def lager_usb_disable(box: str, net: str) -> str:
-    """Disable a USB hub port.
-
-    Powers off the specified USB hub port.
+def usb_enable(net: str) -> str:
+    """Enable (power on) a USB hub port.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: USB net name (e.g., 'usb1')
     """
-    return run_lager("usb", net, "disable", "--box", box)
+    from lager import Net, NetType
+
+    Net.get(net, type=NetType.Usb).enable()
+    return json.dumps({"status": "ok", "net": net, "enabled": True})
 
 
 @mcp.tool()
-def lager_usb_toggle(box: str, net: str) -> str:
-    """Power-cycle a USB hub port.
-
-    Disables and re-enables the specified USB hub port to force
-    a re-enumeration of the connected device.
+def usb_disable(net: str) -> str:
+    """Disable (power off) a USB hub port.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: USB net name (e.g., 'usb1')
     """
-    return run_lager("usb", net, "toggle", "--box", box)
+    from lager import Net, NetType
+
+    Net.get(net, type=NetType.Usb).disable()
+    return json.dumps({"status": "ok", "net": net, "enabled": False})
+
+
+@mcp.tool()
+def usb_toggle(net: str) -> str:
+    """Power-cycle a USB hub port (disable then re-enable).
+
+    Forces a re-enumeration of the connected USB device.
+
+    Args:
+        net: USB net name (e.g., 'usb1')
+    """
+    from lager import Net, NetType
+
+    Net.get(net, type=NetType.Usb).toggle()
+    return json.dumps({"status": "ok", "net": net, "toggled": True})

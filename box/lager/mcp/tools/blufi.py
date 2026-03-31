@@ -1,58 +1,81 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""MCP tools for BluFi (ESP32 WiFi provisioning over BLE)."""
+"""MCP tools for BluFi (ESP32 WiFi provisioning over BLE).
 
-from ..server import mcp, run_lager
+BluFi uses the box's BLE radio to communicate with ESP32 devices.
+There is no instrument net — the tools import ``lager.blufi`` directly.
+"""
+
+import json
+
+from ..server import mcp
+
+
+def _get_client():
+    """Create a fresh BlufiClient instance."""
+    from lager.blufi.client import BlufiClient
+    return BlufiClient()
 
 
 @mcp.tool()
-def lager_blufi_scan(
-    box: str,
-    timeout: float = 10.0,
-    name_contains: str = None,
-) -> str:
+def blufi_scan(timeout: float = 10.0, name_contains: str = "") -> str:
     """Scan for BluFi-capable BLE devices.
 
-    Scans for BLE devices advertising the BluFi service UUID or matching
+    Looks for BLE devices advertising the BluFi service UUID or matching
     a name filter. Used to discover ESP32 devices ready for WiFi provisioning.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         timeout: Scan duration in seconds (default 10.0)
         name_contains: Filter to devices whose name contains this string
     """
-    args = ["blufi", "scan", "--timeout", str(timeout)]
-    if name_contains is not None:
-        args.extend(["--name-contains", name_contains])
-    args.extend(["--box", box])
-    return run_lager(*args, timeout=120)
+    from lager.protocols.ble import Central
+
+    central = Central()
+    devices = central.scan(scan_time=timeout)
+
+    results = []
+    for dev in devices:
+        name = dev.name or ""
+        if name_contains and name_contains not in name:
+            continue
+        results.append({
+            "name": name or "Unknown",
+            "address": dev.address,
+            "rssi": getattr(dev, "rssi", None),
+        })
+    return json.dumps({"status": "ok", "count": len(results), "devices": results})
 
 
 @mcp.tool()
-def lager_blufi_connect(
-    box: str,
-    device_name: str,
-    timeout: float = 20.0,
-) -> str:
+def blufi_connect(device_name: str, timeout: float = 20.0) -> str:
     """Connect to a BluFi device and retrieve its version and WiFi status.
 
     Establishes a BLE connection, negotiates security, and queries the
     device for firmware version and current WiFi connection state.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         device_name: BLE device name to connect to (e.g., 'BLUFI_DEVICE')
         timeout: BLE connection timeout in seconds (default 20.0)
     """
-    args = ["blufi", "connect", "--timeout", str(timeout), device_name]
-    args.extend(["--box", box])
-    return run_lager(*args, timeout=120)
+    client = _get_client()
+    client.connect(device_name, timeout=timeout)
+    client.negotiate_security()
+
+    info = {"status": "ok", "device": device_name, "connected": True}
+    try:
+        info["version"] = client.get_version()
+    except Exception:
+        pass
+    try:
+        info["wifi_status"] = client.get_wifi_status()
+    except Exception:
+        pass
+    return json.dumps(info, default=str)
 
 
 @mcp.tool()
-def lager_blufi_provision(
-    box: str,
+def blufi_provision(
     device_name: str,
     ssid: str,
     password: str,
@@ -64,21 +87,27 @@ def lager_blufi_provision(
     and verifies the device connects to the specified network.
 
     Args:
-        box: Box name (e.g., 'DEMO')
-        device_name: BLE device name to connect to (e.g., 'BLUFI_DEVICE')
+        device_name: BLE device name to connect to
         ssid: WiFi network SSID
         password: WiFi network password
         timeout: BLE connection timeout in seconds (default 20.0)
     """
-    args = ["blufi", "provision", "--timeout", str(timeout),
-            "--ssid", ssid, "--password", password, device_name]
-    args.extend(["--box", box])
-    return run_lager(*args, timeout=120)
+    client = _get_client()
+    client.connect(device_name, timeout=timeout)
+    client.negotiate_security()
+    client.set_wifi_mode("sta")
+    client.send_wifi_credentials(ssid, password)
+
+    return json.dumps({
+        "status": "ok",
+        "device": device_name,
+        "ssid": ssid,
+        "provisioned": True,
+    })
 
 
 @mcp.tool()
-def lager_blufi_wifi_scan(
-    box: str,
+def blufi_wifi_scan(
     device_name: str,
     timeout: float = 20.0,
     scan_timeout: float = 15.0,
@@ -89,53 +118,57 @@ def lager_blufi_wifi_scan(
     networks. Returns a list of SSIDs with signal strength (RSSI).
 
     Args:
-        box: Box name (e.g., 'DEMO')
-        device_name: BLE device name to connect to (e.g., 'BLUFI_DEVICE')
+        device_name: BLE device name to connect to
         timeout: BLE connection timeout in seconds (default 20.0)
         scan_timeout: WiFi scan duration on device in seconds (default 15.0)
     """
-    args = ["blufi", "wifi-scan", "--timeout", str(timeout),
-            "--scan-timeout", str(scan_timeout), device_name]
-    args.extend(["--box", box])
-    return run_lager(*args, timeout=120)
+    client = _get_client()
+    client.connect(device_name, timeout=timeout)
+    client.negotiate_security()
+    networks = client.wifi_scan(timeout=scan_timeout)
+
+    return json.dumps({
+        "status": "ok",
+        "device": device_name,
+        "networks": networks,
+    }, default=str)
 
 
 @mcp.tool()
-def lager_blufi_status(
-    box: str,
-    device_name: str,
-    timeout: float = 20.0,
-) -> str:
+def blufi_status(device_name: str, timeout: float = 20.0) -> str:
     """Get WiFi connection status from a BluFi device.
 
-    Connects to the device and queries its current WiFi state including
-    operating mode and station connection status.
-
     Args:
-        box: Box name (e.g., 'DEMO')
-        device_name: BLE device name to connect to (e.g., 'BLUFI_DEVICE')
+        device_name: BLE device name to connect to
         timeout: BLE connection timeout in seconds (default 20.0)
     """
-    args = ["blufi", "status", "--timeout", str(timeout), device_name]
-    args.extend(["--box", box])
-    return run_lager(*args, timeout=120)
+    client = _get_client()
+    client.connect(device_name, timeout=timeout)
+    client.negotiate_security()
+    wifi_status = client.get_wifi_status()
+
+    return json.dumps({
+        "status": "ok",
+        "device": device_name,
+        "wifi_status": wifi_status,
+    }, default=str)
 
 
 @mcp.tool()
-def lager_blufi_version(
-    box: str,
-    device_name: str,
-    timeout: float = 20.0,
-) -> str:
+def blufi_version(device_name: str, timeout: float = 20.0) -> str:
     """Get firmware version from a BluFi device.
 
-    Connects to the device and retrieves its BluFi firmware version.
-
     Args:
-        box: Box name (e.g., 'DEMO')
-        device_name: BLE device name to connect to (e.g., 'BLUFI_DEVICE')
+        device_name: BLE device name to connect to
         timeout: BLE connection timeout in seconds (default 20.0)
     """
-    args = ["blufi", "version", "--timeout", str(timeout), device_name]
-    args.extend(["--box", box])
-    return run_lager(*args, timeout=120)
+    client = _get_client()
+    client.connect(device_name, timeout=timeout)
+    client.negotiate_security()
+    version = client.get_version()
+
+    return json.dumps({
+        "status": "ok",
+        "device": device_name,
+        "version": version,
+    }, default=str)

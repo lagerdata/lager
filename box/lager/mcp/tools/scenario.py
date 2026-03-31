@@ -1,11 +1,14 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""MCP tools for coarse-grained scenario execution on-box.
+"""
+MCP tools for coarse-grained scenario execution.
 
-Primary v0 workflow: agent calls run_scenario with structured JSON;
-the box executes the full sequence locally and returns results.
-run_hil_program exists as an expert/debug escape hatch.
+run_scenario is the PRIMARY tool for hardware-in-the-loop testing.
+It sends a multi-step plan to the on-box interpreter which executes
+ALL steps locally with no agent round trips between steps.
+
+run_hil_program is an escape hatch for arbitrary Python on the box.
 """
 
 from __future__ import annotations
@@ -13,6 +16,8 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
+
+from mcp.server.fastmcp import Context
 
 from ..server import mcp
 
@@ -22,11 +27,7 @@ logger = logging.getLogger(__name__)
 def _preflight_scenario(
     scenario_steps: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    """Validate scenario steps against the bench before uploading to the box.
-
-    Checks:
-      - Every step with a ``target`` references a known net
-      - Voltage/current params respect bench safety constraints
+    """Validate scenario steps against the bench before execution.
 
     Returns an error dict if preflight fails, or None if OK.
     """
@@ -69,26 +70,41 @@ def _preflight_scenario(
 
 
 @mcp.tool()
-def run_scenario(scenario_json: str) -> str:
-    """Execute a multi-step HIL scenario on the box.
+async def run_scenario(scenario_json: str, ctx: Context) -> str:
+    """Execute a multi-step HIL scenario entirely on-box.
 
-    The scenario JSON is sent to a fixed on-box interpreter that
-    dispatches each step to a registered action handler. Protocol
-    interactions, assertions, and GPIO operations all run on-box
-    in a single execution with no host round-trips.
+    This is the PREFERRED tool for hardware testing. All steps execute
+    locally with sub-millisecond latency between them — no round trips
+    back to the agent. A 10-step scenario costs one round trip, not ten.
 
     Args:
         scenario_json: JSON string with ``name`` and ``steps``.
             Optional: ``setup``, ``cleanup``, ``assertions``, ``timeout_s``.
             Each step has ``action``, optional ``target`` and ``params``.
 
+    Available actions:
+        Power: set_voltage, set_current, enable_supply, disable_supply, measure
+        Battery: battery_enable, battery_disable, battery_soc, battery_voc,
+                 battery_set, battery_state
+        ELoad: eload_set, eload_enable, eload_disable, eload_state
+        Energy: energy_read, energy_stats
+        GPIO: gpio_set, gpio_read, gpio_wait
+        SPI: spi_config, spi_transfer, spi_read, spi_write
+        I2C: i2c_config, i2c_scan, i2c_read, i2c_write, i2c_write_read
+        UART: uart_send, uart_expect
+        Debug: debug_connect, debug_disconnect, debug_flash, debug_reset,
+               debug_erase, debug_read_memory
+        RTT: rtt_write, rtt_expect
+        ADC/DAC: adc_read, dac_set
+        USB: usb_enable, usb_disable
+        Measurement: watt_read, watt_read_all, tc_read
+        Timing: wait (params: ms)
+
     Returns:
-        JSON result with status, step results, assertion outcomes,
-        and collected results keyed by label.
+        JSON with status, step_results, assertion outcomes, and labeled results.
     """
     from ..schemas.scenario import Scenario
-    from ..server_state import get_box_ip
-    from ..engine.scenario_executor import execute_scenario_on_box
+    from ..engine.scenario_executor import execute_scenario
 
     try:
         payload = json.loads(scenario_json)
@@ -100,35 +116,32 @@ def run_scenario(scenario_json: str) -> str:
     except Exception as exc:
         return json.dumps({"error": f"Invalid scenario schema: {exc}"})
 
-    box_ip = get_box_ip()
-    if not box_ip:
-        return json.dumps({"error": "No box configured. Set LAGER_BOX or LAGER_BOX_IP."})
-
     all_steps = (
         [s.model_dump() for s in scenario.setup]
         + [s.model_dump() for s in scenario.steps]
         + [s.model_dump() for s in scenario.cleanup]
     )
+    total_steps = len(all_steps)
+
     preflight_err = _preflight_scenario(all_steps)
     if preflight_err:
         return json.dumps(preflight_err, indent=2)
 
-    result = execute_scenario_on_box(
-        box_ip,
-        scenario_json,
-        timeout_s=scenario.timeout_s,
-    )
+    await ctx.report_progress(progress=0, total=total_steps)
+    result = execute_scenario(scenario_json, timeout_s=scenario.timeout_s)
+
+    completed = len(result.get("step_results", []))
+    await ctx.report_progress(progress=completed, total=total_steps)
     return json.dumps(result, indent=2, default=str)
 
 
 @mcp.tool()
-def run_hil_program(code: str, timeout: int = 120) -> str:
-    """Run a raw Python program on the box via lager python.
+async def run_hil_program(code: str, ctx: Context, timeout: int = 120) -> str:
+    """Run a raw Python program on the box (escape hatch).
 
     Use this for ad-hoc hardware interaction when the structured
-    scenario DSL is too restrictive. The code executes in the box's
-    Python container with full access to ``lager.nets``,
-    ``lager.protocols.*``, ``lager.io.*``, etc.
+    scenario DSL is too restrictive. The code executes on-box with
+    full access to the lager Python API (lager.Net, lager.NetType, etc.).
 
     Args:
         code: Python source code to execute on-box.
@@ -137,12 +150,9 @@ def run_hil_program(code: str, timeout: int = 120) -> str:
     Returns:
         stdout/stderr output from the program.
     """
-    from ..server_state import get_box_ip
-    from ..engine.scenario_executor import execute_script_on_box
+    from ..engine.scenario_executor import execute_script
 
-    box_ip = get_box_ip()
-    if not box_ip:
-        return json.dumps({"error": "No box configured. Set LAGER_BOX or LAGER_BOX_IP."})
-
-    result = execute_script_on_box(box_ip, code, timeout_s=timeout)
+    await ctx.report_progress(progress=0, total=2)
+    result = execute_script(code, timeout_s=timeout)
+    await ctx.report_progress(progress=2, total=2)
     return json.dumps(result, indent=2, default=str)

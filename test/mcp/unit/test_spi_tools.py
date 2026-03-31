@@ -1,118 +1,151 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for SPI MCP tools -- verify CLI command construction."""
+"""Unit tests for SPI MCP tools (lager.mcp.tools.spi) — Net API."""
+
+import json
+from unittest.mock import patch, MagicMock
 
 import pytest
-from test.mcp.conftest import assert_lager_called_with
+from lager import NetType
 
 
 @pytest.mark.unit
 class TestSpiTools:
-    """Test all 5 SPI tool functions build the correct lager CLI commands."""
+    """Verify each SPI tool calls the correct Net API."""
 
-    def test_list_nets(self, mock_subprocess):
-        from lager.mcp.tools.spi import lager_spi_list_nets
-        lager_spi_list_nets(box="DEMO")
-        assert_lager_called_with(mock_subprocess, "spi", "--box", "DEMO")
+    @patch("lager.Net.get")
+    def test_transfer_minimal(self, mock_get):
+        spi = MagicMock()
+        spi.read_write.return_value = [0x00, 0x12, 0x34, 0x56]
+        mock_get.return_value = spi
+        from lager.mcp.tools.spi import spi_transfer
 
-    def test_transfer_minimal(self, mock_subprocess):
-        from lager.mcp.tools.spi import lager_spi_transfer
-        lager_spi_transfer(box="DEMO", net="spi1", num_words=4)
-        assert_lager_called_with(
-            mock_subprocess,
-            "spi", "spi1", "transfer", "4",
-            "--format", "hex", "--box", "DEMO",
-        )
+        data = [0x9F, 0x00, 0x00, 0x00]
+        result = json.loads(spi_transfer(net="spi1", data=data))
+        mock_get.assert_called_once_with("spi1", type=NetType.SPI)
+        spi.read_write.assert_called_once_with(data)
+        assert result["status"] == "ok"
+        assert result["net"] == "spi1"
+        assert result["tx_data"] == data
+        assert result["rx_data"] == [0x00, 0x12, 0x34, 0x56]
 
-    def test_transfer_all_options(self, mock_subprocess):
-        from lager.mcp.tools.spi import lager_spi_transfer
-        lager_spi_transfer(
-            box="DEMO", net="spi1", num_words=4,
-            data="0x9f", mode="0", frequency="1M",
-        )
-        assert_lager_called_with(
-            mock_subprocess,
-            "spi", "spi1", "transfer", "4",
-            "--format", "hex", "--box", "DEMO",
-            "--data", "0x9f", "--mode", "0", "--frequency", "1M",
-        )
+    @patch("lager.Net.get")
+    def test_transfer_pads_when_num_words_greater_than_data(self, mock_get):
+        spi = MagicMock()
+        spi.read_write.return_value = [1, 2, 3, 4]
+        mock_get.return_value = spi
+        from lager.mcp.tools.spi import spi_transfer
 
-    def test_read_defaults(self, mock_subprocess):
-        from lager.mcp.tools.spi import lager_spi_read
-        lager_spi_read(box="DEMO", net="spi1", num_words=8)
-        assert_lager_called_with(
-            mock_subprocess,
-            "spi", "spi1", "read", "8",
-            "--fill", "0xFF", "--format", "hex", "--box", "DEMO",
-        )
+        result = json.loads(spi_transfer(net="spi1", data=[0x9F], num_words=4))
+        spi.read_write.assert_called_once_with([0x9F, 0xFF, 0xFF, 0xFF])
+        assert result["status"] == "ok"
 
-    def test_read_custom_fill(self, mock_subprocess):
-        from lager.mcp.tools.spi import lager_spi_read
-        lager_spi_read(box="DEMO", net="spi1", num_words=16, fill="0x00")
-        assert_lager_called_with(
-            mock_subprocess,
-            "spi", "spi1", "read", "16",
-            "--fill", "0x00", "--format", "hex", "--box", "DEMO",
-        )
+    @patch("lager.Net.get")
+    def test_read_defaults(self, mock_get):
+        spi = MagicMock()
+        spi.read.return_value = [0xAB] * 8
+        mock_get.return_value = spi
+        from lager.mcp.tools.spi import spi_read
 
-    def test_write(self, mock_subprocess):
-        from lager.mcp.tools.spi import lager_spi_write
-        lager_spi_write(box="DEMO", net="spi1", data="0x9f01020304")
-        assert_lager_called_with(
-            mock_subprocess,
-            "spi", "spi1", "write", "0x9f01020304",
-            "--format", "hex", "--box", "DEMO",
-        )
+        result = json.loads(spi_read(net="spi1", num_words=8))
+        mock_get.assert_called_once_with("spi1", type=NetType.SPI)
+        spi.read.assert_called_once_with(8, fill=0xFF)
+        assert result["status"] == "ok"
+        assert result["rx_data"] == [0xAB] * 8
 
-    def test_config_all_options(self, mock_subprocess):
-        from lager.mcp.tools.spi import lager_spi_config
-        lager_spi_config(
-            box="DEMO", net="spi1",
-            mode="0", frequency="500k",
-            bit_order="msb", word_size="8", cs_active="low",
-        )
-        assert_lager_called_with(
-            mock_subprocess,
-            "spi", "spi1", "config", "--box", "DEMO",
-            "--mode", "0", "--frequency", "500k",
-            "--bit-order", "msb", "--word-size", "8", "--cs-active", "low",
-        )
+    @patch("lager.Net.get")
+    def test_read_custom_fill(self, mock_get):
+        spi = MagicMock()
+        spi.read.return_value = []
+        mock_get.return_value = spi
+        from lager.mcp.tools.spi import spi_read
 
-    def test_config_no_options(self, mock_subprocess):
-        from lager.mcp.tools.spi import lager_spi_config
-        lager_spi_config(box="DEMO", net="spi1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "spi", "spi1", "config", "--box", "DEMO",
+        json.loads(spi_read(net="spi1", num_words=16, fill=0x00))
+        spi.read.assert_called_once_with(16, fill=0x00)
+
+    @patch("lager.Net.get")
+    def test_write(self, mock_get):
+        spi = MagicMock()
+        mock_get.return_value = spi
+        from lager.mcp.tools.spi import spi_write
+
+        data = [0x06, 0x01, 0x02]
+        result = json.loads(spi_write(net="spi1", data=data))
+        spi.write.assert_called_once_with(data)
+        assert result["status"] == "ok"
+        assert result["data"] == data
+
+    @patch("lager.Net.get")
+    def test_config_all_options(self, mock_get):
+        spi = MagicMock()
+        mock_get.return_value = spi
+        from lager.mcp.tools.spi import spi_config
+
+        result = json.loads(
+            spi_config(
+                net="spi1",
+                mode=0,
+                frequency_hz=500_000,
+                bit_order="msb",
+                word_size=8,
+            )
         )
+        spi.config.assert_called_once_with(
+            mode=0,
+            frequency_hz=500_000,
+            bit_order="msb",
+            word_size=8,
+        )
+        assert result["status"] == "ok"
+        assert result["config"] == {
+            "mode": 0,
+            "frequency_hz": 500_000,
+            "bit_order": "msb",
+            "word_size": 8,
+        }
+
+    @patch("lager.Net.get")
+    def test_config_no_options(self, mock_get):
+        spi = MagicMock()
+        mock_get.return_value = spi
+        from lager.mcp.tools.spi import spi_config
+
+        result = json.loads(spi_config(net="spi1"))
+        spi.config.assert_called_once_with()
+        assert result["status"] == "ok"
+        assert result["config"] == {}
 
     # -- error handling --------------------------------
 
-    def test_spi_transfer_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.spi import lager_spi_transfer
-        result = lager_spi_transfer(box="B", net="spi1", num_words=4, data="0xAB")
-        assert "Error" in result
+    @patch("lager.Net.get")
+    def test_spi_transfer_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.spi import spi_transfer
 
-    def test_spi_read_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.spi import lager_spi_read
-        result = lager_spi_read(box="B", net="spi1", num_words=4)
-        assert "Error" in result
+        with pytest.raises(RuntimeError, match="device not found"):
+            spi_transfer(net="spi1", data=[0xAB])
 
-    def test_spi_write_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.spi import lager_spi_write
-        result = lager_spi_write(box="B", net="spi1", data="0xAB")
-        assert "Error" in result
+    @patch("lager.Net.get")
+    def test_spi_read_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.spi import spi_read
 
-    def test_spi_config_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.spi import lager_spi_config
-        result = lager_spi_config(box="B", net="spi1", mode="0")
-        assert "Error" in result
+        with pytest.raises(RuntimeError, match="device not found"):
+            spi_read(net="spi1", num_words=4)
+
+    @patch("lager.Net.get")
+    def test_spi_write_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.spi import spi_write
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            spi_write(net="spi1", data=[0xAB])
+
+    @patch("lager.Net.get")
+    def test_spi_config_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.spi import spi_config
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            spi_config(net="spi1", mode=0)

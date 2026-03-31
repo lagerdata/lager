@@ -1,109 +1,142 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""MCP tools for firmware build, flash, and DUT control."""
+"""MCP tools for firmware flash and DUT control.
 
-from __future__ import annotations
+Supports two modes:
+  1. Path-based: binary already on the box filesystem
+  2. Content-based: binary content sent inline (base64) from the host
 
+Mode 2 is the typical agent workflow — the agent compiles firmware on
+the host machine and sends the binary content through the MCP tool,
+just like `lager debug flash` does via the CLI.
+"""
+
+import base64
 import json
+import tempfile
+import os
 
-from ..server import mcp, run_lager
+from mcp.server.fastmcp import Context
+
+from ..server import mcp
+
+
+def _find_debug_net() -> str:
+    """Return the first debug net on the bench, or empty string."""
+    from ..server_state import get_bench
+
+    for net in get_bench().nets:
+        if net.net_type == "debug":
+            return net.name
+    return ""
 
 
 @mcp.tool()
-def flash_firmware(
-    binary_path: str,
-    box: str = "",
+async def flash_firmware(
+    ctx: Context,
+    binary_path: str = "",
+    binary_content_base64: str = "",
+    file_type: str = "hex",
     debug_net: str = "",
     reset_after: bool = True,
 ) -> str:
-    """Flash a firmware binary to the DUT via the debug probe.
+    """Flash firmware to the DUT and optionally reset.
+
+    Provide EITHER binary_path (file already on the box) OR
+    binary_content_base64 (base64-encoded binary from the host).
 
     Args:
-        binary_path: Path to the firmware binary (.elf, .hex, .bin) on the
-            host or box filesystem.
-        box: Box name (leave empty to use the server's configured box).
-        debug_net: Debug net name (leave empty to auto-select the first debug net).
+        binary_path: Path to firmware file on the box filesystem.
+        binary_content_base64: Base64-encoded firmware binary (sent from host).
+        file_type: Firmware file type — 'hex', 'elf', or 'bin' (default: hex).
+        debug_net: Debug net name (leave empty to auto-select).
         reset_after: Reset the DUT after flashing (default: true).
     """
-    from ..server_state import get_bench
-    from ..config import resolve_box_name
+    from lager import Net, NetType
 
-    box_name = box or resolve_box_name()
-    if not box_name:
-        return json.dumps({"error": "No box configured."})
+    total = 3 if reset_after else 2
 
-    if not debug_net:
-        bench = get_bench()
-        for net in bench.nets:
-            if net.net_type == "debug":
-                debug_net = net.name
-                break
-    if not debug_net:
-        return json.dumps({"error": "No debug net found on this bench."})
+    net_name = debug_net or _find_debug_net()
+    if not net_name:
+        return json.dumps({"status": "error", "error": "No debug net found on this bench."})
 
-    args = ["debug", debug_net, "flash", binary_path, "--box", box_name]
-    output = run_lager(*args, timeout=120)
+    if not binary_path and not binary_content_base64:
+        return json.dumps({"status": "error", "error": "Provide binary_path or binary_content_base64."})
 
-    result = {"status": "success" if "Error" not in output else "error", "output": output}
-    if reset_after and "Error" not in output:
-        reset_output = run_lager("debug", debug_net, "reset", "--box", box_name)
-        result["reset_output"] = reset_output
+    path_to_flash = binary_path
+    tmp_file = None
 
-    return json.dumps(result, indent=2)
+    if binary_content_base64:
+        try:
+            content = base64.b64decode(binary_content_base64)
+        except Exception as exc:
+            return json.dumps({"status": "error", "error": f"Invalid base64: {exc}"})
+
+        suffix = {"hex": ".hex", "elf": ".elf", "bin": ".bin"}.get(file_type, ".hex")
+        tmp_file = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+        tmp_file.write(content)
+        tmp_file.close()
+        path_to_flash = tmp_file.name
+
+    await ctx.report_progress(progress=0, total=total)
+
+    try:
+        dbg = Net.get(net_name, type=NetType.Debug)
+        dbg.flash(path_to_flash)
+        await ctx.report_progress(progress=1, total=total)
+
+        result = {"status": "ok", "net": net_name, "file_type": file_type}
+        if binary_path:
+            result["firmware_path"] = binary_path
+        else:
+            result["uploaded_bytes"] = len(content)
+
+        if reset_after:
+            dbg.reset()
+            result["reset"] = True
+            await ctx.report_progress(progress=2, total=total)
+
+        await ctx.report_progress(progress=total, total=total)
+        return json.dumps(result)
+    finally:
+        if tmp_file:
+            os.unlink(tmp_file.name)
 
 
 @mcp.tool()
-def reset_dut(box: str = "", debug_net: str = "") -> str:
+def reset_dut(debug_net: str = "") -> str:
     """Reset the DUT via the debug probe.
 
     Args:
-        box: Box name (leave empty for configured box).
         debug_net: Debug net name (leave empty to auto-select).
     """
-    from ..server_state import get_bench
-    from ..config import resolve_box_name
+    from lager import Net, NetType
 
-    box_name = box or resolve_box_name()
-    if not box_name:
-        return json.dumps({"error": "No box configured."})
+    net_name = debug_net or _find_debug_net()
+    if not net_name:
+        return json.dumps({"status": "error", "error": "No debug net found on this bench."})
 
-    if not debug_net:
-        bench = get_bench()
-        for net in bench.nets:
-            if net.net_type == "debug":
-                debug_net = net.name
-                break
-    if not debug_net:
-        return json.dumps({"error": "No debug net found on this bench."})
-
-    output = run_lager("debug", debug_net, "reset", "--box", box_name)
-    return json.dumps({"status": "success" if "Error" not in output else "error", "output": output})
+    Net.get(net_name, type=NetType.Debug).reset()
+    return json.dumps({"status": "ok", "net": net_name, "reset": True})
 
 
 @mcp.tool()
-def get_boot_status(box: str = "", debug_net: str = "") -> str:
-    """Read the DUT's debug status (connected, halted, running).
+def get_boot_status(debug_net: str = "") -> str:
+    """Read the DUT's debug probe connection status.
 
     Args:
-        box: Box name (leave empty for configured box).
         debug_net: Debug net name (leave empty to auto-select).
     """
-    from ..server_state import get_bench
-    from ..config import resolve_box_name
+    from lager import Net, NetType
 
-    box_name = box or resolve_box_name()
-    if not box_name:
-        return json.dumps({"error": "No box configured."})
+    net_name = debug_net or _find_debug_net()
+    if not net_name:
+        return json.dumps({"status": "error", "error": "No debug net found on this bench."})
 
-    if not debug_net:
-        bench = get_bench()
-        for net in bench.nets:
-            if net.net_type == "debug":
-                debug_net = net.name
-                break
-    if not debug_net:
-        return json.dumps({"error": "No debug net found on this bench."})
-
-    output = run_lager("debug", debug_net, "status", "--box", box_name)
-    return json.dumps({"output": output})
+    dbg = Net.get(net_name, type=NetType.Debug)
+    try:
+        info = dbg.status()
+        return json.dumps({"status": "ok", "net": net_name, "debug_status": info}, default=str)
+    except Exception as exc:
+        return json.dumps({"status": "ok", "net": net_name, "debug_status": str(exc)})

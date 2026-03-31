@@ -1,124 +1,134 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""MCP tools for solar simulator control."""
+"""MCP tools for solar simulator control via direct on-box dispatcher.
 
-from ..server import mcp, run_lager
+There is no NetType.Solar — the solar dispatcher resolves nets with
+role='solar' from saved_nets.json and instantiates the appropriate
+driver (EA PSB series) directly.
+"""
+
+import json
+
+from ..server import mcp
+
+
+def _get_driver(net: str):
+    """Resolve a solar net name to a connected driver instance."""
+    from lager.power.solar.dispatcher import SolarDispatcher
+    dispatcher = SolarDispatcher()
+    drv = dispatcher.resolve_driver(net)
+    drv.connect_instrument()
+    return drv
 
 
 @mcp.tool()
-def lager_solar_set(box: str, net: str) -> str:
-    """Apply the current solar simulator configuration.
+def solar_set(net: str) -> str:
+    """Initialize and start the solar simulation mode.
 
-    Sends the previously configured irradiance, temperature, and
-    resistance values to the solar simulator hardware.
+    Puts the instrument into PV simulation mode with the previously
+    configured parameters.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Solar net name (e.g., 'solar1')
     """
-    return run_lager("solar", net, "set", "--box", box)
+    _get_driver(net)
+    return json.dumps({"status": "ok", "net": net, "action": "set_solar_mode"})
 
 
 @mcp.tool()
-def lager_solar_stop(box: str, net: str) -> str:
+def solar_stop(net: str) -> str:
     """Stop the solar simulator output.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Solar net name (e.g., 'solar1')
     """
-    return run_lager("solar", net, "stop", "--box", box)
+    from lager.power.solar.dispatcher import SolarDispatcher
+    dispatcher = SolarDispatcher()
+    drv = dispatcher.resolve_driver(net)
+    try:
+        drv.connect_instrument()
+    except Exception:
+        pass
+    drv.disconnect_instrument()
+    return json.dumps({"status": "ok", "net": net, "action": "stop"})
 
 
 @mcp.tool()
-def lager_solar_irradiance(box: str, net: str, value: float = None) -> str:
-    """Get or set solar simulator irradiance.
-
-    If value is provided, sets the irradiance level. If omitted,
-    reads and returns the current irradiance.
+def solar_irradiance(net: str, value: float = None) -> str:
+    """Get or set solar simulator irradiance (W/m^2).
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Solar net name (e.g., 'solar1')
-        value: Irradiance value to set (omit to read current value)
+        value: Irradiance to set (0-1500 W/m^2). Omit to read current value.
     """
+    drv = _get_driver(net)
+    result = drv.irradiance(value=value)
+    resp = {"status": "ok", "net": net}
     if value is not None:
-        return run_lager(
-            "solar", net, "irradiance", str(value),
-            "--box", box,
-        )
-    return run_lager("solar", net, "irradiance", "--box", box)
+        resp["irradiance"] = value
+    elif result is not None:
+        resp["irradiance"] = result.strip() if isinstance(result, str) else result
+    return json.dumps(resp)
 
 
 @mcp.tool()
-def lager_solar_mpp_current(box: str, net: str) -> str:
+def solar_mpp_current(net: str) -> str:
     """Read the maximum power point current from the solar simulator.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Solar net name (e.g., 'solar1')
     """
-    return run_lager("solar", net, "mpp-current", "--box", box)
+    result = _get_driver(net).mpp_current()
+    return json.dumps({"status": "ok", "net": net, "mpp_current": result})
 
 
 @mcp.tool()
-def lager_solar_mpp_voltage(box: str, net: str) -> str:
+def solar_mpp_voltage(net: str) -> str:
     """Read the maximum power point voltage from the solar simulator.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Solar net name (e.g., 'solar1')
     """
-    return run_lager("solar", net, "mpp-voltage", "--box", box)
+    result = _get_driver(net).mpp_voltage()
+    return json.dumps({"status": "ok", "net": net, "mpp_voltage": result})
 
 
 @mcp.tool()
-def lager_solar_resistance(box: str, net: str, value: float = None) -> str:
-    """Get or set solar simulator series resistance.
-
-    If value is provided, sets the resistance. If omitted,
-    reads and returns the current resistance.
+def solar_resistance(net: str, value: float = None) -> str:
+    """Get or set solar simulator series resistance (ohms).
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Solar net name (e.g., 'solar1')
-        value: Resistance value to set (omit to read current value)
+        value: Resistance to set. Omit to read current value.
     """
+    drv = _get_driver(net)
+    result = drv.resistance(value=value) if value is None else drv.resistance(value)
+    resp = {"status": "ok", "net": net}
     if value is not None:
-        return run_lager(
-            "solar", net, "resistance", str(value),
-            "--box", box,
-        )
-    return run_lager("solar", net, "resistance", "--box", box)
+        resp["resistance"] = value
+    elif result is not None:
+        resp["resistance"] = result.strip() if isinstance(result, str) else result
+    return json.dumps(resp)
 
 
 @mcp.tool()
-def lager_solar_temperature(box: str, net: str) -> str:
-    """Read the solar simulator temperature.
+def solar_temperature(net: str) -> str:
+    """Read the solar simulator cell temperature.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Solar net name (e.g., 'solar1')
     """
-    return run_lager("solar", net, "temperature", "--box", box)
+    result = _get_driver(net).temperature()
+    return json.dumps({"status": "ok", "net": net, "temperature": result})
 
 
 @mcp.tool()
-def lager_solar_voc(box: str, net: str, value: float = None) -> str:
-    """Get or set solar simulator open circuit voltage.
-
-    If value is provided, sets the VOC. If omitted,
-    reads and returns the current VOC.
+def solar_voc(net: str) -> str:
+    """Read the solar simulator open circuit voltage (Voc).
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Solar net name (e.g., 'solar1')
-        value: Open circuit voltage to set (omit to read current value)
     """
-    if value is not None:
-        return run_lager(
-            "solar", net, "voc", str(value),
-            "--box", box,
-        )
-    return run_lager("solar", net, "voc", "--box", box)
+    result = _get_driver(net).voc()
+    return json.dumps({"status": "ok", "net": net, "voc": result})

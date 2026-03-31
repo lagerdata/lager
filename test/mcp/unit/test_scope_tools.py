@@ -3,369 +3,503 @@
 
 """Unit tests for MCP oscilloscope tools (lager.mcp.tools.scope)."""
 
+import json
+from unittest.mock import MagicMock, patch
+
 import pytest
-from test.mcp.conftest import assert_lager_called_with
+
+from lager import NetType
+
+
+def _scope_device():
+    scope = MagicMock()
+    scope.measurement.frequency.return_value = 1e6
+    scope.measurement.voltage_peak_to_peak.return_value = 3.3
+    scope.measurement.voltage_rms.return_value = 1.0
+    scope.measurement.voltage_max.return_value = 2.0
+    scope.measurement.voltage_min.return_value = -2.0
+    scope.measurement.voltage_average.return_value = 0.1
+    scope.measurement.period.return_value = 1e-6
+    scope.measurement.pulse_width_positive.return_value = 1e-7
+    scope.measurement.pulse_width_negative.return_value = 1e-7
+    scope.measurement.duty_cycle_positive.return_value = 0.5
+    scope.measurement.duty_cycle_negative.return_value = 0.5
+    ts = scope.trigger_settings
+    ts.set_mode_normal = MagicMock()
+    ts.set_mode_auto = MagicMock()
+    ts.set_mode_single = MagicMock()
+    ts.set_coupling_DC = MagicMock()
+    ts.set_coupling_AC = MagicMock()
+    ts.set_coupling_low_freq_reject = MagicMock()
+    ts.set_coupling_high_freq_reject = MagicMock()
+    ts.edge.set_source = MagicMock()
+    ts.edge.set_slope_rising = MagicMock()
+    ts.edge.set_slope_falling = MagicMock()
+    ts.edge.set_slope_both = MagicMock()
+    ts.edge.set_level = MagicMock()
+    ts.pulse.set_source = MagicMock()
+    ts.pulse.set_level = MagicMock()
+    ts.pulse.set_trigger_on_pulse_greater_than_width = MagicMock()
+    ts.pulse.set_trigger_on_pulse_less_than_width = MagicMock()
+    ts.pulse.set_trigger_on_pulse_less_than_greater_than = MagicMock()
+    ts.uart.set_source = MagicMock()
+    ts.uart.set_level = MagicMock()
+    ts.uart.set_uart_params = MagicMock()
+    ts.uart.set_trigger_on_start = MagicMock()
+    ts.uart.set_trigger_on_frame_error = MagicMock()
+    ts.uart.set_trigger_on_check_error = MagicMock()
+    ts.uart.set_trigger_on_data = MagicMock()
+    ts.i2c.set_source = MagicMock()
+    ts.i2c.set_scl_trigger_level = MagicMock()
+    ts.i2c.set_sda_trigger_level = MagicMock()
+    ts.i2c.set_trigger_on_start = MagicMock()
+    ts.i2c.set_trigger_on_restart = MagicMock()
+    ts.i2c.set_trigger_on_stop = MagicMock()
+    ts.i2c.set_trigger_on_nack = MagicMock()
+    ts.i2c.set_trigger_on_address = MagicMock()
+    ts.i2c.set_trigger_on_data = MagicMock()
+    ts.i2c.set_trigger_on_addr_data = MagicMock()
+    ts.spi.set_source = MagicMock()
+    ts.spi.set_sck_trigger_level = MagicMock()
+    ts.spi.set_mosi_miso_trigger_level = MagicMock()
+    ts.spi.set_cs_trigger_level = MagicMock()
+    ts.spi.set_clk_edge_positive = MagicMock()
+    ts.spi.set_clk_edge_negative = MagicMock()
+    ts.spi.set_trigger_on_timeout = MagicMock()
+    ts.spi.set_trigger_on_cs_high = MagicMock()
+    ts.spi.set_trigger_data = MagicMock()
+    scope.trace_settings.set_volts_per_div = MagicMock()
+    scope.trace_settings.set_time_per_div = MagicMock()
+    scope.set_channel_coupling = MagicMock()
+    scope.set_channel_probe = MagicMock()
+    scope.cursor.set_a = MagicMock()
+    scope.cursor.set_b = MagicMock()
+    scope.cursor.move_a = MagicMock()
+    scope.cursor.move_b = MagicMock()
+    scope.cursor.hide = MagicMock()
+    scope.cursor.a_x = MagicMock(return_value=1.0)
+    scope.cursor.a_y = MagicMock(return_value=2.0)
+    scope.cursor.b_x = MagicMock(return_value=3.0)
+    scope.cursor.b_y = MagicMock(return_value=4.0)
+    scope.cursor.x_delta = MagicMock(return_value=2.0)
+    scope.cursor.y_delta = MagicMock(return_value=2.0)
+    scope.cursor.frequency = MagicMock(return_value=1e3)
+    return scope
 
 
 @pytest.mark.unit
 class TestScopeBasicTools:
-    """Verify basic scope tools: list_nets, autoscale, enable, disable."""
+    """Verify basic scope tools: autoscale, enable, disable."""
 
-    def test_list_nets(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_list_nets
-        lager_scope_list_nets(box="X")
-        assert_lager_called_with(mock_subprocess, "scope", "--box", "X")
+    @patch("lager.Net.get")
+    def test_autoscale(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_autoscale
 
-    def test_autoscale(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_autoscale
-        lager_scope_autoscale(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess, "scope", "scope1", "autoscale", "--box", "X",
-        )
+        result = json.loads(scope_autoscale(net="scope1"))
+        mock_get.assert_called_once_with("scope1", type=NetType.Analog)
+        scope.autoscale.assert_called_once_with()
+        assert result["action"] == "autoscale"
 
-    def test_enable(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_enable
-        lager_scope_enable(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess, "scope", "scope1", "enable", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_enable(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_enable
 
-    def test_disable(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_disable
-        lager_scope_disable(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess, "scope", "scope1", "disable", "--box", "X",
-        )
+        result = json.loads(scope_enable(net="scope1"))
+        scope.enable.assert_called_once_with()
+        assert result["enabled"] is True
 
-    # -- subprocess failure error handling -----------------------------------
+    @patch("lager.Net.get")
+    def test_disable(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_disable
 
-    def test_scope_enable_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.scope import lager_scope_enable
-        result = lager_scope_enable(box="B", net="scope1")
-        assert "Error" in result
+        result = json.loads(scope_disable(net="scope1"))
+        scope.disable.assert_called_once_with()
+        assert result["enabled"] is False
 
-    def test_scope_measure_freq_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.scope import lager_scope_measure_freq
-        result = lager_scope_measure_freq(box="B", net="scope1")
-        assert "Error" in result
+    @patch("lager.Net.get")
+    def test_scope_enable_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.scope import scope_enable
 
-    def test_scope_trigger_edge_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.scope import lager_scope_trigger_edge
-        result = lager_scope_trigger_edge(box="B", net="scope1")
-        assert "Error" in result
+        with pytest.raises(RuntimeError, match="device not found"):
+            scope_enable(net="scope1")
 
-    def test_scope_stream_start_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.scope import lager_scope_stream_start
-        result = lager_scope_stream_start(box="B", net="scope1")
-        assert "Error" in result
+    @patch("lager.Net.get")
+    def test_scope_measure_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.scope import scope_measure
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            scope_measure(net="scope1", metric="freq")
+
+    @patch("lager.Net.get")
+    def test_scope_trigger_edge_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.scope import scope_trigger_edge
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            scope_trigger_edge(net="scope1")
 
 
 @pytest.mark.unit
 class TestScopeMeasurements:
-    """Verify measurement tools build correct commands via _measure helper."""
+    """Verify measurement tools call the scope measurement API."""
 
-    def test_measure_freq(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_measure_freq
-        lager_scope_measure_freq(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "measure", "freq", "--box", "X",
+    @patch("lager.Net.get")
+    def test_measure_freq(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_measure
+
+        result = json.loads(scope_measure(net="scope1", metric="freq"))
+        scope.measurement.frequency.assert_called_once_with(display=False, measurement_cursor=False)
+        assert result["value"] == 1e6
+
+    @patch("lager.Net.get")
+    def test_measure_vpp(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_measure
+
+        json.loads(scope_measure(net="scope1", metric="vpp"))
+        scope.measurement.voltage_peak_to_peak.assert_called_once_with(
+            display=False, measurement_cursor=False,
         )
 
-    def test_measure_vpp(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_measure_vpp
-        lager_scope_measure_vpp(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "measure", "vpp", "--box", "X",
+    @patch("lager.Net.get")
+    def test_measure_vrms(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_measure
+
+        json.loads(scope_measure(net="scope1", metric="vrms"))
+        scope.measurement.voltage_rms.assert_called_once_with(
+            display=False, measurement_cursor=False,
         )
 
-    def test_measure_vrms(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_measure_vrms
-        lager_scope_measure_vrms(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "measure", "vrms", "--box", "X",
+    @patch("lager.Net.get")
+    def test_measure_vmax_with_display(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_measure
+
+        json.loads(scope_measure(net="scope1", metric="vmax", display=True))
+        scope.measurement.voltage_max.assert_called_once_with(display=True, measurement_cursor=False)
+
+    @patch("lager.Net.get")
+    def test_measure_vmin_with_display(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_measure
+
+        json.loads(scope_measure(net="scope1", metric="vmin", display=True))
+        scope.measurement.voltage_min.assert_called_once_with(display=True, measurement_cursor=False)
+
+    @patch("lager.Net.get")
+    def test_measure_vavg_with_display(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_measure
+
+        json.loads(scope_measure(net="scope1", metric="vavg", display=True))
+        scope.measurement.voltage_average.assert_called_once_with(
+            display=True, measurement_cursor=False,
         )
 
-    def test_measure_vmax_with_display(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_measure_vmax
-        lager_scope_measure_vmax(box="X", net="scope1", display=True)
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "measure", "vmax", "--box", "X", "--display",
+    @patch("lager.Net.get")
+    def test_measure_period(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_measure
+
+        json.loads(scope_measure(net="scope1", metric="period"))
+        scope.measurement.period.assert_called_once_with(display=False, measurement_cursor=False)
+
+    @patch("lager.Net.get")
+    def test_measure_pw_pos(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_measure
+
+        json.loads(scope_measure(net="scope1", metric="pw_pos"))
+        scope.measurement.pulse_width_positive.assert_called_once_with(
+            display=False, measurement_cursor=False,
         )
 
-    def test_measure_vmin_with_cursor(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_measure_vmin
-        lager_scope_measure_vmin(box="X", net="scope1", cursor=True)
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "measure", "vmin", "--box", "X", "--cursor",
+    @patch("lager.Net.get")
+    def test_measure_pw_neg(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_measure
+
+        json.loads(scope_measure(net="scope1", metric="pw_neg"))
+        scope.measurement.pulse_width_negative.assert_called_once_with(
+            display=False, measurement_cursor=False,
         )
 
-    def test_measure_vavg_with_display_and_cursor(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_measure_vavg
-        lager_scope_measure_vavg(box="X", net="scope1", display=True, cursor=True)
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "measure", "vavg", "--box", "X",
-            "--display", "--cursor",
+    @patch("lager.Net.get")
+    def test_measure_duty_pos(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_measure
+
+        json.loads(scope_measure(net="scope1", metric="dc_pos"))
+        scope.measurement.duty_cycle_positive.assert_called_once_with(
+            display=False, measurement_cursor=False,
         )
 
-    def test_measure_period(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_measure_period
-        lager_scope_measure_period(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "measure", "period", "--box", "X",
+    @patch("lager.Net.get")
+    def test_measure_duty_neg(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_measure
+
+        json.loads(scope_measure(net="scope1", metric="dc_neg"))
+        scope.measurement.duty_cycle_negative.assert_called_once_with(
+            display=False, measurement_cursor=False,
         )
 
-    def test_measure_pw_pos(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_measure_pw_pos
-        lager_scope_measure_pw_pos(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "measure", "pulse-width-pos", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_measure_unknown_metric(self, mock_get):
+        from lager.mcp.tools.scope import scope_measure
 
-    def test_measure_pw_neg(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_measure_pw_neg
-        lager_scope_measure_pw_neg(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "measure", "pulse-width-neg", "--box", "X",
-        )
-
-    def test_measure_duty_pos(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_measure_duty_pos
-        lager_scope_measure_duty_pos(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "measure", "duty-cycle-pos", "--box", "X",
-        )
-
-    def test_measure_duty_neg(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_measure_duty_neg
-        lager_scope_measure_duty_neg(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "measure", "duty-cycle-neg", "--box", "X",
-        )
+        result = json.loads(scope_measure(net="scope1", metric="bad"))
+        mock_get.assert_not_called()
+        assert result["status"] == "error"
+        assert "Unknown metric" in result["error"]
 
 
 @pytest.mark.unit
 class TestScopeCapture:
     """Verify capture control tools: start, stop, force."""
 
-    def test_start(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_start
-        lager_scope_start(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess, "scope", "scope1", "start", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_start(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_start
 
-    def test_start_single(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_start
-        lager_scope_start(box="X", net="scope1", single=True)
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "start", "--single", "--box", "X",
-        )
+        json.loads(scope_start(net="scope1"))
+        scope.start_capture.assert_called_once_with()
 
-    def test_stop(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_stop
-        lager_scope_stop(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess, "scope", "scope1", "stop", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_start_single(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_start
 
-    def test_force(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_force
-        lager_scope_force(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess, "scope", "scope1", "force", "--box", "X",
-        )
+        json.loads(scope_start(net="scope1", single=True))
+        scope.start_single_capture.assert_called_once_with()
+
+    @patch("lager.Net.get")
+    def test_stop(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_stop
+
+        json.loads(scope_stop(net="scope1"))
+        scope.stop_capture.assert_called_once_with()
+
+    @patch("lager.Net.get")
+    def test_force(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_force
+
+        json.loads(scope_force(net="scope1"))
+        scope.force_trigger.assert_called_once_with()
 
 
 @pytest.mark.unit
 class TestScopeChannelSettings:
-    """Verify channel setting tools: scale, coupling, probe, timebase."""
+    """Verify scope_configure (volts/div, timebase, coupling, probe)."""
 
-    def test_scale(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_scale
-        lager_scope_scale(box="X", net="scope1", volts_per_div=0.5)
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "scale", "0.5", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_volts_per_div(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_configure
 
-    def test_coupling(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_coupling
-        lager_scope_coupling(box="X", net="scope1", mode="ac")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "coupling", "ac", "--box", "X",
-        )
+        result = json.loads(scope_configure(net="scope1", volts_per_div=0.5))
+        scope.trace_settings.set_volts_per_div.assert_called_once_with(0.5)
+        assert result["volts_per_div"] == 0.5
 
-    def test_probe(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_probe
-        lager_scope_probe(box="X", net="scope1", attenuation="10x")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "probe", "10x", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_time_per_div(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_configure
 
-    def test_timebase(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_timebase
-        lager_scope_timebase(box="X", net="scope1", seconds_per_div=0.001)
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "timebase", "0.001", "--box", "X",
-        )
+        result = json.loads(scope_configure(net="scope1", time_per_div=0.001))
+        scope.trace_settings.set_time_per_div.assert_called_once_with(0.001)
+        assert result["time_per_div"] == 0.001
+
+    @patch("lager.Net.get")
+    def test_coupling(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_configure
+
+        result = json.loads(scope_configure(net="scope1", coupling="ac"))
+        scope.set_channel_coupling.assert_called_once_with("AC")
+        assert result["coupling"] == "ac"
+
+    @patch("lager.Net.get")
+    def test_probe(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_configure
+
+        result = json.loads(scope_configure(net="scope1", probe="10x"))
+        scope.set_channel_probe.assert_called_once_with(10.0)
+        assert result["probe"] == "10x"
 
 
 @pytest.mark.unit
 class TestScopeTriggers:
     """Verify trigger configuration tools."""
 
-    def test_trigger_edge_defaults(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_trigger_edge
-        lager_scope_trigger_edge(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "trigger", "edge", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_trigger_edge_defaults(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_trigger_edge
 
-    def test_trigger_edge_with_all_options(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_trigger_edge
-        lager_scope_trigger_edge(
-            box="X", net="scope1",
+        json.loads(scope_trigger_edge(net="scope1"))
+        scope.trigger_settings.set_mode_normal.assert_called_once_with()
+
+    @patch("lager.Net.get")
+    def test_trigger_edge_with_all_options(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_trigger_edge
+
+        json.loads(scope_trigger_edge(
+            net="scope1",
             source="CH1", slope="rising", level=1.5,
-        )
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "trigger", "edge", "--box", "X",
-            "--source", "CH1", "--slope", "rising", "--level", "1.5",
+        ))
+        scope.trigger_settings.edge.set_source.assert_called_once_with("CH1")
+        scope.trigger_settings.edge.set_slope_rising.assert_called_once_with()
+        scope.trigger_settings.edge.set_level.assert_called_once_with(1.5)
+
+    @patch("lager.Net.get")
+    def test_trigger_uart_defaults(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_trigger_uart
+
+        json.loads(scope_trigger_uart(net="scope1"))
+        scope.trigger_settings.uart.set_trigger_on_start.assert_called_once_with()
+        scope.trigger_settings.uart.set_uart_params.assert_called_once_with(
+            parity="none", stopbits="1", baud=9600, bits=8,
         )
 
-    def test_trigger_uart_defaults(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_trigger_uart
-        lager_scope_trigger_uart(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "trigger", "uart", "--box", "X",
-            "--baud", "9600", "--parity", "none",
-            "--stop-bits", "1", "--data-width", "8",
-            "--trigger-on", "start", "--mode", "normal", "--coupling", "dc",
-        )
+    @patch("lager.Net.get")
+    def test_trigger_uart_with_optional_params(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_trigger_uart
 
-    def test_trigger_uart_with_optional_params(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_trigger_uart
-        lager_scope_trigger_uart(
-            box="X", net="scope1",
+        json.loads(scope_trigger_uart(
+            net="scope1",
             baud=115200, source="CH2", level=2.0, data="0xAB",
-        )
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "trigger", "uart", "--box", "X",
-            "--baud", "115200", "--parity", "none",
-            "--stop-bits", "1", "--data-width", "8",
-            "--trigger-on", "start", "--mode", "normal", "--coupling", "dc",
-            "--source", "CH2", "--level", "2.0", "--data", "0xAB",
+        ))
+        scope.trigger_settings.uart.set_uart_params.assert_called_once_with(
+            parity="none", stopbits="1", baud=115200, bits=8,
         )
 
-    def test_trigger_i2c_defaults(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_trigger_i2c
-        lager_scope_trigger_i2c(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "trigger", "i2c", "--box", "X",
-            "--trigger-on", "start", "--addr-width", "7",
-            "--data-width", "8", "--direction", "read_write",
-            "--mode", "normal", "--coupling", "dc",
-        )
+    @patch("lager.Net.get")
+    def test_trigger_i2c_defaults(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_trigger_i2c
 
-    def test_trigger_i2c_with_optional_params(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_trigger_i2c
-        lager_scope_trigger_i2c(
-            box="X", net="scope1",
+        json.loads(scope_trigger_i2c(net="scope1"))
+        scope.trigger_settings.i2c.set_trigger_on_start.assert_called_once_with()
+
+    @patch("lager.Net.get")
+    def test_trigger_i2c_with_optional_params(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_trigger_i2c
+
+        json.loads(scope_trigger_i2c(
+            net="scope1",
             source_scl="CH1", source_sda="CH2",
             level_scl=1.5, level_sda=1.5,
             address="0x48", data="0xFF",
-        )
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "trigger", "i2c", "--box", "X",
-            "--trigger-on", "start", "--addr-width", "7",
-            "--data-width", "8", "--direction", "read_write",
-            "--mode", "normal", "--coupling", "dc",
-            "--source-scl", "CH1", "--source-sda", "CH2",
-            "--level-scl", "1.5", "--level-sda", "1.5",
-            "--address", "0x48", "--data", "0xFF",
-        )
+        ))
+        scope.trigger_settings.i2c.set_source.assert_called_once_with(net_scl="CH1", net_sda="CH2")
 
-    def test_trigger_spi_defaults(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_trigger_spi
-        lager_scope_trigger_spi(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "trigger", "spi", "--box", "X",
-            "--trigger-on", "cs", "--data-width", "8",
-            "--clk-slope", "rising", "--cs-idle", "high",
-            "--mode", "normal", "--coupling", "dc",
-        )
+    @patch("lager.Net.get")
+    def test_trigger_spi_defaults(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_trigger_spi
 
-    def test_trigger_spi_with_optional_params(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_trigger_spi
-        lager_scope_trigger_spi(
-            box="X", net="scope1",
+        json.loads(scope_trigger_spi(net="scope1"))
+        scope.trigger_settings.spi.set_clk_edge_positive.assert_called_once_with()
+        scope.trigger_settings.spi.set_trigger_on_cs_high.assert_called_once_with()
+
+    @patch("lager.Net.get")
+    def test_trigger_spi_with_optional_params(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_trigger_spi
+
+        json.loads(scope_trigger_spi(
+            net="scope1",
+            trigger_on="timeout",
             source_mosi_miso="CH1", source_sck="CH2", source_cs="CH3",
             level_mosi_miso=1.5, level_sck=1.5, level_cs=1.5,
             data="0xDE", timeout=0.5,
-        )
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "trigger", "spi", "--box", "X",
-            "--trigger-on", "cs", "--data-width", "8",
-            "--clk-slope", "rising", "--cs-idle", "high",
-            "--mode", "normal", "--coupling", "dc",
-            "--source-mosi-miso", "CH1", "--source-sck", "CH2",
-            "--source-cs", "CH3",
-            "--level-mosi-miso", "1.5", "--level-sck", "1.5",
-            "--level-cs", "1.5",
-            "--data", "0xDE", "--timeout", "0.5",
+        ))
+        scope.trigger_settings.spi.set_trigger_on_timeout.assert_called_once_with(0.5)
+        scope.trigger_settings.spi.set_source.assert_called_once_with(
+            net_sck="CH2", net_mosi_miso="CH1", net_cs="CH3",
         )
 
-    def test_trigger_pulse_defaults(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_trigger_pulse
-        lager_scope_trigger_pulse(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "trigger", "pulse", "--box", "X",
-            "--trigger-on", "positive", "--mode", "normal", "--coupling", "dc",
-        )
+    @patch("lager.Net.get")
+    def test_trigger_spi_cs_mode_with_data(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_trigger_spi
 
-    def test_trigger_pulse_with_optional_params(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_trigger_pulse
-        lager_scope_trigger_pulse(
-            box="X", net="scope1",
+        json.loads(scope_trigger_spi(
+            net="scope1",
+            trigger_on="cs",
+            data="0xDE",
+        ))
+        scope.trigger_settings.spi.set_trigger_data.assert_called_once_with(bits=8, data="0xDE")
+
+    @patch("lager.Net.get")
+    def test_trigger_pulse_defaults(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_trigger_pulse
+
+        json.loads(scope_trigger_pulse(net="scope1"))
+        scope.trigger_settings.set_mode_normal.assert_called_once_with()
+
+    @patch("lager.Net.get")
+    def test_trigger_pulse_with_optional_params(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_trigger_pulse
+
+        json.loads(scope_trigger_pulse(
+            net="scope1",
             source="CH1", level=2.0, upper=0.001, lower=0.0001,
-        )
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "trigger", "pulse", "--box", "X",
-            "--trigger-on", "positive", "--mode", "normal", "--coupling", "dc",
-            "--source", "CH1", "--level", "2.0",
-            "--upper", "0.001", "--lower", "0.0001",
+            condition="range",
+        ))
+        scope.trigger_settings.pulse.set_trigger_on_pulse_less_than_greater_than.assert_called_once_with(
+            max_pulse_width=0.001, min_pulse_width=0.0001,
         )
 
 
@@ -373,168 +507,58 @@ class TestScopeTriggers:
 class TestScopeCursors:
     """Verify cursor control tools."""
 
-    def test_cursor_set_a_with_x_and_y(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_cursor_set_a
-        lager_scope_cursor_set_a(box="X", net="scope1", x=0.001, y=1.5)
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "cursor", "set-a", "--box", "X",
-            "--x", "0.001", "--y", "1.5",
-        )
+    @patch("lager.Net.get")
+    def test_cursor_set_a_with_x_and_y(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_cursor_set
 
-    def test_cursor_set_b_x_only(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_cursor_set_b
-        lager_scope_cursor_set_b(box="X", net="scope1", x=0.002)
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "cursor", "set-b", "--box", "X",
-            "--x", "0.002",
-        )
+        json.loads(scope_cursor_set(net="scope1", cursor="a", x=0.001, y=1.5))
+        scope.cursor.set_a.assert_called_once_with(x=0.001, y=1.5)
 
-    def test_cursor_move_a(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_cursor_move_a
-        lager_scope_cursor_move_a(box="X", net="scope1", x=0.5, y=-0.3)
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "cursor", "move-a", "--box", "X",
-            "--x", "0.5", "--y", "-0.3",
-        )
+    @patch("lager.Net.get")
+    def test_cursor_set_b_x_only(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_cursor_set
 
-    def test_cursor_move_b(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_cursor_move_b
-        lager_scope_cursor_move_b(box="X", net="scope1", y=1.0)
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "cursor", "move-b", "--box", "X",
-            "--y", "1.0",
-        )
+        json.loads(scope_cursor_set(net="scope1", cursor="b", x=0.002))
+        scope.cursor.set_b.assert_called_once_with(x=0.002, y=None)
 
-    def test_cursor_hide(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_cursor_hide
-        lager_scope_cursor_hide(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "cursor", "hide", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_cursor_move_a(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_cursor_move
 
+        json.loads(scope_cursor_move(net="scope1", cursor="a", x=0.5, y=-0.3))
+        scope.cursor.move_a.assert_called_once_with(x_del=0.5, y_del=-0.3)
 
-@pytest.mark.unit
-class TestScopeStreaming:
-    """Verify PicoScope streaming tools."""
+    @patch("lager.Net.get")
+    def test_cursor_move_b(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_cursor_move
 
-    def test_stream_start_defaults(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_stream_start
-        lager_scope_stream_start(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "stream", "start", "--box", "X",
-            "--channel", "A",
-            "--volts-per-div", "1.0",
-            "--time-per-div", "0.001",
-            "--trigger-level", "0.0",
-            "--trigger-slope", "rising",
-            "--capture-mode", "auto",
-            "--coupling", "dc",
-        )
+        json.loads(scope_cursor_move(net="scope1", cursor="b", y=1.0))
+        scope.cursor.move_b.assert_called_once_with(x_del=None, y_del=1.0)
 
-    def test_stream_start_custom(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_stream_start
-        lager_scope_stream_start(
-            box="X", net="scope1",
-            channel="B", volts_per_div=2.0, time_per_div=0.01,
-            trigger_level=1.5, trigger_slope="falling",
-            capture_mode="normal", coupling="ac",
-        )
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "stream", "start", "--box", "X",
-            "--channel", "B",
-            "--volts-per-div", "2.0",
-            "--time-per-div", "0.01",
-            "--trigger-level", "1.5",
-            "--trigger-slope", "falling",
-            "--capture-mode", "normal",
-            "--coupling", "ac",
-        )
+    @patch("lager.Net.get")
+    def test_cursor_hide(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_cursor_hide
 
-    def test_stream_stop(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_stream_stop
-        lager_scope_stream_stop(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "stream", "stop", "--box", "X",
-        )
+        json.loads(scope_cursor_hide(net="scope1"))
+        scope.cursor.hide.assert_called_once_with()
 
-    def test_stream_status(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_stream_status
-        lager_scope_stream_status(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "stream", "status", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_cursor_read(self, mock_get):
+        scope = _scope_device()
+        mock_get.return_value = scope
+        from lager.mcp.tools.scope import scope_cursor_read
 
-    def test_stream_capture_defaults(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_stream_capture
-        lager_scope_stream_capture(box="X", net="scope1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "stream", "capture", "--box", "X",
-            "--output", "scope_data.csv", "--duration", "1.0",
-        )
-
-    def test_stream_capture_with_samples(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_stream_capture
-        lager_scope_stream_capture(
-            box="X", net="scope1",
-            output="data.csv", duration=2.0, samples=5000,
-        )
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "stream", "capture", "--box", "X",
-            "--output", "data.csv", "--duration", "2.0",
-            "--samples", "5000",
-        )
-
-    def test_stream_config_enable_true(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_stream_config
-        lager_scope_stream_config(box="X", net="scope1", enable=True)
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "stream", "config", "--box", "X",
-            "--enable",
-        )
-
-    def test_stream_config_enable_false(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_stream_config
-        lager_scope_stream_config(box="X", net="scope1", enable=False)
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "stream", "config", "--box", "X",
-            "--disable",
-        )
-
-    def test_stream_config_enable_none(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_stream_config
-        lager_scope_stream_config(box="X", net="scope1", channel="B")
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "stream", "config", "--box", "X",
-            "--channel", "B",
-        )
-
-    def test_stream_config_multiple_params(self, mock_subprocess):
-        from lager.mcp.tools.scope import lager_scope_stream_config
-        lager_scope_stream_config(
-            box="X", net="scope1",
-            channel="A", volts_per_div=0.5, coupling="ac",
-            trigger_slope="falling", capture_mode="single",
-        )
-        assert_lager_called_with(
-            mock_subprocess,
-            "scope", "scope1", "stream", "config", "--box", "X",
-            "--channel", "A",
-            "--volts-per-div", "0.5",
-            "--trigger-slope", "falling",
-            "--capture-mode", "single",
-            "--coupling", "ac",
-        )
+        result = json.loads(scope_cursor_read(net="scope1"))
+        assert result["status"] == "ok"
+        assert result["a_x"] == 1.0
+        assert result["frequency"] == 1e3

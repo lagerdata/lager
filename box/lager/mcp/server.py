@@ -3,86 +3,57 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Lager MCP Server - Model Context Protocol server for Lager hardware boxes.
+Lager MCP Server — runs ON the box with direct hardware access.
 
 Architecture:
-    AI Agent
-        |  MCP (stdio / SSE)
+    AI Agent (Cursor)
+        |  MCP (streamable-http via box IP)
         v
-    Lager MCP Server (this process)
-        |  direct HTTP to box services (:5000, :8080, :9000)
+    Lager MCP Server (this process, on-box)
+        |  direct lager.Net API
         v
-    Lager Box
+    Hardware (power supplies, debug probes, GPIO, protocols, etc.)
 
-The server initializes by loading the bench definition and capability
-graph from the target box, then exposes structured resources, coarse-
-grained scenario tools, and fine-grained debug tools.
+The server runs as a service on the Lager box and is reachable from
+Cursor via the box's local IP address.  All hardware operations execute
+directly on-box with no round trips back to the agent.
 
-Scenario execution uses an **interpreter-style runner** -- a fixed
-Python script uploaded to the box's Python service (:5000).  The agent
-sends scenario JSON; the runner dispatches each step to on-box hardware
-APIs (GPIO, SPI, power, etc.) and returns structured results.
+Cursor MCP configuration:
+    {
+        "mcpServers": {
+            "lager": {
+                "url": "http://<box-ip>:8100/mcp"
+            }
+        }
+    }
 
-Legacy subprocess-based tool execution is preserved for backward
-compatibility via ``run_lager()``.
+Primary workflow:
+    1. Agent reads lager://bench/* resources to understand hardware
+    2. Agent calls run_scenario() with a multi-step test plan
+    3. ALL steps execute on-box in sequence — one round trip total
+    4. Agent analyzes structured results and iterates
 
-v0 simplifications (see also scenario_runner.py, session.py):
-  - Runner script is re-uploaded per invocation
-  - No box lock acquired (single-user assumption)
-  - cli/mcp/ location is pragmatic; box-resident components may
-    move to box/lager/mcp/ in a future version
-
-Usage:
-    # Set target box and run
-    LAGER_BOX=HW-7  lager-mcp
-    LAGER_BOX_IP=100.64.0.5  lager-mcp
-
-    # Add to Claude Code
-    claude mcp add --transport stdio lager -- lager-mcp
+Fine-grained tools (supply_*, debug_*, spi_*, etc.) exist for
+interactive debugging but each one costs an agent round trip.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
-from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from .config import resolve_box_ip, resolve_box_name
-
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Create the MCP server instance
-# ---------------------------------------------------------------------------
-
-mcp = FastMCP(
-    "lager",
-    instructions=(
-        "Lager MCP server -- one server per Lager box. "
-        "This server is scoped to a single hardware-in-the-loop bench. "
-        "Use discovery resources (lager://bench/*) to understand the bench "
-        "capabilities, then use coarse-grained scenario tools for test "
-        "execution. Fine-grained tools are available for debugging."
-    ),
-)
-
-
-# ---------------------------------------------------------------------------
-# Legacy CLI subprocess helper (kept for backward-compat fine-grained tools)
-# ---------------------------------------------------------------------------
 
 
 def run_lager(*args: str, timeout: int = 60) -> str:
     """Run a lager CLI command and return output.
 
-    Args:
-        *args: Command-line arguments passed to the ``lager`` binary.
-        timeout: Maximum seconds to wait for the command to complete.
-
-    Returns:
-        stdout on success, or an error message on failure.
+    Still used by tool modules that shell out to the lager CLI
+    (python_run, pip_tools, logs, defaults, binaries).  Converted tools
+    use the direct lager.Net API instead.
     """
     try:
         result = subprocess.run(
@@ -115,105 +86,78 @@ def run_lager(*args: str, timeout: int = 60) -> str:
     return output or "(no output)"
 
 
-# ---------------------------------------------------------------------------
-# Direct HTTP helpers for box communication
-# ---------------------------------------------------------------------------
-
-
-def box_http_get(path: str, *, port: int = 5000, timeout: float = 30.0) -> dict[str, Any] | list | str:
-    """GET request to the target box's HTTP API."""
-    import requests
-    from .server_state import get_box_ip
-
-    ip = get_box_ip()
-    if not ip:
-        return {"error": "No box IP configured. Set LAGER_BOX or LAGER_BOX_IP."}
-
-    url = f"http://{ip}:{port}{path}"
-    try:
-        resp = requests.get(url, timeout=timeout)
-        resp.raise_for_status()
-        ct = resp.headers.get("content-type", "")
-        if "json" in ct:
-            return resp.json()
-        return resp.text
-    except Exception as exc:
-        return {"error": str(exc)}
-
-
-def box_http_post(
-    path: str,
-    *,
-    port: int = 5000,
-    json_body: dict[str, Any] | None = None,
-    timeout: float = 60.0,
-) -> dict[str, Any] | list | str:
-    """POST request to the target box's HTTP API."""
-    import requests
-    from .server_state import get_box_ip
-
-    ip = get_box_ip()
-    if not ip:
-        return {"error": "No box IP configured. Set LAGER_BOX or LAGER_BOX_IP."}
-
-    url = f"http://{ip}:{port}{path}"
-    try:
-        resp = requests.post(url, json=json_body, timeout=timeout)
-        resp.raise_for_status()
-        ct = resp.headers.get("content-type", "")
-        if "json" in ct:
-            return resp.json()
-        return resp.text
-    except Exception as exc:
-        return {"error": str(exc)}
-
+mcp = FastMCP(
+    "lager",
+    instructions=(
+        "Lager MCP server — runs on a Lager box with direct hardware access. "
+        "This server is scoped to a single hardware-in-the-loop bench.\n\n"
+        "WORKFLOW:\n"
+        "1. Use get_bench_summary() to understand available hardware\n"
+        "2. Use assess_suitability() to check if the bench can run your test\n"
+        "3. Use run_scenario() for multi-step operations — this executes ALL "
+        "steps on-box with no round trips, keeping latency low\n"
+        "4. Use fine-grained tools (supply_*, debug_*, spi_*) only for "
+        "one-off debugging, not for production test sequences\n\n"
+        "IMPORTANT: Prefer run_scenario() over sequential fine-grained tool "
+        "calls. A scenario with 10 hardware steps runs in one round trip. "
+        "10 fine-grained calls would cost 10 round trips."
+    ),
+)
 
 # ---------------------------------------------------------------------------
-# Register resources (v0: bench identity, capabilities, netlist only)
+# Register resources
 # ---------------------------------------------------------------------------
 
 from .resources import bench_identity  # noqa: E402
 from .resources import bench_capabilities  # noqa: E402
 from .resources import netlist  # noqa: E402
+from .resources import interfaces  # noqa: E402
+from .resources import safety_constraints  # noqa: E402
 
 bench_identity.register(mcp)
 bench_capabilities.register(mcp)
 netlist.register(mcp)
+interfaces.register(mcp)
+safety_constraints.register(mcp)
 
 # ---------------------------------------------------------------------------
-# Register tools from submodules (legacy fine-grained + new coarse-grained)
+# Register tools — coarse-grained (primary) + fine-grained (debug)
 # ---------------------------------------------------------------------------
 
-# Legacy fine-grained tools (backward compatibility)
-from .tools import box  # noqa: E402, F401
-from .tools import i2c  # noqa: E402, F401
-from .tools import spi  # noqa: E402, F401
-from .tools import power  # noqa: E402, F401
-from .tools import measurement  # noqa: E402, F401
-from .tools import battery  # noqa: E402, F401
-from .tools import eload  # noqa: E402, F401
-from .tools import uart  # noqa: E402, F401
-from .tools import usb  # noqa: E402, F401
-from .tools import ble  # noqa: E402, F401
-from .tools import blufi  # noqa: E402, F401
-from .tools import debug  # noqa: E402, F401
-from .tools import scope  # noqa: E402, F401
-from .tools import logic  # noqa: E402, F401
-from .tools import webcam  # noqa: E402, F401
-from .tools import defaults  # noqa: E402, F401
-from .tools import solar  # noqa: E402, F401
-from .tools import wifi  # noqa: E402, F401
-from .tools import arm  # noqa: E402, F401
-from .tools import python_run  # noqa: E402, F401
-from .tools import pip_tools  # noqa: E402, F401
-from .tools import logs  # noqa: E402, F401
-from .tools import binaries  # noqa: E402, F401
-
-# New coarse-grained tools
+# Coarse-grained: discovery, scenarios, firmware, observation
 from .tools import discover  # noqa: E402, F401
 from .tools import scenario  # noqa: E402, F401
 from .tools import firmware  # noqa: E402, F401
 from .tools import observe  # noqa: E402, F401
+
+# Fine-grained: direct hardware access (each call = one agent round trip)
+from .tools import power  # noqa: E402, F401
+from .tools import debug  # noqa: E402, F401
+from .tools import uart  # noqa: E402, F401
+from .tools import spi  # noqa: E402, F401
+from .tools import i2c  # noqa: E402, F401
+from .tools import box  # noqa: E402, F401
+from .tools import measurement  # noqa: E402, F401
+from .tools import usb  # noqa: E402, F401
+from .tools import battery  # noqa: E402, F401
+from .tools import eload  # noqa: E402, F401
+from .tools import scope  # noqa: E402, F401
+from .tools import logic  # noqa: E402, F401
+
+# Converted from run_lager() → direct on-box API
+from .tools import solar  # noqa: E402, F401
+from .tools import arm  # noqa: E402, F401
+from .tools import webcam  # noqa: E402, F401
+from .tools import ble  # noqa: E402, F401
+from .tools import blufi  # noqa: E402, F401
+from .tools import wifi  # noqa: E402, F401
+
+# New tool modules (NetTypes with no prior coverage)
+from .tools import energy  # noqa: E402, F401
+from .tools import router  # noqa: E402, F401
+
+# PicoScope streaming (daemon-based, separate from Rigol scope tools)
+from .tools import scope_stream  # noqa: E402, F401
 
 # ---------------------------------------------------------------------------
 # Entry point
@@ -221,21 +165,25 @@ from .tools import observe  # noqa: E402, F401
 
 
 def main():
-    """Entry point for the Lager MCP server."""
+    """Start the on-box Lager MCP server."""
+    from .config import MCP_PORT
     from .server_state import init_state
 
-    box_ip = resolve_box_ip()
-    if box_ip:
-        logger.info("Lager MCP server targeting box at %s", box_ip)
-        init_state(box_ip=box_ip)
-    else:
-        logger.warning(
-            "No target box configured. Set LAGER_BOX or LAGER_BOX_IP. "
-            "Resources will return empty data until a box is configured."
-        )
-        init_state()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
 
-    mcp.run(transport="stdio")
+    init_state()
+
+    host = os.environ.get("LAGER_MCP_HOST", "0.0.0.0")
+    logger.info("Lager MCP server starting on %s:%d (streamable-http)", host, MCP_PORT)
+
+    mcp.run(
+        transport="streamable-http",
+        host=host,
+        port=MCP_PORT,
+    )
 
 
 if __name__ == "__main__":

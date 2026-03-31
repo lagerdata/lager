@@ -3,349 +3,490 @@
 
 """Unit tests for MCP logic analyzer tools (lager.mcp.tools.logic)."""
 
+import json
+from unittest.mock import MagicMock, patch
+
 import pytest
-from test.mcp.conftest import assert_lager_called_with
+
+from lager import NetType
+
+
+def _logic_device():
+    la = MagicMock()
+    la.measurement.frequency.return_value = 1e6
+    la.measurement.period.return_value = 1e-6
+    la.measurement.duty_cycle_positive.return_value = 0.5
+    la.measurement.duty_cycle_negative.return_value = 0.5
+    la.measurement.pulse_width_positive.return_value = 1e-7
+    la.measurement.pulse_width_negative.return_value = 1e-7
+    ts = la.trigger_settings
+    ts.set_mode_normal = MagicMock()
+    ts.set_mode_auto = MagicMock()
+    ts.set_mode_single = MagicMock()
+    ts.set_coupling_DC = MagicMock()
+    ts.set_coupling_AC = MagicMock()
+    ts.set_coupling_low_freq_reject = MagicMock()
+    ts.set_coupling_high_freq_reject = MagicMock()
+    ts.edge.set_source = MagicMock()
+    ts.edge.set_slope_rising = MagicMock()
+    ts.edge.set_slope_falling = MagicMock()
+    ts.edge.set_slope_both = MagicMock()
+    ts.edge.set_level = MagicMock()
+    ts.pulse.set_source = MagicMock()
+    ts.pulse.set_level = MagicMock()
+    ts.pulse.set_trigger_on_pulse_greater_than_width = MagicMock()
+    ts.pulse.set_trigger_on_pulse_less_than_width = MagicMock()
+    ts.pulse.set_trigger_on_pulse_less_than_greater_than = MagicMock()
+    ts.uart.set_source = MagicMock()
+    ts.uart.set_level = MagicMock()
+    ts.uart.set_uart_params = MagicMock()
+    ts.uart.set_trigger_on_start = MagicMock()
+    ts.uart.set_trigger_on_frame_error = MagicMock()
+    ts.uart.set_trigger_on_check_error = MagicMock()
+    ts.uart.set_trigger_on_data = MagicMock()
+    ts.i2c.set_source = MagicMock()
+    ts.i2c.set_scl_trigger_level = MagicMock()
+    ts.i2c.set_sda_trigger_level = MagicMock()
+    ts.i2c.set_trigger_on_start = MagicMock()
+    ts.i2c.set_trigger_on_restart = MagicMock()
+    ts.i2c.set_trigger_on_stop = MagicMock()
+    ts.i2c.set_trigger_on_nack = MagicMock()
+    ts.i2c.set_trigger_on_address = MagicMock()
+    ts.i2c.set_trigger_on_data = MagicMock()
+    ts.i2c.set_trigger_on_addr_data = MagicMock()
+    ts.spi.set_source = MagicMock()
+    ts.spi.set_sck_trigger_level = MagicMock()
+    ts.spi.set_mosi_miso_trigger_level = MagicMock()
+    ts.spi.set_cs_trigger_level = MagicMock()
+    ts.spi.set_clk_edge_positive = MagicMock()
+    ts.spi.set_clk_edge_negative = MagicMock()
+    ts.spi.set_trigger_on_timeout = MagicMock()
+    ts.spi.set_trigger_on_cs_high = MagicMock()
+    ts.spi.set_trigger_data = MagicMock()
+    la.cursor.set_a = MagicMock()
+    la.cursor.set_b = MagicMock()
+    la.cursor.move_a = MagicMock()
+    la.cursor.move_b = MagicMock()
+    la.cursor.hide = MagicMock()
+    return la
 
 
 @pytest.mark.unit
 class TestLogicBasicTools:
-    """Verify basic logic tools: list_nets, enable, disable."""
+    """Verify basic logic tools: enable, disable, threshold."""
 
-    def test_list_nets(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_list_nets
-        lager_logic_list_nets(box="X")
-        assert_lager_called_with(mock_subprocess, "logic", "--box", "X")
+    @patch("lager.Net.get")
+    def test_enable(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_enable
 
-    def test_enable(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_enable
-        lager_logic_enable(box="X", net="logic1")
-        assert_lager_called_with(
-            mock_subprocess, "logic", "logic1", "enable", "--box", "X",
-        )
+        result = json.loads(logic_enable(net="logic1"))
+        mock_get.assert_called_once_with("logic1", type=NetType.Logic)
+        la.enable.assert_called_once_with()
+        assert result["enabled"] is True
 
-    def test_disable(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_disable
-        lager_logic_disable(box="X", net="logic1")
-        assert_lager_called_with(
-            mock_subprocess, "logic", "logic1", "disable", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_disable(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_disable
 
-    # -- subprocess failure error handling -----------------------------------
+        result = json.loads(logic_disable(net="logic1"))
+        la.disable.assert_called_once_with()
+        assert result["enabled"] is False
 
-    def test_logic_enable_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.logic import lager_logic_enable
-        result = lager_logic_enable(box="B", net="logic1")
-        assert "Error" in result
+    @patch("lager.Net.get")
+    def test_threshold(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_threshold
 
-    def test_logic_measure_freq_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from lager.mcp.tools.logic import lager_logic_measure_freq
-        result = lager_logic_measure_freq(box="B", net="logic1")
-        assert "Error" in result
+        result = json.loads(logic_threshold(net="logic1", voltage=1.5))
+        la.set_signal_threshold.assert_called_once_with(1.5)
+        assert result["threshold_v"] == 1.5
+
+    @patch("lager.Net.get")
+    def test_logic_enable_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.logic import logic_enable
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            logic_enable(net="logic1")
 
 
 @pytest.mark.unit
 class TestLogicCapture:
-    """Verify capture control tools: start, start_single, stop."""
+    """Verify capture control tools: start, single, stop."""
 
-    def test_start(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_start
-        lager_logic_start(box="X", net="logic1")
-        assert_lager_called_with(
-            mock_subprocess, "logic", "logic1", "start", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_start(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_start
 
-    def test_start_single(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_start_single
-        lager_logic_start_single(box="X", net="logic1")
-        assert_lager_called_with(
-            mock_subprocess, "logic", "logic1", "start-single", "--box", "X",
-        )
+        result = json.loads(logic_start(net="logic1"))
+        la.start_capture.assert_called_once_with()
+        la.start_single_capture.assert_not_called()
+        assert result["single"] is False
 
-    def test_stop(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_stop
-        lager_logic_stop(box="X", net="logic1")
-        assert_lager_called_with(
-            mock_subprocess, "logic", "logic1", "stop", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_start_single(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_start
+
+        result = json.loads(logic_start(net="logic1", single=True))
+        la.start_single_capture.assert_called_once_with()
+        la.start_capture.assert_not_called()
+        assert result["single"] is True
+
+    @patch("lager.Net.get")
+    def test_stop(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_stop
+
+        result = json.loads(logic_stop(net="logic1"))
+        la.stop_capture.assert_called_once_with()
+        assert result["action"] == "stop"
 
 
 @pytest.mark.unit
 class TestLogicMeasurements:
-    """Verify measurement tools build correct commands via _measure helper."""
+    """Verify measurement tools call the logic measurement API."""
 
-    def test_measure_period(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_measure_period
-        lager_logic_measure_period(box="X", net="logic1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "measure", "period", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_measure_period(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_measure
 
-    def test_measure_freq(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_measure_freq
-        lager_logic_measure_freq(box="X", net="logic1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "measure", "freq", "--box", "X",
-        )
+        result = json.loads(logic_measure(net="logic1", metric="period"))
+        la.measurement.period.assert_called_once_with(display=False, measurement_cursor=False)
+        assert result["metric"] == "period"
+        assert result["value"] == 1e-6
 
-    def test_measure_dc_pos(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_measure_dc_pos
-        lager_logic_measure_dc_pos(box="X", net="logic1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "measure", "dc-pos", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_measure_freq(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_measure
 
-    def test_measure_dc_neg(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_measure_dc_neg
-        lager_logic_measure_dc_neg(box="X", net="logic1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "measure", "dc-neg", "--box", "X",
-        )
+        result = json.loads(logic_measure(net="logic1", metric="freq"))
+        la.measurement.frequency.assert_called_once_with(display=False, measurement_cursor=False)
+        assert result["value"] == 1e6
 
-    def test_measure_pw_pos(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_measure_pw_pos
-        lager_logic_measure_pw_pos(box="X", net="logic1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "measure", "pw-pos", "--box", "X",
+    @patch("lager.Net.get")
+    def test_measure_dc_pos(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_measure
+
+        json.loads(logic_measure(net="logic1", metric="dc_pos"))
+        la.measurement.duty_cycle_positive.assert_called_once_with(
+            display=False, measurement_cursor=False,
         )
 
-    def test_measure_pw_neg(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_measure_pw_neg
-        lager_logic_measure_pw_neg(box="X", net="logic1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "measure", "pw-neg", "--box", "X",
+    @patch("lager.Net.get")
+    def test_measure_dc_neg(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_measure
+
+        json.loads(logic_measure(net="logic1", metric="dc_neg"))
+        la.measurement.duty_cycle_negative.assert_called_once_with(
+            display=False, measurement_cursor=False,
         )
 
-    def test_measure_freq_with_display(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_measure_freq
-        lager_logic_measure_freq(box="X", net="logic1", display=True)
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "measure", "freq", "--box", "X", "--display",
+    @patch("lager.Net.get")
+    def test_measure_pw_pos(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_measure
+
+        json.loads(logic_measure(net="logic1", metric="pw_pos"))
+        la.measurement.pulse_width_positive.assert_called_once_with(
+            display=False, measurement_cursor=False,
         )
 
-    def test_measure_period_with_cursor(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_measure_period
-        lager_logic_measure_period(box="X", net="logic1", cursor=True)
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "measure", "period", "--box", "X", "--cursor",
+    @patch("lager.Net.get")
+    def test_measure_pw_neg(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_measure
+
+        json.loads(logic_measure(net="logic1", metric="pw_neg"))
+        la.measurement.pulse_width_negative.assert_called_once_with(
+            display=False, measurement_cursor=False,
         )
 
-    def test_measure_dc_pos_with_display_and_cursor(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_measure_dc_pos
-        lager_logic_measure_dc_pos(
-            box="X", net="logic1", display=True, cursor=True,
+    @patch("lager.Net.get")
+    def test_measure_freq_with_display(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_measure
+
+        json.loads(logic_measure(net="logic1", metric="freq", display=True))
+        la.measurement.frequency.assert_called_once_with(display=True, measurement_cursor=False)
+
+    @patch("lager.Net.get")
+    def test_measure_period_with_display(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_measure
+
+        json.loads(logic_measure(net="logic1", metric="period", display=True))
+        la.measurement.period.assert_called_once_with(display=True, measurement_cursor=False)
+
+    @patch("lager.Net.get")
+    def test_measure_dc_pos_with_display(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_measure
+
+        json.loads(logic_measure(net="logic1", metric="dc_pos", display=True))
+        la.measurement.duty_cycle_positive.assert_called_once_with(
+            display=True, measurement_cursor=False,
         )
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "measure", "dc-pos", "--box", "X",
-            "--display", "--cursor",
-        )
+
+    @patch("lager.Net.get")
+    def test_measure_unknown_metric(self, mock_get):
+        from lager.mcp.tools.logic import logic_measure
+
+        result = json.loads(logic_measure(net="logic1", metric="not_a_metric"))
+        mock_get.assert_not_called()
+        assert result["status"] == "error"
+        assert "Unknown metric" in result["error"]
+
+    @patch("lager.Net.get")
+    def test_logic_measure_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.logic import logic_measure
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            logic_measure(net="logic1", metric="freq")
 
 
 @pytest.mark.unit
 class TestLogicTriggers:
     """Verify trigger configuration tools."""
 
-    def test_trigger_edge_defaults(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_trigger_edge
-        lager_logic_trigger_edge(box="X", net="logic1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "trigger", "edge", "--box", "X",
-            "--mode", "normal", "--coupling", "dc",
-        )
+    @patch("lager.Net.get")
+    def test_trigger_edge_defaults(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_trigger_edge
 
-    def test_trigger_edge_with_all_options(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_trigger_edge
-        lager_logic_trigger_edge(
-            box="X", net="logic1",
+        json.loads(logic_trigger_edge(net="logic1"))
+        la.trigger_settings.set_mode_normal.assert_called_once_with()
+        la.trigger_settings.set_coupling_DC.assert_called_once_with()
+
+    @patch("lager.Net.get")
+    def test_trigger_edge_with_all_options(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_trigger_edge
+
+        json.loads(logic_trigger_edge(
+            net="logic1",
             source="CH1", slope="rising", level=1.5,
             mode="auto", coupling="ac",
-        )
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "trigger", "edge", "--box", "X",
-            "--mode", "auto", "--coupling", "ac",
-            "--source", "CH1", "--slope", "rising", "--level", "1.5",
+        ))
+        la.trigger_settings.set_mode_auto.assert_called_once_with()
+        la.trigger_settings.set_coupling_AC.assert_called_once_with()
+        la.trigger_settings.edge.set_source.assert_called_once_with("CH1")
+        la.trigger_settings.edge.set_slope_rising.assert_called_once_with()
+        la.trigger_settings.edge.set_level.assert_called_once_with(1.5)
+
+    @patch("lager.Net.get")
+    def test_trigger_pulse_defaults(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_trigger_pulse
+
+        json.loads(logic_trigger_pulse(net="logic1"))
+        la.trigger_settings.set_mode_normal.assert_called_once_with()
+        la.trigger_settings.set_coupling_DC.assert_called_once_with()
+
+    @patch("lager.Net.get")
+    def test_trigger_pulse_greater_width(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_trigger_pulse
+
+        json.loads(logic_trigger_pulse(
+            net="logic1",
+            source="CH1", level=2.0,
+            condition="greater", width=1e-6,
+        ))
+        la.trigger_settings.pulse.set_source.assert_called_once_with("CH1")
+        la.trigger_settings.pulse.set_level.assert_called_once_with(2.0)
+        la.trigger_settings.pulse.set_trigger_on_pulse_greater_than_width.assert_called_once_with(
+            1e-6,
         )
 
-    def test_trigger_pulse_defaults(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_trigger_pulse
-        lager_logic_trigger_pulse(box="X", net="logic1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "trigger", "pulse", "--box", "X",
-            "--mode", "normal", "--coupling", "dc",
-        )
+    @patch("lager.Net.get")
+    def test_trigger_pulse_range(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_trigger_pulse
 
-    def test_trigger_pulse_with_options(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_trigger_pulse
-        lager_logic_trigger_pulse(
-            box="X", net="logic1",
-            trigger_on="gt", source="CH1", level=2.0,
+        json.loads(logic_trigger_pulse(
+            net="logic1",
+            condition="range",
             upper=0.001, lower=0.0001,
-        )
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "trigger", "pulse", "--box", "X",
-            "--mode", "normal", "--coupling", "dc",
-            "--trigger-on", "gt", "--source", "CH1", "--level", "2.0",
-            "--upper", "0.001", "--lower", "0.0001",
+        ))
+        la.trigger_settings.pulse.set_trigger_on_pulse_less_than_greater_than.assert_called_once_with(
+            max_pulse_width=0.001, min_pulse_width=0.0001,
         )
 
-    def test_trigger_i2c_defaults(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_trigger_i2c
-        lager_logic_trigger_i2c(box="X", net="logic1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "trigger", "i2c", "--box", "X",
-            "--mode", "normal", "--coupling", "dc",
-        )
+    @patch("lager.Net.get")
+    def test_trigger_i2c_defaults(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_trigger_i2c
 
-    def test_trigger_i2c_with_options(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_trigger_i2c
-        lager_logic_trigger_i2c(
-            box="X", net="logic1",
-            trigger_on="address", addr_width="7",
-            data_width="2", direction="write",
+        json.loads(logic_trigger_i2c(net="logic1"))
+        la.trigger_settings.set_mode_normal.assert_called_once_with()
+        la.trigger_settings.i2c.set_trigger_on_start.assert_called_once_with()
+
+    @patch("lager.Net.get")
+    def test_trigger_i2c_address_mode(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_trigger_i2c
+
+        json.loads(logic_trigger_i2c(
+            net="logic1",
+            trigger_on="address",
+            addr_bits=7,
+            data_width=2,
+            direction="write",
             source_scl="CH1", source_sda="CH2",
             level_scl=1.5, level_sda=1.5,
-            address=0x48, data=0xFF,
-        )
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "trigger", "i2c", "--box", "X",
-            "--mode", "normal", "--coupling", "dc",
-            "--trigger-on", "address", "--addr-width", "7",
-            "--data-width", "2", "--direction", "write",
-            "--source-scl", "CH1", "--source-sda", "CH2",
-            "--level-scl", "1.5", "--level-sda", "1.5",
-            "--address", "72", "--data", "255",
+            address="0x48", data="0xFF",
+        ))
+        la.trigger_settings.i2c.set_source.assert_called_once_with(net_scl="CH1", net_sda="CH2")
+        la.trigger_settings.i2c.set_trigger_on_address.assert_called_once_with(
+            bits=7, direction="write", address="0x48",
         )
 
-    def test_trigger_uart_defaults(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_trigger_uart
-        lager_logic_trigger_uart(box="X", net="logic1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "trigger", "uart", "--box", "X",
-            "--mode", "normal", "--coupling", "dc",
+    @patch("lager.Net.get")
+    def test_trigger_uart_defaults(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_trigger_uart
+
+        json.loads(logic_trigger_uart(net="logic1"))
+        la.trigger_settings.uart.set_trigger_on_start.assert_called_once_with()
+        la.trigger_settings.uart.set_uart_params.assert_called_once_with(
+            parity="none", stopbits="1", baud=9600, bits=8,
         )
 
-    def test_trigger_uart_with_options(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_trigger_uart
-        lager_logic_trigger_uart(
-            box="X", net="logic1",
-            trigger_on="data", parity="even", stop_bits="2",
-            baud=115200, data_width=8, data=0xAB,
+    @patch("lager.Net.get")
+    def test_trigger_uart_data_mode(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_trigger_uart
+
+        json.loads(logic_trigger_uart(
+            net="logic1",
+            trigger_on="data",
+            parity="even", stop_bits="2",
+            baud=115200, data_width=8, data="AB",
             source="CH1", level=2.0,
+        ))
+        la.trigger_settings.uart.set_uart_params.assert_called_once_with(
+            parity="even", stopbits="2", baud=115200, bits=8,
         )
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "trigger", "uart", "--box", "X",
-            "--mode", "normal", "--coupling", "dc",
-            "--trigger-on", "data", "--parity", "even",
-            "--stop-bits", "2", "--baud", "115200",
-            "--data-width", "8", "--data", "171",
-            "--source", "CH1", "--level", "2.0",
-        )
+        la.trigger_settings.uart.set_trigger_on_data.assert_called_once_with(data="AB")
 
-    def test_trigger_spi_defaults(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_trigger_spi
-        lager_logic_trigger_spi(box="X", net="logic1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "trigger", "spi", "--box", "X",
-            "--mode", "normal", "--coupling", "dc",
-        )
+    @patch("lager.Net.get")
+    def test_trigger_spi_defaults(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_trigger_spi
 
-    def test_trigger_spi_with_options(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_trigger_spi
-        lager_logic_trigger_spi(
-            box="X", net="logic1",
-            trigger_on="cs", data_width=8,
-            clk_slope="positive", cs_idle="high",
-            data=0xDE, timeout=0.5,
+        json.loads(logic_trigger_spi(net="logic1"))
+        la.trigger_settings.spi.set_clk_edge_positive.assert_called_once_with()
+        la.trigger_settings.spi.set_trigger_on_cs_high.assert_called_once_with()
+
+    @patch("lager.Net.get")
+    def test_trigger_spi_with_sources_and_data(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_trigger_spi
+
+        json.loads(logic_trigger_spi(
+            net="logic1",
+            trigger_on="cs",
+            data_bits=8,
+            clk_edge="positive",
+            data="DE",
             source_mosi_miso="CH1", source_sck="CH2", source_cs="CH3",
             level_mosi_miso=1.5, level_sck=1.5, level_cs=1.5,
+        ))
+        la.trigger_settings.spi.set_source.assert_called_once_with(
+            net_sck="CH2", net_mosi_miso="CH1", net_cs="CH3",
         )
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "trigger", "spi", "--box", "X",
-            "--mode", "normal", "--coupling", "dc",
-            "--trigger-on", "cs", "--data-width", "8",
-            "--clk-slope", "positive", "--cs-idle", "high",
-            "--data", "222", "--timeout", "0.5",
-            "--source-mosi-miso", "CH1", "--source-sck", "CH2",
-            "--source-cs", "CH3",
-            "--level-mosi-miso", "1.5", "--level-sck", "1.5",
-            "--level-cs", "1.5",
-        )
+        la.trigger_settings.spi.set_trigger_data.assert_called_once_with(bits=8, data="DE")
 
 
 @pytest.mark.unit
 class TestLogicCursors:
     """Verify cursor control tools."""
 
-    def test_cursor_set_a_with_x_and_y(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_cursor_set_a
-        lager_logic_cursor_set_a(box="X", net="logic1", x=0.001, y=1.5)
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "cursor", "set-a", "--box", "X",
-            "--x", "0.001", "--y", "1.5",
-        )
+    @patch("lager.Net.get")
+    def test_cursor_set_a_with_x_and_y(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_cursor_set
 
-    def test_cursor_set_a_no_args(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_cursor_set_a
-        lager_logic_cursor_set_a(box="X", net="logic1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "cursor", "set-a", "--box", "X",
-        )
+        json.loads(logic_cursor_set(net="logic1", cursor="a", x=0.001, y=1.5))
+        la.cursor.set_a.assert_called_once_with(x=0.001, y=1.5)
 
-    def test_cursor_set_b_x_only(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_cursor_set_b
-        lager_logic_cursor_set_b(box="X", net="logic1", x=0.002)
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "cursor", "set-b", "--box", "X",
-            "--x", "0.002",
-        )
+    @patch("lager.Net.get")
+    def test_cursor_set_a_no_args(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_cursor_set
 
-    def test_cursor_move_a(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_cursor_move_a
-        lager_logic_cursor_move_a(box="X", net="logic1", x=0.5, y=-0.3)
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "cursor", "move-a", "--box", "X",
-            "--del-x", "0.5", "--del-y", "-0.3",
-        )
+        json.loads(logic_cursor_set(net="logic1", cursor="a"))
+        la.cursor.set_a.assert_called_once_with(x=None, y=None)
 
-    def test_cursor_move_b(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_cursor_move_b
-        lager_logic_cursor_move_b(box="X", net="logic1", y=1.0)
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "cursor", "move-b", "--box", "X",
-            "--del-y", "1.0",
-        )
+    @patch("lager.Net.get")
+    def test_cursor_set_b_x_only(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_cursor_set
 
-    def test_cursor_hide(self, mock_subprocess):
-        from lager.mcp.tools.logic import lager_logic_cursor_hide
-        lager_logic_cursor_hide(box="X", net="logic1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "logic", "logic1", "cursor", "hide", "--box", "X",
-        )
+        json.loads(logic_cursor_set(net="logic1", cursor="b", x=0.002))
+        la.cursor.set_b.assert_called_once_with(x=0.002, y=None)
+
+    @patch("lager.Net.get")
+    def test_cursor_move_a(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_cursor_move
+
+        json.loads(logic_cursor_move(net="logic1", cursor="a", x=0.5, y=-0.3))
+        la.cursor.move_a.assert_called_once_with(x_del=0.5, y_del=-0.3)
+
+    @patch("lager.Net.get")
+    def test_cursor_move_b(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_cursor_move
+
+        json.loads(logic_cursor_move(net="logic1", cursor="b", y=1.0))
+        la.cursor.move_b.assert_called_once_with(x_del=None, y_del=1.0)
+
+    @patch("lager.Net.get")
+    def test_cursor_hide(self, mock_get):
+        la = _logic_device()
+        mock_get.return_value = la
+        from lager.mcp.tools.logic import logic_cursor_hide
+
+        json.loads(logic_cursor_hide(net="logic1"))
+        la.cursor.hide.assert_called_once_with()

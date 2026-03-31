@@ -95,6 +95,7 @@ RUN /usr/local/bin/python -m pip install --upgrade pip \
 	'rich' \
 	'cbor2' \
 	'websocket-client>=1.6.0' \
+	'mcp>=1.0.0' \
 	'git+https://github.com/Vaskivskyi/asusrouter.git@8de97bfa8ffe3efa2f6d1ec30bb95187d13ab37a'
 
 RUN git config --global http.version HTTP/1.1
@@ -131,6 +132,9 @@ COPY http_handlers /app/lager/lager/http_handlers
 COPY instrument_wrappers /app/lager/lager/instrument_wrappers
 COPY nets /app/lager/lager/nets
 COPY python /app/lager/lager/python
+
+# MCP server: AI agent integration
+COPY mcp /app/lager/lager/mcp
 
 # Copy grouped hardware modules
 # Power group: supply, battery, solar, eload

@@ -1,137 +1,185 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""MCP tools for power supply control."""
+"""MCP tools for power supply control via direct on-box Net API."""
 
-from ..server import mcp, run_lager
+import json
+
+from ..server import mcp
 
 
 @mcp.tool()
-def lager_supply_voltage(
-    box: str, net: str, voltage: float = None,
-    ocp: float = None, ovp: float = None,
-) -> str:
-    """Get or set power supply voltage.
-
-    If voltage is provided, sets the output voltage (with --yes to skip
-    confirmation). If omitted, reads and returns the current voltage.
-    OCP/OVP protection limits can be set at the same time as voltage.
+def supply_set_voltage(net: str, voltage: float) -> str:
+    """Set power supply voltage.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Power supply net name (e.g., 'psu1')
-        voltage: Voltage to set in volts (omit to read current voltage)
-        ocp: Over-current protection limit in amps (optional)
-        ovp: Over-voltage protection limit in volts (optional)
+        voltage: Voltage in volts
     """
-    if voltage is not None:
-        args = ["supply", net, "voltage", str(voltage), "--yes", "--box", box]
-        if ocp is not None:
-            args.extend(["--ocp", str(ocp)])
-        if ovp is not None:
-            args.extend(["--ovp", str(ovp)])
-        return run_lager(*args)
-    return run_lager("supply", net, "voltage", "--box", box)
+    from lager import Net, NetType
+
+    supply = Net.get(net, type=NetType.PowerSupply)
+    supply.set_voltage(voltage)
+    return json.dumps({"status": "ok", "net": net, "voltage": voltage})
 
 
 @mcp.tool()
-def lager_supply_current(box: str, net: str, current: float = None) -> str:
-    """Get or set power supply current limit.
-
-    If current is provided, sets the current limit (with --yes to skip
-    confirmation). If omitted, reads and returns the current setting.
+def supply_set_current(net: str, current: float) -> str:
+    """Set power supply current limit.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Power supply net name (e.g., 'psu1')
-        current: Current limit in amps (omit to read current setting)
+        current: Current limit in amps
     """
-    if current is not None:
-        return run_lager(
-            "supply", net, "current", str(current),
-            "--yes", "--box", box,
-        )
-    return run_lager("supply", net, "current", "--box", box)
+    from lager import Net, NetType
+
+    supply = Net.get(net, type=NetType.PowerSupply)
+    supply.set_current(current)
+    return json.dumps({"status": "ok", "net": net, "current": current})
 
 
 @mcp.tool()
-def lager_supply_enable(box: str, net: str) -> str:
+def supply_enable(net: str) -> str:
     """Enable power supply output.
 
-    Turns on the power supply output at the previously configured
-    voltage and current settings.
-
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Power supply net name (e.g., 'psu1')
     """
-    return run_lager("supply", net, "enable", "--yes", "--box", box)
+    from lager import Net, NetType
+
+    Net.get(net, type=NetType.PowerSupply).enable()
+    return json.dumps({"status": "ok", "net": net, "enabled": True})
 
 
 @mcp.tool()
-def lager_supply_disable(box: str, net: str) -> str:
+def supply_disable(net: str) -> str:
     """Disable power supply output.
 
-    Turns off the power supply output. Voltage and current settings
-    are preserved for when output is re-enabled.
-
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Power supply net name (e.g., 'psu1')
     """
-    return run_lager("supply", net, "disable", "--yes", "--box", box)
+    from lager import Net, NetType
+
+    Net.get(net, type=NetType.PowerSupply).disable()
+    return json.dumps({"status": "ok", "net": net, "enabled": False})
 
 
 @mcp.tool()
-def lager_supply_state(box: str, net: str) -> str:
-    """Read the current state of a power supply.
-
-    Returns voltage, current, and output enable status.
+def supply_measure(net: str, measurement: str = "voltage") -> str:
+    """Read a measurement from a power supply net.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Power supply net name (e.g., 'psu1')
+        measurement: What to measure — 'voltage', 'current', or 'power'
     """
-    return run_lager("supply", net, "state", "--box", box)
+    from lager import Net, NetType
+
+    supply = Net.get(net, type=NetType.PowerSupply)
+    value = getattr(supply, measurement)()
+    return json.dumps({"status": "ok", "net": net, "measurement": measurement, "value": value})
 
 
 @mcp.tool()
-def lager_supply_clear_ocp(box: str, net: str) -> str:
-    """Clear an over-current protection fault on a power supply.
-
-    Resets the OCP latch so the supply can be re-enabled after a
-    current fault event.
+def supply_state(net: str) -> str:
+    """Read the full state of a power supply (voltage, current, enabled).
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Power supply net name (e.g., 'psu1')
     """
-    return run_lager("supply", net, "clear-ocp", "--box", box)
+    from lager import Net, NetType
+
+    supply = Net.get(net, type=NetType.PowerSupply)
+    state = {
+        "status": "ok",
+        "net": net,
+        "voltage": supply.voltage(),
+        "current": supply.current(),
+    }
+    try:
+        state["power"] = supply.power()
+    except Exception:
+        pass
+    try:
+        state["enabled"] = supply.output_is_enabled()
+    except Exception:
+        pass
+    return json.dumps(state)
 
 
 @mcp.tool()
-def lager_supply_clear_ovp(box: str, net: str) -> str:
-    """Clear an over-voltage protection fault on a power supply.
-
-    Resets the OVP latch so the supply can be re-enabled after a
-    voltage fault event.
+def supply_ocp(net: str, value: float = None) -> str:
+    """Get or set over-current protection limit.
 
     Args:
-        box: Box name (e.g., 'DEMO')
         net: Power supply net name (e.g., 'psu1')
+        value: OCP limit in amps. Omit to read current setting.
     """
-    return run_lager("supply", net, "clear-ovp", "--box", box)
+    from lager import Net, NetType
+
+    supply = Net.get(net, type=NetType.PowerSupply)
+    supply.ocp(value)
+    if value is not None:
+        return json.dumps({"status": "ok", "net": net, "ocp": value})
+    return json.dumps({"status": "ok", "net": net, "action": "read_ocp"})
 
 
 @mcp.tool()
-def lager_supply_set(box: str, net: str) -> str:
-    """Apply the current power supply configuration.
-
-    Sends the previously configured voltage and current settings
-    to the power supply hardware.
+def supply_ovp(net: str, value: float = None) -> str:
+    """Get or set over-voltage protection limit.
 
     Args:
-        box: Box name (e.g., 'DEMO')
+        net: Power supply net name (e.g., 'psu1')
+        value: OVP limit in volts. Omit to read current setting.
+    """
+    from lager import Net, NetType
+
+    supply = Net.get(net, type=NetType.PowerSupply)
+    supply.ovp(value)
+    if value is not None:
+        return json.dumps({"status": "ok", "net": net, "ovp": value})
+    return json.dumps({"status": "ok", "net": net, "action": "read_ovp"})
+
+
+@mcp.tool()
+def supply_clear_ocp(net: str) -> str:
+    """Clear an over-current protection trip on a power supply.
+
+    Resets the OCP latch so the supply can be re-enabled after a current fault.
+
+    Args:
         net: Power supply net name (e.g., 'psu1')
     """
-    return run_lager("supply", net, "set", "--box", box)
+    from lager import Net, NetType
+
+    Net.get(net, type=NetType.PowerSupply).clear_ocp()
+    return json.dumps({"status": "ok", "net": net, "cleared": "ocp"})
+
+
+@mcp.tool()
+def supply_clear_ovp(net: str) -> str:
+    """Clear an over-voltage protection trip on a power supply.
+
+    Resets the OVP latch so the supply can be re-enabled after a voltage fault.
+
+    Args:
+        net: Power supply net name (e.g., 'psu1')
+    """
+    from lager import Net, NetType
+
+    Net.get(net, type=NetType.PowerSupply).clear_ovp()
+    return json.dumps({"status": "ok", "net": net, "cleared": "ovp"})
+
+
+@mcp.tool()
+def supply_set_mode(net: str) -> str:
+    """Set the instrument to DC power supply mode.
+
+    Useful when the instrument supports multiple modes (e.g., battery + supply).
+
+    Args:
+        net: Power supply net name (e.g., 'psu1')
+    """
+    from lager import Net, NetType
+
+    Net.get(net, type=NetType.PowerSupply).set_mode()
+    return json.dumps({"status": "ok", "net": net, "action": "set_mode"})

@@ -581,6 +581,165 @@ def handle_tc_read(target: str, params: dict, results: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Battery simulator handlers
+# ---------------------------------------------------------------------------
+
+@action("battery_enable")
+def handle_battery_enable(target: str, params: dict, results: dict) -> dict:
+    """Enable battery simulator output."""
+    from lager import NetType
+    _get_net(target, NetType.Battery).enable()
+    return {"target": target, "enabled": True}
+
+
+@action("battery_disable")
+def handle_battery_disable(target: str, params: dict, results: dict) -> dict:
+    """Disable battery simulator output."""
+    from lager import NetType
+    _get_net(target, NetType.Battery).disable()
+    return {"target": target, "enabled": False}
+
+
+@action("battery_soc")
+def handle_battery_soc(target: str, params: dict, results: dict) -> dict:
+    """Get or set battery state of charge."""
+    from lager import NetType
+    value = params.get("value")
+    batt = _get_net(target, NetType.Battery)
+    batt.soc(value)
+    label = params.get("label")
+    data = {"target": target, "soc": value}
+    if label:
+        results[label] = data
+    return data
+
+
+@action("battery_voc")
+def handle_battery_voc(target: str, params: dict, results: dict) -> dict:
+    """Get or set battery open circuit voltage."""
+    from lager import NetType
+    value = params.get("value")
+    batt = _get_net(target, NetType.Battery)
+    batt.voc(value)
+    label = params.get("label")
+    data = {"target": target, "voc": value}
+    if label:
+        results[label] = data
+    return data
+
+
+@action("battery_set")
+def handle_battery_set(target: str, params: dict, results: dict) -> dict:
+    """Apply current battery simulator configuration to hardware."""
+    from lager import NetType
+    _get_net(target, NetType.Battery).set_mode_battery()
+    return {"target": target, "action": "set_mode_battery"}
+
+
+@action("battery_state")
+def handle_battery_state(target: str, params: dict, results: dict) -> dict:
+    """Read comprehensive battery simulator state."""
+    from lager import NetType
+    batt = _get_net(target, NetType.Battery)
+    data: dict[str, Any] = {"target": target}
+    for attr in ("terminal_voltage", "current", "esr"):
+        try:
+            data[attr] = getattr(batt, attr)()
+        except Exception:
+            pass
+    label = params.get("label")
+    if label:
+        results[label] = data
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Electronic load handlers
+# ---------------------------------------------------------------------------
+
+@action("eload_set")
+def handle_eload_set(target: str, params: dict, results: dict) -> dict:
+    """Set electronic load mode and value."""
+    from lager import NetType
+    mode = params.get("mode", "cc")
+    value = params.get("value")
+    eload = _get_net(target, NetType.ELoad)
+    mode_map = {"cc": "current", "cv": "voltage", "cr": "resistance", "cp": "power"}
+    attr_name = mode_map.get(mode.lower())
+    if not attr_name:
+        raise ValueError(f"Unknown eload mode '{mode}'. Use cc, cv, cr, or cp.")
+    getattr(eload, attr_name)(value)
+    return {"target": target, "mode": mode, attr_name: value}
+
+
+@action("eload_enable")
+def handle_eload_enable(target: str, params: dict, results: dict) -> dict:
+    """Enable electronic load input."""
+    from lager import NetType
+    _get_net(target, NetType.ELoad).enable()
+    return {"target": target, "enabled": True}
+
+
+@action("eload_disable")
+def handle_eload_disable(target: str, params: dict, results: dict) -> dict:
+    """Disable electronic load input."""
+    from lager import NetType
+    _get_net(target, NetType.ELoad).disable()
+    return {"target": target, "enabled": False}
+
+
+@action("eload_state")
+def handle_eload_state(target: str, params: dict, results: dict) -> dict:
+    """Read the current state of an electronic load."""
+    from lager import NetType
+    eload = _get_net(target, NetType.ELoad)
+    data: dict[str, Any] = {"target": target}
+    for attr in ("measured_voltage", "measured_current", "measured_power"):
+        try:
+            data[attr] = getattr(eload, attr)()
+        except Exception:
+            pass
+    try:
+        data["mode"] = eload.mode()
+    except Exception:
+        pass
+    label = params.get("label")
+    if label:
+        results[label] = data
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Energy analyzer handlers
+# ---------------------------------------------------------------------------
+
+@action("energy_read")
+def handle_energy_read(target: str, params: dict, results: dict) -> dict:
+    """Integrate energy over a duration (joules, watt-hours, coulombs)."""
+    from lager import NetType
+    duration = params.get("duration", 1.0)
+    reading = _get_net(target, NetType.EnergyAnalyzer).read_energy(duration)
+    label = params.get("label")
+    data = {"target": target, "duration": duration, "reading": reading}
+    if label:
+        results[label] = data
+    return data
+
+
+@action("energy_stats")
+def handle_energy_stats(target: str, params: dict, results: dict) -> dict:
+    """Compute current/voltage/power statistics over a duration."""
+    from lager import NetType
+    duration = params.get("duration", 1.0)
+    stats = _get_net(target, NetType.EnergyAnalyzer).read_stats(duration)
+    label = params.get("label")
+    data = {"target": target, "duration": duration, "stats": stats}
+    if label:
+        results[label] = data
+    return data
+
+
+# ---------------------------------------------------------------------------
 # Wait handler
 # ---------------------------------------------------------------------------
 
@@ -596,12 +755,41 @@ def handle_wait(target: str | None, params: dict, results: dict) -> dict:
 # Step execution
 # ---------------------------------------------------------------------------
 
+class _StepTimeout(Exception):
+    """Raised when a step exceeds its timeout_s budget."""
+
+
+def _run_with_timeout(fn, args, timeout_s):
+    """Run *fn(*args)* in a thread with a hard timeout.
+
+    Returns the result or raises _StepTimeout / the original exception.
+    The pool is shut down non-blocking so we don't wait for the orphaned
+    worker thread when a timeout fires.
+    """
+    import concurrent.futures
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(fn, *args)
+    try:
+        result = future.result(timeout=timeout_s)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise _StepTimeout(f"Step timed out after {timeout_s}s")
+    except Exception:
+        pool.shutdown(wait=False)
+        raise
+    pool.shutdown(wait=False)
+    return result
+
+
 def execute_step(step: dict, results: dict, step_results: list, errors: list) -> None:
-    """Execute a single scenario step."""
+    """Execute a single scenario step with retry and timeout support."""
     action_name = step.get("action", "")
     target = step.get("target")
     params = step.get("params", {})
     on_failure = step.get("on_failure", "abort")
+    max_retries = step.get("max_retries", 0)
+    timeout_s = step.get("timeout_s")
 
     handler = _HANDLER_REGISTRY.get(action_name)
     if handler is None:
@@ -617,37 +805,163 @@ def execute_step(step: dict, results: dict, step_results: list, errors: list) ->
             raise RuntimeError(msg)
         return
 
-    t0 = time.time()
-    try:
-        data = handler(target, params, results)
-        elapsed_ms = (time.time() - t0) * 1000
-        step_results.append({
-            "action": action_name,
-            "target": target,
-            "label": params.get("label"),
-            "success": True,
-            "data": data,
-            "duration_ms": round(elapsed_ms, 2),
-        })
-    except Exception as exc:
-        elapsed_ms = (time.time() - t0) * 1000
-        msg = f"{action_name} on {target}: {exc}"
-        errors.append(msg)
-        step_results.append({
-            "action": action_name,
-            "target": target,
-            "label": params.get("label"),
-            "success": False,
-            "error": str(exc),
-            "duration_ms": round(elapsed_ms, 2),
-        })
-        if on_failure == "abort":
-            raise
+    last_exc: Exception | None = None
+    for attempt in range(1 + max_retries):
+        t0 = time.time()
+        try:
+            if timeout_s is not None:
+                data = _run_with_timeout(handler, (target, params, results), timeout_s)
+            else:
+                data = handler(target, params, results)
+            elapsed_ms = (time.time() - t0) * 1000
+            step_results.append({
+                "action": action_name,
+                "target": target,
+                "label": params.get("label"),
+                "success": True,
+                "data": data,
+                "duration_ms": round(elapsed_ms, 2),
+                **({"attempt": attempt + 1} if attempt > 0 else {}),
+            })
+            return
+        except Exception as exc:
+            last_exc = exc
+            elapsed_ms = (time.time() - t0) * 1000
+            if attempt < max_retries:
+                continue
+            msg = f"{action_name} on {target}: {exc}"
+            errors.append(msg)
+            step_results.append({
+                "action": action_name,
+                "target": target,
+                "label": params.get("label"),
+                "success": False,
+                "error": str(exc),
+                "duration_ms": round(elapsed_ms, 2),
+                **({"attempts": attempt + 1} if max_retries > 0 else {}),
+            })
+            if on_failure == "abort":
+                raise
 
 
 # ---------------------------------------------------------------------------
 # Assertion evaluation
 # ---------------------------------------------------------------------------
+
+def _safe_eval(expression: str, results: dict) -> bool:
+    """Evaluate a comparison expression against *results* without full eval().
+
+    Supported syntax (via AST whitelisting):
+      - Attribute / subscript access on ``results``:
+          ``results['vdd_voltage']['value']``
+      - Numeric / string literals
+      - Comparisons: ``==``, ``!=``, ``<``, ``<=``, ``>``, ``>=``,
+        ``in``, ``not in``, ``is``, ``is not``
+      - Boolean operators: ``and``, ``or``, ``not``
+      - Unary ``-`` / ``+``
+      - ``abs()``, ``len()``, ``round()``, ``min()``, ``max()``, ``str()``,
+        ``int()``, ``float()``, ``bool()``
+    """
+    import ast
+    import operator
+
+    _COMPARE_OPS = {
+        ast.Eq: operator.eq,
+        ast.NotEq: operator.ne,
+        ast.Lt: operator.lt,
+        ast.LtE: operator.le,
+        ast.Gt: operator.gt,
+        ast.GtE: operator.ge,
+        ast.Is: operator.is_,
+        ast.IsNot: operator.is_not,
+    }
+
+    _SAFE_BUILTINS = {
+        "abs": abs, "len": len, "round": round,
+        "min": min, "max": max,
+        "str": str, "int": int, "float": float, "bool": bool,
+        "True": True, "False": False, "None": None,
+    }
+
+    def _eval_node(node):  # noqa: C901
+        if isinstance(node, ast.Expression):
+            return _eval_node(node.body)
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.Name):
+            if node.id == "results":
+                return results
+            if node.id in _SAFE_BUILTINS:
+                return _SAFE_BUILTINS[node.id]
+            raise NameError(f"Name '{node.id}' is not allowed")
+        if isinstance(node, ast.Subscript):
+            value = _eval_node(node.value)
+            key = _eval_node(node.slice)
+            return value[key]
+        if isinstance(node, ast.Attribute):
+            value = _eval_node(node.value)
+            return getattr(value, node.attr)
+        if isinstance(node, ast.Index):
+            return _eval_node(node.value)
+        if isinstance(node, ast.UnaryOp):
+            operand = _eval_node(node.operand)
+            if isinstance(node.op, ast.USub):
+                return -operand
+            if isinstance(node.op, ast.UAdd):
+                return +operand
+            if isinstance(node.op, ast.Not):
+                return not operand
+            raise ValueError(f"Unsupported unary op: {type(node.op).__name__}")
+        if isinstance(node, ast.BinOp):
+            left = _eval_node(node.left)
+            right = _eval_node(node.right)
+            if isinstance(node.op, ast.Add):
+                return left + right
+            if isinstance(node.op, ast.Sub):
+                return left - right
+            if isinstance(node.op, ast.Mult):
+                return left * right
+            if isinstance(node.op, ast.Div):
+                return left / right
+            raise ValueError(f"Unsupported binary op: {type(node.op).__name__}")
+        if isinstance(node, ast.BoolOp):
+            if isinstance(node.op, ast.And):
+                return all(_eval_node(v) for v in node.values)
+            if isinstance(node.op, ast.Or):
+                return any(_eval_node(v) for v in node.values)
+        if isinstance(node, ast.Compare):
+            left = _eval_node(node.left)
+            for op, comparator in zip(node.ops, node.comparators):
+                right = _eval_node(comparator)
+                if isinstance(op, ast.In):
+                    if left not in right:
+                        return False
+                elif isinstance(op, ast.NotIn):
+                    if left in right:
+                        return False
+                else:
+                    fn = _COMPARE_OPS.get(type(op))
+                    if fn is None:
+                        raise ValueError(f"Unsupported compare op: {type(op).__name__}")
+                    if not fn(left, right):
+                        return False
+                left = right
+            return True
+        if isinstance(node, ast.Call):
+            func = _eval_node(node.func)
+            if func not in _SAFE_BUILTINS.values():
+                raise ValueError(f"Function call not allowed: {ast.dump(node.func)}")
+            args = [_eval_node(a) for a in node.args]
+            return func(*args)
+        if isinstance(node, ast.IfExp):
+            return _eval_node(node.body) if _eval_node(node.test) else _eval_node(node.orelse)
+        if isinstance(node, (ast.List, ast.Tuple)):
+            return [_eval_node(e) for e in node.elts]
+        raise ValueError(f"Unsupported AST node: {type(node).__name__}")
+
+    tree = ast.parse(expression, mode="eval")
+    return bool(_eval_node(tree))
+
 
 def evaluate_assertions(assertions: list[dict], results: dict) -> list[dict]:
     """Evaluate assertion expressions against collected results."""
@@ -657,7 +971,7 @@ def evaluate_assertions(assertions: list[dict], results: dict) -> list[dict]:
         expression = assertion.get("expression", "False")
         severity = assertion.get("severity", "error")
         try:
-            passed = bool(eval(expression, {"__builtins__": {}}, {"results": results}))
+            passed = _safe_eval(expression, results)
             outcomes.append({"name": name, "passed": passed, "severity": severity})
         except Exception as exc:
             outcomes.append({
@@ -673,23 +987,48 @@ def evaluate_assertions(assertions: list[dict], results: dict) -> list[dict]:
 # Main runner
 # ---------------------------------------------------------------------------
 
-def run(scenario_json: str) -> dict:
-    """Execute a scenario from JSON and return structured results."""
+def run(scenario_json: str, *, timeout_s: int | None = None) -> dict:
+    """Execute a scenario from JSON and return structured results.
+
+    Args:
+        scenario_json: Serialised scenario.
+        timeout_s: Hard wall-clock budget for the entire scenario.
+            Overrides the ``timeout_s`` field inside the JSON when provided
+            by the caller (e.g. ``execute_scenario``).
+    """
     scenario = json.loads(scenario_json)
     results: dict[str, Any] = {}
     step_results: list[dict] = []
     errors: list[str] = []
 
+    effective_timeout = timeout_s or scenario.get("timeout_s")
+    deadline: float | None = None
+    if effective_timeout:
+        deadline = time.time() + effective_timeout
+
     t0 = time.time()
+
+    timed_out = False
+
+    def _check_deadline() -> None:
+        nonlocal timed_out
+        if deadline is not None and time.time() > deadline:
+            timed_out = True
+            raise _StepTimeout(f"Scenario exceeded {effective_timeout}s wall-clock budget")
 
     try:
         for step in scenario.get("setup", []):
+            _check_deadline()
             execute_step(step, results, step_results, errors)
 
         aborted = False
         try:
             for step in scenario.get("steps", []):
+                _check_deadline()
                 execute_step(step, results, step_results, errors)
+        except _StepTimeout:
+            aborted = True
+            timed_out = True
         except Exception:
             aborted = True
 
@@ -698,6 +1037,8 @@ def run(scenario_json: str) -> dict:
                 execute_step(step, results, step_results, errors)
             except Exception:
                 pass
+    except _StepTimeout:
+        timed_out = True
     finally:
         _cleanup_all()
 
@@ -713,7 +1054,9 @@ def run(scenario_json: str) -> dict:
     )
     all_steps_ok = all(s["success"] for s in step_results)
 
-    if aborted:
+    if timed_out:
+        status = "timeout"
+    elif aborted:
         status = "aborted"
     elif errors:
         status = "error"
