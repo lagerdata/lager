@@ -388,14 +388,12 @@ class KeysightE36000(SupplyNet):
         Returns a float if one channel, or a list of floats for multiple channels.
         """
         if chanlist is not None:
+            # Use numeric channel list (e.g. (@2)); str(InstrumentChannel.CH2) is "CH2" and is invalid SCPI here.
+            chan_str = self._chanlist_to_str(chanlist)
+            response = self._query(f"SOURce:VOLTage:PROTection? (@{chan_str})")
             if isinstance(chanlist, (list, tuple)):
-                chan_str = ",".join(str(ch) for ch in chanlist)
-                response = self._query(f"SOURce:VOLTage:PROTection? (@{chan_str})")
                 return [float(val) for val in response.split(",")]
-            else:
-                chan_str = str(chanlist)
-                response = self._query(f"SOURce:VOLTage:PROTection? (@{chan_str})")
-                return float(response)
+            return float(response)
         else:
             response = self._query("SOURce:VOLTage:PROTection?")
             return float(response)

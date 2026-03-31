@@ -165,7 +165,21 @@ def register_supply_routes(app: Flask) -> None:
                         current_meas = 0.0
 
                     state_str = "ON" if enabled else "OFF"
-                    result['message'] = f'Channel {channel}: {state_str}, Set: {voltage_set}V/{current_set}A, Measured: {voltage_meas}V/{current_meas}A'
+                    msg = (
+                        f'Channel {channel}: {state_str}, Set: {voltage_set}V/{current_set}A, '
+                        f'Measured: {voltage_meas}V/{current_meas}A'
+                    )
+                    try:
+                        ocp_s = float(supply.get_overcurrent_protection_value(channel))
+                        msg += f', OCP: {ocp_s}A'
+                    except Exception:
+                        pass
+                    try:
+                        ovp_s = float(supply.get_overvoltage_protection_value(channel))
+                        msg += f', OVP: {ovp_s}V'
+                    except Exception:
+                        pass
+                    result['message'] = msg
 
                 else:
                     return jsonify({'success': False, 'error': f'Unknown action: {action}'}), 400
@@ -658,8 +672,38 @@ def register_supply_socketio(socketio: SocketIO) -> None:
 
                 elif action == 'state':
                     logger.info(f"[COMMAND-{thread_name}] Getting state for channel {channel}...")
-                    # State is already being monitored and pushed to client
-                    result['message'] = 'State retrieved (see monitor updates)'
+                    try:
+                        enabled = supply.output_is_enabled(channel=channel)
+                        voltage_set = float(supply.get_channel_voltage(source=channel))
+                        current_set = float(supply.get_channel_current(source=channel))
+                        if enabled:
+                            try:
+                                voltage_meas = float(supply.measure_voltage(channel))
+                                current_meas = float(supply.measure_current(channel))
+                            except Exception:
+                                voltage_meas = 0.0
+                                current_meas = 0.0
+                        else:
+                            voltage_meas = 0.0
+                            current_meas = 0.0
+                        state_str = "ON" if enabled else "OFF"
+                        msg = (
+                            f'Channel {channel}: {state_str}, Set: {voltage_set}V/{current_set}A, '
+                            f'Measured: {voltage_meas}V/{current_meas}A'
+                        )
+                        try:
+                            ocp_s = float(supply.get_overcurrent_protection_value(channel))
+                            msg += f', OCP: {ocp_s}A'
+                        except Exception:
+                            pass
+                        try:
+                            ovp_s = float(supply.get_overvoltage_protection_value(channel))
+                            msg += f', OVP: {ovp_s}V'
+                        except Exception:
+                            pass
+                        result['message'] = msg
+                    except Exception as e:
+                        result['message'] = f'State summary unavailable: {e}'
 
                 else:
                     result['success'] = False
