@@ -222,8 +222,8 @@ Alternatively, go to [Releases](https://github.com/lagerdata/lager/releases) and
 Create a branch from the release tag so boxes can be pinned to specific versions via `lager update --version`:
 
 ```bash
-git branch vX.Y.Z vX.Y.Z
-git push upstream vX.Y.Z
+git branch X.Y.Z vX.Y.Z
+git push upstream X.Y.Z
 ```
 
 ## Post-release
