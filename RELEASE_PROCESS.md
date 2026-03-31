@@ -161,18 +161,22 @@ Add the new version to the top of the Release Notes list in `docs/docs.json`:
 }
 ```
 
-### 5. Commit and Push to Upstream Main
+### 5. Open a PR Against Upstream Main
 
-Sync your local main with upstream, commit the release files, and push directly to upstream:
+The `main` branch requires all changes to go through a pull request (direct pushes are blocked). Create a release branch, push it to your fork, and open a PR:
 
 ```bash
 git fetch upstream
 git checkout main
 git reset --hard upstream/main
+git checkout -b release/vX.Y.Z
 git add cli/__init__.py CHANGELOG.md docs/source/release-notes/vX.Y.Z.mdx docs/docs.json
 git commit -m "vX.Y.Z"
-git push upstream main
+git push -u origin release/vX.Y.Z
+gh pr create --repo lagerdata/lager --base main --title "vX.Y.Z"
 ```
+
+After the PR is reviewed and approved, merge it using **Squash and merge** or **Rebase and merge** — the branch requires linear history, so standard merge commits are not allowed.
 
 ### 6. Tag the Release
 

@@ -809,12 +809,14 @@ def disconnect(ctx, box, keep_server):
               help='Show detailed J-Link connection and flash output (slower)')
 @click.option('--force-reconnect', is_flag=True, default=False,
               help='Force disconnect and reconnect before flash for clean state')
-@click.option('--erase', is_flag=True, default=False,
-              help='Erase before programming (J-Link; DA1469x erases external QSPI XIP '
-                   'range only, not full chip)')
+@click.option('--no-erase', is_flag=True, default=False,
+              help='Skip erasing flash before flashing')
+@click.option('--erase', is_flag=True, default=False, hidden=True,
+              help='(Deprecated) Erase before programming — now the default behavior. '
+                   'DA1469x erases external QSPI XIP range only, not full chip.')
 @click.option('--halt/--no-halt', is_flag=True, default=False,
               help='Halt the device after flashing (keeps debugger connected)', show_default=True)
-def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, erase, halt):
+def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, halt):
     """Flash firmware to target"""
 
     target_box = box
@@ -839,8 +841,8 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, erase, halt):
 
     device_type = str(_debug_net_jlink_device(debug_net) or '').upper()
 
-    # Erase flash if requested (ensures clean state for RTT and firmware initialization)
-    if erase:
+    # Erase flash before flashing (default behavior; skip with --no-erase)
+    if not no_erase:
         try:
             click.echo("Erasing flash memory...", err=True)
             client.erase(debug_net, speed='4000', transport='SWD')
