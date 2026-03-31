@@ -15,14 +15,13 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from .jlink import JLink
+from .jlink import JLink, commander
 from .mappings import (
     get_jlink_status,
     readfile,
     JL_LOGFILE,
 )
 from .process import (
-    start_jlink,
     stop_jlink,
 )
 from .gdbserver import get_jlink_gdbserver_status, stop_jlink_gdbserver, start_jlink_gdbserver
@@ -607,19 +606,26 @@ def erase_flash(start_addr, length, mcu=None):
     raise JLinkNotRunning()
 
 
-def chip_erase(device, speed='4000', transport='SWD', mcu=None):
+def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None):
     """
-    Perform full chip erase (J-Link only)
+    Erase flash via J-Link Commander.
 
-    This will erase the entire flash memory on the device.
-    WARNING: This will erase ALL data on the chip, including any
-    protection settings on Renesas devices.
+    Most devices: full chip ``erase``. **DA1469x** uses **address-range** erase over the
+    external QSPI XIP map (default 1 MiB @ 0x16000000 — loader-style bank 0 — or
+    ``LAGER_ERASE_RANGE`` in the J-Link script). Commander enables that QSPI flash bank
+    (``SetEnableFlashbank``), then unlocks external erase (``EnableEraseAllFlashBanks``),
+    then ``erase <start> <end>`` — not a global chip erase — to avoid wiping internal
+    flash. No extra Commander steps after the range erase (connect, erase, disconnect).
+
+    WARNING: On non-DA1469 devices, full chip erase erases ALL data on the chip.
 
     Args:
         device: J-Link device name (e.g., 'R7FA0E107', 'NRF52840_XXAA')
         speed: Interface speed in kHz (default: 4000)
         transport: Transport protocol ('SWD' or 'JTAG', default: 'SWD')
         mcu: MCU identifier (optional, unused for J-Link)
+        script_file: Optional path to J-Link script (from debug service); if None,
+            uses a temp file left by connect or api._get_script_file().
 
     Returns:
         Generator yielding output from erase operation
@@ -630,8 +636,12 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None):
     # Lazy import to avoid circular dependencies
     from .jlink import JLink
 
-    # Stop any running GDB server to free the J-Link hardware for JLinkExe
+    # Stop ALL running J-Link processes to free the USB probe for JLinkExe.
+    # Legacy start_jlink() uses /tmp/jlink.pid; the debug service uses
+    # JLinkGDBServer (/tmp/jlink_gdbserver.pid). Both must be stopped or
+    # JLinkExe cannot get exclusive USB access (erase may fail or hit wrong flash).
     stop_jlink()
+    stop_jlink_gdbserver()
 
     # Give the hardware time to be released
     time.sleep(0.5)
@@ -650,19 +660,30 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None):
             self.args = args
             self.script_file = script_file
 
-    jlink = TempJLink(cmd_args, script_file=_get_script_file())
+    resolved_script = script_file if (script_file and os.path.exists(script_file)) else _get_script_file()
+    if not resolved_script:
+        logger.warning(
+            'chip_erase: no J-Link script file; DA1469x external QSPI may not be erased'
+        )
+
+    jlink = TempJLink(cmd_args, script_file=resolved_script)
     jlink.__class__ = JLink
 
     return jlink.chip_erase()
 
 
-def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None, use_gdb=True):
+def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None, use_gdb=True,
+                 script_file=None):
     """
     Flash firmware to device using JLinkExe.
 
     Note: The use_gdb parameter is deprecated and ignored. Flash always uses JLinkExe
     for reliability. The GDB-based flash method was removed due to unreliable behavior
     where it would report success but not actually program the device.
+
+    For DA1469x, before ``loadfile`` Commander runs ``rnh`` — brief sleep — ``h`` (disable
+    with ``LAGER_DA1469_PRE_FLASH_RUN_HALT=0``). Post-flash may run the target via GDB then
+    stop the server. Other devices: reconnect GDB server only.
 
     Args:
         files: Tuple of (hexfiles, binfiles, elffiles)
@@ -671,16 +692,18 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
         run_after: Reset and run after flashing (JLinkExe does this automatically)
         mcu: MCU identifier (e.g., 'nRF52833_XXAA')
         use_gdb: DEPRECATED - ignored, always uses JLinkExe
+        script_file: Optional path to J-Link script file (from debug service)
 
     Returns:
         Generator yielding output from flash operation
     """
     from .jlink import JLink
-    from .process import stop_jlink
 
-    # Stop any running GDB server to free the J-Link hardware for JLinkExe
-    # (flash works with or without a running GDB server)
+    # Stop ALL running J-Link processes to free the USB probe for JLinkExe.
+    # Both the legacy path (jlink.pid) and JLinkGDBServer (jlink_gdbserver.pid)
+    # must be stopped; otherwise JLinkExe cannot get exclusive USB access.
     stop_jlink()
+    stop_jlink_gdbserver()
 
     # Give the hardware time to be released
     time.sleep(0.5)
@@ -704,30 +727,55 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
             self.args = args
             self.script_file = script_file
 
-    jlink = TempJLink(jlink_args, script_file=_get_script_file())
+    resolved_script = script_file if (script_file and os.path.exists(script_file)) else _get_script_file()
+    jlink = TempJLink(jlink_args, script_file=resolved_script)
     jlink.__class__ = JLink
 
     yield from jlink.flash(files, preverify, verify)
 
-    # Note: JLinkExe's loadfile command automatically resets and runs the device
-    # Reconnect GDB server after JLinkExe finishes
-    yield "Reconnecting GDB server..."
-
     time.sleep(1.0)  # Give JLinkExe time to fully disconnect
 
-    try:
-        # Use start_jlink() to match the PID file checked by get_jlink_status()
-        from .process import start_jlink
-        cmd_args = [
-            '-nohalt',  # Don't halt after reset
-            '-device', device,
-            '-if', transport,
-            '-speed', speed
-        ]
-        start_jlink(cmd_args)
-        yield "GDB server reconnected"
-    except Exception as e:
-        yield f"Warning: Failed to reconnect GDB server: {e}"
+    is_da1469 = 'DA1469' in (device or '').upper()
+
+    if is_da1469:
+        # DA1469x: issue a software reset via J-Link Commander so the bootrom
+        # re-initialises QSPI, clocks, and cache from scratch.  This mirrors
+        # what the flash_loader GDB template does (write to SYS_CTRL_REG
+        # 0x100C0050) and avoids the fragile start-gdbserver / gdb-reset /
+        # stop-gdbserver dance that left the target in a state where a
+        # subsequent `gdbserver --rtt` attach would freeze the application.
+        yield "DA1469x: resetting target via J-Link Commander..."
+        try:
+            reset_args = ['-device', device, '-if', 'SWD', '-speed', speed]
+            with commander(reset_args, script_file=resolved_script) as jl:
+                jl.run_command('connect')
+                # Disable MPU and MTB so the next debug attach is clean
+                jl.run_command('w4 0xE000ED94 0')   # MPU_CTRL = 0
+                jl.run_command('w4 0xE0043000 0')   # MTB_POSITION = 0
+                jl.run_command('w4 0xE0043004 0')   # MTB_MASTER = 0
+                jl.run_command('w4 0xE0043008 0')   # MTB_FLOW = 0
+                # Software reset via SYS_CTRL_REG — lets bootrom run fully
+                jl.run_command('w4 0x100C0050 1')
+            yield "Target reset — bootrom will reinitialise and boot application"
+        except Exception as e:
+            logger.warning("DA1469x post-flash Commander reset failed: %s", e)
+            yield f"Warning: Could not reset target after flash: {e}"
+    else:
+        # Non-DA1469x: reconnect GDB server so the debug service knows
+        # a server is running for subsequent operations.
+        yield "Reconnecting GDB server..."
+        try:
+            start_jlink_gdbserver(
+                device=device,
+                speed=speed,
+                transport=transport,
+                halt=False,
+                gdb_port=2331,
+                script_file=resolved_script,
+            )
+            yield "GDB server reconnected"
+        except Exception as e:
+            yield f"Warning: Failed to reconnect GDB server: {e}"
 
 
 
