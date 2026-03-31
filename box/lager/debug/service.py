@@ -56,23 +56,54 @@ def _resolve_device_type(net: Dict[str, Any]) -> str:
     return device
 
 
-def _get_script_file(net_name=None):
-    """Return script file path if it exists, reconstructing from NetsCache if needed."""
+def _get_script_file(net=None):
+    """Write J-Link script to temp path and return it, or None.
+
+    When *net* is a dict, prefer (in order): embedded ``jlink_script`` from the
+    request body, then NetsCache by ``net['name']``. Only then fall back to an
+    existing temp file from a previous connect — this avoids stale scripts and
+    fixes erase/flash when the POST body carries the script but NetsCache lags.
+
+    When *net* is a str, treat it as a net name (legacy callers).
+
+    When *net* is None, only return the temp path if it already exists.
+    """
     import os
-    if os.path.exists(JLINK_SCRIPT_TEMP_PATH):
+    import base64
+    from lager.cache import get_nets_cache
+
+    def _write_b64_script(b64: str, source: str) -> str:
+        with open(JLINK_SCRIPT_TEMP_PATH, 'wb') as f:
+            f.write(base64.b64decode(b64))
+        logger.info(f'Wrote J-Link script to {JLINK_SCRIPT_TEMP_PATH} ({source})')
         return JLINK_SCRIPT_TEMP_PATH
-    if net_name:
+
+    if isinstance(net, dict):
+        emb = net.get('jlink_script')
+        if isinstance(emb, str) and emb.strip():
+            try:
+                return _write_b64_script(emb, 'POST net body')
+            except Exception as e:
+                logger.warning(f'Failed to write embedded jlink_script: {e}')
+        name = net.get('name')
+        if name:
+            try:
+                saved = get_nets_cache().find_by_name(name)
+                if saved and saved.get('jlink_script'):
+                    return _write_b64_script(saved['jlink_script'], f'NetsCache:{name}')
+            except Exception as e:
+                logger.warning(f'Failed to reconstruct J-Link script from NetsCache: {e}')
+    elif isinstance(net, str) and net.strip():
         try:
-            import base64
-            from lager.cache import get_nets_cache
-            saved_net = get_nets_cache().find_by_name(net_name)
-            if saved_net and saved_net.get('jlink_script'):
-                with open(JLINK_SCRIPT_TEMP_PATH, 'wb') as f:
-                    f.write(base64.b64decode(saved_net['jlink_script']))
-                logger.info(f'Reconstructed J-Link script from NetsCache for net {net_name}')
-                return JLINK_SCRIPT_TEMP_PATH
+            saved = get_nets_cache().find_by_name(net)
+            if saved and saved.get('jlink_script'):
+                return _write_b64_script(saved['jlink_script'], f'NetsCache:{net}')
         except Exception as e:
             logger.warning(f'Failed to reconstruct J-Link script from NetsCache: {e}')
+
+    if os.path.exists(JLINK_SCRIPT_TEMP_PATH):
+        logger.debug(f'Using existing J-Link script file {JLINK_SCRIPT_TEMP_PATH}')
+        return JLINK_SCRIPT_TEMP_PATH
     return None
 
 
@@ -234,7 +265,12 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             self.send_error_response(500, str(e))
 
     def _get_jlink_script_from_net(self, net):
-        """Look up jlink_script from saved_nets.json via NetsCache."""
+        """Resolve jlink_script: POST net body first, then saved_nets via NetsCache."""
+        if not net:
+            return None
+        embedded = net.get('jlink_script')
+        if isinstance(embedded, str) and embedded.strip():
+            return embedded
         net_name = net.get('name')
         if not net_name:
             return None
@@ -424,8 +460,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             # Use J-Link Commander approach (same as Python API)
             # This avoids the device type resolution issue with the GDB-based approach
             try:
-                net_name = data.get('net', {}).get('name')
-                jlink = JLink(cmdline, script_file=_get_script_file(net_name))
+                jlink = JLink(cmdline, script_file=_get_script_file(data.get('net') or {}))
             except (ValueError, KeyError) as e:
                 logger.error(f"Failed to create JLink from cmdline: {e}")
                 raise JLinkNotRunning()
@@ -446,46 +481,44 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             self.send_error_response(500, str(e))
 
     def handle_flash(self, data: Dict[str, Any]):
-        """Handle debug flash command."""
+        """Handle debug flash command.
+
+        Programming uses JLinkExe (``flash_device``), not GDB. A GDB server is optional:
+        when absent (e.g. immediately after ``/debug/erase`` on DA1469x), we skip GDB health
+        checks and flash anyway.
+        """
         try:
             import base64
             import tempfile
             import os
 
-            # HEALTH CHECK: Verify GDB server is running before flashing
+            net = data.get('net', {})
+            device_type = _resolve_device_type(net)
+
             gdbserver_status = get_jlink_gdbserver_status()
-            if not gdbserver_status['running']:
-                self.send_error_response(400, 'No debugger connection found. Connect first with: lager debug <net> connect')
-                return
+            if gdbserver_status['running']:
+                try:
+                    from lager.debug.gdb import get_controller
+                    gdbmi = get_controller(device=device_type)
 
-            # HEALTH CHECK: Verify target is still responsive via GDB
-            # Note: Some debug probes (e.g., J-Link) don't return 'console' type responses
-            # for 'monitor version', so we make this check informational only.
-            # The J-Link status check above is the primary health indicator.
-            try:
-                net = data.get('net', {})
-                device_type = _resolve_device_type(net)
-                from lager.debug.gdb import get_controller
-                gdbmi = get_controller(device=device_type)
+                    test_responses = gdbmi.write('monitor version', timeout_sec=2.0, raise_error_on_timeout=False)
+                    connection_ok = False
+                    for resp in test_responses:
+                        if resp.get('type') in ('console', 'result', 'done'):
+                            connection_ok = True
+                            break
 
-                # Test connection with a simple monitor command (fast, non-intrusive)
-                # This is primarily to ensure the GDB controller is still alive
-                test_responses = gdbmi.write('monitor version', timeout_sec=2.0, raise_error_on_timeout=False)
-                connection_ok = False
-                for resp in test_responses:
-                    # Accept any non-error response type as success
-                    # J-Link may not return 'console' but will return other response types
-                    if resp.get('type') in ('console', 'result', 'done'):
-                        connection_ok = True
-                        break
+                    if not connection_ok:
+                        logger.warning(
+                            'GDB health check did not return expected response, but continuing since J-Link is running'
+                        )
 
-                if not connection_ok:
-                    # Log warning but don't fail - J-Link is running and that's sufficient
-                    logger.warning('GDB health check did not return expected response, but continuing since J-Link is running')
-
-            except Exception as e:
-                # Log warning but don't fail - if J-Link is running (checked above), flash should work
-                logger.warning(f"GDB health check failed: {e}, but continuing since J-Link is running")
+                except Exception as e:
+                    logger.warning(f'GDB health check failed: {e}, but continuing since J-Link is running')
+            else:
+                logger.info(
+                    '[FLASH] No GDB server; proceeding with JLinkExe-only flash'
+                )
 
             hexfile = data.get('hexfile')
             elffile = data.get('elffile')
@@ -527,7 +560,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                     raise ValueError("No firmware file provided")
 
                 # Ensure J-Link script temp file exists for flash operation
-                _get_script_file(net.get('name'))
+                script_path = _get_script_file(net)
 
                 # Call flash_device with correct parameters
                 # files parameter is a tuple: (hexfiles, binfiles, elffiles)
@@ -535,9 +568,16 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 # Collect all output from the flash_device generator
                 flash_output = []
                 files = (hexfiles, binfiles, elffiles)
-                for output in flash_device(files, run_after=True, mcu=device_type, use_gdb=(not verbose)):
+                for output in flash_device(
+                    files, run_after=True, mcu=device_type, use_gdb=(not verbose), script_file=script_path
+                ):
                     logger.info(f"[FLASH] {output}")  # Log flash progress
                     flash_output.append(output)  # Collect for client
+
+                # DA1469x post-flash may stop JLinkGDBServer; drop stale connection state.
+                if 'DA1469' in device_type.upper():
+                    with connections_lock:
+                        active_connections.clear()
 
                 self.send_json_response(200, {
                     'status': 'flash_complete',
@@ -557,24 +597,33 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             self.send_error_response(500, str(e))
 
     def handle_erase(self, data: Dict[str, Any]):
-        """Handle debug erase command."""
+        """Handle debug erase command.
+
+        chip_erase() stops J-Link processes so JLinkExe can use the probe. Clear
+        active_connections since the GDB server is gone. ``flash`` does not require
+        reconnecting before ``/debug/flash`` (JLinkExe-only).
+        """
         try:
             net = data.get('net', {})
             device_type = _resolve_device_type(net)
             speed = data.get('speed', '4000')
             transport = data.get('transport', 'SWD')
 
-            # Ensure J-Link script temp file exists for erase operation
-            _get_script_file(net.get('name'))
+            script_path = _get_script_file(net)
 
             # chip_erase() returns a generator - must consume it to execute
-            # Collect all output from the erase operation
+            # NOTE: chip_erase() stops running J-Link / JLinkGDBServer so JLinkExe
+            # has exclusive USB access.
             erase_output = list(chip_erase(
                 device=device_type,
                 speed=speed,
                 transport=transport,
-                mcu=None
+                mcu=None,
+                script_file=script_path,
             ))
+
+            with connections_lock:
+                active_connections.clear()
 
             self.send_json_response(200, {
                 'status': 'erase_complete',
@@ -622,8 +671,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
 
             # Create JLink instance from the running GDB server's configuration
             try:
-                net_name = data.get('net', {}).get('name')
-                jlink = JLink(cmdline, script_file=_get_script_file(net_name))
+                jlink = JLink(cmdline, script_file=_get_script_file(data.get('net') or {}))
             except (ValueError, KeyError) as e:
                 logger.error(f"Failed to create JLink from cmdline: {e}")
                 self.send_error_response(500, f"Failed to initialize J-Link: {e}")
