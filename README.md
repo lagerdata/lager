@@ -132,6 +132,13 @@ box/lager/
 ├── exceptions.py           # Unified exception hierarchy
 ├── box_http_server.py      # Main Flask+WebSocket server
 │
+├── mcp/                    # MCP server for AI agent integration
+│   ├── server.py           # FastMCP server (port 8100)
+│   ├── tools/              # Tool implementations (power, debug, spi, etc.)
+│   ├── resources/          # Bench discovery resources
+│   ├── schemas/            # Pydantic models (bench, nets, scenarios)
+│   └── engine/             # Scenario runner, bench loader, capability graph
+│
 ├── dispatchers/            # Shared dispatcher infrastructure
 │   ├── base.py             # BaseDispatcher abstract class
 │   └── helpers.py          # Shared helper functions
@@ -358,6 +365,98 @@ supply.enable()
 tc = Net.get("temp-sensor", type=NetType.Thermocouple)
 print(f"Temperature: {tc.read()}°C")
 ```
+
+---
+
+## MCP Server (AI Agent Integration)
+
+The Lager box includes an **MCP (Model Context Protocol) server** that lets AI coding agents control hardware directly. Any MCP-compatible client — Cursor, Claude Code, Claude Desktop, or custom agents — can connect over HTTP and run hardware operations without writing CLI commands.
+
+### How It Works
+
+```
+AI Agent (Cursor, Claude Code, etc.)
+    |  MCP (streamable-http)
+    v
+Lager MCP Server (on-box, port 8100)
+    |  direct lager.Net API
+    v
+Hardware (power supplies, debug probes, GPIO, protocols, etc.)
+```
+
+The server runs inside the box's Docker container alongside existing services. All hardware operations execute directly on-box — no CLI subprocess calls, no round trips back to the agent.
+
+### Connecting Your Agent
+
+Add the Lager box as an MCP server in your client's configuration. Replace `<box-ip>` with the box's IP address (Tailscale IP, LAN IP, etc.).
+
+**Cursor** — create or edit `.cursor/mcp.json` in your project:
+```json
+{
+  "mcpServers": {
+    "lager": {
+      "url": "http://<box-ip>:8100/mcp"
+    }
+  }
+}
+```
+
+**Claude Code** (CLI):
+```bash
+claude mcp add --transport http lager http://<box-ip>:8100/mcp
+```
+
+**Claude Desktop** — edit `claude_desktop_config.json`:
+```json
+{
+  "mcpServers": {
+    "lager": {
+      "url": "http://<box-ip>:8100/mcp"
+    }
+  }
+}
+```
+
+**Python (programmatic)**:
+```python
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+async with streamablehttp_client("http://<box-ip>:8100/mcp") as (read, write, _):
+    async with ClientSession(read, write) as session:
+        await session.initialize()
+        tools = await session.list_tools()
+        result = await session.call_tool("get_bench_summary", {})
+```
+
+### Recommended Workflow
+
+1. **Discover hardware** — the agent calls `get_bench_summary()` to see available instruments, nets, and capabilities.
+2. **Run scenarios** — use `run_scenario()` with a multi-step test plan. All steps execute on-box in one round trip, keeping latency low.
+3. **Debug interactively** — fine-grained tools (`supply_set_voltage`, `debug_flash`, `spi_transfer`, etc.) are available for one-off operations.
+
+### Verifying the Server
+
+```bash
+# Quick connectivity check from any machine
+curl http://<box-ip>:8100/mcp
+
+# Check logs on the box
+docker exec lager tail -20 /tmp/lager-mcp-server.log
+```
+
+### Available Tools
+
+| Category | Tools |
+|----------|-------|
+| **Discovery** | `get_bench_summary`, `get_capabilities`, `assess_suitability`, `find_candidate_nets` |
+| **Scenarios** | `run_scenario` (multi-step, one round trip), `run_hil_program` (escape hatch) |
+| **Power** | `supply_set_voltage`, `supply_enable`, `supply_measure`, `battery_*`, `eload_*`, `solar_*` |
+| **Debug** | `debug_flash`, `debug_reset`, `debug_connect`, `debug_gdbserver`, `rtt_write`, `rtt_read` |
+| **Communication** | `spi_transfer`, `i2c_scan`, `i2c_read`, `uart_send`, `uart_read` |
+| **Measurement** | `adc_read`, `dac_set`, `gpio_read`, `gpio_set`, `watt_read`, `thermocouple_read` |
+| **Scope** | `scope_enable`, `scope_measure`, `scope_trigger_edge`, `picoscope_capture` |
+| **Other** | `usb_enable`, `webcam_start`, `ble_scan`, `wifi_status`, `router_info`, `flash_firmware` |
 
 ---
 

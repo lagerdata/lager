@@ -17,6 +17,7 @@ box/
     http_handlers/        # Flask HTTP + WebSocket route handlers
     instrument_wrappers/  # Low-level instrument drivers (Keithley, Keysight, Rigol, EA)
     io/                   # ADC, DAC, GPIO (LabJack T7)
+    mcp/                  # MCP server for AI agent integration (port 8100)
     measurement/          # Oscilloscope, thermocouple, watt meter
     nets/                 # Net/device/mux framework (hardware abstraction)
     power/                # Power supply, battery emulator, solar sim, eload
@@ -53,14 +54,19 @@ Boxes are deployed via `lager update` from the CLI. The flow is:
 
 ## Architecture
 
-Each box runs a Flask + WebSocket server (`box_http_server.py`) inside Docker that:
+Each box runs multiple services inside a single Docker container:
 
-1. Receives commands from the CLI over HTTP/WebSocket
-2. Routes commands through dispatchers to the correct hardware driver
-3. Executes operations on connected test equipment
-4. Streams results back to the CLI
+| Service | Port | Purpose |
+|---------|------|---------|
+| Python Execution | 5000 | User script execution (`lager python`) |
+| Hardware Invocation | 8080 | Device method proxy |
+| **MCP Server** | **8100** | **AI agent integration (Cursor, Claude, etc.)** |
+| Debug Service | 8765 | Embedded debugging (GDB, J-Link) |
+| HTTP+WebSocket | 9000 | CLI hardware control (UART, supply, etc.) |
 
-Hardware is accessed through **nets** -- named references to physical connections defined in the box configuration. The dispatcher pattern routes commands to the correct driver based on the net's device type.
+The **MCP server** (`mcp/server.py`) provides direct hardware access to AI coding agents via the Model Context Protocol. It uses the same `lager.Net` API as the CLI but executes everything on-box with no subprocess overhead. See the [main README](../README.md#mcp-server-ai-agent-integration) for agent setup instructions.
+
+Hardware is accessed through **nets** — named references to physical connections defined in the box configuration. The dispatcher pattern routes commands to the correct driver based on the net's device type.
 
 ## License
 
