@@ -166,6 +166,12 @@ from .tools import scope_stream  # noqa: E402, F401
 
 def main():
     """Start the on-box Lager MCP server."""
+    import contextlib
+
+    import uvicorn
+    from starlette.applications import Starlette
+    from starlette.routing import Mount
+
     from .config import MCP_PORT
     from .server_state import init_state
 
@@ -181,7 +187,18 @@ def main():
 
     mcp.settings.host = host
     mcp.settings.port = MCP_PORT
-    mcp.run(transport="streamable-http")
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app: Starlette):
+        async with mcp.session_manager.run():
+            yield
+
+    app = Starlette(
+        routes=[Mount("/", app=mcp.streamable_http_app())],
+        lifespan=lifespan,
+    )
+
+    uvicorn.run(app, host=host, port=MCP_PORT)
 
 
 if __name__ == "__main__":
