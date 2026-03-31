@@ -179,11 +179,9 @@ def main():
     host = os.environ.get("LAGER_MCP_HOST", "0.0.0.0")
     logger.info("Lager MCP server starting on %s:%d (streamable-http)", host, MCP_PORT)
 
-    mcp.run(
-        transport="streamable-http",
-        host=host,
-        port=MCP_PORT,
-    )
+    mcp.settings.host = host
+    mcp.settings.port = MCP_PORT
+    mcp.run(transport="streamable-http")
 
 
 if __name__ == "__main__":
