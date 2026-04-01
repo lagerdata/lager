@@ -873,8 +873,8 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
     log('Stopping containers...', nl=False)
 
     run_ssh_command_with_output(
-        'docker stop $(docker ps -aq) 2>/dev/null || true && '
-        'docker rm $(docker ps -aq) 2>/dev/null || true',
+        'docker stop lager pigpio 2>/dev/null || true && '
+        'docker rm lager pigpio 2>/dev/null || true',
         timeout_secs=30
     )
     log_status('Stopping containers...', 'OK', 'green')
