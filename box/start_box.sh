@@ -120,8 +120,9 @@ fi
 # Ensure authorized_keys.d is writable by the container process (www-data, UID 33).
 # Public keys are not secret so world-writable is acceptable here. The background
 # poller (running as lagerdata) syncs these into ~/.ssh/authorized_keys on each tick.
-mkdir -p /etc/lager/authorized_keys.d
-chmod 777 /etc/lager/authorized_keys.d
+# Use sudo in case /etc/lager is root-owned (common on fresh deployments).
+sudo mkdir -p /etc/lager/authorized_keys.d
+sudo chmod 777 /etc/lager/authorized_keys.d
 
 # Sync SSH keys from /etc/lager/authorized_keys.d/ into ~/.ssh/authorized_keys.
 # Runs as lagerdata (no sudo needed). After the first successful Stout install,
