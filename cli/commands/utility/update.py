@@ -361,14 +361,23 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
         click.echo()
         click.echo('Copying SSH key to box (enter password when prompted):')
         copy_result = subprocess.run(
-            ['ssh-copy-id', '-i', key_file, ssh_host],
+            [
+                'ssh-copy-id',
+                '-o', 'StrictHostKeyChecking=accept-new',
+                '-o', 'ConnectTimeout=30',
+                '-i', key_file,
+                ssh_host,
+            ],
             timeout=300  # 5 minutes - allow time for user to enter password
         )
 
         if copy_result.returncode == 0:
             # Verify key works
             verify_result = subprocess.run(
-                ['ssh', '-i', key_file, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5',
+                ['ssh', '-i', key_file,
+                 '-o', 'BatchMode=yes',
+                 '-o', 'StrictHostKeyChecking=accept-new',
+                 '-o', 'ConnectTimeout=5',
                  ssh_host, 'echo test'],
                 capture_output=True, text=True, timeout=10
             )
@@ -387,7 +396,10 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
         # First try with lager_box key if it exists
         if os.path.exists(key_file):
             result = subprocess.run(
-                ['ssh', '-i', key_file, '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes',
+                ['ssh', '-i', key_file,
+                 '-o', 'ConnectTimeout=5',
+                 '-o', 'BatchMode=yes',
+                 '-o', 'StrictHostKeyChecking=accept-new',
                  ssh_host, 'echo test'],
                 capture_output=True,
                 text=True,
