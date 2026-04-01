@@ -24,13 +24,15 @@ from flask import Flask, jsonify, request
 
 logger = logging.getLogger(__name__)
 
-# Primary path: host's /home/lagerdata/.ssh is bind-mounted here by start_box.sh.
-# Writing here takes effect immediately for SSH connections.
+# Best-effort immediate path: host's /home/lagerdata/.ssh is bind-mounted here by
+# start_box.sh. Writing here takes effect immediately but may fail if the host
+# directory is owned by a different UID (www-data is UID 33, host user may differ).
 _HOST_AUTHORIZED_KEYS = pathlib.Path('/home/www-data/.ssh/authorized_keys')
 
-# Durable record: keys written here survive container restarts.
-# start_box.sh syncs these back into authorized_keys on each start.
-_AUTHORIZED_KEYS_D = pathlib.Path('/etc/lager/authorized_keys.d')
+# Staging area: /tmp is bind-mounted from the host and is always writable by
+# www-data. start_box.sh polls this directory every 5 seconds and syncs any .pub
+# files into ~/.ssh/authorized_keys as lagerdata (which owns that file).
+_AUTHORIZED_KEYS_D = pathlib.Path('/tmp/lager-authorized-keys.d')
 
 _LABEL_RE = re.compile(r'^[a-zA-Z0-9._-]{1,64}$')
 

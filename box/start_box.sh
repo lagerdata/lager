@@ -117,30 +117,33 @@ if [ ! -f /etc/lager/saved_nets.json ]; then
     chmod 666 /etc/lager/saved_nets.json
 fi
 
-# Ensure authorized_keys.d is writable by the container process (www-data, UID 33).
-# Public keys are not secret so world-writable is acceptable here. The background
-# poller (running as lagerdata) syncs these into ~/.ssh/authorized_keys on each tick.
-# Use sudo in case /etc/lager is root-owned (common on fresh deployments).
-sudo mkdir -p /etc/lager/authorized_keys.d
-sudo chmod 777 /etc/lager/authorized_keys.d
+# Create the staging directory for SSH keys written by the container process.
+# /tmp is already bind-mounted into the container so www-data can always write here
+# without needing root. The poller below picks these up every 5 seconds.
+mkdir -p /tmp/lager-authorized-keys.d
 
-# Sync SSH keys from /etc/lager/authorized_keys.d/ into ~/.ssh/authorized_keys.
+# Sync SSH keys into ~/.ssh/authorized_keys.
+# Checks two directories:
+#   /etc/lager/authorized_keys.d  — durable, persists across reboots
+#   /tmp/lager-authorized-keys.d  — staging area written by the container process
+#                                    (www-data can always write to /tmp)
 # Runs as lagerdata (no sudo needed). After the first successful Stout install,
 # systemd units handle this automatically; this is the bootstrap path for first install.
 _sync_authorized_keys() {
-    local keys_dir="/etc/lager/authorized_keys.d"
-    [ -d "$keys_dir" ] || return 0
     local auth_keys="$HOME/.ssh/authorized_keys"
     mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
     touch "$auth_keys" && chmod 600 "$auth_keys"
     local added=0
-    for f in "$keys_dir"/*.pub; do
-        [ -f "$f" ] || continue
-        local key
-        key=$(cat "$f")
-        grep -qxF "$key" "$auth_keys" || { echo "$key" >> "$auth_keys"; added=$((added + 1)); }
+    for keys_dir in "/etc/lager/authorized_keys.d" "/tmp/lager-authorized-keys.d"; do
+        [ -d "$keys_dir" ] || continue
+        for f in "$keys_dir"/*.pub; do
+            [ -f "$f" ] || continue
+            local key
+            key=$(cat "$f")
+            grep -qxF "$key" "$auth_keys" || { echo "$key" >> "$auth_keys"; added=$((added + 1)); }
+        done
     done
-    [ "$added" -gt 0 ] && echo "  Synced $added SSH key(s) from authorized_keys.d"
+    [ "$added" -gt 0 ] && echo "  Synced $added SSH key(s) into authorized_keys"
     return 0
 }
 
