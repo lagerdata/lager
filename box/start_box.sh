@@ -274,6 +274,7 @@ docker run -d \
     -v /sys/devices:/sys/devices:ro \
     -v /var/run/dbus:/var/run/dbus \
     -v /etc/lager:/etc/lager \
+    -v /home/lagerdata/.ssh:/home/www-data/.ssh \
     -v /etc/hostname:/host/etc/hostname:ro \
     -v /opt/SEGGER:/opt/SEGGER:ro \
     -v /opt/picoscope/lib:/opt/picoscope/lib:ro \
