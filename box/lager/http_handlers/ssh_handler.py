@@ -87,8 +87,26 @@ def register_ssh_routes(app: Flask) -> None:
         except ValueError as exc:
             return jsonify({'error': str(exc)}), 400
 
-        # Primary write: /home/www-data/.ssh is bind-mounted from the host's
-        # /home/lagerdata/.ssh by start_box.sh, so this takes effect immediately.
+        # Durable record: write to authorized_keys.d so the key survives a container
+        # restart. start_box.sh syncs this directory into ~/.ssh/authorized_keys on
+        # each boot and via a background poller every 5 seconds while running.
+        # authorized_keys.d is chmod 777 by start_box.sh so the container user can
+        # always write here regardless of the host UID.
+        try:
+            _AUTHORIZED_KEYS_D.mkdir(parents=True, exist_ok=True)
+            pub_file = _AUTHORIZED_KEYS_D / f'{label}.pub'
+            existing_pub = pub_file.read_text().strip() if pub_file.exists() else ''
+            if existing_pub != public_key.strip():
+                pub_file.write_text(public_key.strip() + '\n')
+                logger.info('authorize-key: wrote %s to authorized_keys.d', pub_file.name)
+        except OSError as exc:
+            logger.warning('authorize-key: could not write authorized_keys.d: %s', exc)
+            return jsonify({'error': f'Failed to write key to authorized_keys.d: {exc}'}), 500
+
+        # Best-effort immediate write: /home/www-data/.ssh is bind-mounted from the
+        # host's /home/lagerdata/.ssh. This takes effect instantly for SSH but may
+        # fail if the host directory is owned by a different UID (the poller above
+        # handles that case within ~5 seconds).
         added = False
         try:
             _HOST_AUTHORIZED_KEYS.parent.mkdir(parents=True, exist_ok=True)
@@ -100,20 +118,8 @@ def register_ssh_routes(app: Flask) -> None:
             else:
                 logger.info('authorize-key: key already present in authorized_keys')
         except OSError as exc:
-            logger.warning('authorize-key: could not write authorized_keys: %s', exc)
-            return jsonify({'error': f'Failed to write key: {exc}'}), 500
-
-        # Durable record: write to authorized_keys.d so the key survives a container
-        # restart (start_box.sh syncs this directory back into authorized_keys on boot).
-        try:
-            _AUTHORIZED_KEYS_D.mkdir(parents=True, exist_ok=True)
-            pub_file = _AUTHORIZED_KEYS_D / f'{label}.pub'
-            existing_pub = pub_file.read_text().strip() if pub_file.exists() else ''
-            if existing_pub != public_key.strip():
-                pub_file.write_text(public_key.strip() + '\n')
-                logger.info('authorize-key: wrote %s to authorized_keys.d', pub_file.name)
-        except OSError as exc:
-            # Non-fatal: authorized_keys was already updated above.
-            logger.warning('authorize-key: could not write authorized_keys.d: %s', exc)
+            logger.warning(
+                'authorize-key: could not write authorized_keys directly (will sync via poller): %s', exc
+            )
 
         return jsonify({'authorized': True, 'added': added, 'label': label})
