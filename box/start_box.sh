@@ -117,10 +117,9 @@ if [ ! -f /etc/lager/saved_nets.json ]; then
     chmod 666 /etc/lager/saved_nets.json
 fi
 
-# Create the staging directory for SSH keys written by the container process.
-# /tmp is already bind-mounted into the container so www-data can always write here
-# without needing root. The poller below picks these up every 5 seconds.
-mkdir -p /tmp/lager-authorized-keys.d
+# /tmp/lager-authorized-keys.d is created on demand by the container process (www-data).
+# /tmp is 1777 on the host so www-data can create the directory there and own it.
+# The poller below reads it as lagerdata (which has "other" read access).
 
 # Sync SSH keys into ~/.ssh/authorized_keys.
 # Checks two directories:
