@@ -44,6 +44,12 @@ class NetDescriptor(BaseModel):
     channel: str = ""
     params: dict[str, Any] = Field(default_factory=dict)
 
+    # User-provided metadata (from saved_nets.json or bench.json overrides)
+    description: str = ""
+    dut_connection: str = ""
+    test_hints: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+
 
 class InterfaceDescriptor(BaseModel):
     """

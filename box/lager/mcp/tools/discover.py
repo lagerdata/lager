@@ -25,6 +25,20 @@ def get_bench_summary() -> str:
     for node in graph.nodes:
         role_counts[node.role.value] = role_counts.get(node.role.value, 0) + 1
 
+    nets_out = []
+    for n in bench.nets:
+        entry: dict = {
+            "name": n.name,
+            "type": n.net_type,
+            "instrument": n.instrument,
+            "roles": n.roles,
+        }
+        if n.description:
+            entry["description"] = n.description
+        if n.tags:
+            entry["tags"] = n.tags
+        nets_out.append(entry)
+
     summary: dict = {
         "box_id": bench.box_id,
         "hostname": bench.hostname,
@@ -37,10 +51,7 @@ def get_bench_summary() -> str:
             {"name": i.name, "type": i.instrument_type, "connection": i.connection}
             for i in bench.instruments
         ],
-        "nets": [
-            {"name": n.name, "type": n.net_type, "instrument": n.instrument, "roles": n.roles}
-            for n in bench.nets
-        ],
+        "nets": nets_out,
         "interfaces": [
             {"name": i.name, "protocol": i.protocol, "roles": i.roles}
             for i in bench.interfaces
@@ -62,19 +73,12 @@ def get_bench_summary() -> str:
 
 
 @mcp.tool()
-def get_capabilities() -> str:
-    """Get the full capability graph for this bench.
-
-    Each node describes a specific role (e.g., source_power, protocol_master)
-    bound to a specific net or interface, with a confidence score.
-    """
-    graph = get_capability_graph()
-    return graph.model_dump_json(indent=2)
-
-
-@mcp.tool()
 def get_net_details(net_name: str) -> str:
-    """Get detailed information about a specific net.
+    """Get detailed information about a specific net, including metadata.
+
+    Returns all fields: type, instrument, channel, params, electrical
+    metadata, safety limits, and user-provided metadata (description,
+    dut_connection, test_hints, tags).
 
     Args:
         net_name: The net name (e.g., 'psu1', 'spi0', 'debug1')
@@ -96,45 +100,6 @@ def get_net_details(net_name: str) -> str:
 
 
 @mcp.tool()
-def get_interface_details(interface_name: str) -> str:
-    """Get detailed information about a protocol interface.
-
-    Args:
-        interface_name: Interface name (e.g., 'spi0', 'i2c1', 'uart0')
-    """
-    bench = get_bench()
-    graph = get_capability_graph()
-
-    for iface in bench.interfaces:
-        if iface.name == interface_name:
-            caps = graph.by_target(interface_name)
-            return json.dumps(
-                {
-                    **iface.model_dump(exclude_none=True),
-                    "capabilities": [c.model_dump() for c in caps],
-                },
-                indent=2,
-            )
-    return json.dumps({"error": f"Interface '{interface_name}' not found."})
-
-
-@mcp.tool()
-def infer_test_requirements(test_description: str) -> str:
-    """Infer what bench capabilities are needed for a given test.
-
-    Given a natural-language test description, returns required,
-    recommended, and optional capabilities.
-
-    Args:
-        test_description: Description of the test (e.g., "QSPI flash driver validation")
-    """
-    from ..engine.heuristic_engine import infer_requirements
-
-    req = infer_requirements(test_description)
-    return req.model_dump_json(indent=2)
-
-
-@mcp.tool()
 def assess_suitability(test_type: str) -> str:
     """Assess whether this bench can run a given test type.
 
@@ -149,28 +114,3 @@ def assess_suitability(test_type: str) -> str:
 
     report = assess_bench_suitability(test_type)
     return report.model_dump_json(indent=2)
-
-
-@mcp.tool()
-def find_candidate_nets(role: str) -> str:
-    """Find nets that can serve a given capability role.
-
-    Args:
-        role: Capability role to search for (e.g., "source_power",
-              "protocol_master", "flash_firmware", "capture_waveform")
-    """
-    from ..schemas.capability import CapabilityRole
-
-    graph = get_capability_graph()
-
-    try:
-        cap_role = CapabilityRole(role)
-    except ValueError:
-        return json.dumps({"error": f"Unknown role: '{role}'", "valid_roles": [r.value for r in CapabilityRole]})
-
-    nodes = graph.by_role(cap_role)
-    results = [
-        {"target": n.target, "confidence": n.confidence, "parameters": n.parameters, "notes": n.notes}
-        for n in nodes
-    ]
-    return json.dumps({"role": role, "candidates": results}, indent=2)

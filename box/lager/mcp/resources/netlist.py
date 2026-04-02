@@ -13,7 +13,10 @@ from ..server_state import get_bench
 def register(mcp):
     @mcp.resource("lager://bench/netlist")
     def bench_netlist() -> str:
-        """All nets on the bench with type, roles, instrument, and limits."""
+        """All nets on the bench with type, roles, instrument, metadata, and limits."""
         bench = get_bench()
-        nets = [n.model_dump(exclude_none=True) for n in bench.nets]
+        nets = [
+            {k: v for k, v in n.model_dump(exclude_none=True).items() if v != "" and v != []}
+            for n in bench.nets
+        ]
         return json.dumps(nets, indent=2)

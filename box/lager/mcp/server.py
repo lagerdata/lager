@@ -28,13 +28,12 @@ Cursor MCP configuration:
     }
 
 Primary workflow:
-    1. Agent reads lager://bench/* resources to understand hardware
-    2. Agent calls run_scenario() with a multi-step test plan
-    3. ALL steps execute on-box in sequence — one round trip total
-    4. Agent analyzes structured results and iterates
-
-Fine-grained tools (supply_*, debug_*, spi_*, etc.) exist for
-interactive debugging but each one costs an agent round trip.
+    1. Agent reads lager://guide/overview and calls get_bench_summary()
+    2. Agent calls plan_firmware_test() with firmware description + goals
+    3. Agent calls get_api_reference() / get_test_example() to learn the API
+    4. Agent writes a Python test script using ``from lager import Net, NetType``
+    5. Agent calls run_test_script() — script executes on-box, results come back
+    6. Agent analyzes results, iterates
 """
 
 from __future__ import annotations
@@ -90,18 +89,22 @@ def run_lager(*args: str, timeout: int = 60) -> str:
 mcp = FastMCP(
     "lager",
     instructions=(
-        "Lager MCP server — runs on a Lager box with direct hardware access. "
-        "This server is scoped to a single hardware-in-the-loop bench.\n\n"
-        "WORKFLOW:\n"
-        "1. Use get_bench_summary() to understand available hardware\n"
-        "2. Use assess_suitability() to check if the bench can run your test\n"
-        "3. Use run_scenario() for multi-step operations — this executes ALL "
-        "steps on-box with no round trips, keeping latency low\n"
-        "4. Use fine-grained tools (supply_*, debug_*, spi_*) only for "
-        "one-off debugging, not for production test sequences\n\n"
-        "IMPORTANT: Prefer run_scenario() over sequential fine-grained tool "
-        "calls. A scenario with 10 hardware steps runs in one round trip. "
-        "10 fine-grained calls would cost 10 round trips."
+        "You are connected to a Lager hardware-in-the-loop test bench. "
+        "Your job is to help validate firmware by writing and running "
+        "Python test scripts on the box.\n\n"
+        "START by reading lager://guide/overview and calling "
+        "get_bench_summary(). This tells you what hardware is available.\n\n"
+        "TO TEST FIRMWARE: Call plan_firmware_test() with what the firmware "
+        "does and what you want to validate. Then write a Python script "
+        "using the lager API — call get_api_reference() for the relevant "
+        "net types. Run it with run_test_script(). Analyse the output "
+        "and iterate.\n\n"
+        "YOUR TEST SCRIPTS RUN DIRECTLY ON THE BOX with access to "
+        "'from lager import Net, NetType' and all connected hardware. "
+        "Write them like you would any Python test — the box is the "
+        "test runner.\n\n"
+        "QUICK DEBUG: Use quick_read(net) / quick_write(net, value) for "
+        "spot-checks without writing a full script."
     ),
 )
 
@@ -110,55 +113,33 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 
 from .resources import bench_identity  # noqa: E402
-from .resources import bench_capabilities  # noqa: E402
 from .resources import netlist  # noqa: E402
 from .resources import interfaces  # noqa: E402
-from .resources import safety_constraints  # noqa: E402
+from .resources import guide  # noqa: E402
 
 bench_identity.register(mcp)
-bench_capabilities.register(mcp)
 netlist.register(mcp)
 interfaces.register(mcp)
-safety_constraints.register(mcp)
+guide.register(mcp)
 
 # ---------------------------------------------------------------------------
-# Register tools — coarse-grained (primary) + fine-grained (debug)
+# Register tools
 # ---------------------------------------------------------------------------
 
-# Coarse-grained: discovery, scenarios, firmware, observation
+# Discovery — understand what's on this bench
 from .tools import discover  # noqa: E402, F401
+
+# Test authoring guidance — API docs, examples, test planning
+from .tools import authoring  # noqa: E402, F401
+
+# Script execution — the primary way to run tests
 from .tools import scenario  # noqa: E402, F401
-from .tools import firmware  # noqa: E402, F401
-from .tools import observe  # noqa: E402, F401
 
-# Fine-grained: direct hardware access (each call = one agent round trip)
-from .tools import power  # noqa: E402, F401
-from .tools import debug  # noqa: E402, F401
-from .tools import uart  # noqa: E402, F401
-from .tools import spi  # noqa: E402, F401
-from .tools import i2c  # noqa: E402, F401
+# Quick debug tools — interactive spot-checks
+from .tools import quick  # noqa: E402, F401
+
+# Box health
 from .tools import box  # noqa: E402, F401
-from .tools import measurement  # noqa: E402, F401
-from .tools import usb  # noqa: E402, F401
-from .tools import battery  # noqa: E402, F401
-from .tools import eload  # noqa: E402, F401
-from .tools import scope  # noqa: E402, F401
-from .tools import logic  # noqa: E402, F401
-
-# Converted from run_lager() → direct on-box API
-from .tools import solar  # noqa: E402, F401
-from .tools import arm  # noqa: E402, F401
-from .tools import webcam  # noqa: E402, F401
-from .tools import ble  # noqa: E402, F401
-from .tools import blufi  # noqa: E402, F401
-from .tools import wifi  # noqa: E402, F401
-
-# New tool modules (NetTypes with no prior coverage)
-from .tools import energy  # noqa: E402, F401
-from .tools import router  # noqa: E402, F401
-
-# PicoScope streaming (daemon-based, separate from Rigol scope tools)
-from .tools import scope_stream  # noqa: E402, F401
 
 # ---------------------------------------------------------------------------
 # Entry point

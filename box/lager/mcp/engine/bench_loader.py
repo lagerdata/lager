@@ -188,6 +188,10 @@ def _net_from_raw(raw: dict[str, Any]) -> NetDescriptor:
         instrument=instrument,
         channel=channel,
         params=raw.get("params", {}),
+        description=raw.get("description", ""),
+        dut_connection=raw.get("dut_connection", ""),
+        test_hints=raw.get("test_hints", []),
+        tags=raw.get("tags", []),
     )
 
 
@@ -372,6 +376,14 @@ def _assemble(
                 nd.voltage_domain = VoltageRange(**ovr["voltage_domain"])
             if "safety_limits" in ovr:
                 nd.safety_limits = SafetyLimits(**ovr["safety_limits"])
+            if "description" in ovr:
+                nd.description = ovr["description"]
+            if "dut_connection" in ovr:
+                nd.dut_connection = ovr["dut_connection"]
+            if "test_hints" in ovr:
+                nd.test_hints = ovr["test_hints"]
+            if "tags" in ovr:
+                nd.tags = ovr["tags"]
 
     # Instruments
     instruments = [

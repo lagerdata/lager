@@ -212,6 +212,10 @@ class Net:
     addr: str
     saved: bool = False
     has_script: bool = False
+    description: str = ""
+    dut_connection: str = ""
+    test_hints: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
     _uid: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -869,6 +873,7 @@ class NetActionDialog(Screen):
             with Horizontal(classes="dialog-buttons"):
                 yield Button("Cancel", id="cancel")
                 yield Button("Rename", id="rename", variant="primary")
+                yield Button("Edit Details", id="edit_details", variant="primary")
                 yield Button("Delete", id="delete", variant="error")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -883,10 +888,111 @@ class NetActionDialog(Screen):
             app.push_screen(RenameDialog(self.net))
             return
 
+        if event.button.id == "edit_details":
+            app.pop_screen()
+            app.push_screen(EditDetailsDialog(self.net))
+            return
+
         if event.button.id == "delete":
             app.pop_screen()
             app.push_screen(ConfirmDelete(self.net))
             return
+
+
+class EditDetailsDialog(Screen):
+    """Dialog for editing net metadata (description, DUT connection, hints, tags)."""
+
+    def __init__(self, net: Net) -> None:
+        super().__init__()
+        self.net = net
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Static("Edit Net Details", classes="dialog-title")
+            yield Static(
+                f"Net: {self.net.net}  ({self.net.type.upper()})",
+                classes="dialog-content",
+            )
+            yield Label("Description:")
+            self.desc_input = Input(
+                placeholder="e.g., SPI flash (W25Q128) on DUT main board",
+                id="desc_input",
+                value=self.net.description,
+            )
+            yield self.desc_input
+
+            yield Label("DUT Connection:")
+            self.dut_input = Input(
+                placeholder="e.g., MCU SPI1 peripheral (PA5-PA7, CS on PA4)",
+                id="dut_input",
+                value=self.net.dut_connection,
+            )
+            yield self.dut_input
+
+            yield Label("Test Hints (one per line, comma-separated):")
+            self.hints_input = Input(
+                placeholder="e.g., Read JEDEC ID, Write/readback pattern",
+                id="hints_input",
+                value=", ".join(self.net.test_hints),
+            )
+            yield self.hints_input
+
+            yield Label("Tags (comma-separated):")
+            self.tags_input = Input(
+                placeholder="e.g., flash, storage, boot-critical",
+                id="tags_input",
+                value=", ".join(self.net.tags),
+            )
+            yield self.tags_input
+
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Cancel", id="cancel")
+                yield Button("Save", id="save_details", variant="success")
+
+    def on_mount(self) -> None:
+        self.desc_input.focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        app: NetApp = self.app  # type: ignore[attr-defined]
+
+        if event.button.id == "cancel":
+            app.pop_screen()
+            return
+
+        description = self.desc_input.value.strip()
+        dut_connection = self.dut_input.value.strip()
+        hints_raw = self.hints_input.value.strip()
+        tags_raw = self.tags_input.value.strip()
+
+        test_hints = [h.strip() for h in hints_raw.split(",") if h.strip()] if hints_raw else []
+        tags = [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else []
+
+        self.net.description = description
+        self.net.dut_connection = dut_connection
+        self.net.test_hints = test_hints
+        self.net.tags = tags
+
+        net_data = {
+            "name": self.net.net,
+            "role": self.net.type,
+            "address": self.net.addr,
+            "instrument": self.net.instrument,
+            "pin": self.net.chan,
+            "description": description,
+            "dut_connection": dut_connection,
+            "test_hints": test_hints,
+            "tags": tags,
+        }
+
+        try:
+            _run_script(app.ctx, "net.py", app.dut, "save", json.dumps(net_data))
+            app.show_success(f"Updated details for net '{self.net.net}'")
+        except Exception as e:
+            app.show_error(f"Failed to save details: {str(e)}")
+
+        app._sync_saved_from_disk()
+        app._refresh_table()
+        app.pop_screen()
 
 
 class ConfirmDelete(Screen):
@@ -1896,6 +2002,10 @@ class NetApp(App):
                 addr=rec.get("address", "NA"),
                 saved=True,
                 has_script=bool(rec.get("jlink_script")),
+                description=rec.get("description", ""),
+                dut_connection=rec.get("dut_connection", ""),
+                test_hints=rec.get("test_hints", []),
+                tags=rec.get("tags", []),
             ) for rec in saved_from_disk
         ]
         self._ensure_autogen_unsaved()
@@ -2098,6 +2208,10 @@ def launch_tui(ctx: click.Context, dut: str) -> None:
             addr=rec.get("address", "NA"),
             saved=True,
             has_script=bool(rec.get("jlink_script")),
+            description=rec.get("description", ""),
+            dut_connection=rec.get("dut_connection", ""),
+            test_hints=rec.get("test_hints", []),
+            tags=rec.get("tags", []),
         ))
 
     # Now generate auto-names for new devices, continuing from highest saved number
