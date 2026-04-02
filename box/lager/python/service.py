@@ -48,6 +48,14 @@ SERVICE_HOST = '0.0.0.0'  # Listen on all interfaces
 SERVICE_PORT = 5000
 SERVICE_VERSION = '1.0.0'
 
+# Directories from which files may be downloaded.
+# Paths outside this allowlist are rejected regardless of traversal techniques.
+ALLOWED_DOWNLOAD_ROOTS = (
+    '/tmp/lager-output',
+    '/tmp/lager-results',
+    '/tmp/lager-job-output',
+)
+
 
 def is_truthy_string(s):
     """Check if a string represents a truthy value"""
@@ -198,13 +206,19 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
 
         filename = query_params['filename'][0]
 
-        # Security check: prevent path traversal attacks
-        if '..' in filename:
-            self.send_error_response(400, 'Invalid filename: path traversal not allowed')
-            return
-
-        # Get absolute path
+        # Resolve to absolute path first — eliminates all traversal sequences
+        # including '..' components and absolute paths pointing at sensitive locations.
         abs_filename = os.path.abspath(filename)
+
+        # Allowlist check: the resolved path must reside under a permitted root.
+        # The os.sep suffix prevents /tmp/lager-output-evil from matching /tmp/lager-output.
+        if not any(
+            abs_filename == root or abs_filename.startswith(root + os.sep)
+            for root in ALLOWED_DOWNLOAD_ROOTS
+        ):
+            logger.warning(f"download-file: rejected path outside allowlist: {abs_filename!r}")
+            self.send_error_response(403, 'Access to this path is not permitted')
+            return
 
         # Check if file exists
         if not os.path.exists(abs_filename):
