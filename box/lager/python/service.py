@@ -78,6 +78,10 @@ def is_truthy_string(s):
 class PythonServiceHandler(BaseHTTPRequestHandler):
     """HTTP request handler for Python execution service"""
 
+    def address_string(self):
+        """Return raw IP instead of resolving hostname — avoids reverse DNS timeouts."""
+        return self.client_address[0]
+
     def log_message(self, format, *args):
         """Override to use our logger"""
         logger.info(format % args)
