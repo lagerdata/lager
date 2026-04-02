@@ -16,6 +16,8 @@ Keys are written to two places:
 Both writes are idempotent: if the key already exists it is not duplicated.
 """
 
+import hmac
+import json
 import logging
 import pathlib
 import re
@@ -35,6 +37,29 @@ _HOST_AUTHORIZED_KEYS = pathlib.Path('/home/www-data/.ssh/authorized_keys')
 _AUTHORIZED_KEYS_D = pathlib.Path('/tmp/lager-authorized-keys.d')
 
 _LABEL_RE = re.compile(r'^[a-zA-Z0-9._-]{1,64}$')
+
+_CONTROL_PLANE_CONFIG_PATH = pathlib.Path('/etc/lager/control_plane.json')
+
+
+def _get_authorize_token() -> str | None:
+    """Read authorize_token from control_plane.json. Returns None if missing or unreadable."""
+    try:
+        data = json.loads(_CONTROL_PLANE_CONFIG_PATH.read_text())
+        token = data.get('authorize_token')
+        return token if isinstance(token, str) and token else None
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+
+
+# Matches a valid OpenSSH public key:
+#   <key-type> <base64-blob> [optional comment with no newlines]
+# Key types: the four standard types plus sk- (FIDO2) variants.
+_SSH_KEY_RE = re.compile(
+    r'^(?:ssh-(?:rsa|dss|ed25519|ed25519-sk)|'
+    r'ecdsa-sha2-nistp(?:256|384|521)(?:-sk)?)'
+    r'\s+[A-Za-z0-9+/]+=*'
+    r'(?:\s+[^\r\n]*)?$'
+)
 
 
 def _safe_label(label: str) -> str:
@@ -77,12 +102,32 @@ def register_ssh_routes(app: Flask) -> None:
           400  { "error": "..." }  — bad request
           500  { "error": "..." }  — filesystem error
         """
+        # Authenticate: require a Bearer token matching the authorize_token in
+        # control_plane.json. Use hmac.compare_digest for timing-safe comparison.
+        auth_header = request.headers.get('Authorization', '')
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'error': 'Authorization required'}), 401
+
+        provided_token = auth_header[len('Bearer '):]
+        expected_token = _get_authorize_token()
+
+        if not expected_token:
+            logger.warning('authorize-key: control_plane.json missing or has no authorize_token')
+            return jsonify({'error': 'Box not configured for authenticated key authorization'}), 503
+
+        if not hmac.compare_digest(provided_token, expected_token):
+            logger.warning('authorize-key: Bearer token mismatch — rejecting request')
+            return jsonify({'error': 'Invalid authorization token'}), 401
+
         data = request.get_json(silent=True) or {}
         public_key = (data.get('public_key') or '').strip()
         label_raw = (data.get('label') or 'remote-key').strip()
 
         if not public_key:
             return jsonify({'error': 'public_key is required'}), 400
+
+        if not _SSH_KEY_RE.match(public_key):
+            return jsonify({'error': 'public_key must be a valid OpenSSH public key'}), 400
 
         try:
             label = _safe_label(label_raw)
