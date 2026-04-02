@@ -2,6 +2,22 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.15.0] - 2026-04-02
+
+### Added
+- `lager boxes lock` now accepts a `--user` flag to lock as a specific username, useful when running inside a Docker container where the effective user would otherwise be `root`
+
+### Changed
+- `lager boxes` now shows a warning when any box is locked as `root`, with instructions to use `--user` or `lager defaults add --user`
+- `LAGER_USER` environment variable is now the highest-priority source when determining the lager user for lock operations (before `~/.lager` config and the OS username)
+- Lock output and error messages now display the user's email address when available. External tools that lock boxes using the `<tool>:<id>:<email>` lock format will have their email extracted and shown rather than the raw lock string
+- `lager update` SSH operations now use `StrictHostKeyChecking=accept-new` to avoid host-key prompts on first connection to a new box
+- `lager update` Docker rebuild step now correctly passes the explicit SSH key file when one is in use
+- `lager update` stop/remove step now targets the `lager` and `pigpio` containers by name instead of stopping all running containers
+
+### Removed
+- `lager boxes connect` command
+
 ## [0.14.4] - 2026-03-31
 
 ### Changed
