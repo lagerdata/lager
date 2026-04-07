@@ -2,6 +2,11 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.15.1] - 2026-04-07
+
+### Fixed
+- DA1469x post-flash reset now uses GDB-based reset instead of J-Link Commander register writes, fixing unreliable behavior on DA1469x targets after flashing. The target is reset via `gdb_reset(halt=False)` and the GDB server is stopped so the application runs freely.
+
 ## [0.15.0] - 2026-04-02
 
 ### Added
