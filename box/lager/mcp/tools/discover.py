@@ -12,14 +12,31 @@ from ..server_state import get_bench, get_capability_graph
 
 
 @mcp.tool()
-def get_bench_summary() -> str:
-    """Get a summary of this Lager box: ID, DUT, instruments, nets, and capability overview.
+def discover_bench(net_name: str | None = None) -> str:
+    """Discover hardware on this bench.
 
-    Use this as the first step to understand what hardware is available.
-    No parameters needed -- the server is scoped to one box.
+    Without arguments, returns a summary: box ID, DUT slots, instruments,
+    nets, interfaces, and capability counts.  With a net_name, returns
+    full metadata and capabilities for that specific net.
+
+    Args:
+        net_name: Optional net to inspect (e.g. 'psu1', 'spi0').
     """
     bench = get_bench()
     graph = get_capability_graph()
+
+    if net_name is not None:
+        for net in bench.nets:
+            if net.name == net_name:
+                caps = graph.by_target(net_name)
+                return json.dumps(
+                    {
+                        **net.model_dump(exclude_none=True),
+                        "capabilities": [c.model_dump() for c in caps],
+                    },
+                    indent=2,
+                )
+        return json.dumps({"error": f"Net '{net_name}' not found."})
 
     role_counts: dict[str, int] = {}
     for node in graph.nodes:
@@ -65,7 +82,7 @@ def get_bench_summary() -> str:
             "No nets configured on this box. Hardware tools will not work until "
             "nets are registered. Ask the user to run 'lager nets add-all' on "
             "the box (or 'lager nets add <name>' for individual nets) to "
-            "auto-discover connected instruments, then call get_bench_summary() "
+            "auto-discover connected instruments, then call discover_bench() "
             "again."
         )
 
@@ -73,42 +90,15 @@ def get_bench_summary() -> str:
 
 
 @mcp.tool()
-def get_net_details(net_name: str) -> str:
-    """Get detailed information about a specific net, including metadata.
-
-    Returns all fields: type, instrument, channel, params, electrical
-    metadata, safety limits, and user-provided metadata (description,
-    dut_connection, test_hints, tags).
-
-    Args:
-        net_name: The net name (e.g., 'psu1', 'spi0', 'debug1')
-    """
-    bench = get_bench()
-    graph = get_capability_graph()
-
-    for net in bench.nets:
-        if net.name == net_name:
-            caps = graph.by_target(net_name)
-            return json.dumps(
-                {
-                    **net.model_dump(exclude_none=True),
-                    "capabilities": [c.model_dump() for c in caps],
-                },
-                indent=2,
-            )
-    return json.dumps({"error": f"Net '{net_name}' not found."})
-
-
-@mcp.tool()
 def assess_suitability(test_type: str) -> str:
     """Assess whether this bench can run a given test type.
 
-    Returns a suitability report with matched/missing capabilities,
-    candidate nets, substitutions, confidence, and explanation.
+    Returns matched/missing capabilities, candidate nets, substitutions,
+    confidence, and explanation.
 
     Args:
-        test_type: Test type key (e.g., "qspi_flash_driver", "spi_slave_validation",
-                   "battery_discharge") or a free-form test description.
+        test_type: Test type key (e.g. "qspi_flash_driver", "battery_discharge")
+                   or a free-form test description.
     """
     from ..engine.heuristic_engine import assess_bench_suitability
 

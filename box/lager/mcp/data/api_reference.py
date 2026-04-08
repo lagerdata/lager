@@ -4,7 +4,8 @@
 """
 Structured API reference for the lager.Net Python API, organised by NetType.
 
-Used by the ``get_api_reference`` MCP tool to teach agents how to write
+Exposed via the ``lager://reference/{net_type}`` MCP resource template
+and consumed by ``plan_firmware_test`` to teach agents how to write
 on-box test scripts.  Every entry is hand-curated from the real driver
 implementations in ``box/lager/``.
 """

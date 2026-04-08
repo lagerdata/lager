@@ -86,7 +86,7 @@ class TestGPIOButtonProofScenario:
     to real hardware I/O via the ``lager`` SDK.
 
     Agent workflow:
-    1. get_bench_summary() -> learn what's on the box (1 call)
+    1. discover_bench() -> learn what's on the box (1 call)
     2. assess_suitability("gpio_button_validation") -> can this box do it? (1 call)
     3. run_scenario({...}) -> actuate + confirm via GPI + DUT CLI (1 call)
 
@@ -214,7 +214,7 @@ class TestGPIOButtonProofScenario:
     def test_round_trip_count(self):
         """The core workflow uses <= 3 MCP-level calls."""
         calls = [
-            "get_bench_summary",
+            "discover_bench",
             "assess_suitability",
             "run_scenario",
         ]

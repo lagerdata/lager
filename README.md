@@ -426,12 +426,12 @@ async with streamablehttp_client("http://<box-ip>:8100/mcp") as (read, write, _)
     async with ClientSession(read, write) as session:
         await session.initialize()
         tools = await session.list_tools()
-        result = await session.call_tool("get_bench_summary", {})
+        result = await session.call_tool("discover_bench", {})
 ```
 
 ### Recommended Workflow
 
-1. **Discover hardware** — the agent calls `get_bench_summary()` to see available instruments, nets, and capabilities.
+1. **Discover hardware** — the agent calls `discover_bench()` to see available instruments, nets, and capabilities.
 2. **Run scenarios** — use `run_scenario()` with a multi-step test plan. All steps execute on-box in one round trip, keeping latency low.
 3. **Debug interactively** — fine-grained tools (`supply_set_voltage`, `debug_flash`, `spi_transfer`, etc.) are available for one-off operations.
 
@@ -449,7 +449,7 @@ docker exec lager tail -20 /tmp/lager-mcp-server.log
 
 | Category | Tools |
 |----------|-------|
-| **Discovery** | `get_bench_summary`, `get_capabilities`, `assess_suitability`, `find_candidate_nets` |
+| **Discovery** | `discover_bench`, `assess_suitability` |
 | **Scenarios** | `run_scenario` (multi-step, one round trip), `run_hil_program` (escape hatch) |
 | **Power** | `supply_set_voltage`, `supply_enable`, `supply_measure`, `battery_*`, `eload_*`, `solar_*` |
 | **Debug** | `debug_flash`, `debug_reset`, `debug_connect`, `debug_gdbserver`, `rtt_write`, `rtt_read` |

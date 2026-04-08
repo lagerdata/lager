@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""MCP tools for box health and status (on-box, no CLI subprocess)."""
+"""MCP tool for box health and configuration management."""
 
 import json
 
@@ -9,90 +9,40 @@ from ..server import mcp
 
 
 @mcp.tool()
-def box_health() -> str:
-    """Check that the box and MCP server are healthy.
+def box_manage(action: str = "health") -> str:
+    """Check box health or reload bench configuration.
 
-    Returns box ID, version, service status, and net count.
-    Use this as a quick connectivity test before running operations.
+    Args:
+        action: "health" returns box ID, version, and net/instrument counts.
+                "reload" re-reads config from disk and rebuilds the capability graph.
     """
-    from ..config import get_box_id, get_box_version
-    from ..server_state import get_bench
+    if action == "health":
+        from ..config import get_box_id, get_box_version
+        from ..server_state import get_bench
 
-    bench = get_bench()
-    return json.dumps({
-        "status": "ok",
-        "box_id": get_box_id(),
-        "version": get_box_version(),
-        "nets": len(bench.nets),
-        "instruments": len(bench.instruments),
-    })
+        bench = get_bench()
+        return json.dumps({
+            "status": "ok",
+            "box_id": get_box_id(),
+            "version": get_box_version(),
+            "nets": len(bench.nets),
+            "instruments": len(bench.instruments),
+        })
 
+    elif action == "reload":
+        from ..server_state import reload_bench
 
-@mcp.tool()
-def list_nets() -> str:
-    """List all configured nets (hardware connections) on this box.
+        reload_bench()
+        from ..server_state import get_bench, get_capability_graph
 
-    Nets are named references to physical hardware connections:
-    power supplies, debug probes, UART ports, SPI/I2C buses,
-    GPIO pins, ADC channels, etc.
-    """
-    from ..server_state import get_bench
+        bench = get_bench()
+        graph = get_capability_graph()
+        return json.dumps({
+            "status": "ok",
+            "nets": len(bench.nets),
+            "instruments": len(bench.instruments),
+            "capabilities": len(graph.nodes),
+        })
 
-    bench = get_bench()
-    nets = [
-        {"name": n.name, "type": n.net_type, "instrument": n.instrument, "channel": n.channel}
-        for n in bench.nets
-    ]
-    result: dict = {"status": "ok", "nets": nets, "count": len(nets)}
-    if not nets:
-        result["warning"] = (
-            "No nets configured. Run 'lager nets add-all' on the box to "
-            "auto-discover connected instruments, then call "
-            "reload_bench_config() to refresh."
-        )
-    return json.dumps(result, indent=2)
-
-
-@mcp.tool()
-def list_instruments() -> str:
-    """List all hardware instruments attached to this box.
-
-    Shows instrument types (LabJack, Rigol, Aardvark, etc.),
-    their connection strings, and channels.
-    """
-    from ..server_state import get_bench
-
-    bench = get_bench()
-    instruments = [
-        {
-            "name": i.name,
-            "type": i.instrument_type,
-            "connection": i.connection,
-            "channels": i.channels,
-        }
-        for i in bench.instruments
-    ]
-    return json.dumps({"status": "ok", "instruments": instruments, "count": len(instruments)}, indent=2)
-
-
-@mcp.tool()
-def reload_bench_config() -> str:
-    """Reload bench configuration from disk.
-
-    Re-reads /etc/lager/saved_nets.json and /etc/lager/bench.json
-    and rebuilds the capability graph. Use after adding or removing
-    nets or instruments.
-    """
-    from ..server_state import reload_bench
-
-    reload_bench()
-    from ..server_state import get_bench, get_capability_graph
-
-    bench = get_bench()
-    graph = get_capability_graph()
-    return json.dumps({
-        "status": "ok",
-        "nets": len(bench.nets),
-        "instruments": len(bench.instruments),
-        "capabilities": len(graph.nodes),
-    })
+    else:
+        return json.dumps({"error": f"Unknown action '{action}'. Use 'health' or 'reload'."})

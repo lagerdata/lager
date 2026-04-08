@@ -28,9 +28,9 @@ Cursor MCP configuration:
     }
 
 Primary workflow:
-    1. Agent reads lager://guide/overview and calls get_bench_summary()
+    1. Agent calls discover_bench() to see available hardware
     2. Agent calls plan_firmware_test() with firmware description + goals
-    3. Agent calls get_api_reference() / get_test_example() to learn the API
+    3. Agent reads lager://reference/{net_type} / get_test_example() to learn the API
     4. Agent writes a Python test script using ``from lager import Net, NetType``
     5. Agent calls run_test_script() — script executes on-box, results come back
     6. Agent analyzes results, iterates
@@ -89,22 +89,8 @@ def run_lager(*args: str, timeout: int = 60) -> str:
 mcp = FastMCP(
     "lager",
     instructions=(
-        "You are connected to a Lager hardware-in-the-loop test bench. "
-        "Your job is to help validate firmware by writing and running "
-        "Python test scripts on the box.\n\n"
-        "START by reading lager://guide/overview and calling "
-        "get_bench_summary(). This tells you what hardware is available.\n\n"
-        "TO TEST FIRMWARE: Call plan_firmware_test() with what the firmware "
-        "does and what you want to validate. Then write a Python script "
-        "using the lager API — call get_api_reference() for the relevant "
-        "net types. Run it with run_test_script(). Analyse the output "
-        "and iterate.\n\n"
-        "YOUR TEST SCRIPTS RUN DIRECTLY ON THE BOX with access to "
-        "'from lager import Net, NetType' and all connected hardware. "
-        "Write them like you would any Python test — the box is the "
-        "test runner.\n\n"
-        "QUICK DEBUG: Use quick_read(net) / quick_write(net, value) for "
-        "spot-checks without writing a full script."
+        "Lager hardware-in-the-loop test bench. "
+        "Scripts run on-box with 'from lager import Net, NetType'."
     ),
 )
 
@@ -116,11 +102,13 @@ from .resources import bench_identity  # noqa: E402
 from .resources import netlist  # noqa: E402
 from .resources import interfaces  # noqa: E402
 from .resources import guide  # noqa: E402
+from .resources import api_reference as api_reference_resource  # noqa: E402
 
 bench_identity.register(mcp)
 netlist.register(mcp)
 interfaces.register(mcp)
 guide.register(mcp)
+api_reference_resource.register(mcp)
 
 # ---------------------------------------------------------------------------
 # Register tools

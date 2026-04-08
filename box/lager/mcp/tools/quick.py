@@ -1,10 +1,10 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""MCP tools for quick, interactive hardware reads and writes.
+"""MCP tool for quick, interactive hardware reads and writes.
 
-These are thin wrappers that auto-detect net type and call the appropriate
-lager.Net method.  For interactive debugging — not for test authoring.
+Thin wrapper that auto-detects net type and calls the appropriate
+lager.Net method.  For interactive debugging -- not for test authoring.
 """
 
 from __future__ import annotations
@@ -57,17 +57,16 @@ _WRITE_FNS = {
 
 
 @mcp.tool()
-def quick_read(net_name: str) -> str:
-    """Read the current value of a net (auto-detects type).
+def quick_io(net_name: str, action: str = "read", value: str | None = None) -> str:
+    """Read or write a net value (auto-detects type).
 
-    Works for power supplies (voltage/current), GPIO (level), ADC (voltage),
-    thermocouples (temperature), watt meters (power), batteries, and eloads.
-
-    Use for quick spot-checks during interactive debugging — NOT inside
-    test scripts (use the lager.Net API directly in scripts).
+    Reads: PSU (voltage/current), GPIO, ADC, thermocouple, watt-meter,
+    battery, eload.  Writes: PSU (voltage), GPIO (0/1), DAC (voltage).
 
     Args:
-        net_name: The net to read (e.g., "supply1", "gpio3", "adc0").
+        net_name: The net to interact with (e.g. "supply1", "gpio3").
+        action: "read" or "write".
+        value: Value to set (required for writes -- voltage in V, or 0/1 for GPIO).
     """
     from ..server_state import get_bench
 
@@ -76,53 +75,37 @@ def quick_read(net_name: str) -> str:
     if not net_desc:
         return json.dumps({"error": f"Net '{net_name}' not found."})
 
-    reader = _READ_DISPATCH.get(net_desc.net_type)
-    if not reader:
-        return json.dumps({
-            "error": f"quick_read does not support net type '{net_desc.net_type}'.",
-            "hint": "Use run_test_script() to write a Python script that reads this net.",
-        })
+    if action == "read":
+        reader = _READ_DISPATCH.get(net_desc.net_type)
+        if not reader:
+            return json.dumps({
+                "error": f"quick_io read does not support net type '{net_desc.net_type}'.",
+                "hint": "Use run_test_script() with a Python script instead.",
+            })
+        try:
+            from lager import Net, NetType
+            hw = Net.get(net_name, type=NetType(net_desc.net_type))
+            result = reader(hw)
+            return json.dumps({"net": net_name, "type": net_desc.net_type, **result})
+        except Exception:
+            return json.dumps({"error": traceback.format_exc()})
 
-    try:
-        from lager import Net, NetType
-        hw = Net.get(net_name, type=NetType(net_desc.net_type))
-        result = reader(hw)
-        return json.dumps({"net": net_name, "type": net_desc.net_type, **result})
-    except Exception:
-        return json.dumps({"error": traceback.format_exc()})
+    elif action == "write":
+        if value is None:
+            return json.dumps({"error": "value is required for write action."})
+        fn_name = _WRITE_DISPATCH.get(net_desc.net_type)
+        if not fn_name:
+            return json.dumps({
+                "error": f"quick_io write does not support net type '{net_desc.net_type}'.",
+                "hint": "Use run_test_script() with a Python script instead.",
+            })
+        try:
+            from lager import Net, NetType
+            hw = Net.get(net_name, type=NetType(net_desc.net_type))
+            result = _WRITE_FNS[fn_name](hw, value)
+            return json.dumps({"net": net_name, "type": net_desc.net_type, **result})
+        except Exception:
+            return json.dumps({"error": traceback.format_exc()})
 
-
-@mcp.tool()
-def quick_write(net_name: str, value: str) -> str:
-    """Set a value on a net (auto-detects type).
-
-    Works for power supplies (set voltage), GPIO (set level 0/1), and
-    DAC (set voltage).
-
-    Use for quick interactive poking — NOT inside test scripts.
-
-    Args:
-        net_name: The net to write (e.g., "supply1", "gpio3", "dac0").
-        value: The value to set (voltage in V, or GPIO level 0/1).
-    """
-    from ..server_state import get_bench
-
-    bench = get_bench()
-    net_desc = next((n for n in bench.nets if n.name == net_name), None)
-    if not net_desc:
-        return json.dumps({"error": f"Net '{net_name}' not found."})
-
-    fn_name = _WRITE_DISPATCH.get(net_desc.net_type)
-    if not fn_name:
-        return json.dumps({
-            "error": f"quick_write does not support net type '{net_desc.net_type}'.",
-            "hint": "Use run_test_script() to write a Python script that controls this net.",
-        })
-
-    try:
-        from lager import Net, NetType
-        hw = Net.get(net_name, type=NetType(net_desc.net_type))
-        result = _WRITE_FNS[fn_name](hw, value)
-        return json.dumps({"net": net_name, "type": net_desc.net_type, **result})
-    except Exception:
-        return json.dumps({"error": traceback.format_exc()})
+    else:
+        return json.dumps({"error": f"Unknown action '{action}'. Use 'read' or 'write'."})

@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for lager.mcp.tools.box -- on-box bench and health MCP tools."""
+"""Unit tests for lager.mcp.tools.box -- on-box box_manage MCP tool."""
 
 import json
 from unittest.mock import patch
@@ -15,12 +15,12 @@ from lager.mcp.schemas.net import NetDescriptor
 
 @pytest.mark.unit
 class TestBoxTools:
-    """Tests for box_health, list_nets, list_instruments, reload_bench_config."""
+    """Tests for box_manage (health / reload)."""
 
     @patch("lager.mcp.server_state.get_bench")
     @patch("lager.mcp.config.get_box_version")
     @patch("lager.mcp.config.get_box_id")
-    def test_box_health(self, mock_box_id, mock_version, mock_get_bench):
+    def test_box_manage_health(self, mock_box_id, mock_version, mock_get_bench):
         mock_box_id.return_value = "demo-box"
         mock_version.return_value = "1.0.0"
         bench = BenchDefinition(
@@ -35,9 +35,9 @@ class TestBoxTools:
             ],
         )
         mock_get_bench.return_value = bench
-        from lager.mcp.tools.box import box_health
+        from lager.mcp.tools.box import box_manage
 
-        result = json.loads(box_health())
+        result = json.loads(box_manage("health"))
         assert result["status"] == "ok"
         assert result["box_id"] == "demo-box"
         assert result["version"] == "1.0.0"
@@ -93,7 +93,7 @@ class TestBoxTools:
     @patch("lager.mcp.server_state.get_capability_graph")
     @patch("lager.mcp.server_state.get_bench")
     @patch("lager.mcp.server_state.reload_bench")
-    def test_reload_bench_config(self, mock_reload, mock_get_bench, mock_get_graph):
+    def test_box_manage_reload(self, mock_reload, mock_get_bench, mock_get_graph):
         bench = BenchDefinition(
             nets=[NetDescriptor(name="n1", net_type="gpio")],
             instruments=[
@@ -107,9 +107,9 @@ class TestBoxTools:
             ],
         )
         mock_get_graph.return_value = graph
-        from lager.mcp.tools.box import reload_bench_config
+        from lager.mcp.tools.box import box_manage
 
-        result = json.loads(reload_bench_config())
+        result = json.loads(box_manage("reload"))
         mock_reload.assert_called_once()
         assert result["status"] == "ok"
         assert result["nets"] == 1
@@ -121,14 +121,14 @@ class TestBoxTools:
     @patch("lager.mcp.server_state.get_bench")
     @patch("lager.mcp.config.get_box_version")
     @patch("lager.mcp.config.get_box_id")
-    def test_box_health_get_bench_failure(self, mock_box_id, mock_version, mock_get_bench):
+    def test_box_manage_health_get_bench_failure(self, mock_box_id, mock_version, mock_get_bench):
         mock_box_id.return_value = "b"
         mock_version.return_value = "v"
         mock_get_bench.side_effect = RuntimeError("bench unavailable")
-        from lager.mcp.tools.box import box_health
+        from lager.mcp.tools.box import box_manage
 
         with pytest.raises(RuntimeError, match="bench unavailable"):
-            box_health()
+            box_manage("health")
 
     @patch("lager.mcp.server_state.get_bench")
     def test_list_nets_get_bench_failure(self, mock_get_bench):
@@ -149,13 +149,13 @@ class TestBoxTools:
     @patch("lager.mcp.server_state.get_capability_graph")
     @patch("lager.mcp.server_state.get_bench")
     @patch("lager.mcp.server_state.reload_bench")
-    def test_reload_bench_config_reload_failure(
+    def test_box_manage_reload_failure(
         self, mock_reload, mock_get_bench, mock_get_graph,
     ):
         mock_reload.side_effect = RuntimeError("reload failed")
         mock_get_bench.return_value = BenchDefinition()
         mock_get_graph.return_value = CapabilityGraph()
-        from lager.mcp.tools.box import reload_bench_config
+        from lager.mcp.tools.box import box_manage
 
         with pytest.raises(RuntimeError, match="reload failed"):
-            reload_bench_config()
+            box_manage("reload")
