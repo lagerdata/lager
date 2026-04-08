@@ -1,12 +1,7 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pydantic schemas for the Lager MCP server.
-
-v0 exports: bench, capability, net, safety, heuristic, and scenario
-types needed for the core discovery -> suitability -> run_scenario loop.
-Artifact and advanced step types (loop/branch/sweep) are deferred.
-"""
+"""Pydantic schemas for the Lager MCP server."""
 
 from .bench import (
     BenchDefinition,
@@ -37,16 +32,8 @@ from .heuristic import (
     SuitabilityReport,
     TestRequirement,
 )
-from .scenario import (
-    Assertion,
-    Scenario,
-    ScenarioResult,
-    ScenarioStep,
-    StepResult,
-)
 
 __all__ = [
-    "Assertion",
     "BenchDefinition",
     "CalibrationStatus",
     "CapabilityGraph",
@@ -62,10 +49,6 @@ __all__ = [
     "RoutingEntry",
     "SafetyConstraints",
     "SafetyLimits",
-    "Scenario",
-    "ScenarioResult",
-    "ScenarioStep",
-    "StepResult",
     "Substitution",
     "SuitabilityReport",
     "TestRequirement",

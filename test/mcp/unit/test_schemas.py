@@ -22,13 +22,6 @@ from lager.mcp.schemas.heuristic import (
     SuitabilityReport,
     TestRequirement,
 )
-from lager.mcp.schemas.scenario import (
-    Assertion,
-    Scenario,
-    ScenarioResult,
-    ScenarioStep,
-    StepResult,
-)
 
 
 class TestBenchSchemas:
@@ -182,61 +175,3 @@ class TestHeuristicSchemas:
         assert report.confidence == 0.92
 
 
-class TestScenarioSchemas:
-    def test_scenario_step(self):
-        step = ScenarioStep(action="set_voltage", target="psu1", params={"voltage": 3.3})
-        assert step.action == "set_voltage"
-        assert step.on_failure == "abort"
-
-    def test_scenario_step_defaults(self):
-        step = ScenarioStep(action="wait")
-        assert step.target is None
-        assert step.params == {}
-        assert step.max_retries == 0
-
-    def test_scenario_full(self):
-        scenario = Scenario(
-            name="test_flash",
-            setup=[ScenarioStep(action="set_voltage", target="psu1", params={"voltage": 3.3})],
-            steps=[ScenarioStep(action="spi_transfer", target="spi0", params={"tx": "0x9F"})],
-            cleanup=[ScenarioStep(action="disable_supply", target="psu1")],
-            assertions=[Assertion(name="check", expression="True")],
-        )
-        assert scenario.name == "test_flash"
-        assert len(scenario.setup) == 1
-        assert len(scenario.steps) == 1
-        assert len(scenario.cleanup) == 1
-        assert len(scenario.assertions) == 1
-
-    def test_scenario_gpio_button_roundtrip(self):
-        scenario = Scenario(
-            name="gpio_button_press_release",
-            steps=[
-                ScenarioStep(action="gpio_set", target="button0", params={"level": "high"}),
-                ScenarioStep(action="wait", params={"ms": 100}),
-                ScenarioStep(action="gpio_read", target="led0", params={"label": "after_press"}),
-                ScenarioStep(action="gpio_set", target="button0", params={"level": "low"}),
-                ScenarioStep(action="wait", params={"ms": 100}),
-                ScenarioStep(action="gpio_read", target="led0", params={"label": "after_release"}),
-            ],
-            assertions=[
-                Assertion(name="press_detected", expression="results['after_press']['value'] == 1"),
-                Assertion(name="release_detected", expression="results['after_release']['value'] == 0"),
-            ],
-        )
-        payload = json.loads(scenario.model_dump_json())
-        s2 = Scenario(**payload)
-        assert s2.name == "gpio_button_press_release"
-        assert len(s2.steps) == 6
-        assert len(s2.assertions) == 2
-
-    def test_scenario_result(self):
-        result = ScenarioResult(scenario_name="test1", status="passed", duration_ms=1234.5)
-        assert result.status == "passed"
-        data = json.loads(result.model_dump_json())
-        assert data["duration_ms"] == 1234.5
-
-    def test_step_result(self):
-        sr = StepResult(action="gpio_set", target="button0", success=True, duration_ms=1.5)
-        assert sr.success
-        assert sr.error is None

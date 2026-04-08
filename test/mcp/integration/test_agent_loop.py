@@ -7,7 +7,7 @@ Integration tests for the agent workflow loop.
 Focused on the v0 proof scenario: GPIO button press/release.
 
 These tests verify the end-to-end flow without requiring a live box:
-  discovery -> suitability -> scenario run (mocked) -> verify
+  discovery -> suitability -> run_test_script (mocked) -> verify
 
 They ensure that coarse-grained execution uses <= 3 MCP-style calls
 for the core workflow.
@@ -24,9 +24,7 @@ from lager.mcp.engine.heuristic_engine import (
     assess_suitability,
     infer_requirements,
 )
-from lager.mcp.engine.scenario_runner import run as run_scenario_interpreter
 from lager.mcp.server_state import init_state, get_bench, get_capability_graph
-from lager.mcp.schemas.scenario import Scenario, ScenarioStep, Assertion
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +86,7 @@ class TestGPIOButtonProofScenario:
     Agent workflow:
     1. discover_bench() -> learn what's on the box (1 call)
     2. assess_suitability("gpio_button_validation") -> can this box do it? (1 call)
-    3. run_scenario({...}) -> actuate + confirm via GPI + DUT CLI (1 call)
+    3. run_test_script({...}) -> actuate + confirm via GPI + DUT CLI (1 call)
 
     Total: 3 MCP round trips.
     """
@@ -130,93 +128,12 @@ class TestGPIOButtonProofScenario:
         req = infer_requirements("Validate button press/release via GPIO")
         assert req.test_type == "gpio_button_validation"
 
-    @patch("lager.Net.get")
-    def test_step3_run_scenario(self, mock_net_get):
-        """Agent runs the full GPIO + UART button proof scenario.
-
-        The scenario models the v0 proof interaction:
-          - button0 (GPO) drives a physical button input on the DUT
-          - led0 (GPI) samples a DUT-driven output (LED/status pin)
-          - uart0 talks to the DUT CLI over UART to confirm firmware
-            actually sees the press and release events
-
-        All hardware calls go through ``lager.Net.get()`` which is mocked
-        here. On a real box these resolve to physical pin I/O and /dev/tty*.
-        """
-        from lager import NetType
-
-        gpio_net = MagicMock(name="gpio_net")
-        gpio_net.input.side_effect = [1, 0]
-
-        mock_ser = MagicMock(name="serial_connection")
-        mock_ser.timeout = 1
-        mock_ser.readline.side_effect = [
-            b"btn_state: pressed\r\n",
-            b"btn_state: released\r\n",
-        ]
-        uart_net = MagicMock(name="uart_net")
-        uart_net.connect.return_value = mock_ser
-
-        def net_get_side_effect(name, *, type=None):
-            if type == NetType.GPIO:
-                return gpio_net
-            if type == NetType.UART:
-                return uart_net
-            return MagicMock()
-
-        mock_net_get.side_effect = net_get_side_effect
-
-        scenario_json = json.dumps({
-            "name": "gpio_button_press_release",
-            "description": "Actuate button via GPIO, confirm with GPI and DUT CLI over UART",
-            "steps": [
-                {"action": "gpio_set", "target": "button0", "params": {"level": 1}},
-                {"action": "wait", "params": {"ms": 10}},
-                {"action": "gpio_read", "target": "led0", "params": {"label": "after_press"}},
-                {"action": "uart_send", "target": "uart0", "params": {"data": "btn_status\r\n"}},
-                {"action": "uart_expect", "target": "uart0", "params": {"pattern": "pressed", "label": "dut_after_press", "timeout_ms": 2000}},
-                {"action": "gpio_set", "target": "button0", "params": {"level": 0}},
-                {"action": "wait", "params": {"ms": 10}},
-                {"action": "gpio_read", "target": "led0", "params": {"label": "after_release"}},
-                {"action": "uart_send", "target": "uart0", "params": {"data": "btn_status\r\n"}},
-                {"action": "uart_expect", "target": "uart0", "params": {"pattern": "released", "label": "dut_after_release", "timeout_ms": 2000}},
-            ],
-            "assertions": [
-                {"name": "press_detected", "expression": "results['after_press']['value'] == 1"},
-                {"name": "release_detected", "expression": "results['after_release']['value'] == 0"},
-                {"name": "dut_saw_press", "expression": "results['dut_after_press']['matched'] is True"},
-                {"name": "dut_saw_release", "expression": "results['dut_after_release']['matched'] is True"},
-            ],
-        })
-
-        result = run_scenario_interpreter(scenario_json)
-
-        assert result["status"] == "passed"
-        assert result["scenario_name"] == "gpio_button_press_release"
-
-        assert len(result["step_results"]) == 10
-        assert all(s["success"] for s in result["step_results"])
-
-        assert len(result["assertions"]) == 4
-        assert all(a["passed"] for a in result["assertions"])
-
-        assert result["results"]["after_press"]["value"] == 1
-        assert result["results"]["after_release"]["value"] == 0
-        assert result["results"]["dut_after_press"]["matched"] is True
-        assert result["results"]["dut_after_release"]["matched"] is True
-
-        assert gpio_net.output.call_count == 2
-        gpio_net.output.assert_any_call(1)
-        gpio_net.output.assert_any_call(0)
-        assert gpio_net.input.call_count == 2
-        assert mock_ser.write.call_count == 2
-
     def test_round_trip_count(self):
         """The core workflow uses <= 3 MCP-level calls."""
         calls = [
             "discover_bench",
-            "assess_suitability",
-            "run_scenario",
+            "plan_firmware_test",
+            "run_test_script",
         ]
         assert len(calls) <= 3
 
@@ -249,33 +166,3 @@ class TestDiscoveryToolIntegration:
         assert "led0" in drive_targets
 
 
-# ---------------------------------------------------------------------------
-# Scenario schema validation
-# ---------------------------------------------------------------------------
-
-class TestScenarioSchemaValidation:
-    """Verify scenario schema works for v0 patterns."""
-
-    def test_minimal_scenario(self):
-        s = Scenario(name="empty", steps=[])
-        assert s.name == "empty"
-        assert s.steps == []
-        assert s.timeout_s == 300
-
-    def test_gpio_scenario_roundtrip(self):
-        s = Scenario(
-            name="gpio_test",
-            steps=[
-                ScenarioStep(action="gpio_set", target="pin0", params={"level": 1}),
-                ScenarioStep(action="wait", params={"ms": 50}),
-                ScenarioStep(action="gpio_read", target="pin0", params={"label": "reading"}),
-            ],
-            assertions=[
-                Assertion(name="pin_high", expression="results['reading']['value'] == 1"),
-            ],
-        )
-        payload = json.loads(s.model_dump_json())
-        s2 = Scenario(**payload)
-        assert s2.name == "gpio_test"
-        assert len(s2.steps) == 3
-        assert len(s2.assertions) == 1

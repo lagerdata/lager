@@ -1,14 +1,7 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Execute scenarios directly on-box via the interpreter runner.
-
-Since the MCP server runs on the box, we import and call the scenario
-runner in-process — no HTTP upload, no wire format parsing, no network
-overhead. A multi-step scenario executes with sub-millisecond latency
-between steps.
-"""
+"""On-box script execution engine for MCP tools."""
 
 from __future__ import annotations
 
@@ -19,29 +12,6 @@ import sys
 from typing import Any
 
 logger = logging.getLogger(__name__)
-
-
-def execute_scenario(scenario_json: str, *, timeout_s: int = 300) -> dict[str, Any]:
-    """
-    Execute a scenario in-process using the on-box runner.
-
-    The runner walks setup → steps → cleanup sequentially, dispatching
-    each step to hardware via the lager.Net API. All steps execute
-    locally with no network round trips.
-
-    Args:
-        scenario_json: JSON-serialised scenario.
-        timeout_s: Hard wall-clock budget passed to the runner. Overrides
-            the ``timeout_s`` field inside the JSON.
-    """
-    from .scenario_runner import run
-
-    try:
-        return run(scenario_json, timeout_s=timeout_s)
-    except json.JSONDecodeError as exc:
-        return {"status": "error", "error": f"Invalid scenario JSON: {exc}"}
-    except Exception as exc:
-        return {"status": "error", "error": str(exc)}
 
 
 def execute_script(
