@@ -1,13 +1,7 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-MCP tools for on-box script execution.
-
-run_test_script is the PRIMARY execution tool.  The agent writes a Python
-script using ``from lager import Net, NetType`` and this tool runs it
-directly on the box.  All hardware calls are local — one round trip total.
-"""
+"""MCP tools for on-box script execution."""
 
 from __future__ import annotations
 
@@ -24,11 +18,13 @@ logger = logging.getLogger(__name__)
 
 @mcp.tool()
 async def run_test_script(python_code: str, ctx: Context, timeout: int = 120) -> str:
-    """Run a Python script on the box and return results.
+    """Run a short Python snippet on the box for quick hardware checks.
 
-    The script runs as a subprocess with access to ``from lager import
-    Net, NetType`` and all pip-installed packages.  Print a JSON object
-    on the last stdout line for structured results.
+    Only has access to ``from lager import Net, NetType`` and pip packages.
+    No project files, no dtest, no custom modules.
+
+    For real tests, write a test file locally and run it via the shell:
+        lager python --serial <BOX> path/to/test.py
 
     Args:
         python_code: Complete Python source code to execute on-box.
