@@ -276,9 +276,10 @@ class SavedNetsTree(Tree[TreeNodeData]):
     def _get_net_label(self, net: Net, highlight_button: str | None = None) -> str:
         """Generate label for a net with optional button highlighting (hover or focus)."""
         rename_btn = "[reverse][✎][/reverse]" if highlight_button == "rename" else "[✎]"
+        edit_btn = "[reverse][⋯][/reverse]" if highlight_button == "edit" else "[⋯]"
         delete_btn = "[reverse][✕][/reverse]" if highlight_button == "delete" else "[✕]"
         script_tag = " [dim](script)[/dim]" if net.has_script else ""
-        return f"[bold]{net.net}[/bold] | {net.type.upper()} | Ch: {net.chan}{script_tag}   {rename_btn} {delete_btn}"
+        return f"[bold]{net.net}[/bold] | {net.type.upper()} | Ch: {net.chan}{script_tag}   {rename_btn} {edit_btn} {delete_btn}"
 
     def _get_highlighted_button(self, net_key: str) -> str | None:
         """Get which button should be highlighted for a given net (hover takes precedence)."""
@@ -316,29 +317,25 @@ class SavedNetsTree(Tree[TreeNodeData]):
 
     def _get_button_at_position(self, net: Net, x: int) -> str | None:
         """Determine which button (if any) is at the given x position."""
-        # Calculate content length without the buttons (3 spaces before buttons)
         content = f"{net.net} | {net.type.upper()} | Ch: {net.chan}"
         if net.has_script:
             content += " (script)"
         content += "   "
-        # Buttons: [✎] [✕] - each button is 3 chars, space between = 1 char
-        # Total button area: 7 chars
-
+        # Buttons: [✎] [⋯] [✕] — each 3 chars, 1 char space between
         content_end = len(content)
-        # Add offset to shift clickable area right to match visual buttons
         offset = 4
 
-        # Button positions:
-        # [✎] at content_end to content_end+3
-        # space at content_end+3
-        # [✕] at content_end+4 to content_end+7
         rename_start = content_end + offset + 3
-        rename_end = content_end + 3 + offset + 3
-        delete_start = content_end + 4 + offset + 3
-        delete_end = content_end + 7 + offset + 3
+        rename_end = rename_start + 3
+        edit_start = rename_end + 1
+        edit_end = edit_start + 3
+        delete_start = edit_end + 1
+        delete_end = delete_start + 3
 
         if x >= delete_start and x < delete_end:
             return "delete"
+        elif x >= edit_start and x < edit_end:
+            return "edit"
         elif x >= rename_start and x < rename_end:
             return "rename"
         return None
@@ -394,22 +391,24 @@ class SavedNetsTree(Tree[TreeNodeData]):
             return
 
         if event.key == "right":
-            # Move focus: None -> rename -> delete
+            # Move focus: None -> rename -> edit -> delete
             if self._focus_button is None:
                 self._focus_button = "rename"
             elif self._focus_button == "rename":
+                self._focus_button = "edit"
+            elif self._focus_button == "edit":
                 self._focus_button = "delete"
-            # else stay on delete
             self._update_focus_display()
             event.stop()
         elif event.key == "left":
-            # Move focus: delete -> rename -> None
+            # Move focus: delete -> edit -> rename -> None
             if self._focus_button == "delete":
+                self._focus_button = "edit"
+            elif self._focus_button == "edit":
                 self._focus_button = "rename"
             elif self._focus_button == "rename":
                 self._focus_button = None
-                self._clear_focus()  # Clear visual when focus goes to None
-            # else stay on None
+                self._clear_focus()
             if self._focus_button:
                 self._update_focus_display()
             event.stop()
@@ -417,10 +416,12 @@ class SavedNetsTree(Tree[TreeNodeData]):
             if self._focus_button == "delete":
                 self.app.push_screen(ConfirmDelete(data.net))
                 event.stop()
+            elif self._focus_button == "edit":
+                self.app.push_screen(EditDetailsDialog(data.net))
+                event.stop()
             elif self._focus_button == "rename":
                 self.app.push_screen(RenameDialog(data.net))
                 event.stop()
-            # If no button focused, let default handler show action dialog
 
     def on_mouse_move(self, event: MouseMove) -> None:
         """Track mouse position to highlight buttons on hover."""
@@ -488,9 +489,10 @@ class SavedNetsTree(Tree[TreeNodeData]):
             button = self._get_button_at_position(data.net, event.x)
             if button == "delete":
                 self.app.push_screen(ConfirmDelete(data.net))
+            elif button == "edit":
+                self.app.push_screen(EditDetailsDialog(data.net))
             elif button == "rename":
                 self.app.push_screen(RenameDialog(data.net))
-            # Otherwise ignore click (user can use Enter for action dialog)
 
     def watch_cursor_node(self, old_node, new_node) -> None:
         """Called when cursor moves to a different node - clear button focus."""
