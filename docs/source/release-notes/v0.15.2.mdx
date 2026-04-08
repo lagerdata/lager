@@ -1,0 +1,30 @@
+---
+title: "Version 0.15.2"
+description: "April 8, 2026"
+---
+
+## <u>New Features</u>
+
+- `lager install --version` now accepts a release tag (e.g. `v0.15.0`) in addition to a git branch, so you can install a box at a pinned version directly: `lager install --ip <BOX_IP> --version v0.15.0`. This replaces the old `--branch` flag, which only accepted branches.
+
+## <u>Bug Fixes</u>
+
+- Reverted DA1469x post-flash reset to use J-Link Commander register writes (restores 0.15.0 behavior). The GDB-based reset introduced in 0.15.1 caused regressions on DA1469x targets.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.15.2
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.15.2/)
