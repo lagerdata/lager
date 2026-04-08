@@ -7,14 +7,11 @@ Integration tests for the agent workflow loop.
 Focused on the v0 proof scenario: GPIO button press/release.
 
 These tests verify the end-to-end flow without requiring a live box:
-  discovery -> suitability -> run_test_script (mocked) -> verify
+  discovery -> suitability -> lager python (shell) -> verify
 
 They ensure that coarse-grained execution uses <= 3 MCP-style calls
 for the core workflow.
 """
-
-import json
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -86,9 +83,9 @@ class TestGPIOButtonProofScenario:
     Agent workflow:
     1. discover_bench() -> learn what's on the box (1 call)
     2. assess_suitability("gpio_button_validation") -> can this box do it? (1 call)
-    3. run_test_script({...}) -> actuate + confirm via GPI + DUT CLI (1 call)
+    3. lager python test.py -> actuate + confirm via GPI + DUT CLI (shell)
 
-    Total: 3 MCP round trips.
+    Total: 2 MCP round trips + 1 shell command.
     """
 
     def test_step1_discovery(self, gpio_state):
@@ -133,7 +130,7 @@ class TestGPIOButtonProofScenario:
         calls = [
             "discover_bench",
             "plan_firmware_test",
-            "run_test_script",
+            "lager python (shell)",
         ]
         assert len(calls) <= 3
 

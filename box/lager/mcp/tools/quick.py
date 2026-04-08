@@ -80,7 +80,7 @@ def quick_io(net_name: str, action: str = "read", value: str | None = None) -> s
         if not reader:
             return json.dumps({
                 "error": f"quick_io read does not support net type '{net_desc.net_type}'.",
-                "hint": "Use run_test_script() with a Python script instead.",
+                "hint": "Write a test file and run via: lager python --serial <BOX> path/to/test.py",
             })
         try:
             from lager import Net, NetType
@@ -97,7 +97,7 @@ def quick_io(net_name: str, action: str = "read", value: str | None = None) -> s
         if not fn_name:
             return json.dumps({
                 "error": f"quick_io write does not support net type '{net_desc.net_type}'.",
-                "hint": "Use run_test_script() with a Python script instead.",
+                "hint": "Write a test file and run via: lager python --serial <BOX> path/to/test.py",
             })
         try:
             from lager import Net, NetType

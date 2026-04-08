@@ -31,8 +31,8 @@ Primary workflow:
     1. Agent calls discover_bench() to see available hardware
     2. Agent calls plan_firmware_test() with firmware description + goals
     3. Agent reads lager://reference/{net_type} / get_test_example() to learn the API
-    4. Agent writes a Python test script using ``from lager import Net, NetType``
-    5. Agent calls run_test_script() — script executes on-box, results come back
+    4. Agent writes a Python test file locally using ``from lager import Net, NetType``
+    5. Agent runs via shell: lager python --serial <BOX> path/to/test.py
     6. Agent analyzes results, iterates
 """
 
@@ -90,7 +90,12 @@ mcp = FastMCP(
     "lager",
     instructions=(
         "Lager hardware-in-the-loop test bench. "
-        "Scripts run on-box with 'from lager import Net, NetType'."
+        "Use this server to DISCOVER hardware and PLAN tests. "
+        "To EXECUTE tests, write a Python file locally and run it via shell: "
+        "lager python --serial <BOX> path/to/test.py "
+        "(this syncs your project to the box and runs with full project context, "
+        "dtest, and all local modules). "
+        "Use quick_io() only for simple spot-checks on a single net."
     ),
 )
 
@@ -120,7 +125,7 @@ from .tools import discover  # noqa: E402, F401
 # Test authoring guidance — API docs, examples, test planning
 from .tools import authoring  # noqa: E402, F401
 
-# Script execution — the primary way to run tests
+# Package management
 from .tools import scenario  # noqa: E402, F401
 
 # Quick debug tools — interactive spot-checks
