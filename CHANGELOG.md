@@ -2,6 +2,17 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.15.2] - 2026-04-08
+
+### Added
+- `lager install --version` now accepts a release tag (e.g. `v0.15.0`) in addition to a git branch, so a box can be installed at a pinned version directly. The deployment script detects tags and uses the bare ref for `git reset --hard` instead of the (non-existent) `origin/<tag>` ref.
+
+### Changed
+- `lager install --branch` has been replaced by `lager install --version`. The new flag accepts both branches and release tags.
+
+### Fixed
+- Reverted DA1469x post-flash reset to use J-Link Commander register writes (as in 0.15.0). The GDB-based reset introduced in 0.15.1 caused regressions on DA1469x targets; Commander remains the supported path.
+
 ## [0.15.1] - 2026-04-07
 
 ### Fixed

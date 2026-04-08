@@ -76,13 +76,13 @@ def get_script_path(script_name: str, subdir: str = "scripts") -> Path:
 @click.option("--box", default=None, help="Box name (uses stored IP and username)")
 @click.option("--ip", default=None, help="Target box IP address")
 @click.option("--user", default=None, help="SSH username (default: lagerdata, or stored username if using --box)")
-@click.option("--branch", default="main", help="Git branch to deploy (default: main)")
+@click.option("--version", "version", default="main", help="Box version to deploy: a release tag (e.g. v0.15.0) or a git branch (default: main)")
 @click.option("--skip-jlink", is_flag=True, help="Skip J-Link installation")
 @click.option("--skip-firewall", is_flag=True, help="Skip UFW firewall configuration")
 @click.option("--skip-verify", is_flag=True, help="Skip post-deployment verification")
 @click.option("--corporate-vpn", default=None, help="Corporate VPN interface name (e.g., tun0)")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompts")
-def install(ctx, box, ip, user, branch, skip_jlink, skip_firewall, skip_verify, corporate_vpn, yes):
+def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify, corporate_vpn, yes):
     """
     Install lager box code onto a new box.
     """
@@ -341,7 +341,7 @@ def install(ctx, box, ip, user, branch, skip_jlink, skip_firewall, skip_verify, 
         click.secho(f"Installing lager to {box} ({ip})...", fg='cyan', bold=True)
     else:
         click.secho(f"Installing lager to {ip}...", fg='cyan', bold=True)
-    click.echo(f"  Branch: {branch}")
+    click.echo(f"  Version: {version}")
     click.echo(f"  User: {user}")
     click.echo(f"  Mode: Git sparse checkout (enables 'lager update')")
     if skip_jlink:
@@ -363,7 +363,7 @@ def install(ctx, box, ip, user, branch, skip_jlink, skip_firewall, skip_verify, 
     click.secho("Running box deployment...", fg='cyan')
     click.echo("This may take several minutes.\n")
 
-    deploy_args = [str(deploy_script), ip, "--user", user, "--branch", branch, "--skip-add-box"]
+    deploy_args = [str(deploy_script), ip, "--user", user, "--version", version, "--skip-add-box"]
 
     if skip_jlink:
         deploy_args.append("--skip-jlink")
@@ -455,7 +455,7 @@ def install(ctx, box, ip, user, branch, skip_jlink, skip_firewall, skip_verify, 
 
     except Exception as e:
         click.secho(f"Warning: Could not store version information: {e}", fg='yellow')
-        box_cli_version = branch  # Fallback to branch name
+        box_cli_version = version  # Fallback to requested version
 
     click.echo()
 

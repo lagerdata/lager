@@ -18,7 +18,7 @@ lager install [OPTIONS]
 | `--box TEXT` | string | | Box name (uses stored IP and username from `.lager` config) |
 | `--ip TEXT` | string | | Target box IP address |
 | `--user TEXT` | string | `lagerdata` | SSH username |
-| `--branch TEXT` | string | `main` | Git branch to deploy |
+| `--version TEXT` | string | `main` | Box version to deploy: a release tag (e.g. `v0.15.0`) or a git branch |
 | `--skip-jlink` | flag | | Skip J-Link installation (pyOCD is always installed) |
 | `--skip-firewall` | flag | | Skip UFW firewall configuration |
 | `--skip-verify` | flag | | Skip post-deployment verification |
@@ -56,8 +56,11 @@ lager install --ip 192.168.1.100
 # Install to a stored box
 lager install --box my-test-box
 
+# Install a specific release tag
+lager install --ip 192.168.1.100 --version v0.15.0
+
 # Install a specific branch with a custom user
-lager install --ip 192.168.1.100 --user pi --branch staging
+lager install --ip 192.168.1.100 --user pi --version staging
 
 # Install with corporate VPN firewall support
 lager install --ip 192.168.1.100 --corporate-vpn tun0

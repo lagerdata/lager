@@ -20,14 +20,15 @@
 #
 # Options:
 #   --user <username>     Box username (default: lagerdata)
-#   --branch <branch>     Git branch to checkout (default: main)
+#   --version <version>   Release tag (e.g. v0.15.0) or git branch to deploy (default: main)
 #   --skip-jlink          Skip J-Link installation even if available
 #   --skip-verify         Skip post-deployment verification
 #   --help                Show this help message
 #
 # Examples:
 #   ./setup_and_deploy_box.sh <BOX_IP>
-#   ./setup_and_deploy_box.sh <BOX_IP> --branch staging
+#   ./setup_and_deploy_box.sh <BOX_IP> --version staging
+#   ./setup_and_deploy_box.sh <BOX_IP> --version v0.15.0
 #   ./setup_and_deploy_box.sh <BOX_IP> --user pi
 #   ./setup_and_deploy_box.sh <BOX_IP> --skip-jlink
 
@@ -47,7 +48,7 @@ SKIP_JLINK=false
 SKIP_VERIFY=false
 BOX_IP=""
 VPN_INTERFACE=""
-GIT_BRANCH="main"
+GIT_VERSION="main"
 
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -68,7 +69,7 @@ show_help() {
     echo ""
     echo "Options:"
     echo "  --user <username>     Box username (default: lagerdata)"
-    echo "  --branch <branch>     Git branch to checkout (default: main)"
+    echo "  --version <version>   Release tag (e.g. v0.15.0) or git branch (default: main)"
     echo "  --vpn <interface>     VPN interface to bind to (e.g., tun0, ppp0)"
     echo "                        If not specified, auto-detects Tailscale/WireGuard"
     echo "  --corporate-vpn <iface> Corporate VPN interface for firewall (e.g., tun0)"
@@ -81,7 +82,8 @@ show_help() {
     echo ""
     echo "Examples:"
     echo "  $0 <BOX_IP>"
-    echo "  $0 <BOX_IP> --branch staging"
+    echo "  $0 <BOX_IP> --version staging"
+    echo "  $0 <BOX_IP> --version v0.15.0"
     echo "  $0 <BOX_IP> --user pi"
     echo "  $0 <BOX_IP> --vpn tun0"
     echo "  $0 <BOX_IP> --corporate-vpn tun0"
@@ -100,8 +102,8 @@ while [[ $# -gt 0 ]]; do
             # Accepted for backwards compatibility (sparse checkout is now the only mode)
             shift
             ;;
-        --branch)
-            GIT_BRANCH="$2"
+        --version)
+            GIT_VERSION="$2"
             shift 2
             ;;
         --vpn)
@@ -158,6 +160,15 @@ if [ -z "$BOX_IP" ]; then
     exit 1
 fi
 
+# Determine the git ref for `git reset --hard`.
+# Release tags (e.g. v0.15.0) must be referenced directly; branches use origin/<name>.
+# This mirrors the tag detection in cli/commands/utility/update.py.
+if [[ "$GIT_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+    GIT_REF="$GIT_VERSION"
+else
+    GIT_REF="origin/$GIT_VERSION"
+fi
+
 # Print header
 echo ""
 echo -e "${BOLD}=========================================${NC}"
@@ -166,7 +177,7 @@ echo -e "${BOLD}=========================================${NC}"
 echo ""
 echo -e "${BLUE}Box:${NC} ${BOX_USER}@${BOX_IP}"
 echo -e "${BLUE}Method:${NC}  sparse-checkout (git over HTTPS)"
-echo -e "${BLUE}Branch:${NC}  ${GIT_BRANCH}"
+echo -e "${BLUE}Version:${NC} ${GIT_VERSION}"
 echo -e "${BLUE}Time:${NC}    $(date '+%Y-%m-%d %H:%M:%S')"
 echo ""
 
@@ -612,7 +623,7 @@ UDEV_RULES_DIR="${SCRIPT_DIR}/../../box/udev_rules"
     # ==========================================================================
     # Sparse Checkout Deployment via HTTPS (no authentication needed)
     # ==========================================================================
-    print_info "Deploying via git sparse-checkout (branch: ${GIT_BRANCH})..."
+    print_info "Deploying via git sparse-checkout (version: ${GIT_VERSION})..."
     echo ""
 
     # Verify GitHub HTTPS connectivity (with timeout to prevent hangs)
@@ -659,15 +670,16 @@ UDEV_RULES_DIR="${SCRIPT_DIR}/../../box/udev_rules"
         echo ""
 
         # Update existing sparse checkout (discard any local changes)
-        # Re-configure sparse checkout to ensure box directory is included
+        # Re-configure sparse checkout to ensure box directory is included.
+        # `git fetch origin --tags` is required so release tags are available.
         ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
             cd ~/box && \
             git sparse-checkout set box && \
-            git fetch origin && \
+            git fetch origin --tags && \
             git reset --hard HEAD && \
             git clean -fd && \
-            git checkout ${GIT_BRANCH} && \
-            git reset --hard origin/${GIT_BRANCH}
+            git checkout ${GIT_VERSION} && \
+            git reset --hard ${GIT_REF}
         "
 
         # After update, check if box/ subdirectory exists and flatten if needed
@@ -681,7 +693,7 @@ UDEV_RULES_DIR="${SCRIPT_DIR}/../../box/udev_rules"
             "
         fi
 
-        print_success "Existing repository updated to ${GIT_BRANCH}"
+        print_success "Existing repository updated to ${GIT_VERSION}"
     else
         # Remove old box directory if exists (rsync-based or corrupted)
         print_info "Removing old box directory (if exists)..."
@@ -695,18 +707,18 @@ UDEV_RULES_DIR="${SCRIPT_DIR}/../../box/udev_rules"
             cd ~/box && \
             git sparse-checkout init --cone && \
             git sparse-checkout set box && \
-            git checkout ${GIT_BRANCH}
+            git checkout ${GIT_VERSION}
         "
 
         # Check if box/ directory exists after checkout
         if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -d ~/box/box" 2>/dev/null; then
-            print_error "The 'box/' directory does not exist on branch '${GIT_BRANCH}'"
+            print_error "The 'box/' directory does not exist at version '${GIT_VERSION}'"
             echo ""
-            echo "This usually means the branch doesn't have the expected directory structure."
+            echo "This usually means the tag/branch doesn't have the expected directory structure."
             echo ""
-            echo "Try running with a different branch:"
-            echo "  $0 ${BOX_IP} --sparse --branch restructure"
-            echo "  $0 ${BOX_IP} --sparse --branch main"
+            echo "Try running with a different version:"
+            echo "  $0 ${BOX_IP} --version main"
+            echo "  $0 ${BOX_IP} --version v0.15.0"
             echo ""
             exit 1
         fi
@@ -724,7 +736,7 @@ UDEV_RULES_DIR="${SCRIPT_DIR}/../../box/udev_rules"
     fi
 
     echo ""
-    print_success "Box code deployed via sparse checkout (branch: ${GIT_BRANCH})"
+    print_success "Box code deployed via sparse checkout (version: ${GIT_VERSION})"
 
 # Deploy udev rules (applies to both deployment methods)
 echo ""
@@ -1105,7 +1117,7 @@ echo -e "${BOLD}${GREEN}  Deployment Complete!${NC}"
 echo -e "${BOLD}${GREEN}=========================================${NC}"
 echo ""
 echo -e "${GREEN}[OK]${NC} Box is ready to use at: ${BOX_USER}@${BOX_IP}"
-echo -e "${GREEN}[OK]${NC} Deployed with sparse checkout (branch: ${GIT_BRANCH})"
+echo -e "${GREEN}[OK]${NC} Deployed with sparse checkout (version: ${GIT_VERSION})"
 echo -e "${GREEN}[OK]${NC} 'lager update' is available for future updates"
 echo ""
 
@@ -1128,7 +1140,7 @@ echo ""
 
 echo "5. Update box code in the future:"
 echo -e "   ${BLUE}lager update --box ${BOX_IP}${NC}"
-echo -e "   ${BLUE}lager update --box ${BOX_IP} --version ${GIT_BRANCH}${NC}"
+echo -e "   ${BLUE}lager update --box ${BOX_IP} --version ${GIT_VERSION}${NC}"
 echo ""
 
 # Offer to add to .lager config (unless --skip-add-box was passed)

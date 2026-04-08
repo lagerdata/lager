@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from .jlink import JLink
+from .jlink import JLink, commander
 from .mappings import (
     get_jlink_status,
     readfile,
@@ -733,41 +733,49 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
 
     yield from jlink.flash(files, preverify, verify)
 
-    # Use the same JLinkGDBServer + PID file as handle_connect (not process.start_jlink /
-    # /tmp/jlink.pid), otherwise the debug service thinks no server is running and the
-    # next connect can fail or leave the target in a bad state.
-    yield "Reconnecting GDB server..."
-
     time.sleep(1.0)  # Give JLinkExe time to fully disconnect
 
-    try:
-        start_jlink_gdbserver(
-            device=device,
-            speed=speed,
-            transport=transport,
-            halt=False,
-            gdb_port=2331,
-            script_file=resolved_script,
-        )
-        yield "GDB server reconnected"
-        # DA1469x: start server, monitor reset + go (same as connect attach reset), then
-        # stop server so the target can run without the GDB session attached.
-        if 'DA1469' in (device or '').upper():
-            time.sleep(1.0)
-            try:
-                gdb_reset(halt=False, device=device)
-                yield "Target running after flash"
-            except Exception as e:
-                logger.warning("DA1469x post-flash gdb_reset failed: %s", e)
-                yield f"Warning: Could not run target after flash: {e}"
-            else:
-                try:
-                    stop_jlink_gdbserver()
-                except Exception as e:
-                    logger.warning("DA1469x stop_jlink_gdbserver after flash: %s", e)
-                    yield f"Warning: Could not stop GDB server after flash: {e}"
-    except Exception as e:
-        yield f"Warning: Failed to reconnect GDB server: {e}"
+    is_da1469 = 'DA1469' in (device or '').upper()
+
+    if is_da1469:
+        # DA1469x: issue a software reset via J-Link Commander so the bootrom
+        # re-initialises QSPI, clocks, and cache from scratch.  This mirrors
+        # what the flash_loader GDB template does (write to SYS_CTRL_REG
+        # 0x100C0050) and avoids the fragile start-gdbserver / gdb-reset /
+        # stop-gdbserver dance that left the target in a state where a
+        # subsequent `gdbserver --rtt` attach would freeze the application.
+        yield "DA1469x: resetting target via J-Link Commander..."
+        try:
+            reset_args = ['-device', device, '-if', 'SWD', '-speed', speed]
+            with commander(reset_args, script_file=resolved_script) as jl:
+                jl.run_command('connect')
+                # Disable MPU and MTB so the next debug attach is clean
+                jl.run_command('w4 0xE000ED94 0')   # MPU_CTRL = 0
+                jl.run_command('w4 0xE0043000 0')   # MTB_POSITION = 0
+                jl.run_command('w4 0xE0043004 0')   # MTB_MASTER = 0
+                jl.run_command('w4 0xE0043008 0')   # MTB_FLOW = 0
+                # Software reset via SYS_CTRL_REG — lets bootrom run fully
+                jl.run_command('w4 0x100C0050 1')
+            yield "Target reset — bootrom will reinitialise and boot application"
+        except Exception as e:
+            logger.warning("DA1469x post-flash Commander reset failed: %s", e)
+            yield f"Warning: Could not reset target after flash: {e}"
+    else:
+        # Non-DA1469x: reconnect GDB server so the debug service knows
+        # a server is running for subsequent operations.
+        yield "Reconnecting GDB server..."
+        try:
+            start_jlink_gdbserver(
+                device=device,
+                speed=speed,
+                transport=transport,
+                halt=False,
+                gdb_port=2331,
+                script_file=resolved_script,
+            )
+            yield "GDB server reconnected"
+        except Exception as e:
+            yield f"Warning: Failed to reconnect GDB server: {e}"
 
 
 
