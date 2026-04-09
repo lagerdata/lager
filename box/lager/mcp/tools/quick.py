@@ -10,9 +10,12 @@ lager.Net method.  For interactive debugging -- not for test authoring.
 from __future__ import annotations
 
 import json
-import traceback
+import logging
 
+from ..audit import audited
 from ..server import mcp
+
+logger = logging.getLogger(__name__)
 
 
 _READ_DISPATCH = {
@@ -57,6 +60,7 @@ _WRITE_FNS = {
 
 
 @mcp.tool()
+@audited()
 def quick_io(net_name: str, action: str = "read", value: str | None = None) -> str:
     """Read or write a net value (auto-detects type).
 
@@ -84,11 +88,18 @@ def quick_io(net_name: str, action: str = "read", value: str | None = None) -> s
             })
         try:
             from lager import Net, NetType
-            hw = Net.get(net_name, type=NetType(net_desc.net_type))
+            try:
+                nt = NetType(net_desc.net_type)
+            except ValueError:
+                return json.dumps({
+                    "error": f"Net '{net_name}' has unsupported NetType value '{net_desc.net_type}'.",
+                })
+            hw = Net.get(net_name, type=nt)
             result = reader(hw)
             return json.dumps({"net": net_name, "type": net_desc.net_type, **result})
-        except Exception:
-            return json.dumps({"error": traceback.format_exc()})
+        except Exception as e:
+            logger.exception("quick_io read failed for net %s", net_name)
+            return json.dumps({"error": f"{type(e).__name__}: {e}"})
 
     elif action == "write":
         if value is None:
@@ -101,11 +112,18 @@ def quick_io(net_name: str, action: str = "read", value: str | None = None) -> s
             })
         try:
             from lager import Net, NetType
-            hw = Net.get(net_name, type=NetType(net_desc.net_type))
+            try:
+                nt = NetType(net_desc.net_type)
+            except ValueError:
+                return json.dumps({
+                    "error": f"Net '{net_name}' has unsupported NetType value '{net_desc.net_type}'.",
+                })
+            hw = Net.get(net_name, type=nt)
             result = _WRITE_FNS[fn_name](hw, value)
             return json.dumps({"net": net_name, "type": net_desc.net_type, **result})
-        except Exception:
-            return json.dumps({"error": traceback.format_exc()})
+        except Exception as e:
+            logger.exception("quick_io write failed for net %s", net_name)
+            return json.dumps({"error": f"{type(e).__name__}: {e}"})
 
     else:
         return json.dumps({"error": f"Unknown action '{action}'. Use 'read' or 'write'."})
