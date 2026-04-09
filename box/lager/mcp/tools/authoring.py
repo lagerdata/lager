@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from ..audit import audited
 from ..server import mcp
@@ -153,8 +154,13 @@ def plan_firmware_test(firmware_description: str, test_goals: str) -> str:
             step["suggested_tests"] = net.test_hints
 
         if ref:
-            step["get_pattern"] = ref["get_pattern"].replace(
-                ref["get_pattern"].split('"')[1], net.name
+            # Replace the first double-quoted placeholder net name in the
+            # canonical get_pattern with the real net name. Falls back to
+            # the unmodified pattern if it has no quoted placeholder, so
+            # a future api_reference entry without that shape can never
+            # raise IndexError here.
+            step["get_pattern"] = re.sub(
+                r'"[^"]*"', f'"{net.name}"', ref["get_pattern"], count=1
             )
             step["methods"] = [
                 {"sig": m["sig"], "desc": m["desc"]} for m in ref["methods"]

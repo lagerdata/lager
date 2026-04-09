@@ -110,6 +110,32 @@ def quick_io(net_name: str, action: str = "read", value: str | None = None) -> s
                 "error": f"quick_io write does not support net type '{net_desc.net_type}'.",
                 "hint": "Write a test file and run via: lager python --serial <BOX> path/to/test.py",
             })
+
+        # Safety preflight: check voltage/current limits, rate limits, and
+        # dangerous-action flags from the bench's SafetyConstraints before
+        # touching any hardware.
+        from ..safety import preflight_check
+        preflight_params: dict = {}
+        if net_desc.net_type in ("power-supply", "power-supply-2q", "dac"):
+            try:
+                preflight_params["voltage"] = float(value)
+            except (TypeError, ValueError):
+                return json.dumps({
+                    "error": f"Invalid numeric value '{value}' for {net_desc.net_type} write.",
+                })
+        pf = preflight_check(
+            tool_name="quick_io_write",
+            params=preflight_params,
+            constraints=getattr(bench, "constraints", None),
+            target_net=net_name,
+        )
+        if not pf.allowed:
+            return json.dumps({
+                "error": "blocked by safety preflight",
+                "reason": pf.blocked_reason,
+                "mitigations": list(pf.mitigations or []),
+            })
+
         try:
             from lager import Net, NetType
             try:
@@ -120,7 +146,10 @@ def quick_io(net_name: str, action: str = "read", value: str | None = None) -> s
                 })
             hw = Net.get(net_name, type=nt)
             result = _WRITE_FNS[fn_name](hw, value)
-            return json.dumps({"net": net_name, "type": net_desc.net_type, **result})
+            payload: dict = {"net": net_name, "type": net_desc.net_type, **result}
+            if pf.warnings:
+                payload["safety_warnings"] = list(pf.warnings)
+            return json.dumps(payload)
         except Exception as e:
             logger.exception("quick_io write failed for net %s", net_name)
             return json.dumps({"error": f"{type(e).__name__}: {e}"})
