@@ -5,7 +5,7 @@
 
 import pytest
 
-from cli.mcp.tools.box import (
+from lager.mcp.tools.box import (
     lager_hello,
     lager_list_nets,
     lager_instruments,

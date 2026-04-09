@@ -5,7 +5,7 @@
 
 import pytest
 
-from cli.mcp.tools.usb import (
+from lager.mcp.tools.usb import (
     lager_usb_enable,
     lager_usb_disable,
     lager_usb_toggle,

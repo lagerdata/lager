@@ -1,255 +1,161 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for cli.mcp.tools.box -- box and nets management MCP tools."""
+"""Unit tests for lager.mcp.tools.box -- on-box box_manage MCP tool."""
+
+import json
+from unittest.mock import patch
 
 import pytest
 
-from test.mcp.conftest import assert_lager_called_with
+from lager.mcp.schemas.bench import BenchDefinition, InstrumentDescriptor
+from lager.mcp.schemas.capability import CapabilityGraph, CapabilityNode, CapabilityRole
+from lager.mcp.schemas.net import NetDescriptor
 
 
 @pytest.mark.unit
 class TestBoxTools:
-    """Tests for box connectivity tools."""
+    """Tests for box_manage (health / reload)."""
 
-    def test_hello(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_hello
-        lager_hello(box="DEMO")
-        assert_lager_called_with(mock_subprocess, "hello", "--box", "DEMO")
-
-    def test_instruments(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_instruments
-        lager_instruments(box="DEMO")
-        assert_lager_called_with(mock_subprocess, "instruments", "--box", "DEMO")
-
-    def test_list_nets(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_list_nets
-        lager_list_nets(box="MY-BOX")
-        assert_lager_called_with(mock_subprocess, "nets", "--box", "MY-BOX")
-
-    # -- subprocess failure error handling -----------------------------------
-
-    def test_hello_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.box import lager_hello
-        result = lager_hello(box="B")
-        assert "Error" in result
-
-    def test_list_nets_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.box import lager_list_nets
-        result = lager_list_nets(box="B")
-        assert "Error" in result
-
-    def test_boxes_list_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.box import lager_boxes_list
-        result = lager_boxes_list()
-        assert "Error" in result
-
-    def test_nets_add_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.box import lager_nets_add
-        result = lager_nets_add(box="B", name="test-net", role="gpio", channel="0", address="1")
-        assert "Error" in result
-
-
-@pytest.mark.unit
-class TestBoxesManagement:
-    """Tests for boxes list/add/delete/edit/export/import."""
-
-    def test_boxes_list(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_list
-        lager_boxes_list()
-        assert_lager_called_with(mock_subprocess, "boxes")
-
-    def test_boxes_add(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_add
-        lager_boxes_add(name="NEW-BOX", ip="100.64.0.1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "boxes", "add", "--name", "NEW-BOX", "--ip", "100.64.0.1", "--yes",
+    @patch("lager.mcp.server_state.get_bench")
+    @patch("lager.mcp.config.get_box_version")
+    @patch("lager.mcp.config.get_box_id")
+    def test_box_manage_health(self, mock_box_id, mock_version, mock_get_bench):
+        mock_box_id.return_value = "demo-box"
+        mock_version.return_value = "1.0.0"
+        bench = BenchDefinition(
+            nets=[NetDescriptor(name="uart0", net_type="uart")],
+            instruments=[
+                InstrumentDescriptor(
+                    name="ps1",
+                    instrument_type="rigol_dp800",
+                    connection="USB::0x1234::INSTR",
+                    channels=["1"],
+                ),
+            ],
         )
+        mock_get_bench.return_value = bench
+        from lager.mcp.tools.box import box_manage
 
-    def test_boxes_delete(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_delete
-        lager_boxes_delete(name="OLD-BOX")
-        assert_lager_called_with(
-            mock_subprocess,
-            "boxes", "delete", "--name", "OLD-BOX", "--yes",
+        result = json.loads(box_manage("health"))
+        assert result["status"] == "ok"
+        assert result["box_id"] == "demo-box"
+        assert result["version"] == "1.0.0"
+        assert result["nets"] == 1
+        assert result["instruments"] == 1
+
+    @patch("lager.mcp.server_state.get_bench")
+    def test_list_nets(self, mock_get_bench):
+        bench = BenchDefinition(
+            nets=[
+                NetDescriptor(
+                    name="i2c1",
+                    net_type="i2c",
+                    instrument="aardvark",
+                    channel="0",
+                ),
+            ],
         )
+        mock_get_bench.return_value = bench
+        from lager.mcp.tools.box import list_nets
 
-    def test_boxes_add_all(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_add_all
-        lager_boxes_add_all()
-        assert_lager_called_with(mock_subprocess, "boxes", "add-all", "--yes")
+        result = json.loads(list_nets())
+        assert result["status"] == "ok"
+        assert result["count"] == 1
+        assert result["nets"][0]["name"] == "i2c1"
+        assert result["nets"][0]["type"] == "i2c"
+        assert result["nets"][0]["instrument"] == "aardvark"
+        assert result["nets"][0]["channel"] == "0"
 
-    def test_boxes_delete_all(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_delete_all
-        lager_boxes_delete_all()
-        assert_lager_called_with(mock_subprocess, "boxes", "delete-all", "--yes")
-
-    def test_boxes_edit_ip_only(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_edit
-        lager_boxes_edit(name="DEMO", ip="100.64.0.2")
-        assert_lager_called_with(
-            mock_subprocess,
-            "boxes", "edit", "--name", "DEMO", "--yes", "--ip", "100.64.0.2",
+    @patch("lager.mcp.server_state.get_bench")
+    def test_list_instruments(self, mock_get_bench):
+        bench = BenchDefinition(
+            instruments=[
+                InstrumentDescriptor(
+                    name="scope1",
+                    instrument_type="rigol_mso",
+                    connection="TCPIP::192.168.1.10::INSTR",
+                    channels=["CH1", "CH2"],
+                ),
+            ],
         )
+        mock_get_bench.return_value = bench
+        from lager.mcp.tools.box import list_instruments
 
-    def test_boxes_edit_new_name_only(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_edit
-        lager_boxes_edit(name="DEMO", new_name="DEMO-2")
-        assert_lager_called_with(
-            mock_subprocess,
-            "boxes", "edit", "--name", "DEMO", "--yes", "--new-name", "DEMO-2",
+        result = json.loads(list_instruments())
+        assert result["status"] == "ok"
+        assert result["count"] == 1
+        assert result["instruments"][0]["name"] == "scope1"
+        assert result["instruments"][0]["type"] == "rigol_mso"
+        assert result["instruments"][0]["connection"] == "TCPIP::192.168.1.10::INSTR"
+        assert result["instruments"][0]["channels"] == ["CH1", "CH2"]
+
+    @patch("lager.mcp.server_state.get_capability_graph")
+    @patch("lager.mcp.server_state.get_bench")
+    @patch("lager.mcp.server_state.reload_bench")
+    def test_box_manage_reload(self, mock_reload, mock_get_bench, mock_get_graph):
+        bench = BenchDefinition(
+            nets=[NetDescriptor(name="n1", net_type="gpio")],
+            instruments=[
+                InstrumentDescriptor(name="lj", instrument_type="labjack_t7", connection="usb", channels=[]),
+            ],
         )
-
-    def test_boxes_edit_all_fields(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_edit
-        lager_boxes_edit(
-            name="DEMO", ip="192.0.2.1", new_name="PROD",
-            user="admin", version="staging",
+        mock_get_bench.return_value = bench
+        graph = CapabilityGraph(
+            nodes=[
+                CapabilityNode(role=CapabilityRole.MEASURE, target="n1"),
+            ],
         )
-        assert_lager_called_with(
-            mock_subprocess,
-            "boxes", "edit", "--name", "DEMO", "--yes",
-            "--ip", "192.0.2.1", "--new-name", "PROD",
-            "--user", "admin", "--version", "staging",
-        )
+        mock_get_graph.return_value = graph
+        from lager.mcp.tools.box import box_manage
 
-    def test_boxes_edit_no_optional_fields(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_edit
-        lager_boxes_edit(name="DEMO")
-        assert_lager_called_with(
-            mock_subprocess,
-            "boxes", "edit", "--name", "DEMO", "--yes",
-        )
+        result = json.loads(box_manage("reload"))
+        mock_reload.assert_called_once()
+        assert result["status"] == "ok"
+        assert result["nets"] == 1
+        assert result["instruments"] == 1
+        assert result["capabilities"] == 1
 
-    def test_boxes_export_to_file(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_export
-        lager_boxes_export(output="/tmp/boxes.json")
-        assert_lager_called_with(
-            mock_subprocess,
-            "boxes", "export", "-o", "/tmp/boxes.json",
-        )
+    # -- server_state / config failure paths --------------------------------
 
-    def test_boxes_export_to_stdout(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_export
-        lager_boxes_export()
-        assert_lager_called_with(mock_subprocess, "boxes", "export")
+    @patch("lager.mcp.server_state.get_bench")
+    @patch("lager.mcp.config.get_box_version")
+    @patch("lager.mcp.config.get_box_id")
+    def test_box_manage_health_get_bench_failure(self, mock_box_id, mock_version, mock_get_bench):
+        mock_box_id.return_value = "b"
+        mock_version.return_value = "v"
+        mock_get_bench.side_effect = RuntimeError("bench unavailable")
+        from lager.mcp.tools.box import box_manage
 
-    def test_boxes_export_empty_string(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_export
-        lager_boxes_export(output="")
-        assert_lager_called_with(mock_subprocess, "boxes", "export")
+        with pytest.raises(RuntimeError, match="bench unavailable"):
+            box_manage("health")
 
-    def test_boxes_import_basic(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_import
-        lager_boxes_import(file="/tmp/boxes.json")
-        assert_lager_called_with(
-            mock_subprocess,
-            "boxes", "import", "/tmp/boxes.json", "--yes",
-        )
+    @patch("lager.mcp.server_state.get_bench")
+    def test_list_nets_get_bench_failure(self, mock_get_bench):
+        mock_get_bench.side_effect = RuntimeError("bench unavailable")
+        from lager.mcp.tools.box import list_nets
 
-    def test_boxes_import_with_merge(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_import
-        lager_boxes_import(file="/tmp/boxes.json", merge=True)
-        assert_lager_called_with(
-            mock_subprocess,
-            "boxes", "import", "/tmp/boxes.json", "--yes", "--merge",
-        )
+        with pytest.raises(RuntimeError, match="bench unavailable"):
+            list_nets()
 
-    def test_boxes_import_merge_false(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_boxes_import
-        lager_boxes_import(file="/tmp/boxes.json", merge=False)
-        assert_lager_called_with(
-            mock_subprocess,
-            "boxes", "import", "/tmp/boxes.json", "--yes",
-        )
+    @patch("lager.mcp.server_state.get_bench")
+    def test_list_instruments_get_bench_failure(self, mock_get_bench):
+        mock_get_bench.side_effect = RuntimeError("bench unavailable")
+        from lager.mcp.tools.box import list_instruments
 
+        with pytest.raises(RuntimeError, match="bench unavailable"):
+            list_instruments()
 
-@pytest.mark.unit
-class TestNetsManagement:
-    """Tests for nets add/delete/rename/batch/script tools."""
+    @patch("lager.mcp.server_state.get_capability_graph")
+    @patch("lager.mcp.server_state.get_bench")
+    @patch("lager.mcp.server_state.reload_bench")
+    def test_box_manage_reload_failure(
+        self, mock_reload, mock_get_bench, mock_get_graph,
+    ):
+        mock_reload.side_effect = RuntimeError("reload failed")
+        mock_get_bench.return_value = BenchDefinition()
+        mock_get_graph.return_value = CapabilityGraph()
+        from lager.mcp.tools.box import box_manage
 
-    def test_nets_add(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_nets_add
-        lager_nets_add(
-            box="DEMO", name="i2c1", role="i2c",
-            channel="0", address="0x76",
-        )
-        assert_lager_called_with(
-            mock_subprocess,
-            "nets", "add", "i2c1", "i2c", "0", "0x76", "--box", "DEMO",
-        )
-
-    def test_nets_delete(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_nets_delete
-        lager_nets_delete(box="DEMO", name="i2c1", net_type="i2c")
-        assert_lager_called_with(
-            mock_subprocess,
-            "nets", "delete", "i2c1", "i2c", "--yes", "--box", "DEMO",
-        )
-
-    def test_nets_rename(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_nets_rename
-        lager_nets_rename(box="DEMO", name="i2c1", new_name="sensor_bus")
-        assert_lager_called_with(
-            mock_subprocess,
-            "nets", "rename", "i2c1", "sensor_bus", "--box", "DEMO",
-        )
-
-    def test_nets_add_all(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_nets_add_all
-        lager_nets_add_all(box="DEMO")
-        assert_lager_called_with(
-            mock_subprocess,
-            "nets", "add-all", "--yes", "--box", "DEMO",
-        )
-
-    def test_nets_add_batch(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_nets_add_batch
-        lager_nets_add_batch(box="DEMO", json_file="/tmp/nets.json")
-        assert_lager_called_with(
-            mock_subprocess,
-            "nets", "add-batch", "/tmp/nets.json", "--box", "DEMO",
-        )
-
-    def test_nets_delete_all(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_nets_delete_all
-        lager_nets_delete_all(box="DEMO")
-        assert_lager_called_with(
-            mock_subprocess,
-            "nets", "delete-all", "--yes", "--box", "DEMO",
-        )
-
-    def test_nets_set_script(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_nets_set_script
-        lager_nets_set_script(
-            box="DEMO", name="debug1", script_path="/tmp/connect.jlink",
-        )
-        assert_lager_called_with(
-            mock_subprocess,
-            "nets", "set-script", "debug1", "/tmp/connect.jlink", "--box", "DEMO",
-        )
-
-    def test_nets_remove_script(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_nets_remove_script
-        lager_nets_remove_script(box="DEMO", name="debug1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "nets", "remove-script", "debug1", "--box", "DEMO",
-        )
-
-    def test_nets_show_script(self, mock_subprocess):
-        from cli.mcp.tools.box import lager_nets_show_script
-        lager_nets_show_script(box="DEMO", name="debug1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "nets", "show-script", "debug1", "--box", "DEMO",
-        )
+        with pytest.raises(RuntimeError, match="reload failed"):
+            box_manage("reload")

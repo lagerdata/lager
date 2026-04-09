@@ -1,123 +1,172 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for MCP electronic load tools (cli.mcp.tools.eload)."""
+"""Unit tests for MCP electronic load tools (lager.mcp.tools.eload)."""
+
+import json
+from unittest.mock import patch, MagicMock
 
 import pytest
-from test.mcp.conftest import assert_lager_called_with
+from lager import NetType
 
 
 @pytest.mark.unit
 @pytest.mark.eload
 class TestEloadTools:
-    """Verify each electronic load tool builds the correct lager CLI command."""
+    """Verify each electronic load tool calls the correct Net API."""
 
     # -- cc (constant current) -------------------------------------------
 
-    def test_cc_read(self, mock_subprocess):
-        from cli.mcp.tools.eload import lager_eload_cc
-        lager_eload_cc(box="E", net="eload1")
-        assert_lager_called_with(
-            mock_subprocess, "eload", "eload1", "cc", "--box", "E",
-        )
+    @patch("lager.Net.get")
+    def test_cc_read(self, mock_get):
+        eload = MagicMock()
+        eload.current.return_value = 1.5
+        mock_get.return_value = eload
+        from lager.mcp.tools.eload import eload_set
 
-    def test_cc_set(self, mock_subprocess):
-        from cli.mcp.tools.eload import lager_eload_cc
-        lager_eload_cc(box="E", net="eload1", value=1.5)
-        assert_lager_called_with(
-            mock_subprocess, "eload", "eload1", "cc", "1.5", "--box", "E",
-        )
+        result = json.loads(eload_set(net="eload1", mode="cc"))
+        mock_get.assert_called_once_with("eload1", type=NetType.ELoad)
+        eload.current.assert_called_once_with(None)
+        assert result["status"] == "ok"
+        assert result["mode"] == "cc"
+        assert result["current"] == 1.5
+
+    @patch("lager.Net.get")
+    def test_cc_set(self, mock_get):
+        eload = MagicMock()
+        mock_get.return_value = eload
+        from lager.mcp.tools.eload import eload_set
+
+        result = json.loads(eload_set(net="eload1", mode="cc", value=1.5))
+        eload.current.assert_called_once_with(1.5)
+        assert result["current"] == 1.5
 
     # -- cv (constant voltage) -------------------------------------------
 
-    def test_cv_read(self, mock_subprocess):
-        from cli.mcp.tools.eload import lager_eload_cv
-        lager_eload_cv(box="E", net="eload1")
-        assert_lager_called_with(
-            mock_subprocess, "eload", "eload1", "cv", "--box", "E",
-        )
+    @patch("lager.Net.get")
+    def test_cv_read(self, mock_get):
+        eload = MagicMock()
+        eload.voltage.return_value = 12.0
+        mock_get.return_value = eload
+        from lager.mcp.tools.eload import eload_set
 
-    def test_cv_set(self, mock_subprocess):
-        from cli.mcp.tools.eload import lager_eload_cv
-        lager_eload_cv(box="E", net="eload1", value=12.0)
-        assert_lager_called_with(
-            mock_subprocess, "eload", "eload1", "cv", "12.0", "--box", "E",
-        )
+        result = json.loads(eload_set(net="eload1", mode="cv"))
+        eload.voltage.assert_called_once_with(None)
+        assert result["voltage"] == 12.0
+
+    @patch("lager.Net.get")
+    def test_cv_set(self, mock_get):
+        eload = MagicMock()
+        mock_get.return_value = eload
+        from lager.mcp.tools.eload import eload_set
+
+        result = json.loads(eload_set(net="eload1", mode="cv", value=12.0))
+        eload.voltage.assert_called_once_with(12.0)
+        assert result["voltage"] == 12.0
 
     # -- cr (constant resistance) ----------------------------------------
 
-    def test_cr_read(self, mock_subprocess):
-        from cli.mcp.tools.eload import lager_eload_cr
-        lager_eload_cr(box="E", net="eload1")
-        assert_lager_called_with(
-            mock_subprocess, "eload", "eload1", "cr", "--box", "E",
-        )
+    @patch("lager.Net.get")
+    def test_cr_read(self, mock_get):
+        eload = MagicMock()
+        eload.resistance.return_value = 100.0
+        mock_get.return_value = eload
+        from lager.mcp.tools.eload import eload_set
 
-    def test_cr_set(self, mock_subprocess):
-        from cli.mcp.tools.eload import lager_eload_cr
-        lager_eload_cr(box="E", net="eload1", value=100.0)
-        assert_lager_called_with(
-            mock_subprocess, "eload", "eload1", "cr", "100.0", "--box", "E",
-        )
+        result = json.loads(eload_set(net="eload1", mode="cr"))
+        eload.resistance.assert_called_once_with(None)
+        assert result["resistance"] == 100.0
+
+    @patch("lager.Net.get")
+    def test_cr_set(self, mock_get):
+        eload = MagicMock()
+        mock_get.return_value = eload
+        from lager.mcp.tools.eload import eload_set
+
+        result = json.loads(eload_set(net="eload1", mode="cr", value=100.0))
+        eload.resistance.assert_called_once_with(100.0)
+        assert result["resistance"] == 100.0
 
     # -- cp (constant power) ---------------------------------------------
 
-    def test_cp_read(self, mock_subprocess):
-        from cli.mcp.tools.eload import lager_eload_cp
-        lager_eload_cp(box="E", net="eload1")
-        assert_lager_called_with(
-            mock_subprocess, "eload", "eload1", "cp", "--box", "E",
-        )
+    @patch("lager.Net.get")
+    def test_cp_read(self, mock_get):
+        eload = MagicMock()
+        eload.power.return_value = 25.0
+        mock_get.return_value = eload
+        from lager.mcp.tools.eload import eload_set
 
-    def test_cp_set(self, mock_subprocess):
-        from cli.mcp.tools.eload import lager_eload_cp
-        lager_eload_cp(box="E", net="eload1", value=25.0)
-        assert_lager_called_with(
-            mock_subprocess, "eload", "eload1", "cp", "25.0", "--box", "E",
-        )
+        result = json.loads(eload_set(net="eload1", mode="cp"))
+        eload.power.assert_called_once_with(None)
+        assert result["power"] == 25.0
+
+    @patch("lager.Net.get")
+    def test_cp_set(self, mock_get):
+        eload = MagicMock()
+        mock_get.return_value = eload
+        from lager.mcp.tools.eload import eload_set
+
+        result = json.loads(eload_set(net="eload1", mode="cp", value=25.0))
+        eload.power.assert_called_once_with(25.0)
+        assert result["power"] == 25.0
 
     # -- state -----------------------------------------------------------
 
-    def test_state(self, mock_subprocess):
-        from cli.mcp.tools.eload import lager_eload_state
-        lager_eload_state(box="E", net="eload1")
-        assert_lager_called_with(
-            mock_subprocess, "eload", "eload1", "state", "--box", "E",
-        )
+    @patch("lager.Net.get")
+    def test_state(self, mock_get):
+        eload = MagicMock()
+        eload.measured_voltage.return_value = 5.0
+        eload.measured_current.return_value = 0.2
+        eload.measured_power.return_value = 1.0
+        eload.mode.return_value = "cc"
+        mock_get.return_value = eload
+        from lager.mcp.tools.eload import eload_state
 
-    # -- subprocess failure error handling -----------------------------------
+        result = json.loads(eload_state(net="eload1"))
+        assert result["status"] == "ok"
+        assert result["measured_voltage"] == 5.0
+        assert result["measured_current"] == 0.2
+        assert result["measured_power"] == 1.0
+        assert result["mode"] == "cc"
 
-    def test_cc_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.eload import lager_eload_cc
-        result = lager_eload_cc(box="B", net="eload1")
-        assert "Error" in result
+    # -- Net.get / device errors -----------------------------------------
 
-    def test_cv_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.eload import lager_eload_cv
-        result = lager_eload_cv(box="B", net="eload1")
-        assert "Error" in result
+    @patch("lager.Net.get")
+    def test_cc_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.eload import eload_set
 
-    def test_cr_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.eload import lager_eload_cr
-        result = lager_eload_cr(box="B", net="eload1")
-        assert "Error" in result
+        with pytest.raises(RuntimeError, match="device not found"):
+            eload_set(net="eload1", mode="cc")
 
-    def test_cp_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.eload import lager_eload_cp
-        result = lager_eload_cp(box="B", net="eload1")
-        assert "Error" in result
+    @patch("lager.Net.get")
+    def test_cv_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.eload import eload_set
 
-    def test_state_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.eload import lager_eload_state
-        result = lager_eload_state(box="B", net="eload1")
-        assert "Error" in result
+        with pytest.raises(RuntimeError, match="device not found"):
+            eload_set(net="eload1", mode="cv")
+
+    @patch("lager.Net.get")
+    def test_cr_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.eload import eload_set
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            eload_set(net="eload1", mode="cr")
+
+    @patch("lager.Net.get")
+    def test_cp_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.eload import eload_set
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            eload_set(net="eload1", mode="cp")
+
+    @patch("lager.Net.get")
+    def test_state_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.eload import eload_state
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            eload_state(net="eload1")

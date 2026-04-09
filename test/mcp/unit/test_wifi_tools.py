@@ -1,97 +1,176 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for WiFi MCP tools -- verify CLI command construction."""
+"""Unit tests for WiFi MCP tools (lager.mcp.tools.wifi) — subprocess / nmcli / iwconfig."""
+
+import json
+import subprocess
+from unittest.mock import MagicMock, patch
 
 import pytest
-from test.mcp.conftest import assert_lager_called_with
 
 
 @pytest.mark.unit
 class TestWifiTools:
-    """Test all 4 WiFi tool functions build the correct lager CLI commands."""
+    """Verify WiFi tools invoke subprocess.run correctly and return JSON."""
 
-    def test_status(self, mock_subprocess):
-        from cli.mcp.tools.wifi import lager_wifi_status
-        lager_wifi_status(box="DEMO")
-        assert_lager_called_with(
-            mock_subprocess,
-            "wifi", "status", "--box", "DEMO",
+    @patch("lager.mcp.tools.wifi.subprocess.run")
+    def test_status(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='wlan0     IEEE 802.11  ESSID:"MyNet"\n'
+            "          Signal level=-50 dBm  ",
+            stderr="",
         )
+        from lager.mcp.tools.wifi import wifi_status
 
-    def test_scan_default_interface(self, mock_subprocess):
-        from cli.mcp.tools.wifi import lager_wifi_scan
-        lager_wifi_scan(box="DEMO")
-        assert_lager_called_with(
-            mock_subprocess,
-            "wifi", "access-points",
-            "--interface", "wlan0", "--box", "DEMO",
-        )
+        result = json.loads(wifi_status())
+        mock_run.assert_called_once()
+        assert mock_run.call_args[0][0][:2] == ["iwconfig", "wlan0"]
+        assert result["status"] == "ok"
+        assert result["ssid"] == "MyNet"
+        assert result["state"] == "connected"
 
-    def test_scan_custom_interface(self, mock_subprocess):
-        from cli.mcp.tools.wifi import lager_wifi_scan
-        lager_wifi_scan(box="DEMO", interface="wlan1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "wifi", "access-points",
-            "--interface", "wlan1", "--box", "DEMO",
+    @patch("lager.mcp.tools.wifi.subprocess.run")
+    def test_scan_default_interface(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=(
+                'Cell 01 - Address: AA:BB:CC:DD:EE:01\n'
+                '                    ESSID:"NetA"\n'
+                "                    Signal level=-60 dBm\n"
+                "                    Encryption key:off\n"
+            ),
+            stderr="",
         )
+        from lager.mcp.tools.wifi import wifi_scan
 
-    def test_connect_ssid_only(self, mock_subprocess):
-        from cli.mcp.tools.wifi import lager_wifi_connect
-        lager_wifi_connect(box="DEMO", ssid="OpenNet")
-        assert_lager_called_with(
-            mock_subprocess,
-            "wifi", "connect", "--ssid", "OpenNet", "--box", "DEMO",
-        )
+        result = json.loads(wifi_scan())
+        mock_run.assert_called_once()
+        assert mock_run.call_args[0][0] == ["iwlist", "wlan0", "scan"]
+        assert result["status"] == "ok"
+        assert result["interface"] == "wlan0"
+        assert len(result["access_points"]) >= 1
+        assert result["access_points"][0]["ssid"] == "NetA"
 
-    def test_connect_with_password_and_interface(self, mock_subprocess):
-        from cli.mcp.tools.wifi import lager_wifi_connect
-        lager_wifi_connect(
-            box="DEMO", ssid="MyWiFi",
-            password="secret123", interface="wlan1",
+    @patch("lager.mcp.tools.wifi.subprocess.run")
+    def test_scan_custom_interface(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=(
+                'Cell 01 - Address: 11:22:33:44:55:66\n'
+                '                    ESSID:"Other"\n'
+                "                    Signal level=-70 dBm\n"
+            ),
+            stderr="",
         )
-        assert_lager_called_with(
-            mock_subprocess,
-            "wifi", "connect", "--ssid", "MyWiFi", "--box", "DEMO",
-            "--password", "secret123", "--interface", "wlan1",
-        )
+        from lager.mcp.tools.wifi import wifi_scan
 
-    def test_delete(self, mock_subprocess):
-        from cli.mcp.tools.wifi import lager_wifi_delete
-        lager_wifi_delete(box="DEMO", ssid="OldNetwork")
-        assert_lager_called_with(
-            mock_subprocess,
-            "wifi", "delete-connection", "OldNetwork",
-            "--yes", "--box", "DEMO",
+        json.loads(wifi_scan(interface="wlan1"))
+        mock_run.assert_called_once()
+        assert mock_run.call_args[0][0] == ["iwlist", "wlan1", "scan"]
+
+    @patch("lager.mcp.tools.wifi.subprocess.run")
+    def test_connect_ssid_only(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="connected", stderr="")
+        from lager.mcp.tools.wifi import wifi_connect
+
+        result = json.loads(wifi_connect(ssid="OpenNet"))
+        mock_run.assert_called_once()
+        cmd = mock_run.call_args[0][0]
+        assert cmd[:5] == ["nmcli", "dev", "wifi", "connect", "OpenNet"]
+        assert "password" not in cmd
+        assert result["connected"] is True
+
+    @patch("lager.mcp.tools.wifi.subprocess.run")
+    def test_connect_with_password_and_interface(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
+        from lager.mcp.tools.wifi import wifi_connect
+
+        json.loads(
+            wifi_connect(
+                ssid="MyWiFi",
+                password="secret123",
+                interface="wlan1",
+            )
         )
+        cmd = mock_run.call_args[0][0]
+        assert cmd == [
+            "nmcli", "dev", "wifi", "connect", "MyWiFi",
+            "password", "secret123",
+            "ifname", "wlan1",
+        ]
+
+    @patch("lager.mcp.tools.wifi.subprocess.run")
+    def test_delete(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        from lager.mcp.tools.wifi import wifi_delete
+
+        result = json.loads(wifi_delete(ssid="OldNetwork"))
+        mock_run.assert_called_once_with(
+            ["nmcli", "connection", "delete", "OldNetwork"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result["deleted"] is True
 
     # -- error handling --------------------------------
 
-    def test_wifi_status_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.wifi import lager_wifi_status
-        result = lager_wifi_status(box="B")
-        assert "Error" in result
+    @patch("lager.mcp.tools.wifi.subprocess.run")
+    def test_wifi_status_subprocess_failure(self, mock_run):
+        mock_run.side_effect = OSError("device not found")
+        from lager.mcp.tools.wifi import wifi_status
 
-    def test_wifi_scan_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.wifi import lager_wifi_scan
-        result = lager_wifi_scan(box="B")
-        assert "Error" in result
+        result = json.loads(wifi_status())
+        assert result["status"] == "ok"
+        assert result["state"] == "error"
+        assert "device not found" in result["error"]
 
-    def test_wifi_connect_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.wifi import lager_wifi_connect
-        result = lager_wifi_connect(box="B", ssid="test")
-        assert "Error" in result
+    @patch("lager.mcp.tools.wifi.subprocess.run")
+    def test_wifi_scan_subprocess_failure(self, mock_run):
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stdout="", stderr="device not found"),
+            MagicMock(returncode=1, stdout="", stderr="still bad"),
+        ]
+        from lager.mcp.tools.wifi import wifi_scan
 
-    def test_wifi_delete_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.wifi import lager_wifi_delete
-        result = lager_wifi_delete(box="B", ssid="test")
-        assert "Error" in result
+        result = json.loads(wifi_scan())
+        assert result["status"] == "error"
+        assert "Could not scan" in result["error"]
+
+    @patch("lager.mcp.tools.wifi.subprocess.run")
+    def test_wifi_connect_subprocess_failure(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="device not found",
+        )
+        from lager.mcp.tools.wifi import wifi_connect
+
+        result = json.loads(wifi_connect(ssid="test"))
+        assert result["status"] == "error"
+        assert result["connected"] is False
+        assert "device not found" in result["error"]
+
+    @patch("lager.mcp.tools.wifi.subprocess.run")
+    def test_wifi_connect_timeout(self, mock_run):
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="nmcli", timeout=30)
+        from lager.mcp.tools.wifi import wifi_connect
+
+        result = json.loads(wifi_connect(ssid="test"))
+        assert result["status"] == "error"
+        assert "timeout" in result["error"].lower()
+
+    @patch("lager.mcp.tools.wifi.subprocess.run")
+    def test_wifi_delete_subprocess_failure(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stdout="",
+            stderr="device not found",
+        )
+        from lager.mcp.tools.wifi import wifi_delete
+
+        result = json.loads(wifi_delete(ssid="test"))
+        assert result["status"] == "error"
+        assert result["deleted"] is False

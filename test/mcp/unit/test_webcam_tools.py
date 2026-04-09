@@ -1,99 +1,126 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for MCP webcam tools (cli.mcp.tools.webcam)."""
+"""Unit tests for MCP webcam tools (lager.mcp.tools.webcam)."""
+
+import json
+from unittest.mock import MagicMock, patch
 
 import pytest
-from test.mcp.conftest import assert_lager_called_with
+from lager import NetType
 
 
 @pytest.mark.unit
 class TestWebcamTools:
-    """Verify each webcam tool builds the correct lager CLI command."""
+    """Verify each webcam tool calls the correct Net API."""
 
     # -- start ---------------------------------------------------------------
 
-    def test_start_with_net(self, mock_subprocess):
-        from cli.mcp.tools.webcam import lager_webcam_start
-        lager_webcam_start(box="X", net="cam1")
-        assert_lager_called_with(
-            mock_subprocess, "webcam", "cam1", "start", "--box", "X",
-        )
+    @patch("lager.mcp.tools.webcam._box_ip", return_value="10.0.0.5")
+    @patch("lager.Net.get")
+    def test_start(self, mock_get, _mock_box_ip):
+        cam = MagicMock()
+        cam.start.return_value = {"url": "http://10.0.0.5:8080/stream", "port": 8080}
+        mock_get.return_value = cam
+        from lager.mcp.tools.webcam import webcam_start
 
-    def test_start_without_net(self, mock_subprocess):
-        from cli.mcp.tools.webcam import lager_webcam_start
-        lager_webcam_start(box="X")
-        assert_lager_called_with(
-            mock_subprocess, "webcam", "start", "--box", "X",
-        )
+        result = json.loads(webcam_start(net="cam1"))
+        mock_get.assert_called_once_with("cam1", type=NetType.Webcam)
+        cam.start.assert_called_once_with(box_ip="10.0.0.5")
+        assert result["status"] == "ok"
+        assert result["net"] == "cam1"
+        assert result["url"] == "http://10.0.0.5:8080/stream"
+        assert result["port"] == 8080
 
     # -- stop ----------------------------------------------------------------
 
-    def test_stop_with_net(self, mock_subprocess):
-        from cli.mcp.tools.webcam import lager_webcam_stop
-        lager_webcam_stop(box="X", net="cam1")
-        assert_lager_called_with(
-            mock_subprocess, "webcam", "cam1", "stop", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_stop(self, mock_get):
+        cam = MagicMock()
+        cam.stop.return_value = True
+        mock_get.return_value = cam
+        from lager.mcp.tools.webcam import webcam_stop
 
-    def test_stop_without_net(self, mock_subprocess):
-        from cli.mcp.tools.webcam import lager_webcam_stop
-        lager_webcam_stop(box="X")
-        assert_lager_called_with(
-            mock_subprocess, "webcam", "stop", "--box", "X",
-        )
+        result = json.loads(webcam_stop(net="cam1"))
+        mock_get.assert_called_once_with("cam1", type=NetType.Webcam)
+        cam.stop.assert_called_once_with()
+        assert result["stopped"] is True
 
     # -- url -----------------------------------------------------------------
 
-    def test_url_with_net(self, mock_subprocess):
-        from cli.mcp.tools.webcam import lager_webcam_url
-        lager_webcam_url(box="X", net="cam1")
-        assert_lager_called_with(
-            mock_subprocess, "webcam", "cam1", "url", "--box", "X",
-        )
+    @patch("lager.mcp.tools.webcam._box_ip", return_value="10.0.0.5")
+    @patch("lager.Net.get")
+    def test_url(self, mock_get, _mock_box_ip):
+        cam = MagicMock()
+        cam.get_url.return_value = "http://10.0.0.5:8080/stream"
+        mock_get.return_value = cam
+        from lager.mcp.tools.webcam import webcam_url
 
-    def test_url_without_net(self, mock_subprocess):
-        from cli.mcp.tools.webcam import lager_webcam_url
-        lager_webcam_url(box="X")
-        assert_lager_called_with(
-            mock_subprocess, "webcam", "url", "--box", "X",
-        )
+        result = json.loads(webcam_url(net="cam1"))
+        mock_get.assert_called_once_with("cam1", type=NetType.Webcam)
+        cam.get_url.assert_called_once_with(box_ip="10.0.0.5")
+        assert result["url"] == "http://10.0.0.5:8080/stream"
 
-    # -- start-all / stop-all ------------------------------------------------
+    # -- info ----------------------------------------------------------------
 
-    def test_start_all(self, mock_subprocess):
-        from cli.mcp.tools.webcam import lager_webcam_start_all
-        lager_webcam_start_all(box="X")
-        assert_lager_called_with(
-            mock_subprocess, "webcam", "start-all", "--box", "X",
-        )
+    @patch("lager.mcp.tools.webcam._box_ip", return_value="10.0.0.5")
+    @patch("lager.Net.get")
+    def test_info_with_payload(self, mock_get, _mock_box_ip):
+        cam = MagicMock()
+        cam.is_active.return_value = True
+        cam.get_info.return_value = {"codec": "mjpeg"}
+        mock_get.return_value = cam
+        from lager.mcp.tools.webcam import webcam_info
 
-    def test_stop_all(self, mock_subprocess):
-        from cli.mcp.tools.webcam import lager_webcam_stop_all
-        lager_webcam_stop_all(box="X")
-        assert_lager_called_with(
-            mock_subprocess, "webcam", "stop-all", "--box", "X",
-        )
+        result = json.loads(webcam_info(net="cam1"))
+        mock_get.assert_called_once_with("cam1", type=NetType.Webcam)
+        cam.get_info.assert_called_once_with(box_ip="10.0.0.5")
+        assert result["active"] is True
+        assert result["info"] == {"codec": "mjpeg"}
 
-    # -- subprocess failure error handling -----------------------------------
+    @patch("lager.mcp.tools.webcam._box_ip", return_value="10.0.0.5")
+    @patch("lager.Net.get")
+    def test_info_empty(self, mock_get, _mock_box_ip):
+        cam = MagicMock()
+        cam.is_active.return_value = False
+        cam.get_info.return_value = None
+        mock_get.return_value = cam
+        from lager.mcp.tools.webcam import webcam_info
 
-    def test_webcam_start_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.webcam import lager_webcam_start
-        result = lager_webcam_start(box="B", net="webcam1")
-        assert "Error" in result
+        result = json.loads(webcam_info(net="cam1"))
+        assert result["active"] is False
+        assert "info" not in result
 
-    def test_webcam_stop_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.webcam import lager_webcam_stop
-        result = lager_webcam_stop(box="B", net="webcam1")
-        assert "Error" in result
+    # -- Net.get / device errors ---------------------------------------------
 
-    def test_webcam_url_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.webcam import lager_webcam_url
-        result = lager_webcam_url(box="B", net="webcam1")
-        assert "Error" in result
+    @patch("lager.Net.get")
+    def test_webcam_start_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.webcam import webcam_start
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            webcam_start(net="webcam1")
+
+    @patch("lager.Net.get")
+    def test_webcam_stop_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.webcam import webcam_stop
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            webcam_stop(net="webcam1")
+
+    @patch("lager.Net.get")
+    def test_webcam_url_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.webcam import webcam_url
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            webcam_url(net="webcam1")
+
+    @patch("lager.Net.get")
+    def test_webcam_info_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.webcam import webcam_info
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            webcam_info(net="webcam1")

@@ -13,7 +13,7 @@ class TestToolRegistration:
     """Verify that all tool modules import correctly and register tools."""
 
     def test_all_tool_modules_imported(self):
-        """Every tool submodule under cli.mcp.tools should import without error."""
+        """Every tool submodule under lager.mcp.tools should import without error."""
         module_names = [
             "arm",
             "battery",
@@ -40,25 +40,25 @@ class TestToolRegistration:
             "wifi",
         ]
         for name in module_names:
-            mod = importlib.import_module(f"cli.mcp.tools.{name}")
-            assert mod is not None, f"Failed to import cli.mcp.tools.{name}"
+            mod = importlib.import_module(f"lager.mcp.tools.{name}")
+            assert mod is not None, f"Failed to import lager.mcp.tools.{name}"
 
     def test_total_tool_count(self):
         """The MCP server should register at least 160 tools."""
-        from cli.mcp.server import mcp
+        from lager.mcp.server import mcp
 
         loop = asyncio.new_event_loop()
         try:
             tools = loop.run_until_complete(mcp.list_tools())
         finally:
             loop.close()
-        assert len(tools) >= 159, (
-            f"Expected at least 159 tools, got {len(tools)}"
+        assert len(tools) >= 156, (
+            f"Expected at least 156 tools, got {len(tools)}"
         )
 
     def test_tool_names_unique(self):
         """Every registered tool name must be unique (no duplicates)."""
-        from cli.mcp.server import mcp
+        from lager.mcp.server import mcp
 
         loop = asyncio.new_event_loop()
         try:
