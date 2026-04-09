@@ -363,27 +363,36 @@ def _assemble(
     # Nets
     nets = [_net_from_raw(rn) for rn in raw_nets]
 
-    # Merge bench_cfg net overrides (aliases, safety limits, voltage domains)
+    # Merge bench_cfg net overrides (aliases, safety limits, voltage domains).
+    # Each override is applied independently so one malformed entry can't
+    # corrupt the rest of the bench.
     net_overrides: dict[str, dict[str, Any]] = {
-        o["name"]: o for o in bench_cfg.get("net_overrides", []) if "name" in o
+        o["name"]: o for o in bench_cfg.get("net_overrides", []) if isinstance(o, dict) and "name" in o
     }
     for nd in nets:
         ovr = net_overrides.get(nd.name)
-        if ovr:
-            if "aliases" in ovr:
-                nd.aliases = ovr["aliases"]
-            if "voltage_domain" in ovr:
+        if not ovr:
+            continue
+        if "aliases" in ovr:
+            nd.aliases = ovr["aliases"]
+        if "voltage_domain" in ovr and isinstance(ovr["voltage_domain"], dict):
+            try:
                 nd.voltage_domain = VoltageRange(**ovr["voltage_domain"])
-            if "safety_limits" in ovr:
+            except TypeError as e:
+                logger.warning("net %s: bad voltage_domain override (%s)", nd.name, e)
+        if "safety_limits" in ovr and isinstance(ovr["safety_limits"], dict):
+            try:
                 nd.safety_limits = SafetyLimits(**ovr["safety_limits"])
-            if "description" in ovr:
-                nd.description = ovr["description"]
-            if "dut_connection" in ovr:
-                nd.dut_connection = ovr["dut_connection"]
-            if "test_hints" in ovr:
-                nd.test_hints = ovr["test_hints"]
-            if "tags" in ovr:
-                nd.tags = ovr["tags"]
+            except TypeError as e:
+                logger.warning("net %s: bad safety_limits override (%s)", nd.name, e)
+        if "description" in ovr:
+            nd.description = ovr["description"]
+        if "dut_connection" in ovr:
+            nd.dut_connection = ovr["dut_connection"]
+        if "test_hints" in ovr:
+            nd.test_hints = ovr["test_hints"]
+        if "tags" in ovr:
+            nd.tags = ovr["tags"]
 
     # Instruments
     instruments = [
@@ -394,26 +403,50 @@ def _assemble(
             channels=ri.get("channels", []),
         )
         for ri in raw_instruments
+        if isinstance(ri, dict)
     ]
 
-    # DUT slots
-    dut_slots = [DUTSlot(**ds) for ds in bench_cfg.get("dut_slots", [])]
+    # DUT slots — skip individual malformed entries instead of failing the
+    # whole bench load.
+    dut_slots: list[DUTSlot] = []
+    for ds in bench_cfg.get("dut_slots", []):
+        if not isinstance(ds, dict):
+            logger.warning("dut_slots: skipping non-dict entry %r", ds)
+            continue
+        try:
+            dut_slots.append(DUTSlot(**ds))
+        except TypeError as e:
+            logger.warning("dut_slots: skipping malformed entry %r (%s)", ds, e)
 
-    # Interfaces
-    static_ifaces = [InterfaceDescriptor(**iface) for iface in bench_cfg.get("interfaces", [])]
+    # Interfaces — same per-entry tolerance.
+    static_ifaces: list[InterfaceDescriptor] = []
+    for iface in bench_cfg.get("interfaces", []):
+        if not isinstance(iface, dict):
+            logger.warning("interfaces: skipping non-dict entry %r", iface)
+            continue
+        try:
+            static_ifaces.append(InterfaceDescriptor(**iface))
+        except TypeError as e:
+            logger.warning("interfaces: skipping malformed entry %r (%s)", iface, e)
     inferred_ifaces = _infer_interfaces(nets)
     seen_names = {i.name for i in static_ifaces}
     interfaces = static_ifaces + [i for i in inferred_ifaces if i.name not in seen_names]
 
-    # Safety constraints
+    # Safety constraints — bench-level, fall back to None on bad input.
     constraints = None
-    if "constraints" in bench_cfg:
-        constraints = SafetyConstraints(**bench_cfg["constraints"])
+    if "constraints" in bench_cfg and isinstance(bench_cfg["constraints"], dict):
+        try:
+            constraints = SafetyConstraints(**bench_cfg["constraints"])
+        except TypeError as e:
+            logger.warning("bench.json: bad constraints block (%s); ignoring", e)
 
-    # Calibration
+    # Calibration — bench-level, fall back to default empty status.
     cal = CalibrationStatus()
-    if "calibration" in bench_cfg:
-        cal = CalibrationStatus(**bench_cfg["calibration"])
+    if "calibration" in bench_cfg and isinstance(bench_cfg["calibration"], dict):
+        try:
+            cal = CalibrationStatus(**bench_cfg["calibration"])
+        except TypeError as e:
+            logger.warning("bench.json: bad calibration block (%s); ignoring", e)
 
     return BenchDefinition(
         box_id=box_id,
