@@ -1,158 +1,162 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for MCP debug tools (cli.mcp.tools.debug)."""
+"""Unit tests for MCP debug tools (lager.mcp.tools.debug).
+
+All hardware interaction is mocked — no real debug probes are used.
+"""
+
+import json
+from unittest.mock import patch, MagicMock
 
 import pytest
-from test.mcp.conftest import assert_lager_called_with
 
 
 @pytest.mark.unit
 class TestDebugTools:
-    """Verify each debug tool builds the correct lager CLI command."""
+    """Verify each on-box debug tool calls the correct Net API."""
 
-    # -- list nets -------------------------------------------------------
+    @patch("lager.Net.get")
+    def test_flash(self, mock_get):
+        dbg = MagicMock()
+        mock_get.return_value = dbg
+        from lager.mcp.tools.debug import debug_flash
+        result = json.loads(debug_flash(net="debug1", firmware_path="/tmp/fw.hex"))
+        dbg.flash.assert_called_once_with("/tmp/fw.hex")
+        assert result["status"] == "ok"
 
-    def test_list_nets(self, mock_subprocess):
-        from cli.mcp.tools.debug import lager_debug_list_nets
-        lager_debug_list_nets(box="X")
-        assert_lager_called_with(mock_subprocess, "debug", "--box", "X")
+    @patch("lager.Net.get")
+    def test_reset(self, mock_get):
+        dbg = MagicMock()
+        mock_get.return_value = dbg
+        from lager.mcp.tools.debug import debug_reset
+        result = json.loads(debug_reset(net="debug1", halt=True))
+        dbg.reset.assert_called_once_with(halt=True)
+        assert result["halt"] is True
 
-    # -- flash -----------------------------------------------------------
+    @patch("lager.Net.get")
+    def test_erase(self, mock_get):
+        dbg = MagicMock()
+        mock_get.return_value = dbg
+        from lager.mcp.tools.debug import debug_erase
+        result = json.loads(debug_erase(net="debug1"))
+        dbg.erase.assert_called_once()
+        assert result["erased"] is True
 
-    def test_flash_hex(self, mock_subprocess):
-        from cli.mcp.tools.debug import lager_debug_flash
-        lager_debug_flash(box="X", net="debug1", hex_file="fw.hex")
-        assert_lager_called_with(
-            mock_subprocess,
-            "debug", "debug1", "flash", "--box", "X", "--hex", "fw.hex",
-        )
+    @patch("lager.Net.get")
+    def test_connect(self, mock_get):
+        dbg = MagicMock()
+        mock_get.return_value = dbg
+        from lager.mcp.tools.debug import debug_connect
+        result = json.loads(debug_connect(net="debug1", speed=4000))
+        dbg.connect.assert_called_once_with(speed=4000)
+        assert result["connected"] is True
 
-    def test_flash_elf_with_erase(self, mock_subprocess):
-        from cli.mcp.tools.debug import lager_debug_flash
-        lager_debug_flash(box="X", net="debug1", elf_file="fw.elf", erase=True)
-        assert_lager_called_with(
-            mock_subprocess,
-            "debug", "debug1", "flash", "--box", "X",
-            "--elf", "fw.elf", "--erase",
-        )
+    @patch("lager.Net.get")
+    def test_connect_auto_speed(self, mock_get):
+        dbg = MagicMock()
+        mock_get.return_value = dbg
+        from lager.mcp.tools.debug import debug_connect
+        result = json.loads(debug_connect(net="debug1"))
+        dbg.connect.assert_called_once_with()
 
-    def test_flash_no_file(self, mock_subprocess):
-        from cli.mcp.tools.debug import lager_debug_flash
-        lager_debug_flash(box="X", net="debug1")
-        assert_lager_called_with(
-            mock_subprocess, "debug", "debug1", "flash", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_disconnect(self, mock_get):
+        dbg = MagicMock()
+        mock_get.return_value = dbg
+        from lager.mcp.tools.debug import debug_disconnect
+        result = json.loads(debug_disconnect(net="debug1"))
+        dbg.disconnect.assert_called_once()
+        assert result["connected"] is False
 
-    # -- reset -----------------------------------------------------------
+    @patch("lager.Net.get")
+    def test_read_memory(self, mock_get):
+        dbg = MagicMock()
+        dbg.read_memory.return_value = [0xDE, 0xAD]
+        mock_get.return_value = dbg
+        from lager.mcp.tools.debug import debug_read_memory
+        result = json.loads(debug_read_memory(net="debug1", address=0x08000000, length=2))
+        dbg.read_memory.assert_called_once_with(0x08000000, 2)
+        assert result["data"] == [0xDE, 0xAD]
 
-    def test_reset(self, mock_subprocess):
-        from cli.mcp.tools.debug import lager_debug_reset
-        lager_debug_reset(box="X", net="debug1")
-        assert_lager_called_with(
-            mock_subprocess, "debug", "debug1", "reset", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_gdbserver(self, mock_get):
+        dbg = MagicMock()
+        mock_get.return_value = dbg
+        from lager.mcp.tools.debug import debug_gdbserver
+        result = json.loads(debug_gdbserver(net="debug1", port=3333))
+        dbg.gdbserver.assert_called_once_with(port=3333)
+        assert result["gdbserver_port"] == 3333
 
-    # -- erase -----------------------------------------------------------
 
-    def test_erase(self, mock_subprocess):
-        from cli.mcp.tools.debug import lager_debug_erase
-        lager_debug_erase(box="X", net="debug1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "debug", "debug1", "erase", "--yes", "--box", "X",
-        )
+@pytest.mark.unit
+class TestRTTTools:
+    """Verify RTT tools create and use cached sessions correctly."""
 
-    # -- status ----------------------------------------------------------
+    @patch("lager.Net.get")
+    def test_rtt_write(self, mock_get):
+        rtt_session = MagicMock()
+        ctx_mgr = MagicMock()
+        ctx_mgr.__enter__ = MagicMock(return_value=rtt_session)
+        ctx_mgr.__exit__ = MagicMock(return_value=False)
+        dbg = MagicMock()
+        dbg.rtt.return_value = ctx_mgr
+        mock_get.return_value = dbg
 
-    def test_status(self, mock_subprocess):
-        from cli.mcp.tools.debug import lager_debug_status
-        lager_debug_status(box="X", net="debug1")
-        assert_lager_called_with(
-            mock_subprocess, "debug", "debug1", "status", "--box", "X",
-        )
+        from lager.mcp.tools.debug import rtt_write, _rtt_sessions
+        _rtt_sessions.clear()
 
-    # -- memrd -----------------------------------------------------------
+        result = json.loads(rtt_write(net="debug1", data="hello\n", channel=0))
+        rtt_session.write.assert_called_once_with(b"hello\n")
+        assert result["bytes_written"] == 6
 
-    def test_memrd(self, mock_subprocess):
-        from cli.mcp.tools.debug import lager_debug_memrd
-        lager_debug_memrd(
-            box="X", net="debug1",
-            start_addr="0x08000000", length="256",
-        )
-        assert_lager_called_with(
-            mock_subprocess,
-            "debug", "debug1", "memrd", "0x08000000", "256", "--box", "X",
-        )
+    @patch("lager.Net.get")
+    def test_rtt_read(self, mock_get):
+        rtt_session = MagicMock()
+        rtt_session.read_some.side_effect = [b"data", None]
+        ctx_mgr = MagicMock()
+        ctx_mgr.__enter__ = MagicMock(return_value=rtt_session)
+        ctx_mgr.__exit__ = MagicMock(return_value=False)
+        dbg = MagicMock()
+        dbg.rtt.return_value = ctx_mgr
+        mock_get.return_value = dbg
 
-    # -- health ----------------------------------------------------------
+        from lager.mcp.tools.debug import rtt_read, _rtt_sessions
+        _rtt_sessions.clear()
 
-    def test_health(self, mock_subprocess):
-        from cli.mcp.tools.debug import lager_debug_health
-        lager_debug_health(box="X", net="debug1")
-        assert_lager_called_with(
-            mock_subprocess, "debug", "debug1", "health", "--box", "X",
-        )
+        result = json.loads(rtt_read(net="debug1", channel=0, timeout_ms=500))
+        assert result["output"] == "data"
 
-    # -- disconnect ------------------------------------------------------
+    @patch("lager.Net.get")
+    def test_rtt_expect_match(self, mock_get):
+        rtt_session = MagicMock()
+        rtt_session.read_some.return_value = b"sensor: 42\n"
+        ctx_mgr = MagicMock()
+        ctx_mgr.__enter__ = MagicMock(return_value=rtt_session)
+        ctx_mgr.__exit__ = MagicMock(return_value=False)
+        dbg = MagicMock()
+        dbg.rtt.return_value = ctx_mgr
+        mock_get.return_value = dbg
 
-    def test_disconnect(self, mock_subprocess):
-        from cli.mcp.tools.debug import lager_debug_disconnect
-        lager_debug_disconnect(box="X", net="debug1")
-        assert_lager_called_with(
-            mock_subprocess, "debug", "debug1", "disconnect", "--box", "X",
-        )
+        from lager.mcp.tools.debug import rtt_expect, _rtt_sessions
+        _rtt_sessions.clear()
 
-    # -- gdbserver -------------------------------------------------------
+        result = json.loads(rtt_expect(net="debug1", pattern="sensor: 42", timeout_ms=1000))
+        assert result["matched"] is True
 
-    def test_gdbserver_defaults(self, mock_subprocess):
-        from cli.mcp.tools.debug import lager_debug_gdbserver
-        lager_debug_gdbserver(box="X", net="debug1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "debug", "debug1", "gdbserver", "--box", "X",
-            "--gdb-port", "2331",
-        )
+    @patch("lager.Net.get")
+    def test_rtt_expect_no_match(self, mock_get):
+        rtt_session = MagicMock()
+        rtt_session.read_some.return_value = None
+        ctx_mgr = MagicMock()
+        ctx_mgr.__enter__ = MagicMock(return_value=rtt_session)
+        ctx_mgr.__exit__ = MagicMock(return_value=False)
+        dbg = MagicMock()
+        dbg.rtt.return_value = ctx_mgr
+        mock_get.return_value = dbg
 
-    def test_gdbserver_all_options(self, mock_subprocess):
-        from cli.mcp.tools.debug import lager_debug_gdbserver
-        lager_debug_gdbserver(
-            box="X", net="debug1",
-            speed="4000", force=True, halt=True, reset=True, gdb_port=3333,
-        )
-        assert_lager_called_with(
-            mock_subprocess,
-            "debug", "debug1", "gdbserver", "--box", "X",
-            "--gdb-port", "3333",
-            "--speed", "4000", "--force", "--halt", "--reset",
-        )
+        from lager.mcp.tools.debug import rtt_expect, _rtt_sessions
+        _rtt_sessions.clear()
 
-    # -- subprocess failure error handling -----------------------------------
-
-    def test_debug_flash_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.debug import lager_debug_flash
-        result = lager_debug_flash(box="B", net="dbg1", hex_file="/tmp/test.hex")
-        assert "Error" in result
-
-    def test_debug_reset_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.debug import lager_debug_reset
-        result = lager_debug_reset(box="B", net="dbg1")
-        assert "Error" in result
-
-    def test_debug_erase_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.debug import lager_debug_erase
-        result = lager_debug_erase(box="B", net="dbg1")
-        assert "Error" in result
-
-    def test_debug_gdbserver_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="device not found")
-        from cli.mcp.tools.debug import lager_debug_gdbserver
-        result = lager_debug_gdbserver(box="B", net="dbg1")
-        assert "Error" in result
+        result = json.loads(rtt_expect(net="debug1", pattern="never", timeout_ms=200))
+        assert result["matched"] is False

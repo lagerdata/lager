@@ -95,6 +95,7 @@ RUN /usr/local/bin/python -m pip install --upgrade pip \
 	'rich' \
 	'cbor2' \
 	'websocket-client>=1.6.0' \
+	'mcp>=1.0.0' \
 	'git+https://github.com/Vaskivskyi/asusrouter.git@8de97bfa8ffe3efa2f6d1ec30bb95187d13ab37a'
 
 RUN git config --global http.version HTTP/1.1
@@ -132,6 +133,9 @@ COPY instrument_wrappers /app/lager/lager/instrument_wrappers
 COPY nets /app/lager/lager/nets
 COPY python /app/lager/lager/python
 
+# MCP server: AI agent integration
+COPY mcp /app/lager/lager/mcp
+
 # Copy grouped hardware modules
 # Power group: supply, battery, solar, eload
 COPY power /app/lager/lager/power
@@ -150,6 +154,19 @@ COPY run.sh /app
 # Acroname BrainStem SDK (USB hub control)
 # See: https://pypi.org/project/brainstem/
 RUN pip3 install brainstem --upgrade
+
+# Smoke-check: api_reference must successfully introspect every driver in
+# _DRIVER_CLASSES. If a driver is renamed/moved without updating
+# _DRIVER_CLASSES, this fails the build instead of silently falling back
+# to stale hand-written method docs at runtime.
+RUN cd /app/lager && python3 -c "\
+import logging, sys; \
+logging.basicConfig(level=logging.WARNING); \
+from lager.mcp.data import api_reference; \
+missing = [nt for nt, dotted in api_reference._DRIVER_CLASSES.items() \
+           if 'source_module' not in api_reference.API_REFERENCE.get(nt, {})]; \
+sys.exit(f'api_reference introspection failed for: {missing}') if missing else \
+print(f'api_reference: introspected {len(api_reference._DRIVER_CLASSES)} drivers OK')"
 
 RUN usermod -aG dialout www-data
 RUN usermod -aG plugdev www-data

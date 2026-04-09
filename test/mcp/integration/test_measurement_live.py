@@ -7,7 +7,7 @@ import re
 
 import pytest
 
-from cli.mcp.tools.measurement import (
+from lager.mcp.tools.measurement import (
     lager_adc_read,
     lager_dac_write,
     lager_gpi_read,

@@ -1,0 +1,158 @@
+# Copyright 2024-2026 Lager Data LLC
+# SPDX-License-Identifier: Apache-2.0
+
+"""MCP tool for quick, interactive hardware reads and writes.
+
+Thin wrapper that auto-detects net type and calls the appropriate
+lager.Net method.  For interactive debugging -- not for test authoring.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+
+from ..audit import audited
+from ..server import mcp
+
+logger = logging.getLogger(__name__)
+
+
+_READ_DISPATCH = {
+    "power-supply": lambda net: {"voltage": net.voltage(), "current": net.current()},
+    "power-supply-2q": lambda net: {"voltage": net.voltage(), "current": net.current()},
+    "gpio": lambda net: {"level": net.input()},
+    "adc": lambda net: {"voltage": net.input()},
+    "thermocouple": lambda net: {"temperature_c": net.read()},
+    "watt-meter": lambda net: net.read_all() if hasattr(net, "read_all") else {"power_w": net.read()},
+    "battery": lambda net: {"terminal_voltage": net.terminal_voltage(), "current": net.current()},
+    "eload": lambda net: {"voltage": net.measured_voltage(), "current": net.measured_current()},
+}
+
+_WRITE_DISPATCH = {
+    "power-supply": "_write_power_supply",
+    "power-supply-2q": "_write_power_supply",
+    "gpio": "_write_gpio",
+    "dac": "_write_dac",
+}
+
+
+def _write_power_supply(net, value):
+    net.set_voltage(float(value))
+    return {"set_voltage": float(value)}
+
+
+def _write_gpio(net, value):
+    net.output(int(value))
+    return {"set_level": int(value)}
+
+
+def _write_dac(net, value):
+    net.output(float(value))
+    return {"set_voltage": float(value)}
+
+
+_WRITE_FNS = {
+    "_write_power_supply": _write_power_supply,
+    "_write_gpio": _write_gpio,
+    "_write_dac": _write_dac,
+}
+
+
+@mcp.tool()
+@audited()
+def quick_io(net_name: str, action: str = "read", value: str | None = None) -> str:
+    """Read or write a net value (auto-detects type).
+
+    Reads: PSU (voltage/current), GPIO, ADC, thermocouple, watt-meter,
+    battery, eload.  Writes: PSU (voltage), GPIO (0/1), DAC (voltage).
+
+    Args:
+        net_name: The net to interact with (e.g. "supply1", "gpio3").
+        action: "read" or "write".
+        value: Value to set (required for writes -- voltage in V, or 0/1 for GPIO).
+    """
+    from ..server_state import get_bench
+
+    bench = get_bench()
+    net_desc = next((n for n in bench.nets if n.name == net_name), None)
+    if not net_desc:
+        return json.dumps({"error": f"Net '{net_name}' not found."})
+
+    if action == "read":
+        reader = _READ_DISPATCH.get(net_desc.net_type)
+        if not reader:
+            return json.dumps({
+                "error": f"quick_io read does not support net type '{net_desc.net_type}'.",
+                "hint": "Write a test file and run via: lager python --serial <BOX> path/to/test.py",
+            })
+        try:
+            from lager import Net, NetType
+            try:
+                nt = NetType(net_desc.net_type)
+            except ValueError:
+                return json.dumps({
+                    "error": f"Net '{net_name}' has unsupported NetType value '{net_desc.net_type}'.",
+                })
+            hw = Net.get(net_name, type=nt)
+            result = reader(hw)
+            return json.dumps({"net": net_name, "type": net_desc.net_type, **result})
+        except Exception as e:
+            logger.exception("quick_io read failed for net %s", net_name)
+            return json.dumps({"error": f"{type(e).__name__}: {e}"})
+
+    elif action == "write":
+        if value is None:
+            return json.dumps({"error": "value is required for write action."})
+        fn_name = _WRITE_DISPATCH.get(net_desc.net_type)
+        if not fn_name:
+            return json.dumps({
+                "error": f"quick_io write does not support net type '{net_desc.net_type}'.",
+                "hint": "Write a test file and run via: lager python --serial <BOX> path/to/test.py",
+            })
+
+        # Safety preflight: check voltage/current limits, rate limits, and
+        # dangerous-action flags from the bench's SafetyConstraints before
+        # touching any hardware.
+        from ..safety import preflight_check
+        preflight_params: dict = {}
+        if net_desc.net_type in ("power-supply", "power-supply-2q", "dac"):
+            try:
+                preflight_params["voltage"] = float(value)
+            except (TypeError, ValueError):
+                return json.dumps({
+                    "error": f"Invalid numeric value '{value}' for {net_desc.net_type} write.",
+                })
+        pf = preflight_check(
+            tool_name="quick_io_write",
+            params=preflight_params,
+            constraints=getattr(bench, "constraints", None),
+            target_net=net_name,
+        )
+        if not pf.allowed:
+            return json.dumps({
+                "error": "blocked by safety preflight",
+                "reason": pf.blocked_reason,
+                "mitigations": list(pf.mitigations or []),
+            })
+
+        try:
+            from lager import Net, NetType
+            try:
+                nt = NetType(net_desc.net_type)
+            except ValueError:
+                return json.dumps({
+                    "error": f"Net '{net_name}' has unsupported NetType value '{net_desc.net_type}'.",
+                })
+            hw = Net.get(net_name, type=nt)
+            result = _WRITE_FNS[fn_name](hw, value)
+            payload: dict = {"net": net_name, "type": net_desc.net_type, **result}
+            if pf.warnings:
+                payload["safety_warnings"] = list(pf.warnings)
+            return json.dumps(payload)
+        except Exception as e:
+            logger.exception("quick_io write failed for net %s", net_name)
+            return json.dumps({"error": f"{type(e).__name__}: {e}"})
+
+    else:
+        return json.dumps({"error": f"Unknown action '{action}'. Use 'read' or 'write'."})

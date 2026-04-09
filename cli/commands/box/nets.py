@@ -1230,3 +1230,124 @@ def show_script_cmd(
 
     decoded = base64.b64decode(target["jlink_script"]).decode("utf-8")
     click.echo(decoded)
+
+
+@nets.command("describe", help="Set metadata on a saved net (description, DUT connection, hints, tags).")
+@click.argument("name")
+@click.option("--description", "-d", default=None, help="Human-readable description of the net")
+@click.option("--dut-connection", default=None, help="How the net connects to the DUT (e.g., 'MCU SPI1 peripheral')")
+@click.option("--hint", "-h", "hints", multiple=True, help="Test hint (repeatable)")
+@click.option("--tag", "-t", "tags", multiple=True, help="Tag for categorisation (repeatable)")
+@click.option("--clear-hints", is_flag=True, help="Remove all existing test hints before adding new ones")
+@click.option("--clear-tags", is_flag=True, help="Remove all existing tags before adding new ones")
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def describe_cmd(
+    ctx: click.Context,
+    name: str,
+    description: str | None,
+    dut_connection: str | None,
+    hints: tuple[str, ...],
+    tags: tuple[str, ...],
+    clear_hints: bool,
+    clear_tags: bool,
+    box: str | None,
+) -> None:
+    """Set metadata fields on a saved net for agent-assisted testing."""
+    resolved_box = _resolve_box(ctx, box)
+
+    if description is None and dut_connection is None and not hints and not tags and not clear_hints and not clear_tags:
+        click.secho("Nothing to update. Provide at least one of --description, --dut-connection, --hint, or --tag.", fg="yellow")
+        return
+
+    raw = _run_net_py(ctx, resolved_box, "list")
+    try:
+        recs = _parse_backend_json(raw)
+    except json.JSONDecodeError:
+        click.secho("Failed to parse response from backend.", fg="red", err=True)
+        ctx.exit(1)
+
+    target = next((r for r in recs if r.get("name") == name), None)
+    if not target:
+        click.secho(f"Net '{name}' not found on {resolved_box}.", fg="yellow")
+        ctx.exit(1)
+
+    if description is not None:
+        target["description"] = description
+    if dut_connection is not None:
+        target["dut_connection"] = dut_connection
+
+    if clear_hints:
+        target["test_hints"] = []
+    if hints:
+        existing = target.get("test_hints", [])
+        target["test_hints"] = existing + list(hints)
+
+    if clear_tags:
+        target["tags"] = []
+    if tags:
+        existing = target.get("tags", [])
+        merged = list(dict.fromkeys(existing + list(tags)))
+        target["tags"] = merged
+
+    _run_net_py(ctx, resolved_box, "save", json.dumps(target))
+    click.secho(f"Updated metadata for net '{name}' on box {resolved_box}.", fg="green")
+
+
+@nets.command("show", help="Show full details of a saved net, including metadata.")
+@click.argument("name")
+@click.option("--box", help="Lagerbox name or IP")
+@click.option("--json", "as_json", is_flag=True, help="Output as raw JSON")
+@click.pass_context
+def show_cmd(
+    ctx: click.Context,
+    name: str,
+    box: str | None,
+    as_json: bool,
+) -> None:
+    """Display all fields of a net, including user-provided metadata."""
+    resolved_box = _resolve_box(ctx, box)
+
+    raw = _run_net_py(ctx, resolved_box, "list")
+    try:
+        recs = _parse_backend_json(raw)
+    except json.JSONDecodeError:
+        click.secho("Failed to parse response from backend.", fg="red", err=True)
+        ctx.exit(1)
+
+    target = next((r for r in recs if r.get("name") == name), None)
+    if not target:
+        click.secho(f"Net '{name}' not found on {resolved_box}.", fg="yellow")
+        ctx.exit(1)
+
+    if as_json:
+        click.echo(json.dumps(target, indent=2))
+        return
+
+    click.secho(f"Net: {target.get('name', '')}", bold=True)
+    click.echo(f"  Type:       {target.get('role', '')}")
+    click.echo(f"  Instrument: {target.get('instrument', '')}")
+    click.echo(f"  Channel:    {target.get('pin', '')}")
+    click.echo(f"  Address:    {target.get('address', '')}")
+
+    if target.get("jlink_script"):
+        click.echo("  Script:     (J-Link script attached)")
+
+    desc = target.get("description", "")
+    dut_conn = target.get("dut_connection", "")
+    test_hints = target.get("test_hints", [])
+    net_tags = target.get("tags", [])
+
+    if desc or dut_conn or test_hints or net_tags:
+        click.echo()
+        click.secho("  Metadata:", bold=True)
+        if desc:
+            click.echo(f"    Description:    {desc}")
+        if dut_conn:
+            click.echo(f"    DUT Connection: {dut_conn}")
+        if test_hints:
+            click.echo("    Test Hints:")
+            for h in test_hints:
+                click.echo(f"      - {h}")
+        if net_tags:
+            click.echo(f"    Tags:           {', '.join(net_tags)}")

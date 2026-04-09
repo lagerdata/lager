@@ -5,7 +5,7 @@
 
 import pytest
 
-from cli.mcp.tools.solar import (
+from lager.mcp.tools.solar import (
     lager_solar_set,
     lager_solar_stop,
     lager_solar_irradiance,

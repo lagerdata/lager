@@ -5,7 +5,7 @@
 
 import pytest
 
-from cli.mcp.tools.power import (
+from lager.mcp.tools.power import (
     lager_supply_voltage,
     lager_supply_current,
     lager_supply_state,

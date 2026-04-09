@@ -40,6 +40,10 @@ restart_service "debug service" "python3 -m lager.debug.service" "/tmp/lager-deb
 echo "Starting Lager Box HTTP+WebSocket server on port 9000..."
 restart_service "HTTP server" "python3 /app/lager/lager/box_http_server.py" "/tmp/lager-http-server.log" &
 
+# Start MCP server for AI agent integration (port 8100)
+echo "Starting Lager MCP server on port 8100..."
+restart_service "MCP server" "python3 -m lager.mcp" "/tmp/lager-mcp-server.log" &
+
 # Start oscilloscope streaming daemon if available (PicoScope support)
 # Ports: 8082 (commands), 8083 (browser streaming), 8084 (database streaming), 8085 (WebSocket CLI)
 if [ -x /usr/local/bin/oscilloscope-daemon ]; then
@@ -67,6 +71,7 @@ echo "  - Python Execution Service: port 5000 (log: /tmp/lager-python-service.lo
 echo "  - Hardware Invocation Service: port 8080 (log: /tmp/lager-hardware-service.log)"
 echo "  - Debug service: port 8765 (log: /tmp/lager-debug-service.log)"
 echo "  - Box HTTP+WebSocket: port 9000 (log: /tmp/lager-http-server.log)"
+echo "  - MCP Server (AI): port 8100 (log: /tmp/lager-mcp-server.log)"
 if [ -x /usr/local/bin/oscilloscope-daemon ]; then
     echo "  - Oscilloscope Daemon: ports 8082-8085 (log: /tmp/oscilloscope-daemon.log)"
     echo "  - Oscilloscope UI: port 8081 (log: /tmp/oscilloscope-ui.log)"

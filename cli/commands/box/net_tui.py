@@ -212,6 +212,10 @@ class Net:
     addr: str
     saved: bool = False
     has_script: bool = False
+    description: str = ""
+    dut_connection: str = ""
+    test_hints: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
     _uid: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -272,9 +276,10 @@ class SavedNetsTree(Tree[TreeNodeData]):
     def _get_net_label(self, net: Net, highlight_button: str | None = None) -> str:
         """Generate label for a net with optional button highlighting (hover or focus)."""
         rename_btn = "[reverse][✎][/reverse]" if highlight_button == "rename" else "[✎]"
+        edit_btn = "[reverse][⋯][/reverse]" if highlight_button == "edit" else "[⋯]"
         delete_btn = "[reverse][✕][/reverse]" if highlight_button == "delete" else "[✕]"
         script_tag = " [dim](script)[/dim]" if net.has_script else ""
-        return f"[bold]{net.net}[/bold] | {net.type.upper()} | Ch: {net.chan}{script_tag}   {rename_btn} {delete_btn}"
+        return f"[bold]{net.net}[/bold] | {net.type.upper()} | Ch: {net.chan}{script_tag}   {rename_btn} {edit_btn} {delete_btn}"
 
     def _get_highlighted_button(self, net_key: str) -> str | None:
         """Get which button should be highlighted for a given net (hover takes precedence)."""
@@ -312,29 +317,25 @@ class SavedNetsTree(Tree[TreeNodeData]):
 
     def _get_button_at_position(self, net: Net, x: int) -> str | None:
         """Determine which button (if any) is at the given x position."""
-        # Calculate content length without the buttons (3 spaces before buttons)
         content = f"{net.net} | {net.type.upper()} | Ch: {net.chan}"
         if net.has_script:
             content += " (script)"
         content += "   "
-        # Buttons: [✎] [✕] - each button is 3 chars, space between = 1 char
-        # Total button area: 7 chars
-
+        # Buttons: [✎] [⋯] [✕] — each 3 chars, 1 char space between
         content_end = len(content)
-        # Add offset to shift clickable area right to match visual buttons
         offset = 4
 
-        # Button positions:
-        # [✎] at content_end to content_end+3
-        # space at content_end+3
-        # [✕] at content_end+4 to content_end+7
         rename_start = content_end + offset + 3
-        rename_end = content_end + 3 + offset + 3
-        delete_start = content_end + 4 + offset + 3
-        delete_end = content_end + 7 + offset + 3
+        rename_end = rename_start + 3
+        edit_start = rename_end + 1
+        edit_end = edit_start + 3
+        delete_start = edit_end + 1
+        delete_end = delete_start + 3
 
         if x >= delete_start and x < delete_end:
             return "delete"
+        elif x >= edit_start and x < edit_end:
+            return "edit"
         elif x >= rename_start and x < rename_end:
             return "rename"
         return None
@@ -390,22 +391,24 @@ class SavedNetsTree(Tree[TreeNodeData]):
             return
 
         if event.key == "right":
-            # Move focus: None -> rename -> delete
+            # Move focus: None -> rename -> edit -> delete
             if self._focus_button is None:
                 self._focus_button = "rename"
             elif self._focus_button == "rename":
+                self._focus_button = "edit"
+            elif self._focus_button == "edit":
                 self._focus_button = "delete"
-            # else stay on delete
             self._update_focus_display()
             event.stop()
         elif event.key == "left":
-            # Move focus: delete -> rename -> None
+            # Move focus: delete -> edit -> rename -> None
             if self._focus_button == "delete":
+                self._focus_button = "edit"
+            elif self._focus_button == "edit":
                 self._focus_button = "rename"
             elif self._focus_button == "rename":
                 self._focus_button = None
-                self._clear_focus()  # Clear visual when focus goes to None
-            # else stay on None
+                self._clear_focus()
             if self._focus_button:
                 self._update_focus_display()
             event.stop()
@@ -413,10 +416,12 @@ class SavedNetsTree(Tree[TreeNodeData]):
             if self._focus_button == "delete":
                 self.app.push_screen(ConfirmDelete(data.net))
                 event.stop()
+            elif self._focus_button == "edit":
+                self.app.push_screen(EditDetailsDialog(data.net))
+                event.stop()
             elif self._focus_button == "rename":
                 self.app.push_screen(RenameDialog(data.net))
                 event.stop()
-            # If no button focused, let default handler show action dialog
 
     def on_mouse_move(self, event: MouseMove) -> None:
         """Track mouse position to highlight buttons on hover."""
@@ -484,9 +489,10 @@ class SavedNetsTree(Tree[TreeNodeData]):
             button = self._get_button_at_position(data.net, event.x)
             if button == "delete":
                 self.app.push_screen(ConfirmDelete(data.net))
+            elif button == "edit":
+                self.app.push_screen(EditDetailsDialog(data.net))
             elif button == "rename":
                 self.app.push_screen(RenameDialog(data.net))
-            # Otherwise ignore click (user can use Enter for action dialog)
 
     def watch_cursor_node(self, old_node, new_node) -> None:
         """Called when cursor moves to a different node - clear button focus."""
@@ -869,6 +875,7 @@ class NetActionDialog(Screen):
             with Horizontal(classes="dialog-buttons"):
                 yield Button("Cancel", id="cancel")
                 yield Button("Rename", id="rename", variant="primary")
+                yield Button("Edit Details", id="edit_details", variant="primary")
                 yield Button("Delete", id="delete", variant="error")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -883,10 +890,111 @@ class NetActionDialog(Screen):
             app.push_screen(RenameDialog(self.net))
             return
 
+        if event.button.id == "edit_details":
+            app.pop_screen()
+            app.push_screen(EditDetailsDialog(self.net))
+            return
+
         if event.button.id == "delete":
             app.pop_screen()
             app.push_screen(ConfirmDelete(self.net))
             return
+
+
+class EditDetailsDialog(Screen):
+    """Dialog for editing net metadata (description, DUT connection, hints, tags)."""
+
+    def __init__(self, net: Net) -> None:
+        super().__init__()
+        self.net = net
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Static("Edit Net Details", classes="dialog-title")
+            yield Static(
+                f"Net: {self.net.net}  ({self.net.type.upper()})",
+                classes="dialog-content",
+            )
+            yield Label("Description:")
+            self.desc_input = Input(
+                placeholder="e.g., SPI flash (W25Q128) on DUT main board",
+                id="desc_input",
+                value=self.net.description,
+            )
+            yield self.desc_input
+
+            yield Label("DUT Connection:")
+            self.dut_input = Input(
+                placeholder="e.g., MCU SPI1 peripheral (PA5-PA7, CS on PA4)",
+                id="dut_input",
+                value=self.net.dut_connection,
+            )
+            yield self.dut_input
+
+            yield Label("Test Hints (one per line, comma-separated):")
+            self.hints_input = Input(
+                placeholder="e.g., Read JEDEC ID, Write/readback pattern",
+                id="hints_input",
+                value=", ".join(self.net.test_hints),
+            )
+            yield self.hints_input
+
+            yield Label("Tags (comma-separated):")
+            self.tags_input = Input(
+                placeholder="e.g., flash, storage, boot-critical",
+                id="tags_input",
+                value=", ".join(self.net.tags),
+            )
+            yield self.tags_input
+
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Cancel", id="cancel")
+                yield Button("Save", id="save_details", variant="success")
+
+    def on_mount(self) -> None:
+        self.desc_input.focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        app: NetApp = self.app  # type: ignore[attr-defined]
+
+        if event.button.id == "cancel":
+            app.pop_screen()
+            return
+
+        description = self.desc_input.value.strip()
+        dut_connection = self.dut_input.value.strip()
+        hints_raw = self.hints_input.value.strip()
+        tags_raw = self.tags_input.value.strip()
+
+        test_hints = [h.strip() for h in hints_raw.split(",") if h.strip()] if hints_raw else []
+        tags = [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else []
+
+        self.net.description = description
+        self.net.dut_connection = dut_connection
+        self.net.test_hints = test_hints
+        self.net.tags = tags
+
+        net_data = {
+            "name": self.net.net,
+            "role": self.net.type,
+            "address": self.net.addr,
+            "instrument": self.net.instrument,
+            "pin": self.net.chan,
+            "description": description,
+            "dut_connection": dut_connection,
+            "test_hints": test_hints,
+            "tags": tags,
+        }
+
+        try:
+            _run_script(app.ctx, "net.py", app.dut, "save", json.dumps(net_data))
+            app.show_success(f"Updated details for net '{self.net.net}'")
+        except Exception as e:
+            app.show_error(f"Failed to save details: {str(e)}")
+
+        app._sync_saved_from_disk()
+        app._refresh_table()
+        app.pop_screen()
 
 
 class ConfirmDelete(Screen):
@@ -1896,6 +2004,10 @@ class NetApp(App):
                 addr=rec.get("address", "NA"),
                 saved=True,
                 has_script=bool(rec.get("jlink_script")),
+                description=rec.get("description", ""),
+                dut_connection=rec.get("dut_connection", ""),
+                test_hints=rec.get("test_hints", []),
+                tags=rec.get("tags", []),
             ) for rec in saved_from_disk
         ]
         self._ensure_autogen_unsaved()
@@ -2098,6 +2210,10 @@ def launch_tui(ctx: click.Context, dut: str) -> None:
             addr=rec.get("address", "NA"),
             saved=True,
             has_script=bool(rec.get("jlink_script")),
+            description=rec.get("description", ""),
+            dut_connection=rec.get("dut_connection", ""),
+            test_hints=rec.get("test_hints", []),
+            tags=rec.get("tags", []),
         ))
 
     # Now generate auto-names for new devices, continuing from highest saved number

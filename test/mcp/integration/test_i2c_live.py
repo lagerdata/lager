@@ -7,7 +7,7 @@ import re
 
 import pytest
 
-from cli.mcp.tools.i2c import (
+from lager.mcp.tools.i2c import (
     lager_i2c_list_nets,
     lager_i2c_scan,
     lager_i2c_config,

@@ -5,7 +5,7 @@
 
 import pytest
 
-from cli.mcp.tools.battery import (
+from lager.mcp.tools.battery import (
     lager_battery_soc,
     lager_battery_voc,
     lager_battery_enable,

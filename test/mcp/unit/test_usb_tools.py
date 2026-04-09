@@ -1,59 +1,81 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for USB MCP tools -- verify CLI command construction."""
+"""Unit tests for USB MCP tools (direct lager.Net API)."""
+
+import json
+from unittest.mock import MagicMock, patch
 
 import pytest
-from test.mcp.conftest import assert_lager_called_with
+
+from lager import NetType
 
 
 @pytest.mark.unit
 class TestUsbTools:
-    """Test all 3 USB tool functions build the correct lager CLI commands."""
+    """Verify USB tools call Net.get(..., type=NetType.Usb) and the correct port methods."""
 
-    def test_enable(self, mock_subprocess):
-        from cli.mcp.tools.usb import lager_usb_enable
-        lager_usb_enable(box="DEMO", net="usb1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "usb", "usb1", "enable", "--box", "DEMO",
-        )
+    @patch("lager.Net.get")
+    def test_enable(self, mock_get):
+        device = MagicMock()
+        mock_get.return_value = device
+        from lager.mcp.tools.usb import usb_enable
 
-    def test_disable(self, mock_subprocess):
-        from cli.mcp.tools.usb import lager_usb_disable
-        lager_usb_disable(box="DEMO", net="usb1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "usb", "usb1", "disable", "--box", "DEMO",
-        )
+        result = json.loads(usb_enable(net="usb1"))
+        mock_get.assert_called_once_with("usb1", type=NetType.Usb)
+        device.enable.assert_called_once()
+        assert result["status"] == "ok"
+        assert result["net"] == "usb1"
+        assert result["enabled"] is True
 
-    def test_toggle(self, mock_subprocess):
-        from cli.mcp.tools.usb import lager_usb_toggle
-        lager_usb_toggle(box="DEMO", net="usb1")
-        assert_lager_called_with(
-            mock_subprocess,
-            "usb", "usb1", "toggle", "--box", "DEMO",
-        )
+    @patch("lager.Net.get")
+    def test_disable(self, mock_get):
+        device = MagicMock()
+        mock_get.return_value = device
+        from lager.mcp.tools.usb import usb_disable
 
-    # -- subprocess failure error handling -----------------------------------
+        result = json.loads(usb_disable(net="usb1"))
+        mock_get.assert_called_once_with("usb1", type=NetType.Usb)
+        device.disable.assert_called_once()
+        assert result["status"] == "ok"
+        assert result["net"] == "usb1"
+        assert result["enabled"] is False
 
-    def test_enable_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="command failed")
-        from cli.mcp.tools.usb import lager_usb_enable
-        result = lager_usb_enable(box="B", net="usb1")
-        assert "Error" in result
+    @patch("lager.Net.get")
+    def test_toggle(self, mock_get):
+        device = MagicMock()
+        mock_get.return_value = device
+        from lager.mcp.tools.usb import usb_toggle
 
-    def test_disable_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="command failed")
-        from cli.mcp.tools.usb import lager_usb_disable
-        result = lager_usb_disable(box="B", net="usb1")
-        assert "Error" in result
+        result = json.loads(usb_toggle(net="usb1"))
+        mock_get.assert_called_once_with("usb1", type=NetType.Usb)
+        device.toggle.assert_called_once()
+        assert result["status"] == "ok"
+        assert result["net"] == "usb1"
+        assert result["toggled"] is True
 
-    def test_toggle_subprocess_failure(self, mock_subprocess):
-        from unittest.mock import MagicMock
-        mock_subprocess.return_value = MagicMock(returncode=1, stdout="", stderr="command failed")
-        from cli.mcp.tools.usb import lager_usb_toggle
-        result = lager_usb_toggle(box="B", net="usb1")
-        assert "Error" in result
+    # -- Net.get failure (hardware / resolution errors) -----------------------
+
+    @patch("lager.Net.get")
+    def test_enable_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.usb import usb_enable
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            usb_enable(net="usb1")
+
+    @patch("lager.Net.get")
+    def test_disable_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.usb import usb_disable
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            usb_disable(net="usb1")
+
+    @patch("lager.Net.get")
+    def test_toggle_net_get_failure(self, mock_get):
+        mock_get.side_effect = RuntimeError("device not found")
+        from lager.mcp.tools.usb import usb_toggle
+
+        with pytest.raises(RuntimeError, match="device not found"):
+            usb_toggle(net="usb1")

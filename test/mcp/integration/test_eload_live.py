@@ -5,7 +5,7 @@
 
 import pytest
 
-from cli.mcp.tools.eload import (
+from lager.mcp.tools.eload import (
     lager_eload_cc,
     lager_eload_cv,
     lager_eload_cr,
