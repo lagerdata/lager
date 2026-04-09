@@ -47,14 +47,30 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 logger = logging.getLogger(__name__)
 
+# Generic CLI passthrough is OFF by default in shared/multi-tenant environments.
+# Set LAGER_MCP_ALLOW_RUN_LAGER=1 on the box to enable. Stout and other control
+# planes should keep this disabled and use their own dispatch path with audit
+# and per-org RBAC.
+LAGER_MCP_ALLOW_RUN_LAGER = os.environ.get("LAGER_MCP_ALLOW_RUN_LAGER", "0") == "1"
+
 
 def run_lager(*args: str, timeout: int = 60) -> str:
     """Run a lager CLI command and return output.
 
+    DANGER: generic shell into the lager CLI. Disabled by default; set
+    LAGER_MCP_ALLOW_RUN_LAGER=1 to enable. For test execution, write a
+    Python file and run it via: lager python --serial <BOX> path/to/test.py
+
     Still used by tool modules that shell out to the lager CLI
-    (python_run, pip_tools, logs, defaults, binaries).  Converted tools
-    use the direct lager.Net API instead.
+    (python_run, pip_tools, logs, defaults, binaries) when enabled.
+    Converted tools use the direct lager.Net API instead.
     """
+    if not LAGER_MCP_ALLOW_RUN_LAGER:
+        return (
+            "Error: run_lager is disabled. Set LAGER_MCP_ALLOW_RUN_LAGER=1 "
+            "on the box to enable. For test execution, write a Python file "
+            "and run it via: lager python --serial <BOX> path/to/test.py"
+        )
     try:
         result = subprocess.run(
             ["lager"] + list(args),
