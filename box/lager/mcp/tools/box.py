@@ -5,10 +5,12 @@
 
 import json
 
+from ..audit import audited
 from ..server import mcp
 
 
 @mcp.tool()
+@audited()
 def box_manage(action: str = "health") -> str:
     """Check box health or reload bench configuration.
 

@@ -9,10 +9,12 @@ import json
 import subprocess
 import sys
 
+from ..audit import audited
 from ..server import mcp
 
 
 @mcp.tool()
+@audited()
 def install_dependency(package_name: str) -> str:
     """Install a Python package on the box via pip.
 

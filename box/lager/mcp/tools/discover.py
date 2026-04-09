@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import json
 
+from ..audit import audited
 from ..server import mcp
 from ..server_state import get_bench, get_capability_graph
 
 
 @mcp.tool()
+@audited()
 def discover_bench(net_name: str | None = None) -> str:
     """Discover hardware on this bench.
 
@@ -90,6 +92,7 @@ def discover_bench(net_name: str | None = None) -> str:
 
 
 @mcp.tool()
+@audited()
 def assess_suitability(test_type: str) -> str:
     """Assess whether this bench can run a given test type.
 

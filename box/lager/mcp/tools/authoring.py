@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 
+from ..audit import audited
 from ..server import mcp
 
 # ── Ordered phases for structuring a test plan ────────────────────────────
@@ -54,6 +55,7 @@ def _infer_phase(net) -> int:
 
 
 @mcp.tool()
+@audited()
 def get_test_example(query: str) -> str:
     """Find runnable test script examples by net type, pattern name, or keyword.
 
@@ -105,6 +107,7 @@ def _score_net(net, goal_words: set[str]) -> int:
 
 
 @mcp.tool()
+@audited()
 def plan_firmware_test(firmware_description: str, test_goals: str) -> str:
     """Generate a phased test plan with full API references for each net.
 
