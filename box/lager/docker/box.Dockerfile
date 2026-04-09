@@ -155,6 +155,19 @@ COPY run.sh /app
 # See: https://pypi.org/project/brainstem/
 RUN pip3 install brainstem --upgrade
 
+# Smoke-check: api_reference must successfully introspect every driver in
+# _DRIVER_CLASSES. If a driver is renamed/moved without updating
+# _DRIVER_CLASSES, this fails the build instead of silently falling back
+# to stale hand-written method docs at runtime.
+RUN cd /app/lager && python3 -c "\
+import logging, sys; \
+logging.basicConfig(level=logging.WARNING); \
+from lager.mcp.data import api_reference; \
+missing = [nt for nt, dotted in api_reference._DRIVER_CLASSES.items() \
+           if 'source_module' not in api_reference.API_REFERENCE.get(nt, {})]; \
+sys.exit(f'api_reference introspection failed for: {missing}') if missing else \
+print(f'api_reference: introspected {len(api_reference._DRIVER_CLASSES)} drivers OK')"
+
 RUN usermod -aG dialout www-data
 RUN usermod -aG plugdev www-data
 RUN usermod -aG bluetooth www-data

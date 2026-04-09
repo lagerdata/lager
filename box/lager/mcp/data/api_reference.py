@@ -6,11 +6,30 @@ Structured API reference for the lager.Net Python API, organised by NetType.
 
 Exposed via the ``lager://reference/{net_type}`` MCP resource template
 and consumed by ``plan_firmware_test`` to teach agents how to write
-on-box test scripts.  Every entry is hand-curated from the real driver
-implementations in ``box/lager/``.
+on-box test scripts.
+
+The ``methods`` list for each NetType is *introspected* at module import
+time from the canonical driver class (see ``_DRIVER_CLASSES`` below) and
+overwrites the hand-written list in ``API_REFERENCE``. This keeps the
+agent-facing reference in lock-step with the real driver implementations
+so a driver rename can never silently mislead an agent.
+
+The hand-written ``methods`` lists below are kept as a fallback for the
+case where a driver class fails to import (e.g. development environments
+without the C extensions installed) and as the source of truth for
+``Debug``, which has no Net subclass.
+
+``gotchas`` and ``example_snippet`` cannot be introspected and are always
+hand-curated.
 """
 
 from __future__ import annotations
+
+import inspect
+import logging
+from typing import Any
+
+logger = logging.getLogger(__name__)
 
 API_REFERENCE: dict[str, dict] = {
     "PowerSupply": {
@@ -374,6 +393,101 @@ API_REFERENCE: dict[str, dict] = {
         ),
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# Driver introspection — overwrites hand-written `methods` at import time
+# ---------------------------------------------------------------------------
+#
+# Map NetType key in API_REFERENCE → dotted path of the canonical driver
+# class to introspect. Add new entries here as new drivers are added.
+# ``Debug`` is intentionally absent: it has no Net subclass (the debug
+# API is procedural functions in box/lager/debug/api.py).
+
+_DRIVER_CLASSES: dict[str, str] = {
+    "PowerSupply":    "lager.power.supply.supply_net.SupplyNet",
+    "Battery":        "lager.power.battery.battery_net.BatteryNet",
+    "ELoad":          "lager.power.eload.eload_net.ELoadNet",
+    "GPIO":           "lager.io.gpio.gpio_net.GPIOBase",
+    "ADC":            "lager.io.adc.adc_net.ADCBase",
+    "DAC":            "lager.io.dac.dac_net.DACBase",
+    "UART":           "lager.protocols.uart.uart_net.UARTNet",
+    "SPI":            "lager.protocols.spi.spi_net.SPINet",
+    "I2C":            "lager.protocols.i2c.i2c_net.I2CNet",
+    "Thermocouple":   "lager.measurement.thermocouple.thermocouple_net.ThermocoupleBase",
+    "WattMeter":      "lager.measurement.watt.watt_net.WattMeterBase",
+    "EnergyAnalyzer": "lager.measurement.energy_analyzer.energy_analyzer_net.EnergyAnalyzerBase",
+    "Usb":            "lager.automation.usb_hub.usb_net.USBNet",
+}
+
+# Methods we never want to expose to agents (private, dunder, base-class
+# plumbing, abstract decorator artifacts, etc.)
+_INTROSPECT_SKIP = {
+    "from_dict", "to_dict", "register", "unregister",
+}
+
+
+def _import_class(dotted: str) -> Any:
+    mod_name, _, cls_name = dotted.rpartition(".")
+    mod = __import__(mod_name, fromlist=[cls_name])
+    return getattr(mod, cls_name)
+
+
+def _introspect_methods(cls: Any) -> list[dict]:
+    """Walk a driver class and return a structured method list.
+
+    Skips private/dunder methods, things in ``_INTROSPECT_SKIP``, and any
+    member that doesn't carry a usable signature.
+    """
+    out: list[dict] = []
+    for name, member in inspect.getmembers(cls, predicate=inspect.isfunction):
+        if name.startswith("_") or name in _INTROSPECT_SKIP:
+            continue
+        try:
+            params = inspect.signature(member)
+            # Drop the leading "self" param for agent-facing display
+            kept = [p for p in params.parameters.values() if p.name != "self"]
+            sig = f"{name}({', '.join(str(p) for p in kept)})"
+            if params.return_annotation is not inspect.Signature.empty:
+                ret = params.return_annotation
+                ret_str = ret if isinstance(ret, str) else getattr(ret, "__name__", str(ret))
+                sig += f" -> {ret_str}"
+        except (TypeError, ValueError):
+            sig = f"{name}(...)"
+        doc = inspect.getdoc(member) or ""
+        desc = next((ln.strip() for ln in doc.splitlines() if ln.strip()), "")
+        out.append({"name": name, "sig": sig, "desc": desc})
+    out.sort(key=lambda m: m["name"])
+    return out
+
+
+def _apply_introspection() -> None:
+    """For every NetType with a known driver class, replace the hand-written
+    ``methods`` list with the introspected one. Failures fall back to the
+    hand-written list and emit a warning."""
+    for net_type, dotted in _DRIVER_CLASSES.items():
+        if net_type not in API_REFERENCE:
+            logger.warning(
+                "api_reference: %s in _DRIVER_CLASSES but not in API_REFERENCE",
+                net_type,
+            )
+            continue
+        try:
+            cls = _import_class(dotted)
+        except Exception as e:
+            logger.warning(
+                "api_reference: introspection failed for %s (%s); "
+                "falling back to hand-written methods. Error: %s",
+                net_type, dotted, e,
+            )
+            continue
+        methods = _introspect_methods(cls)
+        if methods:
+            API_REFERENCE[net_type]["methods"] = methods
+            API_REFERENCE[net_type]["source_module"] = dotted
+
+
+_apply_introspection()
 
 
 def get_reference_for_type(net_type: str) -> dict | None:
