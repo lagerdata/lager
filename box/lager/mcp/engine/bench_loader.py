@@ -174,8 +174,8 @@ def _net_from_raw(raw: dict[str, Any]) -> NetDescriptor:
     channel = str(raw.get("channel", raw.get("pin", "")))
 
     return NetDescriptor(
-        name=raw.get("name", ""),
-        aliases=raw.get("aliases", []),
+        name=raw.get("name") or "",
+        aliases=raw.get("aliases") or [],
         net_type=role,
         electrical_type=_ELECTRICAL_TYPE_MAP.get(role, "unknown"),
         voltage_domain=None,
@@ -187,11 +187,11 @@ def _net_from_raw(raw: dict[str, Any]) -> NetDescriptor:
         timing_constraints=None,
         instrument=instrument,
         channel=channel,
-        params=raw.get("params", {}),
-        description=raw.get("description", ""),
-        dut_connection=raw.get("dut_connection", ""),
-        test_hints=raw.get("test_hints", []),
-        tags=raw.get("tags", []),
+        params=raw.get("params") or {},
+        description=raw.get("description") or "",
+        dut_connection=raw.get("dut_connection") or "",
+        test_hints=raw.get("test_hints") or [],
+        tags=raw.get("tags") or [],
     )
 
 
@@ -367,7 +367,9 @@ def _assemble(
     # Each override is applied independently so one malformed entry can't
     # corrupt the rest of the bench.
     net_overrides: dict[str, dict[str, Any]] = {
-        o["name"]: o for o in bench_cfg.get("net_overrides", []) if isinstance(o, dict) and "name" in o
+        o["name"]: o
+        for o in (bench_cfg.get("net_overrides") or [])
+        if isinstance(o, dict) and "name" in o
     }
     for nd in nets:
         ovr = net_overrides.get(nd.name)
@@ -400,7 +402,7 @@ def _assemble(
             name=ri.get("name", ri.get("instrument", "")),
             instrument_type=ri.get("type", ri.get("instrument", "")),
             connection=ri.get("address", ri.get("connection", "")),
-            channels=ri.get("channels", []),
+            channels=ri.get("channels") or [],
         )
         for ri in raw_instruments
         if isinstance(ri, dict)
@@ -409,7 +411,7 @@ def _assemble(
     # DUT slots — skip individual malformed entries instead of failing the
     # whole bench load.
     dut_slots: list[DUTSlot] = []
-    for ds in bench_cfg.get("dut_slots", []):
+    for ds in (bench_cfg.get("dut_slots") or []):
         if not isinstance(ds, dict):
             logger.warning("dut_slots: skipping non-dict entry %r", ds)
             continue
@@ -420,7 +422,7 @@ def _assemble(
 
     # Interfaces — same per-entry tolerance.
     static_ifaces: list[InterfaceDescriptor] = []
-    for iface in bench_cfg.get("interfaces", []):
+    for iface in (bench_cfg.get("interfaces") or []):
         if not isinstance(iface, dict):
             logger.warning("interfaces: skipping non-dict entry %r", iface)
             continue
