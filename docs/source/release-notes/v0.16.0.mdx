@@ -1,0 +1,42 @@
+---
+title: "Version 0.16.0"
+description: "April 13, 2026"
+---
+
+## <u>Features</u>
+
+- **Lager MCP server** — a Model Context Protocol server now runs on the Lager Box on port 8100 (FastMCP, streamable-http), allowing AI agents to discover a bench and understand how its nets are wired to the DUT. The server has moved from the CLI to the box and is started automatically inside the Docker container.
+- **Net metadata** — nets now support `description`, `dut_connection`, `test_hints`, and `tags` fields. New `lager nets` CLI commands and TUI flows let you edit this metadata interactively so AI agents (and humans) can reason about what each net is for.
+- **Capability graph and heuristic engine** — a new engine maps test types to the nets available on a bench, giving agents a principled way to pick the right instrument for a given task.
+- **Auto-generated MCP API reference** — the MCP API reference is now generated from driver introspection at Docker image build time. The build fails fast if a driver is renamed, so the agent-facing surface stays in sync with the code.
+
+## <u>Improvements</u>
+
+- Every MCP tool call is wired through an `@audited` decorator that records the call via `audit.log_tool_call`, giving control planes (Stout) a consistent audit trail.
+- `quick_io` writes now pass through a `preflight_check` that enforces voltage, current, and dangerous-action constraints before touching hardware.
+- The `bench.json` parser is now defensive: a single malformed entry no longer breaks `discover_bench`.
+- MCP errors no longer return raw tracebacks to agents. `NetType()` inputs are validated against the enum.
+- `plan_firmware_test` uses a regex-based pattern split instead of the previous unsafe `get_pattern` split.
+- New integration test `test_agent_loop` plus unit tests for the bench loader, capability graph, heuristic engine, safety preflight, and MCP schemas.
+
+## <u>Security</u>
+
+- The `run_lager` MCP passthrough tool is now gated behind the `LAGER_MCP_ALLOW_RUN_LAGER` environment flag and is **off by default**. Operators must opt in explicitly before agents can invoke arbitrary `lager` commands on a box.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.16.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.16.0/)
