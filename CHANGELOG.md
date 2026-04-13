@@ -2,6 +2,26 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.16.0] - 2026-04-13
+
+### Added
+- Lager MCP (Model Context Protocol) server, running on the box on port 8100 (FastMCP, streamable-http). Allows AI agents to discover a Lager setup and understand how nets are wired to the DUT.
+- Net metadata fields: `description`, `dut_connection`, `test_hints`, and `tags`. New CLI commands and TUI flows under `lager nets` for editing them.
+- Capability graph and heuristic engine (`box/lager/mcp/engine/`) that map test types to the nets available on a bench.
+- Auto-generated MCP API reference built from driver introspection at image build time. The Dockerfile build now fails fast on driver renames.
+- Defensive `bench.json` parser so a single malformed entry can no longer break `discover_bench`.
+- New integration test `test_agent_loop` and unit tests for the bench loader, capability graph, heuristic engine, safety preflight, and MCP schemas.
+
+### Changed
+- The MCP server has moved from the CLI (`cli/mcp/`) to the box (`box/lager/mcp/`). It is now started by `start-services.sh` inside the Docker container rather than running on the developer machine.
+- Every MCP tool call is now wired through an `@audited` decorator that records the call via `audit.log_tool_call`, so control planes (Stout) can rely on a consistent audit trail.
+- `quick_io` writes now go through a `preflight_check` that enforces voltage, current, and dangerous-action constraints before hitting hardware.
+- MCP errors no longer return raw tracebacks to agents; `NetType()` inputs are validated against the enum.
+- `plan_firmware_test` now uses a regex-based pattern split instead of the previous unsafe `get_pattern` split.
+
+### Security
+- The `run_lager` MCP passthrough tool is now gated behind the `LAGER_MCP_ALLOW_RUN_LAGER` environment flag and is **off by default**. Operators must opt in explicitly before agents can invoke arbitrary `lager` commands.
+
 ## [0.15.2] - 2026-04-08
 
 ### Added
