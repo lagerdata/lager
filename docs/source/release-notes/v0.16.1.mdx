@@ -1,0 +1,26 @@
+---
+title: "Version 0.16.1"
+description: "April 13, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **`bench_loader` null-value crash** — the MCP bench loader no longer crashes when `bench.json` or `saved_nets.json` contains explicit `null` values for list or dict fields such as `test_hints`, `tags`, `aliases`, `params`, `net_overrides`, `dut_slots`, `interfaces`, or `channels`. Previously, `dict.get(key, default)` only substituted the default when the key was absent, so a literal `"test_hints": null` would return `None` and break downstream iteration. All affected sites now coerce an explicit `null` to the same empty default as an absent key. Regression tests added in `test/mcp/unit/test_bench_loader.py::TestNullTolerance`.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.16.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.16.1/)

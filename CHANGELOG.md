@@ -2,6 +2,11 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.16.1] - 2026-04-13
+
+### Fixed
+- `bench_loader` no longer crashes when `bench.json` or `saved_nets.json` contains explicit `null` values for list or dict fields (`test_hints`, `tags`, `aliases`, `params`, `net_overrides`, `dut_slots`, `interfaces`, `channels`). Previously, `dict.get(key, default)` only substituted the default when the key was absent, so a literal `"test_hints": null` would return `None` and break downstream iteration. All affected sites now use `dict.get(key) or default` so an explicit `null` is treated the same as an absent key.
+
 ## [0.16.0] - 2026-04-13
 
 ### Added

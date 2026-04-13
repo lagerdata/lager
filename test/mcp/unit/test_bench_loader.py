@@ -146,3 +146,53 @@ class TestLoadFromFiles:
         )
         assert bench.box_id == "HW-99"
         assert len(bench.nets) == 1
+
+
+class TestNullTolerance:
+    """Regression: explicit JSON null values must not crash the loader.
+
+    JSON allows a key to exist with value null, which is distinct from the key
+    being absent. `dict.get(key, default)` only returns `default` for the
+    absent case, so user data like `{"test_hints": null}` used to return None
+    and crash downstream iteration.
+    """
+
+    def test_net_with_null_list_fields(self):
+        nd = _net_from_raw({
+            "name": "psu1",
+            "role": "power-supply",
+            "instrument": "rigol_dp800",
+            "channel": "1",
+            "aliases": None,
+            "test_hints": None,
+            "tags": None,
+            "params": None,
+            "description": None,
+            "dut_connection": None,
+        })
+        assert nd.aliases == []
+        assert nd.test_hints == []
+        assert nd.tags == []
+        assert nd.params == {}
+        assert nd.description == ""
+        assert nd.dut_connection == ""
+
+    def test_bench_cfg_with_null_collections(self):
+        bench = load_from_dicts(
+            raw_nets=[{"name": "psu1", "role": "power-supply"}],
+            bench_cfg={
+                "net_overrides": None,
+                "dut_slots": None,
+                "interfaces": None,
+            },
+        )
+        assert len(bench.nets) == 1
+        assert bench.dut_slots == []
+
+    def test_instrument_with_null_channels(self):
+        bench = load_from_dicts(
+            raw_nets=[],
+            raw_instruments=[{"name": "scope1", "type": "rigol_mso5204", "channels": None}],
+        )
+        assert len(bench.instruments) == 1
+        assert bench.instruments[0].channels == []
