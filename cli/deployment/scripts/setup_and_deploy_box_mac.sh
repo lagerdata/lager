@@ -164,6 +164,16 @@ else
     unset LAGER_PASSWORD
 fi
 
+# Ensure the home directory exists. sysadminctl -addUser assigns the path but
+# does NOT create it on macOS — we have to do it ourselves with sudo, then
+# chown to the new user.
+if [ ! -d "/Users/${LAGER_USER}" ]; then
+    log "  creating home directory /Users/${LAGER_USER}"
+    sudo mkdir -p "/Users/${LAGER_USER}"
+    sudo chown "${LAGER_USER}:${LAGER_GROUP}" "/Users/${LAGER_USER}"
+    sudo chmod 0755 "/Users/${LAGER_USER}"
+fi
+
 # Ensure the user is in the staff group (needed for chowns and normal shell use).
 sudo dseditgroup -o edit -a "$LAGER_USER" -t user staff || true
 
@@ -175,7 +185,7 @@ sudo dseditgroup -o edit -a "$LAGER_USER" -t user staff || true
 # authorized_keys file (e.g. they use password auth), fall back to their
 # public key files.
 log "  seeding ~${LAGER_USER}/.ssh/authorized_keys from the admin user"
-sudo -u "$LAGER_USER" mkdir -p "/Users/${LAGER_USER}/.ssh"
+sudo mkdir -p "/Users/${LAGER_USER}/.ssh"
 sudo chmod 0700 "/Users/${LAGER_USER}/.ssh"
 sudo chown "${LAGER_USER}:${LAGER_GROUP}" "/Users/${LAGER_USER}/.ssh"
 
@@ -183,7 +193,7 @@ ADMIN_HOME=$(eval echo "~${SUDO_USER:-$USER}")
 ADMIN_AUTH_KEYS="${ADMIN_HOME}/.ssh/authorized_keys"
 LAGERDATA_AUTH_KEYS="/Users/${LAGER_USER}/.ssh/authorized_keys"
 
-sudo -u "$LAGER_USER" touch "$LAGERDATA_AUTH_KEYS"
+sudo touch "$LAGERDATA_AUTH_KEYS"
 sudo chmod 0600 "$LAGERDATA_AUTH_KEYS"
 
 if [ -s "$ADMIN_AUTH_KEYS" ]; then
