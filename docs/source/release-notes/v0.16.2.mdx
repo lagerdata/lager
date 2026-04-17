@@ -1,0 +1,26 @@
+---
+title: "Version 0.16.2"
+description: "April 17, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **Keysight E36313A USB PID** — corrected the USB product ID for the Keysight E36313A power supply (`2a8d:1202`) in the `SUPPORTED_USB` tables used by the box's USB scanner and the CLI's `query_instruments` path. The PID was previously a placeholder (`????`), so the instrument was not recognized on plug-in. A matching udev rule was added so PyVISA can open the device directly via libusb (`MODE=0666`, with the `usbtmc` driver unbound on `bind` to prevent "Resource busy" errors).
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.16.2
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.16.2/)

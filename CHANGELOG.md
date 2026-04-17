@@ -2,6 +2,11 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.16.2] - 2026-04-17
+
+### Fixed
+- Corrected the USB PID for the Keysight E36313A power supply (`2a8d:1202`) in `SUPPORTED_USB` for both `box/lager/http_handlers/usb_scanner.py` and `cli/impl/query_instruments.py`; previously the PID was a placeholder (`????`) so the device was never recognized. Added a matching udev rule in `box/udev_rules/99-instrument.rules` (`MODE=0666` plus `usbtmc` unbind on `bind`) so PyVISA can open the instrument directly via libusb.
+
 ## [0.16.1] - 2026-04-13
 
 ### Fixed
