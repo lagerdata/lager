@@ -12,8 +12,17 @@ import sys
 import tempfile
 import os
 
+_IS_DARWIN = sys.platform == "darwin"
+
+
 def connect_to_wifi(ssid, password, interface='wlan0'):
     """Connect to WiFi network using wpa_supplicant"""
+    if _IS_DARWIN:
+        return {
+            'success': False,
+            'error': 'not_supported_on_macos',
+            'message': 'WiFi station control is not supported on the macOS box (v1).',
+        }
     try:
         # Create wpa_supplicant configuration
         if password:

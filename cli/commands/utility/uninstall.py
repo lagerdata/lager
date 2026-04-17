@@ -13,6 +13,138 @@ from ...box_storage import get_box_ip, get_box_user, get_box_name_by_ip, delete_
 from ...core.ssh_utils import host_in_known_hosts, get_ssh_connection_pool
 
 
+def _detect_remote_os_for_uninstall(ssh_host: str) -> str:
+    """Return 'darwin', 'linux', or 'unknown' for the box at ssh_host."""
+    try:
+        result = subprocess.run(
+            ['ssh', '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes', ssh_host, 'uname -s'],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            uname = result.stdout.strip().lower()
+            if 'darwin' in uname:
+                return 'darwin'
+            if 'linux' in uname:
+                return 'linux'
+    except Exception:
+        pass
+    return 'unknown'
+
+
+def _uninstall_macos_box(ctx, ssh_host: str, ip: str, box: str,
+                         keep_config: bool, remove_all: bool, yes: bool, dry_run: bool):
+    """Uninstall a native macOS Lager box.
+
+    Reverses what setup_and_deploy_box_mac.sh did: stops the launchd daemon,
+    removes the plist, removes state/log directories, and optionally deletes
+    the lagerdata user.
+    """
+    plist_label = "com.lager.box"
+    plist_path = f"/Library/LaunchDaemons/{plist_label}.plist"
+    state_dir = "/Library/Application Support/Lager"
+    log_dir = "/Library/Logs/Lager"
+
+    click.secho("Detected macOS target", fg='cyan', bold=True)
+
+    def _run_mac(cmd, desc, allow_fail=False):
+        click.echo(f"  {desc}...", nl=False)
+        try:
+            result = subprocess.run(
+                ["ssh", "-t", ssh_host, cmd],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode == 0:
+                click.secho(" ok", fg='green')
+                return True
+            else:
+                click.secho(" skipped" if allow_fail else " failed", fg='yellow' if allow_fail else 'red')
+                return False
+        except Exception as e:
+            click.secho(f" error: {e}", fg='red')
+            return False
+
+    if dry_run:
+        click.secho(f"Dry run: inspecting macOS box {ip}...", fg='cyan')
+        click.echo()
+        _run_mac(f"sudo launchctl print system/{plist_label} 2>/dev/null | head -5", "launchd daemon status", allow_fail=True)
+        _run_mac(f"ls -la '{plist_path}' 2>/dev/null", "Plist file", allow_fail=True)
+        _run_mac(f"du -sh '{state_dir}' 2>/dev/null", "State directory size", allow_fail=True)
+        _run_mac(f"du -sh '{log_dir}' 2>/dev/null", "Log directory size", allow_fail=True)
+        _run_mac("id lagerdata 2>/dev/null", "lagerdata user", allow_fail=True)
+        click.echo()
+        click.secho("No changes were made (dry run).", fg='yellow')
+        return
+
+    if box:
+        click.secho(f"Uninstalling lager from macOS box {box} ({ip})...", fg='cyan', bold=True)
+    else:
+        click.secho(f"Uninstalling lager from macOS box {ip}...", fg='cyan', bold=True)
+    click.echo()
+    click.secho("The following will be REMOVED:", fg='yellow', bold=True)
+    click.echo(f"  - launchd daemon ({plist_label})")
+    click.echo(f"  - Plist ({plist_path})")
+    if not keep_config:
+        click.echo(f"  - State directory ({state_dir})")
+    click.echo(f"  - Log directory ({log_dir})")
+    if remove_all:
+        click.echo("  - lagerdata macOS user account")
+        click.echo("  - LabJack LJM, SEGGER J-Link (if installed)")
+    click.echo()
+
+    if not yes:
+        click.secho("WARNING: This action cannot be undone!", fg='red', bold=True)
+        if not click.confirm("Are you sure you want to proceed?", default=False):
+            click.echo("Uninstall cancelled.")
+            ctx.exit(0)
+
+    click.echo()
+
+    # Step 1: Stop and unload the launchd daemon
+    click.secho("[Step 1/4] Stopping launchd daemon...", fg='cyan')
+    _run_mac(f"sudo launchctl bootout system/{plist_label} 2>/dev/null || true", "Unloading daemon", allow_fail=True)
+    _run_mac(f"sudo rm -f '{plist_path}'", "Removing plist", allow_fail=True)
+    click.echo()
+
+    # Step 2: Remove state directory (unless --keep-config)
+    click.secho("[Step 2/4] Removing state and logs...", fg='cyan')
+    if not keep_config:
+        _run_mac(f"sudo rm -rf '{state_dir}'", "Removing state directory")
+    else:
+        click.echo("  Skipping state directory removal (--keep-config)")
+    _run_mac(f"sudo rm -rf '{log_dir}'", "Removing log directory", allow_fail=True)
+    click.echo()
+
+    # Step 3: Remove Homebrew packages and vendor SDKs (only with --all)
+    click.secho("[Step 3/4] Cleaning vendor SDKs...", fg='cyan')
+    if remove_all:
+        _run_mac("sudo rm -rf /Applications/SEGGER/JLink 2>/dev/null || true", "Removing J-Link", allow_fail=True)
+        # LJM uninstall — LabJack installs to /usr/local/lib
+        _run_mac("sudo rm -f /usr/local/lib/libLabJackM* 2>/dev/null || true", "Removing LabJack LJM", allow_fail=True)
+    else:
+        click.echo("  Skipping vendor cleanup (use --all for complete removal)")
+    click.echo()
+
+    # Step 4: Delete the lagerdata user (only with --all)
+    click.secho("[Step 4/4] Cleaning up user...", fg='cyan')
+    if remove_all:
+        _run_mac("sudo sysadminctl -deleteUser lagerdata 2>/dev/null || true", "Deleting lagerdata user", allow_fail=True)
+    else:
+        click.echo("  Skipping user deletion (use --all to delete lagerdata user)")
+
+    # Remove from local CLI config
+    box_name = box or get_box_name_by_ip(ip)
+    if box_name:
+        try:
+            delete_box(box_name)
+            click.echo(f"\n  Removed '{box_name}' from local CLI config")
+        except Exception:
+            pass
+
+    click.echo()
+    click.secho("macOS box uninstall complete!", fg='green', bold=True)
+    ctx.exit(0)
+
+
 @click.command()
 @click.pass_context
 @click.option("--box", default=None, help="Box name (uses stored IP and username)")
@@ -227,6 +359,12 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
         else:
             click.secho("SSH connection OK", fg='green')
             use_multiplexing = True
+
+        # Dispatch to the macOS-native uninstall path if the target is a Mac.
+        remote_os = _detect_remote_os_for_uninstall(ssh_host)
+        if remote_os == "darwin":
+            _uninstall_macos_box(ctx, ssh_host, ip, box, keep_config, remove_all, yes, dry_run)
+            return
     except subprocess.TimeoutExpired:
         click.secho(f"Error: SSH connection timed out", fg='red', err=True)
         click.echo(err=True)

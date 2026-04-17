@@ -9,7 +9,8 @@ from typing import Optional, Tuple, Any
 from .rotrics import Dexarm  # Dexarm subclasses ArmBase
 from .arm_net import ArmBackendError, MovementTimeoutError, LibraryMissingError, DeviceNotFoundError
 
-_SAVED_NETS_PATH = os.environ.get("SAVED_NETS_PATH", "/etc/lager/saved_nets.json")
+from ...constants import SAVED_NETS_PATH as _DEFAULT_SAVED_NETS_PATH
+_SAVED_NETS_PATH = os.environ.get("SAVED_NETS_PATH", _DEFAULT_SAVED_NETS_PATH)
 
 # ---------- JSON helpers ----------
 

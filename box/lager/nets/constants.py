@@ -3,10 +3,18 @@
 
 from enum import Enum, auto
 
+import os
+
 from lager.constants import HARDWARE_SERVICE_PORT
 
 # Re-export for backward compatibility within pcb module
 HARDWARE_PORT = HARDWARE_SERVICE_PORT
+
+# The hostname used for inter-service HTTP calls to the hardware service.
+# On Linux (Docker container) this was historically "hardware" (Docker DNS),
+# but all services now run in a single container (or natively on macOS),
+# so "localhost" is correct. Override with LAGER_HARDWARE_HOST if needed.
+HARDWARE_HOST = os.environ.get("LAGER_HARDWARE_HOST", "localhost")
 
 class NetType(Enum):
     Analog = auto()

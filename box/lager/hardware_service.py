@@ -353,7 +353,7 @@ def cache_stats():
 @app.route('/web_oscilloscope.html', methods=['GET'])
 def serve_web_oscilloscope():
     """Serve the web oscilloscope HTML interface"""
-    html_path = '/app/lager'
+    html_path = os.environ.get('LAGER_APP_DIR', '/app/lager')
     return send_from_directory(html_path, 'web_oscilloscope.html')
 
 def _cleanup_device_cache():

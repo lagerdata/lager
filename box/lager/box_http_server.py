@@ -167,9 +167,11 @@ def status():
     import json as _json
     from lager.nets.constants import NetType
 
+    from lager.constants import VERSION_FILE_PATH, SAVED_NETS_PATH
+
     version = 'unknown'
     try:
-        with open('/etc/lager/version', 'r') as f:
+        with open(VERSION_FILE_PATH, 'r') as f:
             version_content = f.read().strip()
             version = version_content.split('|', 1)[0] if '|' in version_content else version_content
     except (FileNotFoundError, IOError):
@@ -177,7 +179,7 @@ def status():
 
     nets = []
     try:
-        with open('/etc/lager/saved_nets.json', 'r') as f:
+        with open(SAVED_NETS_PATH, 'r') as f:
             saved_nets = _json.load(f)
         for net in saved_nets:
             role = net.get('role', '')

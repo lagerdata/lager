@@ -56,9 +56,10 @@ def load_box_secrets():
     Load organization secrets from box filesystem.
 
     Returns:
-        dict: Secrets from /etc/lager/org_secrets.json or empty dict
+        dict: Secrets from the box state directory's org_secrets.json or empty dict
     """
-    secrets_file = '/etc/lager/org_secrets.json'
+    from ..constants import ORG_SECRETS_PATH
+    secrets_file = ORG_SECRETS_PATH
 
     if os.path.exists(secrets_file):
         try:
@@ -75,9 +76,10 @@ def get_box_id():
     Get box ID from local config.
 
     Returns:
-        str: Box ID from /etc/lager/box_id or 'unknown'
+        str: Box ID from the box state directory's box_id file, or 'unknown'
     """
-    id_file = '/etc/lager/box_id'
+    from ..constants import BOX_ID_PATH
+    id_file = BOX_ID_PATH
 
     if os.path.exists(id_file):
         try:
@@ -209,9 +211,18 @@ class PythonExecutor:
             if args:
                 command.extend([arg.decode() if isinstance(arg, bytes) else arg for arg in args])
 
-            # Set up timeout (use timeout command directly, not docker exec)
+            # Set up timeout. On Linux, use GNU `timeout` (coreutils). On macOS,
+            # use `gtimeout` from Homebrew's coreutils, or fall back to running
+            # without a timeout wrapper (the Python service itself has its own
+            # keepalive/kill logic as a backstop).
             if not detach:
-                base_command = ['/usr/bin/timeout', str(min(timeout, MAX_TIMEOUT))] + command
+                import shutil
+                timeout_bin = shutil.which('timeout') or shutil.which('gtimeout')
+                if timeout_bin:
+                    base_command = [timeout_bin, str(min(timeout, MAX_TIMEOUT))] + command
+                else:
+                    logger.warning("Neither 'timeout' nor 'gtimeout' found on PATH; running without timeout wrapper")
+                    base_command = command
             else:
                 base_command = command
 
@@ -438,124 +449,83 @@ def _kill_by_proc_id(sig, proc_id):
     """
     Kill a process by its lager process ID.
 
-    Since LAGER_PROCESS_ID is an environment variable (not visible in ps output),
-    we need to search /proc/*/environ files to find the matching process.
-
-    Args:
-        sig: Signal number to send
-        proc_id: Lager process ID (UUID) to search for (bytes)
+    Uses the cross-platform process_utils module to search for processes
+    with a matching LAGER_PROCESS_ID environment variable (works on both
+    Linux and macOS).
     """
-    import glob
+    from ..process_utils import find_processes_by_env
 
     proc_id_str = proc_id.decode() if isinstance(proc_id, bytes) else proc_id
-    search_str = f'LAGER_PROCESS_ID={proc_id_str}'.encode()
+    matches = find_processes_by_env("LAGER_PROCESS_ID", proc_id_str)
 
-    # Search through /proc/*/environ to find processes with matching LAGER_PROCESS_ID
-    for environ_path in glob.glob('/proc/*/environ'):
+    if not matches:
+        logger.warning(f"Could not find process with LAGER_PROCESS_ID={proc_id_str}")
+        return
+
+    for match in matches:
+        pid = match["pid"]
+        cmdline_str = " ".join(match.get("cmdline", []))[:100]
+        logger.info(f"Killing process {pid} with signal {sig} (cmdline: {cmdline_str})")
+
         try:
-            pid = int(environ_path.split('/')[2])
-
-            # Read the environment variables for this process
-            with open(environ_path, 'rb') as f:
-                environ_data = f.read()
-
-            # Check if this process has the matching LAGER_PROCESS_ID
-            if search_str in environ_data:
-                # Read cmdline to determine if it's timeout or python
-                cmdline_path = f'/proc/{pid}/cmdline'
-                try:
-                    with open(cmdline_path, 'rb') as f:
-                        cmdline = f.read().replace(b'\x00', b' ')
-                except FileNotFoundError:
-                    continue
-
-                # Log what we're killing
-                if b'/usr/bin/timeout' in cmdline:
-                    logger.info(f"Killing timeout process {pid} with signal {sig} (cmdline: {cmdline[:100]})")
-                elif b'/usr/local/bin/python3' in cmdline:
-                    logger.info(f"Killing Python process {pid} with signal {sig} (cmdline: {cmdline[:100]})")
-                else:
-                    logger.info(f"Killing process {pid} with signal {sig}")
-
-                # Kill the process
-                try:
-                    os.kill(pid, sig)
-                    logger.info(f"Successfully sent signal {sig} to PID {pid}")
-                except (ProcessLookupError, PermissionError) as e:
-                    logger.warning(f"Failed to kill PID {pid}: {e}")
-                    continue
-
-                # If not SIGKILL, wait up to 3s then escalate
-                if sig != signal_module.SIGKILL:
-                    import time
-                    for _ in range(30):
-                        try:
-                            os.kill(pid, 0)  # check if alive
-                        except ProcessLookupError:
-                            return  # process exited
-                        time.sleep(0.1)
-                    # Still alive — escalate to SIGKILL
-                    try:
-                        logger.warning(f"Process {pid} did not exit after 3s, sending SIGKILL")
-                        os.kill(pid, signal_module.SIGKILL)
-                    except (ProcessLookupError, PermissionError):
-                        pass
-                return
-
-        except (FileNotFoundError, ValueError, PermissionError):
-            # Process exited or we can't read it
+            os.kill(pid, sig)
+            logger.info(f"Successfully sent signal {sig} to PID {pid}")
+        except (ProcessLookupError, PermissionError) as e:
+            logger.warning(f"Failed to kill PID {pid}: {e}")
             continue
 
-    logger.warning(f"Could not find process with LAGER_PROCESS_ID={proc_id_str}")
+        # If not SIGKILL, wait up to 3s then escalate
+        if sig != signal_module.SIGKILL:
+            import time
+            for _ in range(30):
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    return
+                time.sleep(0.1)
+            try:
+                logger.warning(f"Process {pid} did not exit after 3s, sending SIGKILL")
+                os.kill(pid, signal_module.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        return
 
 
 def _kill_all_lager_processes(sig):
     """
     Kill all processes that have a LAGER_PROCESS_ID environment variable.
 
-    Used when --kill is invoked without a specific process ID.
-
-    Args:
-        sig: Signal number to send
+    Uses the cross-platform process_utils module (works on both Linux and macOS).
     """
-    import glob
+    from ..process_utils import find_processes_by_env
 
-    search_str = b'LAGER_PROCESS_ID='
+    matches = find_processes_by_env("LAGER_PROCESS_ID")
     killed = 0
 
-    for environ_path in glob.glob('/proc/*/environ'):
+    for match in matches:
+        pid = match["pid"]
+        logger.info(f"Killing lager process PID {pid} with signal {sig}")
         try:
-            pid = int(environ_path.split('/')[2])
-
-            with open(environ_path, 'rb') as f:
-                environ_data = f.read()
-
-            if search_str in environ_data:
-                logger.info(f"Killing lager process PID {pid} with signal {sig}")
-                try:
-                    os.kill(pid, sig)
-                    killed += 1
-                except (ProcessLookupError, PermissionError) as e:
-                    logger.warning(f"Failed to kill PID {pid}: {e}")
-                    continue
-
-                if sig != signal_module.SIGKILL:
-                    import time
-                    for _ in range(30):
-                        try:
-                            os.kill(pid, 0)
-                        except ProcessLookupError:
-                            break
-                        time.sleep(0.1)
-                    else:
-                        try:
-                            logger.warning(f"Process {pid} did not exit after 3s, sending SIGKILL")
-                            os.kill(pid, signal_module.SIGKILL)
-                        except (ProcessLookupError, PermissionError):
-                            pass
-
-        except (FileNotFoundError, ValueError, PermissionError):
+            os.kill(pid, sig)
+            killed += 1
+        except (ProcessLookupError, PermissionError) as e:
+            logger.warning(f"Failed to kill PID {pid}: {e}")
             continue
+
+        if sig != signal_module.SIGKILL:
+            import time
+            for _ in range(30):
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.1)
+            else:
+                try:
+                    logger.warning(f"Process {pid} did not exit after 3s, sending SIGKILL")
+                    os.kill(pid, signal_module.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
 
     if killed:
         logger.info(f"Killed {killed} lager process(es)")

@@ -5,8 +5,6 @@
 
 Provides endpoints to lock/unlock a box so that shared users
 can prevent others from using a box while they're working with it.
-
-Lock state file: /etc/lager/lock.json
 """
 
 import json
@@ -15,9 +13,11 @@ from datetime import datetime, timezone
 
 from flask import Flask, jsonify, request
 
+from ..constants import LOCK_FILE_PATH
+
 logger = logging.getLogger(__name__)
 
-LOCK_FILE = '/etc/lager/lock.json'
+LOCK_FILE = LOCK_FILE_PATH
 
 
 def _read_lock():

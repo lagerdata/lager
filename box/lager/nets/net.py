@@ -13,7 +13,7 @@ import requests  # used by get_state(); safe to keep
 
 from .device import Device
 from .mux import Mux
-from .constants import HARDWARE_PORT, NetType
+from .constants import HARDWARE_HOST, HARDWARE_PORT, NetType
 from .defines import (
     TriggerType,
     TriggerStatus,
@@ -75,17 +75,18 @@ from ..protocols.i2c.i2c_net import I2CNet
 from ..automation.usb_hub.usb_net_wrapper import USBNetWrapper
 from ..automation.webcam.webcam_net_wrapper import WebcamNetWrapper
 from ..cache import get_nets_cache
+from ..constants import SAVED_NETS_PATH
 
 
 # ------------------------------- constants -------------------------------
 
-LOCAL_NETS_PATH = "/etc/lager/saved_nets.json"
+LOCAL_NETS_PATH = SAVED_NETS_PATH
 
 
 # ------------------------------ HTTP helpers -----------------------------
 
 def get_state() -> Dict[str, Any]:
-    resp = requests.get(f"http://hardware:{HARDWARE_PORT}/equipment")
+    resp = requests.get(f"http://{HARDWARE_HOST}:{HARDWARE_PORT}/equipment")
     resp.raise_for_status()
     return resp.json()
 

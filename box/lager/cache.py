@@ -40,10 +40,11 @@ class NetsCache:
 
     def _init(self) -> None:
         """Initialize instance attributes (called once on singleton creation)."""
+        from .constants import SAVED_NETS_PATH
         self._nets: Optional[List[dict]] = None
         self._mtime: float = 0
         self._name_index: Dict[str, dict] = {}
-        self._path = "/etc/lager/saved_nets.json"
+        self._path = SAVED_NETS_PATH
         self._data_lock = threading.Lock()
 
     def _reload_if_needed(self) -> None:

@@ -21,7 +21,9 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-AUDIT_LOG_PATH = Path(os.environ.get("LAGER_MCP_AUDIT_LOG", "/etc/lager/mcp_audit.log"))
+from ..constants import MCP_AUDIT_LOG_PATH as _DEFAULT_MCP_AUDIT_LOG_PATH
+
+AUDIT_LOG_PATH = Path(os.environ.get("LAGER_MCP_AUDIT_LOG", _DEFAULT_MCP_AUDIT_LOG_PATH))
 
 
 def _redact(value: Any) -> Any:

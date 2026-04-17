@@ -1,6 +1,8 @@
 # Copyright 2024-2026 Lager Data LLC
 # SPDX-License-Identifier: Apache-2.0
 
+from .state_dir import get_state_dir
+
 __all__ = [
     # GPIO states
     'HIGH',
@@ -13,6 +15,11 @@ __all__ = [
     'BOX_ID_PATH',
     'VERSION_FILE_PATH',
     'WEBCAM_STREAMS_PATH',
+    'LOCK_FILE_PATH',
+    'CONTROL_PLANE_CONFIG_PATH',
+    'AUTHORIZED_KEYS_DIR',
+    'BENCH_JSON_PATH',
+    'MCP_AUDIT_LOG_PATH',
     # Port numbers
     'HARDWARE_SERVICE_PORT',
     'BOX_HTTP_PORT',
@@ -29,14 +36,22 @@ __all__ = [
 HIGH = 1
 LOW = 0
 
-# Configuration paths
-LAGER_CONFIG_DIR = "/etc/lager"
-SAVED_NETS_PATH = "/etc/lager/saved_nets.json"
-AVAILABLE_INSTRUMENTS_PATH = "/etc/lager/available_instruments.json"
-ORG_SECRETS_PATH = "/etc/lager/org_secrets.json"
-BOX_ID_PATH = "/etc/lager/box_id"
-VERSION_FILE_PATH = "/etc/lager/version"
-WEBCAM_STREAMS_PATH = "/etc/lager/webcam_streams.json"
+# Configuration paths — all derived from the platform-aware state directory.
+# On Linux this is /etc/lager; on macOS this is /Library/Application Support/Lager.
+# Override with the LAGER_STATE_DIR environment variable.
+_STATE_DIR = get_state_dir()
+LAGER_CONFIG_DIR = str(_STATE_DIR)
+SAVED_NETS_PATH = str(_STATE_DIR / "saved_nets.json")
+AVAILABLE_INSTRUMENTS_PATH = str(_STATE_DIR / "available_instruments.json")
+ORG_SECRETS_PATH = str(_STATE_DIR / "org_secrets.json")
+BOX_ID_PATH = str(_STATE_DIR / "box_id")
+VERSION_FILE_PATH = str(_STATE_DIR / "version")
+WEBCAM_STREAMS_PATH = str(_STATE_DIR / "webcam_streams.json")
+LOCK_FILE_PATH = str(_STATE_DIR / "lock.json")
+CONTROL_PLANE_CONFIG_PATH = str(_STATE_DIR / "control_plane.json")
+AUTHORIZED_KEYS_DIR = str(_STATE_DIR / "authorized_keys.d")
+BENCH_JSON_PATH = str(_STATE_DIR / "bench.json")
+MCP_AUDIT_LOG_PATH = str(_STATE_DIR / "mcp_audit.log")
 
 # Service port numbers
 HARDWARE_SERVICE_PORT = 8080  # Hardware service for instrument control

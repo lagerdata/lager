@@ -167,9 +167,9 @@ def _get_debugger_status(pidfile, logfile_path, mcu=None):
 
             if running:
                 try:
-                    with open(f'/proc/{pid}/cmdline', 'rb') as f:
-                        cmdline = [part.decode() for part in f.read().split(b'\x00')]
-                except OSError:
+                    from ..process_utils import get_process_cmdline
+                    cmdline = get_process_cmdline(pid)
+                except Exception:
                     pass
 
     if logfile is None:

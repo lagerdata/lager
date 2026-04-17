@@ -4,11 +4,13 @@
 """
     cli.context.session
 
-    Session classes for direct communication with Lager boxes.
+    Session class for direct HTTP communication with Lager boxes.
 
-    Contains:
-    - DirectIPSession: SSH + docker exec communication with boxes
-    - DirectHTTPSession: Direct HTTP communication with boxes
+    DirectHTTPSession is the sole transport for all CLI-to-box communication.
+    It makes HTTP requests to the box's Python execution service (port 5000),
+    box HTTP server (port 9000), and other services. This works identically
+    on both Linux and macOS boxes because the services listen on the same ports
+    regardless of whether they run inside a Docker container or natively.
 """
 import os
 import signal
@@ -20,7 +22,12 @@ import requests
 from .. import __version__
 
 
-class DirectIPSession:
+# DirectIPSession (SSH + docker exec) was removed — it was dead code from an
+# earlier architecture phase and is superseded by DirectHTTPSession for all
+# production use cases. All CLI commands use DirectHTTPSession exclusively.
+
+
+class _RemovedDirectIPSession:
     """
     Direct session for communicating with box IPs via SSH + docker exec
     """

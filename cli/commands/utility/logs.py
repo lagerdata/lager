@@ -12,6 +12,30 @@ from ...sort_utils import natural_sort_key
 from ...box_storage import list_boxes
 
 
+def _detect_remote_os_for_logs(ssh_host: str) -> str:
+    """Return 'darwin', 'linux', or 'unknown' for the box at ssh_host."""
+    try:
+        result = subprocess.run(
+            ['ssh', '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes', ssh_host, 'uname -s'],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            uname = result.stdout.strip().lower()
+            if 'darwin' in uname:
+                return 'darwin'
+            if 'linux' in uname:
+                return 'linux'
+    except Exception:
+        pass
+    return 'unknown'
+
+
+# The macOS box writes its five Python services' logs here via the launchd
+# plist's StandardOutPath/StandardErrorPath redirect. See
+# box/launchd/com.lager.box.plist and box/start_box_mac.sh.
+_MAC_LOG_DIR = '/Library/Logs/Lager'
+
+
 @click.group()
 def logs():
     """Manage box logs"""
@@ -48,9 +72,17 @@ def clean(ctx, box, older_than, yes):
     if not yes:
         click.confirm(f"Clean logs older than {older_than} day(s) on {box} ({ip})?", abort=True)
 
+    # Detect the box OS so we look in the right log directory.
+    ssh_host = f'lagerdata@{ip}'
+    remote_os = _detect_remote_os_for_logs(ssh_host)
+    if remote_os == 'darwin':
+        log_dir = _MAC_LOG_DIR
+    else:
+        log_dir = '~/box/logs'
+
     # Build command to remove old logs
     # Note: -mtime +N means "modified more than N days ago"
-    cmd = f'find ~/box/logs -name "*.log" -type f -mtime +{older_than} -delete 2>/dev/null || true'
+    cmd = f'find {log_dir} -name "*.log" -type f -mtime +{older_than} -delete 2>/dev/null || true'
 
     click.echo(f'Cleaning logs on {box}...', nl=False)
     try:
@@ -69,7 +101,7 @@ def clean(ctx, box, older_than, yes):
         click.secho(' OK', fg='green')
 
         # Show how much space was freed
-        size_cmd = 'du -sh ~/box/logs/ 2>/dev/null || echo "0"'
+        size_cmd = f'du -sh {log_dir}/ 2>/dev/null || echo "0"'
         try:
             result = subprocess.run(
                 ['ssh', '-o', 'ConnectTimeout=10', '-o', 'BatchMode=yes', f'lagerdata@{ip}', size_cmd],
@@ -125,8 +157,13 @@ def size(ctx, box, verbose):
 
         click.echo(f'\n{name} ({ip}):')
 
+        # Detect box OS to pick the right log directory.
+        ssh_host = f'lagerdata@{ip}'
+        remote_os = _detect_remote_os_for_logs(ssh_host)
+        log_dir = _MAC_LOG_DIR if remote_os == 'darwin' else '~/box/logs'
+
         # Get total size
-        size_cmd = 'du -sh ~/box/logs/ 2>/dev/null || echo "0\t(not found)"'
+        size_cmd = f'du -sh {log_dir}/ 2>/dev/null || echo "0\t(not found)"'
         try:
             result = subprocess.run(
                 ['ssh', '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes', f'lagerdata@{ip}', size_cmd],
@@ -164,7 +201,7 @@ def size(ctx, box, verbose):
 
             # Show individual files if verbose
             if verbose:
-                files_cmd = 'find ~/box/logs -name "*.log" -type f -exec ls -lh {} \\; 2>/dev/null | awk \'{print "    " $9 ": " $5}\''
+                files_cmd = f'find {log_dir} -name "*.log" -type f -exec ls -lh {{}} \\; 2>/dev/null | awk \'{{print "    " $9 ": " $5}}\''
                 try:
                     result = subprocess.run(
                         ['ssh', '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes', f'lagerdata@{ip}', files_cmd],
@@ -212,6 +249,19 @@ def docker_logs(ctx, box, container):
         ip = box_info.get('ip', 'unknown')
     else:
         ip = box_info
+
+    # Docker container logs are Linux-only. Mac boxes run the services
+    # natively under launchd — there is no Docker container to inspect.
+    ssh_host = f'lagerdata@{ip}'
+    if _detect_remote_os_for_logs(ssh_host) == 'darwin':
+        click.secho(f'{box} is a native macOS box — no Docker containers to inspect.', fg='yellow')
+        click.echo()
+        click.echo(f'Service logs live at {_MAC_LOG_DIR}/ on the box. To tail them:')
+        click.echo(f'  ssh {ssh_host} "tail -F {_MAC_LOG_DIR}/*.log"')
+        click.echo()
+        click.echo(f'To see total log size:')
+        click.echo(f'  lager logs size --box {box}')
+        return
 
     click.echo(f'Docker logs on {box} ({ip}):\n')
 

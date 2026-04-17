@@ -99,7 +99,8 @@ def _load_ljm():
         from labjack.ljm import ljm as _inner
         if getattr(_inner, '_staticLib', None) is None:
             raise ImportError(
-                "labjack.ljm loaded but the native LJM library (libLabJackM.so) "
+                "labjack.ljm loaded but the native LJM library "
+                "(libLabJackM.so on Linux, libLabJackM.dylib on macOS) "
                 "is not available. Install the LJM SDK from "
                 "https://labjack.com/support/software/installers/ljm"
             )
@@ -135,7 +136,8 @@ def _load_ljm():
         _inner = importlib.import_module("labjack.ljm.ljm")
         if getattr(_inner, '_staticLib', None) is None:
             raise ImportError(
-                "labjack.ljm loaded but the native LJM library (libLabJackM.so) "
+                "labjack.ljm loaded but the native LJM library "
+                "(libLabJackM.so on Linux, libLabJackM.dylib on macOS) "
                 "is not available. Install the LJM SDK from "
                 "https://labjack.com/support/software/installers/ljm"
             )

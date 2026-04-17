@@ -135,6 +135,13 @@ class YKUSHUSBNet(USBNet):
 
     @staticmethod
     def _shell_fallback(port: int, turn_on: bool) -> None:
+        import sys as _sys
+        if _sys.platform == "darwin":
+            raise RuntimeError(
+                "ykushcmd CLI fallback is not available on macOS. "
+                "Ensure the pykush Python library is installed with working "
+                "set_port_state() / switch_port_on() / switch_port_off() methods."
+            )
         cmd = ["ykushcmd", "-u" if turn_on else "-d", str(port)]
         try:
             subprocess.check_call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

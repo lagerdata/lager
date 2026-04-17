@@ -147,9 +147,11 @@ def read_adc(kind="T7", interface="AIN0"):
                 pass
 
 def get_available_instruments():
-    with open('/etc/lager/available_instruments.json') as f:
+    from .constants import AVAILABLE_INSTRUMENTS_PATH
+    with open(AVAILABLE_INSTRUMENTS_PATH) as f:
         return json.load(f)
 
 def get_saved_nets():
-    with open('/etc/lager/saved_nets.json') as f:
+    from .constants import SAVED_NETS_PATH
+    with open(SAVED_NETS_PATH) as f:
         return json.load(f)

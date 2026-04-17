@@ -7,48 +7,62 @@ import os
 import sys
 import re
 import glob
-import signal
 from pathlib import Path
 from typing import List, Dict, Optional, Callable, TypeVar, Any
 from serial import Serial, SerialException
 import subprocess
 from collections import defaultdict
 
+# Cross-platform USB/serial enumeration. This script runs inside the box's
+# Python environment (Linux container today, macOS host on a Mac box), so the
+# lager package is on sys.path and we can import the shared helper.
+try:
+    from lager.usb_enum import (
+        get_serial_by_port as _xp_get_serial_by_port,
+        get_tty_for_usb_serial as _xp_get_tty_for_usb_serial,
+        iter_serial_ports as _xp_iter_serial_ports,
+        iter_usb_devices as _xp_iter_usb_devices,
+        iter_video_devices as _xp_iter_video_devices,
+    )
+    _HAS_USB_ENUM = True
+except ImportError:
+    _HAS_USB_ENUM = False
+
+_IS_DARWIN = sys.platform == "darwin"
+
+# Vendor SDKs with no macOS support — skipped on Darwin so they don't appear
+# as "detected but broken" in `lager instruments`.
+_MACOS_UNSUPPORTED_INSTRUMENTS = {
+    "MCC_USB-202",
+    "Picoscope_2000",
+}
+
 T = TypeVar('T')
 
 # ---------------------------------------------------------------------------
-#  Timeout Helper
+#  Timeout Helper (thread-safe, cross-platform)
 # ---------------------------------------------------------------------------
 
-class _ScanTimeoutError(Exception):
-    """Raised when a USB scan operation times out."""
-    pass
-
-def timeout_handler(signum, frame):
-    """Signal handler for timeout."""
-    raise _ScanTimeoutError("Operation timed out")
+import concurrent.futures
 
 def with_timeout(seconds: int, default: T = None) -> Callable[[Callable[..., T]], Callable[..., T]]:
     """
     Decorator to add a timeout to a function.
     If the function takes longer than `seconds`, return `default`.
 
-    Note: Uses SIGALRM which only works on Unix-like systems.
+    Uses concurrent.futures instead of signal.SIGALRM so it works from any
+    thread on any platform (SIGALRM crashes on macOS non-main threads).
     """
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
         def wrapper(*args, **kwargs) -> T:
-            # Set up the signal handler
-            old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(seconds)
-            try:
-                result = func(*args, **kwargs)
-                signal.alarm(0)  # Cancel the alarm
-                return result
-            except _ScanTimeoutError:
-                return default
-            finally:
-                signal.alarm(0)  # Ensure alarm is cancelled
-                signal.signal(signal.SIGALRM, old_handler)  # Restore old handler
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(func, *args, **kwargs)
+                try:
+                    return future.result(timeout=seconds)
+                except concurrent.futures.TimeoutError:
+                    return default
+                except Exception:
+                    return default
         return wrapper
     return decorator
 
@@ -207,29 +221,34 @@ DEX_PID = "5740"
 DEX_BAUD = 115200
 
 def get_serial_by_port(port):
-    """Attempt to get the USB serial number for a device."""
+    """Attempt to get the USB serial number for a device (cross-platform)."""
+    if _HAS_USB_ENUM:
+        try:
+            return _xp_get_serial_by_port(port)
+        except Exception as e:
+            print(f"Error retrieving serial for {port}: {e}", file=sys.stderr)
+            return None
+    # Legacy Linux fallback when the lager package isn't importable
     try:
         output = subprocess.check_output(
             ["udevadm", "info", "-q", "all", "-n", port],
             stderr=subprocess.DEVNULL,
             text=True,
-            timeout=2  # 2 second timeout for udevadm
+            timeout=2,
         )
         for key in ["ID_SERIAL_SHORT", "ID_SERIAL", "ID_USB_SERIAL"]:
             match = re.search(fr"{key}=(\w+)", output)
             if match:
                 return match.group(1)
-
         output = subprocess.check_output(
             ["udevadm", "info", "-a", "-n", port],
             stderr=subprocess.DEVNULL,
             text=True,
-            timeout=2  # 2 second timeout for udevadm
+            timeout=2,
         )
         match = re.search(r'ATTRS{serial}=="([^"]+)"', output)
         if match:
             return match.group(1)
-
     except subprocess.TimeoutExpired:
         print(f"Timeout retrieving serial for {port}", file=sys.stderr)
     except Exception as e:
@@ -249,7 +268,10 @@ def _by_handshake(*, exclude: Optional[set[str]] = None) -> List[dict]:
     """
     results = []
     exclude = exclude or set()
-    ports = sorted(glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*"))
+    if _HAS_USB_ENUM:
+        ports = [p for p, _vid, _pid, _serial in _xp_iter_serial_ports()]
+    else:
+        ports = sorted(glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*"))
 
     for port in ports:
         if port in exclude:
@@ -293,7 +315,9 @@ CAM_PIDS = {"085e", "0856", "0843"}   # BRIO HD / BRIO / C930e
 
 def _by_camera() -> List[dict]:
     """
-    Detect Logitech webcams (BRIO, BRIO HD, C930e) when udev attributes are missing.
+    Detect Logitech webcams (BRIO, BRIO HD, C930e). On Linux this maps each
+    USB camera to a /dev/video* node (4 nodes per camera); on macOS it maps
+    each camera to an OpenCV-style integer index (1 logical index per camera).
     """
     usb_cams = [
         dev for dev in _scan_usb()
@@ -303,17 +327,20 @@ def _by_camera() -> List[dict]:
     if not usb_cams:
         return []
 
-    video_nodes = sorted(
-        (Path(p) for p in glob.glob("/dev/video*")),
-        key=lambda p: int(p.name.replace("video", ""))
-    )
+    if _HAS_USB_ENUM:
+        video_nodes = _xp_iter_video_devices()
+    else:
+        video_nodes = sorted(
+            (str(p) for p in (Path(x) for x in glob.glob("/dev/video*"))),
+            key=lambda s: int(re.sub(r"\D", "", Path(s).name) or 0),
+        )
 
+    blk_size = 1 if _IS_DARWIN else 4
     results: List[dict] = []
-    blk_size = 4
     for idx, cam in enumerate(usb_cams):
         try:
             vidx = idx * blk_size
-            video_dev = str(video_nodes[vidx])
+            video_dev = video_nodes[vidx]
         except IndexError:
             print(
                 f"[webcam] WARNING: could not map video port for "
@@ -367,14 +394,14 @@ def _merge_or_append(entry: dict, instruments: List[dict]) -> None:
 @with_timeout(seconds=2, default=None)
 def _get_tty_for_usb_serial(serial_number: Optional[str] = None) -> Optional[str]:
     """
-    Find the /dev/tty* device path for a USB serial adapter by serial number.
-    Uses sysfs to map USB device serial to tty device.
-
-    Wrapped with 2-second timeout to prevent hanging on problematic devices
-    (e.g., composite USB devices like ESP32 with complex sysfs structures).
+    Find the tty device path (e.g. /dev/ttyUSB0 on Linux, /dev/cu.usbserial-X
+    on macOS) for a USB serial adapter by its USB serial number.
     """
     if not serial_number:
         return None
+
+    if _HAS_USB_ENUM:
+        return _xp_get_tty_for_usb_serial(serial_number)
 
     sys_tty = Path("/sys/class/tty")
     if not sys_tty.exists():
@@ -429,13 +456,28 @@ for _name, meta in SUPPORTED_USB.items():
     _VIDPID_TO_NAME[(meta["vid"].lower(), meta["pid"].lower())] = _name
 
 
-def _scan_usb() -> List[dict]:
-    """Quick VID:PID scan via /sys (Linux only) with channel map for LabJack."""
-    results: List[dict] = []
+def _resolve_instrument_name(vid: str, pid: str, serial: Optional[str]) -> Optional[str]:
+    """Map (vid, pid, serial) → SUPPORTED_USB instrument name, or None."""
+    if vid == "1ab1" and pid == "0e11" and serial:
+        serial_upper = serial.upper()
+        if serial_upper.startswith("DL3"):
+            return "Rigol_DL3021"
+        if serial_upper.startswith("DP8B") or serial_upper.startswith("DP83"):
+            return "Rigol_DP832"
+        if serial_upper.startswith("DP82"):
+            return "Rigol_DP821"
+        if serial_upper.startswith("DP8"):
+            return "Rigol_DP821"
+        return "Rigol_DP821"
+    return _VIDPID_TO_NAME.get((vid, pid))
+
+
+def _iter_usb_devices_legacy_linux() -> List[Dict[str, Optional[str]]]:
+    """Fallback /sys/bus/usb scan when lager.usb_enum is not importable."""
+    out: List[Dict[str, Optional[str]]] = []
     sys_usb = Path("/sys/bus/usb/devices")
     if not sys_usb.exists():
-        return results
-
+        return out
     for dev in sys_usb.iterdir():
         try:
             vid_path = dev / "idVendor"
@@ -443,22 +485,13 @@ def _scan_usb() -> List[dict]:
             serial_path = dev / "serial"
             if not (vid_path.exists() and pid_path.exists()):
                 continue
-
-            # Use non-blocking reads to avoid hanging on problematic devices
             vid_fd = os.open(str(vid_path), os.O_RDONLY | os.O_NONBLOCK)
             vid = os.read(vid_fd, 64).decode('utf-8').strip().lower()
             os.close(vid_fd)
-
             pid_fd = os.open(str(pid_path), os.O_RDONLY | os.O_NONBLOCK)
             pid = os.read(pid_fd, 64).decode('utf-8').strip().lower()
             os.close(pid_fd)
-
-            # Check if this device is supported BEFORE reading serial
-            # (avoids reading serial from unsupported devices that might hang)
-            if (vid, pid) not in _VIDPID_TO_NAME and not (vid == "1ab1" and pid == "0e11"):
-                continue
-
-            serial = None
+            serial: Optional[str] = None
             if serial_path.exists():
                 try:
                     serial_fd = os.open(str(serial_path), os.O_RDONLY | os.O_NONBLOCK)
@@ -468,27 +501,34 @@ def _scan_usb() -> List[dict]:
                     serial = None
         except (OSError, UnicodeDecodeError, BlockingIOError):
             continue
+        out.append({"vid": vid, "pid": pid, "serial": serial})
+    return out
 
-        # Special handling for Rigol instruments with same VID:PID (1ab1:0e11)
-        # Differentiate by serial number prefix
-        if vid == "1ab1" and pid == "0e11" and serial:
-            serial_upper = serial.upper()
-            if serial_upper.startswith("DL3"):
-                meta_name = "Rigol_DL3021"  # DL3000 series electronic load
-            elif serial_upper.startswith("DP8B") or serial_upper.startswith("DP83"):
-                meta_name = "Rigol_DP832"  # DP832/DP832A - 3 channel power supply
-            elif serial_upper.startswith("DP82"):
-                meta_name = "Rigol_DP821"  # DP821 - 2 channel power supply
-            elif serial_upper.startswith("DP8"):
-                # Generic DP8xx - default to DP821
-                meta_name = "Rigol_DP821"
-            else:
-                # Default to power supply if we can't determine from serial
-                meta_name = "Rigol_DP821"
-        else:
-            meta_name = _VIDPID_TO_NAME.get((vid, pid))
-            if meta_name is None:
-                continue
+
+def _scan_usb() -> List[dict]:
+    """Cross-platform VID:PID scan with channel maps and Tier-1 macOS skips."""
+    results: List[dict] = []
+    skipped_on_macos: set = set()
+
+    if _HAS_USB_ENUM:
+        devices = _xp_iter_usb_devices()
+    else:
+        devices = _iter_usb_devices_legacy_linux()
+
+    for dev_info in devices:
+        vid = dev_info.get("vid")
+        pid = dev_info.get("pid")
+        serial = dev_info.get("serial")
+        if not vid or not pid:
+            continue
+
+        meta_name = _resolve_instrument_name(vid, pid, serial)
+        if meta_name is None:
+            continue
+
+        if _IS_DARWIN and meta_name in _MACOS_UNSUPPORTED_INSTRUMENTS:
+            skipped_on_macos.add(meta_name)
+            continue
 
         meta = SUPPORTED_USB[meta_name]
 
@@ -526,6 +566,14 @@ def _scan_usb() -> List[dict]:
                 continue
 
         results.append(entry)
+
+    if skipped_on_macos:
+        print(
+            "[query_instruments] Skipping unsupported on macOS: "
+            + ", ".join(sorted(skipped_on_macos))
+            + " (vendor SDK has no macOS build)",
+            file=sys.stderr,
+        )
 
     return results
 

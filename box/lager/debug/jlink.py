@@ -91,7 +91,8 @@ def _yield_loadfile_outputs(jl, hexfiles, binfiles, elffiles):
             yield _LOADFILE_SKIPPED_MSG
 
 
-# JLinkExe paths (checked in order)
+# JLinkExe paths (checked in order). The first six are Linux-container layouts;
+# the last two are the standard SEGGER macOS .pkg install locations.
 JLINK_EXE_PATHS = [
     '/tmp/lager-jlink-bin/JLinkExe',  # Symlinks to /opt/SEGGER (most common)
     '/opt/SEGGER/JLink_V794e/JLinkExe',  # Direct path on newer boxes
@@ -99,6 +100,9 @@ JLINK_EXE_PATHS = [
     '/home/www-data/third_party/JLink_V884/JLinkExe',
     '/home/www-data/third_party/JLink_Linux_V794a_x86_64/JLinkExe',
     '/usr/bin/JLinkExe',
+    # macOS (SEGGER .pkg installer locations)
+    '/Applications/SEGGER/JLink/JLinkExe',
+    '/Applications/SEGGER/JLink/JLinkExeCmd',
 ]
 
 

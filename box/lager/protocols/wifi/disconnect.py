@@ -11,8 +11,17 @@ import json
 import sys
 
 
+_IS_DARWIN = sys.platform == "darwin"
+
+
 def disconnect_wifi(interface='wlan0'):
     """Disconnect from the current WiFi network using nmcli."""
+    if _IS_DARWIN:
+        return {
+            'success': False,
+            'error': 'not_supported_on_macos',
+            'message': 'WiFi station control is not supported on the macOS box (v1).',
+        }
     try:
         result = subprocess.run(
             ['nmcli', 'dev', 'disconnect', interface],

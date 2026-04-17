@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.lager.box.plist — LaunchDaemon for the native macOS Lager box.
+
+  Installed by setup_and_deploy_box_mac.sh to /Library/LaunchDaemons/ as
+  root:wheel 0644 and loaded with `launchctl bootstrap system <path>`.
+
+  Runs the box services as the dedicated `lagerdata` user. KeepAlive=true
+  with SuccessfulExit=false means launchd will restart start_box_mac.sh if
+  it ever exits, providing the same auto-restart guarantee as systemd on the
+  Linux Cybergeek boxes. RunAtLoad=true makes the box come up at boot before
+  any user logs in, since LaunchDaemons run pre-login.
+
+  The repo path under LAGER_REPO_DIR is the canonical install location; the
+  setup script clones the open-source-lager repo there and chowns to lagerdata.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.lager.box</string>
+
+    <key>UserName</key>
+    <string>lagerdata</string>
+
+    <key>GroupName</key>
+    <string>staff</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Library/Application Support/Lager/repo/box/start_box_mac.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Library/Application Support/Lager</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>LAGER_STATE_DIR</key>
+        <string>/Library/Application Support/Lager</string>
+        <key>LAGER_VENV</key>
+        <string>/Library/Application Support/Lager/venv</string>
+        <key>LAGER_LOG_DIR</key>
+        <string>/Library/Logs/Lager</string>
+        <key>LAGER_BIN_DIR</key>
+        <string>/Library/Application Support/Lager/bin</string>
+        <key>LAGER_REPO_DIR</key>
+        <string>/Library/Application Support/Lager/repo</string>
+        <key>PATH</key>
+        <string>/Library/Application Support/Lager/bin:/Library/Application Support/Lager/venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/Applications/SEGGER/JLink</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Library/Logs/Lager/launchd.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Library/Logs/Lager/launchd.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>4096</integer>
+    </dict>
+</dict>
+</plist>

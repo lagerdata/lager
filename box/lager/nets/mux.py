@@ -5,7 +5,7 @@ import requests
 import json
 import os
 from typing import Dict, Optional, Set, Tuple
-from .constants import HARDWARE_PORT
+from .constants import HARDWARE_HOST, HARDWARE_PORT
 
 class InvalidNetNameError(Exception):
     pass
@@ -114,7 +114,7 @@ class Mux:
                 }],
             },
         ]
-        resp = requests.post(f'http://hardware:{HARDWARE_PORT}/mux', json=data)
+        resp = requests.post(f'http://{HARDWARE_HOST}:{HARDWARE_PORT}/mux', json=data)
         resp.raise_for_status()
 
 
@@ -141,5 +141,5 @@ class Mux:
                 }],
             },
         ]
-        resp = requests.post(f'http://hardware:{HARDWARE_PORT}/mux', json=data)
+        resp = requests.post(f'http://{HARDWARE_HOST}:{HARDWARE_PORT}/mux', json=data)
         resp.raise_for_status()

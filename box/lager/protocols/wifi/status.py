@@ -7,11 +7,27 @@ WiFi status implementation for box execution
 This file should be copied to the lager_box_python container
 """
 import subprocess
+import sys
 import json
 import re
 
+_IS_DARWIN = sys.platform == "darwin"
+
 def get_wifi_status():
     """Get WiFi status using system commands"""
+    if _IS_DARWIN:
+        # WiFi station control on macOS would go through CoreWLAN/networksetup,
+        # which is meaningfully different from the Linux iwconfig/nmcli path.
+        # No instrument depends on host WiFi control today, so v1 of the macOS
+        # box returns a stub. Reimplement with networksetup if a customer
+        # actually needs it.
+        return {
+            'wlan0': {
+                'interface': 'wlan0',
+                'ssid': 'not_supported_on_macos',
+                'state': 'WiFi station control is not supported on the macOS box (v1).',
+            }
+        }
     try:
         # Try to get wireless interfaces
         result = subprocess.run(['iwconfig'], capture_output=True, text=True)
