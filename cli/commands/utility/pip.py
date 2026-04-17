@@ -58,7 +58,7 @@ def _read_remote_requirements(ctx, box):
 import os
 import json
 
-requirements_file = '/etc/lager/user_requirements.txt'
+requirements_file = os.path.join(os.environ.get('LAGER_STATE_DIR', '/etc/lager'), 'user_requirements.txt')
 
 if os.path.exists(requirements_file):
     with open(requirements_file, 'r') as f:
@@ -135,7 +135,7 @@ def _write_remote_requirements(ctx, box, packages):
 import os
 import json
 
-requirements_file = '/etc/lager/user_requirements.txt'
+requirements_file = os.path.join(os.environ.get('LAGER_STATE_DIR', '/etc/lager'), 'user_requirements.txt')
 content = {json.dumps(content)}
 
 # Ensure directory exists
@@ -240,7 +240,7 @@ import subprocess
 import json
 import os
 
-requirements_file = '/etc/lager/user_requirements.txt'
+requirements_file = os.path.join(os.environ.get('LAGER_STATE_DIR', '/etc/lager'), 'user_requirements.txt')
 
 try:
     if not os.path.exists(requirements_file):

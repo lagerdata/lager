@@ -29,6 +29,7 @@ import io
 import warnings
 
 from .executor import PythonExecutor
+from ..constants import SAVED_NETS_PATH as _SAVED_NETS_PATH
 
 # Suppress cgi deprecation warning (still works in Python 3.12, removed in 3.13)
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='cgi')
@@ -302,7 +303,7 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
 
             nets = []
             try:
-                with open('/etc/lager/saved_nets.json', 'r') as f:
+                with open(_SAVED_NETS_PATH, 'r') as f:
                     saved_nets = json.load(f)
                 for net in saved_nets:
                     role = net.get('role', '')
@@ -338,7 +339,7 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         elif self.path == '/nets/list':
             # Return full saved net details (instrument, address, pin, role, etc.)
             try:
-                with open('/etc/lager/saved_nets.json', 'r') as f:
+                with open(_SAVED_NETS_PATH, 'r') as f:
                     nets = json.load(f)
                 if not isinstance(nets, list):
                     nets = []
@@ -353,13 +354,14 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
             self.send_error_response(404, 'Not found')
 
     def _read_box_version(self):
-        """Read box version from /etc/lager/version or fallback location.
+        """Read box version from the box state directory's version file or fallback.
 
         Returns dict with box_version, updater_version, raw keys, or None if not found.
         """
         import os
+        from lager.constants import VERSION_FILE_PATH
 
-        version_file = '/etc/lager/version'
+        version_file = VERSION_FILE_PATH
         if not os.path.exists(version_file):
             version_file = os.path.expanduser('~/box/.lager/version')
 
@@ -394,7 +396,7 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                 name = unquote(path[len('/nets/'):])
                 role = parse_qs(parsed.query).get('role', [None])[0]
                 try:
-                    with open('/etc/lager/saved_nets.json', 'r') as f:
+                    with open(_SAVED_NETS_PATH, 'r') as f:
                         nets = json.load(f)
                     if not isinstance(nets, list):
                         nets = []
@@ -407,11 +409,11 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                 if len(new_nets) == len(nets):
                     self.send_error_response(404, 'Net not found')
                     return
-                tmp = '/etc/lager/saved_nets.json.tmp'
+                tmp = (_SAVED_NETS_PATH + '.tmp')
                 with open(tmp, 'w') as f:
                     json.dump(new_nets, f, indent=2)
                 import os
-                os.replace(tmp, '/etc/lager/saved_nets.json')
+                os.replace(tmp, _SAVED_NETS_PATH)
                 self.send_json_response(200, {'ok': True})
             else:
                 self.send_error_response(404, 'Not found')
@@ -434,7 +436,7 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                     self.send_error_response(400, 'name, role, and instrument are required')
                     return
                 try:
-                    with open('/etc/lager/saved_nets.json', 'r') as f:
+                    with open(_SAVED_NETS_PATH, 'r') as f:
                         nets = json.load(f)
                     if not isinstance(nets, list):
                         nets = []
@@ -454,11 +456,11 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                 data['mappings'] = [mapping]
                 data['scope_points'] = [[pin, str(pin)]]
                 nets.append(data)
-                tmp = '/etc/lager/saved_nets.json.tmp'
+                tmp = (_SAVED_NETS_PATH + '.tmp')
                 with open(tmp, 'w') as f:
                     json.dump(nets, f, indent=2)
                 import os
-                os.replace(tmp, '/etc/lager/saved_nets.json')
+                os.replace(tmp, _SAVED_NETS_PATH)
                 self.send_json_response(200, {'ok': True})
             else:
                 self.send_error_response(404, 'Not found')
@@ -499,7 +501,8 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
 
     # --- Lock endpoints ---
 
-    LOCK_FILE = '/etc/lager/lock.json'
+    from lager.constants import LOCK_FILE_PATH as _LOCK_FILE_PATH
+    LOCK_FILE = _LOCK_FILE_PATH
 
     def _read_lock(self):
         """Read lock state from disk. Returns dict if locked, None otherwise."""
@@ -812,11 +815,17 @@ print("Test execution complete.")
     # Custom Binaries Endpoints
     # =========================================================================
 
-    # Paths for customer binaries
-    # Host path (where files are stored on the box filesystem)
-    HOST_BINARIES_DIR = '/home/lagerdata/third_party/customer-binaries'
-    # Container path (where files are mounted inside the Docker container)
-    CONTAINER_BINARIES_DIR = '/home/www-data/customer-binaries'
+    # Paths for customer binaries — platform-conditional.
+    # Linux: host path mapped into the Docker container.
+    # macOS: lives under the LAGER_STATE_DIR alongside saved_nets.json etc.
+    import sys as _sys_binaries
+    if _sys_binaries.platform == 'darwin':
+        from lager.state_dir import get_state_dir as _get_state_dir_binaries
+        HOST_BINARIES_DIR = str(_get_state_dir_binaries() / 'customer-binaries')
+        CONTAINER_BINARIES_DIR = HOST_BINARIES_DIR  # no container on macOS
+    else:
+        HOST_BINARIES_DIR = '/home/lagerdata/third_party/customer-binaries'
+        CONTAINER_BINARIES_DIR = '/home/www-data/customer-binaries'
 
     def _handle_binaries_list(self):
         """

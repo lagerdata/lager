@@ -11,6 +11,7 @@ import logging
 
 from flask import Flask, jsonify, request
 
+from ..constants import SAVED_NETS_PATH
 from ..nets.net import Net
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ def register_nets_routes(app: Flask) -> None:
     def nets_list():
         """Return full saved nets details."""
         try:
-            with open('/etc/lager/saved_nets.json', 'r') as f:
+            with open(SAVED_NETS_PATH, 'r') as f:
                 nets = json.load(f)
             if not isinstance(nets, list):
                 nets = []

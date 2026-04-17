@@ -16,8 +16,10 @@ import time
 from pathlib import Path
 from typing import Dict, Optional, List
 
+from ...constants import WEBCAM_STREAMS_PATH
+
 # State file path
-STATE_FILE = Path("/etc/lager/webcam_streams.json")
+STATE_FILE = Path(WEBCAM_STREAMS_PATH)
 BASE_PORT = 8086  # Changed from 8081 to avoid conflict with oscilloscope UI (8081) and daemon (8082-8085)
 
 
@@ -359,6 +361,7 @@ class WebcamService:
         Returns:
             PID of the started process
         """
+        state_file_path = WEBCAM_STREAMS_PATH
         # Create a simple Python script that streams the webcam
         script = f'''
 import cv2
@@ -372,7 +375,7 @@ import time
 # Current stream info
 CURRENT_NET = "{net_name}"
 BOX_IP = "{box_ip}"
-STATE_FILE = "/etc/lager/webcam_streams.json"
+STATE_FILE = "{state_file_path}"
 
 # Thread-safe zoom level
 zoom_lock = threading.Lock()
@@ -515,15 +518,9 @@ def get_brightness():
         return current_brightness
 
 def apply_brightness(value):
-    """
-    Apply brightness setting to the camera using v4l2-ctl.
-
-    Args:
-        value: Brightness value (0-255)
-
-    Returns:
-        True if successful, False otherwise
-    """
+    """Apply brightness setting to the camera (v4l2-ctl on Linux, no-op on macOS)."""
+    if sys.platform == 'darwin':
+        return True  # v4l2-ctl not available on macOS; brightness set at capture time via cv2
     import subprocess
 
     try:
@@ -540,16 +537,9 @@ def apply_brightness(value):
     return False
 
 def apply_focus(mode, value=None):
-    """
-    Apply focus settings to the camera using v4l2-ctl.
-
-    Args:
-        mode: "auto" or "manual"
-        value: Manual focus value (0-255, only used in manual mode)
-
-    Returns:
-        True if successful, False otherwise
-    """
+    """Apply focus settings to the camera (v4l2-ctl on Linux, no-op on macOS)."""
+    if sys.platform == 'darwin':
+        return True  # v4l2-ctl not available on macOS
     import subprocess
 
     try:
@@ -901,7 +891,7 @@ class StreamingHandler(BaseHTTPRequestHandler):
 
                 # Try to read state file
                 try:
-                    with open("/etc/lager/webcam_streams.json", "r") as f:
+                    with open("{state_file_path}", "r") as f:
                         state = json.load(f)
                         for name, info in state.items():
                             streams_list.append({{

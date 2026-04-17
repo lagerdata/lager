@@ -17,6 +17,89 @@ from ...box_storage import add_box, get_box_ip, get_box_user
 from ...core.ssh_utils import host_in_known_hosts
 
 
+def _detect_remote_os(ssh_host: str) -> str:
+    """Run `uname -s` on the remote box. Returns 'darwin', 'linux', or 'unknown'."""
+    try:
+        result = subprocess.run(
+            ["ssh", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes", ssh_host, "uname -s"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode == 0:
+            uname = result.stdout.strip().lower()
+            if "darwin" in uname:
+                return "darwin"
+            if "linux" in uname:
+                return "linux"
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _install_macos_box(ctx, ssh_host: str, version: str, yes: bool, repo_url: str = None):
+    """Install the native macOS Lager box on the target.
+
+    Copies setup_and_deploy_box_mac.sh to /tmp on the box and runs it via
+    sudo. The script creates the lagerdata user, installs Homebrew, Python,
+    vendor SDKs (LJM, J-Link, Aardvark, nrfutil), and the launchd plist.
+    """
+    click.secho(f"Detected macOS target — using native macOS install path", fg='cyan', bold=True)
+    click.echo(f"  Repo branch: {version}")
+    click.echo()
+
+    if not yes:
+        click.echo("This will:")
+        click.echo("  - Create a 'lagerdata' macOS user on the box")
+        click.echo("  - Install Homebrew, Python 3.12, libusb, hidapi")
+        click.echo("  - Install LabJack LJM, SEGGER J-Link, Nordic nrfutil (Tier-2 vendor SDKs)")
+        click.echo("  - Drop a launchd LaunchDaemon at /Library/LaunchDaemons/com.lager.box.plist")
+        click.echo("  - Bootstrap the daemon so the box services come up immediately and on every boot")
+        click.echo()
+        click.echo("Note: MCC USB-202 and Picoscope 2000 are not supported on macOS.")
+        click.echo()
+        if not click.confirm("Proceed?", default=True):
+            click.secho("Installation cancelled.", fg='yellow')
+            ctx.exit(0)
+
+    try:
+        mac_script = get_script_path("setup_and_deploy_box_mac.sh")
+    except FileNotFoundError as e:
+        click.secho("Error: setup_and_deploy_box_mac.sh not found", fg='red', err=True)
+        click.secho(f"Details: {e}", fg='yellow', err=True)
+        ctx.exit(1)
+
+    remote_path = "/tmp/setup_and_deploy_box_mac.sh"
+    click.echo(f"Copying installer to {ssh_host}:{remote_path}...")
+    scp_result = subprocess.run(
+        ["scp", "-o", "ConnectTimeout=10", str(mac_script), f"{ssh_host}:{remote_path}"],
+        timeout=60,
+    )
+    if scp_result.returncode != 0:
+        click.secho("Error: failed to copy installer to box via scp", fg='red', err=True)
+        ctx.exit(1)
+
+    repo_url_flag = f" --repo-url {repo_url}" if repo_url else ""
+    remote_cmd = f"chmod +x {remote_path} && sudo {remote_path} --repo-branch {version}{repo_url_flag}"
+    click.secho("Running macOS box install (will prompt for sudo password on the box)...", fg='cyan')
+    click.echo()
+    install_result = subprocess.run(
+        ["ssh", "-t", ssh_host, remote_cmd],
+        timeout=3600,  # 60 min — Homebrew + venv + vendor installs can be slow
+    )
+    if install_result.returncode != 0:
+        click.secho("macOS box install failed!", fg='red', err=True)
+        ctx.exit(1)
+
+    click.echo()
+    click.secho("macOS box install complete!", fg='green', bold=True)
+    click.echo()
+    click.echo("Smoke test:")
+    click.echo(f"  curl http://{ssh_host.split('@')[-1]}:9000/health")
+    click.echo()
+    ctx.exit(0)
+
+
 def get_script_path(script_name: str, subdir: str = "scripts") -> Path:
     """Get path to deployment script from package resources.
 
@@ -81,8 +164,9 @@ def get_script_path(script_name: str, subdir: str = "scripts") -> Path:
 @click.option("--skip-firewall", is_flag=True, help="Skip UFW firewall configuration")
 @click.option("--skip-verify", is_flag=True, help="Skip post-deployment verification")
 @click.option("--corporate-vpn", default=None, help="Corporate VPN interface name (e.g., tun0)")
+@click.option("--repo-url", default=None, help="Git repo URL for macOS install (default: lagerdata/lager)")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompts")
-def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify, corporate_vpn, yes):
+def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify, corporate_vpn, repo_url, yes):
     """
     Install lager box code onto a new box.
     """
@@ -122,7 +206,37 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
         click.secho(f"Error: '{ip}' is not a valid IP address", fg='red', err=True)
         ctx.exit(1)
 
+    user_was_explicit = user != "lagerdata" or (box and get_box_user(box))
     ssh_host = f"{user}@{ip}"
+
+    # 2.5. On a fresh Mac, the 'lagerdata' user doesn't exist yet (the
+    # installer creates it), so SSH as lagerdata will fail with "permission
+    # denied". When --user was NOT explicitly provided, do a quick pre-check
+    # and fall back to the current OS username — which on a MacBook is
+    # typically the admin account that CAN accept SSH connections.
+    if not user_was_explicit:
+        import os as _os
+        _probe = subprocess.run(
+            ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_host, "true"],
+            capture_output=True, text=True, timeout=10,
+        ) if True else None  # always run
+        if _probe and _probe.returncode != 0:
+            _stderr_lower = (_probe.stderr or "").lower()
+            if "permission denied" in _stderr_lower or "publickey" in _stderr_lower:
+                fallback_user = _os.environ.get("USER") or _os.environ.get("LOGNAME")
+                if fallback_user and fallback_user != user:
+                    fallback_host = f"{fallback_user}@{ip}"
+                    click.echo(f"SSH as '{user}' failed — trying '{fallback_user}' (your local username)...")
+                    _probe2 = subprocess.run(
+                        ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", fallback_host, "true"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if _probe2.returncode == 0:
+                        click.secho(f"Connected as '{fallback_user}'", fg='green')
+                        user = fallback_user
+                        ssh_host = fallback_host
+                    else:
+                        click.echo(f"SSH as '{fallback_user}' also failed — will continue with '{user}' and fall through to the SSH handler below.")
 
     # 3. Verify deploy script exists (check before SSH to avoid wasted effort)
     try:
@@ -308,6 +422,15 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                     ctx.exit(0)
         else:
             click.secho("SSH connection OK", fg='green')
+
+        # Dispatch to the macOS-native install path if the target is a Mac.
+        # This must happen AFTER SSH is verified but BEFORE the Linux deploy
+        # script runs, since none of the Linux setup applies to a macOS host.
+        remote_os = _detect_remote_os(ssh_host)
+        if remote_os == "darwin":
+            _install_macos_box(ctx, ssh_host, version, yes, repo_url=repo_url)
+            # _install_macos_box calls ctx.exit(); this return is defensive.
+            return
     except subprocess.TimeoutExpired:
         click.secho("Error: SSH connection timed out", fg='red', err=True)
         click.echo(err=True)

@@ -20,6 +20,112 @@ from ...context import get_default_box
 from ..box.boxes import compare_versions
 
 
+def _detect_remote_os_for_update(ssh_host: str, key_file: str = None) -> str:
+    """Run `uname -s` on the target. Returns 'darwin', 'linux', or 'unknown'."""
+    cmd = ["ssh", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes"]
+    if key_file:
+        cmd.extend(["-i", key_file])
+    cmd.extend([ssh_host, "uname -s"])
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if result.returncode == 0:
+            uname = result.stdout.strip().lower()
+            if "darwin" in uname:
+                return "darwin"
+            if "linux" in uname:
+                return "linux"
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _update_macos_box(ctx, ssh_host: str, target_version: str, skip_restart: bool, verbose: bool):
+    """Update a native macOS Lager box.
+
+    The macOS box is managed by a launchd LaunchDaemon and lives in
+    /Library/Application Support/Lager/repo. Updating is a git fetch + checkout
+    followed by `launchctl kickstart -k` on the daemon (unless --skip-restart).
+    The big vendor SDK installs from setup_and_deploy_box_mac.sh do NOT re-run;
+    the assumption is that box dependencies don't churn between normal updates.
+    If the caller wants a full reinstall (including LJM/J-Link/Aardvark), they
+    should run `lager install --box <name>` instead.
+    """
+    click.secho(f"Detected macOS target — using launchd update path", fg='cyan', bold=True)
+    click.echo(f"  Target: {ssh_host}")
+    click.echo(f"  Branch: {target_version}")
+    click.echo()
+
+    repo_dir = "/Library/Application Support/Lager/repo"
+    plist_label = "com.lager.box"
+    state_dir = "/Library/Application Support/Lager"
+
+    # Step 1: fetch and checkout the requested branch/tag.
+    click.echo("Fetching latest from origin...")
+    # The `lagerdata` user owns the repo. We have to drop to it via sudo -u
+    # because SSH logs us in as `lagerdata` already, but sudo is needed on the
+    # box for the git operations to stay consistent with install ownership.
+    git_cmd = (
+        f'cd "{repo_dir}" && '
+        f'git fetch origin && '
+        f'git checkout {target_version} 2>/dev/null || git checkout -B {target_version} origin/{target_version} && '
+        f'git pull --ff-only origin {target_version} 2>/dev/null || true'
+    )
+    result = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", ssh_host, git_cmd],
+        text=True,
+        timeout=300,
+    )
+    if result.returncode != 0:
+        click.secho("git fetch/checkout failed on the box", fg='red', err=True)
+        ctx.exit(1)
+
+    # Step 2: write the new version file so `lager hello` reflects the update.
+    # We can't use sudo non-interactively, but the state dir is owned by
+    # lagerdata, which is who we're logged in as, so a plain write works.
+    click.echo("Writing version file...")
+    version_cmd = (
+        f'cd "{repo_dir}" && '
+        f'REV=$(git rev-parse --short HEAD 2>/dev/null || echo unknown) && '
+        f'echo "${{REV}}|{target_version}" > "{state_dir}/version"'
+    )
+    subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", ssh_host, version_cmd],
+        timeout=30,
+    )
+
+    # Step 3: kickstart the launchd daemon so the new code actually runs.
+    if skip_restart:
+        click.secho("Skipping daemon restart (--skip-restart)", fg='yellow')
+        click.echo("Run `sudo launchctl kickstart -k system/com.lager.box` on the box to pick up the new code.")
+    else:
+        click.echo("Restarting launchd daemon (requires sudo on the box)...")
+        restart_cmd = f"sudo launchctl kickstart -k system/{plist_label}"
+        restart_result = subprocess.run(
+            ["ssh", "-t", ssh_host, restart_cmd],
+            timeout=120,
+        )
+        if restart_result.returncode != 0:
+            click.secho("launchctl kickstart failed", fg='red', err=True)
+            click.echo(f"Run manually: ssh {ssh_host} 'sudo launchctl kickstart -k system/{plist_label}'", err=True)
+            ctx.exit(1)
+
+    # Step 4: smoke test.
+    click.echo("Smoke test...")
+    time.sleep(3)
+    smoke = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", ssh_host,
+         "curl -sf -m 5 http://localhost:9000/health >/dev/null && echo ok || echo fail"],
+        capture_output=True, text=True, timeout=30,
+    )
+    if smoke.stdout.strip() == "ok":
+        click.secho("Box update complete and services are healthy.", fg='green', bold=True)
+    else:
+        click.secho("Daemon restarted but /health did not respond within 5s.", fg='yellow')
+        click.echo("Check logs at /Library/Logs/Lager/ on the box.")
+
+    ctx.exit(0)
+
+
 class ProgressBar:
     """Simple progress bar for tracking update steps."""
 
@@ -318,6 +424,17 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
         if not click.confirm('This will update the box code and restart services. Continue?'):
             click.secho('Update cancelled.', fg='yellow')
             ctx.exit(0)
+
+    # Dispatch to the macOS-native update path if the target is a Mac box.
+    # This uses launchd/kickstart instead of docker restart and touches only
+    # /Library/Application Support/Lager/repo (not ~/box).
+    import os as _os
+    _mac_key_file = _os.path.expanduser('~/.ssh/lager_box')
+    _mac_key = _mac_key_file if _os.path.exists(_mac_key_file) else None
+    _remote_os = _detect_remote_os_for_update(ssh_host, _mac_key)
+    if _remote_os == 'darwin':
+        _update_macos_box(ctx, ssh_host, target_version, skip_restart, verbose)
+        return  # _update_macos_box calls ctx.exit; this is defensive.
 
     # Initialize progress bar (only in non-verbose mode)
     # Total steps: connectivity, repo check, git state check, fetch, checkout/pull, flatten, udev, sudoers, docker stop, [force image removal], docker build, cleanup, /etc/lager, docker start, binaries, jlink, verify, version

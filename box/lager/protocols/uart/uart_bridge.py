@@ -100,41 +100,15 @@ class UARTBridge:
 
     def _find_device_by_serial(self, serial_number: str) -> Optional[str]:
         """
-        Find the /dev/tty* device path for a USB serial adapter by serial number.
-        Uses sysfs to map USB device serial to tty device.
+        Find the tty device path for a USB serial adapter by USB serial number.
+        Cross-platform: lager.usb_enum dispatches to sysfs on Linux and to
+        pyserial.tools.list_ports on macOS.
         """
-        sys_tty = Path("/sys/class/tty")
-        if not sys_tty.exists():
+        try:
+            from ...usb_enum import get_tty_for_usb_serial
+        except ImportError:
             return None
-
-        for tty_dev in sys_tty.iterdir():
-            try:
-                # Skip non-USB ttys
-                if not tty_dev.name.startswith(("ttyUSB", "ttyACM")):
-                    continue
-
-                device_path = tty_dev / "device"
-                if not device_path.exists():
-                    continue
-
-                # Resolve symlink to get real device path, then navigate up to find USB device with serial number
-                usb_device = device_path.resolve()
-                for _ in range(10):  # Search up to 10 levels
-                    serial_path = usb_device / "serial"
-                    if serial_path.exists():
-                        dev_serial = serial_path.read_text().strip()
-                        if dev_serial == serial_number:
-                            return f"/dev/{tty_dev.name}"
-                        break
-
-                    # Move up one level
-                    usb_device = usb_device.parent
-                    if not usb_device or usb_device == Path("/sys"):
-                        break
-            except Exception:
-                continue
-
-        return None
+        return get_tty_for_usb_serial(serial_number)
 
     def _connect(self):
         """Open the serial connection."""

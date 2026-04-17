@@ -557,8 +557,8 @@ def reset_device(halt=False, mcu=None):
         pid = gdbserver_status.get('pid')
         if pid:
             try:
-                with open(f'/proc/{pid}/cmdline', 'rb') as f:
-                    cmdline = [part.decode() for part in f.read().split(b'\x00')]
+                from ..process_utils import get_process_cmdline
+                cmdline = get_process_cmdline(pid)
                 jlink = JLink(cmdline, script_file=_get_script_file())
                 return jlink.reset(halt)
             except (OSError, IOError, ValueError, KeyError):
@@ -596,8 +596,8 @@ def erase_flash(start_addr, length, mcu=None):
         pid = gdbserver_status.get('pid')
         if pid:
             try:
-                with open(f'/proc/{pid}/cmdline', 'rb') as f:
-                    cmdline = [part.decode() for part in f.read().split(b'\x00')]
+                from ..process_utils import get_process_cmdline
+                cmdline = get_process_cmdline(pid)
                 jlink = JLink(cmdline, script_file=_get_script_file())
                 return jlink.erase(start_addr, length)
             except (OSError, IOError, ValueError, KeyError):
@@ -824,8 +824,8 @@ def read_memory(address, length, mcu=None):
             pid = gdbserver_status.get('pid')
             if pid:
                 try:
-                    with open(f'/proc/{pid}/cmdline', 'rb') as f:
-                        cmdline = [part.decode() for part in f.read().split(b'\x00')]
+                    from ..process_utils import get_process_cmdline
+                    cmdline = get_process_cmdline(pid)
                     jlink = JLink(cmdline, script_file=_get_script_file())
                 except (OSError, IOError, ValueError, KeyError):
                     pass

@@ -25,18 +25,20 @@ BOX_DEBUG_PORT = 8765
 
 
 def get_box_id() -> str:
-    """Read the box identifier from /etc/lager/box_id."""
+    """Read the box identifier from the box state directory's box_id file."""
+    from ..constants import BOX_ID_PATH
     try:
-        with open("/etc/lager/box_id", "r") as fh:
+        with open(BOX_ID_PATH, "r") as fh:
             return fh.read().strip()
     except FileNotFoundError:
         return os.environ.get("LAGER_BOX_ID", "unknown")
 
 
 def get_box_version() -> str:
-    """Read the box software version from /etc/lager/version."""
+    """Read the box software version from the box state directory's version file."""
+    from ..constants import VERSION_FILE_PATH
     try:
-        with open("/etc/lager/version", "r") as fh:
+        with open(VERSION_FILE_PATH, "r") as fh:
             content = fh.read().strip()
             return content.split("|", 1)[0] if "|" in content else content
     except FileNotFoundError:

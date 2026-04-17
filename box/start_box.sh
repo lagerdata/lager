@@ -9,6 +9,16 @@
 # Usage: ./start_box.sh
 # Run this script from the box directory after copying code to the box device
 
+# On macOS the Lager box runs natively (no Docker container) — dispatch to
+# start_box_mac.sh, which launches the same services as host processes and is
+# also what the launchd LaunchDaemon points at.
+case "$(uname -s)" in
+    Darwin)
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        exec "$SCRIPT_DIR/start_box_mac.sh" "$@"
+        ;;
+esac
+
 set -e
 
 # Ensure standard paths are available (needed when run via SSH or cron)
@@ -293,7 +303,7 @@ docker run -d \
     ${OSCILLOSCOPE_MOUNT} \
     -p 5000:5000 \
     -p 8301:5000 \
-    -p 8080:8080 \
+    -p 18080:8080 \
     -p 8081-8090:8081-8090 \
     -p 8100:8100 \
     -p 8765:8765 \

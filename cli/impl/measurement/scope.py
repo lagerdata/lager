@@ -21,8 +21,10 @@ import os
 import sys
 import asyncio
 
-# Constants
-LOCAL_NETS_PATH = "/etc/lager/saved_nets.json"
+# Constants — LAGER_STATE_DIR is /etc/lager on Linux boxes (default) and
+# /Library/Application Support/Lager on macOS boxes (set by the launchd plist).
+_LAGER_STATE_DIR = os.environ.get("LAGER_STATE_DIR", "/etc/lager")
+LOCAL_NETS_PATH = os.path.join(_LAGER_STATE_DIR, "saved_nets.json")
 DAEMON_HOST = "localhost"
 DAEMON_COMMAND_PORT = 8085
 

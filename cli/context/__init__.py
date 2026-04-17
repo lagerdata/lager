@@ -21,7 +21,6 @@ from .core import (
     get_default_net,
 )
 from .session import (
-    DirectIPSession,
     DirectHTTPSession,
 )
 def is_ip_address(address):
@@ -52,7 +51,6 @@ __all__ = [
     'get_impl_path',
     'get_default_net',
     # Sessions
-    'DirectIPSession',
     'DirectHTTPSession',
     # Utilities
     'is_ip_address',

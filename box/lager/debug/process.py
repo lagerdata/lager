@@ -35,12 +35,10 @@ def start_jlink(cmd_args):
     logfile = JL_LOGFILE
     pidfile = JL_PIDFILE
 
-    # Start JLinkGDBServerCLExe directly (from mounted third_party directory)
-    jlink_exe = '/home/www-data/third_party/jlink/JLinkGDBServerCLExe'
-
-    # Fallback to PATH if not in third_party
-    if not os.path.exists(jlink_exe):
-        jlink_exe = 'JLinkGDBServerCLExe'
+    # Use the canonical search path (handles Linux container, third_party
+    # mounts, and macOS SEGGER .pkg install location at /Applications/SEGGER).
+    from .gdbserver import get_jlink_gdb_server_path
+    jlink_exe = get_jlink_gdb_server_path() or 'JLinkGDBServerCLExe'
 
     cmd = [jlink_exe] + cmd_args + [
         '-select', 'USB',

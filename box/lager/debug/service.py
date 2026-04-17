@@ -450,9 +450,11 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 return
 
             try:
-                with open(f'/proc/{pid}/cmdline', 'rb') as f:
-                    cmdline = [part.decode() for part in f.read().split(b'\x00')]
-            except (OSError, IOError) as e:
+                from ..process_utils import get_process_cmdline
+                cmdline = get_process_cmdline(pid)
+                if not cmdline:
+                    raise OSError("empty cmdline")
+            except Exception as e:
                 logger.error(f"Failed to read process cmdline: {e}")
                 self.send_error_response(400, 'No debugger connection found')
                 return
@@ -662,9 +664,11 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 return
 
             try:
-                with open(f'/proc/{pid}/cmdline', 'rb') as f:
-                    cmdline = [part.decode() for part in f.read().split(b'\x00')]
-            except (OSError, IOError) as e:
+                from ..process_utils import get_process_cmdline
+                cmdline = get_process_cmdline(pid)
+                if not cmdline:
+                    raise OSError("empty cmdline")
+            except Exception as e:
                 logger.error(f"Failed to read process cmdline: {e}")
                 self.send_error_response(400, 'Cannot determine J-Link configuration')
                 return

@@ -296,10 +296,17 @@ def load_from_box(
 
 def load_from_files(
     *,
-    saved_nets_path: str = "/etc/lager/saved_nets.json",
-    bench_json_path: str = "/etc/lager/bench.json",
-    box_id_path: str = "/etc/lager/box_id",
+    saved_nets_path: str = None,
+    bench_json_path: str = None,
+    box_id_path: str = None,
 ) -> BenchDefinition:
+    from ...constants import SAVED_NETS_PATH, BENCH_JSON_PATH, BOX_ID_PATH
+    if saved_nets_path is None:
+        saved_nets_path = SAVED_NETS_PATH
+    if bench_json_path is None:
+        bench_json_path = BENCH_JSON_PATH
+    if box_id_path is None:
+        box_id_path = BOX_ID_PATH
     """Build a BenchDefinition from on-disk JSON files (used on-box or in tests)."""
 
     raw_nets = _read_json(saved_nets_path, default=[])

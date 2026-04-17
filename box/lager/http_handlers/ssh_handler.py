@@ -26,19 +26,23 @@ from flask import Flask, jsonify, request
 
 logger = logging.getLogger(__name__)
 
-# Best-effort immediate path: host's /home/lagerdata/.ssh is bind-mounted here by
-# start_box.sh. Writing here takes effect immediately but may fail if the host
-# directory is owned by a different UID (www-data is UID 33, host user may differ).
-_HOST_AUTHORIZED_KEYS = pathlib.Path('/home/www-data/.ssh/authorized_keys')
+# Best-effort immediate path: on Linux (Docker container) the host's
+# /home/lagerdata/.ssh is bind-mounted at /home/www-data/.ssh. On macOS
+# (native host mode) we write directly to ~lagerdata/.ssh/authorized_keys.
+import sys as _sys
+if _sys.platform == 'darwin':
+    _HOST_AUTHORIZED_KEYS = pathlib.Path('/Users/lagerdata/.ssh/authorized_keys')
+else:
+    _HOST_AUTHORIZED_KEYS = pathlib.Path('/home/www-data/.ssh/authorized_keys')
 
-# Staging area: /tmp is bind-mounted from the host and is always writable by
-# www-data. start_box.sh polls this directory every 5 seconds and syncs any .pub
-# files into ~/.ssh/authorized_keys as lagerdata (which owns that file).
+# Staging area for pub keys when the immediate path is not writable.
 _AUTHORIZED_KEYS_D = pathlib.Path('/tmp/lager-authorized-keys.d')
 
 _LABEL_RE = re.compile(r'^[a-zA-Z0-9._-]{1,64}$')
 
-_CONTROL_PLANE_CONFIG_PATH = pathlib.Path('/etc/lager/control_plane.json')
+from ..constants import CONTROL_PLANE_CONFIG_PATH as _CONTROL_PLANE_CONFIG_PATH_STR
+
+_CONTROL_PLANE_CONFIG_PATH = pathlib.Path(_CONTROL_PLANE_CONFIG_PATH_STR)
 
 
 def _get_authorize_token() -> str | None:

@@ -11,8 +11,17 @@ import json
 import re
 import sys
 
+_IS_DARWIN = sys.platform == "darwin"
+
+
 def scan_wifi_networks(interface='wlan0'):
     """Scan for available WiFi networks"""
+    if _IS_DARWIN:
+        return {
+            'error': 'not_supported_on_macos',
+            'message': 'WiFi station control is not supported on the macOS box (v1).',
+            'networks': [],
+        }
     try:
         # Try iwlist scan first
         result = subprocess.run(['iwlist', interface, 'scan'], capture_output=True, text=True)

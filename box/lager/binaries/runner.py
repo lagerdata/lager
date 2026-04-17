@@ -18,8 +18,14 @@ import subprocess
 from typing import List, Optional, Union
 
 
-# Path where customer binaries are mounted inside the container
-CUSTOMER_BINARIES_PATH = '/home/www-data/customer-binaries'
+# Path where customer binaries live. On Linux this is inside the Docker
+# container; on macOS it's under the LAGER_STATE_DIR.
+import sys as _sys
+if _sys.platform == 'darwin':
+    from ..state_dir import get_state_dir as _get_state_dir
+    CUSTOMER_BINARIES_PATH = str(_get_state_dir() / 'customer-binaries')
+else:
+    CUSTOMER_BINARIES_PATH = '/home/www-data/customer-binaries'
 
 
 class BinaryNotFoundError(Exception):

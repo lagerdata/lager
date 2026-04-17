@@ -10,13 +10,29 @@ managing processes, and handling container lifecycle operations.
 Migrated from gateway/controller/controller/application/views/run.py (legacy, removed)
 """
 
-from .docker import (
-    execute_in_container,
-    kill_container_process,
-    is_container_running,
-    get_container_ip,
-    get_container_pid,
-)
+import sys as _sys
+
+# Docker container operations are only available on Linux where the box runs
+# inside a Docker container. On macOS (native host mode) there is no container,
+# so we skip importing the Docker module entirely and expose no-op stubs.
+if not _sys.platform == "darwin":
+    from .docker import (
+        execute_in_container,
+        kill_container_process,
+        is_container_running,
+        get_container_ip,
+        get_container_pid,
+    )
+else:
+    def execute_in_container(*a, **kw):
+        raise RuntimeError("Docker container operations are not available on the native macOS box")
+    kill_container_process = execute_in_container
+    def is_container_running(*a, **kw):
+        return False
+    def get_container_ip(*a, **kw):
+        return None
+    def get_container_pid(*a, **kw):
+        return None
 
 from .process import (
     stream_process_output,
@@ -26,7 +42,7 @@ from .process import (
 )
 
 __all__ = [
-    # Docker operations
+    # Docker operations (no-ops on macOS)
     'execute_in_container',
     'kill_container_process',
     'is_container_running',

@@ -19,9 +19,10 @@ RESET = '\033[0m'
 # --------------------------------------------------------------------------- #
 # config
 # --------------------------------------------------------------------------- #
+from ...constants import SAVED_NETS_PATH as _DEFAULT_SAVED_NETS_PATH
 NET_DEFS_PATH = os.environ.get(
     "LAGER_USB_NETS_FILE",
-    os.path.expanduser("/etc/lager/saved_nets.json"),
+    _DEFAULT_SAVED_NETS_PATH,
 )
 
 

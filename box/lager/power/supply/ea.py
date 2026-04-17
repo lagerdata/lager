@@ -47,7 +47,9 @@ def _serial_from_usbtmc(addr: str) -> Optional[str]:
 
 def _find_serial_device_path(serial_hint: Optional[str]) -> Optional[str]:
     """
-    Prefer stable /dev/serial/by-id symlinks, else fall back to ttyACM*/ttyUSB*.
+    Prefer stable /dev/serial/by-id symlinks (Linux), else use the cross-platform
+    enumerator from lager.usb_enum to find an EA-style serial device by its USB
+    serial number, finally falling back to a tty glob.
     """
     by_id = "/dev/serial/by-id"
     patterns: list[str] = []
@@ -65,7 +67,20 @@ def _find_serial_device_path(serial_hint: Optional[str]) -> Optional[str]:
             if os.path.islink(path) or os.path.exists(path):
                 return path
 
-    for pat in ("/dev/ttyACM*", "/dev/ttyUSB*"):
+    # Cross-platform lookup by USB serial number (works on macOS via
+    # pyserial.tools.list_ports; on Linux it uses sysfs).
+    if serial_hint:
+        try:
+            from ...usb_enum import get_tty_for_usb_serial
+            tty = get_tty_for_usb_serial(serial_hint)
+            if tty:
+                return tty
+        except Exception:
+            pass
+
+    # Last-resort tty glob — the EA PSB enumerates as a CDC-ACM device on Linux
+    # and as /dev/cu.usbmodem* on macOS.
+    for pat in ("/dev/ttyACM*", "/dev/ttyUSB*", "/dev/cu.usbmodem*"):
         found = sorted(glob.glob(pat))
         if found:
             return found[0]

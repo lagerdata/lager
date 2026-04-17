@@ -16,7 +16,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# JLinkGDBServer paths (checked in order)
+# JLinkGDBServer paths (checked in order). The first six entries are the
+# Linux container layout; the last two are the standard SEGGER J-Link install
+# locations on macOS — `/Applications/SEGGER/JLink/` is where the SEGGER
+# macOS .pkg installer drops the binaries.
 JLINK_GDB_SERVER_PATHS = [
     '/tmp/lager-jlink-bin/JLinkGDBServerCLExe',  # Symlinks to /opt/SEGGER (most common)
     '/opt/SEGGER/JLink_V794e/JLinkGDBServerCLExe',  # Direct path on newer boxes
@@ -24,6 +27,9 @@ JLINK_GDB_SERVER_PATHS = [
     '/home/www-data/third_party/JLink_V884/JLinkGDBServerCLExe',
     '/home/www-data/third_party/JLink_Linux_V794a_x86_64/JLinkGDBServerCLExe',
     '/usr/bin/JLinkGDBServerCLExe',
+    # macOS (SEGGER .pkg installer locations)
+    '/Applications/SEGGER/JLink/JLinkGDBServerCLExe',
+    '/Applications/SEGGER/JLink/JLinkGDBServerCL',
 ]
 
 # J-Link PID and log files

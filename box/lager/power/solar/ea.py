@@ -154,8 +154,17 @@ def _find_serial_device_path(serial_hint: Optional[str]) -> Optional[str]:
         for path in sorted(glob.glob(pat)):
             if os.path.islink(path) or os.path.exists(path):
                 return path
-    # Fallback to generic ACM/USB if by-id not found
-    for pat in ("/dev/ttyACM*", "/dev/ttyUSB*"):
+    # Cross-platform USB-serial-number lookup (works on macOS).
+    if serial_hint:
+        try:
+            from ...usb_enum import get_tty_for_usb_serial
+            tty = get_tty_for_usb_serial(serial_hint)
+            if tty:
+                return tty
+        except Exception:
+            pass
+    # Fallback to generic ACM/USB if by-id not found.
+    for pat in ("/dev/ttyACM*", "/dev/ttyUSB*", "/dev/cu.usbmodem*"):
         found = sorted(glob.glob(pat))
         if found:
             return found[0]
