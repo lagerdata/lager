@@ -64,7 +64,7 @@ SUPPORTED_USB: Dict[str, Dict[str, str | List[str] | None]] = {
     "EA_PSB_10080_60":   {"vid": "232e", "pid": "0053", "net_type": ["power-supply", "solar"]},
     "EA_PSB_10060_60":   {"vid": "232e", "pid": "0053", "net_type": ["power-supply", "solar"]},
     "KEYSIGHT_E36233A":  {"vid": "2a8d", "pid": "3302", "net_type": ["power-supply"]}, # 2-channel
-    "KEYSIGHT_E36313A":  {"vid": "2a8d", "pid": "????", "net_type": ["power-supply"]},
+    "KEYSIGHT_E36313A":  {"vid": "2a8d", "pid": "1202", "net_type": ["power-supply"]},
     "KEYSIGHT_E36312A":  {"vid": "2a8d", "pid": "1102", "net_type": ["power-supply"]},
 
     # battery
