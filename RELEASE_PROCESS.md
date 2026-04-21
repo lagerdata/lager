@@ -53,6 +53,7 @@ Before starting a release, verify:
 - [ ] All PRs merged to upstream `main` and CI is green
 - [ ] Tests pass against target hardware boxes
 - [ ] `CHANGELOG.md` has entries for all user-facing changes
+- [ ] `SECURITY.md` supported-version table matches the release you are about to cut
 - [ ] No open security issues that should block the release
 
 ## Release Steps
@@ -138,6 +139,8 @@ pip install --upgrade lager-cli
 - **Features**: New functionality, new commands, new device support
 - **Bug Fixes**: Fixes for issues, crashes, incorrect behavior
 - **Improvements**: Performance, code cleanup, minor enhancements
+
+> If this release drops support for an older minor version, also bump the table in `SECURITY.md`.
 
 **Terminology:** Use "Lager Box" (not "gateway"), "Lager Boxes" (not "gateways").
 

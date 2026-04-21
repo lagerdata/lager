@@ -113,7 +113,7 @@ cli/
 | **Communication** | `uart`, `i2c`, `spi`, `ble`, `blufi`, `wifi`, `usb` | Device communication |
 | **Development** | `debug`, `arm`, `python` | Embedded development |
 | **Box** | `hello`, `status`, `boxes`, `instruments`, `nets`, `ssh` | Box management |
-| **Utility** | `defaults`, `update`, `pip`, `webcam`, `exec`, `logs`, `binaries`, `install`, `uninstall` | Utilities |
+| **Utility** | `defaults`, `update`, `pip`, `webcam`, `exec`, `logs`, `binaries`, `install`, `install-wheel`, `uninstall` | Utilities |
 
 ---
 
