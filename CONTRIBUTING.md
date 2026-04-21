@@ -28,14 +28,14 @@ Thank you for your interest in contributing to Lager! This document provides gui
 ```
 lager/
 ├── cli/                    # Command-line interface
-│   ├── commands/          # CLI command modules
-│   ├── context/           # Context and session management
-│   └── impl/              # Box execution scripts
+│   ├── commands/           # CLI command modules
+│   ├── context/            # Context and session management
+│   ├── impl/               # Box execution scripts
+│   └── deployment/         # Deployment scripts (packaged with CLI)
 ├── box/                    # Box-side code
-│   └── lager/             # Hardware control libraries
-├── cli/deployment/        # Deployment scripts (packaged with CLI)
-├── test/                  # Integration and API tests
-└── docs/                  # Documentation
+│   └── lager/              # Hardware control libraries
+├── test/                   # Integration and API tests
+└── docs/                   # Mintlify documentation
 ```
 
 ## How to Contribute
