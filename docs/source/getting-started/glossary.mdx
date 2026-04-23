@@ -5,31 +5,98 @@ description: Definitions of technical terms used in Lager documentation
 
 A reference of terms, abbreviations, and acronyms used throughout the Lager documentation.
 
----
+## ADC
 
-| Term | Definition |
-|------|------------|
-| **ADC** | Analog-to-Digital Converter. Hardware that converts an analog voltage to a digital value. Used for reading sensor outputs, measuring voltages, etc. |
-| **BLE** | Bluetooth Low Energy. A wireless communication protocol for short-range, low-power devices. |
-| **CLI** | Command-Line Interface. The `lager` tool you install via `pip install lager-cli` and run in your terminal. |
-| **DAC** | Digital-to-Analog Converter. Hardware that outputs a precise analog voltage from a digital value. Used for generating reference voltages or test signals. |
-| **DUT** | Device Under Test. The embedded board or product you are testing with Lager. |
-| **E-Load** | Electronic Load. An instrument that draws a programmable amount of current from a power source, used to simulate real-world loads during testing. |
-| **GDB** | GNU Debugger. A widely-used debugger for embedded development. Lager starts a GDB server on the box that you can connect to remotely. |
-| **GPIO** | General-Purpose Input/Output. Digital pins that can be configured as inputs (reading HIGH/LOW) or outputs (driving HIGH/LOW). |
-| **GPI** | General-Purpose Input. A GPIO pin configured for reading digital state (HIGH or LOW). |
-| **GPO** | General-Purpose Output. A GPIO pin configured for driving digital state (HIGH or LOW). |
-| **I2C** | Inter-Integrated Circuit (pronounced "eye-squared-see"). A two-wire serial protocol (SDA + SCL) commonly used to communicate with sensors, EEPROMs, and other peripherals. |
-| **Lager Box** | A compact mini-computer (Cybergeek Mini PC) that sits in your lab, physically connected to your instruments and DUT. It runs the Lager server software in a Docker container. |
-| **Net** | A logical name (e.g., `POWER`, `I2C_0`, `DEBUG_NET`) that maps to a specific instrument, channel, and address on a Lager Box. Nets decouple your commands from physical hardware details. |
-| **OCP** | Over-Current Protection. A safety threshold on a power supply. If the output current exceeds this limit, the supply automatically shuts off. Clear with `lager supply <NET> clear-ocp`. |
-| **OVP** | Over-Voltage Protection. A safety threshold on a power supply. If the output voltage exceeds this limit, the supply automatically shuts off. Clear with `lager supply <NET> clear-ovp`. |
-| **REPL** | Read-Eval-Print Loop. An interactive prompt where you type commands and see results immediately. The Lager Terminal (`lager terminal`) is a REPL. |
-| **SCPI** | Standard Commands for Programmable Instruments (pronounced "skippy"). A text-based protocol used to control bench instruments like oscilloscopes and power supplies. |
-| **SOC** | State of Charge. A percentage (0-100%) representing how charged a battery is. Used with battery simulator instruments. |
-| **SPI** | Serial Peripheral Interface. A four-wire serial protocol (SCLK, MOSI, MISO, CS) used for high-speed communication with peripherals like flash memory and ADCs. |
-| **SWD** | Serial Wire Debug. A two-pin debug interface (SWDIO + SWCLK) used by ARM Cortex-M microcontrollers. Used by debug probes like J-Link to flash firmware and debug code. |
-| **Tailscale** | A WireGuard-based mesh VPN that creates encrypted tunnels between your computer and your Lager Boxes. This is how you access boxes remotely. |
-| **TUI** | Text User Interface. An interactive terminal-based interface (as opposed to a graphical UI). Lager uses TUIs for net configuration (`lager nets tui`) and real-time power supply monitoring (`lager supply <NET> tui`). |
-| **UART** | Universal Asynchronous Receiver/Transmitter. A serial communication protocol commonly used for debug console output and device communication. |
-| **VISA** | Virtual Instrument Software Architecture. A standard for communicating with test instruments over USB, LAN, or GPIB. Many bench instruments (Rigol, Keysight, Keithley) use VISA. |
+Analog-to-Digital Converter. Hardware that converts an analog voltage to a digital value. Used for reading sensor outputs, measuring voltages, etc.
+
+## BLE
+
+Bluetooth Low Energy. A wireless communication protocol for short-range, low-power devices.
+
+## CLI
+
+Command-Line Interface. The `lager` tool you install via `pip install lager-cli` and run in your terminal.
+
+## DAC
+
+Digital-to-Analog Converter. Hardware that outputs a precise analog voltage from a digital value. Used for generating reference voltages or test signals.
+
+## DUT
+
+Device Under Test. The embedded board or product you are testing with Lager.
+
+## E-Load
+
+Electronic Load. An instrument that draws a programmable amount of current from a power source, used to simulate real-world loads during testing.
+
+## GDB
+
+GNU Debugger. A widely-used debugger for embedded development. Lager starts a GDB server on the box that you can connect to remotely.
+
+## GPIO
+
+General-Purpose Input/Output. Digital pins that can be configured as inputs (reading HIGH/LOW) or outputs (driving HIGH/LOW).
+
+## GPI
+
+General-Purpose Input. A GPIO pin configured for reading digital state (HIGH or LOW).
+
+## GPO
+
+General-Purpose Output. A GPIO pin configured for driving digital state (HIGH or LOW).
+
+## I2C
+
+Inter-Integrated Circuit (pronounced "eye-squared-see"). A two-wire serial protocol (SDA + SCL) commonly used to communicate with sensors, EEPROMs, and other peripherals.
+
+## Lager Box
+
+A compact mini-computer (Cybergeek Mini PC) that sits in your lab, physically connected to your instruments and DUT. It runs only the Lager container (Flask + SocketIO) which exposes HTTP and WebSocket APIs for hardware control. If the same machine also runs a sibling `stout` container for control-plane communication, it is called a **Stout Box** instead — see the [Stout glossary](https://docs.stoutdata.ai/source/concepts/glossary).
+
+## Net
+
+A named logical connection to a physical instrument on a Lager Box — e.g. `supply1` mapping to channel 1 of a Rigol DP832 power supply, or `uart0` mapping to `/dev/ttyUSB0` at 115200 baud. Nets decouple test code from specific hardware addresses, so the same script works as instruments move or change.
+
+## OCP
+
+Over-Current Protection. A safety threshold on a power supply. If the output current exceeds this limit, the supply automatically shuts off. Clear with `lager supply <NET> clear-ocp`.
+
+## OVP
+
+Over-Voltage Protection. A safety threshold on a power supply. If the output voltage exceeds this limit, the supply automatically shuts off. Clear with `lager supply <NET> clear-ovp`.
+
+## REPL
+
+Read-Eval-Print Loop. An interactive prompt where you type commands and see results immediately. The Lager Terminal (`lager terminal`) is a REPL.
+
+## SCPI
+
+Standard Commands for Programmable Instruments (pronounced "skippy"). A text-based protocol used to control bench instruments like oscilloscopes and power supplies.
+
+## SOC
+
+State of Charge. A percentage (0-100%) representing how charged a battery is. Used with battery simulator instruments.
+
+## SPI
+
+Serial Peripheral Interface. A four-wire serial protocol (SCLK, MOSI, MISO, CS) used for high-speed communication with peripherals like flash memory and ADCs.
+
+## SWD
+
+Serial Wire Debug. A two-pin debug interface (SWDIO + SWCLK) used by ARM Cortex-M microcontrollers. Used by debug probes like J-Link to flash firmware and debug code.
+
+## Tailscale
+
+A WireGuard-based mesh VPN that creates encrypted tunnels between your computer and your Lager Boxes. This is how you access boxes remotely.
+
+## TUI
+
+Text User Interface. An interactive terminal-based interface (as opposed to a graphical UI). Lager uses TUIs for net configuration (`lager nets tui`) and real-time power supply monitoring (`lager supply <NET> tui`).
+
+## UART
+
+Universal Asynchronous Receiver/Transmitter. A serial communication protocol commonly used for debug console output and device communication.
+
+## VISA
+
+Virtual Instrument Software Architecture. A standard for communicating with test instruments over USB, LAN, or GPIB. Many bench instruments (Rigol, Keysight, Keithley) use VISA.

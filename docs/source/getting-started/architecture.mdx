@@ -81,12 +81,18 @@ LAGERBOX HOST (Cybergeek Mini PC, Linux)
 |  Docker Container "lager"  (--restart always)                         |
 | +-------------------------------------------------------------------+ |
 | |                                                                   | |
-| |  Port 5000 -- Flask HTTP Server -- Python Execution Service       | |
+| |  Port 9000 -- Flask + SocketIO -- Main Box API                   | |
+| |                  |     (UART, supply, battery, instruments,      | |
+| |                  |      nets, lock)                               | |
+| |                  v                                                | |
+| |  Port 5000 -- HTTP Server -- Python Execution Service             | |
 | |                  |                                                | |
 | |                  |  receives impl script + LAGER_COMMAND_DATA     | |
 | |                  |  env var (JSON), executes it, streams results  | |
 | |                  v                                                | |
-| |  Port 8765 -- WebSocket Server -- Debug Service (GDB, OpenOCD)   | |
+| |  Port 8765 -- WebSocket Server -- Debug Service (GDB, OpenOCD)    | |
+| |                                                                   | |
+| |  Port 8100 -- HTTP Server -- MCP Service (AI tool integration)    | |
 | |                                                                   | |
 | |  Port 8080 -- Hardware Service (internal only, not exposed)       | |
 | |                  |                                                | |
@@ -121,10 +127,25 @@ LAGERBOX HOST (Cybergeek Mini PC, Linux)
 
 | Port | Service | Exposed | Purpose |
 |------|---------|---------|---------|
-| 5000 | Flask HTTP | Yes (VPN only) | Receives CLI commands, runs impl scripts |
+| 9000 | Flask + SocketIO | Yes (VPN only) | Main box API: UART streaming, live supply/battery WebSockets, instrument discovery, net listing, box lock |
+| 5000 | HTTP | Yes (VPN only) | Python execution service: receives CLI commands, runs impl scripts |
 | 8765 | WebSocket | Yes (VPN only) | Debug sessions (GDB, flash, reset) |
+| 8100 | HTTP | Yes (VPN only) | MCP service for AI tool integration |
 | 8080 | Hardware Service | No (container-internal) | Instrument control via Device proxy |
+| 8081 | HTTP | Yes (if PicoScope present) | Oscilloscope streaming UI |
+| 8082-8085 | TCP / WebSocket | Yes (if PicoScope present) | Oscilloscope daemon (commands, browser streaming, database streaming, CLI WebSocket) |
+| 8086+ | HTTP | Yes (if webcams present) | Webcam MJPEG streaming (one port per camera) |
 | 22 | SSH | Yes | Direct SSH access for deployment and debugging |
+
+---
+
+## Optional Control Plane Integration
+
+Lager boxes expose an authenticated SSH-key-sync endpoint (`POST /authorize-key` on port 9000) that an external control plane can use to provision access without a human typing SSH commands. If `/etc/lager/control_plane.json` is present with an `authorize_token`, requests carrying that token as a Bearer token can add public keys to `/etc/lager/authorized_keys.d/`, which the box's startup script and systemd path unit merge into `~/.ssh/authorized_keys`.
+
+Lager itself does not require or run a control plane -- this is a hook, not a dependency. Leaving `control_plane.json` absent simply disables the endpoint.
+
+[Stout](https://docs.stoutdata.ai) is the commercial control plane built on this hook. If you operate a fleet across multiple boxes, teams, or sites and need org/RBAC/SSO/audit/scheduling on top of Lager, see the Stout docs.
 
 ---
 

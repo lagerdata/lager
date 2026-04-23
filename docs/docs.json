@@ -193,7 +193,6 @@
           {
             "group": "Version History",
             "pages": [
-              "source/release-notes/v0.16.2",
               "source/release-notes/v0.16.1",
               "source/release-notes/v0.16.0",
               "source/release-notes/v0.15.2",
@@ -271,6 +270,9 @@
       }
     ]
   },
+  "contextual": {
+    "options": ["copy"]
+  },
   "logo": {
     "light": "/logo/light.png",
     "dark": "/logo/dark.png"
@@ -278,13 +280,16 @@
   "navbar": {
     "links": [
       {
+        "label": "Stout",
+        "href": "https://docs.stoutdata.ai"
+      },
+      {
         "label": "Support",
         "href": "https://github.com/lagerdata/lager/issues"
       }
     ],
     "primary": {
-      "type": "button",
-      "label": "Documentation",
+      "type": "github",
       "href": "https://github.com/lagerdata/lager"
     }
   },

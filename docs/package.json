@@ -2,8 +2,8 @@
   "name": "mintlify-lager-docs",
 
   "scripts": {
-    "build": "npx --yes @mintlify/cli@latest build -o .mintlify",
-    "dev":   "npx --yes @mintlify/cli@latest dev"
+    "build": "npx --yes mint@latest build -o .mintlify",
+    "dev":   "npx --yes mint@latest dev"
   },
   "dependencies": {},
   "engines": {
