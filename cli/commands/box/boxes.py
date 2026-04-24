@@ -52,11 +52,13 @@ def _list_boxes_live(port=5000, timeout=5):
     for name, box_info in sorted(saved_boxes.items(), key=lambda x: natural_sort_key(x[0])):
         if isinstance(box_info, dict):
             ip = box_info.get('ip', 'unknown')
+            user = box_info.get('user') or 'lagerdata'
         else:
             ip = box_info
+            user = 'lagerdata'
 
         if ip == 'unknown':
-            results.append((name, ip, '-', 'no IP', '', ''))
+            results.append((name, ip, user, '-', 'no IP', '', ''))
             failed_count += 1
             continue
 
@@ -87,35 +89,35 @@ def _list_boxes_live(port=5000, timeout=5):
                         version_cmp = compare_versions(box_version, cli_version)
 
                         if version_cmp == 0:
-                            results.append((name, ip, box_version, 'current', locked_by, busy_info))
+                            results.append((name, ip, user, box_version, 'current', locked_by, busy_info))
                         elif version_cmp < 0:
-                            results.append((name, ip, box_version, 'needs update', locked_by, busy_info))
+                            results.append((name, ip, user, box_version, 'needs update', locked_by, busy_info))
                             needs_update_count += 1
                         else:
-                            results.append((name, ip, box_version, 'newer', locked_by, busy_info))
+                            results.append((name, ip, user, box_version, 'newer', locked_by, busy_info))
                             newer_count += 1
                     else:
-                        results.append((name, ip, '-', 'bad response', locked_by, busy_info))
+                        results.append((name, ip, user, '-', 'bad response', locked_by, busy_info))
                         failed_count += 1
                 except ValueError:
-                    results.append((name, ip, '-', 'invalid JSON', locked_by, busy_info))
+                    results.append((name, ip, user, '-', 'invalid JSON', locked_by, busy_info))
                     failed_count += 1
 
             elif response.status_code == 404:
-                results.append((name, ip, '-', 'old box', locked_by, busy_info))
+                results.append((name, ip, user, '-', 'old box', locked_by, busy_info))
                 failed_count += 1
             else:
-                results.append((name, ip, '-', f'HTTP {response.status_code}', locked_by, busy_info))
+                results.append((name, ip, user, '-', f'HTTP {response.status_code}', locked_by, busy_info))
                 failed_count += 1
 
         except requests.exceptions.Timeout:
-            results.append((name, ip, '-', 'timeout', locked_by, busy_info))
+            results.append((name, ip, user, '-', 'timeout', locked_by, busy_info))
             failed_count += 1
         except requests.exceptions.ConnectionError:
-            results.append((name, ip, '-', 'unreachable', locked_by, busy_info))
+            results.append((name, ip, user, '-', 'unreachable', locked_by, busy_info))
             failed_count += 1
         except Exception:
-            results.append((name, ip, '-', 'error', locked_by, busy_info))
+            results.append((name, ip, user, '-', 'error', locked_by, busy_info))
             failed_count += 1
 
     spinner_stop.set()
@@ -123,32 +125,33 @@ def _list_boxes_live(port=5000, timeout=5):
     sys.stdout.write('\r' + ' ' * 40 + '\r')
     sys.stdout.flush()
 
-    any_locked = any(r[4] for r in results)
-    any_busy = any(r[5] for r in results)
+    any_locked = any(r[5] for r in results)
+    any_busy = any(r[6] for r in results)
 
     name_width = max(len('name'), max(len(r[0]) for r in results))
     ip_width = max(len('ip'), max(len(r[1]) for r in results))
-    version_width = max(len('version'), max(len(r[2]) for r in results))
-    status_width = max(len('status'), max(len(r[3]) for r in results))
+    user_width = max(len('user'), max(len(r[2]) for r in results))
+    version_width = max(len('version'), max(len(r[3]) for r in results))
+    status_width = max(len('status'), max(len(r[4]) for r in results))
 
-    header = f"{'name':<{name_width}}   {'ip':<{ip_width}}   {'version':<{version_width}}   {'status':<{status_width}}"
-    total_width = name_width + ip_width + version_width + status_width + 9
+    header = f"{'name':<{name_width}}   {'ip':<{ip_width}}   {'user':<{user_width}}   {'version':<{version_width}}   {'status':<{status_width}}"
+    total_width = name_width + ip_width + user_width + version_width + status_width + 12
 
     if any_locked:
-        locked_width = max(len('locked by'), max(len(r[4]) for r in results))
+        locked_width = max(len('locked by'), max(len(r[5]) for r in results))
         header += f"   {'locked by':<{locked_width}}"
         total_width += locked_width + 3
 
     if any_busy:
-        busy_width = max(len('busy'), max(len(r[5]) for r in results))
+        busy_width = max(len('busy'), max(len(r[6]) for r in results))
         header += f"   {'busy':<{busy_width}}"
         total_width += busy_width + 3
 
     click.echo(header)
     click.echo("=" * total_width)
 
-    for name, ip, version, status, locked_by, busy_info in results:
-        row = f"{name:<{name_width}}   {ip:<{ip_width}}   {version:<{version_width}}   "
+    for name, ip, user, version, status, locked_by, busy_info in results:
+        row = f"{name:<{name_width}}   {ip:<{ip_width}}   {user:<{user_width}}   {version:<{version_width}}   "
         click.echo(row, nl=False)
 
         if status == 'current':
@@ -193,7 +196,7 @@ def _list_boxes_live(port=5000, timeout=5):
         box_word = 'box' if failed_count == 1 else 'boxes'
         click.secho(f'{failed_count} {box_word} could not be reached', fg='red')
 
-    root_locked = [r[0] for r in results if r[4] == 'root']
+    root_locked = [r[0] for r in results if r[5] == 'root']
     if root_locked:
         box_word = 'box is' if len(root_locked) == 1 else 'boxes are'
         click.secho(f'\nWarning: {len(root_locked)} {box_word} locked as root (likely locked from inside a Docker container).', fg='yellow')
