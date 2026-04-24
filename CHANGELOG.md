@@ -2,6 +2,11 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.16.3] - 2026-04-24
+
+### Added
+- `lager boxes` (and `lager boxes list`) now shows a `user` column between `ip` and `version`, so boxes configured with a non-default SSH user are visible at a glance. Boxes added without `--user` display as `lagerdata` (the default).
+
 ## [0.16.2] - 2026-04-17
 
 ### Fixed
