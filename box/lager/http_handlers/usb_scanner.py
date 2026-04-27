@@ -15,6 +15,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, TypeVar
@@ -38,6 +39,14 @@ def with_timeout(seconds: int, default: T = None) -> Callable[[Callable[..., T]]
     """Decorator that aborts a function after *seconds* and returns *default*."""
     def decorator(func: Callable[..., T]) -> Callable[..., T]:
         def wrapper(*args, **kwargs) -> T:
+            # signal.signal() only works on the main thread. When this runs
+            # inside a ThreadingHTTPServer worker (e.g. /instruments/list),
+            # fall back to running without a signal-based timeout.
+            if threading.current_thread() is not threading.main_thread():
+                try:
+                    return func(*args, **kwargs)
+                except Exception:
+                    return default
             old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
             signal.alarm(seconds)
             try:
