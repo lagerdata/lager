@@ -2,6 +2,11 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.16.4] - 2026-04-27
+
+### Fixed
+- `/instruments/list` no longer returns an empty list when served from a `ThreadingHTTPServer` worker thread. `scan_usb()`'s `with_timeout` decorator uses `signal.signal(SIGALRM, ...)`, which only works on the main thread; the resulting `ValueError` was silently swallowed by the handler, making boxes appear to have no instruments connected (e.g. LabJack T7) even when devices were plugged in. The scanner now falls back to a no-timeout direct call when not on the main thread; the inner serial/sysfs reads already have their own I/O timeouts. The CLI path was unaffected because `query_instruments.py` runs as a subprocess.
+
 ## [0.16.3] - 2026-04-24
 
 ### Added
