@@ -43,10 +43,7 @@ def with_timeout(seconds: int, default: T = None) -> Callable[[Callable[..., T]]
             # inside a ThreadingHTTPServer worker (e.g. /instruments/list),
             # fall back to running without a signal-based timeout.
             if threading.current_thread() is not threading.main_thread():
-                try:
-                    return func(*args, **kwargs)
-                except Exception:
-                    return default
+                return func(*args, **kwargs)
             old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
             signal.alarm(seconds)
             try:
