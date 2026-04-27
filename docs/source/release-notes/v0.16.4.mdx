@@ -1,0 +1,26 @@
+---
+title: "Version 0.16.4"
+description: "April 27, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **`/instruments/list` returning empty from worker threads** — when the box's HTTP server handled `/instruments/list` on a `ThreadingHTTPServer` worker, the USB scan's `signal.SIGALRM`-based timeout raised "signal only works in main thread of the main interpreter". The error was silently swallowed and the endpoint returned `[]`, so connected devices (e.g. LabJack T7) appeared to be missing. The scanner now falls back to a no-timeout direct call when it isn't on the main thread; the underlying serial and sysfs reads already have their own I/O timeouts. The CLI path was not affected because it runs `query_instruments.py` as a subprocess.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.16.4
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.16.4/)
