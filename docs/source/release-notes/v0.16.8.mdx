@@ -1,0 +1,26 @@
+---
+title: "Version 0.16.8"
+description: "April 28, 2026"
+---
+
+## <u>Features</u>
+
+- **SEGGER J-Link Flasher PRO support** — the J-Link Flasher PRO (USB `1366:0105`) is now recognized as a supported `debug` instrument. Plugging one into a Lager Box and running `lager instruments` will list it as `J-Link_Flasher_Pro`. Both the box-side scanner (`box/lager/http_handlers/usb_scanner.py`) and the CLI-side scanner (`cli/impl/query_instruments.py`) were updated.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.16.8
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.16.8/)

@@ -2,6 +2,11 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.16.8] - 2026-04-28
+
+### Added
+- Recognize the SEGGER J-Link Flasher PRO (USB `1366:0105`) as a supported `debug` instrument. Added `J-Link_Flasher_Pro` to `SUPPORTED_USB` and `CHANNEL_MAPS` in both `box/lager/http_handlers/usb_scanner.py` and `cli/impl/query_instruments.py`, so `lager instruments` now lists the device when it is plugged into a Lager Box.
+
 ## [0.16.7] - 2026-04-28
 
 ### Fixed
