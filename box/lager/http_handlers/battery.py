@@ -14,10 +14,13 @@ import threading
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit
 
+from lager.dispatchers.helpers import resolve_net_proxy
+from lager.exceptions import BatteryBackendError
+from lager.nets.device import ConnectionFailed, DeviceError, Device
+
 from .state import (
     active_battery_sessions,
     active_battery_sessions_lock,
-    get_instrument_lock,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,11 +65,13 @@ def register_battery_routes(app: Flask) -> None:
             if not netname or not action:
                 return jsonify({'success': False, 'error': 'netname and action are required'}), 400
 
-            # Find an active WebSocket session for this netname and get instrument lock
+            # Find an active WebSocket session for this netname.
+            # SCPI serialization is now handled inside hardware_service.py
+            # by per-cache-key locks, so the old per-netname instrument_lock
+            # is no longer needed here.
             session_id = None
             battery = None
             channel = None
-            instr_lock = None
 
             with active_battery_sessions_lock:
                 for sid, session_info in active_battery_sessions.items():
@@ -74,7 +79,6 @@ def register_battery_routes(app: Flask) -> None:
                         session_id = sid
                         battery = session_info.get('battery')
                         channel = session_info.get('channel')
-                        instr_lock = session_info.get('instrument_lock')
                         break
 
             if not battery:
@@ -82,10 +86,6 @@ def register_battery_routes(app: Flask) -> None:
                     'success': False,
                     'error': f'No active WebSocket session found for {netname}. Start the TUI first with: lager battery {netname} tui'
                 }), 404
-
-            # CRITICAL: Lock instrument access to prevent concurrent queries
-            if instr_lock:
-                instr_lock.acquire()
 
             # Execute the command using the same logic as WebSocket commands
             result = {'success': True, 'action': action}
@@ -215,10 +215,9 @@ def register_battery_routes(app: Flask) -> None:
 
                 logger.info(f"[HTTP] Battery command executed: {action} on {netname} (session {session_id})")
                 return jsonify(result)
-            finally:
-                # CRITICAL: Always release instrument lock
-                if instr_lock and instr_lock.locked():
-                    instr_lock.release()
+            except (ConnectionFailed, DeviceError) as e:
+                logger.exception(f"[HTTP] Battery command {action} on {netname} failed at hardware_service")
+                return jsonify({'success': False, 'error': f'Hardware service error: {e}'}), 502
 
         except Exception as e:
             logger.exception(f"[HTTP] Error executing battery command")
@@ -288,10 +287,10 @@ def register_battery_socketio(socketio: SocketIO) -> None:
             # Capture session ID before starting thread
             session_id = request.sid
 
-            # Get or create instrument lock for this netname (prevents concurrent SCPI queries)
-            instr_lock = get_instrument_lock(netname)
-
-            # Store session info (battery driver will be added by monitoring thread)
+            # Store session info. The battery driver (a Device proxy) will be
+            # added by the monitoring thread once it has resolved net_info.
+            # SCPI serialization is handled inside hardware_service.py by
+            # per-cache-key locks; no per-netname lock needed here anymore.
             with active_battery_sessions_lock:
                 active_battery_sessions[session_id] = {
                     'netname': netname,
@@ -299,7 +298,6 @@ def register_battery_socketio(socketio: SocketIO) -> None:
                     'interval': interval,
                     'battery': None,  # Will be set by monitoring thread
                     'channel': None,  # Will be set by monitoring thread
-                    'instrument_lock': instr_lock  # Shared lock for this instrument
                 }
 
             # Send connection success
@@ -309,127 +307,135 @@ def register_battery_socketio(socketio: SocketIO) -> None:
                 'message': f'Started monitoring battery: {netname}'
             })
 
-            # Start monitoring thread
+            # Start monitoring thread.
+            #
+            # The battery driver is a Device HTTP proxy that POSTs to
+            # hardware_service.py:/invoke. hardware_service owns the pyvisa
+            # session and serializes concurrent calls per cache key, so this
+            # thread no longer needs the USB/pyvisa import dance, the
+            # per-netname instrument_lock, or a driver-close finally.
             def monitor_battery():
                 """Monitor battery state and emit updates to WebSocket."""
-                import time
-                import json
-                import sys
                 import threading
 
                 thread_name = threading.current_thread().name
                 logger.info(f"[BATTERY-MONITOR-{thread_name}] Monitoring thread starting for {netname}")
 
-                # CRITICAL: Import USB modules BEFORE importing dispatcher
                 try:
-                    logger.info(f"[BATTERY-MONITOR-{thread_name}] Importing USB modules...")
-                    import usb
-                    logger.info(f"[BATTERY-MONITOR-{thread_name}] Imported usb package: {usb}")
-                    from usb import util, core
-                    logger.info(f"[BATTERY-MONITOR-{thread_name}] USB submodules imported: util={util}, core={core}")
-
-                    sys.modules['usb'] = usb
-                    sys.modules['usb.util'] = util
-                    sys.modules['usb.core'] = core
-                    logger.info(f"[BATTERY-MONITOR-{thread_name}] USB modules registered in sys.modules")
-
-                    # Now import pyvisa to ensure it sees USB modules
-                    logger.info(f"[BATTERY-MONITOR-{thread_name}] Importing pyvisa...")
-                    import pyvisa
-                    logger.info(f"[BATTERY-MONITOR-{thread_name}] PyVISA imported: {pyvisa}")
-
-                    # Check if pyvisa can access USB backend
-                    rm = pyvisa.ResourceManager()
-                    logger.info(f"[BATTERY-MONITOR-{thread_name}] PyVISA ResourceManager created: {rm}")
-
-                    # Finally safe to import dispatcher (which imports drivers -> pyvisa)
-                    logger.info(f"[BATTERY-MONITOR-{thread_name}] Importing dispatcher...")
-                    from lager.power.battery.dispatcher import _resolve_net_and_driver
-                    logger.info(f"[BATTERY-MONITOR-{thread_name}] Dispatcher imported successfully")
-                except Exception as e:
+                    device_name, net_info, channel = resolve_net_proxy(
+                        netname, "battery", BatteryBackendError
+                    )
+                    battery = Device(device_name, net_info)
+                    logger.info(
+                        f"[BATTERY-MONITOR-{thread_name}] Got battery proxy: {device_name} "
+                        f"channel {channel} address {net_info.get('address')}"
+                    )
+                except Exception as resolve_err:
                     import traceback
-                    logger.error(f"[BATTERY-MONITOR-{thread_name}] Import error: {e}")
+                    logger.error(
+                        f"[BATTERY-MONITOR-{thread_name}] Failed to resolve battery '{netname}': {resolve_err}"
+                    )
                     logger.error(f"[BATTERY-MONITOR-{thread_name}] Traceback: {traceback.format_exc()}")
-                    socketio.emit('error',
-                                {'message': f'Import error in monitoring thread: {str(e)}'},
-                                namespace='/battery',
-                                room=session_id)
+                    socketio.emit(
+                        'error',
+                        {'message': f"Could not resolve battery '{netname}': {resolve_err}"},
+                        namespace='/battery',
+                        room=session_id,
+                    )
                     return
 
+                # Store battery proxy and channel in session for command execution.
                 try:
-                    # Create battery driver once before loop - reuse for all monitoring
-                    logger.info(f"[BATTERY-MONITOR-{thread_name}] Resolving net and driver for {netname}...")
-                    battery, channel = _resolve_net_and_driver(netname)
-                    logger.info(f"[BATTERY-MONITOR-{thread_name}] Got battery driver: {type(battery).__name__}, channel: {channel}")
-
-                    # Store battery and channel in session for command execution
                     with active_battery_sessions_lock:
                         if session_id in active_battery_sessions:
                             active_battery_sessions[session_id]['battery'] = battery
                             active_battery_sessions[session_id]['channel'] = channel
-                            logger.info(f"[BATTERY-MONITOR-{thread_name}] Stored battery driver in session")
+                            logger.info(f"[BATTERY-MONITOR-{thread_name}] Stored battery proxy in session")
+                except Exception as store_err:
+                    import traceback
+                    logger.error(
+                        f"[BATTERY-MONITOR-{thread_name}] Failed to store battery session for {netname}: {store_err}"
+                    )
+                    logger.error(f"[BATTERY-MONITOR-{thread_name}] Traceback: {traceback.format_exc()}")
+                    socketio.emit(
+                        'error',
+                        {'message': f"Internal error registering battery '{netname}' session: {store_err}"},
+                        namespace='/battery',
+                        room=session_id,
+                    )
+                    return
 
-                    # Get instrument lock for thread-safe SCPI queries
-                    with active_battery_sessions_lock:
-                        instr_lock = active_battery_sessions.get(session_id, {}).get('instrument_lock')
+                # Notify client that driver is ready for commands. Mirrors the
+                # supply monitor's supply_driver_ready event for client symmetry.
+                socketio.emit('battery_driver_ready', {
+                    'netname': netname,
+                    'channel': channel,
+                    'message': f'Battery driver ready for {netname}'
+                }, namespace='/battery', room=session_id)
+                logger.info(f"[BATTERY-MONITOR-{thread_name}] Emitted battery_driver_ready event")
 
-                    while not stop_event.is_set():
-                        try:
-                            # CRITICAL: Lock instrument access to prevent concurrent queries
-                            with instr_lock:
-                                # Get all state information using driver methods
-                                enabled = battery._is_batt_output_on()
-                                mode_str = battery._mode_string()
-                                model_str = battery._safe_query(":BATT:STAT?", "") or "Custom"
-
-                                state = {
-                                    'netname': netname,
-                                    'channel': channel,
-                                    'terminal_voltage': float(battery._safe_query(":BATT:SIM:TVOL?", "0")),
-                                    'current': float(battery._safe_query(":BATT:SIM:CURR?", "0")),
-                                    'esr': float(battery._safe_query(":BATT:SIM:RES?", "0.067")),
-                                    'soc': float(battery._safe_query(":BATT:SIM:SOC?", "0")),
-                                    'voc': float(battery._safe_query(":BATT:SIM:VOC?", "0")),
-                                    'enabled': enabled,
-                                    'mode': mode_str,
-                                    'model': model_str,
-                                    'capacity': float(battery._safe_query(":BATT:SIM:CAP:LIM?", "1.0")),
-                                    'current_limit': float(battery._safe_query(":BATT:SIM:CURR:LIM?", "1.0")),
-                                    'ocp_limit': float(battery._safe_query(":BATT:SIM:CURR:PROT?", "2.0")),
-                                    'ovp_limit': float(battery._safe_query(":BATT:SIM:TVOL:PROT?", "4.5")),
-                                    'volt_full': float(battery._safe_query(":BATT:SIM:VOC:FULL?", "4.2")),
-                                    'volt_empty': float(battery._safe_query(":BATT:SIM:VOC:EMPT?", "3.0")),
-                                }
-
-                                # Get protection trip status
-                                trip = (battery._safe_query(":OUTP:PROT:TRIP?", "").upper() or "")
-                                state['ocp_tripped'] = (trip == "OCP")
-                                state['ovp_tripped'] = (trip == "OVP")
-
-                            # Emit state to client (outside lock - network I/O doesn't need instrument)
-                            socketio.emit('battery_state_update',
-                                        {'state': state},
-                                        namespace='/battery',
-                                        room=session_id)
-                        except Exception as e:
-                            logger.error(f"Error monitoring battery: {e}")
-                            socketio.emit('error',
-                                        {'message': f'Monitoring error: {str(e)}'},
-                                        namespace='/battery',
-                                        room=session_id)
-
-                        # Wait for interval or stop event
-                        stop_event.wait(interval)
-                finally:
-                    # Close battery driver when done
+                while not stop_event.is_set():
                     try:
-                        if hasattr(battery, 'close'):
-                            battery.close()
-                        elif hasattr(battery, 'instr') and hasattr(battery.instr, 'close'):
-                            battery.instr.close()
+                        # Each call below is one /invoke POST; hardware_service
+                        # serializes per-device internally. Underscore methods
+                        # (_safe_query, _is_batt_output_on, _mode_string) proxy
+                        # through Device.__getattr__ since Python only suppresses
+                        # dunder lookups, not single-underscore names.
+                        enabled = battery._is_batt_output_on()
+                        mode_str = battery._mode_string()
+                        model_str = battery._safe_query(":BATT:STAT?", "") or "Custom"
+
+                        state = {
+                            'netname': netname,
+                            'channel': channel,
+                            'terminal_voltage': float(battery._safe_query(":BATT:SIM:TVOL?", "0")),
+                            'current': float(battery._safe_query(":BATT:SIM:CURR?", "0")),
+                            'esr': float(battery._safe_query(":BATT:SIM:RES?", "0.067")),
+                            'soc': float(battery._safe_query(":BATT:SIM:SOC?", "0")),
+                            'voc': float(battery._safe_query(":BATT:SIM:VOC?", "0")),
+                            'enabled': enabled,
+                            'mode': mode_str,
+                            'model': model_str,
+                            'capacity': float(battery._safe_query(":BATT:SIM:CAP:LIM?", "1.0")),
+                            'current_limit': float(battery._safe_query(":BATT:SIM:CURR:LIM?", "1.0")),
+                            'ocp_limit': float(battery._safe_query(":BATT:SIM:CURR:PROT?", "2.0")),
+                            'ovp_limit': float(battery._safe_query(":BATT:SIM:TVOL:PROT?", "4.5")),
+                            'volt_full': float(battery._safe_query(":BATT:SIM:VOC:FULL?", "4.2")),
+                            'volt_empty': float(battery._safe_query(":BATT:SIM:VOC:EMPT?", "3.0")),
+                        }
+
+                        # Get protection trip status
+                        trip = (battery._safe_query(":OUTP:PROT:TRIP?", "").upper() or "")
+                        state['ocp_tripped'] = (trip == "OCP")
+                        state['ovp_tripped'] = (trip == "OVP")
+
+                        socketio.emit('battery_state_update',
+                                    {'state': state},
+                                    namespace='/battery',
+                                    room=session_id)
+                    except ConnectionFailed as e:
+                        logger.error(f"[BATTERY-MONITOR-{thread_name}] hardware_service unreachable: {e}")
+                        socketio.emit('error',
+                                    {'message': f'Hardware service unreachable: {e}'},
+                                    namespace='/battery',
+                                    room=session_id)
+                    except DeviceError as e:
+                        logger.error(f"[BATTERY-MONITOR-{thread_name}] hardware_service error: {e}")
+                        socketio.emit('error',
+                                    {'message': f'Hardware service error: {e}'},
+                                    namespace='/battery',
+                                    room=session_id)
                     except Exception as e:
-                        logger.error(f"Error closing battery driver: {e}")
-                    logger.info(f"Battery monitoring thread stopped for session {session_id}")
+                        logger.error(f"[BATTERY-MONITOR-{thread_name}] Error monitoring battery: {e}")
+                        socketio.emit('error',
+                                    {'message': f'Monitoring error: {str(e)}'},
+                                    namespace='/battery',
+                                    room=session_id)
+
+                    # Wait for interval or stop event
+                    stop_event.wait(interval)
+
+                logger.info(f"Battery monitoring thread stopped for session {session_id}")
 
             # Start monitoring thread
             monitor_thread = threading.Thread(target=monitor_battery, daemon=True)
@@ -469,42 +475,22 @@ def register_battery_socketio(socketio: SocketIO) -> None:
                 emit('battery_command_response', {'success': False, 'error': 'action is required'})
                 return
 
-            # CRITICAL: Import USB modules BEFORE importing dispatcher
-            import sys
             import threading
 
             thread_name = threading.current_thread().name
             logger.info(f"[BATTERY-COMMAND-{thread_name}] Processing command: action={action}, netname={netname}, params={params}")
 
-            try:
-                logger.info(f"[BATTERY-COMMAND-{thread_name}] Importing USB modules...")
-                import usb
-                from usb import util, core
-                sys.modules['usb'] = usb
-                sys.modules['usb.util'] = util
-                sys.modules['usb.core'] = core
-                import pyvisa
-                logger.info(f"[BATTERY-COMMAND-{thread_name}] USB and PyVISA imported")
-            except Exception as e:
-                import traceback
-                logger.error(f"[BATTERY-COMMAND-{thread_name}] Import error: {e}")
-                emit('battery_command_response', {
-                    'success': False,
-                    'error': f'Import error: {str(e)}'
-                })
-                return
-
-            # Get battery driver and instrument lock from session (shared with monitoring thread)
+            # Get battery proxy and channel from session (set by monitoring thread).
+            # SCPI serialization is handled inside hardware_service.py per cache key,
+            # so the old per-netname instrument_lock is no longer needed here.
             session_id = request.sid
             battery = None
             channel = None
-            instr_lock = None
 
             with active_battery_sessions_lock:
                 if session_id in active_battery_sessions:
                     battery = active_battery_sessions[session_id].get('battery')
                     channel = active_battery_sessions[session_id].get('channel')
-                    instr_lock = active_battery_sessions[session_id].get('instrument_lock')
 
             if not battery:
                 emit('battery_command_response', {
@@ -513,18 +499,9 @@ def register_battery_socketio(socketio: SocketIO) -> None:
                 })
                 return
 
-            logger.info(f"[BATTERY-COMMAND-{thread_name}] Using shared battery driver: {type(battery).__name__}, channel: {channel}")
+            logger.info(f"[BATTERY-COMMAND-{thread_name}] Using battery proxy on channel {channel}")
 
             result = {'success': True, 'action': action}
-
-            try:
-                # CRITICAL: Lock instrument access to prevent concurrent queries with monitoring thread
-                if instr_lock:
-                    logger.info(f"[BATTERY-COMMAND-{thread_name}] Acquiring instrument lock...")
-                    instr_lock.acquire()
-                    logger.info(f"[BATTERY-COMMAND-{thread_name}] Instrument lock acquired")
-            except Exception as e:
-                logger.error(f"[BATTERY-COMMAND-{thread_name}] Failed to acquire instrument lock: {e}")
 
             try:
                 if action == 'soc':
@@ -652,6 +629,12 @@ def register_battery_socketio(socketio: SocketIO) -> None:
                 logger.info(f"[BATTERY-COMMAND-{thread_name}] Command completed successfully: {result}")
                 emit('battery_command_response', result)
 
+            except (ConnectionFailed, DeviceError) as e:
+                logger.error(f"[BATTERY-COMMAND-{thread_name}] hardware_service error: {e}")
+                emit('battery_command_response', {
+                    'success': False,
+                    'error': f'Hardware service error: {e}'
+                })
             except Exception as e:
                 import traceback
                 logger.error(f"[BATTERY-COMMAND-{thread_name}] Command execution error: {e}")
@@ -660,12 +643,6 @@ def register_battery_socketio(socketio: SocketIO) -> None:
                     'success': False,
                     'error': str(e)
                 })
-            finally:
-                # CRITICAL: Always release instrument lock
-                if instr_lock and instr_lock.locked():
-                    logger.info(f"[BATTERY-COMMAND-{thread_name}] Releasing instrument lock...")
-                    instr_lock.release()
-                    logger.info(f"[BATTERY-COMMAND-{thread_name}] Instrument lock released")
 
         except Exception as e:
             logger.exception("Error in handle_battery_command")
