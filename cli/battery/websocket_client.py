@@ -29,6 +29,7 @@ class BatteryWebSocketClient:
         self.update_interval = update_interval
         self.connected = False
         self.monitoring_active = False
+        self.driver_ready = False
         self.stop_event = threading.Event()
 
         # Callbacks
@@ -37,6 +38,7 @@ class BatteryWebSocketClient:
         self.on_error: Optional[Callable[[str], None]] = None
         self.on_connected: Optional[Callable[[], None]] = None
         self.on_disconnected: Optional[Callable[[], None]] = None
+        self.on_driver_ready: Optional[Callable[[Dict[str, Any]], None]] = None
 
         # Command response tracking
         self._command_response_event = threading.Event()
@@ -58,6 +60,7 @@ class BatteryWebSocketClient:
         self.sio.on('disconnect', self._on_disconnect, namespace='/battery')
         self.sio.on('connected', self._on_connected_event, namespace='/battery')
         self.sio.on('battery_monitor_started', self._on_monitor_started, namespace='/battery')
+        self.sio.on('battery_driver_ready', self._on_driver_ready, namespace='/battery')
         self.sio.on('battery_state_update', self._on_state_update, namespace='/battery')
         self.sio.on('battery_command_response', self._on_command_response, namespace='/battery')
         self.sio.on('battery_monitor_stopped', self._on_monitor_stopped, namespace='/battery')
@@ -83,6 +86,12 @@ class BatteryWebSocketClient:
     def _on_monitor_started(self, data):
         """Handle monitoring start confirmation."""
         self.monitoring_active = True
+
+    def _on_driver_ready(self, data):
+        """Handle battery driver ready confirmation - driver is now ready for commands."""
+        self.driver_ready = True
+        if self.on_driver_ready:
+            self.on_driver_ready(data)
 
     def _on_state_update(self, data):
         """Handle battery state update."""
@@ -148,18 +157,28 @@ class BatteryWebSocketClient:
             return False
 
         try:
+            # Reset driver_ready flag before starting
+            self.driver_ready = False
+
             self.sio.emit('start_battery_monitor', {
                 'netname': self.netname,
                 'interval': self.update_interval
             }, namespace='/battery')
 
-            # Wait for monitoring to start
-            timeout = 5.0
-            while not self.monitoring_active and not self.stop_event.is_set() and timeout > 0:
+            # Wait for driver to be ready (not just monitoring started). Driver
+            # initialization takes time for the first SCPI query through
+            # hardware_service. Mirrors supply's wait pattern.
+            timeout = 15.0
+            while not self.driver_ready and not self.stop_event.is_set() and timeout > 0:
                 self.sio.sleep(0.1)
                 timeout -= 0.1
 
-            return self.monitoring_active
+            if not self.driver_ready and not self.stop_event.is_set():
+                if self.on_error:
+                    self.on_error("Timeout waiting for battery driver to initialize")
+                return False
+
+            return self.driver_ready
         except Exception as e:
             if self.on_error:
                 self.on_error(f"Failed to start monitoring: {str(e)}")
