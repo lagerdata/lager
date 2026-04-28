@@ -69,8 +69,13 @@ def _get_device_lock(cache_key):
         return lock
 
 
-# Keywords indicating a stale VISA session that should trigger retry
-_VISA_SESSION_ERROR_KEYWORDS = ('session', 'resource', 'closed', 'invalid')
+# Substrings that classify an error as a stale pyvisa session worth recreating.
+# Note: 'resource' was previously here but matched 'Resource busy' — a kernel-level
+# USB-claim error from a *live* concurrent session, not a stale one. That caused a
+# retry loop (pop the live cache entry, then call create_device on the same address
+# while the original session is still alive in this process) producing a second
+# Resource busy. Removed in v0.16.7.
+_VISA_SESSION_ERROR_KEYWORDS = ('session', 'closed', 'invalid')
 
 def get_net_info_hash(net_info):
     """Create a hashable representation of net_info dict
