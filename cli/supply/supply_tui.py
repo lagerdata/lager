@@ -184,6 +184,9 @@ class SupplyTUI(App):
         self.history_index = -1
         self.title = f"SupplyTUI - {netname}"
         self.ws_client = None  # WebSocket client
+        # Captured by the click wrapper after run_async() returns; if set it
+        # gets printed to stderr so failures don't disappear with the alt-screen.
+        self.exit_error: str | None = None
 
     def compose(self) -> ComposeResult:
         """Create child widgets"""
@@ -248,8 +251,8 @@ class SupplyTUI(App):
 
             # Connection successful - no log message needed
         except Exception as e:
-            import traceback
             self._add_log_entry("Error", f"[red]WebSocket connection failed: {e}[/red]")
+            self.exit_error = f"WebSocket connection failed: {e}"
             self.exit(1)
 
     def _handle_state_update(self, state):
@@ -290,6 +293,9 @@ class SupplyTUI(App):
     def _handle_ws_error(self, message):
         """Handle WebSocket error"""
         self._add_log_entry("Error", f"[red]{message}[/red]")
+        # Remember the most recent server-side error; if the TUI exits because
+        # start_monitoring() failed, this is the message we want surfaced on stderr.
+        self.exit_error = message
 
     def _handle_ws_connected(self):
         """Handle WebSocket connected"""

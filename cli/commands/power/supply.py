@@ -389,6 +389,12 @@ def tui(ctx, box):
         from ...supply.supply_tui import SupplyTUI
         app = SupplyTUI(ctx, netname, resolved_box, resolved_box)
         asyncio.run(app.run_async())
+        # If the TUI exited because of an error, surface it to the user now —
+        # the in-app log pane was inside the alt-screen and is no longer visible.
+        exit_error = getattr(app, 'exit_error', None)
+        if exit_error:
+            click.secho(f"Error: {exit_error}", fg='red', err=True)
+            ctx.exit(1)
     except ImportError as e:
         click.secho("Error: TUI dependencies not available", fg='red', err=True)
         click.secho(f"Missing module: {e.name if hasattr(e, 'name') else str(e)}", err=True)
