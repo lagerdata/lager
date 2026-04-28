@@ -2,6 +2,16 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.16.7] - 2026-04-28
+
+### Fixed
+- `lager uart <net>` returned `404 — UART net not found` for every UART command, even when `lager nets` correctly listed the net. The v0.16.6 battery-handler consolidation (commit `f277402`) deleted the two-line `register_uart_routes(app)` / `register_uart_socketio(socketio)` block in `box/lager/box_http_server.py` as collateral damage. Imports stayed in place so the file still parsed; the Flask route just was never registered. Re-added the registration alongside supply and battery.
+- `lager supply <net> state` (and any other one-shot supply or battery command) failed with `[Errno 16] Resource busy` immediately after exiting the TUI, succeeding only on the second invocation. Root cause: `/supply/command` and `/battery/command` returned 404 when no active WS session was found, forcing the CLI's `_run_backend` into a direct-pyvisa subprocess fallback (`cli/impl/power/supply.py` → dispatcher) that opened its own pyvisa session, conflicting with the still-cached session in `hardware_service.py`. Both endpoints now build a transient `Device` proxy via `resolve_net_proxy()` when no active WS session exists, routing through `hardware_service.py:/invoke` like the WS monitor already does. There is now exactly one pyvisa session per `(device_name, address)` regardless of TUI lifecycle. This completes v0.16.6's "VISA session ownership unified" promise.
+- Concurrent TUI + CLI access on the same supply (e.g. `lager supply <net> tui` running while another terminal runs `lager supply <net> current`) could trigger spurious `Hardware service error: [Errno 16] Resource busy` tracebacks even though the per-cache-key lock in `box/lager/hardware_service.py` was correctly serializing the calls. Root cause: `_is_visa_session_error()` used the substring `'resource'` as one of its stale-pyvisa-session keywords, so any kernel-level `Resource busy` error mis-classified as a stale session. The retry path then popped the live cache entry and called `module.create_device()` again on the same address, hitting `Resource busy` a second time (the original session was still alive in the same process). Removed `'resource'` from `_VISA_SESSION_ERROR_KEYWORDS`; retry now fires only for genuine stale-session signals (`'session'`, `'closed'`, `'invalid'`).
+
+### Known Limitations
+- Keithley 2281S configured with both a supply role (`power-supply`) and a battery role (`battery`) on the same physical USB device cannot be used concurrently (or sometimes even sequentially without restarting the box service). `box/lager/hardware_service.py` keys its driver cache by `(device_name, address)`, and the supply path uses `device_name="keithley"` while the battery path uses `device_name="keithley_battery"` — so the same USB device gets two distinct cache entries and two competing pyvisa sessions, the second of which fails with `[Errno 16] Resource busy`. Workaround: configure either the supply role or the battery role on the Keithley 2281S, not both. Proper fix (shared pyvisa Resource or merged driver class) is targeted for v0.16.8.
+
 ## [0.16.6] - 2026-04-27
 
 ### Fixed
