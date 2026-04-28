@@ -85,6 +85,7 @@ SUPPORTED_USB: Dict[str, Dict[str, str | List[str] | None]] = {
     "J-Link_Plus":                  {"vid": "1366", "pid": "0101", "net_type": ["debug"]},
     "J-Link":                       {"vid": "1366", "pid": "1020", "net_type": ["debug"]},
     "Flasher_ARM":                  {"vid": "1366", "pid": "0503", "net_type": ["debug"]},
+    "J-Link_Flasher_Pro":           {"vid": "1366", "pid": "0105", "net_type": ["debug"]},
 
     # usb
     "Acroname_8Port":     {"vid": "24ff", "pid": "0013", "net_type": ["usb"]},
@@ -173,6 +174,7 @@ CHANNEL_MAPS = {
     "J-Link_Plus":            {"debug": ["DEVICE_TYPE"]},
     "J-Link":                 {"debug": ["DEVICE_TYPE"]},
     "Flasher_ARM":            {"debug": ["DEVICE_TYPE"]},
+    "J-Link_Flasher_Pro":     {"debug": ["DEVICE_TYPE"]},
 
     # usb
     "Acroname_8Port":          {"usb": ["0", "1", "2", "3", "4", "5", "6", "7"]},
