@@ -684,12 +684,18 @@ class EA(SupplyNet):
             print(f"Current: {i if (not i or i.endswith('A')) else f'{i} A'}")
 
     def enable(self) -> None:
+        # Idempotent: if the output is already on, do NOT toggle it off/on.
+        # _clear_latched_events() writes OUTPut OFF as its first step, which
+        # would cause a brief (~500ms) drop on a re-enable.
+        if self._enabled():
+            return
+
         # Clear any previous protection events before enabling
         self._clear_latched_events()
-        
+
         # Enable output
         self._out_on()
-        
+
         # EA supplies need more time to fully enable and settle
         # This prevents spurious protection trips immediately after enable
         time.sleep(0.3)
