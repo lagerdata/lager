@@ -22,6 +22,7 @@ import os
 import json
 import logging
 import importlib
+import threading
 import traceback
 import atexit
 from flask import Flask, request, jsonify, send_from_directory
@@ -49,6 +50,24 @@ device_cache = {}
 # Cache for modules used to create devices (for retry on stale sessions)
 # Format: {(device_name, net_info_hash): module}
 module_cache = {}
+
+# Per-device locks for serializing concurrent /invoke calls to the same
+# cached driver. Flask runs threaded=True, so without this two requests
+# (e.g. WS monitor tick + TUI command) racing on the same VISA session
+# produce "Query INTERRUPTED" pyvisa errors. Lock is acquired per call;
+# never held across calls.
+device_locks = {}
+device_locks_meta_lock = threading.Lock()
+
+
+def _get_device_lock(cache_key):
+    with device_locks_meta_lock:
+        lock = device_locks.get(cache_key)
+        if lock is None:
+            lock = threading.Lock()
+            device_locks[cache_key] = lock
+        return lock
+
 
 # Keywords indicating a stale VISA session that should trigger retry
 _VISA_SESSION_ERROR_KEYWORDS = ('session', 'resource', 'closed', 'invalid')
@@ -233,9 +252,14 @@ def invoke():
 
         func = getattr(device, function_name)
 
-        # Call the function
+        # Call the function. Per-device lock serializes concurrent /invoke
+        # requests against the same cached driver (e.g. WS monitor tick +
+        # TUI command both targeting the same Rigol DP821). Without this,
+        # pyvisa raises "Query INTERRUPTED".
+        device_lock = _get_device_lock(cache_key)
         try:
-            result = func(*args, **kwargs)
+            with device_lock:
+                result = func(*args, **kwargs)
 
             # Return the result
             # Note: EnumEncoder is handled by device.py when it decodes the response
@@ -251,14 +275,16 @@ def invoke():
                 # Clear the module's resource cache if available
                 if hasattr(mod, 'clear_resource_cache'):
                     mod.clear_resource_cache()
-                # Recreate device and retry the call once
+                # Recreate device and retry the call once. Same per-device
+                # lock — cache_key is unchanged, so retries serialize too.
                 try:
                     device = mod.create_device(net_info)
                     if hasattr(device, 'device') and not callable(getattr(device, 'device')):
                         device = device.device
                     device_cache[cache_key] = device
                     func = getattr(device, function_name)
-                    result = func(*args, **kwargs)
+                    with device_lock:
+                        result = func(*args, **kwargs)
                     return jsonify(result)
                 except Exception as retry_e:
                     logger.error(f"Retry also failed for {device_name}.{function_name}: {retry_e}")
@@ -331,6 +357,8 @@ def clear_cache():
     total_count = len(device_cache)
     device_cache.clear()
     module_cache.clear()
+    with device_locks_meta_lock:
+        device_locks.clear()
     logger.info(f"Cleared device cache: {closed_count} closed, {error_count} errors")
     return jsonify({
         'status': 'success',
