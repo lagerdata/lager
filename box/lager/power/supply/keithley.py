@@ -311,6 +311,33 @@ class Keithley2281S(SupplyNet):
         """
         self._force_clear_protection()
 
+    # --- OCP/OVP polymorphic wrappers for box/lager/http_handlers/supply.py ---
+    # The HTTP handler is modeled on multi-channel drivers (Rigol DP800) and
+    # calls these names with a `channel=` kwarg. The 2281S is single-channel,
+    # so the kwarg is accepted and ignored. Bodies delegate to the existing
+    # private setters and public clear-trip methods.
+
+    def set_overcurrent_protection_value(self, value: float, channel=None) -> None:
+        self._set_ocp(value)
+
+    def enable_overcurrent_protection(self, channel=None) -> None:
+        # On the 2281S, OCP is armed by `:SOUR:CURR:PROT <value>`; there is no
+        # separate enable register the supply.py handler needs to flip after
+        # set_overcurrent_protection_value.
+        pass
+
+    def set_overvoltage_protection_value(self, value: float, channel=None) -> None:
+        self._set_ovp(value)
+
+    def enable_overvoltage_protection(self, channel=None) -> None:
+        pass
+
+    def clear_overcurrent_protection_trip(self, channel=None) -> None:
+        self.clear_ocp()
+
+    def clear_overvoltage_protection_trip(self, channel=None) -> None:
+        self.clear_ovp()
+
     def ocp(self, value: float | None = None) -> None:
         """Set or read over-current protection limit"""
         if value is not None:
@@ -632,7 +659,10 @@ class Keithley2281S(SupplyNet):
     def _meas_i(self) -> str:
         return self._safe_query(":MEAS:CURR?", default=self._get_iset())
 
-    def output_is_enabled(self) -> bool:
+    def output_is_enabled(self, channel=None) -> bool:
+        # `channel` is accepted for compatibility with multi-channel drivers
+        # that the supply HTTP handler is modeled on (Rigol DP800). The
+        # 2281S is single-channel, so this argument is ignored.
         try:
             # Try multiple queries with slight delays for robustness
             for _ in range(3):
