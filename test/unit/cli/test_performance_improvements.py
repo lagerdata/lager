@@ -31,9 +31,11 @@ class TestConfigCaching:
         """Verify config is cached on second read."""
         from cli.config import read_config_file, _config_cache, _config_cache_mtime
 
-        # Create a temp config file
+        # Create a temp config file. read_config_file accepts JSON only
+        # (raises SystemExit on invalid JSON); _json_to_configparser maps the
+        # top-level "LAGER" key to the LAGER configparser section.
         with tempfile.NamedTemporaryFile(mode='w', suffix='.lager', delete=False) as f:
-            f.write('[LAGER]\ntest_key = test_value\n')
+            f.write('{"LAGER": {"test_key": "test_value"}}')
             temp_path = f.name
 
         try:
@@ -61,7 +63,7 @@ class TestConfigCaching:
         from cli.config import read_config_file, write_config_file, _config_cache
 
         with tempfile.NamedTemporaryFile(mode='w', suffix='.lager', delete=False) as f:
-            f.write('[LAGER]\noriginal_key = original_value\n')
+            f.write('{"LAGER": {"original_key": "original_value"}}')
             temp_path = f.name
 
         try:
