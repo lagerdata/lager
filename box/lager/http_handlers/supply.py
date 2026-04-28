@@ -13,10 +13,13 @@ import threading
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit
 
+from lager.dispatchers.helpers import resolve_net_proxy
+from lager.exceptions import SupplyBackendError
+from lager.nets.device import ConnectionFailed, DeviceError, Device
+
 from .state import (
     active_supply_sessions,
     active_supply_sessions_lock,
-    get_instrument_lock,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,13 +65,15 @@ def register_supply_routes(app: Flask) -> None:
             if not netname or not action:
                 return jsonify({'success': False, 'error': 'netname and action are required'}), 400
 
-            # Find an active WebSocket session for this netname and get instrument lock
+            # Find an active WebSocket session for this netname.
+            # SCPI serialization is now handled inside hardware_service.py
+            # by per-cache-key locks, so the old per-netname instrument_lock
+            # is no longer needed here.
             session_id = None
             supply = None
             channel = None
             voltage_max = 0
             current_max = 0
-            instr_lock = None
 
             with active_supply_sessions_lock:
                 for sid, session_info in active_supply_sessions.items():
@@ -78,7 +83,6 @@ def register_supply_routes(app: Flask) -> None:
                         channel = session_info.get('channel')
                         voltage_max = session_info.get('voltage_max', 0)
                         current_max = session_info.get('current_max', 0)
-                        instr_lock = session_info.get('instrument_lock')
                         break
 
             if not supply:
@@ -86,10 +90,6 @@ def register_supply_routes(app: Flask) -> None:
                     'success': False,
                     'error': f'No active WebSocket session found for {netname}. Start the TUI first with: lager supply {netname} tui'
                 }), 404
-
-            # CRITICAL: Lock instrument access to prevent concurrent queries
-            if instr_lock:
-                instr_lock.acquire()
 
             # Execute the command using the same logic as WebSocket commands
             result = {'success': True, 'action': action}
@@ -186,10 +186,9 @@ def register_supply_routes(app: Flask) -> None:
 
                 logger.info(f"[HTTP] Supply command executed: {action} on {netname} (session {session_id})")
                 return jsonify(result)
-            finally:
-                # CRITICAL: Always release instrument lock
-                if instr_lock and instr_lock.locked():
-                    instr_lock.release()
+            except (ConnectionFailed, DeviceError) as e:
+                logger.exception(f"[HTTP] Supply command {action} on {netname} failed at hardware_service")
+                return jsonify({'success': False, 'error': f'Hardware service error: {e}'}), 502
 
         except Exception as e:
             logger.exception(f"[HTTP] Error executing supply command")
@@ -258,10 +257,10 @@ def register_supply_socketio(socketio: SocketIO) -> None:
             # Capture session ID before starting thread
             session_id = request.sid
 
-            # Get or create instrument lock for this netname (prevents concurrent SCPI queries)
-            instr_lock = get_instrument_lock(netname)
-
-            # Store session info (supply driver will be added by monitoring thread)
+            # Store session info. The supply driver (a Device proxy) will be
+            # added by the monitoring thread once it has resolved net_info.
+            # SCPI serialization is handled inside hardware_service.py by
+            # per-cache-key locks; no per-netname lock needed here anymore.
             with active_supply_sessions_lock:
                 active_supply_sessions[session_id] = {
                     'netname': netname,
@@ -269,7 +268,6 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                     'interval': interval,
                     'supply': None,  # Will be set by monitoring thread
                     'channel': None,  # Will be set by monitoring thread
-                    'instrument_lock': instr_lock  # Shared lock for this instrument
                 }
 
             # Send connection success
@@ -279,257 +277,175 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                 'message': f'Started monitoring supply: {netname}'
             })
 
-            # Start monitoring thread
+            # Start monitoring thread.
+            #
+            # The supply driver is a Device HTTP proxy that POSTs to
+            # hardware_service.py:/invoke. hardware_service owns the pyvisa
+            # session and serializes concurrent calls per cache key, so this
+            # thread no longer needs the USB/pyvisa import dance, the
+            # dispatcher cache clears, the v0.16.5 /cache/clear band-aid,
+            # the per-netname instrument_lock, or a driver-close finally.
             def monitor_supply():
                 """Monitor supply state and emit updates to WebSocket."""
-                import time
-                import json
-                import sys
                 import threading as thread_module
 
                 thread_name = thread_module.current_thread().name
                 logger.info(f"[MONITOR-{thread_name}] Monitoring thread starting for {netname}")
 
-                # CRITICAL: Import USB modules BEFORE importing dispatcher
-                # The dispatcher imports driver classes which import pyvisa at module level
-                # If USB isn't available when pyvisa loads, it permanently caches the failure
                 try:
-                    logger.info(f"[MONITOR-{thread_name}] Importing USB modules...")
-                    # CRITICAL: Import parent package first, then use 'from usb import' for submodules
-                    # Direct 'import usb.util' fails in Flask-SocketIO threads!
-                    import usb
-                    logger.info(f"[MONITOR-{thread_name}] Imported usb package: {usb}")
-                    from usb import util, core
-                    logger.info(f"[MONITOR-{thread_name}] USB submodules imported: util={util}, core={core}")
-
-                    sys.modules['usb'] = usb
-                    sys.modules['usb.util'] = util
-                    sys.modules['usb.core'] = core
-                    logger.info(f"[MONITOR-{thread_name}] USB modules registered in sys.modules")
-
-                    # Now import pyvisa to ensure it sees USB modules
-                    logger.info(f"[MONITOR-{thread_name}] Importing pyvisa...")
-                    import pyvisa
-                    logger.info(f"[MONITOR-{thread_name}] PyVISA imported: {pyvisa}")
-
-                    # Check if pyvisa can access USB backend
-                    rm = pyvisa.ResourceManager()
-                    logger.info(f"[MONITOR-{thread_name}] PyVISA ResourceManager created: {rm}")
-
-                    # Finally safe to import dispatcher (which imports drivers -> pyvisa)
-                    logger.info(f"[MONITOR-{thread_name}] Importing dispatcher...")
-                    from lager.power.supply.dispatcher import _resolve_net_and_driver
-                    logger.info(f"[MONITOR-{thread_name}] Dispatcher imported successfully")
-
-                    # Clear ALL stale caches to ensure fresh connection
-                    try:
-                        # Clear Keysight E36xxx VISA resource cache (unified driver)
-                        from lager.power.supply.keysight_e36000 import clear_resource_cache as clear_keysight_cache
-                        clear_keysight_cache()
-                        logger.info(f"[MONITOR-{thread_name}] Cleared Keysight E36xxx resource cache")
-                    except Exception as cache_err:
-                        logger.debug(f"[MONITOR-{thread_name}] Keysight cache clear: {cache_err}")
-
-                    try:
-                        # Clear dispatcher's driver cache
-                        from lager.power.supply.dispatcher import SupplyDispatcher
-                        SupplyDispatcher.clear_cache()
-                        logger.info(f"[MONITOR-{thread_name}] Cleared dispatcher driver cache")
-                    except Exception as cache_err:
-                        logger.debug(f"[MONITOR-{thread_name}] Dispatcher cache clear: {cache_err}")
-
-                    # Clear the hardware_service.py device cache (port 8080).
-                    # That service holds an open VISA session per device for /invoke calls
-                    # (e.g. `lager supply <net> state`). Some instruments (Rigol DP821)
-                    # cannot tolerate a second concurrent VISA session — without this clear,
-                    # the fresh session opened a few lines below by _resolve_net_and_driver()
-                    # hangs or fails silently, and supply_driver_ready never fires.
-                    try:
-                        import requests
-                        requests.post('http://127.0.0.1:8080/cache/clear', timeout=2.0)
-                        logger.info(f"[MONITOR-{thread_name}] Cleared hardware_service device cache")
-                    except Exception as cache_err:
-                        logger.warning(
-                            f"[MONITOR-{thread_name}] Could not clear hardware_service cache "
-                            f"(continuing anyway): {cache_err}"
-                        )
-                except Exception as e:
+                    device_name, net_info, channel = resolve_net_proxy(
+                        netname, "power-supply", SupplyBackendError
+                    )
+                    supply = Device(device_name, net_info)
+                    logger.info(
+                        f"[MONITOR-{thread_name}] Got supply proxy: {device_name} "
+                        f"channel {channel} address {net_info.get('address')}"
+                    )
+                except Exception as resolve_err:
                     import traceback
-                    logger.error(f"[MONITOR-{thread_name}] Import error: {e}")
+                    logger.error(
+                        f"[MONITOR-{thread_name}] Failed to resolve supply '{netname}': {resolve_err}"
+                    )
                     logger.error(f"[MONITOR-{thread_name}] Traceback: {traceback.format_exc()}")
-                    socketio.emit('error',
-                                {'message': f'Import error in monitoring thread: {str(e)}'},
-                                namespace='/supply',
-                                room=session_id)
+                    socketio.emit(
+                        'error',
+                        {'message': f"Could not resolve supply '{netname}': {resolve_err}"},
+                        namespace='/supply',
+                        room=session_id,
+                    )
                     return
 
-                supply = None
+                # Get hardware limits via the proxy. AttributeError/NotImplementedError
+                # mean the driver legitimately doesn't expose limits (treated as 0).
+                # ConnectionFailed (hardware_service down) or DeviceError (proxy
+                # surfaced an error) means the first SCPI query failed — surface
+                # to client rather than silently timing out.
                 try:
-                    try:
-                        logger.info(f"[MONITOR-{thread_name}] Resolving net and driver for {netname}...")
-                        supply, channel = _resolve_net_and_driver(netname)
-                        logger.info(f"[MONITOR-{thread_name}] Got supply driver: {type(supply).__name__}, channel: {channel}")
-                    except Exception as resolve_err:
-                        import traceback
-                        logger.error(
-                            f"[MONITOR-{thread_name}] Failed to resolve supply driver for {netname}: {resolve_err}"
-                        )
-                        logger.error(
-                            f"[MONITOR-{thread_name}] Traceback: {traceback.format_exc()}"
-                        )
-                        socketio.emit(
-                            'error',
-                            {
-                                'message': (
-                                    f"Could not open supply '{netname}': {resolve_err}"
-                                )
-                            },
-                            namespace='/supply',
-                            room=session_id,
-                        )
-                        return
+                    limits = supply.get_channel_limits(channel)
+                    voltage_max = limits.get('voltage_max', 0)
+                    current_max = limits.get('current_max', 0)
+                except (AttributeError, NotImplementedError):
+                    voltage_max = 0
+                    current_max = 0
+                except (ConnectionFailed, DeviceError) as limits_err:
+                    import traceback
+                    logger.error(
+                        f"[MONITOR-{thread_name}] First SCPI query failed for {netname}: {limits_err}"
+                    )
+                    logger.error(f"[MONITOR-{thread_name}] Traceback: {traceback.format_exc()}")
+                    socketio.emit(
+                        'error',
+                        {'message': (
+                            f"Supply '{netname}' is not responding "
+                            f"(first query failed): {limits_err}"
+                        )},
+                        namespace='/supply',
+                        room=session_id,
+                    )
+                    return
 
-                    # Get hardware limits for validation. AttributeError/NotImplementedError
-                    # mean the driver legitimately doesn't expose limits — fall back to 0.
-                    # Anything else (VISA timeout, "Resource busy", "Query INTERRUPTED", etc.)
-                    # is a real failure on the very first SCPI query and the client deserves
-                    # a visible error rather than a 15s silent timeout.
-                    try:
-                        limits = supply.get_channel_limits(channel)
-                        voltage_max = limits.get('voltage_max', 0)
-                        current_max = limits.get('current_max', 0)
-                    except (AttributeError, NotImplementedError):
-                        voltage_max = 0
-                        current_max = 0
-                    except Exception as limits_err:
-                        import traceback
-                        logger.error(
-                            f"[MONITOR-{thread_name}] First SCPI query failed for {netname}: {limits_err}"
-                        )
-                        logger.error(
-                            f"[MONITOR-{thread_name}] Traceback: {traceback.format_exc()}"
-                        )
-                        socketio.emit(
-                            'error',
-                            {
-                                'message': (
-                                    f"Supply '{netname}' opened but is not responding "
-                                    f"(first query failed): {limits_err}"
-                                )
-                            },
-                            namespace='/supply',
-                            room=session_id,
-                        )
-                        return
-
-                    # Store supply, channel, and limits in session for command execution.
-                    # Wrap so a corrupt session map doesn't kill the thread silently.
-                    try:
-                        with active_supply_sessions_lock:
-                            if session_id in active_supply_sessions:
-                                active_supply_sessions[session_id]['supply'] = supply
-                                active_supply_sessions[session_id]['channel'] = channel
-                                active_supply_sessions[session_id]['voltage_max'] = voltage_max
-                                active_supply_sessions[session_id]['current_max'] = current_max
-                                logger.info(f"[MONITOR-{thread_name}] Stored supply driver in session (limits: {voltage_max}V, {current_max}A)")
-                    except Exception as store_err:
-                        import traceback
-                        logger.error(
-                            f"[MONITOR-{thread_name}] Failed to store supply session for {netname}: {store_err}"
-                        )
-                        logger.error(
-                            f"[MONITOR-{thread_name}] Traceback: {traceback.format_exc()}"
-                        )
-                        socketio.emit(
-                            'error',
-                            {'message': f"Internal error registering supply '{netname}' session: {store_err}"},
-                            namespace='/supply',
-                            room=session_id,
-                        )
-                        return
-
-                    # Notify client that driver is ready for commands
-                    socketio.emit('supply_driver_ready', {
-                        'netname': netname,
-                        'channel': channel,
-                        'voltage_max': voltage_max,
-                        'current_max': current_max,
-                        'message': f'Supply driver ready for {netname}'
-                    }, namespace='/supply', room=session_id)
-                    logger.info(f"[MONITOR-{thread_name}] Emitted supply_driver_ready event")
-
-                    # Get instrument lock for thread-safe SCPI queries
+                # Store supply, channel, and limits in session for command execution.
+                try:
                     with active_supply_sessions_lock:
-                        instr_lock_local = active_supply_sessions.get(session_id, {}).get('instrument_lock')
+                        if session_id in active_supply_sessions:
+                            active_supply_sessions[session_id]['supply'] = supply
+                            active_supply_sessions[session_id]['channel'] = channel
+                            active_supply_sessions[session_id]['voltage_max'] = voltage_max
+                            active_supply_sessions[session_id]['current_max'] = current_max
+                            logger.info(
+                                f"[MONITOR-{thread_name}] Stored supply proxy in session "
+                                f"(limits: {voltage_max}V, {current_max}A)"
+                            )
+                except Exception as store_err:
+                    import traceback
+                    logger.error(
+                        f"[MONITOR-{thread_name}] Failed to store supply session for {netname}: {store_err}"
+                    )
+                    logger.error(f"[MONITOR-{thread_name}] Traceback: {traceback.format_exc()}")
+                    socketio.emit(
+                        'error',
+                        {'message': f"Internal error registering supply '{netname}' session: {store_err}"},
+                        namespace='/supply',
+                        room=session_id,
+                    )
+                    return
 
-                    while not stop_event.is_set():
+                # Notify client that driver is ready for commands
+                socketio.emit('supply_driver_ready', {
+                    'netname': netname,
+                    'channel': channel,
+                    'voltage_max': voltage_max,
+                    'current_max': current_max,
+                    'message': f'Supply driver ready for {netname}'
+                }, namespace='/supply', room=session_id)
+                logger.info(f"[MONITOR-{thread_name}] Emitted supply_driver_ready event")
+
+                while not stop_event.is_set():
+                    try:
+                        # Each call below is one /invoke POST; hardware_service
+                        # serializes per-device internally. No need for a local
+                        # lock.
+                        state = {
+                            'netname': netname,
+                            'channel': channel,
+                            'voltage': float(supply.measure_voltage(channel)),
+                            'current': float(supply.measure_current(channel)),
+                            'power': float(supply.measure_power(channel)),
+                            'enabled': supply.output_is_enabled(channel),
+                            'mode': supply.get_output_mode(channel) if hasattr(supply, 'get_output_mode') else 'CV',
+                            'voltage_set': float(supply.get_channel_voltage(source=channel)),
+                            'current_set': float(supply.get_channel_current(source=channel)),
+                        }
+
                         try:
-                            # CRITICAL: Lock instrument access to prevent concurrent queries
-                            # "Query INTERRUPTED" errors occur when multiple threads query simultaneously
-                            with instr_lock_local:
-                                # Get all state information using SCPI methods
-                                state = {
-                                    'netname': netname,
-                                    'channel': channel,
-                                    'voltage': float(supply.measure_voltage(channel)),
-                                    'current': float(supply.measure_current(channel)),
-                                    'power': float(supply.measure_power(channel)),
-                                    'enabled': supply.output_is_enabled(channel),
-                                    'mode': supply.get_output_mode(channel) if hasattr(supply, 'get_output_mode') else 'CV',
-                                    'voltage_set': float(supply.get_channel_voltage(source=channel)),
-                                    'current_set': float(supply.get_channel_current(source=channel)),
-                                }
+                            limits = supply.get_channel_limits(channel)
+                            state['voltage_max'] = limits.get('voltage_max', 0)
+                            state['current_max'] = limits.get('current_max', 0)
+                        except (AttributeError, NotImplementedError):
+                            state['voltage_max'] = 0
+                            state['current_max'] = 0
 
-                                # Get channel limits
-                                try:
-                                    limits = supply.get_channel_limits(channel)
-                                    state['voltage_max'] = limits.get('voltage_max', 0)
-                                    state['current_max'] = limits.get('current_max', 0)
-                                except (AttributeError, NotImplementedError):
-                                    state['voltage_max'] = 0
-                                    state['current_max'] = 0
-
-                                # Get OCP/OVP if available
-                                try:
-                                    state['ocp_limit'] = float(supply.get_overcurrent_protection_value(channel))
-                                    state['ocp_tripped'] = supply.overcurrent_protection_is_tripped(channel)
-                                except (AttributeError, NotImplementedError):
-                                    state['ocp_limit'] = None
-                                    state['ocp_tripped'] = None
-
-                                try:
-                                    state['ovp_limit'] = float(supply.get_overvoltage_protection_value(channel))
-                                    state['ovp_tripped'] = supply.overvoltage_protection_is_tripped(channel)
-                                except (AttributeError, NotImplementedError):
-                                    state['ovp_limit'] = None
-                                    state['ovp_tripped'] = None
-
-                            # Emit state to client (outside lock - network I/O doesn't need instrument)
-                            socketio.emit('supply_state_update',
-                                        {'state': state},
-                                        namespace='/supply',
-                                        room=session_id)
-                        except Exception as e:
-                            logger.error(f"Error monitoring supply: {e}")
-                            socketio.emit('error',
-                                        {'message': f'Monitoring error: {str(e)}'},
-                                        namespace='/supply',
-                                        room=session_id)
-
-                        # Wait for interval or stop event
-                        stop_event.wait(interval)
-                finally:
-                    # Close supply driver when done. ``supply`` may be None if
-                    # _resolve_net_and_driver raised before assigning it.
-                    if supply is not None:
                         try:
-                            if hasattr(supply, 'close'):
-                                supply.close()
-                            elif hasattr(supply, 'instrument') and hasattr(supply.instrument, 'close'):
-                                supply.instrument.close()
-                        except Exception as e:
-                            logger.error(f"Error closing supply driver: {e}")
-                    logger.info(f"Supply monitoring thread stopped for session {session_id}")
+                            state['ocp_limit'] = float(supply.get_overcurrent_protection_value(channel))
+                            state['ocp_tripped'] = supply.overcurrent_protection_is_tripped(channel)
+                        except (AttributeError, NotImplementedError):
+                            state['ocp_limit'] = None
+                            state['ocp_tripped'] = None
+
+                        try:
+                            state['ovp_limit'] = float(supply.get_overvoltage_protection_value(channel))
+                            state['ovp_tripped'] = supply.overvoltage_protection_is_tripped(channel)
+                        except (AttributeError, NotImplementedError):
+                            state['ovp_limit'] = None
+                            state['ovp_tripped'] = None
+
+                        socketio.emit('supply_state_update',
+                                    {'state': state},
+                                    namespace='/supply',
+                                    room=session_id)
+                    except ConnectionFailed as e:
+                        logger.error(f"[MONITOR-{thread_name}] hardware_service unreachable: {e}")
+                        socketio.emit('error',
+                                    {'message': f'Hardware service unreachable: {e}'},
+                                    namespace='/supply',
+                                    room=session_id)
+                    except DeviceError as e:
+                        logger.error(f"[MONITOR-{thread_name}] hardware_service error: {e}")
+                        socketio.emit('error',
+                                    {'message': f'Hardware service error: {e}'},
+                                    namespace='/supply',
+                                    room=session_id)
+                    except Exception as e:
+                        logger.error(f"[MONITOR-{thread_name}] Error monitoring supply: {e}")
+                        socketio.emit('error',
+                                    {'message': f'Monitoring error: {str(e)}'},
+                                    namespace='/supply',
+                                    room=session_id)
+
+                    # Wait for interval or stop event
+                    stop_event.wait(interval)
+
+                logger.info(f"Supply monitoring thread stopped for session {session_id}")
 
             # Start monitoring thread
             monitor_thread = threading.Thread(target=monitor_supply, daemon=True)
@@ -569,54 +485,19 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                 emit('supply_command_response', {'success': False, 'error': 'action is required'})
                 return
 
-            # CRITICAL: Import USB modules BEFORE importing dispatcher
-            # The dispatcher imports driver classes which import pyvisa at module level
-            import sys
             import threading as thread_module
 
             thread_name = thread_module.current_thread().name
             logger.info(f"[COMMAND-{thread_name}] Processing command: action={action}, netname={netname}, params={params}")
 
-            try:
-                logger.info(f"[COMMAND-{thread_name}] Importing USB modules...")
-                # CRITICAL: Import parent package first, then use 'from usb import' for submodules
-                # Direct 'import usb.util' fails in Flask-SocketIO threads!
-                import usb
-                logger.info(f"[COMMAND-{thread_name}] Imported usb package: {usb}")
-                from usb import util, core
-                logger.info(f"[COMMAND-{thread_name}] USB submodules imported: util={util}, core={core}")
-
-                sys.modules['usb'] = usb
-                sys.modules['usb.util'] = util
-                sys.modules['usb.core'] = core
-                logger.info(f"[COMMAND-{thread_name}] USB modules registered in sys.modules")
-
-                # Import pyvisa to ensure it sees USB modules
-                logger.info(f"[COMMAND-{thread_name}] Importing pyvisa...")
-                import pyvisa
-                logger.info(f"[COMMAND-{thread_name}] PyVISA imported")
-
-                # Execute command using dispatcher functions
-                logger.info(f"[COMMAND-{thread_name}] Importing dispatcher...")
-                from lager.power.supply import dispatcher
-                logger.info(f"[COMMAND-{thread_name}] Dispatcher imported successfully")
-            except Exception as e:
-                import traceback
-                logger.error(f"[COMMAND-{thread_name}] Import error: {e}")
-                logger.error(f"[COMMAND-{thread_name}] Traceback: {traceback.format_exc()}")
-                emit('supply_command_response', {
-                    'success': False,
-                    'error': f'Import error: {str(e)}'
-                })
-                return
-
-            # Get supply driver, limits, and instrument lock from session (shared with monitoring thread)
+            # Get supply proxy, channel, and limits from session (set by monitoring thread).
+            # SCPI serialization is handled inside hardware_service.py per cache key,
+            # so the old per-netname instrument_lock is no longer needed here.
             session_id = request.sid
             supply = None
             channel = None
             voltage_max = 0
             current_max = 0
-            instr_lock = None
 
             with active_supply_sessions_lock:
                 if session_id in active_supply_sessions:
@@ -624,7 +505,6 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                     channel = active_supply_sessions[session_id].get('channel')
                     voltage_max = active_supply_sessions[session_id].get('voltage_max', 0)
                     current_max = active_supply_sessions[session_id].get('current_max', 0)
-                    instr_lock = active_supply_sessions[session_id].get('instrument_lock')
 
             if not supply:
                 emit('supply_command_response', {
@@ -633,18 +513,9 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                 })
                 return
 
-            logger.info(f"[COMMAND-{thread_name}] Using shared supply driver: {type(supply).__name__}, channel: {channel}, limits: {voltage_max}V, {current_max}A")
+            logger.info(f"[COMMAND-{thread_name}] Using supply proxy on channel {channel}, limits: {voltage_max}V, {current_max}A")
 
             result = {'success': True, 'action': action}
-
-            try:
-                # CRITICAL: Lock instrument access to prevent concurrent queries with monitoring thread
-                if instr_lock:
-                    logger.info(f"[COMMAND-{thread_name}] Acquiring instrument lock...")
-                    instr_lock.acquire()
-                    logger.info(f"[COMMAND-{thread_name}] Instrument lock acquired")
-            except Exception as e:
-                logger.error(f"[COMMAND-{thread_name}] Failed to acquire instrument lock: {e}")
 
             try:
                 if action == 'voltage':
@@ -791,6 +662,12 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                 logger.info(f"[COMMAND-{thread_name}] Command completed successfully: {result}")
                 emit('supply_command_response', result)
 
+            except (ConnectionFailed, DeviceError) as e:
+                logger.error(f"[COMMAND-{thread_name}] hardware_service error: {e}")
+                emit('supply_command_response', {
+                    'success': False,
+                    'error': f'Hardware service error: {e}'
+                })
             except Exception as e:
                 import traceback
                 logger.error(f"[COMMAND-{thread_name}] Command execution error: {e}")
@@ -799,12 +676,6 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                     'success': False,
                     'error': str(e)
                 })
-            finally:
-                # CRITICAL: Always release instrument lock
-                if instr_lock and instr_lock.locked():
-                    logger.info(f"[COMMAND-{thread_name}] Releasing instrument lock...")
-                    instr_lock.release()
-                    logger.info(f"[COMMAND-{thread_name}] Instrument lock released")
 
         except Exception as e:
             logger.exception("Error in handle_supply_command")
