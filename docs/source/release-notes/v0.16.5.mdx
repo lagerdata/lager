@@ -1,0 +1,27 @@
+---
+title: "Version 0.16.5"
+description: "April 27, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **Keysight E36xxx supplies reporting `Enabled: OFF` after `enable`** — running `lager supply <net> state` (or any other read-only supply command) immediately after a successful `lager supply <net> enable` would report the output as `OFF` on Keysight E36200/E36300 series supplies. The `KeysightE36000` driver constructor was unconditionally calling `disable_output()` as a "safe default" on every connect, so each fresh CLI invocation silently turned the output off before running its query. The disable is now gated behind the explicit `reset=True` flag, so constructing a driver for a read (or for `enable`) no longer mutates output state.
+- **EA PSB supplies briefly dropping output on re-enable** — `lager supply <net> enable` on an EA PSB 10060-60 / 10080-60 caused a brief (~500ms) output drop when the output was already on. `EA.enable()` always ran `_clear_latched_events()` first, which writes `OUTPut OFF` and waits 200ms before turning the output back on. `enable()` is now idempotent: if `OUTPut?` reports the output is already on, the call returns immediately without toggling. The off→on path that needs latched-protection clearing is unchanged.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.16.5
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.16.5/)

@@ -2,6 +2,12 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.16.5] - 2026-04-27
+
+### Fixed
+- `lager supply <net> state` (and other read-only supply commands) would report `Enabled: OFF` immediately after a successful `lager supply <net> enable` on Keysight E36xxx supplies. The `KeysightE36000` constructor unconditionally called `disable_output()` as a "safe default" on every connect, so each fresh CLI invocation silently turned the output off before running its query. The disable is now gated behind the explicit `reset=True` flag (matching the existing OCP-reset block), so constructing a driver for a read or for `enable` no longer mutates output state.
+- `lager supply <net> enable` on EA PSB supplies briefly dropped the output (~500ms) when the output was already on, because `EA.enable()` always ran `_clear_latched_events()` (which writes `OUTPut OFF` and waits 200ms) before turning the output back on. `enable()` is now idempotent: if `OUTPut?` reports the output is already on, it returns immediately without toggling. The off→on path that needs latched-protection clearing is unchanged.
+
 ## [0.16.4] - 2026-04-27
 
 ### Fixed
