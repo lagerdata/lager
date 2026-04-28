@@ -2,6 +2,19 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.16.6] - 2026-04-27
+
+### Fixed
+- `lager battery <net> tui` now works for the first time. The OLD WebSocket battery monitor in `box/lager/box_http_server.py` imported `_resolve_net_and_driver` from `lager.power.battery.dispatcher`, but the battery dispatcher (unlike the supply dispatcher) had no module-level wrapper of that name — every TUI launch crashed at module load with `ImportError: cannot import name '_resolve_net_and_driver' from 'lager.power.battery.dispatcher'`. Nobody had reported it because nobody had tested the battery TUI. Incidentally fixed by the VISA-ownership unification below; the battery monitor now also emits a `battery_driver_ready` event mirroring `supply_driver_ready` for client symmetry.
+- Concurrent SCPI access on the same instrument now serializes correctly. Previously, two `/invoke` requests against the same cached driver in `box/lager/hardware_service.py` could race on the SCPI bus and produce `Query INTERRUPTED` pyvisa errors. Added a per-`(device_name, address)` `threading.Lock` that wraps the actual `func(*args, **kwargs)` call and the stale-VISA-session retry; lock is acquired per call (never held across calls). Multi-channel devices (e.g., Rigol DP821) correctly share one lock since they share one VISA session.
+
+### Changed
+- **VISA session ownership unified.** The supply and battery WebSocket monitor handlers (`box/lager/http_handlers/supply.py`, `box/lager/http_handlers/battery.py`) no longer open their own pyvisa sessions in monitor threads. They now hold a `Device` HTTP proxy (`box/lager/nets/device.py`) and route every per-tick driver call (and every TUI command) through `hardware_service.py:/invoke`. `hardware_service.py` (port 8080) is now the sole owner of pyvisa sessions per `(device_name, address)`. The v0.16.5 `POST /cache/clear` band-aid in the WS monitor is removed; the architectural fix replaces it.
+- Battery handlers migrated from `box/lager/box_http_server.py` to `box/lager/http_handlers/battery.py`, mirroring the earlier supply migration. The duplicate copies in `box_http_server.py` (~670 lines: `/battery/command` HTTP route, four `/battery` WebSocket handlers, the `monitor_battery` thread) were deleted; `box_http_server.py` now imports and registers the modular handlers via `register_battery_routes` / `register_battery_socketio` / `cleanup_battery_sessions`.
+- New shared helper `box/lager/dispatchers/helpers.py:resolve_net_proxy(netname, role, error_class)` returns `(device_module_name, net_info, channel)` for a saved net, mirroring the regex switches in `SupplyDispatcher._choose_driver` and `BatteryDispatcher._choose_driver`. Used by both monitor handlers to construct their `Device` proxies.
+- `box/lager/power/supply/ea.py` now exposes a `create_device(net_info)` factory for `hardware_service.py:/invoke`, matching the other supply drivers.
+- Two unit tests in `test/unit/cli/test_performance_improvements.py` (`test_config_parsing_cached`, `test_config_cache_invalidation_on_write`) had been silently failing since the `.lager` config format was migrated to JSON-only: they wrote INI/configparser tempfiles, but `cli/config.py:read_config_file` calls `json.load()` and `raise SystemExit(1)` on `JSONDecodeError`. Both tempfiles now write `{"LAGER": {...}}` JSON. Full unit suite now 141/141 passing (was 139/141). No CLI behavior change.
+
 ## [0.16.5] - 2026-04-27
 
 ### Fixed
