@@ -25,6 +25,29 @@ from .state import (
 logger = logging.getLogger(__name__)
 
 
+def _resolve_supply_proxy(netname: str):
+    """
+    Build a transient supply Device proxy + channel + hardware limits for
+    `netname` by routing through hardware_service.py:/invoke. Used by the
+    HTTP command endpoint when no TUI WebSocket session is active so that
+    hardware_service.py remains the sole owner of the pyvisa session — a
+    direct in-process pyvisa session would race with hardware_service for
+    the USB device and produce "[Errno 16] Resource busy".
+    """
+    device_name, net_info, channel = resolve_net_proxy(
+        netname, "power-supply", SupplyBackendError
+    )
+    supply = Device(device_name, net_info)
+    try:
+        limits = supply.get_channel_limits(channel)
+        voltage_max = limits.get('voltage_max', 0)
+        current_max = limits.get('current_max', 0)
+    except (AttributeError, NotImplementedError):
+        voltage_max = 0
+        current_max = 0
+    return supply, channel, voltage_max, current_max
+
+
 def register_supply_routes(app: Flask) -> None:
     """
     Register supply HTTP routes with the Flask app.
@@ -32,15 +55,18 @@ def register_supply_routes(app: Flask) -> None:
     Args:
         app: Flask application instance
     """
-    
+
     # Supply HTTP endpoint for non-WebSocket commands
     @app.route('/supply/command', methods=['POST'])
     def supply_command_http():
         """
-        Execute a supply command using an active WebSocket session's supply driver.
+        Execute a supply command via hardware_service.py:/invoke.
 
-        This allows CLI commands from other terminals to work while the TUI is running,
-        by reusing the WebSocket session's USB connection instead of trying to open a new one.
+        If a TUI WebSocket session is already active for this net, reuse its
+        cached Device proxy (and cached limits). Otherwise, build a transient
+        proxy via resolve_net_proxy() — also routed through hardware_service —
+        so the call still goes through the single pyvisa-owning service rather
+        than opening a competing in-process pyvisa session.
 
         Request body:
         {
@@ -86,10 +112,23 @@ def register_supply_routes(app: Flask) -> None:
                         break
 
             if not supply:
-                return jsonify({
-                    'success': False,
-                    'error': f'No active WebSocket session found for {netname}. Start the TUI first with: lager supply {netname} tui'
-                }), 404
+                # No active TUI session: build a transient hardware_service-routed
+                # proxy. Using a fresh in-process pyvisa session here would race
+                # with hardware_service.py's cached session for the same USB
+                # device (e.g. left over from a recently-exited TUI) and produce
+                # "[Errno 16] Resource busy".
+                try:
+                    supply, channel, voltage_max, current_max = _resolve_supply_proxy(netname)
+                except SupplyBackendError as e:
+                    return jsonify({'success': False, 'error': str(e)}), 404
+                except (ConnectionFailed, DeviceError) as e:
+                    logger.exception(
+                        f"[HTTP] Could not build transient supply proxy for {netname}"
+                    )
+                    return jsonify({
+                        'success': False,
+                        'error': f'Hardware service error: {e}',
+                    }), 502
 
             # Execute the command using the same logic as WebSocket commands
             result = {'success': True, 'action': action}

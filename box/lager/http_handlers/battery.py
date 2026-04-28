@@ -26,6 +26,22 @@ from .state import (
 logger = logging.getLogger(__name__)
 
 
+def _resolve_battery_proxy(netname: str):
+    """
+    Build a transient battery Device proxy + channel for `netname` by routing
+    through hardware_service.py:/invoke. Used by the HTTP command endpoint
+    when no TUI WebSocket session is active so that hardware_service.py
+    remains the sole owner of the pyvisa session — a direct in-process pyvisa
+    session would race with hardware_service for the USB device and produce
+    "[Errno 16] Resource busy".
+    """
+    device_name, net_info, channel = resolve_net_proxy(
+        netname, "battery", BatteryBackendError
+    )
+    battery = Device(device_name, net_info)
+    return battery, channel
+
+
 def register_battery_routes(app: Flask) -> None:
     """
     Register battery HTTP routes on the Flask app.
@@ -37,10 +53,13 @@ def register_battery_routes(app: Flask) -> None:
     @app.route('/battery/command', methods=['POST'])
     def battery_command_http():
         """
-        Execute a battery command using an active WebSocket session's battery driver.
+        Execute a battery command via hardware_service.py:/invoke.
 
-        This allows CLI commands from other terminals to work while the TUI is running,
-        by reusing the WebSocket session's USB connection instead of trying to open a new one.
+        If a TUI WebSocket session is already active for this net, reuse its
+        cached Device proxy. Otherwise, build a transient proxy via
+        resolve_net_proxy() — also routed through hardware_service — so the
+        call still goes through the single pyvisa-owning service rather than
+        opening a competing in-process pyvisa session.
 
         Request body:
         {
@@ -82,10 +101,23 @@ def register_battery_routes(app: Flask) -> None:
                         break
 
             if not battery:
-                return jsonify({
-                    'success': False,
-                    'error': f'No active WebSocket session found for {netname}. Start the TUI first with: lager battery {netname} tui'
-                }), 404
+                # No active TUI session: build a transient hardware_service-routed
+                # proxy. Using a fresh in-process pyvisa session here would race
+                # with hardware_service.py's cached session for the same USB
+                # device (e.g. left over from a recently-exited TUI) and produce
+                # "[Errno 16] Resource busy".
+                try:
+                    battery, channel = _resolve_battery_proxy(netname)
+                except BatteryBackendError as e:
+                    return jsonify({'success': False, 'error': str(e)}), 404
+                except (ConnectionFailed, DeviceError) as e:
+                    logger.exception(
+                        f"[HTTP] Could not build transient battery proxy for {netname}"
+                    )
+                    return jsonify({
+                        'success': False,
+                        'error': f'Hardware service error: {e}',
+                    }), 502
 
             # Execute the command using the same logic as WebSocket commands
             result = {'success': True, 'action': action}
