@@ -47,17 +47,23 @@ class Keithley2281S(SupplyNet):
       • Safe protection clear that preserves setpoints.
     """
 
-    def __init__(self, instr=None, address=None, channel: int = 1, reset: bool = False, **_):
+    def __init__(self, instr=None, address=None, channel: int = 1, reset: bool = False,
+                 _owns_resource: bool = True, **_):
         """
         Accepts:
           • instr:   an open VISA resource or a VISA address string
           • address: a VISA address string (used if 'instr' is not a resource)
           • channel: ignored (2281S is single-channel)
           • reset:   perform *RST on connect if True
+          • _owns_resource: if False, close() will NOT close the underlying pyvisa
+                            session. Set by hardware_service.py when sharing one
+                            pyvisa session between this supply driver and the
+                            sibling battery driver on the same Keithley 2281S.
         """
         raw = None
         addr = None
         self._rm = None  # Keep RM alive to prevent GC from invalidating session handles
+        self._owns_resource = _owns_resource
 
         # 1) prefer 'instr' if provided
         if instr is not None:
@@ -1113,29 +1119,44 @@ class Keithley2281S(SupplyNet):
             return 0.0
 
     def close(self) -> None:
-        """Close the VISA connection and release resources."""
+        """Close the VISA connection and release resources.
+
+        When `_owns_resource` is False, leaves the underlying pyvisa session
+        alone (it's owned by hardware_service.py's shared resource cache and
+        is also held by the sibling Keithley battery driver). Just drops our
+        reference to the wrapper.
+        """
         if hasattr(self, 'instr') and self.instr is not None:
-            try:
-                if hasattr(self.instr, 'instr') and hasattr(self.instr.instr, 'close'):
-                    self.instr.instr.close()
-                elif hasattr(self.instr, 'close'):
-                    self.instr.close()
-            except Exception:
-                pass
-            finally:
-                self.instr = None
+            if getattr(self, '_owns_resource', True):
+                try:
+                    if hasattr(self.instr, 'instr') and hasattr(self.instr.instr, 'close'):
+                        self.instr.instr.close()
+                    elif hasattr(self.instr, 'close'):
+                        self.instr.close()
+                except Exception:
+                    pass
+            self.instr = None
 
     def __del__(self) -> None:
         """Cleanup when instance is garbage collected."""
         self.close()
 
 
-def create_device(net_info):
+def create_device(net_info, *, raw_resource=None):
     """Factory function for hardware_service.
 
     Extracts the required parameters from net_info dict and creates a Keithley2281S instance.
     This allows hardware_service to instantiate the device without knowing the constructor signature.
+
+    When `raw_resource` is provided (an already-open pyvisa session), the
+    returned driver wraps it instead of opening a new session, and is marked
+    as a non-owner so close() won't release the underlying USB claim. Used
+    by hardware_service.py to share one pyvisa session between the supply
+    and battery drivers when both roles are configured on the same Keithley
+    2281S USB device — fixes the v0.16.7 dual-role known limitation.
     """
     address = net_info.get('address')
     channel = net_info.get('channel') or net_info.get('pin') or 1
+    if raw_resource is not None:
+        return Keithley2281S(instr=raw_resource, channel=int(channel), _owns_resource=False)
     return Keithley2281S(instr=address, channel=int(channel))
