@@ -347,11 +347,31 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                                 room=session_id)
                     return
 
+                supply = None
                 try:
-                    # Create supply driver once before loop - reuse for all monitoring
-                    logger.info(f"[MONITOR-{thread_name}] Resolving net and driver for {netname}...")
-                    supply, channel = _resolve_net_and_driver(netname)
-                    logger.info(f"[MONITOR-{thread_name}] Got supply driver: {type(supply).__name__}, channel: {channel}")
+                    try:
+                        logger.info(f"[MONITOR-{thread_name}] Resolving net and driver for {netname}...")
+                        supply, channel = _resolve_net_and_driver(netname)
+                        logger.info(f"[MONITOR-{thread_name}] Got supply driver: {type(supply).__name__}, channel: {channel}")
+                    except Exception as resolve_err:
+                        import traceback
+                        logger.error(
+                            f"[MONITOR-{thread_name}] Failed to resolve supply driver for {netname}: {resolve_err}"
+                        )
+                        logger.error(
+                            f"[MONITOR-{thread_name}] Traceback: {traceback.format_exc()}"
+                        )
+                        socketio.emit(
+                            'error',
+                            {
+                                'message': (
+                                    f"Could not open supply '{netname}': {resolve_err}"
+                                )
+                            },
+                            namespace='/supply',
+                            room=session_id,
+                        )
+                        return
 
                     # Get hardware limits for validation
                     try:
@@ -442,14 +462,16 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                         # Wait for interval or stop event
                         stop_event.wait(interval)
                 finally:
-                    # Close supply driver when done
-                    try:
-                        if hasattr(supply, 'close'):
-                            supply.close()
-                        elif hasattr(supply, 'instrument') and hasattr(supply.instrument, 'close'):
-                            supply.instrument.close()
-                    except Exception as e:
-                        logger.error(f"Error closing supply driver: {e}")
+                    # Close supply driver when done. ``supply`` may be None if
+                    # _resolve_net_and_driver raised before assigning it.
+                    if supply is not None:
+                        try:
+                            if hasattr(supply, 'close'):
+                                supply.close()
+                            elif hasattr(supply, 'instrument') and hasattr(supply.instrument, 'close'):
+                                supply.instrument.close()
+                        except Exception as e:
+                            logger.error(f"Error closing supply driver: {e}")
                     logger.info(f"Supply monitoring thread stopped for session {session_id}")
 
             # Start monitoring thread
