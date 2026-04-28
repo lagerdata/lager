@@ -946,3 +946,14 @@ class EA(SupplyNet):
 
     def __str__(self) -> str:
         return self._safe_query("*IDN?", "EA PSB")
+
+
+def create_device(net_info):
+    """
+    Factory used by hardware_service.py:/invoke to instantiate this driver.
+
+    Other supply drivers (rigol_dp800, keithley, keysight_e36000) already
+    expose this factory. Without it, hardware_service falls back to a
+    class-name lookup; explicit is cheaper than reasoning about the fallback.
+    """
+    return EA(instr=net_info["address"])
