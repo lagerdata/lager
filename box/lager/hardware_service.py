@@ -56,6 +56,11 @@ module_cache = {}
 # (e.g. WS monitor tick + TUI command) racing on the same VISA session
 # produce "Query INTERRUPTED" pyvisa errors. Lock is acquired per call;
 # never held across calls.
+#
+# When the request has a VISA address, we lock on the address itself so
+# that two driver classes wrapping the same physical USB device (e.g.
+# Keithley 2281S supply + battery) serialize their SCPI calls. Locking
+# on cache_key alone would let them race on the USB bus.
 device_locks = {}
 device_locks_meta_lock = threading.Lock()
 
@@ -67,6 +72,71 @@ def _get_device_lock(cache_key):
             lock = threading.Lock()
             device_locks[cache_key] = lock
         return lock
+
+
+def _get_address_lock(address):
+    """Per-VISA-address lock — serializes SCPI across all driver classes
+    that share one physical USB device (e.g. Keithley 2281S supply +
+    battery). Stored in `device_locks` under a sentinel key to avoid
+    colliding with cache_key entries."""
+    return _get_device_lock(('__address__', address))
+
+
+# Shared pyvisa Resource cache keyed by VISA address. Lets multiple driver
+# classes wrap one underlying pyvisa session — fixes the v0.16.7 Keithley
+# 2281S dual-role known limitation where supply and battery drivers each
+# opened their own session against the same USB device and the second one
+# hit [Errno 16] Resource busy.
+_visa_resources = {}                       # address -> (rm, raw_session)
+_visa_resources_meta_lock = threading.Lock()
+
+# Drivers that should share one pyvisa session per VISA address. Add a
+# device_name here whenever a single physical instrument exposes more than
+# one role (e.g. Keithley 2281S as both power supply and battery simulator).
+_SHARED_VISA_DEVICE_NAMES = frozenset({'keithley', 'keithley_battery'})
+
+
+def _get_or_open_visa_resource(address):
+    """Return (rm, raw_session) for `address`, opening a new pyvisa session
+    on first call and reusing it on subsequent calls. Thread-safe.
+
+    The returned `rm` is kept alive in the cache so pyvisa's GC doesn't
+    invalidate the session handle."""
+    import pyvisa  # local import — pyvisa is optional at module import time
+    with _visa_resources_meta_lock:
+        entry = _visa_resources.get(address)
+        if entry is not None:
+            return entry
+        rm = pyvisa.ResourceManager()
+        raw = rm.open_resource(address)
+        try:
+            raw.read_termination = '\n'
+            raw.write_termination = '\n'
+            raw.timeout = 5000  # ms; drivers can override
+        except Exception:
+            pass
+        _visa_resources[address] = (rm, raw)
+        logger.info(f"Opened shared pyvisa session for {address}")
+        return rm, raw
+
+
+def _close_visa_resource(address):
+    """Close and remove the shared pyvisa session for `address`. Safe to
+    call when no entry exists."""
+    with _visa_resources_meta_lock:
+        entry = _visa_resources.pop(address, None)
+    if entry is None:
+        return
+    rm, raw = entry
+    try:
+        raw.close()
+    except Exception as e:
+        logger.warning(f"Error closing shared pyvisa raw for {address}: {e}")
+    try:
+        rm.close()
+    except Exception as e:
+        logger.warning(f"Error closing shared pyvisa rm for {address}: {e}")
+    logger.info(f"Closed shared pyvisa session for {address}")
 
 
 # Substrings that classify an error as a stale pyvisa session worth recreating.
@@ -221,7 +291,29 @@ def invoke():
             # Instantiate the device
             # Most hardware modules have a create function or constructor that takes net_info
             if hasattr(module, 'create_device'):
-                device = _create_device_with_retry(module, device_name, net_info)
+                # For instruments with multiple roles per physical USB device (Keithley
+                # 2281S supply + battery), share one pyvisa session across drivers so
+                # the second open doesn't hit [Errno 16] Resource busy. The driver's
+                # create_device must accept a `raw_resource=` kwarg; if it doesn't, we
+                # fall back to the legacy per-driver-opens-its-own-session path.
+                shared_raw = None
+                if address and device_name in _SHARED_VISA_DEVICE_NAMES:
+                    try:
+                        _, shared_raw = _get_or_open_visa_resource(address)
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not open shared pyvisa session for {address}: {e}; "
+                            f"falling back to per-driver session"
+                        )
+                        shared_raw = None
+                if shared_raw is not None:
+                    try:
+                        device = module.create_device(net_info, raw_resource=shared_raw)
+                    except TypeError:
+                        # Driver's create_device hasn't been updated yet — fall back.
+                        device = _create_device_with_retry(module, device_name, net_info)
+                else:
+                    device = _create_device_with_retry(module, device_name, net_info)
             elif hasattr(module, 'create'):
                 device = module.create(net_info)
             elif net_info:
@@ -258,10 +350,12 @@ def invoke():
         func = getattr(device, function_name)
 
         # Call the function. Per-device lock serializes concurrent /invoke
-        # requests against the same cached driver (e.g. WS monitor tick +
-        # TUI command both targeting the same Rigol DP821). Without this,
-        # pyvisa raises "Query INTERRUPTED".
-        device_lock = _get_device_lock(cache_key)
+        # requests targeting the same physical instrument (e.g. WS monitor
+        # tick + TUI command both targeting the same Rigol DP821, or a
+        # supply command + a battery command both targeting the same
+        # Keithley 2281S). Without this, pyvisa raises "Query INTERRUPTED"
+        # or libusb returns Resource busy on USB transfer.
+        device_lock = _get_address_lock(address) if address else _get_device_lock(cache_key)
         try:
             with device_lock:
                 result = func(*args, **kwargs)
@@ -275,15 +369,46 @@ def invoke():
             mod = module_cache.get(cache_key)
             if _is_visa_session_error(e) and mod and hasattr(mod, 'create_device'):
                 logger.warning(f"VISA session error on cached {device_name}.{function_name}, recreating device: {e}")
-                # Remove stale device from cache
-                device_cache.pop(cache_key, None)
+                # Remove stale device from cache and release its USB claim before
+                # opening a new session on the same address. Without the close,
+                # libusb refuses the second open with [Errno 16] Resource busy
+                # because the popped instance is still alive in this process and
+                # still holds the claim — reproduced on Keithley 2281S battery
+                # TUI + concurrent battery CLI.
+                old_device = device_cache.pop(cache_key, None)
+                if old_device is not None:
+                    _close_device(old_device, cache_key)
                 # Clear the module's resource cache if available
                 if hasattr(mod, 'clear_resource_cache'):
                     mod.clear_resource_cache()
+                # If this driver shares one pyvisa session per address with a
+                # sibling driver (Keithley dual-role), refresh the shared
+                # session: the underlying pyvisa handle is the same one that
+                # just raised, so reusing it would produce the same error.
+                # Closing and reopening releases the USB claim and gives both
+                # drivers a clean session. Non-shared drivers fall through to
+                # the legacy single-driver-opens-its-own-session retry.
+                shared_raw = None
+                if address and device_name in _SHARED_VISA_DEVICE_NAMES:
+                    _close_visa_resource(address)
+                    try:
+                        _, shared_raw = _get_or_open_visa_resource(address)
+                    except Exception as e:
+                        logger.warning(
+                            f"Could not reopen shared pyvisa session for {address} during retry: {e}; "
+                            f"falling back to per-driver session"
+                        )
+                        shared_raw = None
                 # Recreate device and retry the call once. Same per-device
                 # lock — cache_key is unchanged, so retries serialize too.
                 try:
-                    device = mod.create_device(net_info)
+                    if shared_raw is not None:
+                        try:
+                            device = mod.create_device(net_info, raw_resource=shared_raw)
+                        except TypeError:
+                            device = mod.create_device(net_info)
+                    else:
+                        device = mod.create_device(net_info)
                     if hasattr(device, 'device') and not callable(getattr(device, 'device')):
                         device = device.device
                     device_cache[cache_key] = device
@@ -364,7 +489,12 @@ def clear_cache():
     module_cache.clear()
     with device_locks_meta_lock:
         device_locks.clear()
-    logger.info(f"Cleared device cache: {closed_count} closed, {error_count} errors")
+    # Close any shared pyvisa sessions opened for dual-role instruments.
+    with _visa_resources_meta_lock:
+        shared_addresses = list(_visa_resources.keys())
+    for addr in shared_addresses:
+        _close_visa_resource(addr)
+    logger.info(f"Cleared device cache: {closed_count} closed, {error_count} errors, {len(shared_addresses)} shared visa sessions closed")
     return jsonify({
         'status': 'success',
         'cleared': total_count,
@@ -397,6 +527,11 @@ def _cleanup_device_cache():
         _close_device(device, cache_key)
     device_cache.clear()
     module_cache.clear()
+    # Close any shared pyvisa sessions opened for dual-role instruments.
+    with _visa_resources_meta_lock:
+        shared_addresses = list(_visa_resources.keys())
+    for addr in shared_addresses:
+        _close_visa_resource(addr)
 
 
 # Register cleanup handler for normal process exit
