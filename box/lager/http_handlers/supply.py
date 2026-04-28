@@ -337,6 +337,22 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                         logger.info(f"[MONITOR-{thread_name}] Cleared dispatcher driver cache")
                     except Exception as cache_err:
                         logger.debug(f"[MONITOR-{thread_name}] Dispatcher cache clear: {cache_err}")
+
+                    # Clear the hardware_service.py device cache (port 8080).
+                    # That service holds an open VISA session per device for /invoke calls
+                    # (e.g. `lager supply <net> state`). Some instruments (Rigol DP821)
+                    # cannot tolerate a second concurrent VISA session — without this clear,
+                    # the fresh session opened a few lines below by _resolve_net_and_driver()
+                    # hangs or fails silently, and supply_driver_ready never fires.
+                    try:
+                        import requests
+                        requests.post('http://127.0.0.1:8080/cache/clear', timeout=2.0)
+                        logger.info(f"[MONITOR-{thread_name}] Cleared hardware_service device cache")
+                    except Exception as cache_err:
+                        logger.warning(
+                            f"[MONITOR-{thread_name}] Could not clear hardware_service cache "
+                            f"(continuing anyway): {cache_err}"
+                        )
                 except Exception as e:
                     import traceback
                     logger.error(f"[MONITOR-{thread_name}] Import error: {e}")
@@ -373,7 +389,11 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                         )
                         return
 
-                    # Get hardware limits for validation
+                    # Get hardware limits for validation. AttributeError/NotImplementedError
+                    # mean the driver legitimately doesn't expose limits — fall back to 0.
+                    # Anything else (VISA timeout, "Resource busy", "Query INTERRUPTED", etc.)
+                    # is a real failure on the very first SCPI query and the client deserves
+                    # a visible error rather than a 15s silent timeout.
                     try:
                         limits = supply.get_channel_limits(channel)
                         voltage_max = limits.get('voltage_max', 0)
@@ -381,15 +401,52 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                     except (AttributeError, NotImplementedError):
                         voltage_max = 0
                         current_max = 0
+                    except Exception as limits_err:
+                        import traceback
+                        logger.error(
+                            f"[MONITOR-{thread_name}] First SCPI query failed for {netname}: {limits_err}"
+                        )
+                        logger.error(
+                            f"[MONITOR-{thread_name}] Traceback: {traceback.format_exc()}"
+                        )
+                        socketio.emit(
+                            'error',
+                            {
+                                'message': (
+                                    f"Supply '{netname}' opened but is not responding "
+                                    f"(first query failed): {limits_err}"
+                                )
+                            },
+                            namespace='/supply',
+                            room=session_id,
+                        )
+                        return
 
-                    # Store supply, channel, and limits in session for command execution
-                    with active_supply_sessions_lock:
-                        if session_id in active_supply_sessions:
-                            active_supply_sessions[session_id]['supply'] = supply
-                            active_supply_sessions[session_id]['channel'] = channel
-                            active_supply_sessions[session_id]['voltage_max'] = voltage_max
-                            active_supply_sessions[session_id]['current_max'] = current_max
-                            logger.info(f"[MONITOR-{thread_name}] Stored supply driver in session (limits: {voltage_max}V, {current_max}A)")
+                    # Store supply, channel, and limits in session for command execution.
+                    # Wrap so a corrupt session map doesn't kill the thread silently.
+                    try:
+                        with active_supply_sessions_lock:
+                            if session_id in active_supply_sessions:
+                                active_supply_sessions[session_id]['supply'] = supply
+                                active_supply_sessions[session_id]['channel'] = channel
+                                active_supply_sessions[session_id]['voltage_max'] = voltage_max
+                                active_supply_sessions[session_id]['current_max'] = current_max
+                                logger.info(f"[MONITOR-{thread_name}] Stored supply driver in session (limits: {voltage_max}V, {current_max}A)")
+                    except Exception as store_err:
+                        import traceback
+                        logger.error(
+                            f"[MONITOR-{thread_name}] Failed to store supply session for {netname}: {store_err}"
+                        )
+                        logger.error(
+                            f"[MONITOR-{thread_name}] Traceback: {traceback.format_exc()}"
+                        )
+                        socketio.emit(
+                            'error',
+                            {'message': f"Internal error registering supply '{netname}' session: {store_err}"},
+                            namespace='/supply',
+                            room=session_id,
+                        )
+                        return
 
                     # Notify client that driver is ready for commands
                     socketio.emit('supply_driver_ready', {
