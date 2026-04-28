@@ -43,10 +43,19 @@ class KeithleyBattery(BatteryNet):
 
     # ----------------------------- lifecycle -----------------------------
 
-    def __init__(self, instr=None, address=None, channel: int = 1, reset: bool = False, **_):
+    def __init__(self, instr=None, address=None, channel: int = 1, reset: bool = False,
+                 _owns_resource: bool = True, **_):
+        """
+        `_owns_resource`: if False, close() will NOT close the underlying
+        pyvisa session. Set by hardware_service.py when sharing one pyvisa
+        session between this battery driver and the sibling supply driver
+        on the same Keithley 2281S — fixes the v0.16.7 dual-role known
+        limitation.
+        """
         raw = None
         addr = None
         self._rm = None  # Keep RM alive to prevent GC from invalidating session handles
+        self._owns_resource = _owns_resource
 
         if instr is not None:
             if isinstance(instr, str):
@@ -720,17 +729,23 @@ class KeithleyBattery(BatteryNet):
         return self._idn_cache or self._safe_query("*IDN?", "Keithley 2281S")
 
     def close(self) -> None:
-        """Close the VISA connection and release resources."""
+        """Close the VISA connection and release resources.
+
+        When `_owns_resource` is False, leaves the underlying pyvisa session
+        alone (it's owned by hardware_service.py's shared resource cache and
+        is also held by the sibling Keithley supply driver). Just drops our
+        reference to the wrapper.
+        """
         if hasattr(self, 'instr') and self.instr is not None:
-            try:
-                if hasattr(self.instr, 'instr') and hasattr(self.instr.instr, 'close'):
-                    self.instr.instr.close()
-                elif hasattr(self.instr, 'close'):
-                    self.instr.close()
-            except Exception:
-                pass
-            finally:
-                self.instr = None
+            if getattr(self, '_owns_resource', True):
+                try:
+                    if hasattr(self.instr, 'instr') and hasattr(self.instr.instr, 'close'):
+                        self.instr.instr.close()
+                    elif hasattr(self.instr, 'close'):
+                        self.instr.close()
+                except Exception:
+                    pass
+            self.instr = None
 
     def __del__(self) -> None:
         """Cleanup when instance is garbage collected."""
@@ -741,7 +756,7 @@ class KeithleyBattery(BatteryNet):
 Keithley = KeithleyBattery
 
 
-def create_device(net_info):
+def create_device(net_info, *, raw_resource=None):
     """Factory function for hardware_service.
 
     Extracts the required parameters from net_info dict and creates a KeithleyBattery instance.
@@ -752,6 +767,11 @@ def create_device(net_info):
             - address: VISA resource string
             - channel: Channel number (1-3)
             - reset: Whether to reset device on init (default False)
+        raw_resource: Optional already-open pyvisa session to share with the
+            sibling Keithley supply driver. When provided, the returned driver
+            wraps it instead of opening a new session, and close() will not
+            release the underlying USB claim. Used by hardware_service.py to
+            fix the v0.16.7 dual-role known limitation.
 
     Returns:
         KeithleyBattery instance configured with the provided parameters
@@ -759,4 +779,6 @@ def create_device(net_info):
     address = net_info.get('address')
     channel = net_info.get('channel') or net_info.get('pin') or 1
     reset = net_info.get('reset', False)
+    if raw_resource is not None:
+        return KeithleyBattery(instr=raw_resource, channel=int(channel), reset=reset, _owns_resource=False)
     return KeithleyBattery(address=address, channel=int(channel), reset=reset)
