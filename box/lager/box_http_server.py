@@ -202,6 +202,12 @@ def status():
     })
 
 
+# Register UART HTTP and WebSocket handlers from modular http package.
+# These provide /uart/nets/list (consumed by `lager uart`, `lager nets`, etc.)
+# and the /uart WebSocket namespace used by interactive/read-only sessions.
+register_uart_routes(app)
+register_uart_socketio(socketio)
+
 # Register supply HTTP and WebSocket handlers from modular http package
 register_supply_routes(app)
 register_supply_socketio(socketio)
