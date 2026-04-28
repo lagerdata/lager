@@ -247,13 +247,16 @@ class KeysightE36000(SupplyNet):
         # Verify instrument identity
         self.check_instrument()
 
-        # Safe default: output off.
-        # Keep existing protection settings unless explicitly resetting.
-        try:
-            self.disable_output(self.chan)
-        except Exception:
-            pass
+        # Only force-disable the output and re-apply default protections when the
+        # caller explicitly asked for a reset. Constructing a driver to perform a
+        # read-only operation (e.g. `lager supply <net> state`) must not change
+        # the live output state of the instrument, otherwise commands like
+        # `enable` followed by `state` would observe an unexpected OFF.
         if reset:
+            try:
+                self.disable_output(self.chan)
+            except Exception:
+                pass
             try:
                 self.set_overcurrent_protection(LAGER_CURRENT_LIMIT, self.chan)
                 self.enable_overcurrent_protection(self.chan)
