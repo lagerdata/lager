@@ -1,0 +1,33 @@
+---
+title: "Version 0.16.6"
+description: "April 27, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **`lager battery <net> tui` now works for the first time.** The OLD WebSocket battery monitor crashed at module load with `ImportError: cannot import name '_resolve_net_and_driver' from 'lager.power.battery.dispatcher'` — that symbol existed at module level only in the supply dispatcher, never the battery one. Nobody had reported the bug because nobody had tested the battery TUI before. Incidentally fixed by the VISA-ownership unification below; the battery monitor now also emits a `battery_driver_ready` event mirroring `supply_driver_ready` for client symmetry.
+- **Concurrent SCPI access on the same instrument now serializes correctly.** Two `/invoke` requests against the same cached driver in `box/lager/hardware_service.py` could race on the SCPI bus and produce `Query INTERRUPTED` pyvisa errors. Added a per-`(device_name, address)` lock that wraps every driver call. Multi-channel devices (e.g., Rigol DP821) correctly share one lock since they share one VISA session.
+
+## <u>Improvements</u>
+
+- **VISA session ownership unified.** The supply and battery WebSocket monitors no longer open their own pyvisa sessions in monitor threads. They now route every driver call through `hardware_service.py:/invoke` via the existing `Device` HTTP proxy. `hardware_service.py` (port 8080) is the sole owner of pyvisa sessions per `(device_name, address)`. The v0.16.5 `POST /cache/clear` band-aid is removed — this is the architectural fix that replaces it. Net effect: TUIs are more robust, no longer trip on stale cached sessions, and `Query INTERRUPTED` errors during simultaneous TUI + CLI activity are gone.
+- **Battery handlers consolidated.** ~670 lines of duplicate battery-handler code in `box/lager/box_http_server.py` (parallel to the modular `box/lager/http_handlers/battery.py`) were deleted. `box_http_server.py` now imports and registers the modular versions, matching what was already done for supply.
+- **Test hygiene.** Two unit tests in `test/unit/cli/test_performance_improvements.py` had been silently failing since the `.lager` config format was migrated to JSON-only. Tempfiles now use `{"LAGER": {...}}` JSON; full unit suite is back to 141/141 passing.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.16.6
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.16.6/)
