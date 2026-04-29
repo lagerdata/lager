@@ -520,7 +520,25 @@ def _close_device(device, cache_key):
 
 @app.route('/cache/clear', methods=['POST'])
 def clear_cache():
-    """Clear the device cache and properly close all VISA/USB resources"""
+    """Clear the device cache and close non-shared VISA/USB resources.
+
+    v0.16.8 note: shared pyvisa sessions (dual-role instruments — see
+    `_SHARED_VISA_DEVICE_NAMES`) are deliberately retained. The shared
+    session is meant to persist for the container's lifetime so that
+    multiple driver classes (e.g. Keithley 2281S supply + battery) can
+    wrap one underlying USB session; tearing it down on every CLI script
+    exit (the v0.16.5 band-aid that older `lager python` clients still
+    emit on every script exit / SIGINT / BrokenPipeError) re-introduced
+    the libusb release-interface race that surfaced as
+    `[Errno 16] Resource busy` on the next supply or battery command.
+    Cached drivers ARE still closed and dropped from `device_cache`, so
+    a wedged driver can recover by being recreated on the next call —
+    and because the shared raw session stays open, that recreate hits
+    pyvisa instantly without a USB renegotiation.
+
+    To force-reset a shared pyvisa session (e.g. after unplugging a USB
+    instrument or for diagnostic purposes), use `POST /cache/clear_all`.
+    """
     global device_cache
     closed_count = 0
     error_count = 0
@@ -536,17 +554,62 @@ def clear_cache():
     module_cache.clear()
     with device_locks_meta_lock:
         device_locks.clear()
-    # Close any shared pyvisa sessions opened for dual-role instruments.
     with _visa_resources_meta_lock:
-        shared_addresses = list(_visa_resources.keys())
-    for addr in shared_addresses:
-        _close_visa_resource(addr)
-    logger.info(f"Cleared device cache: {closed_count} closed, {error_count} errors, {len(shared_addresses)} shared visa sessions closed")
+        retained = len(_visa_resources)
+    logger.info(
+        f"Cleared device cache: {closed_count} closed, {error_count} errors, "
+        f"{retained} shared visa session(s) retained "
+        f"(use /cache/clear_all to force-close)"
+    )
     return jsonify({
         'status': 'success',
         'cleared': total_count,
         'closed': closed_count,
-        'errors': error_count
+        'errors': error_count,
+        'shared_retained': retained,
+    })
+
+
+@app.route('/cache/clear_all', methods=['POST'])
+def clear_cache_all():
+    """Clear the device cache AND force-close every shared pyvisa session.
+
+    This is the pre-v0.16.8 behavior of `/cache/clear`. It is rarely the
+    right thing to call automatically — see the docstring on
+    `clear_cache()`. Use it after physically unplugging/replugging a USB
+    instrument when you specifically need to drop the kernel's cached
+    interface descriptor.
+    """
+    global device_cache
+    closed_count = 0
+    error_count = 0
+
+    for cache_key, device in list(device_cache.items()):
+        if _close_device(device, cache_key):
+            closed_count += 1
+        else:
+            error_count += 1
+
+    total_count = len(device_cache)
+    device_cache.clear()
+    module_cache.clear()
+    with device_locks_meta_lock:
+        device_locks.clear()
+    with _visa_resources_meta_lock:
+        shared_addresses = list(_visa_resources.keys())
+    for addr in shared_addresses:
+        _close_visa_resource(addr)
+    logger.info(
+        f"Cleared device cache (force-all): {closed_count} closed, "
+        f"{error_count} errors, {len(shared_addresses)} shared visa "
+        f"session(s) closed"
+    )
+    return jsonify({
+        'status': 'success',
+        'cleared': total_count,
+        'closed': closed_count,
+        'errors': error_count,
+        'shared_closed': len(shared_addresses),
     })
 
 @app.route('/cache/stats', methods=['GET'])
@@ -592,7 +655,8 @@ def run_service():
     logger.info(f"Endpoints:")
     logger.info(f"  POST /invoke - Invoke hardware device methods")
     logger.info(f"  GET  /health - Health check")
-    logger.info(f"  POST /cache/clear - Clear device cache")
+    logger.info(f"  POST /cache/clear - Clear device cache (retains shared pyvisa sessions)")
+    logger.info(f"  POST /cache/clear_all - Clear device cache AND force-close shared pyvisa sessions")
     logger.info(f"  GET  /cache/stats - Get cache statistics")
     logger.info(f"  GET  /web_oscilloscope.html - Web oscilloscope interface")
 
