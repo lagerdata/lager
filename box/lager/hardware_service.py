@@ -96,20 +96,55 @@ _visa_resources_meta_lock = threading.Lock()
 _SHARED_VISA_DEVICE_NAMES = frozenset({'keithley', 'keithley_battery'})
 
 
+_RESOURCE_BUSY_RETRY_DELAYS_S = (0.2, 0.5, 1.0, 2.0)
+
+
+def _is_resource_busy_error(exc):
+    """libusb returns 'Resource busy' / Errno 16 when a previous claim on the
+    same USB device hasn't been fully released yet. This is transient — give
+    the kernel a moment and the next open succeeds."""
+    msg = str(exc).lower()
+    return 'resource busy' in msg or 'errno 16' in msg
+
+
 def _get_or_open_visa_resource(address):
     """Return (rm, raw_session) for `address`, opening a new pyvisa session
     on first call and reusing it on subsequent calls. Thread-safe.
 
     The returned `rm` is kept alive in the cache so pyvisa's GC doesn't
-    invalidate the session handle."""
+    invalidate the session handle.
+
+    On `Resource busy` (libusb's async release-interface race after a recent
+    close — happens when /cache/clear or a script exit just tore the session
+    down), retry the open with a short exponential backoff. Other errors
+    propagate immediately."""
     import pyvisa  # local import — pyvisa is optional at module import time
+    import time as _time
     with _visa_resources_meta_lock:
         entry = _visa_resources.get(address)
         if entry is not None:
             logger.info(f"Reusing shared pyvisa session for {address}")
             return entry
         rm = pyvisa.ResourceManager()
-        raw = rm.open_resource(address)
+        raw = None
+        last_exc = None
+        attempts = (0.0,) + _RESOURCE_BUSY_RETRY_DELAYS_S
+        for delay in attempts:
+            if delay:
+                _time.sleep(delay)
+            try:
+                raw = rm.open_resource(address)
+                break
+            except Exception as e:
+                last_exc = e
+                if not _is_resource_busy_error(e):
+                    raise
+                logger.warning(
+                    f"open_resource({address}) hit Resource busy; "
+                    f"retrying after {delay if delay else 0.0}s"
+                )
+        if raw is None:
+            raise last_exc
         try:
             raw.read_termination = '\n'
             raw.write_termination = '\n'
