@@ -230,8 +230,16 @@ def register_battery_routes(app: Flask) -> None:
                     battery.clear()
                     result['message'] = 'Protection trips cleared'
 
-                elif action == 'state':
-                    # Get current state from the battery
+                elif action in ('state', 'print_state'):
+                    # Get current state from the battery. Accept both action
+                    # names: the supply CLI sends 'state' and the battery CLI
+                    # sends 'print_state' (the dispatcher function name).
+                    # Without the alias the CLI fell through to the python:5000
+                    # dispatcher path, which opened a second pyvisa session and
+                    # raced with hardware_service's shared session — surfaced
+                    # as "Could not open instrument at ...: failed to set
+                    # configuration [Errno 16] Resource busy" right after a
+                    # successful supply command.
                     enabled = battery._is_batt_output_on()
                     mode_str = battery._mode_string()
                     model_str = battery._safe_query(':BATT:STAT?', '') or 'Custom'
