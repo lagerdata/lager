@@ -21,6 +21,8 @@ from lager.nets.device import ConnectionFailed, DeviceError, Device
 from .state import (
     active_battery_sessions,
     active_battery_sessions_lock,
+    conflicting_other_role_session,
+    format_cross_role_conflict_message,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,6 +85,30 @@ def register_battery_routes(app: Flask) -> None:
 
             if not netname or not action:
                 return jsonify({'success': False, 'error': 'netname and action are required'}), 400
+
+            # Cross-role conflict check: refuse if a supply TUI is currently
+            # monitoring the same Keithley. See
+            # state.conflicting_other_role_session for full rationale.
+            try:
+                from lager.dispatchers.helpers import resolve_net_proxy
+                _, _conflict_net_info, _ = resolve_net_proxy(
+                    netname, "battery", BatteryBackendError
+                )
+                _conflict_address = (_conflict_net_info or {}).get('address')
+            except BatteryBackendError:
+                _conflict_address = None
+            if _conflict_address:
+                _conflict = conflicting_other_role_session(
+                    'battery', _conflict_address
+                )
+                if _conflict:
+                    other_role, other_netname = _conflict
+                    msg = format_cross_role_conflict_message(
+                        'battery', netname, _conflict_address,
+                        other_role, other_netname,
+                    )
+                    logger.warning(f"[HTTP] {msg}")
+                    return jsonify({'success': False, 'error': msg}), 200
 
             # Find an active WebSocket session for this netname.
             # SCPI serialization is now handled inside hardware_service.py
@@ -321,6 +347,38 @@ def register_battery_socketio(socketio: SocketIO) -> None:
                     emit('error', {'message': 'Battery monitoring session already active'})
                     return
 
+            # Resolve VISA address synchronously so the cross-role conflict
+            # check below — and any concurrent supply_command_http call
+            # racing against this start — can read it from the session dict
+            # immediately, rather than waiting for the monitor thread to
+            # populate it.
+            target_address = None
+            try:
+                from lager.dispatchers.helpers import resolve_net_proxy
+                _, _net_info, _ = resolve_net_proxy(
+                    netname, "battery", BatteryBackendError
+                )
+                target_address = (_net_info or {}).get('address')
+            except Exception:
+                target_address = None
+
+            # Cross-role conflict check: refuse to start a battery TUI on a
+            # Keithley already being monitored as a power supply (and
+            # vice-versa). See state.conflicting_other_role_session.
+            if target_address:
+                conflict = conflicting_other_role_session(
+                    'battery', target_address
+                )
+                if conflict:
+                    other_role, other_netname = conflict
+                    msg = format_cross_role_conflict_message(
+                        'battery', netname, target_address,
+                        other_role, other_netname,
+                    )
+                    logger.warning(f"[WS] {msg}")
+                    emit('error', {'message': msg})
+                    return
+
             # Create stop event for thread control
             stop_event = threading.Event()
 
@@ -334,6 +392,7 @@ def register_battery_socketio(socketio: SocketIO) -> None:
             with active_battery_sessions_lock:
                 active_battery_sessions[session_id] = {
                     'netname': netname,
+                    'address': target_address,  # for cross-role conflict checks
                     'stop_event': stop_event,
                     'interval': interval,
                     'battery': None,  # Will be set by monitoring thread
