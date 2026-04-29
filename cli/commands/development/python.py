@@ -47,24 +47,18 @@ _ORIGINAL_SIGINT_HANDLER = signal.getsignal(signal.SIGINT)
 
 def sigint_handler(kill_python, box_ip, _sig, _frame):
     """
-    Handle Ctrl+C by clearing the hardware cache, restoring the old signal handler
-    (so that subsequent Ctrl+C will actually stop python), and sending SIGTERM to
-    the running docker container.
+    Handle Ctrl+C by restoring the old signal handler (so that subsequent
+    Ctrl+C will actually stop python) and sending SIGTERM to the running
+    docker container.
 
-    Order is important: clear cache FIRST while we still control SIGINT, then
-    restore original handler, then kill remote process.
+    Note: prior versions also POSTed /cache/clear to hardware_service here
+    (the v0.16.5 band-aid). v0.16.8 routes all hardware access through a
+    single shared pyvisa session per VISA address that's *meant* to persist
+    across CLI calls; clearing it on every script exit defeated that and
+    re-introduced the libusb release-interface race that surfaced as
+    [Errno 16] Resource busy on the next open. Removed.
     """
     click.echo(' Attempting to stop Lager Python job')
-
-    # Clear hardware cache FIRST while we still control SIGINT
-    # This ensures cleanup completes even if user presses Ctrl+C again
-    try:
-        cache_url = f"http://{box_ip}:8080/cache/clear"
-        requests.post(cache_url, timeout=2)
-    except Exception:
-        pass  # Best effort - don't fail if box is unreachable
-
-    # Now restore original handler and kill remote process
     signal.signal(signal.SIGINT, _ORIGINAL_SIGINT_HANDLER)
     kill_python(signal.SIGTERM)
 
@@ -77,14 +71,13 @@ def _do_exit(exit_code, box, session, downloads):
     elif exit_code == SIGKILL_EXIT_CODE:
         click.secho('Script forcibly killed due to timeout.', fg='red', err=True)
 
-    # Clear hardware service cache to release VISA connections
-    # This allows CLI commands to work immediately after scripts using Net API
-    try:
-        cache_url = f"http://{box}:8080/cache/clear"
-        requests.post(cache_url, timeout=2)
-    except Exception:
-        # Silently ignore cache clearing errors - not critical
-        pass
+    # Note: prior versions POSTed /cache/clear to hardware_service here.
+    # v0.16.8 owns one persistent pyvisa session per VISA address inside
+    # hardware_service and shares it across CLI/TUI/script callers, so
+    # clearing it on every script exit was actively harmful — it tore down
+    # the session another caller might still need and forced a re-open
+    # that often raced with libusb's async release-interface (surfaced as
+    # [Errno 16] Resource busy). Removed.
 
     for filename in downloads:
         try:
@@ -413,14 +406,10 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
                     click.echo(content)
 
     except BrokenPipeError:
-        # Pipeline downstream closed (e.g., lager python script.py | head)
-        # Kill the remote process, clear cache, and exit gracefully
+        # Pipeline downstream closed (e.g., lager python script.py | head).
+        # Kill the remote process and exit. (See sigint_handler for why we
+        # no longer POST /cache/clear here in v0.16.8.)
         kill_python(signal.SIGTERM)
-        try:
-            cache_url = f"http://{box_ip}:8080/cache/clear"
-            requests.post(cache_url, timeout=2)
-        except Exception:
-            pass  # Best effort - don't fail if box is unreachable
         sys.exit(0)
     except OutputFormatNotSupported:
         click.secho('Response format not supported. Please upgrade lager-cli', fg='red', err=True)
