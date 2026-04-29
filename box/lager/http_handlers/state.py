@@ -91,17 +91,19 @@ def format_cross_role_conflict_message(target_role, target_netname,
                                        other_netname):
     """Compose the user-facing error message for a Keithley 2281S
     cross-role conflict. Centralised so the wording stays identical
-    across the HTTP and WebSocket entry points."""
+    across the HTTP and WebSocket entry points.
+
+    Kept terse on purpose — names the conflicting net, the role it's
+    holding, and the one fix the user can take. The technical details
+    (VISA address, mutually-exclusive entry functions) live in the
+    log message instead, where they're useful for debugging without
+    cluttering the user-facing line.
+    """
     return (
-        f"Cannot run a {target_role} command on '{target_netname}': the "
-        f"same physical instrument (VISA address {target_address}) is "
-        f"currently active as a {other_role} net '{other_netname}'. "
-        f"The Keithley 2281S can only operate as a power supply OR a "
-        f"battery simulator at one time — its Power Supply "
-        f"(:ENTR:FUNC POW) and Battery Simulator (:ENTR:FUNC BATT) "
-        f"entry functions are mutually exclusive in the instrument's "
-        f"firmware. Close the {other_role} session first, or configure "
-        f"only one role on this Keithley."
+        f"'{target_netname}' is on the same Keithley 2281S as "
+        f"'{other_netname}', which is currently in use as a "
+        f"{other_role}. The 2281S supports one role at a time — close "
+        f"the {other_role} session first."
     )
 
 
