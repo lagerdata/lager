@@ -65,7 +65,7 @@ def with_timeout(seconds: int, default: T = None) -> Callable[[Callable[..., T]]
 
 SUPPORTED_USB: Dict[str, Dict] = {
     # supply
-    "Rigol_DP811":       {"vid": "1ab1", "pid": "????", "net_type": ["power-supply"]},
+    "Rigol_DP811":       {"vid": "1ab1", "pid": "0e11", "net_type": ["power-supply"]},
     "Rigol_DP821":       {"vid": "1ab1", "pid": "0e11", "net_type": ["power-supply"]},
     "Rigol_DP831":       {"vid": "1ab1", "pid": "0e31", "net_type": ["power-supply"]},
     "Rigol_DP832":       {"vid": "1ab1", "pid": "0e11", "net_type": ["power-supply"]},
@@ -178,7 +178,7 @@ CHANNEL_MAPS: Dict[str, Dict[str, List[str]]] = {
 # VID:PID → instrument name lookup (excludes instruments with duplicate PIDs)
 _VIDPID_TO_NAME: Dict[tuple, str] = {}
 for _name, _meta in SUPPORTED_USB.items():
-    if _name in ("Rigol_DL3021", "Rigol_DP832"):
+    if _name in ("Rigol_DL3021", "Rigol_DP811", "Rigol_DP832"):
         continue  # differentiated by serial number, handled in _scan_usb
     _VIDPID_TO_NAME[(_meta["vid"].lower(), _meta["pid"].lower())] = _name
 
@@ -270,7 +270,9 @@ def scan_usb() -> List[dict]:
                 meta_name = "Rigol_DL3021"
             elif serial_upper.startswith("DP8B") or serial_upper.startswith("DP83"):
                 meta_name = "Rigol_DP832"
-            elif serial_upper.startswith("DP82"):
+            elif serial_upper.startswith("DP8H") or serial_upper.startswith("DP81"):
+                meta_name = "Rigol_DP811"
+            elif serial_upper.startswith("DP82") or serial_upper.startswith("DP8G"):
                 meta_name = "Rigol_DP821"
             else:
                 meta_name = "Rigol_DP821"
