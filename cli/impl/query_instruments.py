@@ -57,7 +57,7 @@ def with_timeout(seconds: int, default: T = None) -> Callable[[Callable[..., T]]
 # ---------------------------------------------------------------------------
 SUPPORTED_USB: Dict[str, Dict[str, str | List[str] | None]] = {
     # supply
-    "Rigol_DP811":       {"vid": "1ab1", "pid": "????", "net_type": ["power-supply"]},
+    "Rigol_DP811":       {"vid": "1ab1", "pid": "0e11", "net_type": ["power-supply"]}, # Same VID:PID as DP821, differentiated by serial
     "Rigol_DP821":       {"vid": "1ab1", "pid": "0e11", "net_type": ["power-supply"]},
     "Rigol_DP831":       {"vid": "1ab1", "pid": "0e31", "net_type": ["power-supply"]},
     "Rigol_DP832":       {"vid": "1ab1", "pid": "0e11", "net_type": ["power-supply"]}, # Same VID:PID as DP821, differentiated by serial
@@ -426,7 +426,7 @@ _VIDPID_TO_NAME: Dict[tuple[str, str], str] = {}
 # Special handling for instruments with duplicate VID:PID
 # Skip instruments that share VID:PID 1ab1:0e11 - they need serial-based detection
 for _name, meta in SUPPORTED_USB.items():
-    if _name in ("Rigol_DL3021", "Rigol_DP832"):
+    if _name in ("Rigol_DL3021", "Rigol_DP811", "Rigol_DP832"):
         continue  # Handle these specially by serial number (share VID:PID with DP821)
     _VIDPID_TO_NAME[(meta["vid"].lower(), meta["pid"].lower())] = _name
 
@@ -479,7 +479,9 @@ def _scan_usb() -> List[dict]:
                 meta_name = "Rigol_DL3021"  # DL3000 series electronic load
             elif serial_upper.startswith("DP8B") or serial_upper.startswith("DP83"):
                 meta_name = "Rigol_DP832"  # DP832/DP832A - 3 channel power supply
-            elif serial_upper.startswith("DP82"):
+            elif serial_upper.startswith("DP8H") or serial_upper.startswith("DP81"):
+                meta_name = "Rigol_DP811"  # DP811/DP811A - 1 channel power supply
+            elif serial_upper.startswith("DP82") or serial_upper.startswith("DP8G"):
                 meta_name = "Rigol_DP821"  # DP821 - 2 channel power supply
             elif serial_upper.startswith("DP8"):
                 # Generic DP8xx - default to DP821
@@ -544,7 +546,9 @@ def infer_instrument_from_address(address: str) -> str:
                 return "Rigol_DL3021"
             elif serial.startswith("DP8B") or serial.startswith("DP83"):
                 return "Rigol_DP832"
-            elif serial.startswith("DP82"):
+            elif serial.startswith("DP8H") or serial.startswith("DP81"):
+                return "Rigol_DP811"
+            elif serial.startswith("DP82") or serial.startswith("DP8G"):
                 return "Rigol_DP821"
             elif serial.startswith("DP8"):
                 return "Rigol_DP821"
