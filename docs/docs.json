@@ -193,6 +193,7 @@
           {
             "group": "Version History",
             "pages": [
+              "source/release-notes/v0.16.9",
               "source/release-notes/v0.16.8",
               "source/release-notes/v0.16.7",
               "source/release-notes/v0.16.6",
