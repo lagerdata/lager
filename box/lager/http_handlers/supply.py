@@ -20,6 +20,8 @@ from lager.nets.device import ConnectionFailed, DeviceError, Device
 from .state import (
     active_supply_sessions,
     active_supply_sessions_lock,
+    conflicting_other_role_session,
+    format_cross_role_conflict_message,
 )
 
 logger = logging.getLogger(__name__)
@@ -90,6 +92,31 @@ def register_supply_routes(app: Flask) -> None:
 
             if not netname or not action:
                 return jsonify({'success': False, 'error': 'netname and action are required'}), 400
+
+            # Cross-role conflict check: if a battery TUI is currently
+            # monitoring the same physical Keithley, refuse with a clear
+            # message rather than letting the SCPI entry-function tug-of-war
+            # surface as Resource busy. (Sequential CLI cross-role workflows
+            # never populate active_*_sessions and so are unaffected.)
+            try:
+                _, _conflict_net_info, _ = resolve_net_proxy(
+                    netname, "power-supply", SupplyBackendError
+                )
+                _conflict_address = (_conflict_net_info or {}).get('address')
+            except SupplyBackendError:
+                _conflict_address = None
+            if _conflict_address:
+                _conflict = conflicting_other_role_session(
+                    'power-supply', _conflict_address
+                )
+                if _conflict:
+                    other_role, other_netname = _conflict
+                    msg = format_cross_role_conflict_message(
+                        'power-supply', netname, _conflict_address,
+                        other_role, other_netname,
+                    )
+                    logger.warning(f"[HTTP] {msg}")
+                    return jsonify({'success': False, 'error': msg}), 200
 
             # Find an active WebSocket session for this netname.
             # SCPI serialization is now handled inside hardware_service.py
@@ -290,6 +317,38 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                     emit('error', {'message': 'Supply monitoring session already active'})
                     return
 
+            # Resolve VISA address synchronously so the cross-role conflict
+            # check below — and any concurrent battery_command_http call
+            # racing against this start — can read it from the session dict
+            # immediately, rather than waiting for the monitor thread to
+            # populate it. Failures are non-fatal here; the monitor thread
+            # will surface the same error properly.
+            target_address = None
+            try:
+                _, _net_info, _ = resolve_net_proxy(
+                    netname, "power-supply", SupplyBackendError
+                )
+                target_address = (_net_info or {}).get('address')
+            except Exception:
+                target_address = None
+
+            # Cross-role conflict check: refuse to start a supply TUI on a
+            # Keithley already being monitored as a battery (and vice-versa).
+            # See state.conflicting_other_role_session for the full rationale.
+            if target_address:
+                conflict = conflicting_other_role_session(
+                    'power-supply', target_address
+                )
+                if conflict:
+                    other_role, other_netname = conflict
+                    msg = format_cross_role_conflict_message(
+                        'power-supply', netname, target_address,
+                        other_role, other_netname,
+                    )
+                    logger.warning(f"[WS] {msg}")
+                    emit('error', {'message': msg})
+                    return
+
             # Create stop event for thread control
             stop_event = threading.Event()
 
@@ -303,6 +362,7 @@ def register_supply_socketio(socketio: SocketIO) -> None:
             with active_supply_sessions_lock:
                 active_supply_sessions[session_id] = {
                     'netname': netname,
+                    'address': target_address,  # for cross-role conflict checks
                     'stop_event': stop_event,
                     'interval': interval,
                     'supply': None,  # Will be set by monitoring thread
