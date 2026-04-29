@@ -106,6 +106,7 @@ def _get_or_open_visa_resource(address):
     with _visa_resources_meta_lock:
         entry = _visa_resources.get(address)
         if entry is not None:
+            logger.info(f"Reusing shared pyvisa session for {address}")
             return entry
         rm = pyvisa.ResourceManager()
         raw = rm.open_resource(address)
@@ -307,12 +308,23 @@ def invoke():
                         )
                         shared_raw = None
                 if shared_raw is not None:
+                    logger.info(
+                        f"Creating {device_name} with shared raw_resource for {address}"
+                    )
                     try:
                         device = module.create_device(net_info, raw_resource=shared_raw)
-                    except TypeError:
+                    except TypeError as te:
                         # Driver's create_device hasn't been updated yet — fall back.
+                        logger.warning(
+                            f"{device_name}.create_device rejected raw_resource= ({te}); "
+                            f"falling back to legacy per-driver-opens-its-own-session path"
+                        )
                         device = _create_device_with_retry(module, device_name, net_info)
                 else:
+                    logger.info(
+                        f"Creating {device_name} via legacy path "
+                        f"(address={address!r}, in shared list={device_name in _SHARED_VISA_DEVICE_NAMES})"
+                    )
                     device = _create_device_with_retry(module, device_name, net_info)
             elif hasattr(module, 'create'):
                 device = module.create(net_info)
