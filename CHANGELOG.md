@@ -2,7 +2,7 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
-## [0.16.8] - 2026-04-28
+## [0.16.9] - 2026-04-29
 
 ### Fixed
 - Resolves the **sequential half** of the Keithley 2281S dual-role known limitation from v0.16.7. When `supply1` (role `power-supply`) and `battery1` (role `battery`) are configured on the same physical Keithley 2281S, the box now opens exactly one pyvisa session per VISA address — shared by both driver classes — instead of opening two sessions and hitting `[Errno 16] Resource busy` on the second open. Scripts can alternate `lager supply <net>` and `lager battery <net>` commands against the same Keithley without restarting the box. Implemented in `box/lager/hardware_service.py` as a process-wide `_visa_resources` cache keyed by address, plus a `raw_resource=` kwarg on `box/lager/power/supply/keithley.py:create_device` and `box/lager/power/battery/keithley.py:create_device`. Both drivers track an `_owns_resource` flag so `close()` does not release the underlying USB claim when the session is shared. SCPI serialization moved to a per-address lock so supply and battery commands targeting the same Keithley serialize correctly. (Note: genuinely concurrent supply + battery operation against one Keithley is not supported by the instrument's firmware — its Power Supply and Battery Simulator entry functions are mutually exclusive — so configure one role per Keithley if you need both running at once. See Known Limitations in the release notes.) No behavior change for single-role drivers (Rigol DP821, Keysight E36xxx, EA PSB) — they continue to use the legacy per-driver-opens-its-own-session path.
@@ -16,6 +16,11 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Removed (was Known Limitations in v0.16.7)
 - The two Keithley 2281S workarounds documented in v0.16.7 are no longer needed.
+
+## [0.16.8] - 2026-04-28
+
+### Added
+- Recognize the SEGGER J-Link Flasher PRO (USB `1366:0105`) as a supported `debug` instrument. Added `J-Link_Flasher_Pro` to `SUPPORTED_USB` and `CHANNEL_MAPS` in both `box/lager/http_handlers/usb_scanner.py` and `cli/impl/query_instruments.py`, so `lager instruments` now lists the device when it is plugged into a Lager Box.
 
 ## [0.16.7] - 2026-04-28
 
