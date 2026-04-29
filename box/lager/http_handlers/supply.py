@@ -115,7 +115,10 @@ def register_supply_routes(app: Flask) -> None:
                         'power-supply', netname, _conflict_address,
                         other_role, other_netname,
                     )
-                    logger.warning(f"[HTTP] {msg}")
+                    logger.warning(
+                        f"[HTTP] cross-role conflict: '{netname}' (power-supply) "
+                        f"vs '{other_netname}' ({other_role}) at {_conflict_address}"
+                    )
                     return jsonify({'success': False, 'error': msg}), 200
 
             # Find an active WebSocket session for this netname.
@@ -345,7 +348,10 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                         'power-supply', netname, target_address,
                         other_role, other_netname,
                     )
-                    logger.warning(f"[WS] {msg}")
+                    logger.warning(
+                        f"[WS] cross-role conflict: '{netname}' (power-supply) "
+                        f"vs '{other_netname}' ({other_role}) at {target_address}"
+                    )
                     emit('error', {'message': msg})
                     return
 
