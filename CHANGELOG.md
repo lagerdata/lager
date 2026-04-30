@@ -85,7 +85,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Changed
 - The MCP server has moved from the CLI (`cli/mcp/`) to the box (`box/lager/mcp/`). It is now started by `start-services.sh` inside the Docker container rather than running on the developer machine.
-- Every MCP tool call is now wired through an `@audited` decorator that records the call via `audit.log_tool_call`, so control planes (Stout) can rely on a consistent audit trail.
+- Every MCP tool call is now wired through an `@audited` decorator that records the call via `audit.log_tool_call`, so downstream control planes can rely on a consistent audit trail.
 - `quick_io` writes now go through a `preflight_check` that enforces voltage, current, and dangerous-action constraints before hitting hardware.
 - MCP errors no longer return raw tracebacks to agents; `NetType()` inputs are validated against the enum.
 - `plan_firmware_test` now uses a regex-based pattern split instead of the previous unsafe `get_pattern` split.
