@@ -393,6 +393,18 @@ current_fps = 0.0
 frame_count = 0
 fps_start_time = None
 
+# Single-producer / multi-consumer frame buffer. The capture thread (started
+# lazily by the first viewer) is the sole owner of the V4L2 device; every
+# /stream handler reads from this shared buffer and writes to its client.
+# Without this, V4L2's exclusive-open semantics limit us to one viewer at a
+# time and the second connection gets blank frames.
+frame_lock = threading.Lock()
+frame_condition = threading.Condition(frame_lock)
+latest_jpeg = None
+frame_seq = 0
+capture_started = False
+capture_started_lock = threading.Lock()
+
 def load_zoom():
     """Load zoom level from state file."""
     global current_zoom
@@ -666,6 +678,49 @@ def apply_zoom(frame, zoom_level):
     zoomed = cv2.resize(cropped, (width, height), interpolation=cv2.INTER_LINEAR)
 
     return zoomed
+
+def start_capture():
+    """Start the single capture thread that fills the shared frame buffer.
+
+    Idempotent — safe to call from every /stream handler. Only the first
+    caller actually starts the thread; subsequent calls are no-ops.
+    """
+    global capture_started
+    with capture_started_lock:
+        if capture_started:
+            return
+        capture_started = True
+
+    def loop():
+        global latest_jpeg, frame_seq
+        cap = cv2.VideoCapture("{video_device}")
+        if not cap.isOpened():
+            print("ERROR: Could not open video device {video_device}", file=sys.stderr)
+            return
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap.set(cv2.CAP_PROP_FPS, 30)
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    time.sleep(0.05)
+                    continue
+                zoom = get_zoom()
+                if zoom > 1.0:
+                    frame = apply_zoom(frame, zoom)
+                update_fps()
+                ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                if not ok:
+                    continue
+                with frame_condition:
+                    latest_jpeg = jpeg.tobytes()
+                    frame_seq += 1
+                    frame_condition.notify_all()
+        finally:
+            cap.release()
+
+    threading.Thread(target=loop, daemon=True).start()
 
 class StreamingHandler(BaseHTTPRequestHandler):
     def do_HEAD(self):
@@ -1638,44 +1693,33 @@ class StreamingHandler(BaseHTTPRequestHandler):
             self.wfile.write(html.encode())
 
         elif path_only == "/stream" or path_only.startswith("/stream/"):
-            # Stream the actual video
+            # Read from the shared frame buffer instead of opening cv2 here,
+            # so multiple viewers can watch the same stream concurrently.
+            # The capture thread is the only owner of /dev/videoN.
+            start_capture()
+
             self.send_response(200)
             self.send_header("Content-type", "multipart/x-mixed-replace; boundary=frame")
             self.end_headers()
 
-            cap = cv2.VideoCapture("{video_device}")
-            if not cap.isOpened():
-                print("ERROR: Could not open video device {video_device}", file=sys.stderr)
-                return
-
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            cap.set(cv2.CAP_PROP_FPS, 30)
-
+            last_seq = 0
             try:
                 while True:
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-
-                    # Apply zoom if needed
-                    zoom = get_zoom()
-                    if zoom > 1.0:
-                        frame = apply_zoom(frame, zoom)
-
-                    # Update FPS counter
-                    update_fps()
-
-                    _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-
+                    with frame_condition:
+                        while frame_seq == last_seq:
+                            # 5s timeout protects against a stalled capture
+                            # thread holding viewers indefinitely.
+                            frame_condition.wait(timeout=5.0)
+                        jpeg_bytes = latest_jpeg
+                        last_seq = frame_seq
+                    if jpeg_bytes is None:
+                        continue
                     self.wfile.write(b"--frame\\r\\n")
                     self.wfile.write(b"Content-Type: image/jpeg\\r\\n\\r\\n")
-                    self.wfile.write(jpeg.tobytes())
+                    self.wfile.write(jpeg_bytes)
                     self.wfile.write(b"\\r\\n")
-            except BrokenPipeError:
+            except (BrokenPipeError, ConnectionResetError):
                 pass
-            finally:
-                cap.release()
         else:
             self.send_response(404)
             self.end_headers()
