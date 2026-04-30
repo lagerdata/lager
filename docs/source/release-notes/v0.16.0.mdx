@@ -12,7 +12,7 @@ description: "April 13, 2026"
 
 ## <u>Improvements</u>
 
-- Every MCP tool call is wired through an `@audited` decorator that records the call via `audit.log_tool_call`, giving control planes (Stout) a consistent audit trail.
+- Every MCP tool call is wired through an `@audited` decorator that records the call via `audit.log_tool_call`, giving downstream control planes a consistent audit trail.
 - `quick_io` writes now pass through a `preflight_check` that enforces voltage, current, and dangerous-action constraints before touching hardware.
 - The `bench.json` parser is now defensive: a single malformed entry no longer breaks `discover_bench`.
 - MCP errors no longer return raw tracebacks to agents. `NetType()` inputs are validated against the enum.
