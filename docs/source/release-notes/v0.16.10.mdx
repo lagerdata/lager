@@ -1,0 +1,30 @@
+---
+title: "Version 0.16.10"
+description: "May 1, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **`lager debug connect` no longer hides the real Segger error behind an `AttributeError` when J-Link cannot reach the target.** When J-Link's multi-speed retry loop in `box/lager/debug/api.py:connect_jlink` exhausted without ever reaching the target, `status['logfile']` could be set to `None` instead of being absent — so `status.get('logfile', 'No log available')` returned `None`, which was then passed into `clean_logfile_content` and crashed with `AttributeError: 'NoneType' object has no attribute 'replace'`. The crash masked the real Segger "Connecting to target failed" message that operators need to see in the dashboard. Two changes: `connect_jlink` now uses `status.get('logfile') or 'No log available'` so the literal fallback fires for both missing and `None` values, and `clean_logfile_content` itself returns `''` when given `None` as defense in depth for any future caller.
+
+## <u>Internal</u>
+
+- Bumped seven transitive Rust dependencies in `box/oscilloscope-daemon/Cargo.lock` (`quinn-proto`, `rustls-webpki`, `time`, `bytes`, `tracing-subscriber`, `rand` 0.8 and 0.9 lines) to clear ten Dependabot security advisories on the daemon's QUIC/TLS stack. Lockfile-only change; the daemon binary is built and deployed separately from the lager-cli pip package, so this has no runtime effect on existing boxes until the daemon is rebuilt. Verified with a full release build + libps2000 link on a Picoscope-equipped box.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.16.10
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.16.10/)
