@@ -2,6 +2,14 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.16.10] - 2026-05-01
+
+### Fixed
+- **`lager debug connect` surfaces the real Segger error when J-Link cannot reach the target.** When J-Link's multi-speed retry loop in `box/lager/debug/api.py:connect_jlink` exhausted without ever reaching a target, `status['logfile']` could be set to `None` rather than absent, so `status.get('logfile', 'No log available')` returned `None` and the downstream `clean_logfile_content(None)` crashed with `AttributeError: 'NoneType' object has no attribute 'replace'` — masking the real Segger "Connecting to target failed" message that operators need to see in the dashboard. `connect_jlink` now coerces `None` to `'No log available'` at the call site, and `clean_logfile_content` returns `''` when given `None` as defense in depth.
+
+### Internal
+- Bumped seven transitive Rust dependencies in `box/oscilloscope-daemon/Cargo.lock` (`quinn-proto` → 0.11.14, `rustls-webpki` → 0.103.13, `time` → 0.3.47, `bytes` → 1.11.1, `tracing-subscriber` → 0.3.20, `rand` 0.8.6 and 0.9.4) to clear ten Dependabot security advisories on the daemon's QUIC/TLS stack. Lockfile-only change with no runtime effect on existing boxes until the daemon is rebuilt; verified with a full release build + libps2000 link on Picoscope hardware.
+
 ## [0.16.9] - 2026-04-29
 
 ### Fixed
