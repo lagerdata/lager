@@ -232,10 +232,29 @@ class RigolDP800(SupplyNet):
         return
 
     def state(self) -> None:
+        """Legacy entry point — kept for direct callers (e.g. tests)."""
+        result = self.read_state_fields()
+        if result is None:
+            return
+        from lager.cli_output import print_state
+        print_state(
+            "supply",
+            result["fields"],
+            command="supply.state",
+            subject={"instrument": result.get("instrument"),
+                     "channel": result.get("channel")},
+            title_severity=result.get("severity", "ok"),
+        )
+
+    def read_state_fields(self):
+        """Structured state for cli_output.print_state. See SupplyNet.read_state_fields."""
+        from lager.cli_output import Field
         ch = self.channel
         v = self.measure_voltage(ch)
         i = self.measure_current(ch)
         p = self.measure_power(ch)
+        v_set = self.get_voltage_set(ch) if hasattr(self, "get_voltage_set") else v
+        i_set = self.get_current_set(ch) if hasattr(self, "get_current_set") else i
 
         ocp_limit = self.get_overcurrent_protection_value(ch)
         ocp_tripped = self.overcurrent_protection_is_tripped(ch)
@@ -245,18 +264,47 @@ class RigolDP800(SupplyNet):
         enabled = self.output_is_enabled(ch)
         mode = self.get_output_mode(ch)
 
-        print(f"{GREEN}Channel: {ch}{RESET}")
-        print(f"{GREEN}Enabled: {'ON' if enabled else 'OFF'}{RESET}")
-        print(f"{GREEN}Mode: {mode}{RESET}")
-        print(f"{GREEN}Voltage: {v}{RESET}")
-        print(f"{GREEN}Current: {i}{RESET}")
-        print(f"{GREEN}Power: {p}{RESET}")
-        print(f"{GREEN}OCP Limit: {ocp_limit}{RESET}")
-        ocp_status = f"{RED}YES{RESET}" if ocp_tripped else f"{GREEN}NO{RESET}"
-        print(f"    OCP Tripped: {ocp_status}")
-        print(f"{GREEN}OVP Limit: {ovp_limit}{RESET}")
-        ovp_status = f"{RED}YES{RESET}" if ovp_tripped else f"{GREEN}NO{RESET}"
-        print(f"    OVP Tripped: {ovp_status}")
+        # Rigol model is a DP8xx — pull the specific model from the IDN if we can.
+        instrument_label = "Rigol DP800"
+        try:
+            idn = self.get_identification() or ""
+            m = re.search(r"DP8\d{2}\w?", idn)
+            if m:
+                instrument_label = f"Rigol {m.group(0)}"
+        except Exception:
+            pass
+
+        def _f(x, default=0.0):
+            try:
+                return float(x)
+            except Exception:
+                return default
+
+        fields = [
+            Field("Output", bool(enabled), severity=("ok" if enabled else "error")),
+            Field("Mode",   mode),
+            Field("Set",    value=(_f(v_set), _f(i_set)), unit=("V", "A"),
+                            json_subkeys=("voltage", "current")),
+            Field("Measured", value=(_f(v), _f(i)), unit=("V", "A"),
+                              json_subkeys=("voltage", "current")),
+            Field("Power",  _f(p), unit="W"),
+            Field("OCP",    _f(ocp_limit), unit="A",
+                  severity=("error" if ocp_tripped else None)),
+            Field("OCP Tripped", bool(ocp_tripped),
+                  severity=("error" if ocp_tripped else "ok")),
+            Field("OVP",    _f(ovp_limit), unit="V",
+                  severity=("error" if ovp_tripped else None)),
+            Field("OVP Tripped", bool(ovp_tripped),
+                  severity=("error" if ovp_tripped else "ok")),
+        ]
+
+        any_trip = bool(ocp_tripped) or bool(ovp_tripped)
+        return {
+            "instrument": instrument_label,
+            "channel": ch,
+            "severity": "error" if any_trip else "ok",
+            "fields": fields,
+        }
 
     def clear_ocp(self) -> None:
         self.clear_overcurrent_protection_trip(channel=self.channel)

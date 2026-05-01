@@ -19,89 +19,119 @@ import asyncio
 
 import click
 
-# Import consolidated helpers from cli.core.net_helpers
 from ...core.net_helpers import (
     require_netname,
     resolve_box,
     validate_net,
+    validate_net_exists,
     display_nets,
-    run_backend,
     NET_ROLES,
 )
 from ...context import get_impl_path, get_default_net
+from ...output import ExitCode, action as output_action, error as output_error
 from ..development.python import run_python_internal
 
 
 BATTERY_ROLE = NET_ROLES["battery"]  # "battery"
 
 
+def _backend_env(ctx) -> tuple[str, ...]:
+    """Forward output presentation env vars to the impl script."""
+    cfg = ctx.obj.output
+    return (
+        f"LAGER_OUTPUT_FORMAT={cfg.format.value}",
+        f"LAGER_OUTPUT_COLOR={'1' if cfg.color else '0'}",
+    )
+
+
+def _validate_or_exit(ctx, box, netname):
+    """Verify the net exists with role=battery, routing the error through output.error."""
+    return validate_net_exists(ctx, box, netname, BATTERY_ROLE)
+
+
+def _parse_float_or_exit(ctx, value, *, command, label, must_be_positive=False,
+                          must_be_non_negative=False, max_value=None, range_0_100=False,
+                          unit="") -> float | None:
+    if value is None:
+        return None
+    cfg = ctx.obj.output
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        output_error(f"'{value}' is not a valid number for {label}",
+                     cfg=cfg, exit_code=ExitCode.USAGE,
+                     command=command, data={"value": value})
+        return None
+    if range_0_100 and (parsed < 0 or parsed > 100):
+        output_error(f"{label} must be between 0 and 100%, got {parsed}%",
+                     cfg=cfg, exit_code=ExitCode.USER_ERROR,
+                     command=command, data={"value": parsed})
+    if must_be_positive and parsed <= 0:
+        output_error(f"{label} must be positive, got {parsed} {unit}".strip(),
+                     cfg=cfg, exit_code=ExitCode.USER_ERROR,
+                     command=command, data={"value": parsed})
+    if must_be_non_negative and parsed < 0:
+        output_error(f"{label} must be non-negative, got {parsed} {unit}".strip(),
+                     cfg=cfg, exit_code=ExitCode.USER_ERROR,
+                     command=command, data={"value": parsed})
+    if max_value is not None and parsed > max_value:
+        output_error(f"{label} must not exceed {max_value} {unit}, got {parsed} {unit}".strip(),
+                     cfg=cfg, exit_code=ExitCode.USER_ERROR,
+                     command=command, data={"value": parsed, "limit": max_value})
+    return parsed
+
+
 # ---------- Battery-specific backend runner ----------
 
 def _run_backend(ctx, box, action: str, **params):
     """
-    Run backend command and handle errors gracefully.
-
-    First tries to use the WebSocket HTTP endpoint if a TUI is running for this net,
-    which allows sharing the USB connection. Falls back to direct access if no TUI is active.
+    Run backend command, preferring the WebSocket fast-path when a TUI is
+    holding the supply, falling back to running the impl script directly.
     """
     import requests
 
+    cfg = ctx.obj.output
     netname = params.get('netname')
+    subject = {"net": netname} if netname else None
+    cmd_path = f"battery.{action}"
 
     # Try WebSocket HTTP endpoint first (for concurrent TUI + CLI access)
     if netname:
         try:
-            # Get box IP
             from ...box_storage import resolve_and_validate_box
             box_ip = resolve_and_validate_box(ctx, box)
-
-            # Try the WebSocket-shared endpoint
             url = f"http://{box_ip}:9000/battery/command"
-            payload = {
-                "netname": netname,
-                "action": action,
-                "params": params
-            }
-
+            payload = {"netname": netname, "action": action, "params": params}
             response = requests.post(url, json=payload, timeout=10)
 
             if response.status_code == 200:
                 result = response.json()
                 if result.get('success'):
-                    # Command succeeded via WebSocket endpoint
-                    message = result.get('message', 'Command executed')
-                    click.echo(f"\033[92m{message}\033[0m")
+                    output_action(result.get('message', 'Command executed'),
+                                  cfg=cfg, command=cmd_path, subject=subject)
                     return
-                else:
-                    # WebSocket endpoint returned error
-                    click.echo(f"Error: {result.get('error', 'Unknown error')}", err=True)
-                    raise SystemExit(1)
-
+                output_error(
+                    result.get('error', 'Unknown error'),
+                    cfg=cfg, exit_code=ExitCode.BACKEND_ERROR,
+                    command=cmd_path, subject=subject,
+                )
             elif response.status_code == 404:
-                # No active WebSocket session, fall through to direct access
-                pass
-
-            else:
-                # Other HTTP error, try direct access as fallback
-                pass
-
+                pass  # No active WS session; fall through.
         except (requests.ConnectionError, requests.Timeout):
-            # Box not reachable via HTTP, fall through to direct access
             pass
         except Exception:
-            # Other error, fall through to direct access
             pass
 
-    # Fall back to direct USB access (original behavior)
-    data = {
-        'action': action,
-        'params': params,
-    }
+    # Fall back to direct USB access via the impl script.
+    data = {'action': action, 'params': params}
     run_python_internal(
         ctx,
         get_impl_path('battery.py'),
         box,
-        env=(f'LAGER_COMMAND_DATA={json.dumps(data)}',),
+        env=(
+            f'LAGER_COMMAND_DATA={json.dumps(data)}',
+            *_backend_env(ctx),
+        ),
         passenv=(),
         kill=False,
         download=(),
@@ -114,6 +144,38 @@ def _run_backend(ctx, box, action: str, **params):
         args=(),
     )
 
+    # For action commands, the impl is silent — emit an ack so users (and JSON
+    # consumers) get a structured result. The state command's impl emits its
+    # own envelope so we skip the ack here.
+    if action in (
+        "set_mode", "set_to_battery_mode",
+        "set_soc", "set_voc", "set_volt_full", "set_volt_empty",
+        "set_capacity", "set_current_limit", "set_ovp", "set_ocp",
+        "set_model",
+        "enable_battery", "disable_battery",
+        "clear", "clear_ovp", "clear_ocp",
+    ):
+        ack_messages = {
+            "set_mode": "Battery mode updated",
+            "set_to_battery_mode": "Initialized battery simulator mode",
+            "set_soc": "State of charge updated",
+            "set_voc": "Open-circuit voltage updated",
+            "set_volt_full": "Battery-full voltage updated",
+            "set_volt_empty": "Battery-empty voltage updated",
+            "set_capacity": "Capacity limit updated",
+            "set_current_limit": "Current limit updated",
+            "set_ovp": "OVP limit updated",
+            "set_ocp": "OCP limit updated",
+            "set_model": "Battery model updated",
+            "enable_battery": "Enabled battery output",
+            "disable_battery": "Disabled battery output",
+            "clear": "Cleared protection trips",
+            "clear_ovp": "Cleared OVP trip",
+            "clear_ocp": "Cleared OCP trip",
+        }
+        output_action(ack_messages.get(action, "Operation completed"),
+                      cfg=cfg, command=cmd_path, subject=subject)
+
 
 # ---------- CLI ----------
 
@@ -123,14 +185,12 @@ def _run_backend(ctx, box, action: str, **params):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def battery(ctx, box, netname):
     """Control battery simulator settings and output"""
-    # Use provided netname, or fall back to default if not provided
     if netname is None:
         netname = get_default_net(ctx, 'battery')
 
     if netname is not None:
         ctx.obj.netname = netname
 
-    # Only resolve box if no subcommand (listing nets)
     if ctx.invoked_subcommand is None:
         resolved_box = resolve_box(ctx, box)
         display_nets(ctx, resolved_box, None, BATTERY_ROLE, "battery")
@@ -144,6 +204,7 @@ def mode(ctx, box, mode_type):
     """Set (or read) battery simulation mode type"""
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "battery")
+    _validate_or_exit(ctx, resolved_box, netname)
     _run_backend(ctx, resolved_box, 'set_mode', netname=netname, mode_type=mode_type)
 
 
@@ -154,6 +215,7 @@ def set_mode(ctx, box):
     """Initialize battery simulator mode"""
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "battery")
+    _validate_or_exit(ctx, resolved_box, netname)
     _run_backend(ctx, resolved_box, 'set_to_battery_mode', netname=netname)
 
 
@@ -163,21 +225,12 @@ def set_mode(ctx, box):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def soc(ctx, box, value):
     """Set (or read) battery state of charge in percent (%)"""
-    # Parse and validate SOC
-    parsed_value = None
-    if value is not None:
-        try:
-            parsed_value = float(value)
-        except ValueError:
-            click.secho(f"Error: '{value}' is not a valid number", fg='red', err=True)
-            ctx.exit(1)
-        if parsed_value < 0 or parsed_value > 100:
-            click.secho(f"Error: SOC must be between 0 and 100%, got {parsed_value}%", fg='red', err=True)
-            ctx.exit(1)
-
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "battery")
-    _run_backend(ctx, resolved_box, 'set_soc', netname=netname, value=parsed_value)
+    _validate_or_exit(ctx, resolved_box, netname)
+    parsed = _parse_float_or_exit(ctx, value, command="battery.soc", label="SOC",
+                                   range_0_100=True, unit="%")
+    _run_backend(ctx, resolved_box, 'set_soc', netname=netname, value=parsed)
 
 
 @battery.command()
@@ -186,21 +239,12 @@ def soc(ctx, box, value):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def voc(ctx, box, value):
     """Set (or read) battery open circuit voltage in volts (V)"""
-    # Parse and validate VOC
-    parsed_value = None
-    if value is not None:
-        try:
-            parsed_value = float(value)
-        except ValueError:
-            click.secho(f"Error: '{value}' is not a valid number", fg='red', err=True)
-            ctx.exit(1)
-        if parsed_value < 0:
-            click.secho(f"Error: VOC must be positive, got {parsed_value} V", fg='red', err=True)
-            ctx.exit(1)
-
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "battery")
-    _run_backend(ctx, resolved_box, 'set_voc', netname=netname, value=parsed_value)
+    _validate_or_exit(ctx, resolved_box, netname)
+    parsed = _parse_float_or_exit(ctx, value, command="battery.voc", label="VOC",
+                                   must_be_non_negative=True, unit="V")
+    _run_backend(ctx, resolved_box, 'set_voc', netname=netname, value=parsed)
 
 
 @battery.command(name='batt-full')
@@ -209,21 +253,13 @@ def voc(ctx, box, value):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def batt_full(ctx, box, value):
     """Set (or read) battery fully charged voltage in volts (V)"""
-    # Parse and validate voltage
-    parsed_value = None
-    if value is not None:
-        try:
-            parsed_value = float(value)
-        except ValueError:
-            click.secho(f"Error: '{value}' is not a valid number", fg='red', err=True)
-            ctx.exit(1)
-        if parsed_value < 0:
-            click.secho(f"Error: Battery full voltage must be positive, got {parsed_value} V", fg='red', err=True)
-            ctx.exit(1)
-
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "battery")
-    _run_backend(ctx, resolved_box, 'set_volt_full', netname=netname, value=parsed_value)
+    _validate_or_exit(ctx, resolved_box, netname)
+    parsed = _parse_float_or_exit(ctx, value, command="battery.batt_full",
+                                   label="Battery-full voltage",
+                                   must_be_non_negative=True, unit="V")
+    _run_backend(ctx, resolved_box, 'set_volt_full', netname=netname, value=parsed)
 
 
 @battery.command(name='batt-empty')
@@ -232,21 +268,13 @@ def batt_full(ctx, box, value):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def batt_empty(ctx, box, value):
     """Set (or read) battery fully discharged voltage in volts (V)"""
-    # Parse and validate voltage
-    parsed_value = None
-    if value is not None:
-        try:
-            parsed_value = float(value)
-        except ValueError:
-            click.secho(f"Error: '{value}' is not a valid number", fg='red', err=True)
-            ctx.exit(1)
-        if parsed_value < 0:
-            click.secho(f"Error: Battery empty voltage must be positive, got {parsed_value} V", fg='red', err=True)
-            ctx.exit(1)
-
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "battery")
-    _run_backend(ctx, resolved_box, 'set_volt_empty', netname=netname, value=parsed_value)
+    _validate_or_exit(ctx, resolved_box, netname)
+    parsed = _parse_float_or_exit(ctx, value, command="battery.batt_empty",
+                                   label="Battery-empty voltage",
+                                   must_be_non_negative=True, unit="V")
+    _run_backend(ctx, resolved_box, 'set_volt_empty', netname=netname, value=parsed)
 
 
 @battery.command()
@@ -255,21 +283,13 @@ def batt_empty(ctx, box, value):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def capacity(ctx, box, value):
     """Set (or read) battery capacity limit in amp-hours (Ah)"""
-    # Parse and validate capacity
-    parsed_value = None
-    if value is not None:
-        try:
-            parsed_value = float(value)
-        except ValueError:
-            click.secho(f"Error: '{value}' is not a valid number", fg='red', err=True)
-            ctx.exit(1)
-        if parsed_value <= 0:
-            click.secho(f"Error: Capacity must be positive, got {parsed_value} Ah", fg='red', err=True)
-            ctx.exit(1)
-
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "battery")
-    _run_backend(ctx, resolved_box, 'set_capacity', netname=netname, value=parsed_value)
+    _validate_or_exit(ctx, resolved_box, netname)
+    parsed = _parse_float_or_exit(ctx, value, command="battery.capacity",
+                                   label="Capacity",
+                                   must_be_positive=True, unit="Ah")
+    _run_backend(ctx, resolved_box, 'set_capacity', netname=netname, value=parsed)
 
 
 @battery.command(name='current-limit')
@@ -280,25 +300,14 @@ def current_limit(ctx, box, value):
     """Set (or read) maximum charge/discharge current in amps (A)"""
     # Keithley 2281S max current is 6A
     MAX_CURRENT = 6.0
-
-    # Parse and validate current limit
-    parsed_value = None
-    if value is not None:
-        try:
-            parsed_value = float(value)
-        except ValueError:
-            click.secho(f"Error: '{value}' is not a valid number", fg='red', err=True)
-            ctx.exit(1)
-        if parsed_value < 0:
-            click.secho(f"Error: Current limit must be positive, got {parsed_value} A", fg='red', err=True)
-            ctx.exit(1)
-        if parsed_value > MAX_CURRENT:
-            click.secho(f"Error: Current limit must not exceed {MAX_CURRENT} A, got {parsed_value} A", fg='red', err=True)
-            ctx.exit(1)
-
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "battery")
-    _run_backend(ctx, resolved_box, 'set_current_limit', netname=netname, value=parsed_value)
+    _validate_or_exit(ctx, resolved_box, netname)
+    parsed = _parse_float_or_exit(ctx, value, command="battery.current_limit",
+                                   label="Current limit",
+                                   must_be_non_negative=True, max_value=MAX_CURRENT,
+                                   unit="A")
+    _run_backend(ctx, resolved_box, 'set_current_limit', netname=netname, value=parsed)
 
 
 @battery.command()
@@ -307,21 +316,12 @@ def current_limit(ctx, box, value):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def ovp(ctx, box, value):
     """Set (or read) over voltage protection limit in volts (V)"""
-    # Parse and validate OVP
-    parsed_value = None
-    if value is not None:
-        try:
-            parsed_value = float(value)
-        except ValueError:
-            click.secho(f"Error: '{value}' is not a valid number", fg='red', err=True)
-            ctx.exit(1)
-        if parsed_value <= 0:
-            click.secho(f"Error: OVP must be positive, got {parsed_value} V", fg='red', err=True)
-            ctx.exit(1)
-
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "battery")
-    _run_backend(ctx, resolved_box, 'set_ovp', netname=netname, value=parsed_value)
+    _validate_or_exit(ctx, resolved_box, netname)
+    parsed = _parse_float_or_exit(ctx, value, command="battery.ovp", label="OVP",
+                                   must_be_positive=True, unit="V")
+    _run_backend(ctx, resolved_box, 'set_ovp', netname=netname, value=parsed)
 
 
 @battery.command()
@@ -330,21 +330,12 @@ def ovp(ctx, box, value):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def ocp(ctx, box, value):
     """Set (or read) over current protection limit in amps (A)"""
-    # Parse and validate OCP
-    parsed_value = None
-    if value is not None:
-        try:
-            parsed_value = float(value)
-        except ValueError:
-            click.secho(f"Error: '{value}' is not a valid number", fg='red', err=True)
-            ctx.exit(1)
-        if parsed_value <= 0:
-            click.secho(f"Error: OCP must be positive, got {parsed_value} A", fg='red', err=True)
-            ctx.exit(1)
-
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "battery")
-    _run_backend(ctx, resolved_box, 'set_ocp', netname=netname, value=parsed_value)
+    _validate_or_exit(ctx, resolved_box, netname)
+    parsed = _parse_float_or_exit(ctx, value, command="battery.ocp", label="OCP",
+                                   must_be_positive=True, unit="A")
+    _run_backend(ctx, resolved_box, 'set_ocp', netname=netname, value=parsed)
 
 
 @battery.command()
@@ -355,6 +346,7 @@ def model(ctx, box, partnumber):
     """Set (or read) battery model (18650, nimh, lead-acid, etc.)"""
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "battery")
+    _validate_or_exit(ctx, resolved_box, netname)
     _run_backend(ctx, resolved_box, 'set_model', netname=netname, partnumber=partnumber)
 
 
@@ -365,6 +357,7 @@ def state(ctx, box):
     """Get battery state (comprehensive status)"""
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "battery")
+    _validate_or_exit(ctx, resolved_box, netname)
     _run_backend(ctx, resolved_box, 'print_state', netname=netname)
 
 
@@ -376,10 +369,9 @@ def enable(ctx, box, yes):
     """Enable battery simulator output"""
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "battery")
+    _validate_or_exit(ctx, resolved_box, netname)
 
-    if yes or click.confirm(f"Enable Net?", default=False):
-        pass
-    else:
+    if not (yes or click.confirm("Enable Net?", default=False)):
         click.echo("Aborting")
         return
 
@@ -394,10 +386,9 @@ def disable(ctx, box, yes):
     """Disable battery simulator output"""
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "battery")
+    _validate_or_exit(ctx, resolved_box, netname)
 
-    if yes or click.confirm(f"Disable Net?", default=True):
-        pass
-    else:
+    if not (yes or click.confirm("Disable Net?", default=True)):
         click.echo("Aborting")
         return
 
@@ -413,6 +404,7 @@ def clear_both(ctx, box):
     """Clear protection trip conditions (OVP/OCP)"""
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "battery")
+    _validate_or_exit(ctx, resolved_box, netname)
     _run_backend(ctx, resolved_box, 'clear', netname=netname)
 
 
@@ -423,6 +415,7 @@ def clear_ovp(ctx, box):
     """Clear OVP trip condition"""
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "battery")
+    _validate_or_exit(ctx, resolved_box, netname)
     _run_backend(ctx, resolved_box, 'clear_ovp', netname=netname)
 
 
@@ -433,6 +426,7 @@ def clear_ocp(ctx, box):
     """Clear OCP trip condition"""
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "battery")
+    _validate_or_exit(ctx, resolved_box, netname)
     _run_backend(ctx, resolved_box, 'clear_ocp', netname=netname)
 
 
@@ -443,13 +437,9 @@ def tui(ctx, box):
     """Launch interactive battery control TUI"""
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "battery")
-
-    if not validate_net(ctx, resolved_box, netname, BATTERY_ROLE):
-        click.echo(f"{netname} is not a battery net")
-        return
+    _validate_or_exit(ctx, resolved_box, netname)
 
     try:
-        # Import from the original battery location for TUI
         from ...battery.battery_tui import BatteryTUI
         app = BatteryTUI(ctx, netname, resolved_box, resolved_box)
         asyncio.run(app.run_async())

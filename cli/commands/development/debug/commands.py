@@ -513,8 +513,8 @@ def _debug(ctx, box):
               help='SWD/JTAG speed in kHz (e.g., 100, 4000) or "adaptive"')
 @click.option('--quiet', is_flag=True, default=False,
               help='Suppress informational messages')
-@click.option('--json', 'json_output', is_flag=True, default=False,
-              help='Output results in JSON format')
+@click.option('--json', 'json_output', is_flag=True, default=False, hidden=True,
+              help='Deprecated; use --format=json on the root command.')
 @click.option('--rtt', is_flag=True, default=False,
               help='Automatically stream RTT logs after starting GDB server')
 @click.option('--rtt-reset', is_flag=True, default=False,
@@ -959,8 +959,8 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
               help='Skip confirmation prompt')
 @click.option('--quiet', is_flag=True, default=False,
               help='Suppress warning messages')
-@click.option('--json', 'json_output', is_flag=True, default=False,
-              help='Output results in JSON format')
+@click.option('--json', 'json_output', is_flag=True, default=False, hidden=True,
+              help='Deprecated; use --format=json on the root command.')
 @click.option('--halt/--no-halt', is_flag=True, default=False,
               help='Halt the device after erase (keeps debugger connected)', show_default=True)
 def erase(ctx, box, speed, yes, quiet, json_output, halt):
@@ -1120,8 +1120,8 @@ def reset(ctx, box, halt, force_reconnect):
 @click.argument('start_addr', type=MemoryAddressType())
 @click.argument('length', type=MemoryAddressType())
 @click.option("--box", required=False, help="Lagerbox name or IP")
-@click.option('--json', 'json_output', is_flag=True, default=False,
-              help='Output results in JSON format')
+@click.option('--json', 'json_output', is_flag=True, default=False, hidden=True,
+              help='Deprecated; use --format=json on the root command.')
 @click.option('--halt', is_flag=True, default=False,
               help='Halt the device during memory read (keeps debugger connected).')
 @click.option('--no-halt', 'no_halt', is_flag=True, default=False,

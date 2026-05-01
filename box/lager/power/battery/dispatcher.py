@@ -222,7 +222,26 @@ def disable_battery(netname: str, **_):
 def print_state(netname: str, **_):
     """Display comprehensive battery state."""
     drv, _ = _dispatcher._resolve_net_and_driver(netname)
-    drv.print_state()
+    fields = None
+    if hasattr(drv, "read_state_fields"):
+        try:
+            fields = drv.read_state_fields()
+        except NotImplementedError:
+            fields = None
+    if fields is None:
+        # Legacy: driver prints directly.
+        drv.print_state()
+        return
+    from lager.cli_output import print_state as _print_state
+    _print_state(
+        netname,
+        fields["fields"],
+        command="battery.state",
+        subject={"net": netname,
+                 "instrument": fields.get("instrument"),
+                 "channel": fields.get("channel")},
+        title_severity=fields.get("severity", "ok"),
+    )
 
 
 def clear(netname: str, **_):

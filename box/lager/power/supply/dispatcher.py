@@ -160,7 +160,28 @@ def disable(netname: str, **_):
 
 def state(netname: str, **_):
     drv, _ = _dispatcher._resolve_net_and_driver(netname)
-    drv.state()
+    # Prefer the structured path: drivers that implement read_state_fields()
+    # opt into the unified output (text-aligned + JSON envelope).
+    fields = None
+    if hasattr(drv, "read_state_fields"):
+        try:
+            fields = drv.read_state_fields()
+        except NotImplementedError:
+            fields = None
+    if fields is None:
+        # Legacy: driver prints directly.
+        drv.state()
+        return
+    from lager.cli_output import print_state
+    print_state(
+        netname,
+        fields["fields"],
+        command="supply.state",
+        subject={"net": netname,
+                 "instrument": fields.get("instrument"),
+                 "channel": fields.get("channel")},
+        title_severity=fields.get("severity", "ok"),
+    )
 
 
 def set_mode(netname: str, **_):
