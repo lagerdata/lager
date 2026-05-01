@@ -22,6 +22,7 @@ import click
 from . import __version__
 from .config import read_config_file
 from .context import LagerContext
+from .output import ColorPolicy, Format, resolve_config
 from .update_check import start_background_check, notify_if_update_available
 
 
@@ -112,9 +113,14 @@ def _decode_environment():
 @click.pass_context
 @click.option('--version', 'see_version', is_flag=True, help='See package version')
 @click.option('--debug', 'debug', is_flag=True, help='Show debug output', default=False)
-@click.option('--colorize', 'colorize', is_flag=True, help='Enable colored terminal output', default=False)
+@click.option('--format', 'output_format', type=click.Choice(['text', 'json']), default='text',
+              help='Output format. text is human-friendly; json emits one envelope object per line.')
+@click.option('--color', 'output_color', type=click.Choice(['auto', 'always', 'never']), default='auto',
+              help='Color policy. auto enables color when stdout is a TTY (and NO_COLOR is unset).')
+@click.option('--colorize', 'colorize', is_flag=True, help='Deprecated; use --color=always', hidden=True)
 @click.option('--interpreter', '-i', required=False, default=None, help='Select a specific interpreter / user interface', hidden=True)
-def cli(ctx=None, see_version=None, debug=False, colorize=False, interpreter=None):
+def cli(ctx=None, see_version=None, debug=False, output_format='text', output_color='auto',
+        colorize=False, interpreter=None):
     """
         Lager CLI
     """
@@ -131,7 +137,13 @@ def cli(ctx=None, see_version=None, debug=False, colorize=False, interpreter=Non
         if not _launch_terminal():
             click.echo(ctx.get_help())
     else:
-        setup_context(ctx, debug, colorize, interpreter)
+        if colorize and output_color == 'auto':
+            click.secho(
+                "Warning: --colorize is deprecated; use --color=always instead.",
+                fg='yellow', err=True,
+            )
+            output_color = 'always'
+        setup_context(ctx, debug, output_format, output_color, interpreter)
         _schedule_update_check(ctx)
 
 cli.add_command(adc)
@@ -185,17 +197,24 @@ def _schedule_update_check(ctx):
     ctx.call_on_close(lambda: notify_if_update_available(__version__, thread, result_holder))
 
 
-def setup_context(ctx, debug, colorize, interpreter):
+def setup_context(ctx, debug, output_format, output_color, interpreter):
     """
         Setup the CLI context
     """
     config = read_config_file()
+    output_cfg = resolve_config(
+        format_value=Format.parse(output_format),
+        color_value=ColorPolicy.parse(output_color),
+        stream=sys.stdout,
+        err_stream=sys.stderr,
+    )
     ctx.obj = LagerContext(
         ctx=ctx,
         defaults=config['LAGER'],
         debug=debug,
-        style=click.style if colorize else lambda string, **kwargs: string,
+        style=click.style if output_cfg.color else lambda string, **kwargs: string,
         interpreter=interpreter,
+        output=output_cfg,
     )
 
 
