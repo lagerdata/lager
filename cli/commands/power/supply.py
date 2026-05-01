@@ -114,8 +114,14 @@ def _run_backend(ctx, box, action: str, **params):
     netname = getattr(ctx.obj, "netname", None)
     subject = {"net": netname} if netname else None
 
+    # The :9000 WebSocket fast-path returns its own legacy CSV string for
+    # state queries, which would bypass the structured cli_output renderer
+    # in the driver. Force state through the impl until the http_handler
+    # is retrofitted (separate follow-up).
+    skip_ws = action == "state"
+
     # Try WebSocket HTTP endpoint first (for concurrent TUI + CLI access)
-    if netname:
+    if netname and not skip_ws:
         try:
             # Get box IP
             from ...box_storage import resolve_and_validate_box
