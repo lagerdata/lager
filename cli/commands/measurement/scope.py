@@ -1188,7 +1188,8 @@ CHANNEL_CHOICES = click.Choice(("A", "B", "1", "2"))
 @click.option("--capture-mode", type=CAPTURE_MODE_CHOICES, default="auto", help="Triggering mode (auto, normal, or single)")
 @click.option("--coupling", type=COUPLING_STREAM_CHOICES, default="dc", help="Input coupling type (dc or ac)")
 @click.option("--quiet", "-q", is_flag=True, help="Minimal output")
-@click.option("--json", "json_output", is_flag=True, help="JSON output format")
+@click.option("--json", "json_output", is_flag=True, hidden=True,
+              help="Deprecated; use --format=json on the root command.")
 @click.option("--verbose", is_flag=True, help="Verbose debugging output")
 def stream_start(ctx, box, channel, volts_per_div, time_per_div, trigger_level, trigger_slope, capture_mode, coupling, quiet, json_output, verbose):
     """
@@ -1346,7 +1347,8 @@ def stream_web(ctx, box, port):
 @click.option("--duration", "-d", type=float, default=1.0, help="Capture duration in seconds (default: 1.0)")
 @click.option("--samples", "-n", type=int, default=None, help="Maximum number of samples to capture (optional)")
 @click.option("--quiet", "-q", is_flag=True, help="Minimal output")
-@click.option("--json", "json_output", is_flag=True, help="JSON output format")
+@click.option("--json", "json_output", is_flag=True, hidden=True,
+              help="Deprecated; use --format=json on the root command.")
 @click.option("--verbose", is_flag=True, help="Verbose debugging output")
 def stream_capture(ctx, box, output, duration, samples, quiet, json_output, verbose):
     """

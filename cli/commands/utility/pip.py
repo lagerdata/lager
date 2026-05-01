@@ -234,54 +234,56 @@ def _install_packages_in_container(ctx, box):
     click.secho('\nInstalling packages in container...', fg='blue')
 
     try:
-        # Create a Python script to install packages via pip
+        # The on-box helper script. Routes its terminal output through
+        # lager.cli_output so JSON-mode invocations get a structured envelope
+        # and text-mode invocations get a single ✓/✗ line — no more raw
+        # ``{"status": "success"}`` JSON leaking into human output.
         script_content = """
 import subprocess
-import json
 import os
 
+from lager.cli_output import print_action, die, ExitCode
+
 requirements_file = '/etc/lager/user_requirements.txt'
+cmd = 'pip.install'
 
 try:
     if not os.path.exists(requirements_file):
-        print('No user requirements file found')
-        print(json.dumps({'status': 'success', 'installed': 0}))
+        print_action('No user requirements file found', command=cmd,
+                     data={'installed': 0})
         exit(0)
 
-    # Read requirements file
     with open(requirements_file, 'r') as f:
         content = f.read()
 
-    # Count non-comment, non-empty lines
     packages = [line.strip() for line in content.splitlines()
                 if line.strip() and not line.strip().startswith('#')]
 
     if not packages:
-        print('No packages to install')
-        print(json.dumps({'status': 'success', 'installed': 0}))
+        print_action('No packages to install', command=cmd, data={'installed': 0})
         exit(0)
 
     print(f'Installing {len(packages)} package(s)...', flush=True)
 
-    # Run pip install
     result = subprocess.run(
         ['pip3', 'install', '-r', requirements_file],
         capture_output=False,
-        timeout=300
+        timeout=300,
     )
 
     if result.returncode == 0:
-        print(json.dumps({'status': 'success', 'installed': len(packages)}))
+        print_action(f'Installed {len(packages)} package(s)', command=cmd,
+                     data={'installed': len(packages)})
     else:
-        print(json.dumps({'status': 'error', 'message': 'pip install failed'}))
-        exit(1)
+        die('pip install failed', code=ExitCode.BACKEND_ERROR,
+            category='backend', command=cmd,
+            data={'returncode': result.returncode, 'requested': len(packages)})
 
 except subprocess.TimeoutExpired:
-    print(json.dumps({'status': 'error', 'message': 'Installation timed out'}))
-    exit(1)
+    die('Installation timed out', code=ExitCode.BACKEND_ERROR,
+        category='timeout', command=cmd)
 except Exception as e:
-    print(json.dumps({'status': 'error', 'message': str(e)}))
-    exit(1)
+    die(str(e), code=ExitCode.UNEXPECTED, category='unexpected', command=cmd)
 """
 
         # Write script to temp file
@@ -290,12 +292,17 @@ except Exception as e:
             temp_script = f.name
 
         try:
+            cfg = ctx.obj.output
+            env = (
+                f"LAGER_OUTPUT_FORMAT={cfg.format.value}",
+                f"LAGER_OUTPUT_COLOR={'1' if cfg.color else '0'}",
+            )
             # Run the script and stream output to user
             run_python_internal(
                 ctx,
                 temp_script,
                 box,
-                env=(),
+                env=env,
                 passenv=(),
                 kill=False,
                 download=(),

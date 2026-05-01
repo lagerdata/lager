@@ -489,6 +489,30 @@ class KeithleyBattery(BatteryNet):
     # ----------------------------- state dump -----------------------------
 
     def print_state(self) -> None:
+        """Legacy entry — prefer the dispatcher path that uses
+        read_state_fields()."""
+        result = self.read_state_fields()
+        if result is None:
+            return
+        from lager.cli_output import print_state
+        print_state(
+            "battery",
+            result["fields"],
+            command="battery.state",
+            subject={"instrument": result.get("instrument"),
+                     "channel": result.get("channel")},
+            title_severity=result.get("severity", "ok"),
+        )
+
+    def read_state_fields(self):
+        """Structured battery state for cli_output.print_state.
+
+        See SupplyNet.read_state_fields for the contract — same shape applies
+        for battery drivers (the dispatcher decides which envelope ``command``
+        to attach).
+        """
+        from lager.cli_output import Field
+
         enabled = self._is_batt_output_on()
         mode_str = self._mode_string()
         model_str = self._safe_query(":BATT:STAT?", "") or "Custom"
@@ -507,24 +531,42 @@ class KeithleyBattery(BatteryNet):
         ocp_tripped = (trip == "OCP")
         ovp_tripped = (trip == "OVP")
 
-        print(f"{GREEN}Channel: 1{RESET}")
-        print(f"{GREEN}Enabled: {'ON' if enabled else 'OFF'}{RESET}")
-        print(f"{GREEN}Output: {'ON' if enabled else 'OFF'}{RESET}")
-        print(f"{GREEN}Mode: {mode_str}{RESET}")
-        print(f"{GREEN}Model: {model_str}{RESET}")
-        print(f"{GREEN}Terminal Voltage: {self._fmt_v(tvol)}{RESET}")
-        print(f"{GREEN}Current: {self._fmt_i(curr)}{RESET}")
-        print(f"{GREEN}ESR: {self._fmt_ohm(esr)}{RESET}")
-        print(f"{GREEN}SOC: {self._fmt_pct(soc)}{RESET}")
-        print(f"{GREEN}VOC: {self._fmt_v(voc, digits=4)}{RESET}")
-        print(f"{GREEN}Capacity: {self._fmt_ah(cap_lim)}{RESET}")
-        print(f"{GREEN}Current Limit: {self._fmt_i(curr_lim)}{RESET}")
-        print(f"{GREEN}OCP Limit: {self._fmt_i(ocp_lim)}{RESET}")
-        ocp_status = f"{RED}YES{RESET}" if ocp_tripped else f"{GREEN}NO{RESET}"
-        print(f"    OCP Tripped: {ocp_status}")
-        print(f"{GREEN}OVP Limit: {self._fmt_v(ovp_lim)}{RESET}")
-        ovp_status = f"{RED}YES{RESET}" if ovp_tripped else f"{GREEN}NO{RESET}"
-        print(f"    OVP Tripped: {ovp_status}")
+        def _f(s, default=0.0):
+            try:
+                return float(str(s).strip().split()[0])
+            except Exception:
+                return default
+
+        soc_val = _f(soc)
+        fields = [
+            Field("Output", bool(enabled), severity=("ok" if enabled else "error")),
+            Field("Mode",   mode_str),
+            Field("Model",  model_str),
+            Field("Terminal Voltage", _f(tvol), unit="V"),
+            Field("Current", _f(curr), unit="A"),
+            Field("ESR",     _f(esr), unit="Ω"),
+            Field("SOC",     soc_val, unit="%",
+                  severity=("error" if soc_val < 5 else
+                            "warn" if soc_val < 20 else "ok")),
+            Field("VOC",     _f(voc), unit="V"),
+            Field("Capacity", _f(cap_lim), unit="Ah"),
+            Field("Current Limit", _f(curr_lim), unit="A"),
+            Field("OCP",     _f(ocp_lim), unit="A",
+                  severity=("error" if ocp_tripped else None)),
+            Field("OCP Tripped", ocp_tripped,
+                  severity=("error" if ocp_tripped else "ok")),
+            Field("OVP",     _f(ovp_lim), unit="V",
+                  severity=("error" if ovp_tripped else None)),
+            Field("OVP Tripped", ovp_tripped,
+                  severity=("error" if ovp_tripped else "ok")),
+        ]
+
+        return {
+            "instrument": "Keithley 2281S",
+            "channel": 1,
+            "severity": "error" if (ocp_tripped or ovp_tripped) else "ok",
+            "fields": fields,
+        }
 
     # ----------------------------- helpers -----------------------------
 

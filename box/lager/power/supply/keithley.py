@@ -371,56 +371,80 @@ class Keithley2281S(SupplyNet):
         print(f"{GREEN}OVP Limit: {ovp_limit}{RESET}")
 
     def state(self) -> None:
+        """Legacy entry point — kept for direct callers (e.g. tests).
+        The dispatcher prefers read_state_fields(); reaching this method
+        means we're in the legacy path."""
+        result = self.read_state_fields()
+        if result is None:
+            return
+        from lager.cli_output import print_state
+        print_state(
+            "supply",
+            result["fields"],
+            command="supply.state",
+            subject={"instrument": result.get("instrument"),
+                     "channel": result.get("channel")},
+            title_severity=result.get("severity", "ok"),
+        )
+
+    def read_state_fields(self):
+        """Read state and return it as structured Field objects.
+
+        See SupplyNet.read_state_fields for the shape. The dispatcher renders
+        these via lager.cli_output.print_state (text or JSON depending on the
+        host-side cfg).
         """
-        Friendly state dump. Uses measurement if output ON; else setpoints.
-        Non-intrusive - does not change instrument mode or state.
-        """
+        from lager.cli_output import Field
         # Check if output is enabled first to avoid disrupting it
         enabled = self.output_is_enabled()
-        
+
         # Get basic setpoints without forcing mode changes - use direct query without mode enforcement
         v_set = self._safe_query_no_mode(":SOUR1:VOLT?", default="0.0")
         i_set = self._safe_query_no_mode(":SOUR1:CURR?", default=f"{LAGER_CURRENT_LIMIT}")
 
         if enabled:
-            # Use actual measurements when output is enabled
             v = self._safe_query_no_mode(":MEAS:VOLT?", default=v_set)
             i = self._safe_query_no_mode(":MEAS:CURR?", default=i_set)
-            # Determine if in CV or CC mode by checking QIE register
             mode = self._determine_operating_mode_no_mode()
         else:
-            # Use setpoints when output is disabled
             v, i = v_set, i_set
-            # When disabled, default to CV mode (status badge already shows OFF)
             mode = "CV"
 
-        # power (best-effort)
         try:
-            p = float(v) * float(i)
-            p_str = f"{p:.6g}"
+            p_val = float(v) * float(i)
         except Exception:
-            p_str = "0"
+            p_val = None
 
-        # Get protection limits and trip status - use non-mode-enforcing queries
-        ocp_raw = self._safe_query_no_mode(":SOUR1:CURR:PROT?", default="n/a")
-        ovp_raw = self._safe_query_no_mode(":SOUR1:VOLT:PROT?", default="n/a")
+        ocp_raw = self._safe_query_no_mode(":SOUR1:CURR:PROT?", default="0")
+        ovp_raw = self._safe_query_no_mode(":SOUR1:VOLT:PROT?", default="0")
         trip = self._safe_query_no_mode(":OUTP:PROT:TRIP?", default="")
-        
         ocp_trip = (trip == "OCP")
         ovp_trip = (trip == "OVP")
 
-        print(f"{GREEN}Channel: 1{RESET}")
-        print(f"{GREEN}Enabled: {'ON' if enabled else 'OFF'}{RESET}")
-        print(f"{GREEN}Mode: {mode}{RESET}")
-        print(f"{GREEN}Voltage: {v}{RESET}")
-        print(f"{GREEN}Current: {i}{RESET}")
-        print(f"{GREEN}Power: {p_str}{RESET}")
-        print(f"{GREEN}OCP Limit: {ocp_raw}{RESET}")
-        ocp_status = f"{RED}YES{RESET}" if ocp_trip else f"{GREEN}NO{RESET}"
-        print(f"    OCP Tripped: {ocp_status}")
-        print(f"{GREEN}OVP Limit: {ovp_raw}{RESET}")
-        ovp_status = f"{RED}YES{RESET}" if ovp_trip else f"{GREEN}NO{RESET}"
-        print(f"    OVP Tripped: {ovp_status}")
+        fields = [
+            Field("Output", enabled, severity=("ok" if enabled else "error")),
+            Field("Mode",   mode),
+            Field("Set",    value=(self._safe_float(v_set), self._safe_float(i_set)),
+                            unit=("V", "A"), json_subkeys=("voltage", "current")),
+            Field("Measured",
+                  value=(self._safe_float(v), self._safe_float(i)),
+                  unit=("V", "A"), json_subkeys=("voltage", "current")),
+            Field("Power",  p_val, unit="W"),
+            Field("OCP",    self._safe_float(ocp_raw), unit="A",
+                  severity=("error" if ocp_trip else None)),
+            Field("OCP Tripped", ocp_trip, severity=("error" if ocp_trip else "ok")),
+            Field("OVP",    self._safe_float(ovp_raw), unit="V",
+                  severity=("error" if ovp_trip else None)),
+            Field("OVP Tripped", ovp_trip, severity=("error" if ovp_trip else "ok")),
+        ]
+
+        any_trip = ocp_trip or ovp_trip
+        return {
+            "instrument": "Keithley 2281S",
+            "channel": 1,
+            "severity": "error" if any_trip else "ok",
+            "fields": fields,
+        }
 
     def get_full_state(self) -> None:
         """

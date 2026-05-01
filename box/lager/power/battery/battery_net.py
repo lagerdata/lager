@@ -227,6 +227,14 @@ class BatteryNet(ABC):
         """
         pass
 
+    def read_state_fields(self):
+        """Return structured state for cli_output.print_state, or None for legacy.
+
+        See ``lager.power.supply.supply_net.SupplyNet.read_state_fields`` for
+        the contract — same shape applies to battery drivers.
+        """
+        return None
+
     def __str__(self) -> str:
         """
         Return a string representation of the battery device.

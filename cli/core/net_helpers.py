@@ -733,40 +733,94 @@ def validate_net_exists(
     """
     Validate that a net exists with the specified role.
 
-    This function checks if the specified net exists on the box and has
-    the expected role. If not found, it displays a helpful error message
-    listing available nets of that role.
+    Routes errors through cli.output.error so the message respects the
+    --format=text|json policy. When the net exists but has the wrong role
+    (e.g. ``lager battery supply2 state`` where ``supply2`` is a
+    power-supply net) the envelope includes ``actual_role`` so JSON
+    consumers can distinguish "missing" from "wrong-role".
 
     Args:
         ctx: Click context object
         box: Box IP address
         netname: Name of the net to validate
         role: Expected role (e.g., 'adc', 'dac', 'power-supply')
-        exit_on_error: If True, calls ctx.exit(1) on failure
+        exit_on_error: If True, calls output.error (which raises SystemExit)
 
     Returns:
         Net dict if found, None if not found and exit_on_error=False
-
-    Example:
-        net = validate_net_exists(ctx, box_ip, "adc1", "adc")
-        if net is None:
-            return  # Error already displayed
     """
+    from ..output import error as output_error, ExitCode
+    cfg = ctx.obj.output if ctx.obj is not None and hasattr(ctx.obj, "output") else None
+
     nets = list_nets_by_role(ctx, box, role)
     matching = next((n for n in nets if n.get('name') == netname), None)
+    if matching:
+        return matching
 
-    if not matching:
-        available = [n.get('name') for n in nets]
-        click.secho(f"Error: Net '{netname}' with role '{role}' not found", fg='red', err=True)
-        if available:
-            click.secho(f"Available {role} nets: {', '.join(available)}", err=True)
-        else:
-            click.secho(f"No {role} nets configured. Create one with:", err=True)
-            click.secho(f"  lager nets create <name> {role} <device> <address>", err=True)
-        if exit_on_error:
-            ctx.exit(1)
-        return None
-    return matching
+    # Distinguish missing vs wrong-role: scan all nets to find an actual_role.
+    actual_role = None
+    try:
+        all_nets = run_net_py(ctx, box, "list")
+        actual = next((n for n in all_nets if n.get('name') == netname), None)
+        if actual is not None:
+            actual_role = actual.get('role')
+    except Exception:
+        pass
+
+    available = [n.get('name') for n in nets]
+    if actual_role is not None and actual_role != role:
+        message = f"'{netname}' is a {actual_role} net, expected {role}"
+        data = {
+            "actual_role": actual_role,
+            "expected_role": role,
+            "available": available,
+        }
+    elif available:
+        message = (
+            f"Net '{netname}' with role '{role}' not found. "
+            f"Available {role} nets: {', '.join(available)}"
+        )
+        data = {"expected_role": role, "available": available}
+    else:
+        message = (
+            f"Net '{netname}' with role '{role}' not found. "
+            f"No {role} nets are configured."
+        )
+        data = {"expected_role": role, "available": []}
+
+    # Build a dotted command path by walking the click context chain so
+    # JSON consumers see "battery.state" rather than just "state".
+    def _dotted_command(c):
+        parts = []
+        cur = c
+        while cur is not None and getattr(cur, "info_name", None):
+            # Skip the root group ("cli") — it's not user-meaningful.
+            if cur.parent is None:
+                break
+            parts.append(cur.info_name)
+            cur = cur.parent
+        return ".".join(reversed(parts)) if parts else None
+
+    cmd_path = _dotted_command(ctx)
+
+    if exit_on_error:
+        output_error(
+            message, cfg=cfg,
+            exit_code=ExitCode.USER_ERROR,
+            command=cmd_path,
+            subject={"net": netname, "box": box},
+            data=data,
+        )
+    else:
+        output_error(
+            message, cfg=cfg,
+            exit_code=ExitCode.USER_ERROR,
+            command=cmd_path,
+            subject={"net": netname, "box": box},
+            data=data,
+            raise_exit=False,
+        )
+    return None
 
 
 def validate_range(

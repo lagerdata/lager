@@ -76,3 +76,22 @@ class SupplyNet(abc.ABC):
         """Get full state including measurements, setpoints, and limits. This is optional and can be overridden by specific drivers."""
         # Default implementation falls back to state()
         self.state()
+
+    def read_state_fields(self):
+        """Return structured state for cli_output.print_state, or None for legacy.
+
+        Drivers that implement this opt into the unified output path: the
+        dispatcher renders via lager.cli_output.print_state, which produces a
+        human-readable aligned block in text mode and a structured envelope in
+        JSON mode. Drivers that don't override return None and the dispatcher
+        falls back to calling state().
+
+        Return shape:
+            {
+                "instrument": "Rigol DP821",      # human label
+                "channel":    1,                  # optional
+                "severity":   "ok"|"warn"|"error",# optional, default "ok"
+                "fields":     [Field, Field, ...] # box.lager.cli_output.Field
+            }
+        """
+        return None

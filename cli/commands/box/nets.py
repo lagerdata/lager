@@ -1297,7 +1297,8 @@ def describe_cmd(
 @nets.command("show", help="Show full details of a saved net, including metadata.")
 @click.argument("name")
 @click.option("--box", help="Lagerbox name or IP")
-@click.option("--json", "as_json", is_flag=True, help="Output as raw JSON")
+@click.option("--json", "as_json", is_flag=True, hidden=True,
+              help="Deprecated; use --format=json on the root command.")
 @click.pass_context
 def show_cmd(
     ctx: click.Context,
@@ -1306,6 +1307,7 @@ def show_cmd(
     as_json: bool,
 ) -> None:
     """Display all fields of a net, including user-provided metadata."""
+    from ...output import Format
     resolved_box = _resolve_box(ctx, box)
 
     raw = _run_net_py(ctx, resolved_box, "list")
@@ -1321,6 +1323,11 @@ def show_cmd(
         ctx.exit(1)
 
     if as_json:
+        click.secho("Warning: --json is deprecated; use --format=json instead.",
+                    fg='yellow', err=True)
+    json_mode = as_json or (ctx.obj is not None and getattr(ctx.obj, "output", None)
+                            and ctx.obj.output.format is Format.JSON)
+    if json_mode:
         click.echo(json.dumps(target, indent=2))
         return
 

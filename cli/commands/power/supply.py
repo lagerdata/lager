@@ -37,6 +37,7 @@ from ...core.net_helpers import (
     NET_ROLES,
 )
 from ...context import get_default_box, get_impl_path, get_default_net
+from ...output import ExitCode, action as output_action, error as output_error
 from ..development.python import run_python_internal
 
 
@@ -51,40 +52,54 @@ MAX_OCP = 33.0        # OCP can be slightly higher than max output
 
 def _validate_supply_limits(ctx, voltage=None, current=None, ovp=None, ocp=None):
     """Validate power supply values are within safe limits."""
+    cfg = ctx.obj.output
     if voltage is not None and voltage > MAX_VOLTAGE:
-        click.secho(
-            f"Error: Voltage {voltage}V exceeds maximum limit of {MAX_VOLTAGE}V",
-            fg='red', err=True
+        output_error(
+            f"Voltage {voltage}V exceeds maximum limit of {MAX_VOLTAGE}V "
+            "(most bench supplies are limited to 30-60V; check equipment specs).",
+            cfg=cfg, exit_code=ExitCode.USER_ERROR,
+            command="supply.voltage",
+            data={"voltage": voltage, "limit": MAX_VOLTAGE},
         )
-        click.secho("  Most bench power supplies are limited to 30-60V.", err=True)
-        click.secho("  Check your equipment specifications before proceeding.", err=True)
-        ctx.exit(1)
 
     if current is not None and current > MAX_CURRENT:
-        click.secho(
-            f"Error: Current {current}A exceeds maximum limit of {MAX_CURRENT}A",
-            fg='red', err=True
+        output_error(
+            f"Current {current}A exceeds maximum limit of {MAX_CURRENT}A "
+            "(most bench supplies are limited to 3-10A; check equipment specs).",
+            cfg=cfg, exit_code=ExitCode.USER_ERROR,
+            command="supply.current",
+            data={"current": current, "limit": MAX_CURRENT},
         )
-        click.secho("  Most bench power supplies are limited to 3-10A.", err=True)
-        click.secho("  Check your equipment specifications before proceeding.", err=True)
-        ctx.exit(1)
 
     if ovp is not None and ovp > MAX_OVP:
-        click.secho(
-            f"Error: OVP {ovp}V exceeds maximum limit of {MAX_OVP}V",
-            fg='red', err=True
+        output_error(
+            f"OVP {ovp}V exceeds maximum limit of {MAX_OVP}V",
+            cfg=cfg, exit_code=ExitCode.USER_ERROR,
+            command="supply.ovp", data={"ovp": ovp, "limit": MAX_OVP},
         )
-        ctx.exit(1)
 
     if ocp is not None and ocp > MAX_OCP:
-        click.secho(
-            f"Error: OCP {ocp}A exceeds maximum limit of {MAX_OCP}A",
-            fg='red', err=True
+        output_error(
+            f"OCP {ocp}A exceeds maximum limit of {MAX_OCP}A",
+            cfg=cfg, exit_code=ExitCode.USER_ERROR,
+            command="supply.ocp", data={"ocp": ocp, "limit": MAX_OCP},
         )
-        ctx.exit(1)
 
 
 # ---------- Supply-specific backend runner ----------
+
+def _backend_env(ctx) -> tuple[str, ...]:
+    """Build the env-var tuple to forward to the impl script.
+
+    Always includes LAGER_OUTPUT_FORMAT and LAGER_OUTPUT_COLOR so the box-side
+    cli_output helper renders consistently with the host-side cfg.
+    """
+    cfg = ctx.obj.output
+    return (
+        f"LAGER_OUTPUT_FORMAT={cfg.format.value}",
+        f"LAGER_OUTPUT_COLOR={'1' if cfg.color else '0'}",
+    )
+
 
 def _run_backend(ctx, box, action: str, **params):
     """
@@ -95,7 +110,9 @@ def _run_backend(ctx, box, action: str, **params):
     """
     import requests
 
+    cfg = ctx.obj.output
     netname = getattr(ctx.obj, "netname", None)
+    subject = {"net": netname} if netname else None
 
     # Try WebSocket HTTP endpoint first (for concurrent TUI + CLI access)
     if netname:
@@ -119,12 +136,14 @@ def _run_backend(ctx, box, action: str, **params):
                 if result.get('success'):
                     # Command succeeded via WebSocket endpoint
                     message = result.get('message', 'Command executed')
-                    click.echo(f"[OK] {message}")
+                    output_action(message, cfg=cfg, command=f"supply.{action}", subject=subject)
                     return
                 else:
-                    # WebSocket endpoint returned error
-                    click.echo(f"Error: {result.get('error', 'Unknown error')}", err=True)
-                    raise SystemExit(1)
+                    output_error(
+                        result.get('error', 'Unknown error'),
+                        cfg=cfg, exit_code=ExitCode.BACKEND_ERROR,
+                        command=f"supply.{action}", subject=subject,
+                    )
 
             elif response.status_code == 404:
                 # No active WebSocket session, fall through to direct access
@@ -156,7 +175,10 @@ def _run_backend(ctx, box, action: str, **params):
                 ctx,
                 get_impl_path("supply.py"),
                 box,
-                env=(f"LAGER_COMMAND_DATA={json.dumps(data)}",),
+                env=(
+                    f"LAGER_COMMAND_DATA={json.dumps(data)}",
+                    *_backend_env(ctx),
+                ),
                 passenv=(),
                 kill=False,
                 download=(),
@@ -172,40 +194,44 @@ def _run_backend(ctx, box, action: str, **params):
         # Get captured stderr
         stderr_output = stderr_capture.getvalue()
 
-        # Check if this is a "Resource busy" error
+        # Check if this is a "Resource busy" error — re-route through output.error
+        # so JSON consumers get a structured envelope.
         if e.code != 0 and "Resource busy" in stderr_output:
-            click.echo(stderr_output, err=True)  # Print the original error
-            click.echo("\n" + "="*70, err=True)
-            click.echo("WARNING: Power supply is currently in use by the TUI", err=True)
-            click.echo("="*70, err=True)
-            click.echo(f"\nThe power supply '{netname}' cannot be accessed because it's being used", err=True)
-            click.echo("by an active 'lager supply tui' session.\n", err=True)
-            click.echo("To fix this:", err=True)
-            click.echo(f"  1. Close the TUI: Press 'q' or 'Ctrl+C' in the TUI window", err=True)
-            click.echo(f"  2. Then retry this command", err=True)
-            click.echo("\nOr use the TUI's command prompt to control the supply interactively.", err=True)
-            raise SystemExit(1)
+            output_error(
+                f"Power supply '{netname}' is currently in use by the TUI. "
+                "Close the TUI ('q' or Ctrl+C) and retry, or use the TUI's command prompt.",
+                cfg=cfg, exit_code=ExitCode.BACKEND_ERROR,
+                command=f"supply.{action}", subject=subject,
+                data={"reason": "resource_busy", "tui_active": True,
+                      "raw_stderr": stderr_output.strip()},
+            )
         elif e.code != 0:
-            # Other error - print captured stderr and re-raise
+            # Forward the raw stderr (preserves the impl-script error envelope
+            # in JSON mode; preserves the colored stderr block in text mode).
             click.echo(stderr_output, err=True)
             raise
 
-    # Provide feedback for operations that don't naturally produce output
+    # Provide feedback for operations that don't naturally produce output.
+    # output_action handles both text and JSON modes — the impl script is
+    # silent for these actions, so this is the only ack emitted.
     if action in ["set_mode", "clear_ovp", "clear_ocp", "enable", "disable"]:
         operation_names = {
             "set_mode": "Set power supply mode",
             "clear_ovp": "Cleared OVP protection",
             "clear_ocp": "Cleared OCP protection",
             "enable": "Enabled supply output",
-            "disable": "Disabled supply output"
+            "disable": "Disabled supply output",
         }
-        click.echo(f"[OK] {operation_names.get(action, 'Operation completed')}")
+        output_action(operation_names.get(action, "Operation completed"),
+                      cfg=cfg, command=f"supply.{action}", subject=subject)
+        return
 
-    # Provide feedback for voltage/current set operations
     if action == "voltage" and params.get("value") is not None:
-        click.echo(f"[OK] Voltage set to {params.get('value')}V")
+        output_action(f"Voltage set to {params.get('value')} V",
+                      cfg=cfg, command="supply.voltage", subject=subject)
     elif action == "current" and params.get("value") is not None:
-        click.echo(f"[OK] Current set to {params.get('value')}A")
+        output_action(f"Current set to {params.get('value')} A",
+                      cfg=cfg, command="supply.current", subject=subject)
 
 
 # ---------- CLI ----------
@@ -313,6 +339,8 @@ def disable(ctx, box, yes):
         return
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "supply")
+    if validate_net_exists(ctx, resolved_box, netname, SUPPLY_ROLE) is None:
+        return
     _run_backend(ctx, resolved_box, action="disable", netname=netname)
 
 
@@ -327,6 +355,8 @@ def enable(ctx, box, yes):
         return
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "supply")
+    if validate_net_exists(ctx, resolved_box, netname, SUPPLY_ROLE) is None:
+        return
     _run_backend(ctx, resolved_box, action="enable", netname=netname)
 
 
@@ -337,6 +367,8 @@ def state(ctx, box):
     """Read power state"""
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "supply")
+    if validate_net_exists(ctx, resolved_box, netname, SUPPLY_ROLE) is None:
+        return
     _run_backend(ctx, resolved_box, action="state", netname=netname)
 
 
@@ -349,6 +381,8 @@ def set_mode(ctx, box):
     """
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "supply")
+    if validate_net_exists(ctx, resolved_box, netname, SUPPLY_ROLE) is None:
+        return
     _run_backend(ctx, resolved_box, action="set_mode", netname=netname)
 
 
@@ -359,6 +393,8 @@ def clear_ovp(ctx, box):
     """Clear over-voltage protection trip condition"""
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "supply")
+    if validate_net_exists(ctx, resolved_box, netname, SUPPLY_ROLE) is None:
+        return
     _run_backend(ctx, resolved_box, action="clear_ovp", netname=netname)
 
 
@@ -369,6 +405,8 @@ def clear_ocp(ctx, box):
     """Clear over-current protection trip condition"""
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "supply")
+    if validate_net_exists(ctx, resolved_box, netname, SUPPLY_ROLE) is None:
+        return
     _run_backend(ctx, resolved_box, action="clear_ocp", netname=netname)
 
 
