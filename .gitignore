@@ -99,3 +99,6 @@ dashboard_test_results.json
 **/certs/*.pem
 
 # Auth tokens (no longer used but good practice)
+
+# Local AI agent guidelines
+AGENTS.md
