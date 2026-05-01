@@ -222,7 +222,6 @@ def start_jlink_gdbserver(device, speed='adaptive', transport='SWD', halt=False,
         '-RTTTelnetPort', '9090',
         '-LocalhostOnly', '0',  # Allow connections from any IP (Tailscale)
         '-stayrunning', '1',    # Keep server running
-        '-ir',                   # Init Registers - enables RTT
         '-nogui',
         '-logtofile',
         '-log', str(JLINK_LOGFILE)
