@@ -413,7 +413,7 @@ def connect_jlink(speed, device, transport, force=False, ignore_if_connected=Fal
 
     # All attempts failed
     stop_jlink_gdbserver()
-    logfile_content = status.get('logfile', 'No log available') if 'status' in locals() else 'No log available'
+    logfile_content = (status.get('logfile') or 'No log available') if 'status' in locals() else 'No log available'
     logfile_content_clean = clean_logfile_content(logfile_content)
 
     # Check for locked device (Renesas-specific but keep for compatibility)
