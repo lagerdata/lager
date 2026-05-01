@@ -95,8 +95,12 @@ def _run_backend(ctx, box, action: str, **params):
     subject = {"net": netname} if netname else None
     cmd_path = f"battery.{action}"
 
+    # See note in supply.py — skip WS fast-path for state so we render
+    # via the structured cli_output path on the box.
+    skip_ws = action in ("print_state", "state")
+
     # Try WebSocket HTTP endpoint first (for concurrent TUI + CLI access)
-    if netname:
+    if netname and not skip_ws:
         try:
             from ...box_storage import resolve_and_validate_box
             box_ip = resolve_and_validate_box(ctx, box)

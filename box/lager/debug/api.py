@@ -128,6 +128,8 @@ def clean_logfile_content(logfile_content, max_length=2000):
     Returns:
         Cleaned logfile content string
     """
+    if logfile_content is None:
+        return ''
     if isinstance(logfile_content, bytes):
         # Remove null bytes and decode
         cleaned = logfile_content.replace(b'\x00', b'').decode('utf-8', errors='ignore')
