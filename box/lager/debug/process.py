@@ -48,7 +48,6 @@ def start_jlink(cmd_args):
         '-RTTTelnetPort', '9090',
         '-LocalhostOnly', '0',  # Allow connections from any IP (Tailscale network)
         '-stayrunning', '1',  # Keep server running even when all clients disconnect
-        '-ir',  # CRITICAL: Init Registers - enables RTT control block detection
         '-nogui',
         '-logtofile',
         '-log', str(logfile)
