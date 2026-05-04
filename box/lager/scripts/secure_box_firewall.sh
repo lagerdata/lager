@@ -105,8 +105,10 @@ ufw default allow outgoing
 echo -e "${GREEN}Allowing SSH (port 22) from anywhere${NC}"
 ufw allow 22/tcp comment "SSH access"
 
-# Lager service ports
-LAGER_PORTS=(5000 8301 8765)
+# Lager service ports.
+# Single ports plus the 2331-2334 (J-Link GDB) and 9090-9097 (J-Link RTT
+# telnet) ranges so each concurrent J-Link probe gets its own slot.
+LAGER_PORTS=(5000 8301 8765 2331:2334 9090:9097)
 
 # Detect Tailscale interface
 TAILSCALE_IFACE=""

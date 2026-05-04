@@ -13,10 +13,10 @@ SSH_USER="${SSH_USER:-lager}"
 FAILED_TESTS=0
 PASSED_TESTS=0
 
-# Section tracking (15 sections)
+# Section tracking (16 sections)
 CURRENT_SECTION=0
-declare -a SECTION_PASSED=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
-declare -a SECTION_FAILED=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+declare -a SECTION_PASSED=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
+declare -a SECTION_FAILED=(0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0)
 
 # Timing tracking
 ENABLE_TIMING=true  # Set to false to disable timing output
@@ -45,7 +45,7 @@ handle_test_error() {
     local error_msg="$2"
     echo "ERROR in ${test_name}: ${error_msg}"
     ((FAILED_TESTS++))
-    if [ $CURRENT_SECTION -gt 0 ] && [ $CURRENT_SECTION -le 15 ]; then
+    if [ $CURRENT_SECTION -gt 0 ] && [ $CURRENT_SECTION -le 16 ]; then
         ((SECTION_FAILED[$CURRENT_SECTION - 1]++))
     fi
 }
@@ -53,7 +53,7 @@ handle_test_error() {
 # Function to mark test passed
 mark_test_passed() {
     ((PASSED_TESTS++))
-    if [ $CURRENT_SECTION -gt 0 ] && [ $CURRENT_SECTION -le 15 ]; then
+    if [ $CURRENT_SECTION -gt 0 ] && [ $CURRENT_SECTION -le 16 ]; then
         ((SECTION_PASSED[$CURRENT_SECTION - 1]++))
     fi
 }
@@ -1633,6 +1633,85 @@ fi
 echo ""
 
 # ============================================================
+# SECTION 16: CONCURRENT J-LINK (opt-in via DEBUG_NET_2)
+# ============================================================
+CURRENT_SECTION=16
+echo "========================================================================"
+echo "SECTION 16: CONCURRENT J-LINK"
+echo "========================================================================"
+echo ""
+
+if [ -z "$DEBUG_NET_2" ]; then
+    echo "Skipping: DEBUG_NET_2 not set."
+    echo "  To run: re-export DEBUG_NET_2=<second debug net name>"
+    echo "  Requires a box with two J-Link probes (e.g. PRD-2: debug1 + debug2)."
+else
+    NET2="$DEBUG_NET_2"
+    echo "First probe : $NET (already exercised above)"
+    echo "Second probe: $NET2"
+    echo ""
+
+    # Make sure both probes start cold.
+    lager debug $NET disconnect --box $BOX 2>/dev/null || true
+    lager debug $NET2 disconnect --box $BOX 2>/dev/null || true
+    cleanup_jlink_processes
+
+    echo "Test 16.1: Connect probe 1 ($NET) gdbserver"
+    run_test "16.1 connect probe 1 gdbserver" lager debug $NET gdbserver --box $BOX --quiet
+    sleep 1
+
+    echo "Test 16.2: Connect probe 2 ($NET2) gdbserver — must NOT tear down probe 1"
+    run_test "16.2 connect probe 2 gdbserver" lager debug $NET2 gdbserver --box $BOX --quiet
+    sleep 1
+
+    echo "Test 16.3: Both gdbserver processes are running on the box"
+    GDBSERVER_COUNT=$(ssh ${SSH_USER}@$BOX "pgrep -fc JLinkGDBServerCLExe || echo 0" 2>/dev/null | tr -d '\r')
+    echo "  pgrep count: $GDBSERVER_COUNT"
+    if [ "$GDBSERVER_COUNT" -ge 2 ]; then
+        echo "  [OK] Two JLinkGDBServer processes are running concurrently"
+        mark_test_passed
+    else
+        handle_test_error "16.3 two gdbservers" "Expected >=2 JLinkGDBServer processes, found $GDBSERVER_COUNT"
+    fi
+
+    echo "Test 16.4: Both GDB ports (2331 and 2332) are listening"
+    LISTENING_PORTS=$(ssh ${SSH_USER}@$BOX "ss -lntH 2>/dev/null | awk '{print \$4}' | grep -oE '233[1-4]\\b' | sort -u | tr '\\n' ' '" 2>/dev/null | tr -d '\r')
+    echo "  listening on: $LISTENING_PORTS"
+    if echo "$LISTENING_PORTS" | grep -q 2331 && echo "$LISTENING_PORTS" | grep -q 2332; then
+        echo "  [OK] 2331 and 2332 both listening"
+        mark_test_passed
+    else
+        handle_test_error "16.4 ports listening" "Expected both 2331 and 2332 listening, got: $LISTENING_PORTS"
+    fi
+
+    echo "Test 16.5: Per-probe PID files exist"
+    PID_FILES=$(ssh ${SSH_USER}@$BOX "ls /tmp/jlink_gdbserver_*.pid 2>/dev/null | wc -l" 2>/dev/null | tr -d '\r')
+    echo "  per-serial PID files: $PID_FILES"
+    if [ "$PID_FILES" -ge 2 ]; then
+        echo "  [OK] Two per-serial PID files present"
+        mark_test_passed
+    else
+        handle_test_error "16.5 pidfiles" "Expected >=2 per-serial PID files, found $PID_FILES"
+    fi
+
+    echo "Test 16.6: Disconnecting probe 1 leaves probe 2 running"
+    lager debug $NET disconnect --box $BOX
+    sleep 1
+    GDBSERVER_COUNT_AFTER=$(ssh ${SSH_USER}@$BOX "pgrep -fc JLinkGDBServerCLExe || echo 0" 2>/dev/null | tr -d '\r')
+    echo "  pgrep count after probe 1 disconnect: $GDBSERVER_COUNT_AFTER"
+    if [ "$GDBSERVER_COUNT_AFTER" -ge 1 ]; then
+        echo "  [OK] Probe 2's gdbserver survived probe 1 disconnect"
+        mark_test_passed
+    else
+        handle_test_error "16.6 isolated disconnect" "Expected probe 2 still running, found $GDBSERVER_COUNT_AFTER processes"
+    fi
+
+    echo "Cleanup: disconnect probe 2"
+    lager debug $NET2 disconnect --box $BOX
+fi
+echo ""
+
+# ============================================================
 # CLEANUP
 # ============================================================
 echo "========================================================================"
@@ -1693,12 +1772,13 @@ SECTION_NAMES=(
     "Concurrency and Stress Tests"
     "RTT (Real-Time Transfer) Tests"
     "Regression Tests"
+    "Concurrent J-Link (DEBUG_NET_2)"
 )
 
 # Print each section
 TOTAL_SECTION_PASSED=0
 TOTAL_SECTION_FAILED=0
-for i in {0..14}; do
+for i in {0..15}; do
     SECTION_NUM=$((i + 1))
     PASSED=${SECTION_PASSED[$i]}
     FAILED=${SECTION_FAILED[$i]}

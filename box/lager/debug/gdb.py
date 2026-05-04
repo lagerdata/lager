@@ -434,18 +434,20 @@ def _jlink_monitor_reset(device):
     return 'monitor reset'
 
 
-def reset(halt=False, device=None):
+def reset(halt=False, device=None, port=2331, host='127.0.0.1'):
     """
     Reset device via GDB
 
     Args:
         halt: Whether to halt after reset
         device: Device name (optional)
+        port: GDB server port (default: 2331)
+        host: GDB server host (default: 127.0.0.1)
 
     Returns:
         List of GDB responses
     """
-    gdbmi = get_controller(device)
+    gdbmi = get_controller(device=device, host=host, port=port)
     output = []
     mon_reset = _jlink_monitor_reset(device)
 
@@ -473,7 +475,7 @@ def reset(halt=False, device=None):
             pass  # Ignore cleanup errors
 
 
-def read_memory(address, length, device=None):
+def read_memory(address, length, device=None, port=2331, host='127.0.0.1'):
     """
     Read memory via GDB
 
@@ -481,11 +483,13 @@ def read_memory(address, length, device=None):
         address: Memory address to read
         length: Number of bytes to read
         device: Device name (optional)
+        port: GDB server port (default: 2331)
+        host: GDB server host (default: 127.0.0.1)
 
     Returns:
         List of GDB responses
     """
-    gdbmi = get_controller(device)
+    gdbmi = get_controller(device=device, host=host, port=port)
     try:
         cmd = f'x/{length}xb {address}'
         return gdbmi.write(cmd, timeout_sec=GDB_TIMEOUT)

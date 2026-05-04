@@ -11,11 +11,13 @@ import logging
 import time
 from pathlib import Path
 
+from .probes import jlink_pidfile, jlink_logfile
+
 logger = logging.getLogger(__name__)
 
-# Log and PID file paths for J-Link (use /tmp for write access)
-JL_LOGFILE = '/tmp/jlink.log'
-JL_PIDFILE = '/tmp/jlink.pid'
+# Legacy single-probe paths. Multi-probe paths come from probes helpers.
+JL_LOGFILE = jlink_logfile(None)
+JL_PIDFILE = jlink_pidfile(None)
 
 
 def readfile(filepath):
@@ -79,7 +81,7 @@ def check_process(pid):
         return False
 
 
-def check_logfile(logfile_path, max_tries=3, mcu=None):
+def check_logfile(logfile_path, max_tries=3, mcu=None, target_port=2331):
     """
     Check if debugger logfile indicates successful connection
 
@@ -87,12 +89,12 @@ def check_logfile(logfile_path, max_tries=3, mcu=None):
         logfile_path: Path to log file
         max_tries: Maximum number of attempts
         mcu: MCU identifier (unused, kept for compatibility)
+        target_port: GDB server port to look for in the log (default: 2331)
 
     Returns:
         Tuple of (success: bool, logfile_contents: str)
     """
     logfile = readfile(logfile_path)
-    target_port = 2331  # J-Link GDB server port
 
     if logfile:
         # Check for failure indicators first
@@ -118,21 +120,21 @@ def check_logfile(logfile_path, max_tries=3, mcu=None):
             # Wait a bit more to ensure no error occurs after "Listening" message
             if logfile_path == JL_LOGFILE and max_tries == 3:
                 time.sleep(1.0)
-                return check_logfile(logfile_path, max_tries - 1, mcu=mcu)
+                return check_logfile(logfile_path, max_tries - 1, mcu=mcu, target_port=target_port)
             return (True, logfile)
 
         if max_tries <= 0:
             return (False, logfile)
         time.sleep(0.5)
-        return check_logfile(logfile_path, max_tries - 1, mcu=mcu)
+        return check_logfile(logfile_path, max_tries - 1, mcu=mcu, target_port=target_port)
 
     if max_tries <= 0:
         return (False, None)
     time.sleep(0.5)
-    return check_logfile(logfile_path, max_tries - 1, mcu=mcu)
+    return check_logfile(logfile_path, max_tries - 1, mcu=mcu, target_port=target_port)
 
 
-def _get_debugger_status(pidfile, logfile_path, mcu=None):
+def _get_debugger_status(pidfile, logfile_path, mcu=None, target_port=2331):
     """
     Check whether a debugger is running
 
@@ -140,6 +142,7 @@ def _get_debugger_status(pidfile, logfile_path, mcu=None):
         pidfile: Path to PID file
         logfile_path: Path to log file
         mcu: MCU identifier (unused, kept for compatibility)
+        target_port: GDB server port to verify in the log
 
     Returns:
         Dictionary with keys:
@@ -158,7 +161,9 @@ def _get_debugger_status(pidfile, logfile_path, mcu=None):
     if pid:
         running = check_process(pid)
         if running:
-            (running, logfile) = check_logfile(logfile_path, max_tries=max_logfile_tries, mcu=mcu)
+            (running, logfile) = check_logfile(
+                logfile_path, max_tries=max_logfile_tries, mcu=mcu, target_port=target_port
+            )
 
             # Double-check the process is still running after logfile check
             # (it might have exited due to connection failure)
@@ -178,11 +183,17 @@ def _get_debugger_status(pidfile, logfile_path, mcu=None):
     return dict(running=running, cmdline=cmdline, logfile=logfile)
 
 
-def get_jlink_status():
+def get_jlink_status(serial=None, gdb_port=2331):
     """
     Check whether J-Link GDB server is running
+
+    Args:
+        serial: J-Link USB serial. None reads the legacy single-probe paths.
+        gdb_port: GDB server port to verify in the log (default: 2331)
 
     Returns:
         Dictionary with status information
     """
-    return _get_debugger_status(JL_PIDFILE, JL_LOGFILE)
+    return _get_debugger_status(
+        jlink_pidfile(serial), jlink_logfile(serial), target_port=gdb_port
+    )

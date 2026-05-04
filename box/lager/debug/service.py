@@ -40,6 +40,11 @@ from lager.debug.gdbserver import (
     stop_jlink_gdbserver,
     get_jlink_gdbserver_status,
 )
+from lager.debug.probes import (
+    resolve_serial_from_net,
+    gdb_port_for_slot,
+    rtt_port_for_slot,
+)
 
 # Temp path for J-Link script file (written during connect)
 JLINK_SCRIPT_TEMP_PATH = '/tmp/lager_jlink_script.JLinkScript'
@@ -54,6 +59,19 @@ def _resolve_device_type(net: Dict[str, Any]) -> str:
             f"Check net configuration (expected 'channel' or 'pin' field)."
         )
     return device
+
+
+def _resolve_probe(net: Dict[str, Any]):
+    """Return (serial, slot, gdb_port, rtt_port) for *net*.
+
+    Phase 1: every probe goes to slot 0 (legacy ports 2331 / 9090). The serial
+    is plumbed through so JLinkGDBServer binds to a specific probe via
+    ``-select USB=<sn>``. Phase 3 swaps slot 0 for a deterministic multi-probe
+    allocator.
+    """
+    serial = resolve_serial_from_net(net) if isinstance(net, dict) else None
+    slot = 0
+    return serial, slot, gdb_port_for_slot(slot), rtt_port_for_slot(slot)
 
 
 def _get_script_file(net=None):
@@ -294,7 +312,9 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             force = data.get('force', False)
             halt = data.get('halt', False)
             gdb = data.get('gdb', True)  # Default to starting GDB server
-            gdb_port = data.get('gdb_port', 2331)
+            serial, slot, default_gdb_port, default_rtt_port = _resolve_probe(net)
+            gdb_port = data.get('gdb_port', default_gdb_port)
+            rtt_telnet_port = data.get('rtt_telnet_port', default_rtt_port)
 
             # Handle J-Link script file
             # Priority 1: Script sent in POST body (local .lager config override)
@@ -314,8 +334,8 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                     logger.warning(f'Failed to write J-Link script file: {e}')
                     script_file_path = None
 
-            # Check if JLinkGDBServer is already running
-            status = get_jlink_gdbserver_status()
+            # Check if JLinkGDBServer is already running for *this* probe
+            status = get_jlink_gdbserver_status(serial=serial)
             if status['running'] and not force:
                 # Verify the running server matches the requested device
                 net_name = net.get('name', 'unknown')
@@ -330,36 +350,43 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                         'status': 'connected',
                         'device': device_type,
                         'probe': net.get('instrument'),
+                        'serial': serial,
                         'message': 'JLinkGDBServer ready for operations',
                         'pid': status['pid'],
                         'gdb_server': {
                             'status': 'already_running',
                             'gdb_port': gdb_port,
+                            'rtt_telnet_port': rtt_telnet_port,
                             'pid': status['pid']
                         }
                     })
                     return
                 else:
-                    # Different device or unknown state -- restart
+                    # Different device or unknown state -- restart this probe's server
                     logger.info(f'Existing JLinkGDBServer does not match requested device {device_type}, restarting')
-                    stop_jlink_gdbserver()
+                    stop_jlink_gdbserver(serial=serial)
                     time.sleep(0.3)
 
             # Stop existing connection if force=True
             if status['running'] and force:
                 logger.info('Force reconnect: stopping existing JLinkGDBServer')
-                stop_jlink_gdbserver()
+                stop_jlink_gdbserver(serial=serial)
                 time.sleep(0.3)  # Give hardware time to settle
 
             # Start JLinkGDBServer
-            logger.info(f'Starting JLinkGDBServer for device {device_type}, speed {speed}')
+            logger.info(
+                f'Starting JLinkGDBServer for device {device_type}, speed {speed}, '
+                f'probe serial={serial or "<any>"}, gdb_port={gdb_port}, rtt_port={rtt_telnet_port}'
+            )
             result = start_jlink_gdbserver(
                 device=device_type,
                 speed=speed,
                 transport='SWD',
                 halt=halt,
                 gdb_port=gdb_port,
-                script_file=script_file_path
+                rtt_telnet_port=rtt_telnet_port,
+                serial=serial,
+                script_file=script_file_path,
             )
 
             # Track connection (thread-safe)
@@ -369,7 +396,10 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 active_connections[connection_id] = {
                     'timestamp': time.time(),
                     'device': device_type,
-                    'pid': result['pid']
+                    'pid': result['pid'],
+                    'serial': serial,
+                    'gdb_port': gdb_port,
+                    'rtt_telnet_port': rtt_telnet_port,
                 }
 
             logger.info(f'JLinkGDBServer started successfully (PID {result["pid"]})')
@@ -377,11 +407,13 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 'status': 'connected',
                 'device': device_type,
                 'probe': net.get('instrument'),
+                'serial': serial,
                 'message': 'JLinkGDBServer started successfully',
                 'pid': result['pid'],
                 'gdb_server': {
                     'status': 'started',
                     'gdb_port': gdb_port,
+                    'rtt_telnet_port': rtt_telnet_port,
                     'pid': result['pid']
                 }
             })
@@ -405,14 +437,15 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
         try:
             # Check if user wants to keep server running
             keep_jlink_running = data.get('keep_jlink_running', False)
+            net = data.get('net', {})
+            serial, _slot, gdb_port, rtt_telnet_port = _resolve_probe(net)
 
             if not keep_jlink_running:
-                # Stop JLinkGDBServer
-                logger.info('Stopping JLinkGDBServer')
-                stop_jlink_gdbserver()
+                # Stop JLinkGDBServer for *this* probe
+                logger.info(f'Stopping JLinkGDBServer (serial={serial or "<any>"})')
+                stop_jlink_gdbserver(serial=serial)
 
             # Clear connection tracking (thread-safe)
-            net = data.get('net', {})
             try:
                 device_type = _resolve_device_type(net)
             except ValueError:
@@ -424,7 +457,10 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             message = 'JLinkGDBServer still running' if keep_jlink_running else 'JLinkGDBServer stopped'
             self.send_json_response(200, {
                 'status': 'disconnected',
-                'message': message
+                'message': message,
+                'serial': serial,
+                'gdb_port': gdb_port,
+                'rtt_telnet_port': rtt_telnet_port,
             })
 
         except Exception as e:
@@ -435,9 +471,11 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
         """Handle debug reset command."""
         try:
             halt = data.get('halt', False)
+            net = data.get('net') or {}
+            serial, _slot, _gdb_port, _rtt_port = _resolve_probe(net)
 
-            # Check if J-Link GDB server is running
-            gdbserver_status = get_jlink_gdbserver_status()
+            # Check if J-Link GDB server is running for this probe
+            gdbserver_status = get_jlink_gdbserver_status(serial=serial)
             if not gdbserver_status['running']:
                 self.send_error_response(400, 'No debugger connection found')
                 return
@@ -460,7 +498,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             # Use J-Link Commander approach (same as Python API)
             # This avoids the device type resolution issue with the GDB-based approach
             try:
-                jlink = JLink(cmdline, script_file=_get_script_file(data.get('net') or {}))
+                jlink = JLink(cmdline, script_file=_get_script_file(net), serial=serial)
             except (ValueError, KeyError) as e:
                 logger.error(f"Failed to create JLink from cmdline: {e}")
                 raise JLinkNotRunning()
@@ -494,12 +532,13 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
 
             net = data.get('net', {})
             device_type = _resolve_device_type(net)
+            serial, _slot, gdb_port, rtt_telnet_port = _resolve_probe(net)
 
-            gdbserver_status = get_jlink_gdbserver_status()
+            gdbserver_status = get_jlink_gdbserver_status(serial=serial)
             if gdbserver_status['running']:
                 try:
                     from lager.debug.gdb import get_controller
-                    gdbmi = get_controller(device=device_type)
+                    gdbmi = get_controller(device=device_type, port=gdb_port)
 
                     test_responses = gdbmi.write('monitor version', timeout_sec=2.0, raise_error_on_timeout=False)
                     connection_ok = False
@@ -569,15 +608,19 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 flash_output = []
                 files = (hexfiles, binfiles, elffiles)
                 for output in flash_device(
-                    files, run_after=True, mcu=device_type, use_gdb=(not verbose), script_file=script_path
+                    files, run_after=True, mcu=device_type, use_gdb=(not verbose),
+                    script_file=script_path, serial=serial,
+                    gdb_port=gdb_port, rtt_telnet_port=rtt_telnet_port,
                 ):
                     logger.info(f"[FLASH] {output}")  # Log flash progress
                     flash_output.append(output)  # Collect for client
 
-                # DA1469x post-flash may stop JLinkGDBServer; drop stale connection state.
+                # DA1469x post-flash may stop JLinkGDBServer for this probe;
+                # drop only this probe's tracking entry so siblings keep their state.
                 if 'DA1469' in device_type.upper():
+                    connection_id = f"{net.get('name', 'unknown')}:{device_type}"
                     with connections_lock:
-                        active_connections.clear()
+                        active_connections.pop(connection_id, None)
 
                 self.send_json_response(200, {
                     'status': 'flash_complete',
@@ -599,8 +642,8 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
     def handle_erase(self, data: Dict[str, Any]):
         """Handle debug erase command.
 
-        chip_erase() stops J-Link processes so JLinkExe can use the probe. Clear
-        active_connections since the GDB server is gone. ``flash`` does not require
+        chip_erase() stops J-Link processes for the target probe so JLinkExe can use it.
+        Clear active_connections since the GDB server is gone. ``flash`` does not require
         reconnecting before ``/debug/flash`` (JLinkExe-only).
         """
         try:
@@ -608,22 +651,25 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             device_type = _resolve_device_type(net)
             speed = data.get('speed', '4000')
             transport = data.get('transport', 'SWD')
+            serial, _slot, _gdb_port, _rtt_port = _resolve_probe(net)
 
             script_path = _get_script_file(net)
 
             # chip_erase() returns a generator - must consume it to execute
-            # NOTE: chip_erase() stops running J-Link / JLinkGDBServer so JLinkExe
-            # has exclusive USB access.
+            # NOTE: chip_erase() stops running J-Link / JLinkGDBServer for *this*
+            # probe so JLinkExe has exclusive USB access.
             erase_output = list(chip_erase(
                 device=device_type,
                 speed=speed,
                 transport=transport,
                 mcu=None,
                 script_file=script_path,
+                serial=serial,
             ))
 
+            connection_id = f"{net.get('name', 'unknown')}:{device_type}"
             with connections_lock:
-                active_connections.clear()
+                active_connections.pop(connection_id, None)
 
             self.send_json_response(200, {
                 'status': 'erase_complete',
@@ -649,8 +695,11 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 self.send_error_response(400, 'Missing start_addr parameter')
                 return
 
-            # Check if GDB server is running
-            gdbserver_status = get_jlink_gdbserver_status()
+            net = data.get('net') or {}
+            serial, _slot, _gdb_port, _rtt_port = _resolve_probe(net)
+
+            # Check if GDB server is running for this probe
+            gdbserver_status = get_jlink_gdbserver_status(serial=serial)
             if not gdbserver_status['running']:
                 self.send_error_response(400, 'No debugger connection found')
                 return
@@ -671,7 +720,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
 
             # Create JLink instance from the running GDB server's configuration
             try:
-                jlink = JLink(cmdline, script_file=_get_script_file(data.get('net') or {}))
+                jlink = JLink(cmdline, script_file=_get_script_file(net), serial=serial)
             except (ValueError, KeyError) as e:
                 logger.error(f"Failed to create JLink from cmdline: {e}")
                 self.send_error_response(500, f"Failed to initialize J-Link: {e}")
@@ -703,6 +752,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
         try:
             net = data.get('net', {})
             device_type = _resolve_device_type(net)
+            serial, _slot, _gdb_port, _rtt_port = _resolve_probe(net)
 
             # Try to get architecture
             try:
@@ -710,14 +760,15 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             except Exception:
                 arch = "Unknown"
 
-            # Get current debugger status via GDB server
-            gdbserver_status = get_jlink_gdbserver_status()
+            # Get current debugger status via GDB server (per probe)
+            gdbserver_status = get_jlink_gdbserver_status(serial=serial)
 
             self.send_json_response(200, {
                 'net_name': net.get('name', 'unknown'),
                 'device': device_type,
                 'arch': arch,
                 'probe': net.get('instrument', ''),
+                'serial': serial,
                 'connected': gdbserver_status['running'],
             })
 
@@ -728,11 +779,14 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
     def handle_debug_status(self, data: Dict[str, Any]):
         """Handle status command."""
         try:
-            gdbserver_status = get_jlink_gdbserver_status()
+            net = data.get('net') or {}
+            serial, _slot, _gdb_port, _rtt_port = _resolve_probe(net)
+            gdbserver_status = get_jlink_gdbserver_status(serial=serial)
 
             self.send_json_response(200, {
                 'connected': gdbserver_status['running'],
                 'pid': gdbserver_status.get('pid') if gdbserver_status['running'] else None,
+                'serial': serial,
             })
 
         except Exception as e:
@@ -748,8 +802,12 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             channel = data.get('channel', 0)
             timeout_seconds = data.get('timeout', None)  # None = stream until connection closes
 
-            # Check if GDB server is running
-            gdbserver_status = get_jlink_gdbserver_status()
+            net = data.get('net', {})
+            device_type = _resolve_device_type(net)
+            serial, _slot, gdb_port, rtt_port_base = _resolve_probe(net)
+
+            # Check if GDB server is running for this probe
+            gdbserver_status = get_jlink_gdbserver_status(serial=serial)
             if not gdbserver_status['running']:
                 self.send_error_response(400, 'No debugger connection found')
                 return
@@ -760,10 +818,12 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             # 2. We're about to connect to RTT, so J-Link needs to know the address
             # 3. Detection at connect time was too early (firmware not yet booted)
             from .api import detect_and_configure_rtt
-            net = data.get('net', {})
-            device_type = _resolve_device_type(net)
 
-            rtt_kwargs = {'device_type': device_type}
+            rtt_kwargs = {
+                'device_type': device_type,
+                'serial': serial,
+                'gdb_port': gdb_port,
+            }
             if 'search_addr' in data:
                 rtt_kwargs['search_addr'] = data['search_addr']
             if 'search_size' in data:
@@ -776,8 +836,8 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             elif rtt_result['error']:
                 logger.warning(f"RTT auto-detection failed (continuing anyway): {rtt_result['error']}")
 
-            # Determine RTT port based on channel (9090 for channel 0, 9091 for channel 1)
-            rtt_port = 9090 + channel
+            # Per-probe RTT base + channel offset (e.g. slot 0 ch 0 = 9090; slot 1 ch 0 = 9092).
+            rtt_port = rtt_port_base + channel
 
             # Connect to J-Link RTT telnet server with retry logic
             # This is needed because after a device reset, the RTT telnet port may not be
