@@ -697,6 +697,14 @@ def start_capture():
         if not cap.isOpened():
             print("ERROR: Could not open video device {video_device}", file=sys.stderr)
             return
+        # Force MJPEG so two cameras can share a USB 2.0 bus. Default cv2
+        # negotiation picks YUYV (uncompressed, ~150 Mbps at 640x480 30fps),
+        # which doesn't leave room for a second camera on the same bus —
+        # the kernel rejects VIDIOC_STREAMON with "Not enough bandwidth for
+        # altsetting". MJPEG is roughly 5x smaller and fits two cameras
+        # comfortably. Must be set before width/height/fps for negotiation
+        # to honor it.
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         cap.set(cv2.CAP_PROP_FPS, 30)
