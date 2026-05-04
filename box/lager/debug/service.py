@@ -42,6 +42,8 @@ from lager.debug.gdbserver import (
 )
 from lager.debug.probes import (
     resolve_serial_from_net,
+    parse_jlink_serial,
+    compute_slot,
     gdb_port_for_slot,
     rtt_port_for_slot,
 )
@@ -64,13 +66,29 @@ def _resolve_device_type(net: Dict[str, Any]) -> str:
 def _resolve_probe(net: Dict[str, Any]):
     """Return (serial, slot, gdb_port, rtt_port) for *net*.
 
-    Phase 1: every probe goes to slot 0 (legacy ports 2331 / 9090). The serial
-    is plumbed through so JLinkGDBServer binds to a specific probe via
-    ``-select USB=<sn>``. Phase 3 swaps slot 0 for a deterministic multi-probe
-    allocator.
+    The slot is computed deterministically from the sorted list of all debug
+    nets' J-Link serials currently in saved_nets.json, so every probe gets a
+    distinct GDB port (2331 + slot) and RTT base (9090 + slot * 2). Probes
+    without a parseable serial — and any failure to read the cache — fall back
+    to slot 0 / legacy ports for backwards compatibility.
     """
     serial = resolve_serial_from_net(net) if isinstance(net, dict) else None
     slot = 0
+    if serial:
+        try:
+            from lager.cache import get_nets_cache
+            all_nets = get_nets_cache().get_nets()
+            all_serials = [
+                parse_jlink_serial(n.get('address'))
+                for n in all_nets
+                if n.get('role') == 'debug'
+            ]
+            slot = compute_slot(serial, [s for s in all_serials if s])
+        except Exception as exc:
+            logger.warning(
+                f'Slot allocation failed for serial {serial!r}; falling back to slot 0: {exc}'
+            )
+            slot = 0
     return serial, slot, gdb_port_for_slot(slot), rtt_port_for_slot(slot)
 
 
