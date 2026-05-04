@@ -442,8 +442,9 @@ def connect_jlink(speed, device, transport, force=False, ignore_if_connected=Fal
                     "  - RESET: P213 (pin 1) - MUST have 10k pull-up to VCC\n\n"
                 )
 
+            tried_speeds = ', '.join(str(speed) for speed in speeds_to_try)
             error_msg = (
-                f"Cannot connect to target device (tried {', '.join(speeds_to_try)} kHz).\n\n"
+                f"Cannot connect to target device (tried {tried_speeds} kHz).\n\n"
                 "The J-Link probe was found, but cannot establish communication with the target MCU.\n"
                 f"{pin_info}"
                 "TROUBLESHOOTING CHECKLIST:\n"
