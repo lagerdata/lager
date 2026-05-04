@@ -15,16 +15,20 @@ from .mappings import (
     JL_PIDFILE,
     JL_LOGFILE,
 )
+from .probes import jlink_pidfile, jlink_logfile
 
 logger = logging.getLogger(__name__)
 
 
-def start_jlink(cmd_args):
+def start_jlink(cmd_args, serial=None, gdb_port=2331, rtt_telnet_port=9090):
     """
     Start J-Link GDB server process
 
     Args:
         cmd_args: List of command-line arguments for JLinkGDBServer
+        serial: J-Link USB serial. None uses the legacy single-probe paths.
+        gdb_port: GDB server port (default: 2331)
+        rtt_telnet_port: RTT telnet port (default: 9090)
 
     Returns:
         subprocess.CompletedProcess result
@@ -32,8 +36,8 @@ def start_jlink(cmd_args):
     Raises:
         subprocess.CalledProcessError: If J-Link fails to start
     """
-    logfile = JL_LOGFILE
-    pidfile = JL_PIDFILE
+    logfile = jlink_logfile(serial)
+    pidfile = jlink_pidfile(serial)
 
     # Start JLinkGDBServerCLExe directly (from mounted third_party directory)
     jlink_exe = '/home/www-data/third_party/jlink/JLinkGDBServerCLExe'
@@ -42,10 +46,11 @@ def start_jlink(cmd_args):
     if not os.path.exists(jlink_exe):
         jlink_exe = 'JLinkGDBServerCLExe'
 
+    select_arg = f'USB={serial}' if serial else 'USB'
     cmd = [jlink_exe] + cmd_args + [
-        '-select', 'USB',
-        '-port', '2331',
-        '-RTTTelnetPort', '9090',
+        '-select', select_arg,
+        '-port', str(gdb_port),
+        '-RTTTelnetPort', str(rtt_telnet_port),
         '-LocalhostOnly', '0',  # Allow connections from any IP (Tailscale network)
         '-stayrunning', '1',  # Keep server running even when all clients disconnect
         '-ir',  # CRITICAL: Init Registers - enables RTT control block detection
@@ -84,11 +89,14 @@ def start_jlink(cmd_args):
     )
 
 
-def stop_jlink():
+def stop_jlink(serial=None):
     """
-    Stop J-Link GDB server process and all its children, and reap zombies
+    Stop J-Link GDB server process and all its children, and reap zombies.
+
+    Args:
+        serial: J-Link USB serial. None uses the legacy single-probe PID file.
     """
-    pidfile = JL_PIDFILE
+    pidfile = jlink_pidfile(serial)
 
     try:
         # Read PID from file

@@ -26,6 +26,7 @@ from .process import (
 )
 from .gdbserver import get_jlink_gdbserver_status, stop_jlink_gdbserver, start_jlink_gdbserver
 from .gdb import get_arch, reset as gdb_reset, read_memory as gdb_read_memory
+from .probes import gdb_port_for_slot, rtt_port_for_slot
 
 logger = logging.getLogger(__name__)
 
@@ -144,7 +145,8 @@ def clean_logfile_content(logfile_content, max_length=2000):
     return cleaned.strip()
 
 
-def detect_and_configure_rtt(device_type=None, search_addr=0x20000000, search_size=0x10000, chunk_size=0x1000):
+def detect_and_configure_rtt(device_type=None, search_addr=0x20000000, search_size=0x10000,
+                             chunk_size=0x1000, serial=None, gdb_port=2331):
     """
     Detect RTT control block in RAM and configure J-Link to use it.
 
@@ -160,6 +162,8 @@ def detect_and_configure_rtt(device_type=None, search_addr=0x20000000, search_si
         search_addr: RAM start address to search (default: 0x20000000)
         search_size: Size of RAM region to search in bytes (default: 0x10000 / 64KB)
         chunk_size: Size of each read chunk in bytes (default: 0x1000 / 4KB)
+        serial: J-Link USB serial. None reads the legacy single-probe state.
+        gdb_port: GDB server port the running J-Link is listening on.
 
     Returns:
         dict with 'found': bool, 'address': str (hex) if found, 'error': str if error
@@ -174,14 +178,14 @@ def detect_and_configure_rtt(device_type=None, search_addr=0x20000000, search_si
 
     try:
         # Check if debugger is connected (check both PID file paths)
-        jlink_status = get_jlink_status()
-        gdbserver_status = get_jlink_gdbserver_status()
+        jlink_status = get_jlink_status(serial=serial, gdb_port=gdb_port)
+        gdbserver_status = get_jlink_gdbserver_status(serial=serial)
         if not jlink_status['running'] and not gdbserver_status['running']:
             result['error'] = 'No debugger connection'
             return result
 
         # Get GDB controller
-        gdbmi = get_controller(device=device_type)
+        gdbmi = get_controller(device=device_type, port=gdb_port)
 
         logger.info('Searching RAM for RTT control block...')
 
@@ -246,7 +250,8 @@ def detect_and_configure_rtt(device_type=None, search_addr=0x20000000, search_si
 
 
 def connect_jlink(speed, device, transport, force=False, ignore_if_connected=False,
-                  vardefs=None, attach='attach', idcode=None):
+                  vardefs=None, attach='attach', idcode=None, serial=None,
+                  gdb_port=2331, rtt_telnet_port=9090, script_file=None):
     """
     Connect to target via J-Link
 
@@ -259,6 +264,10 @@ def connect_jlink(speed, device, transport, force=False, ignore_if_connected=Fal
         vardefs: List of (varname, varvalue) tuples for additional settings
         attach: Attach mode ('attach', 'reset', 'reset-halt')
         idcode: 16-byte IDCODE for Renesas locked devices (hex string)
+        serial: J-Link USB serial. None falls back to the legacy single-probe path.
+        gdb_port: GDB server port to bind (default: 2331).
+        rtt_telnet_port: RTT telnet port to bind (default: 9090).
+        script_file: Optional path to J-Link script file to apply on connect.
 
     Returns:
         Status dictionary
@@ -271,8 +280,8 @@ def connect_jlink(speed, device, transport, force=False, ignore_if_connected=Fal
         vardefs = []
 
     # Check both PID files - CLI uses gdbserver path, Python API uses legacy path
-    status = get_jlink_status()
-    gdbserver_status = get_jlink_gdbserver_status()
+    status = get_jlink_status(serial=serial, gdb_port=gdb_port)
+    gdbserver_status = get_jlink_gdbserver_status(serial=serial)
 
     # Consider J-Link running if either path shows it running
     jlink_running = status['running'] or gdbserver_status['running']
@@ -284,8 +293,8 @@ def connect_jlink(speed, device, transport, force=False, ignore_if_connected=Fal
         raise JLinkAlreadyRunningError()
 
     # Stop both code paths to ensure clean state
-    stop_jlink()
-    stop_jlink_gdbserver()
+    stop_jlink(serial=serial)
+    stop_jlink_gdbserver(serial=serial)
 
     # Give hardware time to settle after disconnect to prevent fatigue
     # This prevents "Cannot connect to J-Link" errors during rapid operations
@@ -349,14 +358,17 @@ def connect_jlink(speed, device, transport, force=False, ignore_if_connected=Fal
                 speed=attempt_speed,
                 transport=transport,
                 halt=halt,
-                gdb_port=2331
+                gdb_port=gdb_port,
+                rtt_telnet_port=rtt_telnet_port,
+                serial=serial,
+                script_file=script_file,
             )
         except Exception as exc:
             last_error = JLinkStartError(b'', str(exc).encode(), str(exc))
             continue
 
         # Check if gdbserver started successfully
-        gdbserver_status = get_jlink_gdbserver_status()
+        gdbserver_status = get_jlink_gdbserver_status(serial=serial)
         if gdbserver_status['running']:
             status = {
                 'running': True,
@@ -365,7 +377,9 @@ def connect_jlink(speed, device, transport, force=False, ignore_if_connected=Fal
                 'requested_speed': requested_speed,
                 'fallback_used': (attempt_speed != requested_speed),
                 'pid': result.get('pid'),
-                'gdb_port': result.get('gdb_port', 2331),
+                'gdb_port': result.get('gdb_port', gdb_port),
+                'rtt_telnet_port': result.get('rtt_telnet_port', rtt_telnet_port),
+                'serial': serial,
             }
 
             # Give J-Link GDB server additional time to start accepting connections
@@ -375,7 +389,7 @@ def connect_jlink(speed, device, transport, force=False, ignore_if_connected=Fal
             # Perform reset if requested (after server is confirmed ready)
             if attach == 'reset-halt' or attach == 'reset':
                 try:
-                    gdb_reset(halt=halt, device=device)
+                    gdb_reset(halt=halt, device=device, port=gdb_port)
                 except Exception as e:
                     logger.warning(f'Reset after connect failed: {e}')
 
@@ -383,7 +397,7 @@ def connect_jlink(speed, device, transport, force=False, ignore_if_connected=Fal
             try:
                 from .gdb import get_controller
                 logger.debug('Verifying GDB connection to target...')
-                gdbmi = get_controller(device=device)
+                gdbmi = get_controller(device=device, port=gdb_port)
 
                 # Try a simple monitor command to verify connection
                 verify_responses = gdbmi.write('monitor version', timeout_sec=3.0, raise_error_on_timeout=False)
@@ -407,12 +421,12 @@ def connect_jlink(speed, device, transport, force=False, ignore_if_connected=Fal
             return status
         else:
             # Connection failed at this speed, try next
-            stop_jlink_gdbserver()
+            stop_jlink_gdbserver(serial=serial)
             time.sleep(0.5)
             last_error = JLinkStartError(b'', b'Connection failed', 'GDB server failed to start')
 
     # All attempts failed
-    stop_jlink_gdbserver()
+    stop_jlink_gdbserver(serial=serial)
     logfile_content = (status.get('logfile') or 'No log available') if 'status' in locals() else 'No log available'
     logfile_content_clean = clean_logfile_content(logfile_content)
 
@@ -491,7 +505,7 @@ def connect(interface, speed, device, transport, **kwargs):
     return connect_jlink(speed, device, transport, **kwargs)
 
 
-def disconnect(mcu=None, keep_jlink_running=False):
+def disconnect(mcu=None, keep_jlink_running=False, serial=None, gdb_port=2331):
     """
     Disconnect from debug target (J-Link only)
 
@@ -499,6 +513,8 @@ def disconnect(mcu=None, keep_jlink_running=False):
         mcu: MCU identifier (optional, unused for J-Link)
         keep_jlink_running: If True, only disconnect GDB client but leave J-Link running.
                            This allows external GDB clients to connect.
+        serial: J-Link USB serial. None operates on the legacy single-probe state.
+        gdb_port: GDB server port (default: 2331).
 
     Returns:
         Status dictionary
@@ -507,7 +523,7 @@ def disconnect(mcu=None, keep_jlink_running=False):
 
     if keep_jlink_running:
         # Only disconnect the debug service's GDB client, leave J-Link running
-        was_connected = disconnect_gdb_client(device=mcu)
+        was_connected = disconnect_gdb_client(device=mcu, port=gdb_port)
         return {
             'stop': 'ok',
             'gdb_client_disconnected': was_connected,
@@ -516,27 +532,29 @@ def disconnect(mcu=None, keep_jlink_running=False):
     else:
         # Original behavior: stop everything
         # Check both PID files (CLI uses gdbserver, Python API uses legacy)
-        jlink_status = get_jlink_status()
-        gdbserver_status = get_jlink_gdbserver_status()
+        jlink_status = get_jlink_status(serial=serial, gdb_port=gdb_port)
+        gdbserver_status = get_jlink_gdbserver_status(serial=serial)
 
         if jlink_status['running'] or gdbserver_status['running']:
             # First disconnect GDB client
-            disconnect_gdb_client(device=mcu)
+            disconnect_gdb_client(device=mcu, port=gdb_port)
             # Stop both code paths to ensure clean state
-            stop_jlink()
-            stop_jlink_gdbserver()
+            stop_jlink(serial=serial)
+            stop_jlink_gdbserver(serial=serial)
             return {'stop': 'ok'}
 
         return {'stop': 'ok'}
 
 
-def reset_device(halt=False, mcu=None):
+def reset_device(halt=False, mcu=None, serial=None, gdb_port=2331):
     """
     Reset connected device (J-Link only)
 
     Args:
         halt: Whether to halt after reset
         mcu: MCU identifier (optional, unused for J-Link)
+        serial: J-Link USB serial. None operates on the legacy single-probe state.
+        gdb_port: GDB server port (default: 2331).
 
     Returns:
         Generator yielding output from reset operation
@@ -545,23 +563,23 @@ def reset_device(halt=False, mcu=None):
         JLinkNotRunning: If J-Link is not running
     """
     # Try legacy path first (uses /tmp/jlink.pid)
-    jlink_status = get_jlink_status()
+    jlink_status = get_jlink_status(serial=serial, gdb_port=gdb_port)
     if jlink_status['running'] and jlink_status.get('cmdline'):
         try:
-            jlink = JLink(jlink_status['cmdline'], script_file=_get_script_file())
+            jlink = JLink(jlink_status['cmdline'], script_file=_get_script_file(), serial=serial)
             return jlink.reset(halt)
         except (ValueError, KeyError):
             pass  # Fall through to gdbserver path
 
     # Try gdbserver path (uses /tmp/jlink_gdbserver.pid)
-    gdbserver_status = get_jlink_gdbserver_status()
+    gdbserver_status = get_jlink_gdbserver_status(serial=serial)
     if gdbserver_status['running']:
         pid = gdbserver_status.get('pid')
         if pid:
             try:
                 with open(f'/proc/{pid}/cmdline', 'rb') as f:
                     cmdline = [part.decode() for part in f.read().split(b'\x00')]
-                jlink = JLink(cmdline, script_file=_get_script_file())
+                jlink = JLink(cmdline, script_file=_get_script_file(), serial=serial)
                 return jlink.reset(halt)
             except (OSError, IOError, ValueError, KeyError):
                 pass  # Fall through to error
@@ -569,7 +587,7 @@ def reset_device(halt=False, mcu=None):
     raise JLinkNotRunning()
 
 
-def erase_flash(start_addr, length, mcu=None):
+def erase_flash(start_addr, length, mcu=None, serial=None, gdb_port=2331):
     """
     Erase flash memory (J-Link only)
 
@@ -577,6 +595,8 @@ def erase_flash(start_addr, length, mcu=None):
         start_addr: Starting address
         length: Number of bytes to erase
         mcu: MCU identifier (optional, unused for J-Link)
+        serial: J-Link USB serial. None operates on the legacy single-probe state.
+        gdb_port: GDB server port (default: 2331).
 
     Returns:
         Generator yielding output from erase operation
@@ -585,22 +605,22 @@ def erase_flash(start_addr, length, mcu=None):
         JLinkNotRunning: If J-Link is not running
     """
     # Check both PID files (CLI uses gdbserver, Python API uses legacy)
-    jlink_status = get_jlink_status()
+    jlink_status = get_jlink_status(serial=serial, gdb_port=gdb_port)
     if jlink_status['running'] and jlink_status.get('cmdline'):
         try:
-            jlink = JLink(jlink_status['cmdline'], script_file=_get_script_file())
+            jlink = JLink(jlink_status['cmdline'], script_file=_get_script_file(), serial=serial)
             return jlink.erase(start_addr, length)
         except (ValueError, KeyError):
             pass  # Fall through to gdbserver path
 
-    gdbserver_status = get_jlink_gdbserver_status()
+    gdbserver_status = get_jlink_gdbserver_status(serial=serial)
     if gdbserver_status['running']:
         pid = gdbserver_status.get('pid')
         if pid:
             try:
                 with open(f'/proc/{pid}/cmdline', 'rb') as f:
                     cmdline = [part.decode() for part in f.read().split(b'\x00')]
-                jlink = JLink(cmdline, script_file=_get_script_file())
+                jlink = JLink(cmdline, script_file=_get_script_file(), serial=serial)
                 return jlink.erase(start_addr, length)
             except (OSError, IOError, ValueError, KeyError):
                 pass  # Fall through to error
@@ -608,7 +628,8 @@ def erase_flash(start_addr, length, mcu=None):
     raise JLinkNotRunning()
 
 
-def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None):
+def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None,
+               serial=None):
     """
     Erase flash via J-Link Commander.
 
@@ -628,6 +649,7 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None
         mcu: MCU identifier (optional, unused for J-Link)
         script_file: Optional path to J-Link script (from debug service); if None,
             uses a temp file left by connect or api._get_script_file().
+        serial: J-Link USB serial. None falls back to the legacy single-probe path.
 
     Returns:
         Generator yielding output from erase operation
@@ -638,12 +660,12 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None
     # Lazy import to avoid circular dependencies
     from .jlink import JLink
 
-    # Stop ALL running J-Link processes to free the USB probe for JLinkExe.
-    # Legacy start_jlink() uses /tmp/jlink.pid; the debug service uses
-    # JLinkGDBServer (/tmp/jlink_gdbserver.pid). Both must be stopped or
-    # JLinkExe cannot get exclusive USB access (erase may fail or hit wrong flash).
-    stop_jlink()
-    stop_jlink_gdbserver()
+    # Stop running J-Link processes for *this* probe to free its USB handle for JLinkExe.
+    # Legacy start_jlink() uses /tmp/jlink.pid (or per-serial when *serial* is set);
+    # the debug service uses JLinkGDBServer (/tmp/jlink_gdbserver.pid or per-serial).
+    # Both must be stopped or JLinkExe cannot get exclusive USB access.
+    stop_jlink(serial=serial)
+    stop_jlink_gdbserver(serial=serial)
 
     # Give the hardware time to be released
     time.sleep(0.5)
@@ -658,9 +680,10 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None
     # Create JLink instance with command args
     # Note: This will use JLinkExe, not GDB server
     class TempJLink:
-        def __init__(self, args, script_file=None):
+        def __init__(self, args, script_file=None, serial=None):
             self.args = args
             self.script_file = script_file
+            self.serial = serial
 
     resolved_script = script_file if (script_file and os.path.exists(script_file)) else _get_script_file()
     if not resolved_script:
@@ -668,14 +691,14 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None
             'chip_erase: no J-Link script file; DA1469x external QSPI may not be erased'
         )
 
-    jlink = TempJLink(cmd_args, script_file=resolved_script)
+    jlink = TempJLink(cmd_args, script_file=resolved_script, serial=serial)
     jlink.__class__ = JLink
 
     return jlink.chip_erase()
 
 
 def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None, use_gdb=True,
-                 script_file=None):
+                 script_file=None, serial=None, gdb_port=2331, rtt_telnet_port=9090):
     """
     Flash firmware to device using JLinkExe.
 
@@ -695,17 +718,21 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
         mcu: MCU identifier (e.g., 'nRF52833_XXAA')
         use_gdb: DEPRECATED - ignored, always uses JLinkExe
         script_file: Optional path to J-Link script file (from debug service)
+        serial: J-Link USB serial. None falls back to the legacy single-probe path.
+        gdb_port: GDB server port to bind on the post-flash reconnect (default: 2331).
+        rtt_telnet_port: RTT telnet port to bind on the post-flash reconnect (default: 9090).
 
     Returns:
         Generator yielding output from flash operation
     """
     from .jlink import JLink
 
-    # Stop ALL running J-Link processes to free the USB probe for JLinkExe.
-    # Both the legacy path (jlink.pid) and JLinkGDBServer (jlink_gdbserver.pid)
-    # must be stopped; otherwise JLinkExe cannot get exclusive USB access.
-    stop_jlink()
-    stop_jlink_gdbserver()
+    # Stop running J-Link processes for *this* probe to free its USB handle for JLinkExe.
+    # Both the legacy path (jlink.pid / per-serial) and JLinkGDBServer
+    # (jlink_gdbserver.pid / per-serial) must be stopped; otherwise JLinkExe
+    # cannot get exclusive USB access.
+    stop_jlink(serial=serial)
+    stop_jlink_gdbserver(serial=serial)
 
     # Give the hardware time to be released
     time.sleep(0.5)
@@ -725,12 +752,13 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
 
     # Create JLink instance with extracted args
     class TempJLink:
-        def __init__(self, args, script_file=None):
+        def __init__(self, args, script_file=None, serial=None):
             self.args = args
             self.script_file = script_file
+            self.serial = serial
 
     resolved_script = script_file if (script_file and os.path.exists(script_file)) else _get_script_file()
-    jlink = TempJLink(jlink_args, script_file=resolved_script)
+    jlink = TempJLink(jlink_args, script_file=resolved_script, serial=serial)
     jlink.__class__ = JLink
 
     yield from jlink.flash(files, preverify, verify)
@@ -749,7 +777,7 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
         yield "DA1469x: resetting target via J-Link Commander..."
         try:
             reset_args = ['-device', device, '-if', 'SWD', '-speed', speed]
-            with commander(reset_args, script_file=resolved_script) as jl:
+            with commander(reset_args, script_file=resolved_script, serial=serial) as jl:
                 jl.run_command('connect')
                 # Disable MPU and MTB so the next debug attach is clean
                 jl.run_command('w4 0xE000ED94 0')   # MPU_CTRL = 0
@@ -772,7 +800,9 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
                 speed=speed,
                 transport=transport,
                 halt=False,
-                gdb_port=2331,
+                gdb_port=gdb_port,
+                rtt_telnet_port=rtt_telnet_port,
+                serial=serial,
                 script_file=resolved_script,
             )
             yield "GDB server reconnected"
@@ -781,7 +811,7 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
 
 
 
-def read_memory(address, length, mcu=None):
+def read_memory(address, length, mcu=None, serial=None, gdb_port=2331):
     """
     Read memory from target device via J-Link monitor command
 
@@ -792,6 +822,8 @@ def read_memory(address, length, mcu=None):
         address: Memory address to read (int or hex string)
         length: Number of bytes to read
         mcu: MCU/device name (optional)
+        serial: J-Link USB serial. None operates on the legacy single-probe state.
+        gdb_port: GDB server port (default: 2331).
 
     Returns:
         bytes: Memory contents as bytes object
@@ -801,8 +833,8 @@ def read_memory(address, length, mcu=None):
         DebugError: If memory read fails
     """
     # Ensure J-Link is running (check both PID file paths)
-    jlink_status = get_jlink_status()
-    gdbserver_status = get_jlink_gdbserver_status()
+    jlink_status = get_jlink_status(serial=serial, gdb_port=gdb_port)
+    gdbserver_status = get_jlink_gdbserver_status(serial=serial)
     if not jlink_status['running'] and not gdbserver_status['running']:
         raise JLinkNotRunning("J-Link GDB server is not running. Call connect() first.")
 
@@ -818,7 +850,7 @@ def read_memory(address, length, mcu=None):
         jlink = None
         if jlink_status['running'] and jlink_status.get('cmdline'):
             try:
-                jlink = JLink(jlink_status['cmdline'], script_file=_get_script_file())
+                jlink = JLink(jlink_status['cmdline'], script_file=_get_script_file(), serial=serial)
             except (ValueError, KeyError):
                 pass
 
@@ -828,7 +860,7 @@ def read_memory(address, length, mcu=None):
                 try:
                     with open(f'/proc/{pid}/cmdline', 'rb') as f:
                         cmdline = [part.decode() for part in f.read().split(b'\x00')]
-                    jlink = JLink(cmdline, script_file=_get_script_file())
+                    jlink = JLink(cmdline, script_file=_get_script_file(), serial=serial)
                 except (OSError, IOError, ValueError, KeyError):
                     pass
 
@@ -866,7 +898,8 @@ class RTT:
             rtt.write(b'command\\n')
     """
 
-    def __init__(self, device=None, channel=0, search_addr=None, search_size=None, chunk_size=None):
+    def __init__(self, device=None, channel=0, search_addr=None, search_size=None, chunk_size=None,
+                 serial=None, rtt_telnet_port=9090, gdb_port=2331):
         """
         Initialize RTT session.
 
@@ -876,14 +909,20 @@ class RTT:
             search_addr: RAM start address for RTT control block search (default: 0x20000000)
             search_size: Size of RAM region to search in bytes (default: 0x10000 / 64KB)
             chunk_size: Size of each read chunk in bytes (default: 0x1000 / 4KB)
+            serial: J-Link USB serial. None operates on the legacy single-probe state.
+            rtt_telnet_port: Base RTT telnet port that the server is listening on
+                (default: 9090). Channel offset is added on top.
+            gdb_port: GDB server port (default: 2331).
         """
         self.device = device
         self.channel = channel
         self.search_addr = search_addr
         self.search_size = search_size
         self.chunk_size = chunk_size
+        self.serial = serial
+        self.gdb_port = gdb_port
         self._socket = None
-        self._port = 9090 + channel
+        self._port = rtt_telnet_port + channel
 
     def __enter__(self):
         """Enter RTT context - establish connection"""
@@ -891,13 +930,17 @@ class RTT:
         import time
 
         # Check if debugger is connected (check both PID file paths)
-        status = get_jlink_status()
-        gdbserver_status = get_jlink_gdbserver_status()
+        status = get_jlink_status(serial=self.serial, gdb_port=self.gdb_port)
+        gdbserver_status = get_jlink_gdbserver_status(serial=self.serial)
         if not status['running'] and not gdbserver_status['running']:
             raise JLinkNotRunning("J-Link must be connected before using RTT")
 
         # Auto-detect and configure RTT control block
-        rtt_kwargs = {'device_type': self.device}
+        rtt_kwargs = {
+            'device_type': self.device,
+            'serial': self.serial,
+            'gdb_port': self.gdb_port,
+        }
         if self.search_addr is not None:
             rtt_kwargs['search_addr'] = self.search_addr
         if self.search_size is not None:

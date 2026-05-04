@@ -273,8 +273,8 @@ fi
 # Port 8765: Debug Service
 # Port 9000: UART HTTP+WebSocket Server
 # Port 8081-8090: Remote debugging (PDB, etc.)
-# Port 2331: J-Link GDB Server
-# Port 9090: Additional service ports
+# Port 2331-2334: J-Link GDB Server (one slot per concurrent J-Link probe; up to 4)
+# Port 9090-9097: J-Link RTT telnet (two channels per probe slot; up to 4 probes × 2 channels)
 docker run -d \
     --network lagernet \
     --privileged \
@@ -298,8 +298,8 @@ docker run -d \
     -p 8100:8100 \
     -p 8765:8765 \
     -p 9000:9000 \
-    -p 2331:2331 \
-    -p 9090:9090 \
+    -p 2331-2334:2331-2334 \
+    -p 9090-9097:9090-9097 \
     --env "PIGPIO_ADDR=$PIGPIO_ADDR" \
     --env "LAGER_HOST=$DOCKER_IFACE" \
     --env "PYTHONBREAKPOINT=remote_pdb.set_trace" \
@@ -326,7 +326,8 @@ echo "  - MCP Server (AI): port 8100 (Cursor: http://<box-ip>:8100/mcp)"
 echo "  - Debug Service: port 8765"
 echo "  - UART HTTP+WebSocket: port 9000"
 echo "  - Remote PDB: ports 8081-8090"
-echo "  - J-Link GDB Server: port 2331"
+echo "  - J-Link GDB Server: ports 2331-2334 (one per concurrent J-Link probe)"
+echo "  - J-Link RTT telnet: ports 9090-9097"
 echo ""
 echo "IMPORTANT: The controller container is NO LONGER NEEDED!"
 echo "  All functionality has been moved to the lager container."

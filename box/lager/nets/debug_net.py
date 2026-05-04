@@ -45,6 +45,11 @@ try:
         read_memory as debug_read_memory,
         RTT,
     )
+    from ..debug.probes import (
+        resolve_serial_from_net,
+        gdb_port_for_slot,
+        rtt_port_for_slot,
+    )
 
     class DebugNet:
         """Wrapper for debug operations via Net API"""
@@ -65,6 +70,12 @@ try:
             self.device = device
             self.speed = '4000'  # default speed
             self.transport = 'SWD'  # default transport
+            # Phase 1: every probe occupies slot 0 (legacy ports). The serial is
+            # plumbed through so JLinkGDBServer/JLinkExe bind to a specific probe.
+            self.serial = resolve_serial_from_net(net_info)
+            self.slot = 0
+            self.gdb_port = gdb_port_for_slot(self.slot)
+            self.rtt_telnet_port = rtt_port_for_slot(self.slot)
 
         def connect(self, speed=None, transport=None):
             """Connect to target device"""
@@ -73,17 +84,20 @@ try:
             return connect_jlink(
                 speed=speed,
                 device=self.device,
-                transport=transport
+                transport=transport,
+                serial=self.serial,
+                gdb_port=self.gdb_port,
+                rtt_telnet_port=self.rtt_telnet_port,
             )
 
         def disconnect(self):
             """Disconnect from target"""
-            return disconnect()
+            return disconnect(serial=self.serial, gdb_port=self.gdb_port)
 
         def reset(self, halt=False):
             """Reset the device"""
             results = []
-            for line in reset_device(halt=halt):
+            for line in reset_device(halt=halt, serial=self.serial, gdb_port=self.gdb_port):
                 results.append(line)
             return '\n'.join(results)
 
@@ -101,25 +115,34 @@ try:
                 raise ValueError(f"Unsupported firmware file type: {ext}")
 
             results = []
-            for line in flash_device(files, mcu=self.device):
+            for line in flash_device(
+                files, mcu=self.device, serial=self.serial,
+                gdb_port=self.gdb_port, rtt_telnet_port=self.rtt_telnet_port,
+            ):
                 results.append(line)
             return '\n'.join(results)
 
         def erase(self):
             """Perform chip erase"""
             results = []
-            for line in chip_erase(device=self.device, speed=self.speed, transport=self.transport):
+            for line in chip_erase(
+                device=self.device, speed=self.speed, transport=self.transport,
+                serial=self.serial,
+            ):
                 results.append(line)
             return '\n'.join(results)
 
         def read_memory(self, address, length):
             """Read memory from target device"""
-            return debug_read_memory(address, length, mcu=self.device)
+            return debug_read_memory(
+                address, length, mcu=self.device,
+                serial=self.serial, gdb_port=self.gdb_port,
+            )
 
         def status(self):
             """Get connection status"""
-            status = get_jlink_status()
-            gdbserver_status = get_jlink_gdbserver_status()
+            status = get_jlink_status(serial=self.serial, gdb_port=self.gdb_port)
+            gdbserver_status = get_jlink_gdbserver_status(serial=self.serial)
             # Consider connected if either path shows running
             if gdbserver_status['running'] and not status['running']:
                 return gdbserver_status
@@ -145,8 +168,12 @@ try:
                         print(data.decode('utf-8'))
                     rtt.write(b'command\\n')
             """
-            return RTT(device=self.device, channel=channel,
-                       search_addr=search_addr, search_size=search_size, chunk_size=chunk_size)
+            return RTT(
+                device=self.device, channel=channel,
+                search_addr=search_addr, search_size=search_size, chunk_size=chunk_size,
+                serial=self.serial, rtt_telnet_port=self.rtt_telnet_port,
+                gdb_port=self.gdb_port,
+            )
 
     def make_debug(name, net_info=None):  # type: ignore
         """Factory function to create a DebugNet instance."""

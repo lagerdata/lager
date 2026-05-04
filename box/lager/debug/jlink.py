@@ -110,14 +110,36 @@ def get_jlink_exe_path():
     return None
 
 
+def _serial_from_gdbserver_cmdline(cmdline):
+    """Extract the J-Link USB serial from a JLinkGDBServer cmdline list.
+
+    JLinkGDBServer uses ``-select USB=<sn>`` (or bare ``-select USB`` for any
+    probe). Returns the serial string, or None when no serial is bound.
+    """
+    try:
+        idx = cmdline.index('-select')
+    except ValueError:
+        return None
+    if idx + 1 >= len(cmdline):
+        return None
+    value = cmdline[idx + 1]
+    if not value or not value.startswith('USB='):
+        return None
+    serial = value[len('USB='):].strip()
+    return serial or None
+
+
 @contextmanager
-def commander(args, script_file=None):
+def commander(args, script_file=None, serial=None):
     """
     Context manager for J-Link Commander REPL wrapper
 
     Args:
         args: Command-line arguments for JLinkExe
         script_file: Optional path to J-Link script file (.JLinkScript)
+        serial: J-Link USB serial. When provided, JLinkExe is bound to that
+            specific probe via ``-SelectEmuBySN <sn>`` so the call doesn't
+            collide with another probe on the same box.
 
     Yields:
         REPLWrapper instance for interacting with J-Link Commander
@@ -135,6 +157,8 @@ def commander(args, script_file=None):
         raise Exception('JLinkExe not found')
 
     full_args = list(args)
+    if serial and '-SelectEmuBySN' not in full_args:
+        full_args = ['-SelectEmuBySN', serial] + full_args
     if script_file and os.path.exists(script_file):
         full_args.extend(['-JLinkScriptFile', script_file])
     elif script_file:
@@ -155,13 +179,16 @@ class JLink:
     Class for communicating with J-Link debug probes
     """
 
-    def __init__(self, cmdline, script_file=None):
+    def __init__(self, cmdline, script_file=None, serial=None):
         """
         Initialize J-Link interface from command line
 
         Args:
-            cmdline: Command line arguments list from running process
+            cmdline: Command line arguments list from running JLinkGDBServer process
             script_file: Optional path to J-Link script file (.JLinkScript)
+            serial: J-Link USB serial. If None, attempts to recover it from
+                ``-select USB=<sn>`` in *cmdline* so the spawned JLinkExe binds
+                to the same physical probe.
         """
         args_start = cmdline.index('-device')
         args = cmdline[args_start:]
@@ -171,6 +198,9 @@ class JLink:
         args = args[:speed_idx + 2]
         self.args = args
         self.script_file = script_file
+        if serial is None:
+            serial = _serial_from_gdbserver_cmdline(cmdline)
+        self.serial = serial
 
     def erase(self, start_addr, length, *, close=True):
         """
@@ -184,7 +214,7 @@ class JLink:
         Yields:
             Output from J-Link commands
         """
-        with commander(self.args, script_file=self.script_file) as jl:
+        with commander(self.args, script_file=self.script_file, serial=self.serial) as jl:
             yield jl.run_command('connect')
             yield jl.run_command(f'erase {hex(start_addr)} {hex(start_addr + length - 1)}')
 
@@ -208,7 +238,7 @@ class JLink:
         Yields:
             Output from J-Link commands
         """
-        with commander(self.args, script_file=self.script_file) as jl:
+        with commander(self.args, script_file=self.script_file, serial=self.serial) as jl:
             yield jl.run_command('connect')
             dev = ''
             try:
@@ -256,7 +286,7 @@ class JLink:
         """
         memory_data = []
 
-        with commander(self.args, script_file=self.script_file) as jl:
+        with commander(self.args, script_file=self.script_file, serial=self.serial) as jl:
             jl.run_command('connect')
             # J-Link Commander mem8 syntax: mem8 address count
             output = jl.run_command(f'mem8 {hex(address)} {length}')
@@ -295,7 +325,7 @@ class JLink:
         skip).
         """
         (hexfiles, binfiles, elffiles) = files
-        with commander(self.args, script_file=self.script_file) as jl:
+        with commander(self.args, script_file=self.script_file, serial=self.serial) as jl:
             # Yield connect output to show device discovery details
             yield jl.run_command('connect')
 
@@ -329,7 +359,7 @@ class JLink:
         Yields:
             Output from J-Link commands
         """
-        with commander(self.args, script_file=self.script_file) as jl:
+        with commander(self.args, script_file=self.script_file, serial=self.serial) as jl:
             yield jl.run_command('connect')
             if halt:
                 yield jl.run_command('r')

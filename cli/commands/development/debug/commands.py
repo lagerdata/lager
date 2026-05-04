@@ -616,6 +616,9 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
         client.close()
         ctx.exit(1)
 
+    # Effective port may differ from --gdb-port when the box assigns a per-probe slot.
+    effective_gdb_port = result.get('gdb_server', {}).get('gdb_port', gdb_port) if isinstance(result, dict) else gdb_port
+
     if not quiet:
         if json_output:
             click.echo(json.dumps(result, indent=2))
@@ -625,19 +628,19 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
                 gdb_info = result['gdb_server']
                 if gdb_info.get('status') == 'started':
                     click.secho("JLinkGDBServer started!", fg='green', err=True)
-                    click.secho(f"GDB server listening on {target_box}:{gdb_port}", fg='cyan', err=True)
-                    click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{gdb_port}'", fg='cyan', err=True)
+                    click.secho(f"GDB server listening on {target_box}:{effective_gdb_port}", fg='cyan', err=True)
+                    click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{effective_gdb_port}'", fg='cyan', err=True)
                 elif gdb_info.get('status') == 'already_running':
                     click.secho("JLinkGDBServer already running!", fg='green', err=True)
-                    click.secho(f"GDB server listening on {target_box}:{gdb_port}", fg='cyan', err=True)
-                    click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{gdb_port}'", fg='cyan', err=True)
+                    click.secho(f"GDB server listening on {target_box}:{effective_gdb_port}", fg='cyan', err=True)
+                    click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{effective_gdb_port}'", fg='cyan', err=True)
                 elif 'error' in gdb_info:
                     click.secho(f"Error: GDB server failed to start: {gdb_info.get('message', 'Unknown error')}", fg='red', err=True)
                     ctx.exit(1)
             else:
                 click.secho("JLinkGDBServer started!", fg='green', err=True)
-                click.secho(f"GDB server listening on {target_box}:{gdb_port}", fg='cyan', err=True)
-                click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{gdb_port}'", fg='cyan', err=True)
+                click.secho(f"GDB server listening on {target_box}:{effective_gdb_port}", fg='cyan', err=True)
+                click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{effective_gdb_port}'", fg='cyan', err=True)
 
     # Parse RTT search parameters (hex strings to integers)
     rtt_search_params = {}
@@ -789,11 +792,13 @@ def disconnect(ctx, box, keep_server):
         ctx.exit(1)
 
     # Stop JLinkGDBServer
-    client.disconnect(debug_net, keep_jlink_running=keep_server)
+    disc_result = client.disconnect(debug_net, keep_jlink_running=keep_server)
 
     if keep_server:
-        click.secho(f"JLinkGDBServer still running on {target_box}:2331", fg='green')
-        click.secho(f"You can connect with: arm-none-eabi-gdb firmware.elf -ex 'target extended-remote {target_box}:2331'", fg='cyan')
+        # Effective port comes from the box (per-probe slot for multi-J-Link).
+        running_port = (disc_result or {}).get('gdb_port', 2331)
+        click.secho(f"JLinkGDBServer still running on {target_box}:{running_port}", fg='green')
+        click.secho(f"You can connect with: arm-none-eabi-gdb firmware.elf -ex 'target extended-remote {target_box}:{running_port}'", fg='cyan')
     else:
         click.secho("JLinkGDBServer stopped", fg='green')
 
