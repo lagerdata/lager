@@ -66,8 +66,12 @@ def lager_excepthook(etype, value, tb):
         Custom exception printer so users get nice tracebacks without
         weird temporary filenames and paths
     """
-    module_folder = os.environ['LAGER_HOST_MODULE_FOLDER']
     error_lines = traceback.format_exception(etype, value, tb)
+    module_folder = os.environ.get('LAGER_HOST_MODULE_FOLDER')
+    if not module_folder:
+        for line in error_lines:
+            print(line, end='')
+        return
     if module_folder == '/tmp':
         # We are just running a standalone script
         regex = re.compile(r'\A(\s*File \")tmp[a-zA-Z0-9_-]+.py(\",.*)')
