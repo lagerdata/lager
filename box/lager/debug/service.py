@@ -45,6 +45,8 @@ from lager.debug.probes import (
     parse_jlink_serial,
     compute_slot,
     gdb_port_for_slot,
+    swo_port_for_slot,
+    telnet_port_for_slot,
     rtt_port_for_slot,
 )
 
@@ -64,13 +66,19 @@ def _resolve_device_type(net: Dict[str, Any]) -> str:
 
 
 def _resolve_probe(net: Dict[str, Any]):
-    """Return (serial, slot, gdb_port, rtt_port) for *net*.
+    """Return (serial, slot, gdb_port, swo_port, telnet_port, rtt_port) for *net*.
 
     The slot is computed deterministically from the sorted list of all debug
-    nets' J-Link serials currently in saved_nets.json, so every probe gets a
-    distinct GDB port (2331 + slot) and RTT base (9090 + slot * 2). Probes
-    without a parseable serial — and any failure to read the cache — fall back
-    to slot 0 / legacy ports for backwards compatibility.
+    nets' J-Link serials currently in saved_nets.json. Each probe gets a
+    distinct three-port window:
+
+    * GDB protocol:  ``2331 + 3*slot``
+    * SWO output:    ``2332 + 3*slot``
+    * Telnet I/O:    ``2333 + 3*slot``
+    * RTT base:      ``9090 + 2*slot``
+
+    Probes without a parseable serial — and any failure to read the cache —
+    fall back to slot 0 / legacy ports for backwards compatibility.
     """
     serial = resolve_serial_from_net(net) if isinstance(net, dict) else None
     slot = 0
@@ -93,7 +101,14 @@ def _resolve_probe(net: Dict[str, Any]):
                 f'Slot allocation failed for serial {serial!r}; falling back to slot 0: {exc}'
             )
             slot = 0
-    return serial, slot, gdb_port_for_slot(slot), rtt_port_for_slot(slot)
+    return (
+        serial,
+        slot,
+        gdb_port_for_slot(slot),
+        swo_port_for_slot(slot),
+        telnet_port_for_slot(slot),
+        rtt_port_for_slot(slot),
+    )
 
 
 def _get_script_file(net=None):
@@ -334,9 +349,19 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             force = data.get('force', False)
             halt = data.get('halt', False)
             gdb = data.get('gdb', True)  # Default to starting GDB server
-            serial, slot, default_gdb_port, default_rtt_port = _resolve_probe(net)
+            serial, slot, default_gdb_port, default_swo_port, default_telnet_port, default_rtt_port = _resolve_probe(net)
+            # Only honour an explicit override; absence => use the slot allocator.
             gdb_port = data.get('gdb_port', default_gdb_port)
             rtt_telnet_port = data.get('rtt_telnet_port', default_rtt_port)
+            # Auxiliary ports (SWO + Telnet) MUST live in this slot's window or
+            # JLinkGDBServer will collide with the next slot's GDB port. If the
+            # caller overrode gdb_port we shift swo/telnet relative to it.
+            if 'gdb_port' in data:
+                swo_port = data.get('swo_port', gdb_port + 1)
+                telnet_port = data.get('telnet_port', gdb_port + 2)
+            else:
+                swo_port = data.get('swo_port', default_swo_port)
+                telnet_port = data.get('telnet_port', default_telnet_port)
 
             # Handle J-Link script file
             # Priority 1: Script sent in POST body (local .lager config override)
@@ -378,6 +403,8 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                         'gdb_server': {
                             'status': 'already_running',
                             'gdb_port': gdb_port,
+                            'swo_port': swo_port,
+                            'telnet_port': telnet_port,
                             'rtt_telnet_port': rtt_telnet_port,
                             'pid': status['pid']
                         }
@@ -398,7 +425,8 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             # Start JLinkGDBServer
             logger.info(
                 f'Starting JLinkGDBServer for device {device_type}, speed {speed}, '
-                f'probe serial={serial or "<any>"}, gdb_port={gdb_port}, rtt_port={rtt_telnet_port}'
+                f'probe serial={serial or "<any>"}, gdb_port={gdb_port}, '
+                f'swo_port={swo_port}, telnet_port={telnet_port}, rtt_port={rtt_telnet_port}'
             )
             result = start_jlink_gdbserver(
                 device=device_type,
@@ -406,6 +434,8 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 transport='SWD',
                 halt=halt,
                 gdb_port=gdb_port,
+                swo_port=swo_port,
+                telnet_port=telnet_port,
                 rtt_telnet_port=rtt_telnet_port,
                 serial=serial,
                 script_file=script_file_path,
@@ -421,6 +451,8 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                     'pid': result['pid'],
                     'serial': serial,
                     'gdb_port': gdb_port,
+                    'swo_port': swo_port,
+                    'telnet_port': telnet_port,
                     'rtt_telnet_port': rtt_telnet_port,
                 }
 
@@ -435,6 +467,8 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 'gdb_server': {
                     'status': 'started',
                     'gdb_port': gdb_port,
+                    'swo_port': swo_port,
+                    'telnet_port': telnet_port,
                     'rtt_telnet_port': rtt_telnet_port,
                     'pid': result['pid']
                 }
@@ -460,7 +494,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             # Check if user wants to keep server running
             keep_jlink_running = data.get('keep_jlink_running', False)
             net = data.get('net', {})
-            serial, _slot, gdb_port, rtt_telnet_port = _resolve_probe(net)
+            serial, _slot, gdb_port, swo_port, telnet_port, rtt_telnet_port = _resolve_probe(net)
 
             if not keep_jlink_running:
                 # Stop JLinkGDBServer for *this* probe
@@ -494,7 +528,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
         try:
             halt = data.get('halt', False)
             net = data.get('net') or {}
-            serial, _slot, _gdb_port, _rtt_port = _resolve_probe(net)
+            serial, _slot, _gdb_port, _swo_port, _telnet_port, _rtt_port = _resolve_probe(net)
 
             # Check if J-Link GDB server is running for this probe
             gdbserver_status = get_jlink_gdbserver_status(serial=serial)
@@ -554,7 +588,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
 
             net = data.get('net', {})
             device_type = _resolve_device_type(net)
-            serial, _slot, gdb_port, rtt_telnet_port = _resolve_probe(net)
+            serial, _slot, gdb_port, swo_port, telnet_port, rtt_telnet_port = _resolve_probe(net)
 
             gdbserver_status = get_jlink_gdbserver_status(serial=serial)
             if gdbserver_status['running']:
@@ -633,6 +667,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                     files, run_after=True, mcu=device_type, use_gdb=(not verbose),
                     script_file=script_path, serial=serial,
                     gdb_port=gdb_port, rtt_telnet_port=rtt_telnet_port,
+                    swo_port=swo_port, telnet_port=telnet_port,
                 ):
                     logger.info(f"[FLASH] {output}")  # Log flash progress
                     flash_output.append(output)  # Collect for client
@@ -673,7 +708,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             device_type = _resolve_device_type(net)
             speed = data.get('speed', '4000')
             transport = data.get('transport', 'SWD')
-            serial, _slot, _gdb_port, _rtt_port = _resolve_probe(net)
+            serial, _slot, _gdb_port, _swo_port, _telnet_port, _rtt_port = _resolve_probe(net)
 
             script_path = _get_script_file(net)
 
@@ -718,7 +753,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 return
 
             net = data.get('net') or {}
-            serial, _slot, _gdb_port, _rtt_port = _resolve_probe(net)
+            serial, _slot, _gdb_port, _swo_port, _telnet_port, _rtt_port = _resolve_probe(net)
 
             # Check if GDB server is running for this probe
             gdbserver_status = get_jlink_gdbserver_status(serial=serial)
@@ -774,7 +809,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
         try:
             net = data.get('net', {})
             device_type = _resolve_device_type(net)
-            serial, _slot, _gdb_port, _rtt_port = _resolve_probe(net)
+            serial, _slot, _gdb_port, _swo_port, _telnet_port, _rtt_port = _resolve_probe(net)
 
             # Try to get architecture
             try:
@@ -802,7 +837,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
         """Handle status command."""
         try:
             net = data.get('net') or {}
-            serial, _slot, _gdb_port, _rtt_port = _resolve_probe(net)
+            serial, _slot, _gdb_port, _swo_port, _telnet_port, _rtt_port = _resolve_probe(net)
             gdbserver_status = get_jlink_gdbserver_status(serial=serial)
 
             self.send_json_response(200, {
@@ -826,7 +861,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
 
             net = data.get('net', {})
             device_type = _resolve_device_type(net)
-            serial, _slot, gdb_port, rtt_port_base = _resolve_probe(net)
+            serial, _slot, gdb_port, _swo_port, _telnet_port, rtt_port_base = _resolve_probe(net)
 
             # Check if GDB server is running for this probe
             gdbserver_status = get_jlink_gdbserver_status(serial=serial)

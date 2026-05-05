@@ -698,7 +698,8 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None
 
 
 def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None, use_gdb=True,
-                 script_file=None, serial=None, gdb_port=2331, rtt_telnet_port=9090):
+                 script_file=None, serial=None, gdb_port=2331, rtt_telnet_port=9090,
+                 swo_port=None, telnet_port=None):
     """
     Flash firmware to device using JLinkExe.
 
@@ -721,6 +722,8 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
         serial: J-Link USB serial. None falls back to the legacy single-probe path.
         gdb_port: GDB server port to bind on the post-flash reconnect (default: 2331).
         rtt_telnet_port: RTT telnet port to bind on the post-flash reconnect (default: 9090).
+        swo_port: SWO port for the post-flash reconnect. None means ``gdb_port + 1``.
+        telnet_port: Telnet port for the post-flash reconnect. None means ``gdb_port + 2``.
 
     Returns:
         Generator yielding output from flash operation
@@ -801,6 +804,8 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
                 transport=transport,
                 halt=False,
                 gdb_port=gdb_port,
+                swo_port=swo_port,
+                telnet_port=telnet_port,
                 rtt_telnet_port=rtt_telnet_port,
                 serial=serial,
                 script_file=resolved_script,

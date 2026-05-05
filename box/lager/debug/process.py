@@ -20,7 +20,8 @@ from .probes import jlink_pidfile, jlink_logfile
 logger = logging.getLogger(__name__)
 
 
-def start_jlink(cmd_args, serial=None, gdb_port=2331, rtt_telnet_port=9090):
+def start_jlink(cmd_args, serial=None, gdb_port=2331, rtt_telnet_port=9090,
+                swo_port=None, telnet_port=None):
     """
     Start J-Link GDB server process
 
@@ -29,6 +30,10 @@ def start_jlink(cmd_args, serial=None, gdb_port=2331, rtt_telnet_port=9090):
         serial: J-Link USB serial. None uses the legacy single-probe paths.
         gdb_port: GDB server port (default: 2331)
         rtt_telnet_port: RTT telnet port (default: 9090)
+        swo_port: SWO raw output port. None means ``gdb_port + 1``. Must be
+            passed explicitly when running concurrent slots — JLinkGDBServer's
+            hardcoded default is 2332 regardless of -port.
+        telnet_port: Terminal I/O port. None means ``gdb_port + 2``. Same caveat.
 
     Returns:
         subprocess.CompletedProcess result
@@ -47,9 +52,15 @@ def start_jlink(cmd_args, serial=None, gdb_port=2331, rtt_telnet_port=9090):
         jlink_exe = 'JLinkGDBServerCLExe'
 
     select_arg = f'USB={serial}' if serial else 'USB'
+    if swo_port is None:
+        swo_port = gdb_port + 1
+    if telnet_port is None:
+        telnet_port = gdb_port + 2
     cmd = [jlink_exe] + cmd_args + [
         '-select', select_arg,
         '-port', str(gdb_port),
+        '-swoport', str(swo_port),
+        '-telnetport', str(telnet_port),
         '-RTTTelnetPort', str(rtt_telnet_port),
         '-LocalhostOnly', '0',  # Allow connections from any IP (Tailscale network)
         '-stayrunning', '1',  # Keep server running even when all clients disconnect
