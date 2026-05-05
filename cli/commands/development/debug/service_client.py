@@ -58,7 +58,7 @@ class DebugServiceClient:
 
     def connect(self, net: Dict[str, Any], speed: Optional[str] = None,
                 force: bool = False, halt: bool = False, gdb: bool = False,
-                gdb_port: int = 2331, jlink_script: Optional[str] = None) -> Dict[str, Any]:
+                gdb_port: Optional[int] = None, jlink_script: Optional[str] = None) -> Dict[str, Any]:
         """
         Connect to debugger.
 
@@ -68,7 +68,9 @@ class DebugServiceClient:
             force: Force new connection (default: False for connection reuse)
             halt: Halt device after connect
             gdb: Start GDB server (default: False)
-            gdb_port: GDB server port (default: 2331)
+            gdb_port: GDB server port. None lets the box pick from the probe's
+                slot (2331, 2334, 2337, 2340 for slots 0-3). Pass an integer
+                only when you specifically need to override.
             jlink_script: Base64-encoded J-Link script file content (optional)
 
         Returns:
@@ -80,8 +82,11 @@ class DebugServiceClient:
             'force': force,
             'halt': halt,
             'gdb': gdb,
-            'gdb_port': gdb_port,
         }
+        if gdb_port is not None:
+            # Only forward an explicit override; otherwise the box uses its
+            # per-slot allocator.
+            data['gdb_port'] = gdb_port
 
         if jlink_script:
             data['jlink_script'] = jlink_script

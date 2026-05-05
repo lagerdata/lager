@@ -521,8 +521,11 @@ def _debug(ctx, box):
               help='Start GDB server, reset device, then stream RTT logs (captures boot sequence)')
 @click.option('--reset', is_flag=True, default=False,
               help='Reset the device after starting GDB server')
-@click.option('--gdb-port', type=int, default=2331,
-              help='GDB server port (default: 2331)')
+@click.option('--gdb-port', type=int, default=None,
+              help='Override the auto-allocated GDB server port. By default the box '
+                   'picks a port based on the probe\'s slot (2331 for the first probe, '
+                   '2334 for the second, etc.). Pass this flag only if you need a '
+                   'specific port — and don\'t use it on multi-probe boxes.')
 @click.option('--rtt-search-addr', type=str, default=None,
               help='RAM start address for RTT control block search (hex, e.g., 0x20020000)')
 @click.option('--rtt-search-size', type=str, default=None,
@@ -532,12 +535,13 @@ def _debug(ctx, box):
 def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, reset, gdb_port,
               rtt_search_addr, rtt_search_size, rtt_chunk_size):
     """Start JLinkGDBServer for debugging"""
-    # Validate GDB port range
-    if gdb_port < 1 or gdb_port > 65535:
-        click.secho(f"Error: GDB port must be between 1 and 65535, got {gdb_port}", fg='red', err=True)
-        ctx.exit(1)
-    if gdb_port < 1024:
-        click.secho(f"Warning: Port {gdb_port} is a privileged port (< 1024). May require root privileges.", fg='yellow', err=True)
+    # Validate GDB port range only when the user explicitly passed --gdb-port.
+    if gdb_port is not None:
+        if gdb_port < 1 or gdb_port > 65535:
+            click.secho(f"Error: GDB port must be between 1 and 65535, got {gdb_port}", fg='red', err=True)
+            ctx.exit(1)
+        if gdb_port < 1024:
+            click.secho(f"Warning: Port {gdb_port} is a privileged port (< 1024). May require root privileges.", fg='yellow', err=True)
 
     target_box = box
 

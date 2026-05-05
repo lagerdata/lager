@@ -204,7 +204,7 @@ def stop_jlink_gdbserver(serial=None):
 
 def start_jlink_gdbserver(device, speed='adaptive', transport='SWD', halt=False,
                           gdb_port=2331, script_file=None, serial=None,
-                          rtt_telnet_port=9090):
+                          rtt_telnet_port=9090, swo_port=None, telnet_port=None):
     """Start JLinkGDBServer process.
 
     Args:
@@ -217,9 +217,16 @@ def start_jlink_gdbserver(device, speed='adaptive', transport='SWD', halt=False,
         serial: J-Link USB serial. None falls back to the legacy single-probe
             path (no `-select USB=<sn>`, /tmp/jlink_gdbserver.pid).
         rtt_telnet_port: RTT telnet port (default: 9090)
+        swo_port: SWO raw output port. JLinkGDBServer's hardcoded default is 2332
+            regardless of -port, so when running multiple instances on different
+            slots we MUST pass this explicitly to avoid collisions. None means
+            ``gdb_port + 1``.
+        telnet_port: Terminal I/O port. Same story — default 2333 collides across
+            slots. None means ``gdb_port + 2``.
 
     Returns:
-        dict: {'pid': int, 'status': str, 'gdb_port': int}
+        dict: {'pid': int, 'status': str, 'gdb_port': int, 'swo_port': int,
+               'telnet_port': int, 'rtt_telnet_port': int, 'serial': str|None}
 
     Raises:
         Exception: If JLinkGDBServer not found or fails to start
@@ -251,9 +258,15 @@ def start_jlink_gdbserver(device, speed='adaptive', transport='SWD', halt=False,
     cmd.extend(['-speed', speed])
 
     select_arg = f'USB={serial}' if serial else 'USB'
+    if swo_port is None:
+        swo_port = gdb_port + 1
+    if telnet_port is None:
+        telnet_port = gdb_port + 2
     cmd.extend([
         '-select', select_arg,
         '-port', str(gdb_port),
+        '-swoport', str(swo_port),
+        '-telnetport', str(telnet_port),
         '-RTTTelnetPort', str(rtt_telnet_port),
         '-LocalhostOnly', '0',  # Allow connections from any IP (Tailscale)
         '-stayrunning', '1',    # Keep server running
@@ -327,6 +340,8 @@ def start_jlink_gdbserver(device, speed='adaptive', transport='SWD', halt=False,
         'pid': proc.pid,
         'status': 'started',
         'gdb_port': gdb_port,
+        'swo_port': swo_port,
+        'telnet_port': telnet_port,
         'rtt_telnet_port': rtt_telnet_port,
         'serial': serial,
     }

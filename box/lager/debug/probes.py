@@ -10,6 +10,17 @@ segment is the J-Link USB serial number. These helpers extract it and turn
 it into deterministic per-probe paths and ports so multiple J-Links can run
 concurrently on the same box.
 
+JLinkGDBServer reserves three consecutive ports per instance:
+
+* ``-port`` (the GDB protocol port, what users connect to with arm-none-eabi-gdb)
+* ``-swoport`` (SWO raw output, default 2332 — does NOT shift when -port shifts)
+* ``-telnetport`` (Terminal I/O, default 2333)
+
+We therefore stride slots by **3** so adjacent slots never collide on the
+auxiliary ports (a stride of 1 caused slot 0's SWO port 2332 to collide with
+slot 1's GDB port). The caller is responsible for passing all three ports
+explicitly to JLinkGDBServer.
+
 Slot 0 is the legacy single-probe path: GDB on 2331, RTT on 9090, PID file
 ``/tmp/jlink_gdbserver.pid``. ``serial=None`` always resolves to slot 0,
 preserving behaviour for nets without a parseable address.
@@ -24,6 +35,7 @@ _VISA_JLINK_RE = re.compile(
 )
 
 _GDB_PORT_BASE = 2331
+_GDB_PORTS_PER_SLOT = 3  # GDB + SWO + Telnet, must not overlap across slots
 _RTT_PORT_BASE = 9090
 _RTT_PORTS_PER_SLOT = 2  # Two RTT channels per probe
 MAX_SLOTS = 4
@@ -68,7 +80,18 @@ def compute_slot(serial, all_serials):
 
 
 def gdb_port_for_slot(slot):
-    return _GDB_PORT_BASE + slot
+    """GDB protocol port for *slot*. Stride is 3 to leave room for SWO + Telnet."""
+    return _GDB_PORT_BASE + slot * _GDB_PORTS_PER_SLOT
+
+
+def swo_port_for_slot(slot):
+    """SWO raw output port for *slot* (gdb_port + 1 by JLinkGDBServer convention)."""
+    return _GDB_PORT_BASE + slot * _GDB_PORTS_PER_SLOT + 1
+
+
+def telnet_port_for_slot(slot):
+    """Terminal I/O port for *slot* (gdb_port + 2 by JLinkGDBServer convention)."""
+    return _GDB_PORT_BASE + slot * _GDB_PORTS_PER_SLOT + 2
 
 
 def rtt_port_for_slot(slot):
