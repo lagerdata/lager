@@ -381,6 +381,13 @@ def get_controller(device=None, host='127.0.0.1', port=2331, max_retries=3):
             # GDB expects.
             gdbmi.write('set mem inaccessible-by-default off', timeout_sec=GDB_TIMEOUT)
 
+            # Non-stop async mode: lets memory reads and monitor commands run against
+            # a running target without GDB issuing an interrupt on every command.
+            # MUST be set before `target` connects — once attached the flag is locked.
+            gdbmi.write('set pagination off', timeout_sec=GDB_TIMEOUT)
+            gdbmi.write('set target-async on', timeout_sec=GDB_TIMEOUT)
+            gdbmi.write('set non-stop on', timeout_sec=GDB_TIMEOUT)
+
             resp = gdbmi.write(f'tar ext {host}:{port}', timeout_sec=GDB_TIMEOUT)
 
             # Check for connection errors (but allow non-fatal warnings to pass)
