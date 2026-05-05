@@ -24,9 +24,13 @@ lager/debug/
 A single Lager Box can run up to four J-Link probes concurrently — each `lager debug <net>` command targets the probe whose USB serial appears in the net's `address` field. The runtime resolves serial → slot → ports on every request, so no allocation state survives between calls.
 
 - **Per-net routing.** Each debug net's `address` is a VISA resource string of the form `USB0::0x1366::0x<product>::<serial>::INSTR`. The `<serial>` segment selects the J-Link probe via `JLinkGDBServerCLExe -select USB=<serial>` and `JLinkExe -SelectEmuBySN <serial>`. Nets without a parseable `address` fall back to the legacy single-probe paths (`/tmp/jlink_gdbserver.pid`, bare `-select USB`).
-- **Slot allocation.** Slots are assigned by sorted order of all debug-net serials in `saved_nets.json`. Slot N → GDB port `2331 + N`, RTT base port `9090 + 2*N` (two RTT channels per probe). Helpers live in `box/lager/debug/probes.py`. Slot 0 is also the legacy single-probe path.
+- **Slot allocation.** Slots are assigned by sorted order of all debug-net serials in `saved_nets.json`. Each slot owns a window of **three consecutive GDB-side ports** (GDB + SWO + Telnet I/O) plus a two-port RTT block:
+  - Slot N → GDB `2331 + 3*N`, SWO `2332 + 3*N`, Telnet `2333 + 3*N`, RTT base `9090 + 2*N`.
+  - The 3-port stride is required because `JLinkGDBServerCLExe`'s `-swoport` and `-telnetport` defaults (`2332` and `2333`) are hardcoded — a stride of 1 would put slot 1's GDB on top of slot 0's SWO. The service passes `-swoport` and `-telnetport` explicitly so the auxiliary ports stay in the slot's window.
+  - Helpers in `box/lager/debug/probes.py`: `gdb_port_for_slot`, `swo_port_for_slot`, `telnet_port_for_slot`, `rtt_port_for_slot`. Slot 0 is also the legacy single-probe path.
 - **Per-probe state on disk.** Each running gdbserver writes `/tmp/jlink_gdbserver_<serial>.pid` and `/tmp/jlink_gdbserver_<serial>.log`; `/tmp` is tmpfs so these vanish on container restart.
-- **Port range published by Docker.** `box/start_box.sh` publishes `2331-2334:2331-2334` for GDB and `9090-9097:9090-9097` for RTT. Boxes that have been hardened with `box/lager/scripts/secure_box_firewall.sh` must re-run that script after upgrade so UFW admits the new ranges.
+- **Port range published by Docker.** `box/start_box.sh` publishes `2331-2342:2331-2342` (4 slots × 3 GDB-side ports) and `9090-9097:9090-9097` (4 slots × 2 RTT channels). Boxes hardened with `box/lager/scripts/secure_box_firewall.sh` must re-run that script after upgrade so UFW admits the new ranges.
+- **`--gdb-port` is opt-in only.** The CLI's `lager debug <net> gdbserver --gdb-port <N>` flag overrides the slot allocator. With it omitted (the default), the box picks the right port for the probe automatically — that's the only safe option on multi-probe boxes.
 
 ## Usage
 

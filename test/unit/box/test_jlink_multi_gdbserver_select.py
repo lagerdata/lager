@@ -105,7 +105,7 @@ class _TmpdirSandbox:
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
 
-def _start(serial, gdb_port, rtt_port, fake_pid):
+def _start(serial, gdb_port, rtt_port, fake_pid, swo_port=None, telnet_port=None):
     """Drive start_jlink_gdbserver with everything risky mocked out."""
     with patch.object(gdbserver_mod, 'stop_jlink_gdbserver'), \
          patch('subprocess.Popen') as mock_popen, \
@@ -114,10 +114,15 @@ def _start(serial, gdb_port, rtt_port, fake_pid):
          patch.object(gdbserver_mod, 'get_jlink_gdb_server_path',
                       return_value='/fake/path/JLinkGDBServerCLExe'):
         mock_popen.return_value = _FakeProc(fake_pid)
-        result = gdbserver_mod.start_jlink_gdbserver(
+        kwargs = dict(
             device='NRF52840_XXAA', speed='4000', transport='SWD',
             serial=serial, gdb_port=gdb_port, rtt_telnet_port=rtt_port,
         )
+        if swo_port is not None:
+            kwargs['swo_port'] = swo_port
+        if telnet_port is not None:
+            kwargs['telnet_port'] = telnet_port
+        result = gdbserver_mod.start_jlink_gdbserver(**kwargs)
         cmd = mock_popen.call_args.args[0]
     return result, cmd
 
@@ -127,8 +132,9 @@ class TwoProbesProduceDistinctInvocations(unittest.TestCase):
 
     def test_each_probe_gets_its_own_select_port_log_pidfile(self):
         with _TmpdirSandbox() as sandbox:
+            # Slot 0 = GDB 2331, slot 1 = GDB 2334 (stride 3 leaves room for SWO + Telnet).
             r1, cmd1 = _start('000051014439', 2331, 9090, 11111)
-            r2, cmd2 = _start('000051017734', 2332, 9092, 22222)
+            r2, cmd2 = _start('000051017734', 2334, 9092, 22222)
 
             # Each cmd carries a per-probe -select USB=<sn>
             self.assertEqual(cmd1[cmd1.index('-select') + 1], 'USB=000051014439')
@@ -136,7 +142,24 @@ class TwoProbesProduceDistinctInvocations(unittest.TestCase):
 
             # Distinct -port values
             self.assertEqual(cmd1[cmd1.index('-port') + 1], '2331')
-            self.assertEqual(cmd2[cmd2.index('-port') + 1], '2332')
+            self.assertEqual(cmd2[cmd2.index('-port') + 1], '2334')
+
+            # SWO/Telnet ports are passed explicitly and live next to GDB.
+            # JLinkGDBServer's hardcoded defaults (2332/2333) would collide
+            # across slots, so we MUST set these.
+            self.assertEqual(cmd1[cmd1.index('-swoport') + 1], '2332')
+            self.assertEqual(cmd1[cmd1.index('-telnetport') + 1], '2333')
+            self.assertEqual(cmd2[cmd2.index('-swoport') + 1], '2335')
+            self.assertEqual(cmd2[cmd2.index('-telnetport') + 1], '2336')
+
+            # The GDB+SWO+Telnet windows must be disjoint across slots.
+            window1 = {cmd1[cmd1.index('-port') + 1],
+                       cmd1[cmd1.index('-swoport') + 1],
+                       cmd1[cmd1.index('-telnetport') + 1]}
+            window2 = {cmd2[cmd2.index('-port') + 1],
+                       cmd2[cmd2.index('-swoport') + 1],
+                       cmd2[cmd2.index('-telnetport') + 1]}
+            self.assertEqual(window1 & window2, set())
 
             # Distinct -RTTTelnetPort values
             self.assertEqual(cmd1[cmd1.index('-RTTTelnetPort') + 1], '9090')
@@ -157,11 +180,16 @@ class TwoProbesProduceDistinctInvocations(unittest.TestCase):
             with open(pid2_path) as f:
                 self.assertEqual(f.read().strip(), '22222')
 
-            # Returned dict surfaces the per-probe metadata
+            # Returned dict surfaces the per-probe metadata, including the
+            # auxiliary ports so the CLI / box don't have to recompute them.
             self.assertEqual(r1['serial'], '000051014439')
             self.assertEqual(r1['gdb_port'], 2331)
+            self.assertEqual(r1['swo_port'], 2332)
+            self.assertEqual(r1['telnet_port'], 2333)
             self.assertEqual(r2['serial'], '000051017734')
-            self.assertEqual(r2['gdb_port'], 2332)
+            self.assertEqual(r2['gdb_port'], 2334)
+            self.assertEqual(r2['swo_port'], 2335)
+            self.assertEqual(r2['telnet_port'], 2336)
 
 
 class LegacyPathStillWorks(unittest.TestCase):
@@ -173,6 +201,9 @@ class LegacyPathStillWorks(unittest.TestCase):
 
         self.assertEqual(cmd[cmd.index('-select') + 1], 'USB')
         self.assertEqual(cmd[cmd.index('-port') + 1], '2331')
+        # SWO/Telnet still fall back to gdb_port + 1 / + 2 even on the legacy path.
+        self.assertEqual(cmd[cmd.index('-swoport') + 1], '2332')
+        self.assertEqual(cmd[cmd.index('-telnetport') + 1], '2333')
         self.assertEqual(cmd[cmd.index('-RTTTelnetPort') + 1], '9090')
 
 

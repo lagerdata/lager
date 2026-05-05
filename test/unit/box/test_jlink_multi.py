@@ -108,11 +108,38 @@ class ComputeSlotTests(unittest.TestCase):
 
 
 class PortHelpersTests(unittest.TestCase):
-    def test_gdb_port_for_slot(self):
+    def test_gdb_port_for_slot_strides_by_three(self):
+        # Stride of 3 reserves room for the SWO + Telnet ports JLinkGDBServer
+        # always claims alongside its GDB port.
         self.assertEqual(probes.gdb_port_for_slot(0), 2331)
-        self.assertEqual(probes.gdb_port_for_slot(1), 2332)
-        self.assertEqual(probes.gdb_port_for_slot(2), 2333)
-        self.assertEqual(probes.gdb_port_for_slot(3), 2334)
+        self.assertEqual(probes.gdb_port_for_slot(1), 2334)
+        self.assertEqual(probes.gdb_port_for_slot(2), 2337)
+        self.assertEqual(probes.gdb_port_for_slot(3), 2340)
+
+    def test_swo_port_for_slot_is_gdb_plus_one(self):
+        for slot in range(4):
+            self.assertEqual(
+                probes.swo_port_for_slot(slot),
+                probes.gdb_port_for_slot(slot) + 1,
+            )
+
+    def test_telnet_port_for_slot_is_gdb_plus_two(self):
+        for slot in range(4):
+            self.assertEqual(
+                probes.telnet_port_for_slot(slot),
+                probes.gdb_port_for_slot(slot) + 2,
+            )
+
+    def test_three_port_windows_do_not_overlap_across_slots(self):
+        # Each slot's [GDB, SWO, Telnet] window must be disjoint from every other slot's.
+        all_ports = []
+        for slot in range(4):
+            all_ports.extend([
+                probes.gdb_port_for_slot(slot),
+                probes.swo_port_for_slot(slot),
+                probes.telnet_port_for_slot(slot),
+            ])
+        self.assertEqual(len(all_ports), len(set(all_ports)))
 
     def test_rtt_port_for_slot_reserves_two_channels_per_probe(self):
         self.assertEqual(probes.rtt_port_for_slot(0), 9090)
