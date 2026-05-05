@@ -77,14 +77,18 @@ def _resolve_probe(net: Dict[str, Any]):
     if serial:
         try:
             from lager.cache import get_nets_cache
-            all_nets = get_nets_cache().get_nets()
-            all_serials = [
-                parse_jlink_serial(n.get('address'))
-                for n in all_nets
-                if n.get('role') == 'debug'
-            ]
-            slot = compute_slot(serial, [s for s in all_serials if s])
-        except Exception as exc:
+            all_serials = []
+            for n in get_nets_cache().get_nets():
+                if n.get('role') != 'debug':
+                    continue
+                s = parse_jlink_serial(n.get('address'))
+                if s:
+                    all_serials.append(s)
+            slot = compute_slot(serial, all_serials)
+        # Defensive: a slot-allocator failure must never block a debug session,
+        # so swallow anything (broken cache file, missing module, surprise type).
+        # The fallback to slot 0 / legacy ports keeps single-probe boxes working.
+        except Exception as exc:  # noqa: BLE001
             logger.warning(
                 f'Slot allocation failed for serial {serial!r}; falling back to slot 0: {exc}'
             )
