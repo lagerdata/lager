@@ -1,0 +1,38 @@
+---
+title: "Version 0.17.0"
+description: "May 5, 2026"
+---
+
+## <u>Features</u>
+
+- **Concurrent J-Link probes on a single Lager Box.** Two J-Link probes plugged into one Box can now run independent debug sessions side-by-side. The box-side service in `box/lager/debug/service.py` resolves each debug net's J-Link USB serial from its VISA address and allocates a deterministic per-probe slot (read from `saved_nets.json` via `NetsCache`). Slot N owns a three-port window — GDB `2331+3N`, SWO `2332+3N`, telnet `2333+3N` — plus RTT base `9090+2N`. The auxiliary `-swoport` and `-telnetport` are passed explicitly to `JLinkGDBServer` so its defaults of `2332`/`2333` can't collide with another slot's GDB port. The service passes `-select USB=<serial>` to `JLinkGDBServer` and `-SelectEmuBySN <serial>` to `JLinkExe`, writes per-serial PID and log files, and narrows `pkill` so disconnecting one probe no longer tears down the other. The CLI's `--gdb-port` default is now `None` rather than `2331`, so the box's allocator is honored unless an explicit port is requested; the effective `gdb_port` returned by the box is printed on connect. `start_box.sh` publishes the widened `2331-2342` Docker port range and `secure_box_firewall.sh` admits the same range, so existing hardened boxes need a firewall refresh to use the new slots. Nets without a parseable serial (legacy single-probe setups) fall back to slot 0 / GDB 2331 / RTT 9090 / `/tmp/jlink_gdbserver.pid` and continue to work unchanged.
+
+- **RIGOL DP811 power supply detection.** `lager instruments` now lists the DP811 alongside the DP821 and DP832. The DP811 shares VID:PID `1ab1:0e11` with its siblings, so it is identified by USB serial prefix (`DP8H` or `DP81` → `Rigol_DP811`) in both `box/lager/http_handlers/usb_scanner.py` and `cli/impl/query_instruments.py`, and is added to the serial-disambiguated bucket so a generic VID:PID match cannot misclassify it as a DP821.
+
+- **Multiple concurrent viewers per webcam stream.** Each `/stream` connection used to open its own `cv2.VideoCapture` against `/dev/videoN`, which V4L2 serves exclusively — the second viewer either failed or got blank frames. The streamer subprocess in `box/lager/automation/webcam/service.py` now spins up a single daemon capture thread on the first viewer that owns the device and broadcasts encoded JPEG frames to a shared buffer guarded by a `threading.Condition`. Any number of viewers can now subscribe to the same stream concurrently. Stop and re-start each webcam to pick up the regenerated streamer script.
+
+## <u>Bug Fixes</u>
+
+- **`LabJackADC.input()` no longer inherits sticky AIN register state from a previous tool.** ADC reads previously called `ljm.eReadName` with zero AIN register configuration, inheriting whatever the previous tool left in `AIN_RANGE`, `AIN_NEGATIVE_CH`, `AIN_RESOLUTION_INDEX`, and `AIN_SETTLING_US`. T7 register state persists in device RAM until USB power-cycle, so if a previous tool left an AIN in differential mode with a floating negative channel, every read saturated at ~10.10 V regardless of the actual signal — indistinguishable from a real wiring fault. Safe defaults (`RANGE=10.0`, `NEGATIVE_CH=199`, `RESOLUTION_INDEX=0`, `SETTLING_US=0`) are now written once per `(handle, channel)` tuple before the first `eReadName`, cached in a class-level set. Config-write failures are logged but do not raise.
+
+## <u>Improvements</u>
+
+- **Webcam capture forces MJPEG so two cameras can share a USB 2.0 bus.** Default OpenCV negotiation picked YUYV (uncompressed, ~150 Mbps at 640×480 30fps), which doesn't leave room for a second camera on the same bus — the kernel rejected `VIDIOC_STREAMON` with "Not enough bandwidth for altsetting". MJPEG is roughly 5× smaller and fits two cameras comfortably; the FourCC is now set before width/height/fps so negotiation honors it.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.17.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.17.0/)
