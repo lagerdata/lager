@@ -19,6 +19,7 @@ hardware in the loop.
 """
 
 import os
+import shutil
 import sys
 import tempfile
 import types
@@ -101,6 +102,7 @@ class _TmpdirSandbox:
     def __exit__(self, *exc):
         gdbserver_mod.jlink_gdbserver_pidfile = self._orig_pid
         gdbserver_mod.jlink_gdbserver_logfile = self._orig_log
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
 
 
 def _start(serial, gdb_port, rtt_port, fake_pid):
