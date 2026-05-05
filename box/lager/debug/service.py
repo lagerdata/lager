@@ -349,19 +349,24 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             force = data.get('force', False)
             halt = data.get('halt', False)
             gdb = data.get('gdb', True)  # Default to starting GDB server
-            serial, slot, default_gdb_port, default_swo_port, default_telnet_port, default_rtt_port = _resolve_probe(net)
+            (
+                serial,
+                _slot,
+                default_gdb_port,
+                _default_swo_port,
+                _default_telnet_port,
+                default_rtt_port,
+            ) = _resolve_probe(net)
             # Only honour an explicit override; absence => use the slot allocator.
             gdb_port = data.get('gdb_port', default_gdb_port)
             rtt_telnet_port = data.get('rtt_telnet_port', default_rtt_port)
-            # Auxiliary ports (SWO + Telnet) MUST live in this slot's window or
-            # JLinkGDBServer will collide with the next slot's GDB port. If the
-            # caller overrode gdb_port we shift swo/telnet relative to it.
-            if 'gdb_port' in data:
-                swo_port = data.get('swo_port', gdb_port + 1)
-                telnet_port = data.get('telnet_port', gdb_port + 2)
-            else:
-                swo_port = data.get('swo_port', default_swo_port)
-                telnet_port = data.get('telnet_port', default_telnet_port)
+            # SWO and Telnet always sit at gdb_port + 1 / + 2. This holds whether
+            # gdb_port came from the slot allocator (where the helpers guarantee
+            # the relationship) or from a user override (where we must shift the
+            # auxiliary ports to match, otherwise JLinkGDBServer's hardcoded
+            # defaults 2332/2333 would collide with the next slot).
+            swo_port = data.get('swo_port', gdb_port + 1)
+            telnet_port = data.get('telnet_port', gdb_port + 2)
 
             # Handle J-Link script file
             # Priority 1: Script sent in POST body (local .lager config override)
@@ -494,7 +499,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             # Check if user wants to keep server running
             keep_jlink_running = data.get('keep_jlink_running', False)
             net = data.get('net', {})
-            serial, _slot, gdb_port, swo_port, telnet_port, rtt_telnet_port = _resolve_probe(net)
+            serial, _slot, gdb_port, _swo_port, _telnet_port, rtt_telnet_port = _resolve_probe(net)
 
             if not keep_jlink_running:
                 # Stop JLinkGDBServer for *this* probe
