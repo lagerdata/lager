@@ -48,10 +48,12 @@ def _cmd_validate() -> None:
 def _cmd_init(force: bool) -> None:
     import os
     if os.path.exists(cfg.BOX_CONFIG_PATH) and not force:
-        _stdout_json({"ok": True, "created": False})
+        _stdout_json({"ok": True, "created": False, "imported": []})
         return
-    cfg.save(cfg.init_default())
-    _stdout_json({"ok": True, "created": True})
+    new_cfg = cfg.init_default()
+    imported, skipped = _import_legacy_into(new_cfg)
+    cfg.save(new_cfg)
+    _stdout_json({"ok": True, "created": True, "imported": imported, "skipped": skipped})
 
 
 def _cmd_hash() -> None:
@@ -133,6 +135,104 @@ def _cmd_volume_remove(name: str) -> None:
     _stdout_json({"ok": True, "removed": removed})
 
 
+_LEGACY_PIP_PATH = "/etc/lager/user_requirements.txt"
+
+
+def _parse_legacy_requirements(text: str) -> list:
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            out.append(line)
+    return out
+
+
+def _import_legacy_into(current: "cfg.BoxConfig") -> tuple:
+    """Merge /etc/lager/user_requirements.txt into current.pip_packages.
+    Returns (imported, skipped) lists. Mutates current in-place."""
+    import os
+    if not os.path.exists(_LEGACY_PIP_PATH):
+        return [], []
+    try:
+        with open(_LEGACY_PIP_PATH, "r", encoding="utf-8") as f:
+            packages = _parse_legacy_requirements(f.read())
+    except OSError as e:
+        return [], [{"package": None, "reason": f"could not read {_LEGACY_PIP_PATH}: {e}"}]
+
+    seen = {cfg.normalize_pip_name(p): p for p in current.pip_packages}
+    imported = []
+    skipped = []
+    for p in packages:
+        ok, reason = cfg.validate_pip_format(p)
+        if not ok:
+            skipped.append({"package": p, "reason": reason})
+            continue
+        canon = cfg.normalize_pip_name(p)
+        if canon in seen:
+            skipped.append({"package": p, "reason": f"already in pip_packages as {seen[canon]!r}"})
+            continue
+        current.pip_packages.append(p)
+        seen[canon] = p
+        imported.append(p)
+    return imported, skipped
+
+
+def _cmd_pip_add(payload: str) -> None:
+    data = json.loads(payload)
+    new_pkgs = data.get("packages", [])
+    if not isinstance(new_pkgs, list):
+        _stdout_json({"ok": False, "errors": ["payload.packages must be an array"]})
+        return
+    current = _load_or_init()
+    seen = {cfg.normalize_pip_name(p): i for i, p in enumerate(current.pip_packages)}
+    added = []
+    for p in new_pkgs:
+        if not isinstance(p, str):
+            _stdout_json({"ok": False, "errors": [f"non-string package: {p!r}"]})
+            return
+        ok, reason = cfg.validate_pip_format(p)
+        if not ok:
+            _stdout_json({"ok": False, "errors": [f"{p!r}: {reason}"]})
+            return
+        canon = cfg.normalize_pip_name(p)
+        if canon in seen:
+            current.pip_packages[seen[canon]] = p
+        else:
+            current.pip_packages.append(p)
+            seen[canon] = len(current.pip_packages) - 1
+        added.append(p)
+    raw = current.to_dict()
+    errors = cfg.validate(raw)
+    if errors:
+        _stdout_json({"ok": False, "errors": errors})
+        return
+    cfg.save(cfg.BoxConfig.from_dict(raw))
+    _stdout_json({"ok": True, "added": added})
+
+
+def _cmd_pip_remove(names: list) -> None:
+    current = _load_or_init()
+    targets = {cfg.normalize_pip_name(n) for n in names}
+    before = len(current.pip_packages)
+    removed = [p for p in current.pip_packages if cfg.normalize_pip_name(p) in targets]
+    current.pip_packages = [p for p in current.pip_packages if cfg.normalize_pip_name(p) not in targets]
+    cfg.save(current)
+    _stdout_json({"ok": True, "removed": removed, "removed_count": before - len(current.pip_packages)})
+
+
+def _cmd_pip_import_legacy() -> None:
+    current = _load_or_init()
+    imported, skipped = _import_legacy_into(current)
+    if imported:
+        raw = current.to_dict()
+        errors = cfg.validate(raw)
+        if errors:
+            _stdout_json({"ok": False, "errors": errors, "imported": [], "skipped": skipped})
+            return
+        cfg.save(cfg.BoxConfig.from_dict(raw))
+    _stdout_json({"ok": True, "imported": imported, "skipped": skipped})
+
+
 def _cli() -> None:
     try:
         args = sys.argv[1:]
@@ -169,6 +269,16 @@ def _cli() -> None:
             if len(args) < 2:
                 raise ValueError("volume-remove requires NAME")
             _cmd_volume_remove(args[1])
+        elif cmd == "pip-add":
+            if len(args) < 2:
+                raise ValueError("pip-add requires JSON payload")
+            _cmd_pip_add(args[1])
+        elif cmd == "pip-remove":
+            if len(args) < 2:
+                raise ValueError("pip-remove requires at least one package name")
+            _cmd_pip_remove(list(args[1:]))
+        elif cmd == "pip-import-legacy":
+            _cmd_pip_import_legacy()
         else:
             _stdout_json({"ok": False, "error": f"unknown command: {cmd}"})
 

@@ -1,7 +1,12 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for MCP pip tools (lager.mcp.tools.pip_tools)."""
+"""Unit tests for MCP pip tools (lager.mcp.tools.pip_tools).
+
+After consolidation, the pip tools delegate to `lager box config pip ...`
+plus an `apply` for install/uninstall. These tests verify the exact argv
+each tool produces.
+"""
 
 import pytest
 from test.mcp.conftest import assert_lager_called_with
@@ -17,35 +22,41 @@ class TestPipTools:
         from lager.mcp.tools.pip_tools import lager_pip_list
         lager_pip_list(box="X")
         assert_lager_called_with(
-            mock_subprocess, "pip", "list", "--box", "X",
+            mock_subprocess, "box", "config", "pip", "list", "--box", "X",
         )
 
-    # -- install -------------------------------------------------------------
+    # -- install (add + apply) -----------------------------------------------
 
     def test_install_single_package(self, mock_subprocess):
         from lager.mcp.tools.pip_tools import lager_pip_install
         lager_pip_install(box="X", packages="numpy")
-        assert_lager_called_with(
-            mock_subprocess, "pip", "install", "numpy", "--yes", "--box", "X",
-        )
+        # Two CLI calls: pip add, then apply.
+        assert mock_subprocess.call_count == 2
+        first_argv = mock_subprocess.call_args_list[0][0][0]
+        second_argv = mock_subprocess.call_args_list[1][0][0]
+        assert first_argv[1:] == ["box", "config", "pip", "add", "numpy", "--box", "X"]
+        assert second_argv[1:] == ["box", "config", "apply", "--yes", "--box", "X"]
 
     def test_install_multiple_packages(self, mock_subprocess):
         from lager.mcp.tools.pip_tools import lager_pip_install
         lager_pip_install(box="X", packages="numpy pandas scipy")
-        assert_lager_called_with(
-            mock_subprocess,
-            "pip", "install", "numpy", "pandas", "scipy", "--yes", "--box", "X",
-        )
+        first_argv = mock_subprocess.call_args_list[0][0][0]
+        assert first_argv[1:] == [
+            "box", "config", "pip", "add", "numpy", "pandas", "scipy", "--box", "X",
+        ]
 
-    # -- uninstall -----------------------------------------------------------
+    # -- uninstall (remove + apply) ------------------------------------------
 
     def test_uninstall(self, mock_subprocess):
         from lager.mcp.tools.pip_tools import lager_pip_uninstall
         lager_pip_uninstall(box="X", packages="numpy pandas")
-        assert_lager_called_with(
-            mock_subprocess,
-            "pip", "uninstall", "numpy", "pandas", "--yes", "--box", "X",
-        )
+        assert mock_subprocess.call_count == 2
+        first_argv = mock_subprocess.call_args_list[0][0][0]
+        second_argv = mock_subprocess.call_args_list[1][0][0]
+        assert first_argv[1:] == [
+            "box", "config", "pip", "remove", "numpy", "pandas", "--box", "X",
+        ]
+        assert second_argv[1:] == ["box", "config", "apply", "--yes", "--box", "X"]
 
     # -- apply ---------------------------------------------------------------
 
@@ -53,7 +64,7 @@ class TestPipTools:
         from lager.mcp.tools.pip_tools import lager_pip_apply
         lager_pip_apply(box="X")
         assert_lager_called_with(
-            mock_subprocess, "pip", "apply", "--yes", "--box", "X",
+            mock_subprocess, "box", "config", "apply", "--yes", "--box", "X",
         )
 
     # -- subprocess failure error handling -----------------------------------
