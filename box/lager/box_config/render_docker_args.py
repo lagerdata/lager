@@ -16,13 +16,19 @@ empty args, so a broken config never blocks the container start.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
-from lager.box_config import config as cfg  # noqa: E402
+# Load config.py directly without triggering lager/__init__.py — start_box.sh
+# runs this on the box's host Python, which lacks the hardware deps that the
+# package's __init__ chain pulls in (simplejson, pyvisa, numpy, ...).
+_CONFIG_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.py")
+_spec = importlib.util.spec_from_file_location("lager_box_config_renderer_cfg", _CONFIG_PY)
+cfg = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = cfg
+_spec.loader.exec_module(cfg)
 
 
 def main(argv: list[str]) -> int:
