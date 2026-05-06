@@ -125,6 +125,7 @@ COPY __init__.py actuate.py box_http_server.py cache.py constants.py core.py \
 
 # Copy core subpackages
 COPY binaries /app/lager/lager/binaries
+COPY box_config /app/lager/lager/box_config
 COPY debug /app/lager/lager/debug
 COPY dispatchers /app/lager/lager/dispatchers
 COPY exec /app/lager/lager/exec
