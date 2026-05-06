@@ -156,7 +156,18 @@ def _render_human(payload: dict) -> None:
     for k, v in env.items():
         click.echo(f"  {k}={v}")
 
-    extras = {k: v for k, v in payload.items() if k not in {"version", "mounts", "volumes", "env"}}
+    pip_packages = payload.get("pip_packages") or []
+    click.echo()
+    click.secho("Pip packages:", bold=True)
+    if not pip_packages:
+        click.echo("  (none)")
+    for p in pip_packages:
+        click.echo(f"  {p}")
+
+    extras = {
+        k: v for k, v in payload.items()
+        if k not in {"version", "mounts", "volumes", "env", "pip_packages"}
+    }
     if extras:
         click.echo()
         click.secho("Extras (round-tripped, not yet applied):", bold=True)
@@ -177,6 +188,21 @@ def init_cmd(ctx: click.Context, box: Optional[str], force: bool) -> None:
     payload = _parse_response(raw, ctx)
     if payload.get("created"):
         click.secho(f"Created /etc/lager/box_config.json on {resolved}.", fg="green")
+        imported = payload.get("imported") or []
+        if imported:
+            click.secho(
+                f"Migrated {len(imported)} pip package(s) from /etc/lager/user_requirements.txt: "
+                + ", ".join(imported),
+                fg="green",
+            )
+            click.echo("Run `lager box config apply` to (re)install them in the container.")
+        skipped = payload.get("skipped") or []
+        if skipped:
+            click.secho(f"Skipped {len(skipped)} legacy package(s):", fg="yellow")
+            for s in skipped:
+                pkg = s.get("package") if isinstance(s, dict) else s
+                reason = s.get("reason") if isinstance(s, dict) else "unknown"
+                click.secho(f"  - {pkg!r}: {reason}", fg="yellow")
     else:
         click.secho(
             f"/etc/lager/box_config.json already exists on {resolved}. Use --force to overwrite.",
@@ -435,3 +461,138 @@ def volume_remove_cmd(
         click.echo("Run `lager box config apply` to restart the container.")
     else:
         click.secho(f"No volume named {name} on {resolved}.", fg="yellow")
+
+
+@box_config.group("pip", help="Manage user-installed Python packages.")
+def pip_group() -> None:
+    pass
+
+
+@pip_group.command("list", help="List user-installed pip packages.")
+@click.option("--box", help="Lagerbox name or IP")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+@click.pass_context
+def pip_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
+    resolved = _resolve_box(ctx, box)
+    raw = _run_box_config_py(ctx, resolved, "show")
+    payload = _parse_response(raw, ctx) or {}
+    pkgs = payload.get("pip_packages") or []
+    if as_json:
+        click.echo(json.dumps(pkgs, indent=2))
+        return
+    if not pkgs:
+        click.echo("No pip packages configured.")
+        return
+    for p in pkgs:
+        click.echo(p)
+
+
+@pip_group.command("add", help="Add one or more pip packages to the box config.")
+@click.argument("packages", nargs=-1, required=True)
+@click.option("--box", help="Lagerbox name or IP")
+@click.option("--no-validate-pypi", is_flag=True, help="Skip PyPI existence check")
+@click.pass_context
+def pip_add_cmd(
+    ctx: click.Context,
+    packages: tuple,
+    box: Optional[str],
+    no_validate_pypi: bool,
+) -> None:
+    from ._pip_validation import validate_format, validate_on_pypi, is_direct_ref
+
+    resolved = _resolve_box(ctx, box)
+
+    fmt_errors = []
+    for p in packages:
+        ok, reason = validate_format(p)
+        if not ok:
+            fmt_errors.append((p, reason))
+    if fmt_errors:
+        click.secho("Invalid package specification(s):", fg="red", err=True)
+        for p, r in fmt_errors:
+            click.secho(f"  - {p!r}: {r}", fg="red", err=True)
+        ctx.exit(1)
+
+    if not no_validate_pypi:
+        to_check = [p for p in packages if not is_direct_ref(p)]
+        skipped_direct = [p for p in packages if is_direct_ref(p)]
+        if to_check:
+            click.secho("Validating packages on PyPI...", fg="blue")
+            invalid, network_errors = validate_on_pypi(to_check)
+            if invalid:
+                click.secho("The following packages could not be validated:", fg="red", err=True)
+                for p, r in invalid:
+                    click.secho(f"  - {p}: {r}", fg="red", err=True)
+                click.secho(
+                    "No changes made. Use --no-validate-pypi to skip the PyPI check.",
+                    fg="yellow", err=True,
+                )
+                ctx.exit(1)
+            if network_errors:
+                click.secho("Could not validate some packages (network):", fg="yellow", err=True)
+                for p, r in network_errors:
+                    click.secho(f"  - {p}: {r}", fg="yellow", err=True)
+                click.echo("Proceeding anyway; install will fail later if the package is bad.", err=True)
+            click.secho("PyPI validation passed.", fg="green")
+        if skipped_direct:
+            click.echo(f"Skipped PyPI check for {len(skipped_direct)} direct reference(s).")
+
+    payload_json = json.dumps({"packages": list(packages)})
+    raw = _run_box_config_py(ctx, resolved, "pip-add", payload_json)
+    payload = _parse_response(raw, ctx)
+    if not payload.get("ok"):
+        click.secho("Failed to add pip packages:", fg="red", err=True)
+        _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
+        ctx.exit(1)
+    added = payload.get("added") or list(packages)
+    click.secho(f"Added {len(added)} pip package(s) on {resolved}: " + ", ".join(added), fg="green")
+    click.echo("Run `lager box config apply` to install them in the container.")
+
+
+@pip_group.command("remove", help="Remove one or more pip packages from the box config.")
+@click.argument("packages", nargs=-1, required=True)
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def pip_remove_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None:
+    resolved = _resolve_box(ctx, box)
+    raw = _run_box_config_py(ctx, resolved, "pip-remove", *packages)
+    payload = _parse_response(raw, ctx)
+    if not payload.get("ok"):
+        click.secho("Failed to remove pip packages:", fg="red", err=True)
+        _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
+        ctx.exit(1)
+    removed = payload.get("removed") or []
+    if removed:
+        click.secho(f"Removed {len(removed)} pip package(s): " + ", ".join(removed), fg="green")
+        click.echo("Run `lager box config apply` to update the running container.")
+    else:
+        click.secho("No matching pip packages were configured.", fg="yellow")
+
+
+@pip_group.command(
+    "import-legacy",
+    help="Import packages from /etc/lager/user_requirements.txt into pip_packages.",
+)
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def pip_import_legacy_cmd(ctx: click.Context, box: Optional[str]) -> None:
+    resolved = _resolve_box(ctx, box)
+    raw = _run_box_config_py(ctx, resolved, "pip-import-legacy")
+    payload = _parse_response(raw, ctx)
+    if not payload.get("ok"):
+        click.secho("Failed to import legacy pip packages:", fg="red", err=True)
+        _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
+        ctx.exit(1)
+    imported = payload.get("imported") or []
+    skipped = payload.get("skipped") or []
+    if imported:
+        click.secho(f"Imported {len(imported)} package(s): " + ", ".join(imported), fg="green")
+        click.echo("Run `lager box config apply` to (re)install them.")
+    else:
+        click.secho("No new packages to import.", fg="yellow")
+    if skipped:
+        click.secho(f"Skipped {len(skipped)}:", fg="yellow")
+        for s in skipped:
+            pkg = s.get("package") if isinstance(s, dict) else s
+            reason = s.get("reason") if isinstance(s, dict) else "unknown"
+            click.secho(f"  - {pkg!r}: {reason}", fg="yellow")

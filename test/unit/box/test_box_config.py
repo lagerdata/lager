@@ -186,6 +186,103 @@ class FromDict(unittest.TestCase):
         with self.assertRaises(cfg.ValidationError):
             cfg.BoxConfig.from_dict({"version": 999})
 
+    def test_pip_packages_not_in_extras(self):
+        raw = _v({"pip_packages": ["numpy"]})
+        c = cfg.BoxConfig.from_dict(raw)
+        self.assertEqual(c.pip_packages, ["numpy"])
+        self.assertNotIn("pip_packages", c.extras)
+        self.assertEqual(c.to_dict()["pip_packages"], ["numpy"])
+
+
+class ValidatePipPackages(unittest.TestCase):
+    def test_missing_key_is_valid(self):
+        self.assertEqual(cfg.validate(_v()), [])
+
+    def test_empty_list_is_valid(self):
+        self.assertEqual(cfg.validate(_v({"pip_packages": []})), [])
+
+    def test_must_be_list(self):
+        errors = cfg.validate(_v({"pip_packages": "numpy"}))
+        self.assertTrue(any("'pip_packages' must be an array" in e for e in errors))
+
+    def test_non_string_element(self):
+        errors = cfg.validate(_v({"pip_packages": [42]}))
+        self.assertTrue(any("must be a string" in e for e in errors))
+
+    def test_empty_string(self):
+        errors = cfg.validate(_v({"pip_packages": [""]}))
+        self.assertTrue(any("cannot be empty" in e for e in errors))
+
+    def test_whitespace_only(self):
+        errors = cfg.validate(_v({"pip_packages": ["   "]}))
+        self.assertTrue(any("cannot be empty" in e for e in errors))
+
+    def test_accepts_bare_name(self):
+        self.assertEqual(cfg.validate(_v({"pip_packages": ["numpy"]})), [])
+
+    def test_accepts_version_specifier(self):
+        self.assertEqual(cfg.validate(_v({"pip_packages": ["numpy==1.26.4"]})), [])
+
+    def test_accepts_complex_version(self):
+        self.assertEqual(cfg.validate(_v({"pip_packages": ["numpy>=1.20,<2.0"]})), [])
+
+    def test_accepts_extras(self):
+        self.assertEqual(cfg.validate(_v({"pip_packages": ["pandas[excel]"]})), [])
+
+    def test_accepts_extras_with_version(self):
+        self.assertEqual(cfg.validate(_v({"pip_packages": ["pandas[excel,plot]==2.0"]})), [])
+
+    def test_rejects_pip_flag(self):
+        errors = cfg.validate(_v({"pip_packages": ["--index-url", "https://x"]}))
+        self.assertTrue(any("--index-url" in e for e in errors))
+
+    def test_rejects_editable(self):
+        errors = cfg.validate(_v({"pip_packages": ["-e ."]}))
+        self.assertTrue(any("must start with a letter" in e for e in errors))
+
+    def test_rejects_leading_digit(self):
+        errors = cfg.validate(_v({"pip_packages": ["1package"]}))
+        self.assertTrue(any("must start with a letter" in e for e in errors))
+
+    def test_rejects_canonical_duplicate_case(self):
+        errors = cfg.validate(_v({"pip_packages": ["numpy", "Numpy"]}))
+        self.assertTrue(any("duplicates" in e and "numpy" in e for e in errors))
+
+    def test_rejects_canonical_duplicate_versions(self):
+        errors = cfg.validate(_v({"pip_packages": ["numpy==1.20", "Numpy>=1.0"]}))
+        self.assertTrue(any("duplicates" in e for e in errors))
+
+    def test_rejects_canonical_duplicate_underscore(self):
+        # underscore <-> dash normalization
+        errors = cfg.validate(_v({"pip_packages": ["scikit-learn", "scikit_learn"]}))
+        self.assertTrue(any("duplicates" in e for e in errors))
+
+    def test_normalize_pip_name_strips_version(self):
+        self.assertEqual(cfg.normalize_pip_name("Numpy==1.26.4"), "numpy")
+        self.assertEqual(cfg.normalize_pip_name("scikit_learn"), "scikit-learn")
+        self.assertEqual(cfg.normalize_pip_name("pandas[excel]==2.0"), "pandas")
+
+    def test_validate_pip_format_helper(self):
+        ok, _ = cfg.validate_pip_format("numpy")
+        self.assertTrue(ok)
+        ok, reason = cfg.validate_pip_format("--bad")
+        self.assertFalse(ok)
+        self.assertIn("must start with a letter", reason)
+
+
+class PipHashIdempotency(unittest.TestCase):
+    def test_pip_packages_change_hash(self):
+        a = cfg.BoxConfig.from_dict(_v({"pip_packages": ["numpy"]}))
+        b = cfg.BoxConfig.from_dict(_v({"pip_packages": ["numpy", "scipy"]}))
+        self.assertNotEqual(a.compute_hash(), b.compute_hash())
+
+    def test_pip_order_matters_in_hash(self):
+        # Order is preserved as authored; this is intentional so users can keep
+        # a comment-style order. The renderer sorts before writing.
+        a = cfg.BoxConfig.from_dict(_v({"pip_packages": ["numpy", "scipy"]}))
+        b = cfg.BoxConfig.from_dict(_v({"pip_packages": ["scipy", "numpy"]}))
+        self.assertNotEqual(a.compute_hash(), b.compute_hash())
+
 
 class HashIdempotency(unittest.TestCase):
     def test_same_inputs_same_hash(self):

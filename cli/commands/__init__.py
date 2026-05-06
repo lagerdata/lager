@@ -10,7 +10,7 @@ This package contains grouped command modules organized by domain:
 - communication/: UART, BLE, WiFi, USB commands
 - development/: Debug, ARM, Python commands
 - box/: Hello, boxes, instruments, nets, SSH commands
-- utility/: Defaults, binaries, update, pip, exec, logs, webcam commands
+- utility/: Defaults, binaries, update, exec, logs, webcam commands
 """
 
 from .measurement import (
@@ -40,7 +40,6 @@ from .utility import (
     defaults,
     binaries,
     update,
-    pip,
     exec_,
     logs,
     webcam,
@@ -68,7 +67,6 @@ __all__ = [
     "defaults",
     "binaries",
     "update",
-    "pip",
     "exec_",
     "logs",
     "webcam",
