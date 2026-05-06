@@ -6,9 +6,12 @@
 Standalone renderer invoked from start_box.sh.
 
 Reads box_config.json, validates it, and writes shell-safe docker arg
-strings to stdout in two lines:
+strings to stdout in three lines:
     line 1: -v / --mount args (mounts + volumes)
     line 2: --env args
+    line 3: bind-mount HOST paths only, shell-quoted, space-separated
+            (start_box.sh mkdir -p's these so missing dirs don't break
+             `docker run`)
 
 Exits non-zero with errors on stderr if the config is malformed. The
 caller (start_box.sh) treats this as a soft failure and proceeds with
@@ -19,6 +22,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shlex
 import sys
 
 # Load config.py directly without triggering lager/__init__.py — start_box.sh
@@ -43,6 +47,7 @@ def main(argv: list[str]) -> int:
     except FileNotFoundError:
         print("", flush=True)
         print("", flush=True)
+        print("", flush=True)
         return 0
     except json.JSONDecodeError as e:
         print(f"box_config.json: invalid JSON: {e}", file=sys.stderr)
@@ -56,6 +61,7 @@ def main(argv: list[str]) -> int:
 
     print(" ".join(c.docker_mount_args()), flush=True)
     print(" ".join(c.docker_env_args()), flush=True)
+    print(" ".join(shlex.quote(m.host) for m in c.mounts), flush=True)
     return 0
 
 
