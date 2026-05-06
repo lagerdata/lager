@@ -374,5 +374,5 @@ python -m pytest test/mcp/integration/ -v --import-mode=importlib -c /dev/null \
 
 ```
 
-<!-- Copyright 2024-2026 Lager Data LLC -->
+<!-- Copyright 2024-2026 Lager Data -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->

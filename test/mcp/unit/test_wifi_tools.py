@@ -1,4 +1,4 @@
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
 """Unit tests for WiFi MCP tools (lager.mcp.tools.wifi) — subprocess / nmcli / iwconfig."""

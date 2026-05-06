@@ -1,4 +1,4 @@
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
 """Unit tests for I2C MCP tools (lager.mcp.tools.i2c) — Net API."""

@@ -1,4 +1,4 @@
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
 from lager.instrument_wrappers.rigol_dl3000_defines import Mode

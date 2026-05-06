@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 # Comprehensive test suite for J-Link Script File Feature
 # Tests edge cases for configuration, path resolution, script content, and operations

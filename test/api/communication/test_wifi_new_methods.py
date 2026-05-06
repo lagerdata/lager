@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 """
 Tests for standalone WiFi functions: scan_wifi, connect_to_wifi, get_wifi_status, disconnect_wifi.

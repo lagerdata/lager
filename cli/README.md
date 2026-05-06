@@ -434,7 +434,7 @@ We welcome contributions! Please see [CONTRIBUTING.md](../CONTRIBUTING.md) for m
 
 ## License
 
-Apache License 2.0 - Copyright (c) Lager Data LLC
+Apache License 2.0 - Copyright (c) Lager Data
 
 ## Testing
 

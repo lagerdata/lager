@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 # Comprehensive test suite for lager electronic load commands
 # Tests all edge cases and production features for cc, cv, cr, cp commands

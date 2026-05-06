@@ -1,0 +1,187 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+
+"""
+JSON-only CLI for box config operations executed inside the container.
+
+Stdout is always a single JSON value; diagnostics go to stderr. Mirrors
+the contract of lager.nets.net_cli so the host-side CLI can shell in via
+run_python_internal.
+"""
+from __future__ import annotations
+
+import json
+import sys
+import traceback
+from typing import Any
+
+from . import config as cfg
+
+
+def _stdout_json(obj: Any) -> None:
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+def _load_raw():
+    try:
+        with open(cfg.BOX_CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+
+
+def _cmd_show() -> None:
+    raw = _load_raw()
+    _stdout_json(raw)
+
+
+def _cmd_validate() -> None:
+    raw = _load_raw()
+    if raw is None:
+        _stdout_json({"ok": True, "errors": [], "exists": False})
+        return
+    errors = cfg.validate(raw)
+    _stdout_json({"ok": not errors, "errors": errors, "exists": True})
+
+
+def _cmd_init(force: bool) -> None:
+    import os
+    if os.path.exists(cfg.BOX_CONFIG_PATH) and not force:
+        _stdout_json({"ok": True, "created": False})
+        return
+    cfg.save(cfg.init_default())
+    _stdout_json({"ok": True, "created": True})
+
+
+def _cmd_hash() -> None:
+    raw = _load_raw()
+    if raw is None:
+        _stdout_json({"hash": None})
+        return
+    try:
+        c = cfg.BoxConfig.from_dict(raw)
+    except cfg.ValidationError as e:
+        _stdout_json({"hash": None, "error": str(e)})
+        return
+    _stdout_json({"hash": c.compute_hash()})
+
+
+def _cmd_applied_hash() -> None:
+    _stdout_json({"hash": cfg.read_applied_hash()})
+
+
+def _cmd_set_applied_hash(value: str) -> None:
+    cfg.write_applied_hash(value)
+    _stdout_json({"ok": True})
+
+
+def _load_or_init() -> "cfg.BoxConfig":
+    raw = _load_raw()
+    if raw is None:
+        return cfg.init_default()
+    return cfg.BoxConfig.from_dict(raw)
+
+
+def _cmd_mount_add(payload: str) -> None:
+    data = json.loads(payload)
+    current = _load_or_init()
+    new_mount = cfg.Mount(
+        host=data["host"],
+        container=data["container"],
+        readonly=bool(data.get("readonly", False)),
+    )
+    current.mounts = [m for m in current.mounts if m.container != new_mount.container] + [new_mount]
+    raw = current.to_dict()
+    errors = cfg.validate(raw)
+    if errors:
+        _stdout_json({"ok": False, "errors": errors})
+        return
+    cfg.save(cfg.BoxConfig.from_dict(raw))
+    _stdout_json({"ok": True})
+
+
+def _cmd_mount_remove(host: str, container: str) -> None:
+    current = _load_or_init()
+    before = len(current.mounts)
+    current.mounts = [m for m in current.mounts if not (m.host == host and m.container == container)]
+    removed = len(current.mounts) != before
+    cfg.save(current)
+    _stdout_json({"ok": True, "removed": removed})
+
+
+def _cmd_volume_add(payload: str) -> None:
+    data = json.loads(payload)
+    current = _load_or_init()
+    new_vol = cfg.Volume(name=data["name"], container=data["container"])
+    current.volumes = [v for v in current.volumes if v.name != new_vol.name] + [new_vol]
+    raw = current.to_dict()
+    errors = cfg.validate(raw)
+    if errors:
+        _stdout_json({"ok": False, "errors": errors})
+        return
+    cfg.save(cfg.BoxConfig.from_dict(raw))
+    _stdout_json({"ok": True})
+
+
+def _cmd_volume_remove(name: str) -> None:
+    current = _load_or_init()
+    before = len(current.volumes)
+    current.volumes = [v for v in current.volumes if v.name != name]
+    removed = len(current.volumes) != before
+    cfg.save(current)
+    _stdout_json({"ok": True, "removed": removed})
+
+
+def _cli() -> None:
+    try:
+        args = sys.argv[1:]
+        cmd = args[0] if args else "show"
+
+        if cmd == "show":
+            _cmd_show()
+        elif cmd == "validate":
+            _cmd_validate()
+        elif cmd == "init":
+            force = "--force" in args[1:]
+            _cmd_init(force)
+        elif cmd == "hash":
+            _cmd_hash()
+        elif cmd == "applied-hash":
+            _cmd_applied_hash()
+        elif cmd == "set-applied-hash":
+            if len(args) < 2:
+                raise ValueError("set-applied-hash requires a hash value")
+            _cmd_set_applied_hash(args[1])
+        elif cmd == "mount-add":
+            if len(args) < 2:
+                raise ValueError("mount-add requires JSON payload")
+            _cmd_mount_add(args[1])
+        elif cmd == "mount-remove":
+            if len(args) < 3:
+                raise ValueError("mount-remove requires HOST CONTAINER")
+            _cmd_mount_remove(args[1], args[2])
+        elif cmd == "volume-add":
+            if len(args) < 2:
+                raise ValueError("volume-add requires JSON payload")
+            _cmd_volume_add(args[1])
+        elif cmd == "volume-remove":
+            if len(args) < 2:
+                raise ValueError("volume-remove requires NAME")
+            _cmd_volume_remove(args[1])
+        else:
+            _stdout_json({"ok": False, "error": f"unknown command: {cmd}"})
+
+    except cfg.ValidationError as e:
+        _stdout_json({"ok": False, "errors": str(e).split("\n")})
+
+    except SystemExit:
+        _stdout_json({"ok": False, "error": "exit"})
+
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        _stdout_json({"ok": False, "error": str(e)})
+
+
+if __name__ == "__main__":
+    _cli()

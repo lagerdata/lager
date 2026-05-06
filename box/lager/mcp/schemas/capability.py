@@ -1,4 +1,4 @@
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
 """Capability graph schema -- models what a bench *can do*, not just what is connected."""
