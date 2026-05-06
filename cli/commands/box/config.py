@@ -363,6 +363,12 @@ def mount_add_cmd(
         f"Added mount {host} -> {container}{' (ro)' if readonly else ''} on {resolved}.",
         fg="green",
     )
+    if not readonly:
+        click.secho(
+            f"Note: if {host} doesn't exist or isn't writable by uid 33 (www-data),"
+            f" run on the box (one-time): sudo mkdir -p {host} && sudo chown 33:33 {host}",
+            fg="yellow",
+        )
     click.echo("Run `lager box config apply` to restart the container.")
 
 
