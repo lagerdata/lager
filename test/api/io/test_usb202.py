@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 # test_usb202.py
 # Run with: lager python test/api/io/test_usb202.py --box TEST-3

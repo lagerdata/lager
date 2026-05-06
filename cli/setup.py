@@ -1,4 +1,4 @@
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
 import os
@@ -15,7 +15,7 @@ def readme():
 
 name = 'lager-cli'
 description = 'Lager CLI - Box and Docker connectivity'
-author = 'Lager Data LLC'
+author = 'Lager Data'
 classifiers = [
     'Development Status :: 3 - Alpha',
     'License :: OSI Approved :: Apache Software License',

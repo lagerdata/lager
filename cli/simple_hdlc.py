@@ -1,5 +1,5 @@
 #!/usr/bin/python
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
 # coding: utf8

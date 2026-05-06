@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 # harness.sh - Test harness infrastructure for Lager integration tests
 #

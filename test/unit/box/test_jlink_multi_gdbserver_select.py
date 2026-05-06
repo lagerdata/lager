@@ -1,4 +1,4 @@
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 """
 No-DUT smoke test for the multi-probe ``start_jlink_gdbserver`` path.

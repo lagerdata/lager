@@ -230,6 +230,32 @@ else
     echo ""
 fi
 
+# Lager Box config (declarative). Optional. No-op when /etc/lager/box_config.json is absent.
+# A malformed config is logged but never blocks the container start; the box always comes up.
+BOX_CONFIG_MOUNTS=""
+BOX_CONFIG_ENV=""
+BOX_CONFIG_FILE="/etc/lager/box_config.json"
+if [ -f "$BOX_CONFIG_FILE" ]; then
+    echo "Lager Box config detected at $BOX_CONFIG_FILE"
+    if BOX_CONFIG_OUTPUT=$(python3 "${SCRIPT_DIR}/lager/box_config/render_docker_args.py" "$BOX_CONFIG_FILE" 2>&1); then
+        BOX_CONFIG_MOUNTS=$(printf '%s\n' "$BOX_CONFIG_OUTPUT" | sed -n '1p')
+        BOX_CONFIG_ENV=$(printf '%s\n' "$BOX_CONFIG_OUTPUT" | sed -n '2p')
+        if [ -n "$BOX_CONFIG_MOUNTS" ]; then
+            echo "  Mounts/volumes: $BOX_CONFIG_MOUNTS"
+        fi
+        if [ -n "$BOX_CONFIG_ENV" ]; then
+            echo "  Env: $BOX_CONFIG_ENV"
+        fi
+    else
+        echo "[ERROR] box_config.json failed validation:"
+        echo "$BOX_CONFIG_OUTPUT"
+        echo "Container will start without applying box_config.json. Fix and rerun."
+        BOX_CONFIG_MOUNTS=""
+        BOX_CONFIG_ENV=""
+    fi
+    echo ""
+fi
+
 # Get environment variables that will be passed to Python scripts
 [[ -f "$HOME/.env" ]] && source "$HOME/.env" || true
 
@@ -294,6 +320,8 @@ docker run -d \
     ${JL_MOUNT_PYTHON} \
     ${CUSTOMER_BINARIES_MOUNT} \
     ${OSCILLOSCOPE_MOUNT} \
+    ${BOX_CONFIG_MOUNTS} \
+    ${BOX_CONFIG_ENV} \
     -p 5000:5000 \
     -p 8301:5000 \
     -p 8080:8080 \
@@ -325,7 +353,7 @@ echo "========================================"
 echo ""
 echo "Services running:"
 echo "  - Python Execution Service: port 5000 (and 8301 for backwards compatibility)"
-echo "  - MCP Server (AI): port 8100 (Cursor: http://<box-ip>:8100/mcp)"
+echo "  - MCP Server (AI): port 8100 (MCP clients: http://<box-ip>:8100/mcp)"
 echo "  - Debug Service: port 8765"
 echo "  - UART HTTP+WebSocket: port 9000"
 echo "  - Remote PDB: ports 8081-8090"

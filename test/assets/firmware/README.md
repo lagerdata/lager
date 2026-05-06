@@ -9,5 +9,5 @@ Firmware binaries are not included in the open-source release. To run flash test
 
 Then update the test scripts in `test/integration/communication/` to reference your filenames.
 
-<!-- Copyright 2024-2026 Lager Data LLC -->
+<!-- Copyright 2024-2026 Lager Data -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->

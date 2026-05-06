@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 # Streamlined test suite for lager supply commands (5-10 minute target)
 # Focuses on critical functionality with reduced iterations

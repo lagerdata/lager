@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 # Comprehensive test suite for Keysight E36312A power supply (3 channels)
 # Tests all three channels thoroughly with edge cases and cross-channel interactions

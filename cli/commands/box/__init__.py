@@ -1,4 +1,4 @@
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
 """
@@ -19,6 +19,7 @@ from .boxes import boxes
 from .instruments import instruments
 from .nets import nets
 from .ssh import ssh
+from .box_group import box
 
 __all__ = [
     "hello",
@@ -26,4 +27,5 @@ __all__ = [
     "instruments",
     "nets",
     "ssh",
+    "box",
 ]

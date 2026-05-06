@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 """
 Reusable pytest fixtures for Lager hardware tests.

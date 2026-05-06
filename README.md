@@ -370,12 +370,12 @@ print(f"Temperature: {tc.read()}°C")
 
 ## MCP Server (AI Agent Integration)
 
-The Lager box includes an **MCP (Model Context Protocol) server** that lets AI coding agents control hardware directly. Any MCP-compatible client — Cursor, Claude Code, Claude Desktop, or custom agents — can connect over HTTP and run hardware operations without writing CLI commands.
+The Lager box includes an **MCP (Model Context Protocol) server** that lets AI coding agents control hardware directly. Any MCP-compatible client can connect over HTTP and run hardware operations without writing CLI commands.
 
 ### How It Works
 
 ```
-AI Agent (Cursor, Claude Code, etc.)
+MCP-compatible AI agent
     |  MCP (streamable-http)
     v
 Lager MCP Server (on-box, port 8100)
@@ -388,25 +388,8 @@ The server runs inside the box's Docker container alongside existing services. A
 
 ### Connecting Your Agent
 
-Add the Lager box as an MCP server in your client's configuration. Replace `<box-ip>` with the box's IP address (Tailscale IP, LAN IP, etc.).
+Add the Lager box as an MCP server in your client's configuration. Replace `<box-ip>` with the box's IP address (Tailscale IP, LAN IP, etc.). Most MCP clients accept the standard JSON form below; consult your client's documentation for its exact config location and syntax.
 
-**Cursor** — create or edit `.cursor/mcp.json` in your project:
-```json
-{
-  "mcpServers": {
-    "lager": {
-      "url": "http://<box-ip>:8100/mcp"
-    }
-  }
-}
-```
-
-**Claude Code** (CLI):
-```bash
-claude mcp add --transport http lager http://<box-ip>:8100/mcp
-```
-
-**Claude Desktop** — edit `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
@@ -528,4 +511,4 @@ Full documentation available at [docs.lagerdata.com](https://docs.lagerdata.com)
 
 ## License
 
-Apache License 2.0 - Lager Data LLC. See [LICENSE](LICENSE) for details.
+Apache License 2.0 - Lager Data. See [LICENSE](LICENSE) for details.
