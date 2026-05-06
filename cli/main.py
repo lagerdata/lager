@@ -72,7 +72,7 @@ from .commands.measurement.energy import energy
 from .commands.box import hello, boxes, instruments, nets, ssh, box
 
 # Utility commands (from commands.utility package)
-from .commands.utility import defaults, binaries, update, pip, exec_, logs, webcam, install, uninstall, install_wheel
+from .commands.utility import defaults, binaries, update, exec_, logs, webcam, install, uninstall, install_wheel
 
 def _check_venv_shadowing():
     """Warn if a system-installed lager is shadowing the venv version."""
@@ -145,7 +145,6 @@ cli.add_command(uart)
 cli.add_command(python)
 cli.add_command(_wifi)
 cli.add_command(webcam)
-cli.add_command(pip)
 cli.add_command(scope)
 cli.add_command(logic)
 cli.add_command(supply)

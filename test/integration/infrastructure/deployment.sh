@@ -428,12 +428,12 @@ fi
 # =============================================================================
 print_test_header "9. Package Management Tests"
 
-run_test "lager pip --help" "lager pip --help"
+run_test "lager box config pip --help" "lager box config pip --help"
 
 if [ "$DETECTED_USER" != "${SSH_USER}" ]; then
-    skip_test "lager pip list" "requires ${SSH_USER} user"
+    skip_test "lager box config pip list" "requires ${SSH_USER} user"
 else
-    run_test_with_output "lager pip list" "timeout 30 lager pip --box ${DUT} list | head -5"
+    run_test_with_output "lager box config pip list" "timeout 30 lager box config pip list --box ${DUT} | head -5"
 fi
 
 # =============================================================================

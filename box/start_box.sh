@@ -235,6 +235,7 @@ fi
 BOX_CONFIG_MOUNTS=""
 BOX_CONFIG_ENV=""
 BOX_CONFIG_FILE="/etc/lager/box_config.json"
+PIP_REQS_FILE="/etc/lager/user_requirements.txt"
 if [ -f "$BOX_CONFIG_FILE" ]; then
     echo "Lager Box config detected at $BOX_CONFIG_FILE"
     if BOX_CONFIG_OUTPUT=$(python3 "${SCRIPT_DIR}/lager/box_config/render_docker_args.py" "$BOX_CONFIG_FILE" 2>&1); then
@@ -252,6 +253,14 @@ if [ -f "$BOX_CONFIG_FILE" ]; then
         echo "Container will start without applying box_config.json. Fix and rerun."
         BOX_CONFIG_MOUNTS=""
         BOX_CONFIG_ENV=""
+    fi
+
+    # Render pip_packages from box_config.json into the requirements file that
+    # the in-container `pip install -r` step (below) reads. Soft-fail: if render
+    # blows up we leave the existing file alone so the bounce still proceeds.
+    if ! python3 "${SCRIPT_DIR}/lager/box_config/render_pip_requirements.py" \
+            "$BOX_CONFIG_FILE" "$PIP_REQS_FILE" 2>&1; then
+        echo "[WARNING] Failed to render pip_packages; using existing $PIP_REQS_FILE."
     fi
     echo ""
 fi
@@ -346,6 +355,25 @@ docker run -d \
 
 echo "Lager Box container started"
 echo ""
+
+# Install user-requested pip packages from box_config.json into the running
+# container. The renderer above already wrote /etc/lager/user_requirements.txt
+# from BoxConfig.pip_packages; here we apply it. Skipped when the file has no
+# non-comment content. A failure here exits the script non-zero so
+# `lager box config apply` can detect it and skip updating applied-hash.
+if [ -s "$PIP_REQS_FILE" ] && grep -qvE '^[[:space:]]*(#|$)' "$PIP_REQS_FILE"; then
+    echo "Installing user pip packages into container..."
+    # Wait briefly for the container's services to be ready enough to exec.
+    for _ in 1 2 3 4 5; do
+        docker exec lager true 2>/dev/null && break
+        sleep 1
+    done
+    if ! docker exec lager pip3 install -r "$PIP_REQS_FILE"; then
+        echo "[ERROR] User pip install failed; container is up but pip_packages may be incomplete."
+        exit 1
+    fi
+    echo ""
+fi
 
 echo "========================================"
 echo "Box started successfully!"

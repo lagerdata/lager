@@ -8,17 +8,18 @@ This package contains utility commands for managing Lager configuration:
 - defaults: Manage default settings (box, nets, serial port)
 - binaries: Manage custom binaries on boxes
 - update: Update box code from GitHub repository
-- pip: Manage pip packages in the python container
 - exec_: Execute commands in local Docker container (devenv)
 - logs: Manage and inspect box logs
 - webcam: Webcam streaming management
+
+Pip package management lives under `lager box config pip` (declarative,
+applied alongside mounts/volumes/env via `lager box config apply`).
 """
 
 # Import all commands from local files (migrated from original locations)
 from .defaults import defaults
 from .binaries import binaries
 from .update import update
-from .pip import pip
 from .exec_ import exec_
 from .logs import logs
 from .webcam import webcam
@@ -30,7 +31,6 @@ __all__ = [
     "defaults",
     "binaries",
     "update",
-    "pip",
     "exec_",
     "logs",
     "webcam",

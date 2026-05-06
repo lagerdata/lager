@@ -29,6 +29,33 @@ SCHEMA_VERSION = 1
 
 _VOLUME_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]+$")
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PIP_SPEC_RE = re.compile(
+    r'^[a-zA-Z][a-zA-Z0-9\-_\.]*'
+    r'(\[[a-zA-Z0-9\-_,\s]+\])?'
+    r'(([<>=!~]=?|@)[a-zA-Z0-9\.\-_,\s\*<>=!~@]+)?$'
+)
+_PIP_NAME_RE = re.compile(r'^([a-zA-Z0-9\-_\.]+)')
+
+
+def normalize_pip_name(pkg: str) -> str:
+    """Canonical key for dedupe / removal: lowercase, underscores→dashes,
+    strip version specifiers / extras."""
+    m = _PIP_NAME_RE.match(pkg)
+    base = m.group(1) if m else pkg
+    return base.lower().replace('_', '-')
+
+
+def validate_pip_format(pkg: str) -> tuple[bool, Optional[str]]:
+    """Format check for a single requirement string. Mirrors the validator
+    that previously lived in cli/commands/utility/pip.py so we don't change
+    behavior when packages move from user_requirements.txt to pip_packages."""
+    if not isinstance(pkg, str) or not pkg.strip():
+        return False, "package name cannot be empty"
+    if pkg[0] in '0123456789.-_':
+        return False, "package name must start with a letter"
+    if not _PIP_SPEC_RE.match(pkg):
+        return False, "invalid package specification format"
+    return True, None
 
 
 class ValidationError(Exception):
@@ -70,6 +97,7 @@ class BoxConfig:
     mounts: List[Mount] = field(default_factory=list)
     volumes: List[Volume] = field(default_factory=list)
     env: Dict[str, str] = field(default_factory=dict)
+    pip_packages: List[str] = field(default_factory=list)
     extras: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -91,15 +119,17 @@ class BoxConfig:
             for v in raw.get("volumes", [])
         ]
         env = dict(raw.get("env", {}))
+        pip_packages = list(raw.get("pip_packages", []))
         extras = {
             k: v for k, v in raw.items()
-            if k not in {"version", "mounts", "volumes", "env"}
+            if k not in {"version", "mounts", "volumes", "env", "pip_packages"}
         }
         return cls(
             version=int(raw["version"]),
             mounts=mounts,
             volumes=volumes,
             env=env,
+            pip_packages=pip_packages,
             extras=extras,
         )
 
@@ -108,6 +138,7 @@ class BoxConfig:
         out["mounts"] = [m.to_dict() for m in self.mounts]
         out["volumes"] = [v.to_dict() for v in self.volumes]
         out["env"] = dict(self.env)
+        out["pip_packages"] = list(self.pip_packages)
         for k, v in self.extras.items():
             out[k] = v
         return out
@@ -185,6 +216,7 @@ def validate(raw: Any) -> List[str]:
     errors.extend(_validate_volumes(raw))
     errors.extend(_validate_cross_path_collisions(raw))
     errors.extend(_validate_env(raw))
+    errors.extend(_validate_pip_packages(raw))
 
     return errors
 
@@ -319,6 +351,34 @@ def _validate_env(raw: Dict[str, Any]) -> List[str]:
             )
         if not isinstance(v, str):
             errors.append(f"env[{k!r}] must be a string, got {_typename(v)}.")
+    return errors
+
+
+def _validate_pip_packages(raw: Dict[str, Any]) -> List[str]:
+    errors: List[str] = []
+    pkgs = raw.get("pip_packages")
+    if pkgs is None:
+        return errors
+    if not isinstance(pkgs, list):
+        return [f"'pip_packages' must be an array, got {_typename(pkgs)}."]
+
+    seen: Dict[str, int] = {}
+    for i, p in enumerate(pkgs):
+        if not isinstance(p, str):
+            errors.append(f"pip_packages[{i}] must be a string, got {_typename(p)}.")
+            continue
+        ok, reason = validate_pip_format(p)
+        if not ok:
+            errors.append(f"pip_packages[{i}] {p!r}: {reason}.")
+            continue
+        canonical = normalize_pip_name(p)
+        if canonical in seen:
+            errors.append(
+                f"pip_packages[{i}] {p!r} duplicates pip_packages[{seen[canonical]}] "
+                f"(both normalize to {canonical!r})."
+            )
+        else:
+            seen[canonical] = i
     return errors
 
 
