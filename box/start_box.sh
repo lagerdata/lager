@@ -241,11 +241,30 @@ if [ -f "$BOX_CONFIG_FILE" ]; then
     if BOX_CONFIG_OUTPUT=$(python3 "${SCRIPT_DIR}/lager/box_config/render_docker_args.py" "$BOX_CONFIG_FILE" 2>&1); then
         BOX_CONFIG_MOUNTS=$(printf '%s\n' "$BOX_CONFIG_OUTPUT" | sed -n '1p')
         BOX_CONFIG_ENV=$(printf '%s\n' "$BOX_CONFIG_OUTPUT" | sed -n '2p')
+        BOX_CONFIG_HOST_PATHS=$(printf '%s\n' "$BOX_CONFIG_OUTPUT" | sed -n '3p')
         if [ -n "$BOX_CONFIG_MOUNTS" ]; then
             echo "  Mounts/volumes: $BOX_CONFIG_MOUNTS"
         fi
         if [ -n "$BOX_CONFIG_ENV" ]; then
             echo "  Env: $BOX_CONFIG_ENV"
+        fi
+        # Pre-create bind-mount host paths so `docker run` doesn't fail when a
+        # path is declared in box_config.json but doesn't exist yet on the host.
+        # We can only mkdir as the current user (lagerdata); root-owned parents
+        # like /srv still need a one-time `sudo mkdir + chown 33:33` from the
+        # operator. Failures here are warnings, never fatal.
+        if [ -n "$BOX_CONFIG_HOST_PATHS" ]; then
+            eval "_box_cfg_host_paths=($BOX_CONFIG_HOST_PATHS)"
+            for _p in "${_box_cfg_host_paths[@]}"; do
+                if [ ! -d "$_p" ]; then
+                    if mkdir -p "$_p" 2>/dev/null; then
+                        echo "  Created host path $_p"
+                    else
+                        echo "  [WARNING] Could not create $_p (try: sudo mkdir -p $_p && sudo chown 33:33 $_p)"
+                    fi
+                fi
+            done
+            unset _box_cfg_host_paths _p
         fi
     else
         echo "[ERROR] box_config.json failed validation:"
