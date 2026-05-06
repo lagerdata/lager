@@ -240,6 +240,19 @@ def validate_cmd(ctx: click.Context, box: Optional[str]) -> None:
     is_flag=True,
     help="Validate and update applied-hash only; do not bounce the container",
 )
+@click.option(
+    "--no-auto-prep",
+    is_flag=True,
+    help="Skip host-path re-verification before restart.",
+)
+@click.option(
+    "--recursive-chown",
+    is_flag=True,
+    help=(
+        "For any configured mount whose host path is wrong-owned and populated, "
+        "recursively chown it to uid 33 (www-data)."
+    ),
+)
 @click.pass_context
 def apply_cmd(
     ctx: click.Context,
@@ -247,6 +260,8 @@ def apply_cmd(
     yes: bool,
     force: bool,
     skip_restart: bool,
+    no_auto_prep: bool,
+    recursive_chown: bool,
 ) -> None:
     resolved = _resolve_box(ctx, box)
 
@@ -273,6 +288,10 @@ def apply_cmd(
         click.secho("Config unchanged since last apply; skipping restart.", fg="green")
         return
 
+    if not no_auto_prep:
+        if not _preflight_mounts(ctx, resolved, recursive=recursive_chown):
+            ctx.exit(1)
+
     if skip_restart:
         _run_box_config_py(ctx, resolved, "set-applied-hash", cur_hash)
         click.secho("Config validated; restart skipped (--skip-restart).", fg="yellow")
@@ -291,6 +310,58 @@ def apply_cmd(
 
     _run_box_config_py(ctx, resolved, "set-applied-hash", cur_hash)
     click.secho(f"Applied box config on {resolved}.", fg="green")
+
+
+def _preflight_mounts(ctx: click.Context, resolved: str, *, recursive: bool) -> bool:
+    """Re-verify each configured mount's host path before bouncing the container.
+
+    Catches the case where a mount was added by editing /etc/lager/box_config.json
+    directly (skipping `mount add`'s auto-prep). Returns False on any failure that
+    should abort apply.
+    """
+    from ._mount_prep import ensure_host_path_owned
+
+    raw = _run_box_config_py(ctx, resolved, "show")
+    payload = _parse_response(raw, ctx) or {}
+    mounts = payload.get("mounts") or []
+    if not mounts:
+        return True
+
+    failed = False
+    for m in mounts:
+        host = m.get("host")
+        container = m.get("container")
+        if not isinstance(host, str):
+            continue
+        result = ensure_host_path_owned(
+            resolved,
+            host,
+            readonly=bool(m.get("readonly")),
+            recursive=recursive,
+        )
+        if result.ok:
+            if result.action not in ("ok", "ok_readonly"):
+                click.secho(f"Mount {host} -> {container}: {result.message}", fg="green")
+            continue
+        failed = True
+        click.secho(
+            f"Mount {host} -> {container}: {result.message}",
+            fg="red",
+            err=True,
+        )
+        if result.manual_fix:
+            click.echo(f"  Manual fix: {result.manual_fix}", err=True)
+
+    if failed:
+        click.secho(
+            "One or more mounts failed pre-flight; aborting before container restart. "
+            "Use --recursive-chown to fix populated wrong-owner directories, or "
+            "--no-auto-prep to skip the check.",
+            fg="red",
+            err=True,
+        )
+        return False
+    return True
 
 
 def _bounce_container(ctx: click.Context, resolved_box: str) -> bool:
@@ -343,6 +414,19 @@ def mount_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> Non
 @click.argument("container")
 @click.option("--readonly", is_flag=True, help="Mount as read-only")
 @click.option("--box", help="Lagerbox name or IP")
+@click.option(
+    "--no-auto-prep",
+    is_flag=True,
+    help="Skip the auto mkdir/chown of the host path. Use when the directory is provisioned externally.",
+)
+@click.option(
+    "--recursive-chown",
+    is_flag=True,
+    help=(
+        "If the host path already exists with the wrong owner and contains files, recursively "
+        "chown it to uid 33 (www-data). Required to opt in to modifying existing contents."
+    ),
+)
 @click.pass_context
 def mount_add_cmd(
     ctx: click.Context,
@@ -350,6 +434,8 @@ def mount_add_cmd(
     container: str,
     readonly: bool,
     box: Optional[str],
+    no_auto_prep: bool,
+    recursive_chown: bool,
 ) -> None:
     resolved = _resolve_box(ctx, box)
     payload_json = json.dumps({"host": host, "container": container, "readonly": readonly})
@@ -363,13 +449,48 @@ def mount_add_cmd(
         f"Added mount {host} -> {container}{' (ro)' if readonly else ''} on {resolved}.",
         fg="green",
     )
-    if not readonly:
+
+    if no_auto_prep:
+        from ._mount_prep import manual_fix_command
         click.secho(
-            f"Note: if {host} doesn't exist or isn't writable by uid 33 (www-data),"
-            f" run on the box (one-time): sudo mkdir -p {host} && sudo chown 33:33 {host}",
+            f"Skipped host-path prep (--no-auto-prep). If {host} doesn't exist or isn't "
+            f"writable by uid 33, run on the box: {manual_fix_command(host)}",
             fg="yellow",
         )
+    else:
+        from ._mount_prep import ensure_host_path_owned
+        result = ensure_host_path_owned(
+            resolved, host, readonly=readonly, recursive=recursive_chown,
+        )
+        _render_prep_result(ctx, resolved, host, container, result)
+
     click.echo("Run `lager box config apply` to restart the container.")
+
+
+def _render_prep_result(
+    ctx: click.Context,
+    resolved: str,
+    host: str,
+    container: str,
+    result,
+) -> None:
+    """Render a PrepResult; exit non-zero on refused_populated / sudo_failed."""
+    if result.ok:
+        if result.action in ("ok", "ok_readonly"):
+            click.echo(f"Host path: {result.message}")
+        else:
+            click.secho(f"Host path: {result.message}", fg="green")
+        return
+
+    click.secho(
+        f"Host path prep failed for {host} -> {container}: {result.message}",
+        fg="red",
+        err=True,
+    )
+    if result.manual_fix:
+        click.echo("Manual fix (SSH into the box and run):", err=True)
+        click.echo(f"  {result.manual_fix}", err=True)
+    ctx.exit(1)
 
 
 @mount_group.command("remove", help="Remove a bind mount by host+container path.")
