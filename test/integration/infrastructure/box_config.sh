@@ -35,7 +35,22 @@ if [ $# -lt 1 ]; then
 fi
 
 BOX="$1"
-SSH_HOST="lagerdata@${BOX}"
+
+# Resolve box name -> IP for raw SSH commands. `lager` knows the mapping;
+# `ssh` alone does not unless Tailscale MagicDNS or ~/.ssh/config is set up.
+if echo "$BOX" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+    BOX_IP="$BOX"
+else
+    BOX_IP=$(lager boxes 2>/dev/null \
+        | awk -v name="$BOX" '$1 == name { print $2; exit }')
+    if [ -z "$BOX_IP" ]; then
+        echo "Could not resolve box name '$BOX' to an IP via 'lager boxes'."
+        echo "Pass the box's IP directly, or check 'lager boxes' output."
+        exit 1
+    fi
+fi
+SSH_HOST="lagerdata@${BOX_IP}"
+echo "SSH target: $SSH_HOST"
 
 echo "========================================================================"
 echo "LAGER BOX CONFIG SMOKE TEST"
