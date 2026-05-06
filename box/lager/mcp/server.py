@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
 """
 Lager MCP Server — runs ON the box with direct hardware access.
 
 Architecture:
-    AI Agent (Cursor)
+    MCP-compatible AI agent
         |  MCP (streamable-http via box IP)
         v
     Lager MCP Server (this process, on-box)
@@ -14,11 +14,11 @@ Architecture:
         v
     Hardware (power supplies, debug probes, GPIO, protocols, etc.)
 
-The server runs as a service on the Lager box and is reachable from
-Cursor via the box's local IP address.  All hardware operations execute
-directly on-box with no round trips back to the agent.
+The server runs as a service on the Lager box and is reachable from any
+MCP-compatible client via the box's local IP address.  All hardware
+operations execute directly on-box with no round trips back to the agent.
 
-Cursor MCP configuration:
+MCP client configuration:
     {
         "mcpServers": {
             "lager": {

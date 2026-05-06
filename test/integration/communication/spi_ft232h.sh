@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 # ============================================================================
 # FT232H SPI CLI Integration Tests

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 """
 Comprehensive edge-case tests for FT232H SPI auto (hardware) CS mode.

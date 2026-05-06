@@ -60,7 +60,7 @@ Each box runs multiple services inside a single Docker container:
 |---------|------|---------|
 | Python Execution | 5000 | User script execution (`lager python`) |
 | Hardware Invocation | 8080 | Device method proxy |
-| **MCP Server** | **8100** | **AI agent integration (Cursor, Claude, etc.)** |
+| **MCP Server** | **8100** | **AI agent integration (any MCP-compatible client)** |
 | Debug Service | 8765 | Embedded debugging (GDB, J-Link) |
 | HTTP+WebSocket | 9000 | CLI hardware control (UART, supply, etc.) |
 

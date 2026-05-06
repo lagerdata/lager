@@ -258,5 +258,5 @@ Always use `--import-mode=importlib -c /dev/null` to prevent `test/mcp` from sha
 5. For bash tests: source the framework, don't redefine harness functions
 6. Include a docstring/comment with the exact run command
 
-<!-- Copyright 2024-2026 Lager Data LLC -->
+<!-- Copyright 2024-2026 Lager Data -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->

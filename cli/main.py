@@ -1,4 +1,4 @@
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
 """
@@ -69,7 +69,7 @@ from .commands.measurement.watt import watt
 from .commands.measurement.energy import energy
 
 # Box commands (from commands.box package)
-from .commands.box import hello, boxes, instruments, nets, ssh
+from .commands.box import hello, boxes, instruments, nets, ssh, box
 
 # Utility commands (from commands.utility package)
 from .commands.utility import defaults, binaries, update, pip, exec_, logs, webcam, install, uninstall, install_wheel
@@ -166,6 +166,7 @@ cli.add_command(dac)
 cli.add_command(gpi)
 cli.add_command(gpo)
 cli.add_command(boxes)
+cli.add_command(box)
 cli.add_command(instruments)
 cli.add_command(ssh)
 cli.add_command(update)

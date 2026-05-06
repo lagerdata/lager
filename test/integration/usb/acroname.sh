@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright 2024-2026 Lager Data LLC
+# Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 # Acroname-specific test suite for lager usb commands
 # Tests Acroname USBHub2x4, USBHub3p, USBHub3c edge cases and specific behaviors
