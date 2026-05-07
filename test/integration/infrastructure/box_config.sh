@@ -130,6 +130,24 @@ ssh "$SSH_HOST" 'docker inspect lager --format "{{json .Mounts}}"' 2>/dev/null \
   | python3 -c "import json,sys; m=json.load(sys.stdin); sys.exit(0 if any(x.get('Source')=='$MOUNT_HOST_PATH' and x.get('Destination')=='/host_tmp' for x in m) else 1)" \
   && track_test "pass" || track_test "fail"
 
+echo "Test 2.6: Container HOME aligns with /home/www-data mount convention"
+HOME_VAL=$(ssh "$SSH_HOST" 'docker exec lager bash -c "echo \$HOME"' 2>/dev/null | tr -d '\r')
+if [ "$HOME_VAL" = "/home/www-data" ]; then
+  track_test "pass"
+else
+  echo "  Expected /home/www-data, got: $HOME_VAL"
+  track_test "fail"
+fi
+
+echo "Test 2.7: Tilde expansion lands under the mount convention (e.g. ~/.cargo)"
+TILDE_CARGO=$(ssh "$SSH_HOST" 'docker exec lager bash -c "echo ~/.cargo"' 2>/dev/null | tr -d '\r')
+if [ "$TILDE_CARGO" = "/home/www-data/.cargo" ]; then
+  track_test "pass"
+else
+  echo "  Expected /home/www-data/.cargo, got: $TILDE_CARGO"
+  track_test "fail"
+fi
+
 # ------------------------------------------------------------
 start_section "Idempotency"
 # ------------------------------------------------------------

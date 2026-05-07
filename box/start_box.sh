@@ -337,6 +337,12 @@ fi
 # rejects user mounts that would collide. If you add or rename anything here,
 # update the constant too — otherwise users can write a config that validates
 # but blows up at `docker run` mid-bounce with "Duplicate mount point".
+#
+# The container's mount convention puts user files at /home/www-data/... (see
+# the -v lines below and BOX_CONFIG_MOUNTS). Override HOME so ~-aware tools
+# (cargo's env file, ssh's default config, pip user installs, etc.) find them.
+# Without this, $HOME defaults to /var/www per /etc/passwd and ~-expansion
+# misses everything.
 docker run -d \
     --network lagernet \
     --privileged \
@@ -370,6 +376,7 @@ docker run -d \
     --env "LOCAL_ADDRESS=172.18.0.10" \
     --env "REMOTE_PDB_HOST=0.0.0.0" \
     --env "REMOTE_PDB_PORT=5555" \
+    -e HOME=/home/www-data \
     --log-driver json-file \
     --log-opt max-size=10m \
     --log-opt max-file=3 \
