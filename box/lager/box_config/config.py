@@ -25,7 +25,36 @@ from typing import Any, Dict, List, Optional
 
 BOX_CONFIG_PATH = "/etc/lager/box_config.json"
 APPLIED_HASH_PATH = "/etc/lager/box_config.applied_hash"
+APPLIED_CONFIG_PATH = "/etc/lager/box_config.applied.json"
 SCHEMA_VERSION = 1
+
+# Container paths hard-coded by box/start_box.sh. A user-defined mount whose
+# container path collides with one of these would fail at `docker run` with
+# "Duplicate mount point" — at the worst possible moment, mid-bounce. Reject
+# at validation time instead. Keep this in sync with the `-v` list in
+# start_box.sh.
+RESERVED_CONTAINER_PATHS: Dict[str, str] = {
+    "/tmp": "shared host /tmp",
+    "/dev": "host device tree",
+    "/sys/bus/usb": "USB device topology",
+    "/sys/devices": "device topology",
+    "/var/run/dbus": "host dbus socket",
+    "/etc/lager": "lager config (where box_config.json itself lives)",
+    "/home/www-data/.ssh": "lagerdata's authorized_keys (incoming SSH auth)",
+    "/host/etc/hostname": "host hostname",
+    "/opt/SEGGER": "SEGGER J-Link tools",
+    "/opt/picoscope/lib": "PicoScope libraries",
+}
+
+# Suggested non-colliding alternatives for common reserved paths. The big one
+# is .ssh — users want to mount git creds for `cargo install --git`, etc.
+_RESERVED_PATH_ALTERNATIVES: Dict[str, str] = {
+    "/home/www-data/.ssh": "/home/www-data/.ssh-git",
+}
+
+
+def suggest_alternative(container_path: str) -> Optional[str]:
+    return _RESERVED_PATH_ALTERNATIVES.get(container_path)
 
 _VOLUME_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]+$")
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -198,6 +227,29 @@ def write_applied_hash(value: str, path: str = APPLIED_HASH_PATH) -> None:
         raise
 
 
+def read_applied_snapshot(path: str = APPLIED_CONFIG_PATH) -> Optional["BoxConfig"]:
+    """Return the last successfully-applied config (the rollback target).
+
+    None when no apply has succeeded yet on this box, or when the snapshot
+    file is missing/corrupt — callers must treat None as "rollback unavailable".
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+    try:
+        return BoxConfig.from_dict(raw)
+    except ValidationError:
+        return None
+
+
+def write_applied_snapshot(cfg: "BoxConfig", path: str = APPLIED_CONFIG_PATH) -> None:
+    """Save a JSON snapshot of the config alongside applied_hash. The pair
+    is the rollback target if a future apply's bounce blows up."""
+    _atomic_write_json(path, cfg.to_dict())
+
+
 def validate(raw: Any) -> List[str]:
     errors: List[str] = []
 
@@ -215,6 +267,7 @@ def validate(raw: Any) -> List[str]:
     errors.extend(_validate_mounts(raw))
     errors.extend(_validate_volumes(raw))
     errors.extend(_validate_cross_path_collisions(raw))
+    errors.extend(_validate_reserved_paths(raw))
     errors.extend(_validate_env(raw))
     errors.extend(_validate_pip_packages(raw))
 
@@ -331,6 +384,29 @@ def _validate_cross_path_collisions(raw: Dict[str, Any]) -> List[str]:
             errors.append(
                 f"volumes[{i}].container {c!r} collides with mounts[{mount_containers[c]}].container."
             )
+    return errors
+
+
+def _validate_reserved_paths(raw: Dict[str, Any]) -> List[str]:
+    errors: List[str] = []
+    mounts = raw.get("mounts")
+    if not isinstance(mounts, list):
+        return errors
+    for i, m in enumerate(mounts):
+        if not isinstance(m, dict):
+            continue
+        c = m.get("container")
+        if not isinstance(c, str) or c not in RESERVED_CONTAINER_PATHS:
+            continue
+        purpose = RESERVED_CONTAINER_PATHS[c]
+        msg = (
+            f"mounts[{i}].container {c!r} is reserved by start_box.sh ({purpose}); "
+            "pick a different container path."
+        )
+        alt = suggest_alternative(c)
+        if alt:
+            msg += f" Suggestion: use {alt} instead."
+        errors.append(msg)
     return errors
 
 

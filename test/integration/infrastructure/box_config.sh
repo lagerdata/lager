@@ -66,7 +66,7 @@ start_section "Baseline (no config)"
 # ------------------------------------------------------------
 
 echo "Test 1.1: Remove any existing box_config.json"
-ssh "$SSH_HOST" 'rm -f /etc/lager/box_config.json /etc/lager/box_config.applied_hash' 2>&1 \
+ssh "$SSH_HOST" 'rm -f /etc/lager/box_config.json /etc/lager/box_config.applied_hash /etc/lager/box_config.applied.json' 2>&1 \
   && track_test "pass" || track_test "fail"
 
 echo "Test 1.2: Restart container without config"
@@ -179,6 +179,75 @@ else
 fi
 
 # ------------------------------------------------------------
+start_section "applied_hash persists after a real apply"
+# ------------------------------------------------------------
+
+# Issue 2: confirm that after `apply` succeeds, applied_hash actually equals
+# the current config hash. Pre-PR, the set-applied-hash call raced the
+# container restart and silently lost — every subsequent apply re-bounced.
+
+echo "Test 3.6: Run a fresh apply to update applied_hash"
+lager box config apply --box "$BOX" --yes --force >/dev/null 2>&1 \
+  && track_test "pass" || track_test "fail"
+
+echo "Test 3.7: Second apply prints 'unchanged' (applied_hash actually persisted)"
+lager box config apply --box "$BOX" --yes 2>&1 | grep -qi "unchanged" \
+  && track_test "pass" || track_test "fail"
+
+# ------------------------------------------------------------
+start_section "Reserved container path is rejected"
+# ------------------------------------------------------------
+
+# Issue 4: a user-defined mount that collides with a hard-coded mount in
+# start_box.sh used to make the box headless mid-bounce. Now it's rejected
+# at validation with a suggestion.
+
+echo "Test 3.8: mount add /tmp -> /home/www-data/.ssh is rejected with suggestion"
+OUT=$(lager box config mount add /tmp/lager_ssh_collide /home/www-data/.ssh --readonly --box "$BOX" 2>&1)
+if echo "$OUT" | grep -qi "reserved by start_box.sh" \
+   && echo "$OUT" | grep -qi "/home/www-data/.ssh-git"; then
+  track_test "pass"
+else
+  echo "  Output: $OUT"
+  track_test "fail"
+fi
+
+# ------------------------------------------------------------
+start_section "mount add prep failure leaves JSON unchanged"
+# ------------------------------------------------------------
+
+# Issue 1: prep used to run AFTER the JSON was written, so a refused-populated
+# prep left a mount entry orphaned in box_config.json that the duplicate-
+# container validator then blocked on retry.
+
+PREP_FAIL_PATH="/tmp/lager_test_prep_fail"
+ssh "$SSH_HOST" "rm -rf '$PREP_FAIL_PATH' && mkdir -p '$PREP_FAIL_PATH' && touch '$PREP_FAIL_PATH/sentinel'" >/dev/null 2>&1
+
+echo "Test 3.9: Snapshot mount count before prep-failure attempt"
+BEFORE_COUNT=$(lager box config mount list --json --box "$BOX" 2>/dev/null | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
+[ -n "$BEFORE_COUNT" ] && track_test "pass" || track_test "fail"
+
+echo "Test 3.10: mount add (no --recursive-chown) on populated dir refuses"
+OUT=$(lager box config mount add "$PREP_FAIL_PATH" /host_prep_fail --box "$BOX" 2>&1)
+if echo "$OUT" | grep -qi "Mount NOT added"; then
+  track_test "pass"
+else
+  echo "  Output: $OUT"
+  track_test "fail"
+fi
+
+echo "Test 3.11: Mount count unchanged (JSON not written)"
+AFTER_COUNT=$(lager box config mount list --json --box "$BOX" 2>/dev/null | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
+if [ "$BEFORE_COUNT" = "$AFTER_COUNT" ]; then
+  track_test "pass"
+else
+  echo "  Mount count went from $BEFORE_COUNT to $AFTER_COUNT — JSON was mutated despite prep failure"
+  track_test "fail"
+fi
+
+ssh "$SSH_HOST" "sudo rm -rf '$PREP_FAIL_PATH'" >/dev/null 2>&1
+
+# ------------------------------------------------------------
 start_section "Cleanup"
 # ------------------------------------------------------------
 
@@ -198,7 +267,7 @@ ssh "$SSH_HOST" 'docker inspect lager --format "{{json .Mounts}}"' 2>/dev/null \
   && track_test "pass" || track_test "fail"
 
 echo "Test 4.4: Remove config + test dirs and restart to baseline"
-ssh "$SSH_HOST" 'rm -f /etc/lager/box_config.json /etc/lager/box_config.applied_hash' >/dev/null 2>&1
+ssh "$SSH_HOST" 'rm -f /etc/lager/box_config.json /etc/lager/box_config.applied_hash /etc/lager/box_config.applied.json' >/dev/null 2>&1
 ssh "$SSH_HOST" "sudo rm -rf '$MOUNT_HOST_PATH' '$MOUNT_POPULATED_PATH'" >/dev/null 2>&1
 ssh "$SSH_HOST" 'cd ~/box && ./start_box.sh' >/dev/null 2>&1 \
   && track_test "pass" || track_test "fail"
@@ -226,7 +295,7 @@ else
 fi
 
 echo "Test 5.4: Final cleanup"
-ssh "$SSH_HOST" 'rm -f /etc/lager/box_config.json /etc/lager/box_config.applied_hash' >/dev/null 2>&1
+ssh "$SSH_HOST" 'rm -f /etc/lager/box_config.json /etc/lager/box_config.applied_hash /etc/lager/box_config.applied.json' >/dev/null 2>&1
 ssh "$SSH_HOST" 'cd ~/box && ./start_box.sh' >/dev/null 2>&1 \
   && track_test "pass" || track_test "fail"
 

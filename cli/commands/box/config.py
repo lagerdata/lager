@@ -16,11 +16,19 @@ from __future__ import annotations
 import ipaddress
 import json
 import subprocess
+import time
 from typing import Any, Optional
 
 import click
 
 from ...context import get_default_box, get_impl_path
+
+# How long we'll wait for the box's HTTP API to come up after start_box.sh
+# returns 0. The container itself starts in ~3-5s on a healthy box; the
+# generous cap covers slow boxes and pip-install steps that run inline.
+_API_READY_DEADLINE_SECONDS = 30
+_API_READY_POLL_INTERVAL_SECONDS = 1
+_BOX_API_PORT = 5000
 
 
 def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
@@ -305,11 +313,67 @@ def apply_cmd(
         return
 
     if not _bounce_container(ctx, resolved):
-        click.secho("Container restart failed; not updating applied-hash.", fg="red", err=True)
+        # Bounce of the new config failed. The container may be down (start_box.sh
+        # exits between `docker stop` and a successful `docker run` when, e.g.,
+        # a mount entry is malformed). Try to restore the last applied snapshot
+        # and bring the box back up on the previous good config.
+        if _attempt_rollback(ctx, resolved):
+            click.secho(
+                "Rolled back to the previously applied config; the new config "
+                "was rejected. The container is up on the previous config — fix "
+                "/etc/lager/box_config.json and re-run `lager box config apply`.",
+                fg="yellow",
+                err=True,
+            )
+        else:
+            click.secho(
+                "Container restart failed and rollback was not possible. The "
+                "container may be down. SSH into the box, fix /etc/lager/box_config.json, "
+                "and run `~/box/start_box.sh` manually.",
+                fg="red",
+                err=True,
+            )
+        ctx.exit(1)
+
+    if not _wait_for_box_api(resolved):
+        click.secho(
+            f"Container restarted but the box API didn't come up within "
+            f"{_API_READY_DEADLINE_SECONDS}s; not updating applied-hash. The "
+            "bounce succeeded, but next `apply` will re-bounce unnecessarily. "
+            "Check `lager hello` and the container logs.",
+            fg="yellow",
+            err=True,
+        )
         ctx.exit(1)
 
     _run_box_config_py(ctx, resolved, "set-applied-hash", cur_hash)
     click.secho(f"Applied box config on {resolved}.", fg="green")
+
+
+def _attempt_rollback(ctx: click.Context, resolved_box: str) -> bool:
+    """Restore the last applied snapshot and re-bounce. Returns True iff the
+    box is back up on the previous good config.
+
+    First-apply boxes have no snapshot to fall back to; in that case there's
+    nothing we can do remotely and the user has to recover by hand.
+    """
+    raw = _run_box_config_py(ctx, resolved_box, "restore-applied")
+    payload = _parse_response(raw, ctx)
+    if not payload.get("ok"):
+        return False
+    click.secho(
+        "New config rejected; rolling back to last applied config and "
+        "restarting...",
+        fg="yellow",
+        err=True,
+    )
+    if not _bounce_container(ctx, resolved_box):
+        return False
+    # Don't gate the rollback message on API readiness — the bounce returning
+    # 0 is a strong enough signal that docker run accepted the previous config.
+    # If the API doesn't come up, that's a separate problem the user will see
+    # via `lager hello`, not a rollback failure.
+    return True
 
 
 def _preflight_mounts(ctx: click.Context, resolved: str, *, recursive: bool) -> bool:
@@ -362,6 +426,44 @@ def _preflight_mounts(ctx: click.Context, resolved: str, *, recursive: bool) -> 
         )
         return False
     return True
+
+
+def _box_api_responding(box_ip: str, *, timeout: float = 2.0) -> bool:
+    """Single probe of the box's Python execution service. True iff the box
+    answers `/hello` with any HTTP status (i.e., the service is bound and
+    accepting connections). Catches every transport-level failure so the
+    caller can poll cheaply."""
+    import requests
+    try:
+        r = requests.get(f"http://{box_ip}:{_BOX_API_PORT}/hello", timeout=timeout)
+        return r.status_code < 500
+    except Exception:
+        return False
+
+
+def _wait_for_box_api(
+    box_ip: str,
+    *,
+    deadline_seconds: float = _API_READY_DEADLINE_SECONDS,
+    poll_interval: float = _API_READY_POLL_INTERVAL_SECONDS,
+    sleeper=time.sleep,
+    clock=time.monotonic,
+    is_responding=None,
+) -> bool:
+    """Block until the box's API responds, or the deadline passes.
+
+    `sleeper`, `clock`, and `is_responding` are injected so unit tests can
+    drive the polling loop without real time or real HTTP. Production calls
+    use the defaults.
+    """
+    probe = is_responding or _box_api_responding
+    deadline = clock() + deadline_seconds
+    while True:
+        if probe(box_ip):
+            return True
+        if clock() >= deadline:
+            return False
+        sleeper(poll_interval)
 
 
 def _bounce_container(ctx: click.Context, resolved_box: str) -> bool:
@@ -438,6 +540,33 @@ def mount_add_cmd(
     recursive_chown: bool,
 ) -> None:
     resolved = _resolve_box(ctx, box)
+
+    # Run host-path prep BEFORE persisting to box_config.json. If the prep
+    # fails (refused-populated, sudo not configured, etc.), the JSON stays
+    # untouched and the user can re-run `mount add` after fixing the issue
+    # rather than fight the duplicate-container validator on retry.
+    prep_result = None
+    if not no_auto_prep:
+        from ._mount_prep import ensure_host_path_owned
+        prep_result = ensure_host_path_owned(
+            resolved, host, readonly=readonly, recursive=recursive_chown,
+        )
+        if not prep_result.ok:
+            click.secho(
+                f"Host path prep failed for {host} -> {container}: {prep_result.message}",
+                fg="red",
+                err=True,
+            )
+            if prep_result.manual_fix:
+                click.echo("Manual fix (SSH into the box and run):", err=True)
+                click.echo(f"  {prep_result.manual_fix}", err=True)
+            click.secho(
+                "Mount NOT added to box_config.json. Fix the host path and re-run.",
+                fg="yellow",
+                err=True,
+            )
+            ctx.exit(1)
+
     payload_json = json.dumps({"host": host, "container": container, "readonly": readonly})
     raw = _run_box_config_py(ctx, resolved, "mount-add", payload_json)
     payload = _parse_response(raw, ctx)
@@ -458,39 +587,12 @@ def mount_add_cmd(
             fg="yellow",
         )
     else:
-        from ._mount_prep import ensure_host_path_owned
-        result = ensure_host_path_owned(
-            resolved, host, readonly=readonly, recursive=recursive_chown,
-        )
-        _render_prep_result(ctx, resolved, host, container, result)
+        if prep_result.action in ("ok", "ok_readonly"):
+            click.echo(f"Host path: {prep_result.message}")
+        else:
+            click.secho(f"Host path: {prep_result.message}", fg="green")
 
     click.echo("Run `lager box config apply` to restart the container.")
-
-
-def _render_prep_result(
-    ctx: click.Context,
-    resolved: str,
-    host: str,
-    container: str,
-    result,
-) -> None:
-    """Render a PrepResult; exit non-zero on refused_populated / sudo_failed."""
-    if result.ok:
-        if result.action in ("ok", "ok_readonly"):
-            click.echo(f"Host path: {result.message}")
-        else:
-            click.secho(f"Host path: {result.message}", fg="green")
-        return
-
-    click.secho(
-        f"Host path prep failed for {host} -> {container}: {result.message}",
-        fg="red",
-        err=True,
-    )
-    if result.manual_fix:
-        click.echo("Manual fix (SSH into the box and run):", err=True)
-        click.echo(f"  {result.manual_fix}", err=True)
-    ctx.exit(1)
 
 
 @mount_group.command("remove", help="Remove a bind mount by host+container path.")

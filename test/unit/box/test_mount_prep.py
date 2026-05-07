@@ -179,6 +179,29 @@ class SudoFailures(unittest.TestCase):
         self.assertEqual(r.action, "sudo_failed")
         self.assertEqual(r.current_owner, "1000:1000")
 
+    def test_sudo_failure_message_includes_bootstrap(self):
+        # The whole point of the message change in PR2: a fresh box without
+        # passwordless sudo should get a copy-pasteable sudoers snippet so
+        # the user can fix it once and not be asked again.
+        ssh = FakeSsh([_stat_missing(), _sudo_failed()])
+        r = mp.ensure_host_path_owned("1.2.3.4", "/Hyphen", ssh_runner=ssh)
+        self.assertFalse(r.ok)
+        self.assertIn("sudoers.d/lager-box-config", r.message)
+        self.assertIn("NOPASSWD: /bin/mkdir, /bin/chown", r.message)
+
+    def test_unexpected_sudo_error_skips_bootstrap(self):
+        # If sudo failed for an unrelated reason (e.g. /bin/mkdir doesn't
+        # exist), the bootstrap snippet wouldn't help and would just be
+        # noise. Surface the raw stderr instead.
+        ssh = FakeSsh([
+            _stat_missing(),
+            (1, "", "mkdir: cannot create directory: Read-only file system\n"),
+        ])
+        r = mp.ensure_host_path_owned("1.2.3.4", "/Hyphen", ssh_runner=ssh)
+        self.assertFalse(r.ok)
+        self.assertNotIn("sudoers.d/lager-box-config", r.message)
+        self.assertIn("Read-only file system", r.message)
+
 
 class ManualFixCommand(unittest.TestCase):
     def test_quotes_paths_with_spaces(self):

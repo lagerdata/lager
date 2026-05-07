@@ -149,6 +149,60 @@ class ValidateCrossCollisions(unittest.TestCase):
         self.assertTrue(any("collides with mounts" in e for e in errors))
 
 
+class ValidateReservedPaths(unittest.TestCase):
+    def test_each_reserved_path_rejected(self):
+        # Spot-check every entry — keeps the test honest if someone adds a
+        # path to the constant without updating start_box.sh.
+        for reserved in cfg.RESERVED_CONTAINER_PATHS:
+            errors = cfg.validate(_v({
+                "mounts": [{"host": "/h", "container": reserved}],
+            }))
+            self.assertTrue(
+                any("reserved by start_box.sh" in e and reserved in e for e in errors),
+                f"expected rejection for reserved path {reserved!r}, got {errors}",
+            )
+
+    def test_ssh_collision_suggests_alternative(self):
+        errors = cfg.validate(_v({
+            "mounts": [{"host": "/h", "container": "/home/www-data/.ssh"}],
+        }))
+        self.assertTrue(
+            any("/home/www-data/.ssh-git" in e for e in errors),
+            f"expected suggestion for /home/www-data/.ssh, got {errors}",
+        )
+
+    def test_non_reserved_container_path_allowed(self):
+        self.assertEqual(
+            cfg.validate(_v({"mounts": [{"host": "/h", "container": "/Hyphen"}]})),
+            [],
+        )
+
+    def test_suggest_alternative_only_for_known_paths(self):
+        self.assertEqual(cfg.suggest_alternative("/home/www-data/.ssh"), "/home/www-data/.ssh-git")
+        self.assertIsNone(cfg.suggest_alternative("/Hyphen"))
+
+
+class AppliedSnapshot(unittest.TestCase):
+    def test_read_snapshot_missing_returns_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(cfg.read_applied_snapshot(os.path.join(d, "missing.json")))
+
+    def test_round_trip(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "snap.json")
+            original = cfg.init_default()
+            cfg.write_applied_snapshot(original, path)
+            loaded = cfg.read_applied_snapshot(path)
+            self.assertEqual(loaded.compute_hash(), original.compute_hash())
+
+    def test_corrupt_snapshot_returns_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "bad.json")
+            with open(path, "w") as f:
+                f.write("not valid json")
+            self.assertIsNone(cfg.read_applied_snapshot(path))
+
+
 class ValidateEnv(unittest.TestCase):
     def test_env_must_be_object(self):
         errors = cfg.validate(_v({"env": []}))
