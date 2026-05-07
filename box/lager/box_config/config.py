@@ -8,8 +8,9 @@ Reads /etc/lager/box_config.json (when present) and turns it into mount,
 volume, and env declarations consumed by start_box.sh on every container
 restart. Missing file = no behavior change vs. pre-feature boxes.
 
-PR #1 surface: mounts, volumes, env. apt_packages / rustup / hooks are
-round-tripped lossless via `extras` for future PRs.
+First-class fields: mounts, volumes, env, pip_packages, apt_packages,
+sysctl, cargo_packages. Unknown keys (rustup / hooks / future fields) are
+round-tripped lossless via `extras`.
 """
 
 from __future__ import annotations
@@ -65,6 +66,16 @@ _PIP_SPEC_RE = re.compile(
 )
 _PIP_NAME_RE = re.compile(r'^([a-zA-Z0-9\-_\.]+)')
 
+# Debian package name format (lowercased; no version pinning in v1).
+_APT_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9+\-.]*$')
+
+# sysctl namespaced keys: net.ipv4.ip_forward, kernel.shmmax, etc.
+_SYSCTL_KEY_RE = re.compile(r'^[a-zA-Z][a-zA-Z0-9_.]*$')
+
+# cargo crate name + optional @version. No git+ URLs in v1.
+_CARGO_SPEC_RE = re.compile(r'^[a-z0-9][a-z0-9_\-]*(?:@[a-zA-Z0-9.+\-]+)?$')
+_CARGO_NAME_RE = re.compile(r'^([a-z0-9][a-z0-9_\-]*)')
+
 
 def normalize_pip_name(pkg: str) -> str:
     """Canonical key for dedupe / removal: lowercase, underscores→dashes,
@@ -85,6 +96,42 @@ def validate_pip_format(pkg: str) -> tuple[bool, Optional[str]]:
     if not _PIP_SPEC_RE.match(pkg):
         return False, "invalid package specification format"
     return True, None
+
+
+def validate_apt_format(pkg: str) -> tuple[bool, Optional[str]]:
+    """Format check for a single Debian package name. v1 is names only —
+    no version pinning, no architecture qualifier."""
+    if not isinstance(pkg, str) or not pkg.strip():
+        return False, "package name cannot be empty"
+    if not _APT_NAME_RE.match(pkg):
+        return False, "invalid Debian package name (must match [a-z0-9][a-z0-9+-.]*)"
+    return True, None
+
+
+def validate_sysctl_key(key: str) -> tuple[bool, Optional[str]]:
+    if not isinstance(key, str) or not key.strip():
+        return False, "sysctl key cannot be empty"
+    if not _SYSCTL_KEY_RE.match(key):
+        return False, "invalid sysctl key (must match [a-zA-Z][a-zA-Z0-9_.]*)"
+    return True, None
+
+
+def validate_cargo_format(pkg: str) -> tuple[bool, Optional[str]]:
+    """Format check for a cargo crate spec. Accepts `name` or `name@version`."""
+    if not isinstance(pkg, str) or not pkg.strip():
+        return False, "package name cannot be empty"
+    if not _CARGO_SPEC_RE.match(pkg):
+        return False, "invalid cargo crate spec (must match [a-z0-9][a-z0-9_-]*(@version)?)"
+    return True, None
+
+
+def normalize_cargo_name(pkg: str) -> str:
+    """Bare crate name, used as the dedupe key. Cargo crate names are
+    case-sensitive but in practice crates.io is lowercase; we mirror pip's
+    underscore->dash normalization for forgiveness."""
+    m = _CARGO_NAME_RE.match(pkg)
+    base = m.group(1) if m else pkg
+    return base.lower().replace('_', '-')
 
 
 class ValidationError(Exception):
@@ -120,6 +167,12 @@ class Volume:
         return {"name": self.name, "container": self.container}
 
 
+_FIRST_CLASS_KEYS = frozenset({
+    "version", "mounts", "volumes", "env",
+    "pip_packages", "apt_packages", "sysctl", "cargo_packages",
+})
+
+
 @dataclass
 class BoxConfig:
     version: int = SCHEMA_VERSION
@@ -127,6 +180,9 @@ class BoxConfig:
     volumes: List[Volume] = field(default_factory=list)
     env: Dict[str, str] = field(default_factory=dict)
     pip_packages: List[str] = field(default_factory=list)
+    apt_packages: List[str] = field(default_factory=list)
+    sysctl: Dict[str, str] = field(default_factory=dict)
+    cargo_packages: List[str] = field(default_factory=list)
     extras: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -149,16 +205,19 @@ class BoxConfig:
         ]
         env = dict(raw.get("env", {}))
         pip_packages = list(raw.get("pip_packages", []))
-        extras = {
-            k: v for k, v in raw.items()
-            if k not in {"version", "mounts", "volumes", "env", "pip_packages"}
-        }
+        apt_packages = list(raw.get("apt_packages", []))
+        sysctl = dict(raw.get("sysctl", {}))
+        cargo_packages = list(raw.get("cargo_packages", []))
+        extras = {k: v for k, v in raw.items() if k not in _FIRST_CLASS_KEYS}
         return cls(
             version=int(raw["version"]),
             mounts=mounts,
             volumes=volumes,
             env=env,
             pip_packages=pip_packages,
+            apt_packages=apt_packages,
+            sysctl=sysctl,
+            cargo_packages=cargo_packages,
             extras=extras,
         )
 
@@ -168,6 +227,9 @@ class BoxConfig:
         out["volumes"] = [v.to_dict() for v in self.volumes]
         out["env"] = dict(self.env)
         out["pip_packages"] = list(self.pip_packages)
+        out["apt_packages"] = list(self.apt_packages)
+        out["sysctl"] = dict(self.sysctl)
+        out["cargo_packages"] = list(self.cargo_packages)
         for k, v in self.extras.items():
             out[k] = v
         return out
@@ -270,6 +332,9 @@ def validate(raw: Any) -> List[str]:
     errors.extend(_validate_reserved_paths(raw))
     errors.extend(_validate_env(raw))
     errors.extend(_validate_pip_packages(raw))
+    errors.extend(_validate_apt_packages(raw))
+    errors.extend(_validate_sysctl(raw))
+    errors.extend(_validate_cargo_packages(raw))
 
     return errors
 
@@ -457,6 +522,81 @@ def _validate_pip_packages(raw: Dict[str, Any]) -> List[str]:
         if canonical in seen:
             errors.append(
                 f"pip_packages[{i}] {p!r} duplicates pip_packages[{seen[canonical]}] "
+                f"(both normalize to {canonical!r})."
+            )
+        else:
+            seen[canonical] = i
+    return errors
+
+
+def _validate_apt_packages(raw: Dict[str, Any]) -> List[str]:
+    errors: List[str] = []
+    pkgs = raw.get("apt_packages")
+    if pkgs is None:
+        return errors
+    if not isinstance(pkgs, list):
+        return [f"'apt_packages' must be an array, got {_typename(pkgs)}."]
+
+    seen: Dict[str, int] = {}
+    for i, p in enumerate(pkgs):
+        if not isinstance(p, str):
+            errors.append(f"apt_packages[{i}] must be a string, got {_typename(p)}.")
+            continue
+        ok, reason = validate_apt_format(p)
+        if not ok:
+            errors.append(f"apt_packages[{i}] {p!r}: {reason}.")
+            continue
+        canonical = p.lower()
+        if canonical in seen:
+            errors.append(
+                f"apt_packages[{i}] {p!r} duplicates apt_packages[{seen[canonical]}]."
+            )
+        else:
+            seen[canonical] = i
+    return errors
+
+
+def _validate_sysctl(raw: Dict[str, Any]) -> List[str]:
+    errors: List[str] = []
+    sysctl = raw.get("sysctl")
+    if sysctl is None:
+        return errors
+    if not isinstance(sysctl, dict):
+        return [f"'sysctl' must be an object, got {_typename(sysctl)}."]
+    for k, v in sysctl.items():
+        ok, reason = validate_sysctl_key(k)
+        if not ok:
+            errors.append(f"sysctl key {k!r}: {reason}.")
+            continue
+        if not isinstance(v, str):
+            errors.append(f"sysctl[{k!r}] must be a string, got {_typename(v)}.")
+            continue
+        if "\n" in v:
+            errors.append(f"sysctl[{k!r}] must not contain newlines.")
+    return errors
+
+
+def _validate_cargo_packages(raw: Dict[str, Any]) -> List[str]:
+    errors: List[str] = []
+    pkgs = raw.get("cargo_packages")
+    if pkgs is None:
+        return errors
+    if not isinstance(pkgs, list):
+        return [f"'cargo_packages' must be an array, got {_typename(pkgs)}."]
+
+    seen: Dict[str, int] = {}
+    for i, p in enumerate(pkgs):
+        if not isinstance(p, str):
+            errors.append(f"cargo_packages[{i}] must be a string, got {_typename(p)}.")
+            continue
+        ok, reason = validate_cargo_format(p)
+        if not ok:
+            errors.append(f"cargo_packages[{i}] {p!r}: {reason}.")
+            continue
+        canonical = normalize_cargo_name(p)
+        if canonical in seen:
+            errors.append(
+                f"cargo_packages[{i}] {p!r} duplicates cargo_packages[{seen[canonical]}] "
                 f"(both normalize to {canonical!r})."
             )
         else:

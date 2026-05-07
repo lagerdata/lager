@@ -136,6 +136,12 @@ def show_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
     _render_human(payload)
 
 
+_FIRST_CLASS_KEYS = frozenset({
+    "version", "mounts", "volumes", "env",
+    "pip_packages", "apt_packages", "sysctl", "cargo_packages",
+})
+
+
 def _render_human(payload: dict) -> None:
     click.secho(f"Box config (version {payload.get('version', '?')})", bold=True)
 
@@ -172,10 +178,31 @@ def _render_human(payload: dict) -> None:
     for p in pip_packages:
         click.echo(f"  {p}")
 
-    extras = {
-        k: v for k, v in payload.items()
-        if k not in {"version", "mounts", "volumes", "env", "pip_packages"}
-    }
+    apt_packages = payload.get("apt_packages") or []
+    click.echo()
+    click.secho("Apt packages (host):", bold=True)
+    if not apt_packages:
+        click.echo("  (none)")
+    for p in apt_packages:
+        click.echo(f"  {p}")
+
+    sysctl = payload.get("sysctl") or {}
+    click.echo()
+    click.secho("Sysctl:", bold=True)
+    if not sysctl:
+        click.echo("  (none)")
+    for k, v in sysctl.items():
+        click.echo(f"  {k} = {v}")
+
+    cargo_packages = payload.get("cargo_packages") or []
+    click.echo()
+    click.secho("Cargo packages:", bold=True)
+    if not cargo_packages:
+        click.echo("  (none)")
+    for p in cargo_packages:
+        click.echo(f"  {p}")
+
+    extras = {k: v for k, v in payload.items() if k not in _FIRST_CLASS_KEYS}
     if extras:
         click.echo()
         click.secho("Extras (round-tripped, not yet applied):", bold=True)
@@ -312,6 +339,19 @@ def apply_cmd(
         click.secho("Aborted.", fg="yellow")
         return
 
+    # Host-side provisioning that has to happen BEFORE the container bounce:
+    # apt packages may be needed by services the container talks to, and
+    # sysctl values must be in place so first-packet routing works the
+    # moment the container comes up.
+    current_show = _parse_response(_run_box_config_py(ctx, resolved, "show"), ctx) or {}
+    applied_snapshot = _parse_response(
+        _run_box_config_py(ctx, resolved, "applied-show"), ctx
+    )
+    if not _ensure_apt_packages(resolved, current_show, applied_snapshot):
+        ctx.exit(1)
+    if not _ensure_sysctl(resolved, current_show, applied_snapshot):
+        ctx.exit(1)
+
     if not _bounce_container(ctx, resolved):
         # Bounce of the new config failed. The container may be down (start_box.sh
         # exits between `docker stop` and a successful `docker run` when, e.g.,
@@ -348,6 +388,72 @@ def apply_cmd(
 
     _run_box_config_py(ctx, resolved, "set-applied-hash", cur_hash)
     click.secho(f"Applied box config on {resolved}.", fg="green")
+
+
+def _ensure_apt_packages(
+    resolved_box: str,
+    current: dict,
+    applied: Optional[dict],
+) -> bool:
+    """Install apt packages declared in current config. No-op when the field
+    hasn't changed since the last applied snapshot — apt-get is fast for
+    already-installed packages but the SSH round-trip is still ~seconds and
+    re-running apply with no apt changes shouldn't pay that cost."""
+    from ._host_ops import apt_install
+
+    pkgs = current.get("apt_packages") or []
+    prev = (applied or {}).get("apt_packages") or []
+    if list(pkgs) == list(prev):
+        if pkgs:
+            click.secho(f"Apt packages unchanged ({len(pkgs)}); skipping install.", fg="blue")
+        return True
+    if not pkgs:
+        # Field was emptied — we don't auto-uninstall. Apt packages tend to be
+        # things customers want to keep around (tcpdump etc.) even when no
+        # longer declared. Surface the no-op explicitly.
+        click.secho(
+            "apt_packages is empty; not uninstalling previously-declared "
+            "packages (manual `sudo apt-get remove` if you need that).",
+            fg="yellow",
+        )
+        return True
+    click.echo(f"Installing apt packages on {resolved_box}: {', '.join(pkgs)}")
+    result = apt_install(resolved_box, list(pkgs))
+    if not result.ok:
+        click.secho(f"apt install failed: {result.message}", fg="red", err=True)
+        if result.manual_fix:
+            click.echo(f"  Manual fix on the box: {result.manual_fix}", err=True)
+        return False
+    click.secho(result.message, fg="green")
+    return True
+
+
+def _ensure_sysctl(
+    resolved_box: str,
+    current: dict,
+    applied: Optional[dict],
+) -> bool:
+    """Persist sysctl values declared in current config. No-op when unchanged."""
+    from ._host_ops import sysctl_apply
+
+    sysctl = current.get("sysctl") or {}
+    prev = (applied or {}).get("sysctl") or {}
+    if dict(sysctl) == dict(prev):
+        if sysctl:
+            click.secho(f"Sysctl unchanged ({len(sysctl)}); skipping reload.", fg="blue")
+        return True
+    if sysctl:
+        click.echo(f"Applying {len(sysctl)} sysctl key(s) on {resolved_box}...")
+    else:
+        click.echo(f"Clearing sysctl conf on {resolved_box}...")
+    result = sysctl_apply(resolved_box, dict(sysctl))
+    if not result.ok:
+        click.secho(f"sysctl apply failed: {result.message}", fg="red", err=True)
+        if result.manual_fix:
+            click.echo(f"  Manual fix on the box: {result.manual_fix}", err=True)
+        return False
+    click.secho(result.message, fg="green")
+    return True
 
 
 def _attempt_rollback(ctx: click.Context, resolved_box: str) -> bool:
@@ -825,3 +931,290 @@ def pip_import_legacy_cmd(ctx: click.Context, box: Optional[str]) -> None:
             pkg = s.get("package") if isinstance(s, dict) else s
             reason = s.get("reason") if isinstance(s, dict) else "unknown"
             click.secho(f"  - {pkg!r}: {reason}", fg="yellow")
+
+
+# ---------------------------------------------------------------------------
+# apt_packages: host-side Debian packages installed during `apply`
+# ---------------------------------------------------------------------------
+
+# Debian package name format. Mirror of validate_apt_format in
+# box/lager/box_config/config.py — duplicated host-side so we can fail fast
+# without an SSH round-trip.
+import re as _re
+_APT_NAME_RE = _re.compile(r'^[a-z0-9][a-z0-9+\-.]*$')
+
+
+def _validate_apt_name_host(pkg: str) -> Optional[str]:
+    if not isinstance(pkg, str) or not pkg.strip():
+        return "package name cannot be empty"
+    if not _APT_NAME_RE.match(pkg):
+        return "invalid Debian package name (must match [a-z0-9][a-z0-9+-.]*)"
+    return None
+
+
+@box_config.group("apt", help="Manage host-side apt packages.")
+def apt_group() -> None:
+    pass
+
+
+@apt_group.command("list", help="List configured apt packages.")
+@click.option("--box", help="Lagerbox name or IP")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+@click.pass_context
+def apt_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
+    resolved = _resolve_box(ctx, box)
+    raw = _run_box_config_py(ctx, resolved, "show")
+    payload = _parse_response(raw, ctx) or {}
+    pkgs = payload.get("apt_packages") or []
+    if as_json:
+        click.echo(json.dumps(pkgs, indent=2))
+        return
+    if not pkgs:
+        click.echo("No apt packages configured.")
+        return
+    for p in pkgs:
+        click.echo(p)
+
+
+@apt_group.command("add", help="Add one or more apt packages to the box config.")
+@click.argument("packages", nargs=-1, required=True)
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def apt_add_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None:
+    resolved = _resolve_box(ctx, box)
+    fmt_errors = []
+    for p in packages:
+        reason = _validate_apt_name_host(p)
+        if reason:
+            fmt_errors.append((p, reason))
+    if fmt_errors:
+        click.secho("Invalid apt package name(s):", fg="red", err=True)
+        for p, r in fmt_errors:
+            click.secho(f"  - {p!r}: {r}", fg="red", err=True)
+        ctx.exit(1)
+
+    payload_json = json.dumps({"packages": list(packages)})
+    raw = _run_box_config_py(ctx, resolved, "apt-add", payload_json)
+    payload = _parse_response(raw, ctx)
+    if not payload.get("ok"):
+        click.secho("Failed to add apt packages:", fg="red", err=True)
+        _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
+        ctx.exit(1)
+    added = payload.get("added") or list(packages)
+    click.secho(f"Added {len(added)} apt package(s) on {resolved}: " + ", ".join(added), fg="green")
+    click.echo("Run `lager box config apply` to install them on the box host.")
+
+
+@apt_group.command("remove", help="Remove one or more apt packages from the box config.")
+@click.argument("packages", nargs=-1, required=True)
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def apt_remove_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None:
+    resolved = _resolve_box(ctx, box)
+    raw = _run_box_config_py(ctx, resolved, "apt-remove", *packages)
+    payload = _parse_response(raw, ctx)
+    if not payload.get("ok"):
+        click.secho("Failed to remove apt packages:", fg="red", err=True)
+        _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
+        ctx.exit(1)
+    removed = payload.get("removed") or []
+    if removed:
+        click.secho(f"Removed {len(removed)} apt package(s): " + ", ".join(removed), fg="green")
+        click.echo(
+            "Run `lager box config apply` to record the change. Note: existing "
+            "installs are not auto-uninstalled."
+        )
+    else:
+        click.secho("No matching apt packages were configured.", fg="yellow")
+
+
+# ---------------------------------------------------------------------------
+# sysctl: host-side kernel parameters persisted across reboot
+# ---------------------------------------------------------------------------
+
+_SYSCTL_KEY_RE_HOST = _re.compile(r'^[a-zA-Z][a-zA-Z0-9_.]*$')
+
+
+def _validate_sysctl_key_host(key: str) -> Optional[str]:
+    if not isinstance(key, str) or not key.strip():
+        return "sysctl key cannot be empty"
+    if not _SYSCTL_KEY_RE_HOST.match(key):
+        return "invalid sysctl key (must match [a-zA-Z][a-zA-Z0-9_.]*)"
+    return None
+
+
+@box_config.group("sysctl", help="Manage host sysctl values persisted across reboots.")
+def sysctl_group() -> None:
+    pass
+
+
+@sysctl_group.command("list", help="List configured sysctl values.")
+@click.option("--box", help="Lagerbox name or IP")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+@click.pass_context
+def sysctl_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
+    resolved = _resolve_box(ctx, box)
+    raw = _run_box_config_py(ctx, resolved, "show")
+    payload = _parse_response(raw, ctx) or {}
+    sysctl = payload.get("sysctl") or {}
+    if as_json:
+        click.echo(json.dumps(sysctl, indent=2))
+        return
+    if not sysctl:
+        click.echo("No sysctl values configured.")
+        return
+    for k, v in sysctl.items():
+        click.echo(f"{k} = {v}")
+
+
+@sysctl_group.command(
+    "set",
+    help="Set one or more sysctl key=value pairs. Upsert; safe to re-run.",
+)
+@click.argument("entries", nargs=-1, required=True)
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def sysctl_set_cmd(ctx: click.Context, entries: tuple, box: Optional[str]) -> None:
+    resolved = _resolve_box(ctx, box)
+    parsed: dict = {}
+    fmt_errors = []
+    for entry in entries:
+        if "=" not in entry:
+            fmt_errors.append((entry, "expected key=value"))
+            continue
+        key, value = entry.split("=", 1)
+        reason = _validate_sysctl_key_host(key)
+        if reason:
+            fmt_errors.append((entry, reason))
+            continue
+        parsed[key] = value
+    if fmt_errors:
+        click.secho("Invalid sysctl entries:", fg="red", err=True)
+        for e, r in fmt_errors:
+            click.secho(f"  - {e!r}: {r}", fg="red", err=True)
+        ctx.exit(1)
+
+    payload_json = json.dumps({"entries": parsed})
+    raw = _run_box_config_py(ctx, resolved, "sysctl-set", payload_json)
+    payload = _parse_response(raw, ctx)
+    if not payload.get("ok"):
+        click.secho("Failed to set sysctl values:", fg="red", err=True)
+        _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
+        ctx.exit(1)
+    set_keys = payload.get("set") or list(parsed.keys())
+    click.secho(
+        f"Set {len(set_keys)} sysctl key(s) on {resolved}: " + ", ".join(set_keys),
+        fg="green",
+    )
+    click.echo("Run `lager box config apply` to write /etc/sysctl.d/ and reload.")
+
+
+@sysctl_group.command("unset", help="Remove one or more sysctl keys from the box config.")
+@click.argument("keys", nargs=-1, required=True)
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def sysctl_unset_cmd(ctx: click.Context, keys: tuple, box: Optional[str]) -> None:
+    resolved = _resolve_box(ctx, box)
+    raw = _run_box_config_py(ctx, resolved, "sysctl-unset", *keys)
+    payload = _parse_response(raw, ctx)
+    if not payload.get("ok"):
+        click.secho("Failed to unset sysctl values:", fg="red", err=True)
+        _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
+        ctx.exit(1)
+    removed = payload.get("removed") or []
+    if removed:
+        click.secho(f"Removed {len(removed)} sysctl key(s): " + ", ".join(removed), fg="green")
+        click.echo("Run `lager box config apply` to update /etc/sysctl.d/ and reload.")
+    else:
+        click.secho("No matching sysctl keys were configured.", fg="yellow")
+
+
+# ---------------------------------------------------------------------------
+# cargo_packages: in-container Rust crates installed during container start
+# ---------------------------------------------------------------------------
+
+_CARGO_SPEC_RE_HOST = _re.compile(r'^[a-z0-9][a-z0-9_\-]*(?:@[a-zA-Z0-9.+\-]+)?$')
+
+
+def _validate_cargo_spec_host(pkg: str) -> Optional[str]:
+    if not isinstance(pkg, str) or not pkg.strip():
+        return "package name cannot be empty"
+    if not _CARGO_SPEC_RE_HOST.match(pkg):
+        return "invalid cargo crate spec (must match [a-z0-9][a-z0-9_-]*(@version)?)"
+    return None
+
+
+@box_config.group("cargo", help="Manage in-container cargo crates.")
+def cargo_group() -> None:
+    pass
+
+
+@cargo_group.command("list", help="List configured cargo crates.")
+@click.option("--box", help="Lagerbox name or IP")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+@click.pass_context
+def cargo_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
+    resolved = _resolve_box(ctx, box)
+    raw = _run_box_config_py(ctx, resolved, "show")
+    payload = _parse_response(raw, ctx) or {}
+    pkgs = payload.get("cargo_packages") or []
+    if as_json:
+        click.echo(json.dumps(pkgs, indent=2))
+        return
+    if not pkgs:
+        click.echo("No cargo crates configured.")
+        return
+    for p in pkgs:
+        click.echo(p)
+
+
+@cargo_group.command("add", help="Add one or more cargo crates to the box config.")
+@click.argument("packages", nargs=-1, required=True)
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def cargo_add_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None:
+    resolved = _resolve_box(ctx, box)
+    fmt_errors = []
+    for p in packages:
+        reason = _validate_cargo_spec_host(p)
+        if reason:
+            fmt_errors.append((p, reason))
+    if fmt_errors:
+        click.secho("Invalid cargo crate spec(s):", fg="red", err=True)
+        for p, r in fmt_errors:
+            click.secho(f"  - {p!r}: {r}", fg="red", err=True)
+        ctx.exit(1)
+
+    payload_json = json.dumps({"packages": list(packages)})
+    raw = _run_box_config_py(ctx, resolved, "cargo-add", payload_json)
+    payload = _parse_response(raw, ctx)
+    if not payload.get("ok"):
+        click.secho("Failed to add cargo crates:", fg="red", err=True)
+        _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
+        ctx.exit(1)
+    added = payload.get("added") or list(packages)
+    click.secho(f"Added {len(added)} cargo crate(s) on {resolved}: " + ", ".join(added), fg="green")
+    click.echo("Run `lager box config apply` to install them in the container.")
+
+
+@cargo_group.command("remove", help="Remove one or more cargo crates from the box config.")
+@click.argument("packages", nargs=-1, required=True)
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def cargo_remove_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None:
+    resolved = _resolve_box(ctx, box)
+    raw = _run_box_config_py(ctx, resolved, "cargo-remove", *packages)
+    payload = _parse_response(raw, ctx)
+    if not payload.get("ok"):
+        click.secho("Failed to remove cargo crates:", fg="red", err=True)
+        _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
+        ctx.exit(1)
+    removed = payload.get("removed") or []
+    if removed:
+        click.secho(f"Removed {len(removed)} cargo crate(s): " + ", ".join(removed), fg="green")
+        click.echo(
+            "Run `lager box config apply` to record the change. Note: existing "
+            "installs in the container are not auto-uninstalled."
+        )
+    else:
+        click.secho("No matching cargo crates were configured.", fg="yellow")
