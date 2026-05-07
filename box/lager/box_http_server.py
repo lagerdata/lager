@@ -129,6 +129,25 @@ except Exception as e:
     logger.warning("SSH handlers not available: %s", e)
     _has_ssh = False
 
+# Import net metadata handler
+try:
+    from lager.http_handlers.net_metadata_handler import register_net_metadata_routes
+    _has_net_metadata = True
+except Exception as e:
+    logger.warning("Net metadata handlers not available: %s", e)
+    _has_net_metadata = False
+
+# Import box metadata handler
+try:
+    from lager.http_handlers.box_metadata_handler import (
+        register_box_metadata_routes,
+        _read_box_metadata,
+    )
+    _has_box_metadata = True
+except Exception as e:
+    logger.warning("Box metadata handlers not available: %s", e)
+    _has_box_metadata = False
+
 # Global dictionary to track active supply monitoring sessions
 # Format: {session_id: {'netname': str, 'stop_event': event_obj, 'thread': thread_obj, 'instrument_lock': Lock}}
 active_supply_sessions = {}
@@ -191,14 +210,30 @@ def status():
                 net_type = NetType.from_role(role).name
             except (KeyError, ValueError):
                 net_type = role
-            nets.append({'name': net.get('name', ''), 'type': net_type})
+            nets.append({
+                'name': net.get('name', ''),
+                'type': net_type,
+                'description': net.get('description'),
+            })
     except (FileNotFoundError, _json.JSONDecodeError, TypeError):
         pass
+
+    box_description = None
+    if _has_box_metadata:
+        try:
+            box_description = _read_box_metadata().get('description')
+        except Exception:
+            box_description = None
 
     return jsonify({
         'healthy': True,
         'version': version,
         'nets': nets,
+        'box_description': box_description,
+        'capabilities': {
+            'netMetadataSync': _has_net_metadata,
+            'boxMetadataSync': _has_box_metadata,
+        },
     })
 
 
@@ -247,6 +282,22 @@ if _has_ssh:
     print("[INIT] SSH authorization REST endpoints registered", flush=True)
 else:
     print("[INIT] SSH authorization REST endpoints NOT available", flush=True)
+
+# Register net metadata REST handlers (if available)
+if _has_net_metadata:
+    register_net_metadata_routes(app)
+    logger.info("Net metadata REST endpoints registered")
+    print("[INIT] Net metadata REST endpoints registered", flush=True)
+else:
+    print("[INIT] Net metadata REST endpoints NOT available", flush=True)
+
+# Register box metadata REST handlers (if available)
+if _has_box_metadata:
+    register_box_metadata_routes(app)
+    logger.info("Box metadata REST endpoints registered")
+    print("[INIT] Box metadata REST endpoints registered", flush=True)
+else:
+    print("[INIT] Box metadata REST endpoints NOT available", flush=True)
 
 
 # Supply HTTP endpoint (handled by supply.py module, this is now commented out)
