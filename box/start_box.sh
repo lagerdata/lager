@@ -332,6 +332,11 @@ fi
 #   is required because JLinkGDBServer's hardcoded SWO/Telnet defaults
 #   (2332/2333) collide with adjacent slots if the stride is 1.
 # Port 9090-9097: J-Link RTT telnet (two channels per probe slot; up to 4 probes × 2 channels)
+# NOTE: the hard-coded -v list below is reproduced as RESERVED_CONTAINER_PATHS
+# in box/lager/box_config/config.py so that `lager box config mount add`
+# rejects user mounts that would collide. If you add or rename anything here,
+# update the constant too — otherwise users can write a config that validates
+# but blows up at `docker run` mid-bounce with "Duplicate mount point".
 docker run -d \
     --network lagernet \
     --privileged \
