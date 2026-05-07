@@ -74,7 +74,29 @@ def _cmd_applied_hash() -> None:
 
 
 def _cmd_set_applied_hash(value: str) -> None:
+    # Snapshot the current config alongside its hash so a future apply can
+    # roll back to it if a new config breaks the container at bounce time.
+    raw = _load_raw()
+    if raw is not None:
+        try:
+            cfg.write_applied_snapshot(cfg.BoxConfig.from_dict(raw))
+        except cfg.ValidationError:
+            # The on-disk config doesn't validate — odd, since we only call
+            # set-applied-hash after a successful bounce. Skip the snapshot
+            # rather than fail the whole call.
+            pass
     cfg.write_applied_hash(value)
+    _stdout_json({"ok": True})
+
+
+def _cmd_restore_applied() -> None:
+    """Replace box_config.json with the last applied snapshot, so the host-
+    side CLI can roll back when a new config's bounce fails."""
+    snap = cfg.read_applied_snapshot()
+    if snap is None:
+        _stdout_json({"ok": False, "error": "no applied snapshot available"})
+        return
+    cfg.save(snap)
     _stdout_json({"ok": True})
 
 
@@ -253,6 +275,8 @@ def _cli() -> None:
             if len(args) < 2:
                 raise ValueError("set-applied-hash requires a hash value")
             _cmd_set_applied_hash(args[1])
+        elif cmd == "restore-applied":
+            _cmd_restore_applied()
         elif cmd == "mount-add":
             if len(args) < 2:
                 raise ValueError("mount-add requires JSON payload")

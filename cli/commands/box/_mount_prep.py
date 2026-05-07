@@ -179,13 +179,30 @@ def ensure_host_path_owned(
     )
 
 
+SUDOERS_BOOTSTRAP = (
+    "Auto-prep needs passwordless sudo for two specific commands. Run this "
+    "ONCE on the box (you'll be prompted for the sudo password the one "
+    "time):\n"
+    "\n"
+    "  echo 'lagerdata ALL=(root) NOPASSWD: /bin/mkdir, /bin/chown' \\\n"
+    "    | sudo tee /etc/sudoers.d/lager-box-config\n"
+    "  sudo chmod 440 /etc/sudoers.d/lager-box-config\n"
+    "\n"
+    "Then re-run `lager box config mount add ...` (or `apply`). The "
+    "rule is narrow-scoped (mkdir + chown only)."
+)
+
+
 def _sudo_error_message(stderr: str) -> str:
     err = (stderr or "").strip()
-    if not err:
-        return "sudo command failed (no output)."
-    if "a password is required" in err.lower() or "sudo:" in err.lower():
-        return (
-            "passwordless sudo is not configured for this command on the box. "
-            f"Stderr: {err}"
-        )
-    return err
+    base = (
+        "passwordless sudo is not configured on the box for the auto-prep "
+        "commands."
+    )
+    if err and "a password is required" not in err.lower() and "sudo:" not in err.lower():
+        # An unexpected sudo error (binary missing, permission, etc.) — surface
+        # the raw stderr without the bootstrap noise; bootstrap won't help.
+        return err
+    if err:
+        base += f" Stderr: {err}"
+    return base + "\n\n" + SUDOERS_BOOTSTRAP
