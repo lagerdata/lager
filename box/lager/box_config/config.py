@@ -411,6 +411,12 @@ def _validate_reserved_paths(raw: Dict[str, Any]) -> List[str]:
 
 
 def _validate_env(raw: Dict[str, Any]) -> List[str]:
+    # Recognized lager-side env keys (handled inside the container, not just
+    # passed through):
+    #   PATH_PREPEND               extends PATH inside the container
+    #   LAGER_DISABLE_UART_SERVICE truthy ("1"/"true"/"yes") skips the
+    #                              port-9000 box_http_server so customers can
+    #                              run their own service on that port
     errors: List[str] = []
     env = raw.get("env")
     if env is None:

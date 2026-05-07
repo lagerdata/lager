@@ -36,9 +36,23 @@ restart_service "hardware service" "python3 /app/lager/lager/hardware_service.py
 echo "Starting Lager debug service on port 8765..."
 restart_service "debug service" "python3 -m lager.debug.service" "/tmp/lager-debug-service.log" &
 
-# Start HTTP server for direct hardware access in background with auto-restart
-echo "Starting Lager Box HTTP+WebSocket server on port 9000..."
-restart_service "HTTP server" "python3 /app/lager/lager/box_http_server.py" "/tmp/lager-http-server.log" &
+# Start HTTP server for direct hardware access in background with auto-restart.
+# Gated on LAGER_DISABLE_UART_SERVICE so customers can free port 9000 for their
+# own broker / service when they're not using lager's UART feature. Without the
+# skip, the supervisor would re-spawn box_http_server.py and lose the port race
+# every restart. Set the env var via box_config.json's `env` field.
+LAGER_DISABLE_UART_SERVICE_LOWER=$(echo "${LAGER_DISABLE_UART_SERVICE:-}" | tr '[:upper:]' '[:lower:]')
+case "$LAGER_DISABLE_UART_SERVICE_LOWER" in
+    1|true|yes)
+        UART_SERVICE_DISABLED=1
+        echo "Skipping Lager Box HTTP+WebSocket server (LAGER_DISABLE_UART_SERVICE=${LAGER_DISABLE_UART_SERVICE})"
+        ;;
+    *)
+        UART_SERVICE_DISABLED=0
+        echo "Starting Lager Box HTTP+WebSocket server on port 9000..."
+        restart_service "HTTP server" "python3 /app/lager/lager/box_http_server.py" "/tmp/lager-http-server.log" &
+        ;;
+esac
 
 # Start MCP server for AI agent integration (port 8100)
 echo "Starting Lager MCP server on port 8100..."
@@ -70,7 +84,11 @@ echo "Services started with auto-restart:"
 echo "  - Python Execution Service: port 5000 (log: /tmp/lager-python-service.log)"
 echo "  - Hardware Invocation Service: port 8080 (log: /tmp/lager-hardware-service.log)"
 echo "  - Debug service: port 8765 (log: /tmp/lager-debug-service.log)"
-echo "  - Box HTTP+WebSocket: port 9000 (log: /tmp/lager-http-server.log)"
+if [ "$UART_SERVICE_DISABLED" = "1" ]; then
+    echo "  - Box HTTP+WebSocket: DISABLED (LAGER_DISABLE_UART_SERVICE set; port 9000 free for customer use)"
+else
+    echo "  - Box HTTP+WebSocket: port 9000 (log: /tmp/lager-http-server.log)"
+fi
 echo "  - MCP Server (AI): port 8100 (log: /tmp/lager-mcp-server.log)"
 if [ -x /usr/local/bin/oscilloscope-daemon ]; then
     echo "  - Oscilloscope Daemon: ports 8082-8085 (log: /tmp/oscilloscope-daemon.log)"
