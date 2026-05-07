@@ -306,6 +306,127 @@ else
 fi
 
 # ------------------------------------------------------------
+start_section "apt_packages / sysctl / cargo_packages declarative provisioning"
+# ------------------------------------------------------------
+
+# Three declarative fields landed together: apt packages installed on the
+# box host, sysctl values persisted across reboot, and cargo crates
+# installed inside the lager container. All three round-trip through
+# `lager box config <group> add/set/list/remove`, contribute to the
+# config hash, and are applied during `lager box config apply`.
+
+APT_TEST_PKG="bsdmainutils"  # tiny, harmless, ships hexdump — easy to verify
+CARGO_TEST_CRATE="cargo-hello"  # ~3KB crate; fast to install for smoke tests
+SYSCTL_TEST_KEY="net.ipv4.ip_forward"
+
+echo "Test 6.1: lager box config apt add"
+lager box config apt add "$APT_TEST_PKG" --box "$BOX" 2>&1 | grep -qi "added 1 apt" \
+  && track_test "pass" || track_test "fail"
+
+echo "Test 6.2: lager box config apt list"
+lager box config apt list --box "$BOX" 2>&1 | grep -qi "$APT_TEST_PKG" \
+  && track_test "pass" || track_test "fail"
+
+echo "Test 6.3: lager box config apt add rejects bad name"
+OUT=$(lager box config apt add "Bad Name" --box "$BOX" 2>&1)
+if echo "$OUT" | grep -qi "invalid"; then
+  track_test "pass"
+else
+  echo "  Output: $OUT"
+  track_test "fail"
+fi
+
+echo "Test 6.4: lager box config sysctl set net.ipv4.ip_forward=1"
+lager box config sysctl set "${SYSCTL_TEST_KEY}=1" --box "$BOX" 2>&1 | grep -qi "set 1 sysctl" \
+  && track_test "pass" || track_test "fail"
+
+echo "Test 6.5: lager box config sysctl list shows the key"
+lager box config sysctl list --box "$BOX" 2>&1 | grep -qi "$SYSCTL_TEST_KEY" \
+  && track_test "pass" || track_test "fail"
+
+echo "Test 6.6: lager box config sysctl set rejects bad key"
+OUT=$(lager box config sysctl set "bad-key=1" --box "$BOX" 2>&1)
+if echo "$OUT" | grep -qi "invalid sysctl key"; then
+  track_test "pass"
+else
+  echo "  Output: $OUT"
+  track_test "fail"
+fi
+
+echo "Test 6.7: lager box config cargo add"
+lager box config cargo add "$CARGO_TEST_CRATE" --box "$BOX" 2>&1 | grep -qi "added 1 cargo" \
+  && track_test "pass" || track_test "fail"
+
+echo "Test 6.8: lager box config cargo list"
+lager box config cargo list --box "$BOX" 2>&1 | grep -qi "$CARGO_TEST_CRATE" \
+  && track_test "pass" || track_test "fail"
+
+echo "Test 6.9: lager box config cargo add rejects uppercase"
+OUT=$(lager box config cargo add "Bad-Crate" --box "$BOX" 2>&1)
+if echo "$OUT" | grep -qi "invalid cargo crate spec"; then
+  track_test "pass"
+else
+  echo "  Output: $OUT"
+  track_test "fail"
+fi
+
+echo "Test 6.10: Apply (installs apt + writes sysctl + bounces with cargo install)"
+lager box config apply --box "$BOX" --yes --force 2>&1 \
+  && track_test "pass" || track_test "fail"
+
+echo "Test 6.11: apt package is installed on the box host"
+ssh "$SSH_HOST" "dpkg -s $APT_TEST_PKG >/dev/null 2>&1" \
+  && track_test "pass" || track_test "fail"
+
+echo "Test 6.12: sysctl conf file exists with the configured key"
+ssh "$SSH_HOST" "test -f /etc/sysctl.d/99-lager-box-config.conf && grep -q '^${SYSCTL_TEST_KEY}' /etc/sysctl.d/99-lager-box-config.conf" \
+  && track_test "pass" || track_test "fail"
+
+echo "Test 6.13: sysctl value is live (kernel reflects ${SYSCTL_TEST_KEY}=1)"
+LIVE_VAL=$(ssh "$SSH_HOST" "sysctl -n $SYSCTL_TEST_KEY 2>/dev/null" | tr -d '\r\n')
+if [ "$LIVE_VAL" = "1" ]; then
+  track_test "pass"
+else
+  echo "  Expected 1, got: $LIVE_VAL"
+  track_test "fail"
+fi
+
+echo "Test 6.14: cargo crate is installed in the container"
+sleep 3
+ssh "$SSH_HOST" "docker exec lager bash -lc 'ls /home/www-data/.cargo/bin/$CARGO_TEST_CRATE'" >/dev/null 2>&1 \
+  && track_test "pass" || track_test "fail"
+
+echo "Test 6.15: Re-running apply with no changes is silent / unchanged"
+lager box config apply --box "$BOX" --yes 2>&1 | grep -qi "unchanged" \
+  && track_test "pass" || track_test "fail"
+
+echo "Test 6.16: lager box config sysctl unset"
+lager box config sysctl unset "$SYSCTL_TEST_KEY" --box "$BOX" 2>&1 | grep -qi "removed 1 sysctl" \
+  && track_test "pass" || track_test "fail"
+
+echo "Test 6.17: lager box config cargo remove"
+lager box config cargo remove "$CARGO_TEST_CRATE" --box "$BOX" 2>&1 | grep -qi "removed 1 cargo" \
+  && track_test "pass" || track_test "fail"
+
+echo "Test 6.18: lager box config apt remove"
+lager box config apt remove "$APT_TEST_PKG" --box "$BOX" 2>&1 | grep -qi "removed 1 apt" \
+  && track_test "pass" || track_test "fail"
+
+echo "Test 6.19: Re-apply after removal clears the sysctl conf file"
+lager box config apply --box "$BOX" --yes --force >/dev/null 2>&1
+if ssh "$SSH_HOST" "test ! -f /etc/sysctl.d/99-lager-box-config.conf"; then
+  track_test "pass"
+else
+  echo "  /etc/sysctl.d/99-lager-box-config.conf still present"
+  track_test "fail"
+fi
+
+# Clean up the apt package we installed for the smoke test. Cargo crates
+# stay until the container is rebuilt; that's expected behavior (cargo
+# remove just updates config, doesn't uninstall the binary).
+ssh "$SSH_HOST" "sudo apt-get remove -y $APT_TEST_PKG >/dev/null 2>&1" || true
+
+# ------------------------------------------------------------
 start_section "Cleanup"
 # ------------------------------------------------------------
 
