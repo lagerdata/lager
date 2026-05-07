@@ -255,6 +255,141 @@ def _cmd_pip_import_legacy() -> None:
     _stdout_json({"ok": True, "imported": imported, "skipped": skipped})
 
 
+def _cmd_apt_add(payload: str) -> None:
+    data = json.loads(payload)
+    new_pkgs = data.get("packages", [])
+    if not isinstance(new_pkgs, list):
+        _stdout_json({"ok": False, "errors": ["payload.packages must be an array"]})
+        return
+    current = _load_or_init()
+    seen = {p.lower(): i for i, p in enumerate(current.apt_packages)}
+    added = []
+    for p in new_pkgs:
+        if not isinstance(p, str):
+            _stdout_json({"ok": False, "errors": [f"non-string package: {p!r}"]})
+            return
+        ok, reason = cfg.validate_apt_format(p)
+        if not ok:
+            _stdout_json({"ok": False, "errors": [f"{p!r}: {reason}"]})
+            return
+        canon = p.lower()
+        if canon in seen:
+            current.apt_packages[seen[canon]] = p
+        else:
+            current.apt_packages.append(p)
+            seen[canon] = len(current.apt_packages) - 1
+        added.append(p)
+    raw = current.to_dict()
+    errors = cfg.validate(raw)
+    if errors:
+        _stdout_json({"ok": False, "errors": errors})
+        return
+    cfg.save(cfg.BoxConfig.from_dict(raw))
+    _stdout_json({"ok": True, "added": added})
+
+
+def _cmd_apt_remove(names: list) -> None:
+    current = _load_or_init()
+    targets = {n.lower() for n in names}
+    before = len(current.apt_packages)
+    removed = [p for p in current.apt_packages if p.lower() in targets]
+    current.apt_packages = [p for p in current.apt_packages if p.lower() not in targets]
+    cfg.save(current)
+    _stdout_json({"ok": True, "removed": removed, "removed_count": before - len(current.apt_packages)})
+
+
+def _cmd_sysctl_set(payload: str) -> None:
+    data = json.loads(payload)
+    entries = data.get("entries", {})
+    if not isinstance(entries, dict):
+        _stdout_json({"ok": False, "errors": ["payload.entries must be an object"]})
+        return
+    current = _load_or_init()
+    set_keys = []
+    for k, v in entries.items():
+        ok, reason = cfg.validate_sysctl_key(k)
+        if not ok:
+            _stdout_json({"ok": False, "errors": [f"{k!r}: {reason}"]})
+            return
+        if not isinstance(v, str):
+            _stdout_json({"ok": False, "errors": [f"sysctl[{k!r}] value must be a string"]})
+            return
+        current.sysctl[k] = v
+        set_keys.append(k)
+    raw = current.to_dict()
+    errors = cfg.validate(raw)
+    if errors:
+        _stdout_json({"ok": False, "errors": errors})
+        return
+    cfg.save(cfg.BoxConfig.from_dict(raw))
+    _stdout_json({"ok": True, "set": set_keys})
+
+
+def _cmd_sysctl_unset(keys: list) -> None:
+    current = _load_or_init()
+    removed = [k for k in keys if k in current.sysctl]
+    for k in removed:
+        del current.sysctl[k]
+    cfg.save(current)
+    _stdout_json({"ok": True, "removed": removed})
+
+
+def _cmd_cargo_add(payload: str) -> None:
+    data = json.loads(payload)
+    new_pkgs = data.get("packages", [])
+    if not isinstance(new_pkgs, list):
+        _stdout_json({"ok": False, "errors": ["payload.packages must be an array"]})
+        return
+    current = _load_or_init()
+    seen = {cfg.normalize_cargo_name(p): i for i, p in enumerate(current.cargo_packages)}
+    added = []
+    for p in new_pkgs:
+        if not isinstance(p, str):
+            _stdout_json({"ok": False, "errors": [f"non-string package: {p!r}"]})
+            return
+        ok, reason = cfg.validate_cargo_format(p)
+        if not ok:
+            _stdout_json({"ok": False, "errors": [f"{p!r}: {reason}"]})
+            return
+        canon = cfg.normalize_cargo_name(p)
+        if canon in seen:
+            current.cargo_packages[seen[canon]] = p
+        else:
+            current.cargo_packages.append(p)
+            seen[canon] = len(current.cargo_packages) - 1
+        added.append(p)
+    raw = current.to_dict()
+    errors = cfg.validate(raw)
+    if errors:
+        _stdout_json({"ok": False, "errors": errors})
+        return
+    cfg.save(cfg.BoxConfig.from_dict(raw))
+    _stdout_json({"ok": True, "added": added})
+
+
+def _cmd_cargo_remove(names: list) -> None:
+    current = _load_or_init()
+    targets = {cfg.normalize_cargo_name(n) for n in names}
+    before = len(current.cargo_packages)
+    removed = [p for p in current.cargo_packages if cfg.normalize_cargo_name(p) in targets]
+    current.cargo_packages = [
+        p for p in current.cargo_packages if cfg.normalize_cargo_name(p) not in targets
+    ]
+    cfg.save(current)
+    _stdout_json({"ok": True, "removed": removed, "removed_count": before - len(current.cargo_packages)})
+
+
+def _cmd_applied_show() -> None:
+    """Return the last-applied snapshot (or None) so the host CLI can do
+    per-field diffing — `apt_packages` unchanged since last apply means
+    skip the apt-get install round-trip."""
+    snap = cfg.read_applied_snapshot()
+    if snap is None:
+        _stdout_json(None)
+        return
+    _stdout_json(snap.to_dict())
+
+
 def _cli() -> None:
     try:
         args = sys.argv[1:]
@@ -303,6 +438,32 @@ def _cli() -> None:
             _cmd_pip_remove(list(args[1:]))
         elif cmd == "pip-import-legacy":
             _cmd_pip_import_legacy()
+        elif cmd == "apt-add":
+            if len(args) < 2:
+                raise ValueError("apt-add requires JSON payload")
+            _cmd_apt_add(args[1])
+        elif cmd == "apt-remove":
+            if len(args) < 2:
+                raise ValueError("apt-remove requires at least one package name")
+            _cmd_apt_remove(list(args[1:]))
+        elif cmd == "sysctl-set":
+            if len(args) < 2:
+                raise ValueError("sysctl-set requires JSON payload")
+            _cmd_sysctl_set(args[1])
+        elif cmd == "sysctl-unset":
+            if len(args) < 2:
+                raise ValueError("sysctl-unset requires at least one key")
+            _cmd_sysctl_unset(list(args[1:]))
+        elif cmd == "cargo-add":
+            if len(args) < 2:
+                raise ValueError("cargo-add requires JSON payload")
+            _cmd_cargo_add(args[1])
+        elif cmd == "cargo-remove":
+            if len(args) < 2:
+                raise ValueError("cargo-remove requires at least one package name")
+            _cmd_cargo_remove(list(args[1:]))
+        elif cmd == "applied-show":
+            _cmd_applied_show()
         else:
             _stdout_json({"ok": False, "error": f"unknown command: {cmd}"})
 

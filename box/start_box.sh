@@ -236,6 +236,7 @@ BOX_CONFIG_MOUNTS=""
 BOX_CONFIG_ENV=""
 BOX_CONFIG_FILE="/etc/lager/box_config.json"
 PIP_REQS_FILE="/etc/lager/user_requirements.txt"
+CARGO_PKGS_FILE="/etc/lager/cargo_packages.txt"
 if [ -f "$BOX_CONFIG_FILE" ]; then
     echo "Lager Box config detected at $BOX_CONFIG_FILE"
     if BOX_CONFIG_OUTPUT=$(python3 "${SCRIPT_DIR}/lager/box_config/render_docker_args.py" "$BOX_CONFIG_FILE" 2>&1); then
@@ -280,6 +281,13 @@ if [ -f "$BOX_CONFIG_FILE" ]; then
     if ! python3 "${SCRIPT_DIR}/lager/box_config/render_pip_requirements.py" \
             "$BOX_CONFIG_FILE" "$PIP_REQS_FILE" 2>&1; then
         echo "[WARNING] Failed to render pip_packages; using existing $PIP_REQS_FILE."
+    fi
+
+    # Same idea for cargo_packages: render to a flat file the post-run loop
+    # below reads, one crate spec per non-comment line.
+    if ! python3 "${SCRIPT_DIR}/lager/box_config/render_cargo_packages.py" \
+            "$BOX_CONFIG_FILE" "$CARGO_PKGS_FILE" 2>&1; then
+        echo "[WARNING] Failed to render cargo_packages; using existing $CARGO_PKGS_FILE."
     fi
     echo ""
 fi
@@ -401,6 +409,43 @@ if [ -s "$PIP_REQS_FILE" ] && grep -qvE '^[[:space:]]*(#|$)' "$PIP_REQS_FILE"; t
     done
     if ! docker exec lager pip3 install -r "$PIP_REQS_FILE"; then
         echo "[ERROR] User pip install failed; container is up but pip_packages may be incomplete."
+        exit 1
+    fi
+    echo ""
+fi
+
+# Install user-requested cargo crates from box_config.json into the running
+# container. Cargo install is idempotent (skips already-installed at the same
+# version with a warning, no error), so always running this is safe.
+if [ -s "$CARGO_PKGS_FILE" ] && grep -qvE '^[[:space:]]*(#|$)' "$CARGO_PKGS_FILE"; then
+    echo "Installing user cargo crates into container..."
+    for _ in 1 2 3 4 5; do
+        docker exec lager true 2>/dev/null && break
+        sleep 1
+    done
+    _cargo_failed=0
+    while IFS= read -r _crate_spec; do
+        # Skip blanks and comments.
+        case "$_crate_spec" in
+            ''|\#*) continue ;;
+        esac
+        # Translate `name@version` to `name --version version` for cargo
+        # install. Bare `name` passes through unchanged.
+        if [[ "$_crate_spec" == *"@"* ]]; then
+            _name="${_crate_spec%@*}"
+            _ver="${_crate_spec#*@}"
+            _args=("$_name" "--version" "$_ver")
+        else
+            _args=("$_crate_spec")
+        fi
+        if ! docker exec lager bash -lc "cargo install ${_args[*]}"; then
+            echo "[ERROR] cargo install failed for: $_crate_spec"
+            _cargo_failed=1
+        fi
+    done < "$CARGO_PKGS_FILE"
+    unset _crate_spec _name _ver _args
+    if [ "$_cargo_failed" -ne 0 ]; then
+        echo "[ERROR] One or more cargo crates failed to install; container is up but cargo_packages may be incomplete."
         exit 1
     fi
     echo ""

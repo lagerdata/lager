@@ -228,13 +228,13 @@ class FromDict(unittest.TestCase):
     def test_round_trip_extras(self):
         raw = _v({
             "mounts": [{"host": "/a", "container": "/a"}],
-            "apt_packages": ["binutils-arm-none-eabi"],
             "rustup": {"default_toolchain": "stable"},
+            "hooks": {"post_apply": "echo done"},
         })
         c = cfg.BoxConfig.from_dict(raw)
         out = c.to_dict()
-        self.assertEqual(out["apt_packages"], ["binutils-arm-none-eabi"])
         self.assertEqual(out["rustup"], {"default_toolchain": "stable"})
+        self.assertEqual(out["hooks"], {"post_apply": "echo done"})
 
     def test_validation_error_raises(self):
         with self.assertRaises(cfg.ValidationError):
@@ -246,6 +246,19 @@ class FromDict(unittest.TestCase):
         self.assertEqual(c.pip_packages, ["numpy"])
         self.assertNotIn("pip_packages", c.extras)
         self.assertEqual(c.to_dict()["pip_packages"], ["numpy"])
+
+    def test_first_class_fields_not_in_extras(self):
+        raw = _v({
+            "apt_packages": ["tcpdump"],
+            "sysctl": {"net.ipv4.ip_forward": "1"},
+            "cargo_packages": ["defmt-print"],
+        })
+        c = cfg.BoxConfig.from_dict(raw)
+        self.assertEqual(c.apt_packages, ["tcpdump"])
+        self.assertEqual(c.sysctl, {"net.ipv4.ip_forward": "1"})
+        self.assertEqual(c.cargo_packages, ["defmt-print"])
+        for k in ("apt_packages", "sysctl", "cargo_packages"):
+            self.assertNotIn(k, c.extras)
 
 
 class ValidatePipPackages(unittest.TestCase):
@@ -338,6 +351,165 @@ class PipHashIdempotency(unittest.TestCase):
         self.assertNotEqual(a.compute_hash(), b.compute_hash())
 
 
+class ValidateAptPackages(unittest.TestCase):
+    def test_missing_key_is_valid(self):
+        self.assertEqual(cfg.validate(_v()), [])
+
+    def test_empty_list_is_valid(self):
+        self.assertEqual(cfg.validate(_v({"apt_packages": []})), [])
+
+    def test_must_be_list(self):
+        errors = cfg.validate(_v({"apt_packages": "tcpdump"}))
+        self.assertTrue(any("'apt_packages' must be an array" in e for e in errors))
+
+    def test_non_string_element(self):
+        errors = cfg.validate(_v({"apt_packages": [42]}))
+        self.assertTrue(any("must be a string" in e for e in errors))
+
+    def test_accepts_simple_name(self):
+        self.assertEqual(cfg.validate(_v({"apt_packages": ["tcpdump"]})), [])
+
+    def test_accepts_dashes_dots_pluses(self):
+        self.assertEqual(
+            cfg.validate(_v({"apt_packages": [
+                "iptables-persistent", "g++", "libstdc++6", "linux-headers-5.10.0",
+            ]})),
+            [],
+        )
+
+    def test_rejects_uppercase(self):
+        errors = cfg.validate(_v({"apt_packages": ["Tcpdump"]}))
+        self.assertTrue(any("invalid Debian package name" in e for e in errors))
+
+    def test_rejects_shell_metacharacters(self):
+        for bad in ["foo;rm", "foo bar", "$evil", "foo`x`"]:
+            errors = cfg.validate(_v({"apt_packages": [bad]}))
+            self.assertTrue(
+                any("invalid Debian package name" in e for e in errors),
+                msg=f"expected rejection for {bad!r}, got {errors}",
+            )
+
+    def test_rejects_version_pinning_in_name(self):
+        # apt's pkg=version syntax is not allowed in the name field (v1).
+        errors = cfg.validate(_v({"apt_packages": ["tcpdump=4.99"]}))
+        self.assertTrue(any("invalid Debian package name" in e for e in errors))
+
+    def test_rejects_canonical_duplicate(self):
+        errors = cfg.validate(_v({"apt_packages": ["tcpdump", "TCPDUMP"]}))
+        # Normalization is just lowercase for apt; uppercase TCPDUMP fails
+        # the validate_apt_format check first, so the duplicate is reported
+        # only once it survives. Here we expect either format-rejection or
+        # duplicate to fire — but uppercase should fail format. So the test
+        # surfaces a single-name dup case below.
+        self.assertTrue(any("invalid Debian package name" in e for e in errors))
+
+    def test_rejects_exact_duplicate(self):
+        errors = cfg.validate(_v({"apt_packages": ["tcpdump", "tcpdump"]}))
+        self.assertTrue(any("duplicates apt_packages[0]" in e for e in errors))
+
+    def test_validate_apt_format_helper(self):
+        ok, _ = cfg.validate_apt_format("iptables-persistent")
+        self.assertTrue(ok)
+        ok, reason = cfg.validate_apt_format("foo;rm")
+        self.assertFalse(ok)
+        self.assertIn("invalid Debian package name", reason)
+
+
+class ValidateSysctl(unittest.TestCase):
+    def test_missing_key_is_valid(self):
+        self.assertEqual(cfg.validate(_v()), [])
+
+    def test_empty_object_is_valid(self):
+        self.assertEqual(cfg.validate(_v({"sysctl": {}})), [])
+
+    def test_must_be_object(self):
+        errors = cfg.validate(_v({"sysctl": ["bad"]}))
+        self.assertTrue(any("'sysctl' must be an object" in e for e in errors))
+
+    def test_value_must_be_string(self):
+        errors = cfg.validate(_v({"sysctl": {"net.ipv4.ip_forward": 1}}))
+        self.assertTrue(any("must be a string" in e for e in errors))
+
+    def test_invalid_key_with_dash(self):
+        errors = cfg.validate(_v({"sysctl": {"bad-key": "1"}}))
+        self.assertTrue(any("invalid sysctl key" in e for e in errors))
+
+    def test_invalid_key_starting_with_digit(self):
+        errors = cfg.validate(_v({"sysctl": {"1.bad": "1"}}))
+        self.assertTrue(any("invalid sysctl key" in e for e in errors))
+
+    def test_value_with_newline_rejected(self):
+        errors = cfg.validate(_v({"sysctl": {"a.b": "line1\nline2"}}))
+        self.assertTrue(any("must not contain newlines" in e for e in errors))
+
+    def test_accepts_namespaced_key(self):
+        self.assertEqual(
+            cfg.validate(_v({"sysctl": {
+                "net.ipv4.ip_forward": "1",
+                "kernel.shmmax": "68719476736",
+            }})),
+            [],
+        )
+
+
+class ValidateCargoPackages(unittest.TestCase):
+    def test_missing_key_is_valid(self):
+        self.assertEqual(cfg.validate(_v()), [])
+
+    def test_empty_list_is_valid(self):
+        self.assertEqual(cfg.validate(_v({"cargo_packages": []})), [])
+
+    def test_must_be_list(self):
+        errors = cfg.validate(_v({"cargo_packages": "defmt-print"}))
+        self.assertTrue(any("'cargo_packages' must be an array" in e for e in errors))
+
+    def test_accepts_bare_name(self):
+        self.assertEqual(cfg.validate(_v({"cargo_packages": ["defmt-print"]})), [])
+
+    def test_accepts_name_at_version(self):
+        self.assertEqual(
+            cfg.validate(_v({"cargo_packages": ["defmt-print@0.3.13", "probe-rs@0.24.0"]})),
+            [],
+        )
+
+    def test_accepts_underscore(self):
+        self.assertEqual(cfg.validate(_v({"cargo_packages": ["my_crate"]})), [])
+
+    def test_rejects_uppercase(self):
+        errors = cfg.validate(_v({"cargo_packages": ["Defmt-Print"]}))
+        self.assertTrue(any("invalid cargo crate spec" in e for e in errors))
+
+    def test_rejects_git_url(self):
+        # git+ URLs are out of scope for v1.
+        errors = cfg.validate(_v({"cargo_packages": ["git+https://example.com/foo.git"]}))
+        self.assertTrue(any("invalid cargo crate spec" in e for e in errors))
+
+    def test_rejects_shell_metacharacters(self):
+        for bad in ["foo;rm", "foo bar", "$evil"]:
+            errors = cfg.validate(_v({"cargo_packages": [bad]}))
+            self.assertTrue(
+                any("invalid cargo crate spec" in e for e in errors),
+                msg=f"expected rejection for {bad!r}, got {errors}",
+            )
+
+    def test_rejects_canonical_duplicate(self):
+        errors = cfg.validate(_v({"cargo_packages": ["defmt-print", "defmt_print"]}))
+        self.assertTrue(any("duplicates" in e for e in errors))
+
+    def test_normalize_cargo_name(self):
+        self.assertEqual(cfg.normalize_cargo_name("defmt-print@0.3.13"), "defmt-print")
+        self.assertEqual(cfg.normalize_cargo_name("defmt_print"), "defmt-print")
+
+    def test_validate_cargo_format_helper(self):
+        ok, _ = cfg.validate_cargo_format("defmt-print")
+        self.assertTrue(ok)
+        ok, _ = cfg.validate_cargo_format("defmt-print@0.3.13")
+        self.assertTrue(ok)
+        ok, reason = cfg.validate_cargo_format("Bad Name")
+        self.assertFalse(ok)
+        self.assertIn("invalid cargo crate spec", reason)
+
+
 class HashIdempotency(unittest.TestCase):
     def test_same_inputs_same_hash(self):
         a = cfg.BoxConfig.from_dict(_v({"mounts": [{"host": "/a", "container": "/a"}]}))
@@ -352,9 +524,24 @@ class HashIdempotency(unittest.TestCase):
         self.assertEqual(h1, h2)
 
     def test_different_extras_change_hash(self):
-        a = cfg.BoxConfig.from_dict(_v({"apt_packages": ["a"]}))
-        b = cfg.BoxConfig.from_dict(_v({"apt_packages": ["a", "b"]}))
+        # `rustup` is round-tripped via extras (not yet a first-class field).
+        a = cfg.BoxConfig.from_dict(_v({"rustup": {"default_toolchain": "stable"}}))
+        b = cfg.BoxConfig.from_dict(_v({"rustup": {"default_toolchain": "nightly"}}))
         self.assertNotEqual(a.compute_hash(), b.compute_hash())
+
+    def test_apt_sysctl_cargo_change_hash(self):
+        base = cfg.BoxConfig.from_dict(_v())
+        for change in [
+            {"apt_packages": ["tcpdump"]},
+            {"sysctl": {"net.ipv4.ip_forward": "1"}},
+            {"cargo_packages": ["defmt-print"]},
+        ]:
+            other = cfg.BoxConfig.from_dict(_v(change))
+            self.assertNotEqual(
+                base.compute_hash(),
+                other.compute_hash(),
+                msg=f"hash should change for {change}",
+            )
 
 
 class DockerArgs(unittest.TestCase):

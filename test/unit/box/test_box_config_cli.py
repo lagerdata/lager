@@ -134,11 +134,15 @@ class ApplyReadinessPolling(unittest.TestCase):
         self.runner = CliRunner()
 
     def _backend_for_apply(self, cur_hash="aaa", applied_hash="bbb"):
+        # `show` is consulted twice during apply: once by _preflight_mounts and
+        # once by the apt/sysctl host-side helpers. The single registered
+        # response is reused for both calls.
         return FakeBoxBackend({
             "validate": [{"ok": True, "errors": [], "exists": True}],
             "hash": [{"hash": cur_hash}],
             "applied-hash": [{"hash": applied_hash}],
-            "show": [{"version": 1, "mounts": []}],  # _preflight_mounts
+            "show": [{"version": 1, "mounts": []}],
+            "applied-show": [None],
             "set-applied-hash": [{"ok": True}],
         })
 
@@ -226,6 +230,7 @@ class ApplyRollback(unittest.TestCase):
             "hash": [{"hash": "aaa"}],
             "applied-hash": [{"hash": "bbb"}],
             "show": [{"version": 1, "mounts": []}],
+            "applied-show": [None],
             "restore-applied": [
                 {"ok": True} if restore_ok else
                 {"ok": False, "error": "no applied snapshot available"}
@@ -283,6 +288,266 @@ class ApplyRollback(unittest.TestCase):
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("rollback was not possible", result.output)
         self.assertEqual(bounce_mock.call_count, 2)
+
+
+# ---------------------------------------------------------------------------
+# apt / sysctl / cargo CLI verbs
+# ---------------------------------------------------------------------------
+
+class AptCli(unittest.TestCase):
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def test_add_validates_format_before_calling_box(self):
+        backend = FakeBoxBackend()
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apt", "add", "Bad Name", "--box", "HYP-3"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Invalid apt package name", result.output)
+        self.assertEqual(backend.calls, [])
+
+    def test_add_happy_path_hits_box(self):
+        backend = FakeBoxBackend({"apt-add": [{"ok": True, "added": ["tcpdump"]}]})
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apt", "add", "tcpdump", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("Added 1 apt package", result.output)
+        self.assertIn("apt-add", [c[0] for c in backend.calls])
+
+    def test_remove_round_trips(self):
+        backend = FakeBoxBackend({"apt-remove": [{"ok": True, "removed": ["tcpdump"]}]})
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apt", "remove", "tcpdump", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("Removed 1 apt package", result.output)
+
+    def test_list_renders_packages(self):
+        backend = FakeBoxBackend({
+            "show": [{"version": 1, "apt_packages": ["tcpdump", "iptables-persistent"]}],
+        })
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apt", "list", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("tcpdump", result.output)
+        self.assertIn("iptables-persistent", result.output)
+
+
+class SysctlCli(unittest.TestCase):
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def test_set_requires_key_value(self):
+        backend = FakeBoxBackend()
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["sysctl", "set", "no_equals_here", "--box", "HYP-3"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("expected key=value", result.output)
+        self.assertEqual(backend.calls, [])
+
+    def test_set_validates_key_format_before_box(self):
+        backend = FakeBoxBackend()
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["sysctl", "set", "bad-key=1", "--box", "HYP-3"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("invalid sysctl key", result.output)
+        self.assertEqual(backend.calls, [])
+
+    def test_set_round_trip(self):
+        backend = FakeBoxBackend({
+            "sysctl-set": [{"ok": True, "set": ["net.ipv4.ip_forward"]}],
+        })
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["sysctl", "set", "net.ipv4.ip_forward=1", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("Set 1 sysctl key", result.output)
+        # Confirm the JSON payload was constructed correctly
+        verb, args = backend.calls[-1]
+        self.assertEqual(verb, "sysctl-set")
+        sent = json.loads(args[0])
+        self.assertEqual(sent, {"entries": {"net.ipv4.ip_forward": "1"}})
+
+    def test_unset_round_trip(self):
+        backend = FakeBoxBackend({
+            "sysctl-unset": [{"ok": True, "removed": ["net.ipv4.ip_forward"]}],
+        })
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["sysctl", "unset", "net.ipv4.ip_forward", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("Removed 1 sysctl key", result.output)
+
+
+class CargoCli(unittest.TestCase):
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def test_add_rejects_uppercase(self):
+        backend = FakeBoxBackend()
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["cargo", "add", "Bad-Crate", "--box", "HYP-3"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Invalid cargo crate spec", result.output)
+        self.assertEqual(backend.calls, [])
+
+    def test_add_accepts_at_version(self):
+        backend = FakeBoxBackend({
+            "cargo-add": [{"ok": True, "added": ["defmt-print@0.3.13"]}],
+        })
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["cargo", "add", "defmt-print@0.3.13", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("Added 1 cargo crate", result.output)
+
+
+# ---------------------------------------------------------------------------
+# apply: ensure_apt_packages + ensure_sysctl wiring
+# ---------------------------------------------------------------------------
+
+class ApplyHostSideOrdering(unittest.TestCase):
+    """apt + sysctl run before the bounce, only when the field changed,
+    and a failure aborts apply before the container restart."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def _backend(self, *, current, applied):
+        return FakeBoxBackend({
+            "validate": [{"ok": True, "errors": [], "exists": True}],
+            "hash": [{"hash": "aaa"}],
+            "applied-hash": [{"hash": "bbb"}],
+            "show": [current],
+            "applied-show": [applied],
+            "set-applied-hash": [{"ok": True}],
+        })
+
+    def test_apt_skipped_when_unchanged(self):
+        current = {"version": 1, "apt_packages": ["tcpdump"], "sysctl": {}, "mounts": []}
+        backend = self._backend(current=current, applied=current)
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
+             patch("cli.commands.box._host_ops.apt_install") as apt_mock, \
+             patch("cli.commands.box._host_ops.sysctl_apply") as sysctl_mock:
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "HYP-3", "--yes"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        apt_mock.assert_not_called()
+        sysctl_mock.assert_not_called()
+        self.assertIn("Apt packages unchanged", result.output)
+
+    def test_apt_runs_when_changed(self):
+        from cli.commands.box._host_ops import HostOpResult
+        current = {
+            "version": 1,
+            "apt_packages": ["tcpdump", "iptables-persistent"],
+            "sysctl": {},
+            "mounts": [],
+        }
+        applied = {"version": 1, "apt_packages": ["tcpdump"], "sysctl": {}, "mounts": []}
+        backend = self._backend(current=current, applied=applied)
+        apt_result = HostOpResult(ok=True, action="installed", message="Installed/verified 2 apt package(s).")
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
+             patch("cli.commands.box._host_ops.apt_install", return_value=apt_result) as apt_mock, \
+             patch("cli.commands.box._host_ops.sysctl_apply") as sysctl_mock:
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "HYP-3", "--yes"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        apt_mock.assert_called_once()
+        # sysctl was unchanged (both empty), so still skipped.
+        sysctl_mock.assert_not_called()
+
+    def test_apt_failure_aborts_before_bounce(self):
+        from cli.commands.box._host_ops import HostOpResult
+        current = {"version": 1, "apt_packages": ["tcpdump"], "sysctl": {}, "mounts": []}
+        applied = {"version": 1, "apt_packages": [], "sysctl": {}, "mounts": []}
+        backend = self._backend(current=current, applied=applied)
+        apt_result = HostOpResult(ok=False, action="failed", message="sudo not configured")
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container") as bounce_mock, \
+             patch("cli.commands.box._host_ops.apt_install", return_value=apt_result):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "HYP-3", "--yes"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("apt install failed", result.output)
+        bounce_mock.assert_not_called()
+        verbs = [c[0] for c in backend.calls]
+        self.assertNotIn("set-applied-hash", verbs)
+
+    def test_sysctl_runs_when_changed(self):
+        from cli.commands.box._host_ops import HostOpResult
+        current = {
+            "version": 1,
+            "apt_packages": [],
+            "sysctl": {"net.ipv4.ip_forward": "1"},
+            "mounts": [],
+        }
+        applied = {"version": 1, "apt_packages": [], "sysctl": {}, "mounts": []}
+        backend = self._backend(current=current, applied=applied)
+        sysctl_result = HostOpResult(ok=True, action="applied", message="Wrote 1 sysctl key.")
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
+             patch("cli.commands.box._host_ops.sysctl_apply", return_value=sysctl_result) as sysctl_mock:
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "HYP-3", "--yes"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        sysctl_mock.assert_called_once()
+        # sysctl_apply got the values from the current config.
+        called_with = sysctl_mock.call_args[0][1]
+        self.assertEqual(called_with, {"net.ipv4.ip_forward": "1"})
 
 
 if __name__ == "__main__":
