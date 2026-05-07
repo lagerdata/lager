@@ -266,6 +266,46 @@ fi
 ssh "$SSH_HOST" "sudo rm -rf '$PREP_FAIL_PATH'" >/dev/null 2>&1
 
 # ------------------------------------------------------------
+start_section "LAGER_DISABLE_UART_SERVICE skips port-9000 service"
+# ------------------------------------------------------------
+
+# When the env var is truthy, start-services.sh must not launch
+# box_http_server.py. Customers need this to free port 9000 for their own
+# services (e.g. the Hyphen `core` broker that hardcodes port 9000).
+
+echo "Test 3.12: Apply config with LAGER_DISABLE_UART_SERVICE=1"
+ssh "$SSH_HOST" 'cat > /etc/lager/box_config.json' <<'EOF'
+{"version": 1, "mounts": [], "volumes": [{"name": "box-tools", "container": "/opt/box-tools"}], "env": {"LAGER_DISABLE_UART_SERVICE": "1"}, "pip_packages": []}
+EOF
+lager box config apply --box "$BOX" --yes --force >/dev/null 2>&1 \
+  && track_test "pass" || track_test "fail"
+
+echo "Test 3.13: box_http_server.py is NOT running"
+sleep 5
+if ssh "$SSH_HOST" 'docker exec lager pgrep -f box_http_server.py' >/dev/null 2>&1; then
+  echo "  box_http_server.py still running with disable env set"
+  track_test "fail"
+else
+  track_test "pass"
+fi
+
+echo "Test 3.14: Apply config without the env var"
+ssh "$SSH_HOST" 'cat > /etc/lager/box_config.json' <<'EOF'
+{"version": 1, "mounts": [], "volumes": [{"name": "box-tools", "container": "/opt/box-tools"}], "env": {}, "pip_packages": []}
+EOF
+lager box config apply --box "$BOX" --yes --force >/dev/null 2>&1 \
+  && track_test "pass" || track_test "fail"
+
+echo "Test 3.15: box_http_server.py IS running (default behavior preserved)"
+sleep 5
+if ssh "$SSH_HOST" 'docker exec lager pgrep -f box_http_server.py' >/dev/null 2>&1; then
+  track_test "pass"
+else
+  echo "  box_http_server.py not running with default config"
+  track_test "fail"
+fi
+
+# ------------------------------------------------------------
 start_section "Cleanup"
 # ------------------------------------------------------------
 
