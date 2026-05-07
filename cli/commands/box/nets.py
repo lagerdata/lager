@@ -13,6 +13,7 @@ import io
 import json
 import re
 from contextlib import redirect_stdout
+from datetime import datetime, timezone
 from typing import Any, List, Optional
 from collections import defaultdict
 
@@ -1272,16 +1273,23 @@ def describe_cmd(
         click.secho(f"Net '{name}' not found on {resolved_box}.", fg="yellow")
         ctx.exit(1)
 
+    now_iso = datetime.now(timezone.utc).isoformat()
+    touched_fields: list[str] = []
+
     if description is not None:
         target["description"] = description
+        touched_fields.append("description")
     if dut_connection is not None:
         target["dut_connection"] = dut_connection
+        touched_fields.append("dut_connection")
 
     if clear_hints:
         target["test_hints"] = []
     if hints:
         existing = target.get("test_hints", [])
         target["test_hints"] = existing + list(hints)
+    if clear_hints or hints:
+        touched_fields.append("test_hints")
 
     if clear_tags:
         target["tags"] = []
@@ -1289,6 +1297,16 @@ def describe_cmd(
         existing = target.get("tags", [])
         merged = list(dict.fromkeys(existing + list(tags)))
         target["tags"] = merged
+    if clear_tags or tags:
+        touched_fields.append("tags")
+
+    if touched_fields:
+        timestamps = target.get("metadata_timestamps")
+        if not isinstance(timestamps, dict):
+            timestamps = {}
+        for field in touched_fields:
+            timestamps[field] = now_iso
+        target["metadata_timestamps"] = timestamps
 
     _run_net_py(ctx, resolved_box, "save", json.dumps(target))
     click.secho(f"Updated metadata for net '{name}' on box {resolved_box}.", fg="green")
