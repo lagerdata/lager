@@ -550,5 +550,180 @@ class ApplyHostSideOrdering(unittest.TestCase):
         self.assertEqual(called_with, {"net.ipv4.ip_forward": "1"})
 
 
+class DiffHelpers(unittest.TestCase):
+    """Pure-function tests for the diff computation. Independent of click /
+    SSH plumbing so failures pinpoint the helper, not the command wiring."""
+
+    def test_empty_when_current_equals_applied(self):
+        snap = {
+            "mounts": [{"host": "/a", "container": "/a", "readonly": False}],
+            "env": {"FOO": "1"},
+            "sysctl": {"net.ipv4.ip_forward": "1"},
+            "pip_packages": ["click"],
+            "apt_packages": ["tcpdump"],
+            "cargo_packages": [],
+            "volumes": [],
+        }
+        diff = box_config_cli._compute_diff(snap, snap)
+        self.assertTrue(box_config_cli._diff_is_empty(diff))
+
+    def test_no_snapshot_treats_everything_as_added(self):
+        current = {
+            "mounts": [{"host": "/a", "container": "/a", "readonly": False}],
+            "apt_packages": ["tcpdump"],
+            "sysctl": {"k": "v"},
+        }
+        diff = box_config_cli._compute_diff(current, None)
+        self.assertFalse(box_config_cli._diff_is_empty(diff))
+        self.assertEqual(len(diff["mounts"]["added"]), 1)
+        self.assertEqual(diff["apt_packages"]["added"], ["tcpdump"])
+        self.assertEqual(diff["sysctl"]["added"], {"k": "v"})
+
+    def test_mount_upsert_is_changed_not_paired_add_remove(self):
+        applied = {"mounts": [{"host": "/old", "container": "/c", "readonly": False}]}
+        current = {"mounts": [{"host": "/new", "container": "/c", "readonly": False}]}
+        diff = box_config_cli._compute_diff(current, applied)
+        self.assertEqual(diff["mounts"]["added"], [])
+        self.assertEqual(diff["mounts"]["removed"], [])
+        self.assertEqual(len(diff["mounts"]["changed"]), 1)
+        change = diff["mounts"]["changed"][0]
+        self.assertEqual(change["from"]["host"], "/old")
+        self.assertEqual(change["to"]["host"], "/new")
+
+    def test_sysctl_changed_reports_from_and_to(self):
+        applied = {"sysctl": {"net.ipv4.ip_forward": "0", "kernel.shmmax": "1"}}
+        current = {"sysctl": {"net.ipv4.ip_forward": "1", "kernel.shmmax": "1"}}
+        diff = box_config_cli._compute_diff(current, applied)
+        self.assertEqual(
+            diff["sysctl"]["changed"],
+            {"net.ipv4.ip_forward": {"from": "0", "to": "1"}},
+        )
+        self.assertEqual(diff["sysctl"]["added"], {})
+        self.assertEqual(diff["sysctl"]["removed"], {})
+
+    def test_pip_uses_set_semantics_with_sorted_output(self):
+        applied = {"pip_packages": ["a", "b", "c"]}
+        current = {"pip_packages": ["b", "d", "a"]}
+        diff = box_config_cli._compute_diff(current, applied)
+        self.assertEqual(diff["pip_packages"]["added"], ["d"])
+        self.assertEqual(diff["pip_packages"]["removed"], ["c"])
+
+
+class DiffCommand(unittest.TestCase):
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def test_diff_prints_no_pending_when_clean(self):
+        snap = {"version": 1, "apt_packages": ["tcpdump"]}
+        backend = FakeBoxBackend({"show": [snap], "applied-show": [snap]})
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["diff", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("No pending changes", result.output)
+
+    def test_diff_shows_pending_apt_change(self):
+        current = {"version": 1, "apt_packages": ["tcpdump", "strace"]}
+        applied = {"version": 1, "apt_packages": ["tcpdump"]}
+        backend = FakeBoxBackend({"show": [current], "applied-show": [applied]})
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["diff", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("Apt packages", result.output)
+        self.assertIn("+ strace", result.output)
+        self.assertNotIn("tcpdump", result.output.split("Apt packages")[1])
+
+    def test_diff_json_round_trips(self):
+        current = {"version": 1, "sysctl": {"k": "1"}}
+        applied = {"version": 1, "sysctl": {}}
+        backend = FakeBoxBackend({"show": [current], "applied-show": [applied]})
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["diff", "--box", "HYP-3", "--json"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        payload = json.loads(result.output)
+        self.assertEqual(payload["sysctl"]["added"], {"k": "1"})
+
+    def test_diff_first_apply_flags_no_snapshot(self):
+        current = {"version": 1, "apt_packages": ["tcpdump"]}
+        backend = FakeBoxBackend({"show": [current], "applied-show": [None]})
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["diff", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("No applied snapshot", result.output)
+        self.assertIn("+ tcpdump", result.output)
+
+
+class ApplyDryRun(unittest.TestCase):
+    """--dry-run takes no destructive action: no preflight chown, no apt,
+    no sysctl, no bounce, no set-applied-hash. Only the read-only shim calls
+    fire."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def _backend(self, *, current, applied, cur_hash="aaa", applied_hash="bbb"):
+        return FakeBoxBackend({
+            "validate": [{"ok": True, "errors": [], "exists": True}],
+            "hash": [{"hash": cur_hash}],
+            "applied-hash": [{"hash": applied_hash}],
+            "show": [current],
+            "applied-show": [applied],
+        })
+
+    def test_dry_run_skips_all_writes(self):
+        current = {"version": 1, "apt_packages": ["tcpdump"], "sysctl": {}, "mounts": []}
+        applied = {"version": 1, "apt_packages": [], "sysctl": {}, "mounts": []}
+        backend = self._backend(current=current, applied=applied)
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container") as bounce_mock, \
+             patch.object(box_config_cli, "_preflight_mounts") as prep_mock, \
+             patch("cli.commands.box._host_ops.apt_install") as apt_mock, \
+             patch("cli.commands.box._host_ops.sysctl_apply") as sysctl_mock:
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "HYP-3", "--yes", "--dry-run"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("Dry run", result.output)
+        self.assertIn("+ tcpdump", result.output)
+        bounce_mock.assert_not_called()
+        prep_mock.assert_not_called()
+        apt_mock.assert_not_called()
+        sysctl_mock.assert_not_called()
+        # set-applied-hash must NOT be called: dry-run never claims success.
+        verbs = [c[0] for c in backend.calls]
+        self.assertNotIn("set-applied-hash", verbs)
+
+    def test_dry_run_reports_clean_when_unchanged(self):
+        snap = {"version": 1, "apt_packages": [], "sysctl": {}, "mounts": []}
+        backend = self._backend(current=snap, applied=snap, cur_hash="x", applied_hash="x")
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container") as bounce_mock:
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "HYP-3", "--yes", "--dry-run"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("would be a no-op", result.output)
+        bounce_mock.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
