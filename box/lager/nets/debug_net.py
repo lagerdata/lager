@@ -73,6 +73,15 @@ try:
 
         def __init__(self, *, channel, rtt_telnet_port, tcl_port,
                      search_addr=None, search_size=None):
+            """Construct an OpenOCD RTT session.
+
+            Note: the J-Link ``RTT`` class accepts a ``chunk_size`` knob
+            that bounds each ``read_some`` call. OpenOCD's ``rtt server``
+            streams continuously over TCP and we read whatever
+            ``socket.recv(4096)`` returns, so ``chunk_size`` has no
+            equivalent here. ``DebugNet.rtt()`` silently drops the
+            argument when dispatching to this backend.
+            """
             self.channel = channel
             self._port = rtt_telnet_port + channel
             self._tcl_port = tcl_port
