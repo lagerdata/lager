@@ -228,13 +228,14 @@ API_REFERENCE: dict[str, dict] = {
             {"name": "reset", "sig": "reset(halt=False)", "desc": "Reset the DUT. halt=True stops at first instruction."},
             {"name": "erase", "sig": "erase()", "desc": "Mass-erase DUT flash memory"},
             {"name": "read_memory", "sig": "read_memory(address: int, length: int) -> bytes", "desc": "Read raw memory from DUT"},
-            {"name": "rtt", "sig": "rtt(channel=0) -> context_manager", "desc": "Open an RTT channel (use as context manager). Returns object with .write() and .read_some()."},
+            {"name": "rtt_read", "sig": "rtt_read(timeout=3.0, max_chars=None, channel=0) -> str", "desc": "One-shot RTT read: collect output for `timeout` seconds and return it as decoded text (str, never None). Use this for simple 'flash, reset, read console' tests."},
+            {"name": "rtt", "sig": "rtt(channel=0) -> context_manager", "desc": "Open an RTT channel for bidirectional / streaming use (context manager). Object has .write() and .read_some(timeout). Prefer rtt_read() for one-shot reads."},
             {"name": "status", "sig": "status() -> dict", "desc": "Get probe/target status"},
         ],
         "gotchas": [
             "Flash paths must be absolute or relative to the script's working directory on the box.",
-            "Use rtt() as a context manager: `with dbg.rtt(channel=0) as rtt: rtt.write(b'cmd\\n')`",
-            "RTT read_some() may return empty bytes — loop with timeout for reliable reads.",
+            "For a one-shot console read after flashing, use dbg.rtt_read(timeout=3.0) — it returns a str and handles the connect/read-loop/close for you. There is no dbg.rtt_read with a max_bytes arg; the kwarg is max_chars.",
+            "rtt() is the lower-level streaming API: `with dbg.rtt(channel=0) as rtt: rtt.write(b'cmd\\n')`. rtt.read_some() may return None when idle — loop with a timeout for reliable reads.",
             "connect() is often implicit on first operation, but explicit connect gives clearer errors.",
         ],
         "example_snippet": (
@@ -246,12 +247,16 @@ API_REFERENCE: dict[str, dict] = {
             'dbg.flash("/path/to/firmware.hex")\n'
             'dbg.reset()\n'
             '\n'
-            '# Read RTT output\n'
-            'import time\n'
-            'with dbg.rtt(channel=0) as rtt:\n'
-            '    time.sleep(1)  # Let firmware boot\n'
-            '    data = rtt.read_some(timeout=2)\n'
-            '    print(f"RTT output: {data.decode()}")\n'
+            '# Read console (RTT) output — one-shot helper, returns a str\n'
+            'output = dbg.rtt_read(timeout=3.0)\n'
+            'print(f"RTT output:\\n{output}")\n'
+            'assert "expected text" in output\n'
+            '\n'
+            '# Lower-level streaming form if you need .write() / incremental reads:\n'
+            '# import time\n'
+            '# with dbg.rtt(channel=0) as rtt:\n'
+            '#     time.sleep(1)\n'
+            '#     data = rtt.read_some(timeout=2)  # bytes or None\n'
         ),
     },
     "Battery": {
