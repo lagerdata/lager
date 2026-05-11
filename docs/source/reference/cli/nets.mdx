@@ -128,8 +128,95 @@ The `--jlink-script` option is only applicable for debug nets. If used with othe
 **Validation Rules:**
 - Net names must be globally unique across all types
 - The (role, instrument, channel, address) tuple must match a connected instrument
-- Only one net per channel is allowed for most instruments
-- Debug probes (J-Link) allow only one net per instrument/address
+- Channel binding follows the per-instrument rules described in [Channel & Role Constraints](#channel--role-constraints) below
+
+### Channel & Role Constraints
+
+Different instrument families bind nets to channels differently. Lager classifies every supported instrument into one of three categories and enforces the rules consistently across `create`, `create-all`, and the TUI.
+
+#### 1. Multi-channel instruments
+
+Instruments with physically independent outputs / inputs. Each channel is its own circuit and can host its own net.
+
+| Instrument | Channels | Notes |
+|---|---|---|
+| `Rigol_DP811` / `DP821` / `DP831` / `DP832` | `1`, `2`, `3` | One `supply` net per output |
+| `KEYSIGHT_E36233A` | `1`, `2` | Dual-output supply |
+| `KEYSIGHT_E36313A` / `E36312A` | `1`, `2`, `3` | Triple-output supply |
+| `LabJack_T7` | `AIN0`–`AIN13`, `FIO0`–`FIO7`, `DAC0`–`DAC1`, etc. | One net per pin |
+| `Aardvark` | `SPI0`, `I2C0`, GPIO pins | Mixed-mode multi-channel |
+| `MCC_USB-202` | `CH0`–`CH7`, `DIO0`–`DIO7`, `DAC0`–`DAC1` | One net per channel |
+| `Phidget` | `0`–`3` | One `thermocouple` net per channel |
+| `Acroname_8Port` / `4Port`, `YKUSH_Hub` | Port indices | One `usb` net per port |
+
+**Rule:** at most one net per `(instrument, address, role, channel)` tuple. Two nets that share `(instrument, address, role)` but differ in `channel` are fine — that's exactly what multi-channel is for.
+
+#### 2. Single-channel, multi-mode instruments
+
+Instruments with one physical channel that can run in one of several **modes** but not multiple modes at once. The role tells the box which firmware mode to flip the chip into.
+
+| Instrument | Allowed roles | Why exclusive |
+|---|---|---|
+| `Keithley_2281S` | `batt` or `supply` | One channel: battery-simulator firmware OR power-supply firmware |
+| `EA_PSB_10080_60` | `solar` or `supply` | One channel: solar-array simulator OR straight supply |
+| `EA_PSB_10060_60` | `solar` or `supply` | Same as above |
+| `FTDI_FT232H` | `spi` or `i2c` or `gpio` or `debug` or `uart` | One channel hardware-multiplexed between MPSSE (libftdi) and async-serial (`ftdi_sio`) modes |
+
+**Rule:** at most one net per `(instrument, address)`. Once any role is saved on the chip, every other role disappears from the add list. To switch modes, delete the existing net first.
+
+These chips are tracked in `_SINGLE_CHANNEL_INST` (Keithley, EA) and `_MODE_EXCLUSIVE_INST` (FTDI_FT232H) in `cli/commands/box/nets.py` and `cli/commands/box/net_tui.py`.
+
+#### 3. Single-role debug probes
+
+Standalone debugger boxes — one probe drives one target MCU.
+
+| Instrument | Backend | Role |
+|---|---|---|
+| `J-Link` / `J-Link_Plus` / `Flasher_ARM` / `J-Link_Flasher_Pro` | J-Link (SEGGER) | `debug` |
+| `STLink_v2` / `v2_1` / `v3` / `v3_Mini` / `v3_2VCP` | OpenOCD | `debug` |
+| `RP2040_Picoprobe` | OpenOCD (CMSIS-DAP) | `debug` |
+| `Atmel_EDBG` | OpenOCD (CMSIS-DAP) | `debug` |
+| `DAPLink` | OpenOCD (CMSIS-DAP) | `debug` |
+
+**Rule:** at most one `debug` net per `(instrument, address)`.
+
+#### 4. Multi-channel FTDI debug adapters
+
+`FT2232H` (2 channels: A, B) and `FT4232H` (4 channels: A, B, C, D) physically expose multiple USB interfaces. Channels A and B are MPSSE-capable (JTAG/SWD via OpenOCD); channels C and D on the FT4232H are UART-only. The user picks an interface per net via an `@` suffix on the device type.
+
+**Debug nets** encode the channel in the device field:
+
+```bash
+# Channel A (interface 0) — by far the most common
+lager nets create debug_a debug STM32F4x@A USB0::0x0403::0x6010::ABCDEF::INSTR
+
+# Channel B (interface 1) — second target on the same FT2232H
+lager nets create debug_b debug NRF52840_XXAA@B USB0::0x0403::0x6010::ABCDEF::INSTR
+```
+
+Equivalent forms: `@A`/`@0`, `@B`/`@1`, `@C`/`@2`, `@D`/`@3`. Devices without an `@` suffix default to the interface OpenOCD's interface config picks (typically channel A).
+
+**UART nets** distinguish channels by their tty path. The USB scanner enumerates every `/dev/ttyUSB<N>` bound to the chip's USB serial; each shows up as a separate add-list entry, so on an FT4232H you'll see up to four UART options.
+
+**Rule:** a debug net is unique per `(instrument, address, channel-suffix)`. So a single FT2232H can host:
+- one `debug` net on `@A`
+- one `debug` net on `@B`
+- one `uart` net on a `/dev/ttyUSB<N>` belonging to whichever channels you didn't claim for MPSSE
+- one each of `spi` / `i2c` / `gpio` (which all bind to channel A in the OpenOCD interface config — incompatible with `debug@A`)
+
+The user is responsible for not double-booking channel A (e.g. picking `debug@A` *and* `spi`); the box doesn't validate that today.
+
+#### Quick decision table
+
+| You want to add a second net on the same chip | Allowed? |
+|---|---|
+| `supply` on `Rigol_DP811` CH1 + `supply` on Rigol_DP811 CH2 | Yes |
+| `batt` on `Keithley_2281S` + `supply` on the same Keithley | **No** — pick one |
+| `solar` on `EA_PSB_10080_60` + `supply` on the same EA | **No** — pick one |
+| `spi` on `FTDI_FT232H` + `uart` on the same FT232H | **No** — pick one |
+| `debug@A` on `FTDI_FT2232H` + `uart` on a different interface of the same FT2232H | Yes |
+| Two `debug@A` nets on the same `FTDI_FT2232H` | **No** — same channel |
+| Two `debug` nets on the same J-Link | **No** — single-target probe |
 
 ### `create-all`
 
