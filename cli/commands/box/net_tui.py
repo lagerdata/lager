@@ -100,6 +100,31 @@ def _uid(instr: str, chan: str, role: str, name: str) -> str:
     safe = "".join(c if re.fullmatch(r"[A-Za-z0-9_-]", c) else "_" for c in base)
     return f"_{safe}" if safe and safe[0].isdigit() else safe
 
+
+def _debug_channel_suffix(value) -> str:
+    """Return the lower-cased ``@<channel>`` suffix of a debug net's device.
+
+    Multi-channel FTDIs (FT2232H, FT4232H) encode the interface index in the
+    debug net's device field as ``STM32F4x@A``. This helper extracts the
+    trailing ``@A``/``@0`` portion (kept lower-case) so two nets on the same
+    physical probe can be compared by which interface they own. Returns
+    ``""`` for plain devices — that's the implicit channel A.
+    """
+    if not value:
+        return ""
+    s = str(value)
+    if "@" not in s:
+        return ""
+    return f"@{s.rpartition('@')[2].lower()}"
+
+# Chips that can only run in one hardware mode at a time across ALL roles.
+# FT232H is the canonical example: a single channel hardware-multiplexed
+# between MPSSE (spi/i2c/gpio/debug) and async-serial (uart). Once any
+# role is saved on one of these chips, the other roles disappear from the
+# add list. Multi-channel FTDIs (FT2232H, FT4232H) are NOT in this set —
+# they pick a role per channel via the @A/@B/... suffix.
+_MODE_EXCLUSIVE_INST = {"FTDI_FT232H"}
+
 _MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port"}
 _SINGLE_CHANNEL_INST = {
     "Keithley_2281S": ("batt", "supply"),
@@ -187,21 +212,20 @@ def _save_nets_batch(ctx: click.Context, dut: str, nets: list["Net"], custom_nam
 
 def is_single_channel_taken(all_nets: list["Net"], inst: str, addr: str, role: str | None = None) -> bool:
     """
-    True if a *saved* net for this instrument+address (and role, if given)
-    already exists.
+    True if a *saved* net already exists for this single-channel
+    instrument at this address.
 
-    For multi-role devices like Keithley_2281S (battery + power-supply) or
-    EA PSB (solar + power-supply), each role is independent — only block if
-    this specific role is already saved.
+    Single-channel devices like Keithley_2281S (``batt``/``supply``) or
+    EA_PSB (``solar``/``supply``) physically hold one channel, so once
+    any saved net binds it the other role becomes unsafe to add — the
+    underlying hardware can only run one mode at a time. The ``role``
+    parameter is kept for backwards compatibility (callers used to ask
+    "is THIS role taken?") but is ignored: any saved net on the chip
+    counts as taken.
     """
     if inst not in _SINGLE_CHANNEL_INST:
         return False
-    if role is not None:
-        return any(n.saved and n.instrument == inst and n.addr == addr and n.type == role for n in all_nets)
-    # Fallback (no role given): all allowed roles are already saved
-    allowed_prefixes = _SINGLE_CHANNEL_INST[inst]
-    saved_roles = {n.type for n in all_nets if n.saved and n.instrument == inst and n.addr == addr}
-    return len(saved_roles) >= len(allowed_prefixes)
+    return any(n.saved and n.instrument == inst and n.addr == addr for n in all_nets)
 
 @dataclass
 class Net:
@@ -1219,22 +1243,33 @@ class JLinkDeviceTypeDialog(Screen):
         dut: str,
         net_name: str,
         address: str,
-        callback: Callable[[bool, str | None], None]
+        callback: Callable[[bool, str | None], None],
+        channel_suffix: str = "",
     ):
         super().__init__()
         self.dut = dut
         self.net_name = net_name
         self.address = address
         self.callback = callback
+        # ``channel_suffix`` is the FTDI interface tag (``@A`` / ``@B`` / ...)
+        # for multi-channel adapters. Empty string for single-channel probes.
+        self.channel_suffix = channel_suffix
         self.input = Input(placeholder=f"Enter device type for {address}", id="jlink_type")
 
     def compose(self):
+        # Surface the channel selection so users running an FT2232H or
+        # FT4232H know which interface the device they're about to enter
+        # corresponds to. Empty for single-channel probes.
+        chan_line = ""
+        if self.channel_suffix:
+            chan_line = f"FTDI channel: {self.channel_suffix[1:]}\n"
         with Vertical(classes="dialog"):
             yield Static("J-Link Device Configuration", classes="dialog-title")
             yield Static(
                 f"Net: {self.net_name}\n"
-                f"Address: {self.address}\n\n"
-                f"Please specify the device type for this J-Link debugger.",
+                f"Address: {self.address}\n"
+                f"{chan_line}\n"
+                f"Please specify the device type for this debugger.",
                 classes="dialog-content"
             )
             yield self.input
@@ -1278,14 +1313,33 @@ class AddScreen(Screen):
         if any(s.saved and s.type == n.type and s.instrument == n.instrument and s.chan == n.chan and s.addr == n.addr for s in self.nets):
             return False
 
-        # Hide nets for single-channel instruments if this role is already saved
+        # Hide nets for single-channel instruments once ANY role is saved on
+        # the same chip+addr. Keithley_2281S is the canonical case: one
+        # physical channel that can run as ``batt`` OR ``supply`` but never
+        # both. The old per-role check (``s.type == n.type``) let users
+        # silently double-book the channel by picking the other role; this
+        # tighter check matches the ``add-all`` CLI semantics.
         if n.instrument in _SINGLE_CHANNEL_INST:
-            if any(s.saved and s.instrument == n.instrument and s.addr == n.addr and s.type == n.type for s in self.nets):
+            if any(s.saved and s.instrument == n.instrument and s.addr == n.addr for s in self.nets):
                 return False
-        # Prevent multiple debug nets with same type/instrument/address
+
+        # Mode-exclusive chips (FT232H): once ANY role is saved on this
+        # chip+address, all other role options disappear. The user must
+        # delete the existing net to switch modes.
+        if n.instrument in _MODE_EXCLUSIVE_INST:
+            if any(s.saved and s.instrument == n.instrument and s.addr == n.addr for s in self.nets):
+                return False
+        # Prevent multiple debug nets with same type/instrument/address —
+        # but multi-channel FTDIs encode the interface in the ``@suffix`` of
+        # the device field, so we only block when the suffixes also match.
         if n.type == "debug":
-            if any(s.saved and s.type == "debug" and s.instrument == n.instrument and s.addr == n.addr for s in self.nets):
-                return False
+            new_suffix = _debug_channel_suffix(n.chan)
+            for s in self.nets:
+                if (s.saved and s.type == "debug"
+                        and s.instrument == n.instrument
+                        and s.addr == n.addr
+                        and _debug_channel_suffix(s.chan) == new_suffix):
+                    return False
         return True
 
     def _get_addable_nets(self) -> tuple[list["Net"], list[str]]:
@@ -1346,7 +1400,9 @@ class AddScreen(Screen):
             if n.instrument in _SINGLE_CHANNEL_INST and is_single_channel_taken(self.nets, n.instrument, n.addr, n.type):
                 dup_single.add((n.instrument, n.addr))
                 continue
-            if n.type == "debug" and n.chan != "DEVICE_TYPE":
+            if n.type == "debug" and "DEVICE_TYPE" not in str(n.chan):
+                # Already resolved (a real device name); skip the prompt
+                # filter. ``DEVICE_TYPE@A`` placeholders still need prompting.
                 continue
             if not self._row_allowed(n):
                 continue
@@ -1452,18 +1508,23 @@ class AddScreen(Screen):
         debug_nets = [n for n in selected_nets if n.type == "debug"]
         normal_nets = [n for n in selected_nets if n.type != "debug"]
 
-        # Check for single-channel device conflicts (one net per instrument+address+role)
-        single_cnt: dict[tuple[str, str, str], int] = defaultdict(int)
+        # Check for single-channel device conflicts: at most one net per
+        # (instrument, address), regardless of role. Keithley_2281S can be
+        # ``batt`` OR ``supply`` but not both; EA_PSB chips similarly choose
+        # between ``solar`` and ``supply``. The role tuple metadata in
+        # ``_SINGLE_CHANNEL_INST`` is kept for future "available roles"
+        # surfacing but doesn't relax the constraint.
+        single_cnt: dict[tuple[str, str], int] = defaultdict(int)
         for s in main.nets:
             if s.saved and s.instrument in _SINGLE_CHANNEL_INST:
-                single_cnt[(s.instrument, s.addr, s.type)] += 1
+                single_cnt[(s.instrument, s.addr)] += 1
         for n in selected_nets:
             if n.instrument in _SINGLE_CHANNEL_INST:
-                single_cnt[(n.instrument, n.addr, n.type)] += 1
-        conflicts = [(inst, addr) for (inst, addr, _role), cnt in single_cnt.items() if cnt > 1]
+                single_cnt[(n.instrument, n.addr)] += 1
+        conflicts = [(inst, addr) for (inst, addr), cnt in single_cnt.items() if cnt > 1]
         if conflicts:
             parts = [f"{inst} at {addr}" for inst, addr in conflicts]
-            msg = "Only one net per role may be added per " + ", ".join(parts) + "."
+            msg = "Only one net may be added per " + ", ".join(parts) + "."
             try:
                 self.query_one("#keithley_hint", Static).update(msg)
             except NoMatches:
@@ -1474,6 +1535,37 @@ class AddScreen(Screen):
                 self.query_one("#keithley_hint", Static).update("")
             except NoMatches:
                 pass
+
+        # Mode-exclusive chips: across all roles, only one net per chip+addr
+        # can be selected (an FT232H can be SPI OR UART, never both). Detect
+        # the case where the user picked two role options for the same chip
+        # in this batch and bail out with a hint.
+        mode_excl_pairs: dict[tuple[str, str], set[str]] = defaultdict(set)
+        for s in main.nets:
+            if s.saved and s.instrument in _MODE_EXCLUSIVE_INST:
+                mode_excl_pairs[(s.instrument, s.addr)].add(s.type)
+        for n in selected_nets:
+            if n.instrument in _MODE_EXCLUSIVE_INST:
+                mode_excl_pairs[(n.instrument, n.addr)].add(n.type)
+        mode_conflicts = [
+            (inst, addr, sorted(types))
+            for (inst, addr), types in mode_excl_pairs.items()
+            if len(types) > 1
+        ]
+        if mode_conflicts:
+            parts = [
+                f"{inst} at {addr} ({', '.join(types)})"
+                for inst, addr, types in mode_conflicts
+            ]
+            msg = (
+                "These chips only run one mode at a time; pick a single role per "
+                + ", ".join(parts) + "."
+            )
+            try:
+                self.query_one("#keithley_hint", Static).update(msg)
+            except NoMatches:
+                self.mount(Static(msg, id="keithley_hint", classes="warning"))
+            return
 
         # If no debug nets selected, save immediately using batch save
         if not debug_nets:
@@ -1496,8 +1588,17 @@ class AddScreen(Screen):
             if not success or not device_type:
                 main.pop_screen(to=self)
                 return
-            # Set the J-Link device type as the "channel"
-            self._pending_debug_nets[self._debug_idx].chan = device_type
+            # Preserve any ``@<channel>`` suffix that was attached to the
+            # DEVICE_TYPE placeholder (multi-channel FTDI). The OpenOCD
+            # backend reads the suffix off the saved net to route to the
+            # correct FTDI interface.
+            target = self._pending_debug_nets[self._debug_idx]
+            placeholder = str(target.chan or "")
+            suffix = ""
+            if "@" in placeholder:
+                _, _, after = placeholder.partition("@")
+                suffix = f"@{after}"
+            target.chan = f"{device_type}{suffix}"
             self._debug_idx += 1
             if self._debug_idx < len(self._pending_debug_nets):
                 prompt_next()
@@ -1514,7 +1615,10 @@ class AddScreen(Screen):
 
         def prompt_next():
             n = self._pending_debug_nets[self._debug_idx]
-            main.push_screen(JLinkDeviceTypeDialog(main.dut, n.net, n.addr, handle_jlink_complete))
+            suffix = _debug_channel_suffix(n.chan)
+            main.push_screen(
+                JLinkDeviceTypeDialog(main.dut, n.net, n.addr, handle_jlink_complete, channel_suffix=suffix)
+            )
 
         prompt_next()
 

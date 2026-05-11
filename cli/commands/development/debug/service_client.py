@@ -58,7 +58,9 @@ class DebugServiceClient:
 
     def connect(self, net: Dict[str, Any], speed: Optional[str] = None,
                 force: bool = False, halt: bool = False, gdb: bool = False,
-                gdb_port: Optional[int] = None, jlink_script: Optional[str] = None) -> Dict[str, Any]:
+                gdb_port: Optional[int] = None,
+                jlink_script: Optional[str] = None,
+                openocd_config: Optional[str] = None) -> Dict[str, Any]:
         """
         Connect to debugger.
 
@@ -71,10 +73,19 @@ class DebugServiceClient:
             gdb_port: GDB server port. None lets the box pick from the probe's
                 slot (2331, 2334, 2337, 2340 for slots 0-3). Pass an integer
                 only when you specifically need to override.
-            jlink_script: Base64-encoded J-Link script file content (optional)
+            jlink_script: Base64-encoded J-Link script file content. The box
+                uses this when the probe resolves to the J-Link backend
+                (VID 0x1366). Ignored for OpenOCD-backed probes.
+            openocd_config: Base64-encoded OpenOCD ``.cfg``/``.tcl`` content.
+                The box loads it via ``-f <user.cfg>`` *after* the built-in
+                interface + target configs, so it can override transport,
+                halt mode, etc. Used only for OpenOCD-backed probes
+                (ST-Link, CMSIS-DAP, FTDI).
 
         Returns:
-            Connection status dict
+            Connection status dict — includes ``backend`` (``jlink`` or
+            ``openocd``) so callers can branch on which gdbserver type
+            actually started.
         """
         data = {
             'net': net,
@@ -90,6 +101,8 @@ class DebugServiceClient:
 
         if jlink_script:
             data['jlink_script'] = jlink_script
+        if openocd_config:
+            data['openocd_config'] = openocd_config
 
         response = self.session.post(
             f'{self.base_url}/debug/connect',
