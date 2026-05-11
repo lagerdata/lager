@@ -94,10 +94,14 @@ lager update --box <BOX_IP> --version staging --yes
 | Option | Description |
 |--------|-------------|
 | `--user <username>` | Box username (default: lagerdata) |
+| `--version <ref>` | Lager git tag or branch to deploy (default: main) |
+| `--vpn <iface>` | VPN interface to bind services to (auto-detects Tailscale/WireGuard) |
 | `--corporate-vpn <iface>` | Corporate VPN interface for firewall (e.g., tun0) |
 | `--skip-firewall` | Skip firewall configuration |
 | `--skip-jlink` | Skip J-Link installation |
+| `--jlink-version <ver>` | Pin J-Link to a specific SEGGER version (default: latest) |
 | `--skip-verify` | Skip post-deployment verification |
+| `--skip-add-box` | Skip the prompt to add the box to the local `.lager` config |
 
 **Examples:**
 ```bash
