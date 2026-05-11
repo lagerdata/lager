@@ -304,9 +304,20 @@ def _build_openocd_command(
     if interface_cfg:
         cmd.extend(['-f', interface_cfg])
     elif not user_config_path:
+        # Common ways to land here: user set ``debug_backend: openocd``
+        # explicitly on a net whose VID isn't in our auto-classify map
+        # (Black Magic Probe at 0x1209, Glasgow at 0x20b7, custom FTDI
+        # boards, etc.) but didn't supply an ``openocd_config``. The
+        # message has to be actionable because the failure is otherwise
+        # opaque — OpenOCD never starts and the user just sees a generic
+        # "OpenOCD exited" log.
+        hint_vid = f'0x{vid}' if vid else '<unknown>'
         raise FileNotFoundError(
-            'Cannot infer OpenOCD interface from probe address and no '
-            'user openocd_config was supplied'
+            f"Cannot infer OpenOCD interface for probe VID {hint_vid}. "
+            f"Either change ``debug_backend`` to a probe whose VID is "
+            f"in lager.debug.probes._OPENOCD_VIDS, or attach a custom "
+            f"OpenOCD ``.cfg`` to the net via the ``openocd_config`` "
+            f"field (CLI: ``lager debug set-script <net> <file.cfg>``)."
         )
 
     # Multi-channel FTDI: override the interface config's default channel so
@@ -595,14 +606,63 @@ class OpenOcdRpc:
     def flash_erase_all(self):
         """Erase every sector of every flash bank — analog to JLink ``erase``.
 
-        Many target configs name bank 0 ``$_FLASHNAME`` / ``0`` interchangeably,
-        and ``flash erase_sector 0 0 last`` is the portable form.
+        Some target configs declare multiple flash banks (STM32H7 in
+        dual-bank mode, RP2350 with external + internal flash, some Cortex-M55s)
+        and ``flash erase_sector 0 0 last`` only clears bank 0 — leaving
+        stale code behind on the other banks. We enumerate every bank via
+        ``flash banks`` and erase each in turn so the contract matches
+        J-Link's ``chip_erase()`` ("the chip ends up blank").
+
+        ``flash banks`` output looks like::
+
+            #0 : stm32h7x.bank1 (stm32h7x) at 0x08000000, size 0x00100000, ...
+            #1 : stm32h7x.bank2 (stm32h7x) at 0x08100000, size 0x00100000, ...
+
+        We just need the leading ``#N`` index.
         """
+        import re
+        bank_indices = []
         try:
-            return self.cmd('flash erase_sector 0 0 last', timeout=120)
+            banks_out = self.cmd('flash banks', timeout=10)
+            for line in banks_out.splitlines():
+                m = re.match(r'\s*#(\d+)\s*:', line)
+                if m:
+                    bank_indices.append(int(m.group(1)))
         except OpenOcdRpcError as exc:
-            logger.warning('flash erase_sector failed (%s); trying mass_erase', exc)
-            return self.cmd('flash erase_address 0 0xFFFFFFFF', timeout=120)
+            logger.warning(
+                'flash banks enumeration failed (%s); falling back to bank 0 only', exc,
+            )
+
+        # If enumeration produced nothing usable (older OpenOCD, exotic
+        # target.cfg), default to "bank 0 only" — same behaviour as before.
+        if not bank_indices:
+            bank_indices = [0]
+
+        outputs = []
+        last_exc = None
+        for bank in bank_indices:
+            try:
+                outputs.append(self.cmd(f'flash erase_sector {bank} 0 last', timeout=120))
+            except OpenOcdRpcError as exc:
+                last_exc = exc
+                logger.warning(
+                    'flash erase_sector bank=%s failed (%s); trying erase_address fallback',
+                    bank, exc,
+                )
+                try:
+                    outputs.append(self.cmd(
+                        f'flash erase_address 0 0xFFFFFFFF', timeout=120,
+                    ))
+                    # erase_address ignores the bank index and walks all
+                    # banks itself on most target.cfgs, so one fallback is
+                    # enough — bail out of the per-bank loop.
+                    return '\n'.join(outputs)
+                except OpenOcdRpcError as exc2:
+                    last_exc = exc2
+                    logger.warning('flash erase_address fallback failed: %s', exc2)
+        if not outputs and last_exc is not None:
+            raise last_exc
+        return '\n'.join(outputs)
 
     def flash_erase_range(self, start, length):
         end = start + length - 1

@@ -257,28 +257,42 @@ try:
                 results.append(line)
             return '\n'.join(results)
 
-        def flash(self, firmware_path):
-            """Flash firmware to device. Returns combined output as a string."""
+        def flash(self, firmware_path, flash_address=None):
+            """Flash firmware to device. Returns combined output as a string.
+
+            ``.hex`` and ``.elf`` files carry their own load addresses in the
+            file format and the ``flash_address`` argument is ignored for
+            them. ``.bin`` files have no embedded address, so callers MUST
+            pass ``flash_address`` — silently defaulting to ``0x0`` writes
+            to the wrong location on every Cortex-M part whose flash base
+            isn't aliased to 0 (STM32: ``0x08000000``, nRF52/53:
+            ``0x00000000`` *is* flash but only by coincidence). Pass the
+            target's flash base explicitly to avoid foot-guns.
+            """
             import os
             ext = os.path.splitext(firmware_path)[1].lower()
+            if ext not in ('.hex', '.bin', '.elf'):
+                raise ValueError(f"Unsupported firmware file type: {ext}")
+            if ext == '.bin' and flash_address is None:
+                raise ValueError(
+                    f"Flashing a .bin file requires an explicit "
+                    f"flash_address (e.g. 0x08000000 for STM32). "
+                    f"Pass flash_address=... to flash()."
+                )
             if self.backend == BACKEND_OPENOCD:
                 self._ensure_openocd_running()
-                address = None
-                if ext == '.bin':
-                    address = 0
-                elif ext not in ('.hex', '.elf'):
-                    raise ValueError(f"Unsupported firmware file type: {ext}")
+                # OpenOCD's ``program`` reads the load address from the file
+                # for .hex/.elf and uses the trailing address for .bin.
+                address = flash_address if ext == '.bin' else None
                 return self._openocd_rpc(timeout=300).program(
                     firmware_path, verify=True, reset_after=True, address=address,
                 ) or ''
             if ext == '.hex':
                 files = ([firmware_path], [], [])
             elif ext == '.bin':
-                files = ([], [(firmware_path, 0x00000000)], [])
-            elif ext == '.elf':
+                files = ([], [(firmware_path, flash_address)], [])
+            else:  # .elf
                 files = ([], [], [firmware_path])
-            else:
-                raise ValueError(f"Unsupported firmware file type: {ext}")
 
             results = []
             for line in flash_device(
