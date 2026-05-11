@@ -39,6 +39,19 @@ _API_READY_POLL_INTERVAL_SECONDS = 1
 _BOX_API_PORT = 5000
 
 
+def _resolve_boxes(ctx: click.Context, box_opt: Optional[str]) -> list:
+    """Resolve `--box` to a list of IPs. Comma-separated values fan out
+    across boxes for the commands that support it (show / apply / status).
+    A bare value behaves identically to `_resolve_box`."""
+    if box_opt and "," in box_opt:
+        names = [b.strip() for b in box_opt.split(",") if b.strip()]
+        if not names:
+            click.secho("Error: --box value is empty after splitting on commas.", fg="red", err=True)
+            ctx.exit(1)
+        return [_resolve_box(ctx, n) for n in names]
+    return [_resolve_box(ctx, box_opt)]
+
+
 def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
     target_box = None
     if box_opt:
@@ -160,20 +173,32 @@ def box_config(ctx: click.Context, box: Optional[str]) -> None:
 
 
 @box_config.command("show", help="Print the current box_config.json.")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lagerbox name or IP (comma-separated for fanout)")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
 def show_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
-    resolved = _resolve_box(ctx, box)
-    raw = _run_box_config_py(ctx, resolved, verbs.SHOW)
-    payload = _parse_response(raw, ctx)
-    if payload is None:
-        click.secho(f"No box_config.json on {resolved}. Run `lager box config init`.", fg="yellow")
+    targets = _resolve_boxes(ctx, box)
+    if as_json and len(targets) > 1:
+        out = {}
+        for resolved in targets:
+            raw = _run_box_config_py(ctx, resolved, verbs.SHOW)
+            out[resolved] = _parse_response(raw, ctx)
+        click.echo(json.dumps(out, indent=2))
         return
-    if as_json:
-        click.echo(json.dumps(payload, indent=2))
-        return
-    _render_human(payload)
+    for i, resolved in enumerate(targets):
+        if len(targets) > 1:
+            if i > 0:
+                click.echo()
+            click.secho(f"=== {resolved} ===", bold=True)
+        raw = _run_box_config_py(ctx, resolved, verbs.SHOW)
+        payload = _parse_response(raw, ctx)
+        if payload is None:
+            click.secho(f"No box_config.json on {resolved}. Run `lager box config init`.", fg="yellow")
+            continue
+        if as_json:
+            click.echo(json.dumps(payload, indent=2))
+            continue
+        _render_human(payload)
 
 
 def _fmt_mount(m: dict) -> str:
@@ -438,11 +463,227 @@ def diff_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
     _print_diff_human(diff)
 
 
+@box_config.command("status", help="One-line summary of box config state.")
+@click.option("--box", help="Lagerbox name or IP (comma-separated for fanout)")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+@click.pass_context
+def status_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
+    """Quick health check: clean vs. drifted, field counts, last audit entry.
+
+    Designed for `lager box config status --box hyp-3,hyp-4,hyp-5` —
+    one line of signal per box without needing to read full `show` output.
+    """
+    targets = _resolve_boxes(ctx, box)
+    summaries = []
+    for resolved in targets:
+        summaries.append(_status_one(ctx, resolved))
+    if as_json:
+        out = summaries[0] if len(summaries) == 1 else summaries
+        click.echo(json.dumps(out, indent=2))
+        return
+    for s in summaries:
+        _print_status_human(s)
+
+
+def _status_one(ctx: click.Context, resolved: str) -> dict:
+    show = _parse_response(_run_box_config_py(ctx, resolved, verbs.SHOW), ctx)
+    if show is None:
+        return {"box": resolved, "exists": False}
+    cur_hash = _parse_response(_run_box_config_py(ctx, resolved, verbs.HASH), ctx).get("hash")
+    applied_hash = _parse_response(_run_box_config_py(ctx, resolved, verbs.APPLIED_HASH), ctx).get("hash")
+    audit = _parse_response(_run_box_config_py(ctx, resolved, verbs.AUDIT_TAIL, "1"), ctx) or {}
+    entries = audit.get("entries", [])
+    last = entries[0] if entries else None
+    clean = bool(cur_hash) and cur_hash == applied_hash
+    counts = {key: len(show.get(key) or []) for key, _, _ in _FIRST_CLASS_FIELDS}
+    return {
+        "box": resolved, "exists": True, "clean": clean,
+        "current_hash": cur_hash, "applied_hash": applied_hash,
+        "counts": counts, "last_change": last,
+    }
+
+
+def _print_status_human(s: dict) -> None:
+    box = s["box"]
+    if not s.get("exists"):
+        click.echo(f"{box}: no box_config.json")
+        return
+    state = click.style("clean", fg="green") if s["clean"] else click.style("DRIFT", fg="yellow")
+    click.echo(f"{box}: {state}")
+    if not s["clean"]:
+        click.echo(f"  run `lager box config diff --box {box}` to see pending changes")
+    nonzero = {k: n for k, n in s["counts"].items() if n}
+    if nonzero:
+        # Compact rendering: "2 mounts, 3 pip, 1 cargo"
+        parts = []
+        for key, n in nonzero.items():
+            label = key.replace("_packages", "").replace("_", " ")
+            parts.append(f"{n} {label}")
+        click.echo(f"  field counts: {', '.join(parts)}")
+    if s["last_change"]:
+        ts = s["last_change"].get("ts", "?")
+        verb = s["last_change"].get("verb", "?")
+        click.echo(f"  last change: {ts} ({verb})")
+
+
+@box_config.command("export", help="Write the box's config to a local JSON file.")
+@click.argument("path", type=click.Path(dir_okay=False, writable=True))
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def export_cmd(ctx: click.Context, path: str, box: Optional[str]) -> None:
+    """Save box_config.json from the box to a local file. Pair with
+    `import` for gitops workflows — check the file into a repo, edit, then
+    push back with `import`."""
+    resolved = _resolve_box(ctx, box)
+    payload = _parse_response(_run_box_config_py(ctx, resolved, verbs.SHOW), ctx)
+    if payload is None:
+        click.secho(f"No box_config.json on {resolved}.", fg="yellow", err=True)
+        ctx.exit(1)
+    body = json.dumps(payload, indent=2) + "\n"
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(body)
+    click.secho(f"Wrote {path} ({len(body)} bytes from {resolved}).", fg="green")
+
+
+@box_config.command("import", help="Replace the box's config with a local JSON file.")
+@click.argument("path", type=click.Path(exists=True, dir_okay=False, readable=True))
+@click.option("--box", help="Lagerbox name or IP")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt")
+@click.pass_context
+def import_cmd(ctx: click.Context, path: str, box: Optional[str], yes: bool) -> None:
+    """Replace /etc/lager/box_config.json on the box with the local file's
+    contents. The shim validates before writing; on validation failure the
+    on-disk file is untouched."""
+    resolved = _resolve_box(ctx, box)
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
+    try:
+        json.loads(content)  # local syntax check; better error before SSH round-trip
+    except json.JSONDecodeError as e:
+        click.secho(f"Invalid JSON in {path}: {e}", fg="red", err=True)
+        ctx.exit(1)
+    if not yes and not click.confirm(
+        f"Replace box_config.json on {resolved} with {path}?", default=False,
+    ):
+        click.secho("Aborted.", fg="yellow")
+        return
+    response = _parse_response(
+        _run_box_config_py(ctx, resolved, verbs.SET_RAW, content), ctx,
+    )
+    if not response.get("ok"):
+        click.secho("Failed to import config:", fg="red", err=True)
+        _print_errors(response.get("errors") or [response.get("error", "unknown error")])
+        ctx.exit(1)
+    click.secho(f"Imported {path} to {resolved}.", fg="green")
+    click.echo("Run `lager box config apply` to put the new config into effect.")
+
+
+@box_config.command("edit", help="Open the box's config in $EDITOR for live editing.")
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def edit_cmd(ctx: click.Context, box: Optional[str]) -> None:
+    """Round-trip the config through $EDITOR. On save, the shim validates;
+    on failure the user is re-prompted with errors and the editor is
+    reopened so edits are not lost. Aborting the editor (or refusing to
+    retry on errors) leaves the on-disk config unchanged.
+    """
+    import os
+    import subprocess
+    import tempfile
+
+    resolved = _resolve_box(ctx, box)
+    payload = _parse_response(_run_box_config_py(ctx, resolved, verbs.SHOW), ctx) or {}
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
+
+    body = json.dumps(payload, indent=2) + "\n"
+    fd, tmp_path = tempfile.mkstemp(suffix=".json", prefix="lager-box-config-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(body)
+        while True:
+            rc = subprocess.call([editor, tmp_path])
+            if rc != 0:
+                click.secho(f"Editor exited with rc={rc}; not saving.", fg="yellow", err=True)
+                ctx.exit(1)
+            with open(tmp_path, "r", encoding="utf-8") as f:
+                body = f.read()
+            try:
+                json.loads(body)
+            except json.JSONDecodeError as e:
+                click.secho(f"Invalid JSON: {e}", fg="red", err=True)
+                if not click.confirm("Re-open editor?", default=True):
+                    click.secho("Aborted; on-disk config unchanged.", fg="yellow")
+                    ctx.exit(1)
+                continue
+            response = _parse_response(
+                _run_box_config_py(ctx, resolved, verbs.SET_RAW, body), ctx,
+            )
+            if response.get("ok"):
+                click.secho(f"Saved on {resolved}.", fg="green")
+                click.echo("Run `lager box config apply` to put the new config into effect.")
+                return
+            click.secho("Config has errors:", fg="red", err=True)
+            _print_errors(response.get("errors") or [])
+            if not click.confirm("Re-open editor?", default=True):
+                click.secho("Aborted; on-disk config unchanged.", fg="yellow")
+                ctx.exit(1)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+@box_config.command("copy", help="Copy a box's config to another box.")
+@click.option("--from", "src", required=True, metavar="BOX",
+              help="Source box name or IP")
+@click.option("--to", "dst", required=True, metavar="BOX",
+              help="Destination box name or IP")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt")
+@click.pass_context
+def copy_cmd(ctx: click.Context, src: str, dst: str, yes: bool) -> None:
+    """Clone config from source to destination box. Useful for fleet
+    bring-up: stand up one box, perfect its config, replicate to the rest.
+    Does NOT copy applied-hash or the rollback snapshot — destination
+    rebuilds those on its own next `apply`.
+    """
+    src_resolved = _resolve_box(ctx, src)
+    dst_resolved = _resolve_box(ctx, dst)
+    if src_resolved == dst_resolved:
+        click.secho(
+            f"Source and destination resolve to the same box ({src_resolved}); refusing.",
+            fg="red", err=True,
+        )
+        ctx.exit(1)
+    payload = _parse_response(_run_box_config_py(ctx, src_resolved, verbs.SHOW), ctx)
+    if payload is None:
+        click.secho(f"No box_config.json on {src_resolved}.", fg="red", err=True)
+        ctx.exit(1)
+    if not yes and not click.confirm(
+        f"Copy config from {src_resolved} to {dst_resolved} (overwrites destination)?",
+        default=False,
+    ):
+        click.secho("Aborted.", fg="yellow")
+        return
+    body = json.dumps(payload)
+    response = _parse_response(
+        _run_box_config_py(ctx, dst_resolved, verbs.SET_RAW, body), ctx,
+    )
+    if not response.get("ok"):
+        click.secho("Failed to copy config:", fg="red", err=True)
+        _print_errors(response.get("errors") or [response.get("error", "unknown error")])
+        ctx.exit(1)
+    click.secho(
+        f"Copied config from {src_resolved} to {dst_resolved}.", fg="green",
+    )
+    click.echo(f"Run `lager box config apply --box {dst}` to put the new config into effect.")
+
+
 @box_config.command(
     "apply",
     help="Validate, then bounce the container so the new config takes effect.",
 )
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lagerbox name or IP (comma-separated for fanout)")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt")
 @click.option("--force", is_flag=True, help="Restart even if config hash is unchanged")
 @click.option(
@@ -483,8 +724,48 @@ def apply_cmd(
     recursive_chown: bool,
     dry_run: bool,
 ) -> None:
-    resolved = _resolve_box(ctx, box)
+    targets = _resolve_boxes(ctx, box)
+    failed = []
+    for i, resolved in enumerate(targets):
+        if len(targets) > 1:
+            if i > 0:
+                click.echo()
+            click.secho(f"=== {resolved} ===", bold=True)
+        ok = _apply_one(
+            ctx, resolved,
+            yes=yes, force=force, skip_restart=skip_restart,
+            no_auto_prep=no_auto_prep, recursive_chown=recursive_chown,
+            dry_run=dry_run,
+        )
+        if not ok:
+            failed.append(resolved)
+    if failed:
+        if len(targets) > 1:
+            click.secho(
+                f"\nApply failed on {len(failed)}/{len(targets)} box(es): "
+                + ", ".join(failed),
+                fg="red", err=True,
+            )
+        ctx.exit(1)
 
+
+def _apply_one(
+    ctx: click.Context,
+    resolved: str,
+    *,
+    yes: bool,
+    force: bool,
+    skip_restart: bool,
+    no_auto_prep: bool,
+    recursive_chown: bool,
+    dry_run: bool,
+) -> bool:
+    """Apply box config to a single resolved box. Returns True on success.
+
+    Returns False (rather than ctx.exit(1)) so the caller can iterate over
+    multiple targets and continue past a failure on one box, reporting the
+    aggregate at the end instead of bailing on the first error.
+    """
     raw = _run_box_config_py(ctx, resolved, verbs.VALIDATE)
     payload = _parse_response(raw, ctx)
     if not payload.get("exists", True):
@@ -492,11 +773,11 @@ def apply_cmd(
             f"No box_config.json on {resolved}. Run `lager box config init` first.",
             fg="yellow",
         )
-        ctx.exit(1)
+        return False
     if not payload.get("ok"):
         click.secho("Refusing to apply: config has errors:", fg="red", err=True)
         _print_errors(payload.get("errors") or [])
-        ctx.exit(1)
+        return False
 
     raw = _run_box_config_py(ctx, resolved, verbs.HASH)
     cur_hash = _parse_response(raw, ctx).get("hash")
@@ -517,34 +798,34 @@ def apply_cmd(
                 "Config unchanged since last apply; apply would be a no-op.",
                 fg="green",
             )
-            return
+            return True
         click.secho(
             "Dry run — no changes made. apply would perform:",
             bold=True,
         )
         _print_diff_human(diff)
         click.echo("Re-run without --dry-run to apply.")
-        return
+        return True
 
     if unchanged and not force:
         click.secho("Config unchanged since last apply; skipping restart.", fg="green")
-        return
+        return True
 
     if not no_auto_prep:
         if not _preflight_mounts(ctx, resolved, recursive=recursive_chown):
-            ctx.exit(1)
+            return False
 
     if skip_restart:
         _run_box_config_py(ctx, resolved, verbs.SET_APPLIED_HASH, cur_hash)
         click.secho("Config validated; restart skipped (--skip-restart).", fg="yellow")
-        return
+        return True
 
     if not yes and not click.confirm(
         f"Apply box config and restart the lager container on {resolved}?",
         default=True,
     ):
         click.secho("Aborted.", fg="yellow")
-        return
+        return False
 
     # Host-side provisioning that has to happen BEFORE the container bounce:
     # apt packages may be needed by services the container talks to, and
@@ -555,9 +836,9 @@ def apply_cmd(
         _run_box_config_py(ctx, resolved, verbs.APPLIED_SHOW), ctx
     )
     if not _ensure_apt_packages(resolved, current_show, applied_snapshot):
-        ctx.exit(1)
+        return False
     if not _ensure_sysctl(resolved, current_show, applied_snapshot):
-        ctx.exit(1)
+        return False
 
     if not _bounce_container(ctx, resolved):
         # Bounce of the new config failed. The container may be down (start_box.sh
@@ -584,7 +865,7 @@ def apply_cmd(
                 fg="red",
                 err=True,
             )
-        ctx.exit(1)
+        return False
 
     if not _wait_for_box_api(resolved):
         click.secho(
@@ -595,7 +876,7 @@ def apply_cmd(
             fg="yellow",
             err=True,
         )
-        ctx.exit(1)
+        return False
 
     # Post-bounce safety net. Catches the rare race where /etc/lager/box_config.json
     # was hand-edited between apply's pre-bounce read and start_box.sh's renderer
@@ -603,10 +884,11 @@ def apply_cmd(
     # if the on-disk file is different now, the container is up but the operator's
     # latest edits never landed.
     if not _post_apply_consistency_ok(ctx, resolved, expected=current_show, cur_hash=cur_hash):
-        ctx.exit(1)
+        return False
 
     _run_box_config_py(ctx, resolved, verbs.SET_APPLIED_HASH, cur_hash)
     click.secho(f"Applied box config on {resolved}.", fg="green")
+    return True
 
 
 def _post_apply_consistency_ok(

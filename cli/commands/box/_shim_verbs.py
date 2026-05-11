@@ -30,6 +30,7 @@ AUDIT_TAIL = "audit-tail"
 INIT = "init"
 SET_APPLIED_HASH = "set-applied-hash"
 RESTORE_APPLIED = "restore-applied"
+SET_RAW = "set-raw"
 
 # Mount + volume CRUD.
 MOUNT_ADD = "mount-add"

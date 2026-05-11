@@ -484,6 +484,36 @@ def _cmd_npm_add(payload: str) -> None:
     _stdout_json({"ok": True, "added": added})
 
 
+def _cmd_set_raw(payload: str) -> None:
+    """Replace /etc/lager/box_config.json wholesale with a JSON payload.
+
+    Validates the payload before writing — on failure the on-disk config
+    is unchanged. Used by `lager box config edit` (round-trip via $EDITOR),
+    `import` (load a file from local disk), and `copy --from --to`
+    (clone between boxes). Returns the post-save hash so the host CLI can
+    fold it into subsequent `set-applied-hash` calls without an extra
+    round-trip.
+    """
+    try:
+        raw = json.loads(payload)
+    except json.JSONDecodeError as e:
+        _stdout_json({"ok": False, "errors": [f"invalid JSON: {e}"]})
+        return
+    errors = cfg.validate(raw)
+    if errors:
+        _stdout_json({"ok": False, "errors": errors})
+        return
+    try:
+        c = cfg.BoxConfig.from_dict(raw)
+    except cfg.ValidationError as e:
+        _stdout_json({"ok": False, "errors": str(e).split("\n")})
+        return
+    cfg.save(c)
+    new_hash = c.compute_hash()
+    _audit("set-raw", {"hash": new_hash})
+    _stdout_json({"ok": True, "hash": new_hash})
+
+
 def _cmd_npm_remove(names: list) -> None:
     current = _load_or_init()
     targets = {cfg.normalize_npm_name(n) for n in names}
@@ -585,6 +615,7 @@ _DISPATCH = {
     "cargo-remove":      lambda args: _cmd_cargo_remove(_require_rest(args)),
     "npm-add":           lambda args: _cmd_npm_add(_require(args, 1)),
     "npm-remove":        lambda args: _cmd_npm_remove(_require_rest(args)),
+    "set-raw":           lambda args: _cmd_set_raw(_require(args, 1)),
     "audit-tail":        lambda args: _cmd_audit_tail(args[1] if len(args) >= 2 else "20"),
 }
 
