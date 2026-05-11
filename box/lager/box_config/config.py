@@ -76,6 +76,19 @@ _SYSCTL_KEY_RE = re.compile(r'^[a-zA-Z][a-zA-Z0-9_.]*$')
 _CARGO_SPEC_RE = re.compile(r'^[a-z0-9][a-z0-9_\-]*(?:@[a-zA-Z0-9.+\-]+)?$')
 _CARGO_NAME_RE = re.compile(r'^([a-z0-9][a-z0-9_\-]*)')
 
+# npm package spec: optional @scope/, name, optional @version. Versions can
+# include semver ranges (^1.0.0, ~1.0.0, >=1.0.0) — keep that character set
+# permissive but bounded to what npm CLI accepts. No tarball URLs or git refs
+# in v1.
+_NPM_SPEC_RE = re.compile(
+    r'^(?:@[a-z0-9][a-z0-9._\-]*\/)?'           # optional @scope/
+    r'[a-z0-9][a-z0-9._\-]*'                     # name
+    r'(?:@[a-zA-Z0-9.+\-~^*<>=|\s]+)?$'          # optional @version-or-range
+)
+_NPM_NAME_RE = re.compile(
+    r'^((?:@[a-z0-9][a-z0-9._\-]*\/)?[a-z0-9][a-z0-9._\-]*)'
+)
+
 
 def normalize_pip_name(pkg: str) -> str:
     """Canonical key for dedupe / removal: lowercase, underscores→dashes,
@@ -134,6 +147,27 @@ def normalize_cargo_name(pkg: str) -> str:
     return base.lower().replace('_', '-')
 
 
+def validate_npm_format(pkg: str) -> tuple[bool, Optional[str]]:
+    """Format check for an npm package spec. Accepts `name`, `@scope/name`,
+    `name@version`, `@scope/name@version`. Versions may be semver ranges."""
+    if not isinstance(pkg, str) or not pkg.strip():
+        return False, "package name cannot be empty"
+    if len(pkg) > 214:
+        # npm registry hard limit on package name length.
+        return False, "npm package name exceeds 214 chars"
+    if not _NPM_SPEC_RE.match(pkg):
+        return False, "invalid npm package spec (must be lowercase name, optional @scope/, optional @version)"
+    return True, None
+
+
+def normalize_npm_name(pkg: str) -> str:
+    """Bare package name (including @scope/ when present), used as the
+    dedupe key. npm registry is case-insensitive in practice."""
+    m = _NPM_NAME_RE.match(pkg)
+    base = m.group(1) if m else pkg
+    return base.lower()
+
+
 class ValidationError(Exception):
     """Raised by from_dict when the config document fails validation."""
 
@@ -169,8 +203,45 @@ class Volume:
 
 _FIRST_CLASS_KEYS = frozenset({
     "version", "mounts", "volumes", "env",
-    "pip_packages", "apt_packages", "sysctl", "cargo_packages",
+    "pip_packages", "apt_packages", "sysctl", "cargo_packages", "npm_packages",
 })
+
+
+# Schema migrations. Populate when a future schema bump renames a field,
+# splits a value, or computes defaults for a previously-absent key. Each
+# _MIGRATIONS[N] is a callable taking a v=N raw dict and returning a v=N+1
+# raw dict (with `version` bumped). `migrate_raw` walks the chain. Empty
+# today because only v1 exists — leave this here so the upgrade pattern is
+# obvious to the next person who bumps SCHEMA_VERSION.
+_MIGRATIONS: Dict[int, Any] = {}
+
+
+def migrate_raw(raw: Any) -> Any:
+    """Upgrade a raw config dict from its declared version up to SCHEMA_VERSION.
+
+    No-op when version is already current (the common case). Returns `raw`
+    unchanged when the version is older than current but no migrator exists
+    — `validate` will then report the version mismatch with a useful error.
+    Raises ValidationError when the version is *newer* than this CLI knows;
+    silently downgrading a newer config would lose data.
+    """
+    if not isinstance(raw, dict):
+        return raw
+    v = raw.get("version")
+    if not isinstance(v, int):
+        return raw  # let validate() report the missing/bad version
+    while v < SCHEMA_VERSION:
+        migrator = _MIGRATIONS.get(v)
+        if migrator is None:
+            return raw
+        raw = migrator(raw)
+        v = raw.get("version", v) if isinstance(raw, dict) else v
+    if v > SCHEMA_VERSION:
+        raise ValidationError(
+            f"Config version {v} is newer than this CLI supports "
+            f"({SCHEMA_VERSION}). Upgrade the lager CLI on the box."
+        )
+    return raw
 
 
 @dataclass
@@ -183,10 +254,12 @@ class BoxConfig:
     apt_packages: List[str] = field(default_factory=list)
     sysctl: Dict[str, str] = field(default_factory=dict)
     cargo_packages: List[str] = field(default_factory=list)
+    npm_packages: List[str] = field(default_factory=list)
     extras: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any]) -> "BoxConfig":
+        raw = migrate_raw(raw)
         errors = validate(raw)
         if errors:
             raise ValidationError("\n".join(errors))
@@ -208,6 +281,7 @@ class BoxConfig:
         apt_packages = list(raw.get("apt_packages", []))
         sysctl = dict(raw.get("sysctl", {}))
         cargo_packages = list(raw.get("cargo_packages", []))
+        npm_packages = list(raw.get("npm_packages", []))
         extras = {k: v for k, v in raw.items() if k not in _FIRST_CLASS_KEYS}
         return cls(
             version=int(raw["version"]),
@@ -218,6 +292,7 @@ class BoxConfig:
             apt_packages=apt_packages,
             sysctl=sysctl,
             cargo_packages=cargo_packages,
+            npm_packages=npm_packages,
             extras=extras,
         )
 
@@ -230,6 +305,7 @@ class BoxConfig:
         out["apt_packages"] = list(self.apt_packages)
         out["sysctl"] = dict(self.sysctl)
         out["cargo_packages"] = list(self.cargo_packages)
+        out["npm_packages"] = list(self.npm_packages)
         for k, v in self.extras.items():
             out[k] = v
         return out
@@ -335,6 +411,7 @@ def validate(raw: Any) -> List[str]:
     errors.extend(_validate_apt_packages(raw))
     errors.extend(_validate_sysctl(raw))
     errors.extend(_validate_cargo_packages(raw))
+    errors.extend(_validate_npm_packages(raw))
 
     return errors
 
@@ -597,6 +674,34 @@ def _validate_cargo_packages(raw: Dict[str, Any]) -> List[str]:
         if canonical in seen:
             errors.append(
                 f"cargo_packages[{i}] {p!r} duplicates cargo_packages[{seen[canonical]}] "
+                f"(both normalize to {canonical!r})."
+            )
+        else:
+            seen[canonical] = i
+    return errors
+
+
+def _validate_npm_packages(raw: Dict[str, Any]) -> List[str]:
+    errors: List[str] = []
+    pkgs = raw.get("npm_packages")
+    if pkgs is None:
+        return errors
+    if not isinstance(pkgs, list):
+        return [f"'npm_packages' must be an array, got {_typename(pkgs)}."]
+
+    seen: Dict[str, int] = {}
+    for i, p in enumerate(pkgs):
+        if not isinstance(p, str):
+            errors.append(f"npm_packages[{i}] must be a string, got {_typename(p)}.")
+            continue
+        ok, reason = validate_npm_format(p)
+        if not ok:
+            errors.append(f"npm_packages[{i}] {p!r}: {reason}.")
+            continue
+        canonical = normalize_npm_name(p)
+        if canonical in seen:
+            errors.append(
+                f"npm_packages[{i}] {p!r} duplicates npm_packages[{seen[canonical]}] "
                 f"(both normalize to {canonical!r})."
             )
         else:

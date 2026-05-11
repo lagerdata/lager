@@ -20,8 +20,16 @@ import time
 from typing import Any, Optional
 
 import click
+import requests
 
+from ...box_storage import get_box_ip, list_boxes
 from ...context import get_default_box, get_impl_path
+from ..development.python import run_python_internal_get_output
+from . import _shim_verbs as verbs
+from ._host_ops import apt_install, sysctl_apply
+from ._mount_prep import ensure_host_path_owned, manual_fix_command
+from ._pip_validation import is_direct_ref, validate_on_pypi
+from ._ssh import default_ssh_runner
 
 # How long we'll wait for the box's HTTP API to come up after start_box.sh
 # returns 0. The container itself starts in ~3-5s on a healthy box; the
@@ -32,8 +40,6 @@ _BOX_API_PORT = 5000
 
 
 def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
-    from ...box_storage import get_box_ip, list_boxes
-
     target_box = None
     if box_opt:
         target_box = box_opt
@@ -61,8 +67,6 @@ def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
 
 
 def _run_box_config_py(ctx: click.Context, box: str, *args: str) -> str:
-    from ..development.python import run_python_internal_get_output
-
     try:
         output = run_python_internal_get_output(
             ctx,
@@ -111,6 +115,42 @@ def _print_errors(errors: list[str]) -> None:
         click.secho(f"  {i}. {err}", fg="red", err=True)
 
 
+def _list_field(
+    ctx: click.Context,
+    box: Optional[str],
+    *,
+    key: str,
+    empty_msg: str,
+    formatter,
+    as_json: bool,
+) -> None:
+    """Resolve box, fetch `show`, pluck `key`, print formatted entries.
+
+    Shared by every `lager box config <group> list` command. List-valued
+    fields (mounts/volumes/pip_packages/...) iterate items; the one dict
+    field (sysctl) iterates key/value pairs — the formatter takes a tuple
+    in that case, mirroring the diff printer's convention.
+    """
+    resolved = _resolve_box(ctx, box)
+    raw = _run_box_config_py(ctx, resolved, verbs.SHOW)
+    payload = _parse_response(raw, ctx) or {}
+    items = payload.get(key)
+    if items is None:
+        items = {} if key == "sysctl" else []
+    if as_json:
+        click.echo(json.dumps(items, indent=2))
+        return
+    if not items:
+        click.echo(empty_msg)
+        return
+    if isinstance(items, dict):
+        for k, v in items.items():
+            click.echo(formatter((k, v)))
+    else:
+        for item in items:
+            click.echo(formatter(item))
+
+
 @click.group(name="config", invoke_without_command=True, help="Manage declarative box provisioning.")
 @click.option("--box", help="Lagerbox name or IP")
 @click.pass_context
@@ -125,7 +165,7 @@ def box_config(ctx: click.Context, box: Optional[str]) -> None:
 @click.pass_context
 def show_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
     resolved = _resolve_box(ctx, box)
-    raw = _run_box_config_py(ctx, resolved, "show")
+    raw = _run_box_config_py(ctx, resolved, verbs.SHOW)
     payload = _parse_response(raw, ctx)
     if payload is None:
         click.secho(f"No box_config.json on {resolved}. Run `lager box config init`.", fg="yellow")
@@ -136,10 +176,30 @@ def show_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
     _render_human(payload)
 
 
-_FIRST_CLASS_KEYS = frozenset({
-    "version", "mounts", "volumes", "env",
-    "pip_packages", "apt_packages", "sysctl", "cargo_packages",
-})
+def _fmt_mount(m: dict) -> str:
+    ro = " (ro)" if m.get("readonly") else ""
+    return f"{m.get('host', '?')} -> {m.get('container', '?')}{ro}"
+
+
+def _fmt_volume(v: dict) -> str:
+    return f"{v.get('name', '?')} -> {v.get('container', '?')}"
+
+
+# Registry of first-class config fields: (json_key, human_label, entry_formatter).
+# `_render_human` iterates this to print one section per field; `_FIRST_CLASS_KEYS`
+# is derived from it so the "Extras" detection can't drift when a new field
+# is added.
+_FIRST_CLASS_FIELDS = [
+    ("mounts",         "Mounts",              _fmt_mount),
+    ("volumes",        "Volumes",             _fmt_volume),
+    ("env",            "Env",                 lambda kv: f"{kv[0]}={kv[1]}"),
+    ("pip_packages",   "Pip packages",        str),
+    ("apt_packages",   "Apt packages (host)", str),
+    ("sysctl",         "Sysctl",              lambda kv: f"{kv[0]} = {kv[1]}"),
+    ("cargo_packages", "Cargo packages",      str),
+    ("npm_packages",   "Npm packages",        str),
+]
+_FIRST_CLASS_KEYS = frozenset(["version"] + [f[0] for f in _FIRST_CLASS_FIELDS])
 
 
 def _diff_list(cur: list, prev: list) -> dict:
@@ -179,7 +239,7 @@ def _compute_diff(current: dict, applied: Optional[dict]) -> dict:
 
     Mounts diff by container path (the validator's dedupe key) so an upsert
     is a single `changed` entry, not paired add+remove. Volumes by name.
-    Env/sysctl as flat key→value dicts. Pip/apt/cargo as sets of strings.
+    Env/sysctl as flat key→value dicts. Pip/apt/cargo/npm as sets of strings.
     Missing snapshot is treated as empty: everything in `current` is `added`.
     """
     prev = applied or {}
@@ -191,20 +251,12 @@ def _compute_diff(current: dict, applied: Optional[dict]) -> dict:
         "pip_packages":   _diff_list     (current.get("pip_packages") or [],    prev.get("pip_packages") or []),
         "apt_packages":   _diff_list     (current.get("apt_packages") or [],    prev.get("apt_packages") or []),
         "cargo_packages": _diff_list     (current.get("cargo_packages") or [],  prev.get("cargo_packages") or []),
+        "npm_packages":   _diff_list     (current.get("npm_packages") or [],    prev.get("npm_packages") or []),
     }
 
 
 def _diff_is_empty(diff: dict) -> bool:
     return not any(any(parts.values()) for parts in diff.values())
-
-
-def _fmt_mount(m: dict) -> str:
-    ro = " (ro)" if m.get("readonly") else ""
-    return f"{m.get('host', '?')} -> {m.get('container', '?')}{ro}"
-
-
-def _fmt_volume(v: dict) -> str:
-    return f"{v.get('name', '?')} -> {v.get('container', '?')}"
 
 
 def _print_diff_human(diff: dict) -> None:
@@ -216,11 +268,13 @@ def _print_diff_human(diff: dict) -> None:
         "pip_packages":   str,
         "apt_packages":   str,
         "cargo_packages": str,
+        "npm_packages":   str,
     }
     field_labels = {
         "mounts": "Mounts", "volumes": "Volumes", "env": "Env",
         "sysctl": "Sysctl", "pip_packages": "Pip packages",
         "apt_packages": "Apt packages (host)", "cargo_packages": "Cargo packages",
+        "npm_packages": "Npm packages",
     }
     for field, parts in diff.items():
         added = parts.get("added") or []
@@ -251,62 +305,21 @@ def _print_diff_human(diff: dict) -> None:
 def _render_human(payload: dict) -> None:
     click.secho(f"Box config (version {payload.get('version', '?')})", bold=True)
 
-    mounts = payload.get("mounts") or []
-    click.echo()
-    click.secho("Mounts:", bold=True)
-    if not mounts:
-        click.echo("  (none)")
-    for m in mounts:
-        ro = " (ro)" if m.get("readonly") else ""
-        click.echo(f"  {m.get('host', '?')} -> {m.get('container', '?')}{ro}")
-
-    volumes = payload.get("volumes") or []
-    click.echo()
-    click.secho("Volumes:", bold=True)
-    if not volumes:
-        click.echo("  (none)")
-    for v in volumes:
-        click.echo(f"  {v.get('name', '?')} -> {v.get('container', '?')}")
-
-    env = payload.get("env") or {}
-    click.echo()
-    click.secho("Env:", bold=True)
-    if not env:
-        click.echo("  (none)")
-    for k, v in env.items():
-        click.echo(f"  {k}={v}")
-
-    pip_packages = payload.get("pip_packages") or []
-    click.echo()
-    click.secho("Pip packages:", bold=True)
-    if not pip_packages:
-        click.echo("  (none)")
-    for p in pip_packages:
-        click.echo(f"  {p}")
-
-    apt_packages = payload.get("apt_packages") or []
-    click.echo()
-    click.secho("Apt packages (host):", bold=True)
-    if not apt_packages:
-        click.echo("  (none)")
-    for p in apt_packages:
-        click.echo(f"  {p}")
-
-    sysctl = payload.get("sysctl") or {}
-    click.echo()
-    click.secho("Sysctl:", bold=True)
-    if not sysctl:
-        click.echo("  (none)")
-    for k, v in sysctl.items():
-        click.echo(f"  {k} = {v}")
-
-    cargo_packages = payload.get("cargo_packages") or []
-    click.echo()
-    click.secho("Cargo packages:", bold=True)
-    if not cargo_packages:
-        click.echo("  (none)")
-    for p in cargo_packages:
-        click.echo(f"  {p}")
+    for key, label, fmt in _FIRST_CLASS_FIELDS:
+        items = payload.get(key)
+        if items is None:
+            items = {} if key in ("env", "sysctl") else []
+        click.echo()
+        click.secho(f"{label}:", bold=True)
+        if not items:
+            click.echo("  (none)")
+            continue
+        if isinstance(items, dict):
+            for k, v in items.items():
+                click.echo(f"  {fmt((k, v))}")
+        else:
+            for item in items:
+                click.echo(f"  {fmt(item)}")
 
     extras = {k: v for k, v in payload.items() if k not in _FIRST_CLASS_KEYS}
     if extras:
@@ -322,7 +335,7 @@ def _render_human(payload: dict) -> None:
 @click.pass_context
 def init_cmd(ctx: click.Context, box: Optional[str], force: bool) -> None:
     resolved = _resolve_box(ctx, box)
-    args = ["init"]
+    args = [verbs.INIT]
     if force:
         args.append("--force")
     raw = _run_box_config_py(ctx, resolved, *args)
@@ -356,7 +369,7 @@ def init_cmd(ctx: click.Context, box: Optional[str], force: bool) -> None:
 @click.pass_context
 def validate_cmd(ctx: click.Context, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
-    raw = _run_box_config_py(ctx, resolved, "validate")
+    raw = _run_box_config_py(ctx, resolved, verbs.VALIDATE)
     payload = _parse_response(raw, ctx)
     if not payload.get("exists", True):
         click.secho(f"No box_config.json on {resolved}; nothing to validate.", fg="yellow")
@@ -370,6 +383,35 @@ def validate_cmd(ctx: click.Context, box: Optional[str]) -> None:
 
 
 @box_config.command(
+    "audit",
+    help="Show recent box_config mutations recorded on the box.",
+)
+@click.option("--box", help="Lagerbox name or IP")
+@click.option(
+    "--tail", "tail_n", type=int, default=20,
+    help="Number of most-recent entries to show (default 20; 0 for all).",
+)
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+@click.pass_context
+def audit_cmd(ctx: click.Context, box: Optional[str], tail_n: int, as_json: bool) -> None:
+    resolved = _resolve_box(ctx, box)
+    raw = _run_box_config_py(ctx, resolved, verbs.AUDIT_TAIL, str(tail_n))
+    payload = _parse_response(raw, ctx) or {}
+    entries = payload.get("entries", [])
+    if as_json:
+        click.echo(json.dumps(entries, indent=2))
+        return
+    if not entries:
+        click.echo("No audit entries.")
+        return
+    for e in entries:
+        ts = e.get("ts", "?")
+        verb = e.get("verb", "?")
+        args = e.get("args", {})
+        click.echo(f"{ts}  {verb:<18}  {json.dumps(args, separators=(',', ':'))}")
+
+
+@box_config.command(
     "diff",
     help="Show pending changes vs. the last applied config.",
 )
@@ -378,8 +420,8 @@ def validate_cmd(ctx: click.Context, box: Optional[str]) -> None:
 @click.pass_context
 def diff_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
     resolved = _resolve_box(ctx, box)
-    current = _parse_response(_run_box_config_py(ctx, resolved, "show"), ctx) or {}
-    applied = _parse_response(_run_box_config_py(ctx, resolved, "applied-show"), ctx)
+    current = _parse_response(_run_box_config_py(ctx, resolved, verbs.SHOW), ctx) or {}
+    applied = _parse_response(_run_box_config_py(ctx, resolved, verbs.APPLIED_SHOW), ctx)
     diff = _compute_diff(current, applied)
     if as_json:
         click.echo(json.dumps(diff, indent=2))
@@ -443,7 +485,7 @@ def apply_cmd(
 ) -> None:
     resolved = _resolve_box(ctx, box)
 
-    raw = _run_box_config_py(ctx, resolved, "validate")
+    raw = _run_box_config_py(ctx, resolved, verbs.VALIDATE)
     payload = _parse_response(raw, ctx)
     if not payload.get("exists", True):
         click.secho(
@@ -456,9 +498,9 @@ def apply_cmd(
         _print_errors(payload.get("errors") or [])
         ctx.exit(1)
 
-    raw = _run_box_config_py(ctx, resolved, "hash")
+    raw = _run_box_config_py(ctx, resolved, verbs.HASH)
     cur_hash = _parse_response(raw, ctx).get("hash")
-    raw = _run_box_config_py(ctx, resolved, "applied-hash")
+    raw = _run_box_config_py(ctx, resolved, verbs.APPLIED_HASH)
     applied_hash = _parse_response(raw, ctx).get("hash")
 
     unchanged = cur_hash and applied_hash and cur_hash == applied_hash
@@ -467,8 +509,8 @@ def apply_cmd(
         # Read-only preview: no preflight (which mkdirs/chowns), no apt/sysctl,
         # no bounce, no set-applied-hash. Same `show`/`applied-show` round-trips
         # the `diff` command uses.
-        current = _parse_response(_run_box_config_py(ctx, resolved, "show"), ctx) or {}
-        applied = _parse_response(_run_box_config_py(ctx, resolved, "applied-show"), ctx)
+        current = _parse_response(_run_box_config_py(ctx, resolved, verbs.SHOW), ctx) or {}
+        applied = _parse_response(_run_box_config_py(ctx, resolved, verbs.APPLIED_SHOW), ctx)
         diff = _compute_diff(current, applied)
         if _diff_is_empty(diff):
             click.secho(
@@ -493,7 +535,7 @@ def apply_cmd(
             ctx.exit(1)
 
     if skip_restart:
-        _run_box_config_py(ctx, resolved, "set-applied-hash", cur_hash)
+        _run_box_config_py(ctx, resolved, verbs.SET_APPLIED_HASH, cur_hash)
         click.secho("Config validated; restart skipped (--skip-restart).", fg="yellow")
         return
 
@@ -508,9 +550,9 @@ def apply_cmd(
     # apt packages may be needed by services the container talks to, and
     # sysctl values must be in place so first-packet routing works the
     # moment the container comes up.
-    current_show = _parse_response(_run_box_config_py(ctx, resolved, "show"), ctx) or {}
+    current_show = _parse_response(_run_box_config_py(ctx, resolved, verbs.SHOW), ctx) or {}
     applied_snapshot = _parse_response(
-        _run_box_config_py(ctx, resolved, "applied-show"), ctx
+        _run_box_config_py(ctx, resolved, verbs.APPLIED_SHOW), ctx
     )
     if not _ensure_apt_packages(resolved, current_show, applied_snapshot):
         ctx.exit(1)
@@ -555,8 +597,70 @@ def apply_cmd(
         )
         ctx.exit(1)
 
-    _run_box_config_py(ctx, resolved, "set-applied-hash", cur_hash)
+    # Post-bounce safety net. Catches the rare race where /etc/lager/box_config.json
+    # was hand-edited between apply's pre-bounce read and start_box.sh's renderer
+    # pass. We bounced into a container whose docker-args came from current_show;
+    # if the on-disk file is different now, the container is up but the operator's
+    # latest edits never landed.
+    if not _post_apply_consistency_ok(ctx, resolved, expected=current_show, cur_hash=cur_hash):
+        ctx.exit(1)
+
+    _run_box_config_py(ctx, resolved, verbs.SET_APPLIED_HASH, cur_hash)
     click.secho(f"Applied box config on {resolved}.", fg="green")
+
+
+def _post_apply_consistency_ok(
+    ctx: click.Context,
+    resolved_box: str,
+    *,
+    expected: dict,
+    cur_hash: Optional[str],
+) -> bool:
+    """Re-validate and re-show after a successful bounce; warn loudly on drift.
+
+    Two failure shapes:
+      1. validate now reports errors — someone wrote a malformed JSON over the
+         file mid-bounce. Don't update applied-hash; the on-disk file isn't a
+         valid applied state.
+      2. show differs from `expected` (the snapshot we bounced) — file was
+         edited to a *valid* but different shape. The container is running
+         the older content; warn and skip applied-hash so the next apply
+         picks up the new edits.
+    """
+    post_validate = _parse_response(
+        _run_box_config_py(ctx, resolved_box, verbs.VALIDATE), ctx,
+    )
+    if not post_validate.get("ok", True):
+        click.secho(
+            "Warning: box_config.json no longer validates (edited during apply?). "
+            "Container is running on the pre-edit version. Errors:",
+            fg="yellow",
+            err=True,
+        )
+        _print_errors(post_validate.get("errors") or [])
+        click.secho(
+            "Not updating applied-hash. Fix the file and re-run `lager box config apply`.",
+            fg="yellow",
+            err=True,
+        )
+        return False
+
+    post_show = _parse_response(
+        _run_box_config_py(ctx, resolved_box, verbs.SHOW), ctx,
+    ) or {}
+    if post_show != expected:
+        click.secho(
+            "Warning: box_config.json was modified during apply. Container is "
+            "running with the snapshot captured at the start of apply; the "
+            "latest on-disk changes have NOT been applied. Re-run "
+            "`lager box config apply` to pick them up.",
+            fg="yellow",
+            err=True,
+        )
+        # Container is up on a valid (older) config — don't update applied-hash,
+        # so the user's next apply re-bounces with the latest version.
+        return False
+    return True
 
 
 def _ensure_apt_packages(
@@ -568,8 +672,6 @@ def _ensure_apt_packages(
     hasn't changed since the last applied snapshot — apt-get is fast for
     already-installed packages but the SSH round-trip is still ~seconds and
     re-running apply with no apt changes shouldn't pay that cost."""
-    from ._host_ops import apt_install
-
     pkgs = current.get("apt_packages") or []
     prev = (applied or {}).get("apt_packages") or []
     if list(pkgs) == list(prev):
@@ -603,8 +705,6 @@ def _ensure_sysctl(
     applied: Optional[dict],
 ) -> bool:
     """Persist sysctl values declared in current config. No-op when unchanged."""
-    from ._host_ops import sysctl_apply
-
     sysctl = current.get("sysctl") or {}
     prev = (applied or {}).get("sysctl") or {}
     if dict(sysctl) == dict(prev):
@@ -646,7 +746,7 @@ def _attempt_rollback(
     path never auto-uninstalls — the failed apply may have *added* packages,
     which is harmless to leave in place.
     """
-    raw = _run_box_config_py(ctx, resolved_box, "restore-applied")
+    raw = _run_box_config_py(ctx, resolved_box, verbs.RESTORE_APPLIED)
     payload = _parse_response(raw, ctx)
     if not payload.get("ok"):
         return False
@@ -684,9 +784,7 @@ def _preflight_mounts(ctx: click.Context, resolved: str, *, recursive: bool) -> 
     directly (skipping `mount add`'s auto-prep). Returns False on any failure that
     should abort apply.
     """
-    from ._mount_prep import ensure_host_path_owned
-
-    raw = _run_box_config_py(ctx, resolved, "show")
+    raw = _run_box_config_py(ctx, resolved, verbs.SHOW)
     payload = _parse_response(raw, ctx) or {}
     mounts = payload.get("mounts") or []
     if not mounts:
@@ -735,7 +833,6 @@ def _box_api_responding(box_ip: str, *, timeout: float = 2.0) -> bool:
     is still a regression we want to surface, not paper over. Transport
     failures (connection refused, timeout) return False so the caller can
     poll cheaply."""
-    import requests
     try:
         r = requests.get(f"http://{box_ip}:{_BOX_API_PORT}/hello", timeout=timeout)
         return r.status_code == 200
@@ -768,17 +865,24 @@ def _wait_for_box_api(
         sleeper(poll_interval)
 
 
+_BOUNCE_TIMEOUT_SECONDS = 900
+
+
 def _bounce_container(ctx: click.Context, resolved_box: str) -> bool:
-    from ._ssh import default_ssh_runner
     click.echo(f"Restarting lager container on {resolved_box} via SSH...")
     try:
         rc, _stdout, _stderr = default_ssh_runner(
             resolved_box,
             "cd ~/box && ./start_box.sh",
-            timeout=300,
+            timeout=_BOUNCE_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
-        click.secho("SSH command timed out after 5 minutes.", fg="red", err=True)
+        click.secho(
+            f"SSH command timed out after {_BOUNCE_TIMEOUT_SECONDS // 60} minutes. "
+            "start_box.sh may still be running on the box (cargo build, etc.); "
+            "re-run `lager box config apply` once it finishes.",
+            fg="red", err=True,
+        )
         return False
     except FileNotFoundError:
         click.secho("ssh not found on local machine.", fg="red", err=True)
@@ -796,19 +900,10 @@ def mount_group() -> None:
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
 def mount_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
-    resolved = _resolve_box(ctx, box)
-    raw = _run_box_config_py(ctx, resolved, "show")
-    payload = _parse_response(raw, ctx) or {}
-    mounts = payload.get("mounts") or []
-    if as_json:
-        click.echo(json.dumps(mounts, indent=2))
-        return
-    if not mounts:
-        click.echo("No mounts configured.")
-        return
-    for m in mounts:
-        ro = " (ro)" if m.get("readonly") else ""
-        click.echo(f"{m.get('host', '?')} -> {m.get('container', '?')}{ro}")
+    _list_field(
+        ctx, box, key="mounts", empty_msg="No mounts configured.",
+        formatter=_fmt_mount, as_json=as_json,
+    )
 
 
 @mount_group.command("add", help="Add a host-to-container bind mount.")
@@ -847,7 +942,6 @@ def mount_add_cmd(
     # rather than fight the duplicate-container validator on retry.
     prep_result = None
     if not no_auto_prep:
-        from ._mount_prep import ensure_host_path_owned
         prep_result = ensure_host_path_owned(
             resolved, host, readonly=readonly, recursive=recursive_chown,
         )
@@ -868,7 +962,7 @@ def mount_add_cmd(
             ctx.exit(1)
 
     payload_json = json.dumps({"host": host, "container": container, "readonly": readonly})
-    raw = _run_box_config_py(ctx, resolved, "mount-add", payload_json)
+    raw = _run_box_config_py(ctx, resolved, verbs.MOUNT_ADD, payload_json)
     payload = _parse_response(raw, ctx)
     if not payload.get("ok"):
         click.secho("Failed to add mount:", fg="red", err=True)
@@ -880,7 +974,6 @@ def mount_add_cmd(
     )
 
     if no_auto_prep:
-        from ._mount_prep import manual_fix_command
         click.secho(
             f"Skipped host-path prep (--no-auto-prep). If {host} doesn't exist or isn't "
             f"writable by uid 33, run on the box: {manual_fix_command(host)}",
@@ -912,7 +1005,7 @@ def mount_remove_cmd(
     if not yes and not click.confirm(f"Remove mount {host} -> {container} on {resolved}?"):
         click.secho("Aborted.", fg="yellow")
         return
-    raw = _run_box_config_py(ctx, resolved, "mount-remove", host, container)
+    raw = _run_box_config_py(ctx, resolved, verbs.MOUNT_REMOVE, host, container)
     payload = _parse_response(raw, ctx)
     if payload.get("removed"):
         click.secho(f"Removed mount {host} -> {container} on {resolved}.", fg="green")
@@ -931,18 +1024,10 @@ def volume_group() -> None:
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
 def volume_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
-    resolved = _resolve_box(ctx, box)
-    raw = _run_box_config_py(ctx, resolved, "show")
-    payload = _parse_response(raw, ctx) or {}
-    volumes = payload.get("volumes") or []
-    if as_json:
-        click.echo(json.dumps(volumes, indent=2))
-        return
-    if not volumes:
-        click.echo("No volumes configured.")
-        return
-    for v in volumes:
-        click.echo(f"{v.get('name', '?')} -> {v.get('container', '?')}")
+    _list_field(
+        ctx, box, key="volumes", empty_msg="No volumes configured.",
+        formatter=_fmt_volume, as_json=as_json,
+    )
 
 
 @volume_group.command("add", help="Add a named docker volume.")
@@ -958,7 +1043,7 @@ def volume_add_cmd(
 ) -> None:
     resolved = _resolve_box(ctx, box)
     payload_json = json.dumps({"name": name, "container": container})
-    raw = _run_box_config_py(ctx, resolved, "volume-add", payload_json)
+    raw = _run_box_config_py(ctx, resolved, verbs.VOLUME_ADD, payload_json)
     payload = _parse_response(raw, ctx)
     if not payload.get("ok"):
         click.secho("Failed to add volume:", fg="red", err=True)
@@ -983,7 +1068,7 @@ def volume_remove_cmd(
     if not yes and not click.confirm(f"Remove volume {name} on {resolved}?"):
         click.secho("Aborted.", fg="yellow")
         return
-    raw = _run_box_config_py(ctx, resolved, "volume-remove", name)
+    raw = _run_box_config_py(ctx, resolved, verbs.VOLUME_REMOVE, name)
     payload = _parse_response(raw, ctx)
     if payload.get("removed"):
         click.secho(f"Removed volume {name} on {resolved}.", fg="green")
@@ -1002,18 +1087,10 @@ def pip_group() -> None:
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
 def pip_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
-    resolved = _resolve_box(ctx, box)
-    raw = _run_box_config_py(ctx, resolved, "show")
-    payload = _parse_response(raw, ctx) or {}
-    pkgs = payload.get("pip_packages") or []
-    if as_json:
-        click.echo(json.dumps(pkgs, indent=2))
-        return
-    if not pkgs:
-        click.echo("No pip packages configured.")
-        return
-    for p in pkgs:
-        click.echo(p)
+    _list_field(
+        ctx, box, key="pip_packages", empty_msg="No pip packages configured.",
+        formatter=str, as_json=as_json,
+    )
 
 
 @pip_group.command("add", help="Add one or more pip packages to the box config.")
@@ -1027,20 +1104,7 @@ def pip_add_cmd(
     box: Optional[str],
     no_validate_pypi: bool,
 ) -> None:
-    from ._pip_validation import validate_format, validate_on_pypi, is_direct_ref
-
     resolved = _resolve_box(ctx, box)
-
-    fmt_errors = []
-    for p in packages:
-        ok, reason = validate_format(p)
-        if not ok:
-            fmt_errors.append((p, reason))
-    if fmt_errors:
-        click.secho("Invalid package specification(s):", fg="red", err=True)
-        for p, r in fmt_errors:
-            click.secho(f"  - {p!r}: {r}", fg="red", err=True)
-        ctx.exit(1)
 
     if not no_validate_pypi:
         to_check = [p for p in packages if not is_direct_ref(p)]
@@ -1067,7 +1131,7 @@ def pip_add_cmd(
             click.echo(f"Skipped PyPI check for {len(skipped_direct)} direct reference(s).")
 
     payload_json = json.dumps({"packages": list(packages)})
-    raw = _run_box_config_py(ctx, resolved, "pip-add", payload_json)
+    raw = _run_box_config_py(ctx, resolved, verbs.PIP_ADD, payload_json)
     payload = _parse_response(raw, ctx)
     if not payload.get("ok"):
         click.secho("Failed to add pip packages:", fg="red", err=True)
@@ -1084,7 +1148,7 @@ def pip_add_cmd(
 @click.pass_context
 def pip_remove_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
-    raw = _run_box_config_py(ctx, resolved, "pip-remove", *packages)
+    raw = _run_box_config_py(ctx, resolved, verbs.PIP_REMOVE, *packages)
     payload = _parse_response(raw, ctx)
     if not payload.get("ok"):
         click.secho("Failed to remove pip packages:", fg="red", err=True)
@@ -1106,7 +1170,7 @@ def pip_remove_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> N
 @click.pass_context
 def pip_import_legacy_cmd(ctx: click.Context, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
-    raw = _run_box_config_py(ctx, resolved, "pip-import-legacy")
+    raw = _run_box_config_py(ctx, resolved, verbs.PIP_IMPORT_LEGACY)
     payload = _parse_response(raw, ctx)
     if not payload.get("ok"):
         click.secho("Failed to import legacy pip packages:", fg="red", err=True)
@@ -1131,21 +1195,6 @@ def pip_import_legacy_cmd(ctx: click.Context, box: Optional[str]) -> None:
 # apt_packages: host-side Debian packages installed during `apply`
 # ---------------------------------------------------------------------------
 
-# Debian package name format. Mirror of validate_apt_format in
-# box/lager/box_config/config.py — duplicated host-side so we can fail fast
-# without an SSH round-trip.
-import re as _re
-_APT_NAME_RE = _re.compile(r'^[a-z0-9][a-z0-9+\-.]*$')
-
-
-def _validate_apt_name_host(pkg: str) -> Optional[str]:
-    if not isinstance(pkg, str) or not pkg.strip():
-        return "package name cannot be empty"
-    if not _APT_NAME_RE.match(pkg):
-        return "invalid Debian package name (must match [a-z0-9][a-z0-9+-.]*)"
-    return None
-
-
 @box_config.group("apt", help="Manage host-side apt packages.")
 def apt_group() -> None:
     pass
@@ -1156,18 +1205,10 @@ def apt_group() -> None:
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
 def apt_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
-    resolved = _resolve_box(ctx, box)
-    raw = _run_box_config_py(ctx, resolved, "show")
-    payload = _parse_response(raw, ctx) or {}
-    pkgs = payload.get("apt_packages") or []
-    if as_json:
-        click.echo(json.dumps(pkgs, indent=2))
-        return
-    if not pkgs:
-        click.echo("No apt packages configured.")
-        return
-    for p in pkgs:
-        click.echo(p)
+    _list_field(
+        ctx, box, key="apt_packages", empty_msg="No apt packages configured.",
+        formatter=str, as_json=as_json,
+    )
 
 
 @apt_group.command("add", help="Add one or more apt packages to the box config.")
@@ -1176,19 +1217,8 @@ def apt_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
 @click.pass_context
 def apt_add_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
-    fmt_errors = []
-    for p in packages:
-        reason = _validate_apt_name_host(p)
-        if reason:
-            fmt_errors.append((p, reason))
-    if fmt_errors:
-        click.secho("Invalid apt package name(s):", fg="red", err=True)
-        for p, r in fmt_errors:
-            click.secho(f"  - {p!r}: {r}", fg="red", err=True)
-        ctx.exit(1)
-
     payload_json = json.dumps({"packages": list(packages)})
-    raw = _run_box_config_py(ctx, resolved, "apt-add", payload_json)
+    raw = _run_box_config_py(ctx, resolved, verbs.APT_ADD, payload_json)
     payload = _parse_response(raw, ctx)
     if not payload.get("ok"):
         click.secho("Failed to add apt packages:", fg="red", err=True)
@@ -1205,7 +1235,7 @@ def apt_add_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None
 @click.pass_context
 def apt_remove_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
-    raw = _run_box_config_py(ctx, resolved, "apt-remove", *packages)
+    raw = _run_box_config_py(ctx, resolved, verbs.APT_REMOVE, *packages)
     payload = _parse_response(raw, ctx)
     if not payload.get("ok"):
         click.secho("Failed to remove apt packages:", fg="red", err=True)
@@ -1226,17 +1256,6 @@ def apt_remove_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> N
 # sysctl: host-side kernel parameters persisted across reboot
 # ---------------------------------------------------------------------------
 
-_SYSCTL_KEY_RE_HOST = _re.compile(r'^[a-zA-Z][a-zA-Z0-9_.]*$')
-
-
-def _validate_sysctl_key_host(key: str) -> Optional[str]:
-    if not isinstance(key, str) or not key.strip():
-        return "sysctl key cannot be empty"
-    if not _SYSCTL_KEY_RE_HOST.match(key):
-        return "invalid sysctl key (must match [a-zA-Z][a-zA-Z0-9_.]*)"
-    return None
-
-
 @box_config.group("sysctl", help="Manage host sysctl values persisted across reboots.")
 def sysctl_group() -> None:
     pass
@@ -1247,18 +1266,10 @@ def sysctl_group() -> None:
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
 def sysctl_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
-    resolved = _resolve_box(ctx, box)
-    raw = _run_box_config_py(ctx, resolved, "show")
-    payload = _parse_response(raw, ctx) or {}
-    sysctl = payload.get("sysctl") or {}
-    if as_json:
-        click.echo(json.dumps(sysctl, indent=2))
-        return
-    if not sysctl:
-        click.echo("No sysctl values configured.")
-        return
-    for k, v in sysctl.items():
-        click.echo(f"{k} = {v}")
+    _list_field(
+        ctx, box, key="sysctl", empty_msg="No sysctl values configured.",
+        formatter=lambda kv: f"{kv[0]} = {kv[1]}", as_json=as_json,
+    )
 
 
 @sysctl_group.command(
@@ -1272,15 +1283,14 @@ def sysctl_set_cmd(ctx: click.Context, entries: tuple, box: Optional[str]) -> No
     resolved = _resolve_box(ctx, box)
     parsed: dict = {}
     fmt_errors = []
+    # The `key=value` split itself is host-side input parsing, not regex
+    # validation — kept here because the shim takes a JSON object, not raw
+    # `key=value` strings. The key-format check is shim-side.
     for entry in entries:
         if "=" not in entry:
             fmt_errors.append((entry, "expected key=value"))
             continue
         key, value = entry.split("=", 1)
-        reason = _validate_sysctl_key_host(key)
-        if reason:
-            fmt_errors.append((entry, reason))
-            continue
         parsed[key] = value
     if fmt_errors:
         click.secho("Invalid sysctl entries:", fg="red", err=True)
@@ -1289,7 +1299,7 @@ def sysctl_set_cmd(ctx: click.Context, entries: tuple, box: Optional[str]) -> No
         ctx.exit(1)
 
     payload_json = json.dumps({"entries": parsed})
-    raw = _run_box_config_py(ctx, resolved, "sysctl-set", payload_json)
+    raw = _run_box_config_py(ctx, resolved, verbs.SYSCTL_SET, payload_json)
     payload = _parse_response(raw, ctx)
     if not payload.get("ok"):
         click.secho("Failed to set sysctl values:", fg="red", err=True)
@@ -1309,7 +1319,7 @@ def sysctl_set_cmd(ctx: click.Context, entries: tuple, box: Optional[str]) -> No
 @click.pass_context
 def sysctl_unset_cmd(ctx: click.Context, keys: tuple, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
-    raw = _run_box_config_py(ctx, resolved, "sysctl-unset", *keys)
+    raw = _run_box_config_py(ctx, resolved, verbs.SYSCTL_UNSET, *keys)
     payload = _parse_response(raw, ctx)
     if not payload.get("ok"):
         click.secho("Failed to unset sysctl values:", fg="red", err=True)
@@ -1327,17 +1337,6 @@ def sysctl_unset_cmd(ctx: click.Context, keys: tuple, box: Optional[str]) -> Non
 # cargo_packages: in-container Rust crates installed during container start
 # ---------------------------------------------------------------------------
 
-_CARGO_SPEC_RE_HOST = _re.compile(r'^[a-z0-9][a-z0-9_\-]*(?:@[a-zA-Z0-9.+\-]+)?$')
-
-
-def _validate_cargo_spec_host(pkg: str) -> Optional[str]:
-    if not isinstance(pkg, str) or not pkg.strip():
-        return "package name cannot be empty"
-    if not _CARGO_SPEC_RE_HOST.match(pkg):
-        return "invalid cargo crate spec (must match [a-z0-9][a-z0-9_-]*(@version)?)"
-    return None
-
-
 @box_config.group("cargo", help="Manage in-container cargo crates.")
 def cargo_group() -> None:
     pass
@@ -1348,18 +1347,10 @@ def cargo_group() -> None:
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
 def cargo_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
-    resolved = _resolve_box(ctx, box)
-    raw = _run_box_config_py(ctx, resolved, "show")
-    payload = _parse_response(raw, ctx) or {}
-    pkgs = payload.get("cargo_packages") or []
-    if as_json:
-        click.echo(json.dumps(pkgs, indent=2))
-        return
-    if not pkgs:
-        click.echo("No cargo crates configured.")
-        return
-    for p in pkgs:
-        click.echo(p)
+    _list_field(
+        ctx, box, key="cargo_packages", empty_msg="No cargo crates configured.",
+        formatter=str, as_json=as_json,
+    )
 
 
 @cargo_group.command("add", help="Add one or more cargo crates to the box config.")
@@ -1368,19 +1359,8 @@ def cargo_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> Non
 @click.pass_context
 def cargo_add_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
-    fmt_errors = []
-    for p in packages:
-        reason = _validate_cargo_spec_host(p)
-        if reason:
-            fmt_errors.append((p, reason))
-    if fmt_errors:
-        click.secho("Invalid cargo crate spec(s):", fg="red", err=True)
-        for p, r in fmt_errors:
-            click.secho(f"  - {p!r}: {r}", fg="red", err=True)
-        ctx.exit(1)
-
     payload_json = json.dumps({"packages": list(packages)})
-    raw = _run_box_config_py(ctx, resolved, "cargo-add", payload_json)
+    raw = _run_box_config_py(ctx, resolved, verbs.CARGO_ADD, payload_json)
     payload = _parse_response(raw, ctx)
     if not payload.get("ok"):
         click.secho("Failed to add cargo crates:", fg="red", err=True)
@@ -1397,7 +1377,7 @@ def cargo_add_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> No
 @click.pass_context
 def cargo_remove_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
-    raw = _run_box_config_py(ctx, resolved, "cargo-remove", *packages)
+    raw = _run_box_config_py(ctx, resolved, verbs.CARGO_REMOVE, *packages)
     payload = _parse_response(raw, ctx)
     if not payload.get("ok"):
         click.secho("Failed to remove cargo crates:", fg="red", err=True)
@@ -1412,3 +1392,64 @@ def cargo_remove_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) ->
         )
     else:
         click.secho("No matching cargo crates were configured.", fg="yellow")
+
+
+# ---------------------------------------------------------------------------
+# npm_packages: in-container Node.js packages installed during container start
+# ---------------------------------------------------------------------------
+
+@box_config.group("npm", help="Manage in-container npm packages.")
+def npm_group() -> None:
+    pass
+
+
+@npm_group.command("list", help="List configured npm packages.")
+@click.option("--box", help="Lagerbox name or IP")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+@click.pass_context
+def npm_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
+    _list_field(
+        ctx, box, key="npm_packages", empty_msg="No npm packages configured.",
+        formatter=str, as_json=as_json,
+    )
+
+
+@npm_group.command("add", help="Add one or more npm packages to the box config.")
+@click.argument("packages", nargs=-1, required=True)
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def npm_add_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None:
+    resolved = _resolve_box(ctx, box)
+    payload_json = json.dumps({"packages": list(packages)})
+    raw = _run_box_config_py(ctx, resolved, verbs.NPM_ADD, payload_json)
+    payload = _parse_response(raw, ctx)
+    if not payload.get("ok"):
+        click.secho("Failed to add npm packages:", fg="red", err=True)
+        _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
+        ctx.exit(1)
+    added = payload.get("added") or list(packages)
+    click.secho(f"Added {len(added)} npm package(s) on {resolved}: " + ", ".join(added), fg="green")
+    click.echo("Run `lager box config apply` to install them in the container.")
+
+
+@npm_group.command("remove", help="Remove one or more npm packages from the box config.")
+@click.argument("packages", nargs=-1, required=True)
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def npm_remove_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None:
+    resolved = _resolve_box(ctx, box)
+    raw = _run_box_config_py(ctx, resolved, verbs.NPM_REMOVE, *packages)
+    payload = _parse_response(raw, ctx)
+    if not payload.get("ok"):
+        click.secho("Failed to remove npm packages:", fg="red", err=True)
+        _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
+        ctx.exit(1)
+    removed = payload.get("removed") or []
+    if removed:
+        click.secho(f"Removed {len(removed)} npm package(s): " + ", ".join(removed), fg="green")
+        click.echo(
+            "Run `lager box config apply` to record the change. Note: existing "
+            "installs in the container are not auto-uninstalled."
+        )
+    else:
+        click.secho("No matching npm packages were configured.", fg="yellow")
