@@ -102,6 +102,25 @@ def _debug_channel_suffix(value) -> str:
     return f"@{s.rpartition('@')[2].lower()}"
 
 
+_VISA_SERIAL_RE = re.compile(
+    r'USB\d*::0x[0-9A-Fa-f]+::0x[0-9A-Fa-f]+::([^:]+)::INSTR',
+    re.IGNORECASE,
+)
+
+
+def _serial_from_visa_address(address) -> str:
+    """Extract the USB serial segment from a VISA-style address.
+
+    Returns ``""`` for non-VISA strings. Used by the UART dedup pass to
+    recognise legacy saved nets where the ``pin`` field stores the USB
+    serial (pre-multi-tty enumeration) rather than a ``/dev/tty*`` path.
+    """
+    if not address:
+        return ""
+    m = _VISA_SERIAL_RE.match(str(address).strip())
+    return m.group(1).strip() if m else ""
+
+
 _MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port"}
 _SINGLE_CHANNEL_INST = {
     "Keithley_2281S": ("batt", "supply"),
@@ -973,16 +992,34 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
             ):
                 continue
 
-        # Skip if exact duplicate of saved net exists
-        # For UART nets, check the tty path (stored in `pin` after switching
-        # to per-tty enumeration) so multi-channel FT4232Hs don't collapse
-        # back to one entry.
+        # Skip if exact duplicate of saved net exists.
+        # UART dedup needs to handle two ``pin`` formats coexisting in the
+        # same saved_nets file:
+        #   * Legacy (pre per-tty enumeration): ``pin`` == USB serial, one
+        #     net per chip — even multi-channel FT4232H got collapsed to a
+        #     single entry. Treat any such net as claiming the WHOLE chip,
+        #     so we don't double-add when the new scanner expands to one
+        #     net per tty.
+        #   * Current: ``pin`` == ``/dev/ttyUSB<N>`` path; one saved net per
+        #     interface. Strict ``pin == pin`` match.
         if net["type"] == "uart":
-            if any(
-                s.get("role") == "uart" and
-                s.get("pin") == net["pin"]
-                for s in saved_nets
-            ):
+            duplicate = False
+            for s in saved_nets:
+                if s.get("role") != "uart":
+                    continue
+                if s.get("instrument") != net["instrument"]:
+                    continue
+                if s.get("address") != net["addr"]:
+                    continue
+                saved_pin = s.get("pin")
+                # Legacy form: pin == USB serial extracted from address.
+                if saved_pin and saved_pin == _serial_from_visa_address(s.get("address")):
+                    duplicate = True
+                    break
+                if saved_pin == net["pin"]:
+                    duplicate = True
+                    break
+            if duplicate:
                 continue
         else:
             if any(

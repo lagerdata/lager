@@ -311,9 +311,26 @@ def _resolve_debug_scripts(ctx, net_name, debug_net):
     Both fields are computed unconditionally — the box ignores the one that
     doesn't match the resolved backend. Callers should forward both to
     ``client.connect(...)`` so the CLI stays backend-agnostic.
+
+    If the local ``.lager`` config points at a debug script whose extension
+    doesn't match either backend (J-Link ``.JLinkScript`` / OpenOCD
+    ``.cfg``/``.tcl``), warn the user — otherwise the script is silently
+    dropped and the resulting connect uses the box's defaults, which is
+    almost never what the user intended.
     """
     j = _get_jlink_script_content(ctx, net_name, debug_net)
     o = _get_openocd_config_content(ctx, net_name, debug_net)
+    if j is None and o is None:
+        from ....config import get_debug_script_for_net
+        configured = get_debug_script_for_net(net_name)
+        if configured:
+            click.secho(
+                f"Warning: ignoring debug script {configured!r} for net "
+                f"{net_name!r}: extension not recognised. Use "
+                f"`.JLinkScript` for J-Link probes or `.cfg`/`.tcl` for "
+                f"OpenOCD probes.",
+                fg='yellow', err=True,
+            )
     return (j, o)
 
 
