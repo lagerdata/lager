@@ -85,12 +85,36 @@ def _parse_backend_json(raw: str) -> Any:
 
             raise  # Re-raise original exception
 
+def _debug_channel_suffix(value) -> str:
+    """Return the ``@<channel>`` portion of a debug net's device field.
+
+    Multi-channel FTDIs encode the interface index in the device field as
+    ``STM32F4x@A``; this helper extracts the trailing ``@A``/``@0``/``@B``
+    (lower-cased, leading ``@`` retained) so two saved nets on the same
+    physical probe can be compared by channel. Returns ``""`` when no
+    suffix is present — that's the implicit channel A.
+    """
+    if not value:
+        return ""
+    s = str(value)
+    if "@" not in s:
+        return ""
+    return f"@{s.rpartition('@')[2].lower()}"
+
+
 _MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port"}
 _SINGLE_CHANNEL_INST = {
     "Keithley_2281S": ("batt", "supply"),
     "EA_PSB_10060_60": ("solar", "supply"),
     "EA_PSB_10080_60": ("solar", "supply"),
 }
+# Chips that can run in exactly one mode at a time, across ALL roles. The
+# canonical case is the FT232H: one physical channel, hardware-multiplexed
+# between MPSSE (spi/i2c/gpio/debug) and async-serial (uart). Once the user
+# claims any role on one of these chips, the other roles must disappear
+# from the "add nets" menu. Multi-channel FTDIs (FT2232H, FT4232H) are NOT
+# in this set — they get one role per channel via the @A/@B/... suffix.
+_MODE_EXCLUSIVE_INST = {"FTDI_FT232H"}
 INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     # supply
     "Rigol_DP811": ["supply"],
@@ -111,12 +135,27 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     # adc / gpio / dac / spi
     "LabJack_T7": ["gpio", "adc", "dac", "spi", "i2c"],
     "Aardvark": ["spi", "i2c", "gpio"],
-    "FTDI_FT232H": ["spi", "i2c", "gpio"],
+    "FTDI_FT232H": ["spi", "i2c", "gpio", "debug", "uart"],
+    # FT2232H / FT4232H carry the new multi-channel debug role plus UART.
+    # The OpenOCD backend reads the FTDI interface index off the net's
+    # device field (``STM32F4x@A``); single-channel FTDIs default to A.
+    "FTDI_FT2232H": ["spi", "i2c", "gpio", "debug", "uart"],
+    "FTDI_FT4232H": ["debug", "uart"],
 
-    # debug
+    # debug — J-Link family
     "J-Link": ["debug"],
     "J-Link_Plus": ["debug"],
     "Flasher_ARM": ["debug"],
+    "J-Link_Flasher_Pro": ["debug"],
+    # debug — OpenOCD-backed probes
+    "STLink_v2": ["debug"],
+    "STLink_v2_1": ["debug"],
+    "STLink_v3_Mini": ["debug"],
+    "STLink_v3": ["debug"],
+    "STLink_v3_2VCP": ["debug"],
+    "RP2040_Picoprobe": ["debug"],
+    "Atmel_EDBG": ["debug"],
+    "DAPLink": ["debug"],
 
     # usb
     "Acroname_8Port": ["usb"],
@@ -141,7 +180,6 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     "Prolific_USB_Serial": ["uart"],
     "SiLabs_CP210x": ["uart"],
     "FTDI_FT232R": ["uart"],
-    "FTDI_FT4232H": ["uart"],
     "ESP32_JTAG_Serial": ["uart"],
 }
 
@@ -865,6 +903,29 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
                 duplicate_hubs.add(net["instrument"])
             chan_seen[net["instrument"]].add(net["chan"])
 
+    # Mode-exclusive chips (FT232H): if a chip+addr has no saved net yet AND
+    # the scanner produced candidates for more than one role, ``add-all``
+    # can't pick for the user — refuse the whole chip and tell them to use
+    # ``lager nets add`` or the TUI to choose a single role explicitly.
+    mode_excl_roles: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for net in all_possible_nets:
+        if net["instrument"] in _MODE_EXCLUSIVE_INST:
+            mode_excl_roles[(net["instrument"], net["addr"])].add(net["type"])
+    ambiguous_mode_excl: set[tuple[str, str]] = set()
+    for key, roles in mode_excl_roles.items():
+        instrument, addr = key
+        if len(roles) > 1 and not any(
+            s.get("instrument") == instrument and s.get("address") == addr
+            for s in saved_nets
+        ):
+            ambiguous_mode_excl.add(key)
+            roles_str = ", ".join(sorted(roles))
+            warnings.append(
+                f"{instrument} at {addr} supports multiple modes ({roles_str}); "
+                f"run `lager nets add` (or the TUI) to pick one — "
+                f"this chip only runs one mode at a time."
+            )
+
     # Filter out blocked instrument families
     filtered_nets = []
     dup_single: set[tuple[str, str]] = set()
@@ -880,22 +941,46 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
                 dup_single.add((net["instrument"], net["addr"]))
                 continue
 
-        # Skip if duplicate debug net for same instrument/address (check BEFORE prompting)
+        # Mode-exclusive chips (FT232H): once ANY role is saved on this
+        # chip+address, every other role becomes unavailable because the
+        # underlying hardware can only run one mode at a time. Also skip
+        # chips flagged ambiguous in the pre-pass above (multiple candidate
+        # roles, no saved net yet — user must pick interactively).
+        if net["instrument"] in _MODE_EXCLUSIVE_INST:
+            key = (net["instrument"], net["addr"])
+            if key in ambiguous_mode_excl:
+                continue
+            if any(
+                s.get("instrument") == net["instrument"]
+                and s.get("address") == net["addr"]
+                for s in saved_nets
+            ):
+                dup_single.add(key)
+                continue
+
+        # Skip if duplicate debug net for same instrument/address.
+        # Multi-channel FTDI: one debug net per (address, probe_channel),
+        # since the user may want channel A for JTAG and channel B for a
+        # second debug session. We compare the @suffix portion if present.
         if net["type"] == "debug":
+            chan_suffix = _debug_channel_suffix(net["chan"])
             if any(
                 s.get("role") == "debug" and
                 s.get("instrument") == net["instrument"] and
-                s.get("address") == net["addr"]
+                s.get("address") == net["addr"] and
+                _debug_channel_suffix(s.get("pin") or s.get("channel")) == chan_suffix
                 for s in saved_nets
             ):
                 continue
 
         # Skip if exact duplicate of saved net exists
-        # For UART nets, check against USB serial number (pin field)
+        # For UART nets, check the tty path (stored in `pin` after switching
+        # to per-tty enumeration) so multi-channel FT4232Hs don't collapse
+        # back to one entry.
         if net["type"] == "uart":
             if any(
                 s.get("role") == "uart" and
-                s.get("pin") == net["pin"]  # Match USB serial number
+                s.get("pin") == net["pin"]
                 for s in saved_nets
             ):
                 continue
@@ -909,11 +994,22 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
             ):
                 continue
 
-        # Handle debug nets - prompt for device type if channel is DEVICE_TYPE
-        # (only after we've confirmed this net will actually be created)
-        if net["type"] == "debug" and net["chan"] == "DEVICE_TYPE":
-            device_type = click.prompt(f"Enter device type for debug net on {net['instrument']} at {net['addr']}", type=str)
-            net["chan"] = device_type
+        # Handle debug nets — prompt for device type. The chan starts as one
+        # of ``"DEVICE_TYPE"`` (single-channel) or ``"DEVICE_TYPE@A"``/``@B``
+        # (multi-channel FTDI). We replace the ``DEVICE_TYPE`` portion while
+        # preserving the channel suffix so the OpenOCD backend can route it.
+        if net["type"] == "debug" and "DEVICE_TYPE" in str(net["chan"]):
+            chan_str = str(net["chan"])
+            suffix = ""
+            if "@" in chan_str:
+                _, _, suffix = chan_str.partition("@")
+                suffix = f"@{suffix}"
+            channel_hint = f" (channel {suffix[1:]})" if suffix else ""
+            device_type = click.prompt(
+                f"Enter device type for debug net on {net['instrument']} at {net['addr']}{channel_hint}",
+                type=str,
+            )
+            net["chan"] = f"{device_type}{suffix}"
 
         filtered_nets.append(net)
 
