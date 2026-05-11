@@ -142,6 +142,112 @@ _FIRST_CLASS_KEYS = frozenset({
 })
 
 
+def _diff_list(cur: list, prev: list) -> dict:
+    cur_set, prev_set = set(cur), set(prev)
+    return {"added": sorted(cur_set - prev_set), "removed": sorted(prev_set - cur_set)}
+
+
+def _diff_dict(cur: dict, prev: dict) -> dict:
+    cur_keys, prev_keys = set(cur), set(prev)
+    return {
+        "added": {k: cur[k] for k in sorted(cur_keys - prev_keys)},
+        "removed": {k: prev[k] for k in sorted(prev_keys - cur_keys)},
+        "changed": {
+            k: {"from": prev[k], "to": cur[k]}
+            for k in sorted(cur_keys & prev_keys) if cur[k] != prev[k]
+        },
+    }
+
+
+def _diff_keyed_list(cur: list, prev: list, *, key: str) -> dict:
+    def _idx(items):
+        return {m[key]: m for m in items if isinstance(m, dict) and isinstance(m.get(key), str)}
+
+    cur_idx, prev_idx = _idx(cur), _idx(prev)
+    added = sorted(set(cur_idx) - set(prev_idx))
+    removed = sorted(set(prev_idx) - set(cur_idx))
+    changed = sorted(k for k in set(cur_idx) & set(prev_idx) if cur_idx[k] != prev_idx[k])
+    return {
+        "added": [cur_idx[k] for k in added],
+        "removed": [prev_idx[k] for k in removed],
+        "changed": [{"from": prev_idx[k], "to": cur_idx[k]} for k in changed],
+    }
+
+
+def _compute_diff(current: dict, applied: Optional[dict]) -> dict:
+    """Per-field diff of the current config against the last-applied snapshot.
+
+    Mounts diff by container path (the validator's dedupe key) so an upsert
+    is a single `changed` entry, not paired add+remove. Volumes by name.
+    Env/sysctl as flat key→value dicts. Pip/apt/cargo as sets of strings.
+    Missing snapshot is treated as empty: everything in `current` is `added`.
+    """
+    prev = applied or {}
+    return {
+        "mounts":         _diff_keyed_list(current.get("mounts") or [],         prev.get("mounts") or [],         key="container"),
+        "volumes":        _diff_keyed_list(current.get("volumes") or [],        prev.get("volumes") or [],        key="name"),
+        "env":            _diff_dict     (current.get("env") or {},             prev.get("env") or {}),
+        "sysctl":         _diff_dict     (current.get("sysctl") or {},          prev.get("sysctl") or {}),
+        "pip_packages":   _diff_list     (current.get("pip_packages") or [],    prev.get("pip_packages") or []),
+        "apt_packages":   _diff_list     (current.get("apt_packages") or [],    prev.get("apt_packages") or []),
+        "cargo_packages": _diff_list     (current.get("cargo_packages") or [],  prev.get("cargo_packages") or []),
+    }
+
+
+def _diff_is_empty(diff: dict) -> bool:
+    return not any(any(parts.values()) for parts in diff.values())
+
+
+def _fmt_mount(m: dict) -> str:
+    ro = " (ro)" if m.get("readonly") else ""
+    return f"{m.get('host', '?')} -> {m.get('container', '?')}{ro}"
+
+
+def _fmt_volume(v: dict) -> str:
+    return f"{v.get('name', '?')} -> {v.get('container', '?')}"
+
+
+def _print_diff_human(diff: dict) -> None:
+    field_formatters = {
+        "mounts":         _fmt_mount,
+        "volumes":        _fmt_volume,
+        "env":            lambda kv: f"{kv[0]}={kv[1]}",
+        "sysctl":         lambda kv: f"{kv[0]} = {kv[1]}",
+        "pip_packages":   str,
+        "apt_packages":   str,
+        "cargo_packages": str,
+    }
+    field_labels = {
+        "mounts": "Mounts", "volumes": "Volumes", "env": "Env",
+        "sysctl": "Sysctl", "pip_packages": "Pip packages",
+        "apt_packages": "Apt packages (host)", "cargo_packages": "Cargo packages",
+    }
+    for field, parts in diff.items():
+        added = parts.get("added") or []
+        removed = parts.get("removed") or []
+        changed = parts.get("changed") or []
+        if not (added or removed or changed):
+            continue
+        fmt = field_formatters[field]
+        click.secho(f"{field_labels[field]}:", bold=True)
+        # dicts (env / sysctl): added/removed are dicts; iterate items.
+        if isinstance(added, dict):
+            for k, v in added.items():
+                click.secho(f"  + {fmt((k, v))}", fg="green")
+            for k, v in (removed or {}).items():
+                click.secho(f"  - {fmt((k, v))}", fg="red")
+            for k, c in (changed or {}).items():
+                click.secho(f"  ~ {k}: {c['from']} -> {c['to']}", fg="yellow")
+        else:
+            for item in added:
+                click.secho(f"  + {fmt(item)}", fg="green")
+            for item in removed:
+                click.secho(f"  - {fmt(item)}", fg="red")
+            for c in changed:
+                click.secho(f"  ~ {fmt(c['from'])} -> {fmt(c['to'])}", fg="yellow")
+        click.echo()
+
+
 def _render_human(payload: dict) -> None:
     click.secho(f"Box config (version {payload.get('version', '?')})", bold=True)
 
@@ -264,6 +370,33 @@ def validate_cmd(ctx: click.Context, box: Optional[str]) -> None:
 
 
 @box_config.command(
+    "diff",
+    help="Show pending changes vs. the last applied config.",
+)
+@click.option("--box", help="Lagerbox name or IP")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+@click.pass_context
+def diff_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
+    resolved = _resolve_box(ctx, box)
+    current = _parse_response(_run_box_config_py(ctx, resolved, "show"), ctx) or {}
+    applied = _parse_response(_run_box_config_py(ctx, resolved, "applied-show"), ctx)
+    diff = _compute_diff(current, applied)
+    if as_json:
+        click.echo(json.dumps(diff, indent=2))
+        return
+    if _diff_is_empty(diff):
+        click.echo("No pending changes since last apply.")
+        return
+    if applied is None:
+        click.secho(
+            "No applied snapshot on this box — showing the full current config "
+            "as pending additions.",
+            fg="blue",
+        )
+    _print_diff_human(diff)
+
+
+@box_config.command(
     "apply",
     help="Validate, then bounce the container so the new config takes effect.",
 )
@@ -288,6 +421,15 @@ def validate_cmd(ctx: click.Context, box: Optional[str]) -> None:
         "recursively chown it to uid 33 (www-data)."
     ),
 )
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help=(
+        "Validate and report pending changes, but make no SSH writes — no "
+        "mount auto-prep, no apt/sysctl, no bounce. Useful to preview what "
+        "`apply` would do."
+    ),
+)
 @click.pass_context
 def apply_cmd(
     ctx: click.Context,
@@ -297,6 +439,7 @@ def apply_cmd(
     skip_restart: bool,
     no_auto_prep: bool,
     recursive_chown: bool,
+    dry_run: bool,
 ) -> None:
     resolved = _resolve_box(ctx, box)
 
@@ -319,6 +462,28 @@ def apply_cmd(
     applied_hash = _parse_response(raw, ctx).get("hash")
 
     unchanged = cur_hash and applied_hash and cur_hash == applied_hash
+
+    if dry_run:
+        # Read-only preview: no preflight (which mkdirs/chowns), no apt/sysctl,
+        # no bounce, no set-applied-hash. Same `show`/`applied-show` round-trips
+        # the `diff` command uses.
+        current = _parse_response(_run_box_config_py(ctx, resolved, "show"), ctx) or {}
+        applied = _parse_response(_run_box_config_py(ctx, resolved, "applied-show"), ctx)
+        diff = _compute_diff(current, applied)
+        if _diff_is_empty(diff):
+            click.secho(
+                "Config unchanged since last apply; apply would be a no-op.",
+                fg="green",
+            )
+            return
+        click.secho(
+            "Dry run — no changes made. apply would perform:",
+            bold=True,
+        )
+        _print_diff_human(diff)
+        click.echo("Re-run without --dry-run to apply.")
+        return
+
     if unchanged and not force:
         click.secho("Config unchanged since last apply; skipping restart.", fg="green")
         return
@@ -357,7 +522,11 @@ def apply_cmd(
         # exits between `docker stop` and a successful `docker run` when, e.g.,
         # a mount entry is malformed). Try to restore the last applied snapshot
         # and bring the box back up on the previous good config.
-        if _attempt_rollback(ctx, resolved):
+        if _attempt_rollback(
+            ctx, resolved,
+            failed_config=current_show,
+            previous_config=applied_snapshot,
+        ):
             click.secho(
                 "Rolled back to the previously applied config; the new config "
                 "was rejected. The container is up on the previous config — fix "
@@ -456,12 +625,26 @@ def _ensure_sysctl(
     return True
 
 
-def _attempt_rollback(ctx: click.Context, resolved_box: str) -> bool:
+def _attempt_rollback(
+    ctx: click.Context,
+    resolved_box: str,
+    *,
+    failed_config: dict,
+    previous_config: Optional[dict],
+) -> bool:
     """Restore the last applied snapshot and re-bounce. Returns True iff the
     box is back up on the previous good config.
 
     First-apply boxes have no snapshot to fall back to; in that case there's
     nothing we can do remotely and the user has to recover by hand.
+
+    Also reverts host-side sysctl: the failed apply may have written values
+    to /etc/sysctl.d/99-lager-box-config.conf that are still live on the
+    kernel, and if one of those keys is what broke the bounce (broken
+    routing, bad shmmax, ...) the rolled-back container will come up into
+    the same broken host. apt_packages are NOT reverted because the apply
+    path never auto-uninstalls — the failed apply may have *added* packages,
+    which is harmless to leave in place.
     """
     raw = _run_box_config_py(ctx, resolved_box, "restore-applied")
     payload = _parse_response(raw, ctx)
@@ -473,6 +656,18 @@ def _attempt_rollback(ctx: click.Context, resolved_box: str) -> bool:
         fg="yellow",
         err=True,
     )
+    # Reverse-diff sysctl: previous values become "current", failed values
+    # become "applied". When neither config touched sysctl this short-circuits
+    # to a no-op inside _ensure_sysctl. A failure here is logged but doesn't
+    # block the bounce — getting the box back up beats leaving it down.
+    if not _ensure_sysctl(resolved_box, previous_config or {}, failed_config):
+        click.secho(
+            "Sysctl rollback failed; the host may still hold the failed "
+            "config's kernel parameters. Inspect "
+            "/etc/sysctl.d/99-lager-box-config.conf manually.",
+            fg="yellow",
+            err=True,
+        )
     if not _bounce_container(ctx, resolved_box):
         return False
     # Don't gate the rollback message on API readiness — the bounce returning
@@ -535,14 +730,15 @@ def _preflight_mounts(ctx: click.Context, resolved: str, *, recursive: bool) -> 
 
 
 def _box_api_responding(box_ip: str, *, timeout: float = 2.0) -> bool:
-    """Single probe of the box's Python execution service. True iff the box
-    answers `/hello` with any HTTP status (i.e., the service is bound and
-    accepting connections). Catches every transport-level failure so the
-    caller can poll cheaply."""
+    """Single probe of the box's Python execution service. True iff `/hello`
+    returns 200 — a 404 means the server is up but the route is gone, which
+    is still a regression we want to surface, not paper over. Transport
+    failures (connection refused, timeout) return False so the caller can
+    poll cheaply."""
     import requests
     try:
         r = requests.get(f"http://{box_ip}:{_BOX_API_PORT}/hello", timeout=timeout)
-        return r.status_code < 500
+        return r.status_code == 200
     except Exception:
         return False
 
