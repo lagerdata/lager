@@ -50,6 +50,13 @@ BOX_IP=""
 VPN_INTERFACE=""
 GIT_VERSION="main"
 
+# Optional J-Link version pin. Empty (the default) downloads SEGGER's
+# floating "latest" .deb at ``JLink_Linux_x86_64.deb``. Pass an explicit
+# SEGGER version (e.g. ``--jlink-version V832``) when you need to
+# reproduce a specific build — the script then fetches
+# ``JLink_Linux_<VERSION>_<arch>.deb`` instead.
+JLINK_VERSION=""
+
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -76,6 +83,7 @@ show_help() {
     echo "  --skip-firewall       Skip firewall configuration"
     echo "  --install-jlink       Interactively download and install J-Link (requires license acceptance)"
     echo "  --skip-jlink          Skip J-Link installation even if available"
+    echo "  --jlink-version <ver> Pin J-Link to a specific SEGGER version (default: latest)"
     echo "  --skip-verify         Skip post-deployment verification"
     echo "  --skip-add-box        Skip prompt to add box to .lager config"
     echo "  --help                Show this help message"
@@ -126,6 +134,10 @@ while [[ $# -gt 0 ]]; do
         --skip-jlink)
             SKIP_JLINK=true
             shift
+            ;;
+        --jlink-version)
+            JLINK_VERSION="$2"
+            shift 2
             ;;
         --skip-verify)
             SKIP_VERIFY=true
@@ -773,11 +785,19 @@ fi
 
 # =============================================================================
 # Helper: Download and install J-Link using SEGGER's debian package
+#
+# When ``$1`` is empty, downloads SEGGER's floating "latest" .deb. When set,
+# downloads that exact pinned version instead — useful for reproducing a
+# specific build but not the everyday path.
 # =============================================================================
 download_jlink_on_box() {
     local jlink_version="$1"
 
-    print_info "Installing J-Link software on box..."
+    if [ -n "$jlink_version" ]; then
+        print_info "Installing J-Link ${jlink_version} on box..."
+    else
+        print_info "Installing J-Link (latest) on box..."
+    fi
     print_warning "Note: J-Link is proprietary software from SEGGER"
     echo ""
     echo "By installing J-Link, you agree to SEGGER's license terms:"
@@ -789,29 +809,43 @@ download_jlink_on_box() {
     echo "  • Not for use with counterfeit/clone products"
     echo ""
 
-    # Install J-Link using the .deb package directly on box
-    # SEGGER provides a stable deb package that can be downloaded without authentication
-    ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "BOX_USER=${BOX_USER}" bash << 'REMOTE_SCRIPT'
+    # Install J-Link using the .deb package directly on box.
+    ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" \
+        "BOX_USER=${BOX_USER} JLINK_VERSION=${jlink_version}" \
+        bash << 'REMOTE_SCRIPT'
         set -e
 
         mkdir -p "/home/${BOX_USER}/third_party"
         cd /tmp
 
-        echo "Downloading J-Link debian package..."
-
-        # Download the .deb package (this URL is stable and doesn't require authentication)
-        DEB_URL="https://www.segger.com/downloads/jlink/JLink_Linux_x86_64.deb"
+        # Versioned URL (when JLINK_VERSION is set) gives a reproducible
+        # install; the unversioned URL tracks SEGGER's "latest" .deb. The
+        # versioned path also picks the box's actual architecture so arm64
+        # boxes can pin too — the unversioned floating URL only serves
+        # x86_64, matching the historical default.
+        if [ -n "${JLINK_VERSION}" ]; then
+            BOX_ARCH=$(dpkg --print-architecture 2>/dev/null || uname -m)
+            case "$BOX_ARCH" in
+                amd64|x86_64)  SEGGER_ARCH="x86_64" ;;
+                arm64|aarch64) SEGGER_ARCH="arm64" ;;
+                armhf|armv7l)  SEGGER_ARCH="arm" ;;
+                *)             SEGGER_ARCH="x86_64" ;;  # fall back to amd64
+            esac
+            DEB_URL="https://www.segger.com/downloads/jlink/JLink_Linux_${JLINK_VERSION}_${SEGGER_ARCH}.deb"
+        else
+            DEB_URL="https://www.segger.com/downloads/jlink/JLink_Linux_x86_64.deb"
+        fi
+        echo "Downloading: ${DEB_URL}"
 
         if command -v wget &> /dev/null; then
             wget --post-data="accept_license_agreement=accepted" -q --show-progress -O JLink.deb "$DEB_URL" 2>&1 || {
                 echo "Download failed - trying alternative method..."
-                # Try without post data (sometimes it works)
                 wget -q --show-progress -O JLink.deb "$DEB_URL" 2>&1
             }
         elif command -v curl &> /dev/null; then
-            curl -L -d "accept_license_agreement=accepted" -# -o JLink.deb "$DEB_URL" 2>&1 || {
+            curl -fL -d "accept_license_agreement=accepted" -# -o JLink.deb "$DEB_URL" 2>&1 || {
                 echo "Download failed - trying alternative method..."
-                curl -L -# -o JLink.deb "$DEB_URL" 2>&1
+                curl -fL -# -o JLink.deb "$DEB_URL" 2>&1
             }
         else
             echo "Error: Neither wget nor curl is available"
@@ -819,7 +853,10 @@ download_jlink_on_box() {
         fi
 
         if [ ! -f JLink.deb ] || [ ! -s JLink.deb ]; then
-            echo "Download failed - file is empty or missing"
+            echo "Error: download failed - file is empty or missing."
+            if [ -n "${JLINK_VERSION}" ]; then
+                echo "Check that JLINK_VERSION='${JLINK_VERSION}' is a real SEGGER release."
+            fi
             exit 1
         fi
 
@@ -899,8 +936,6 @@ REMOTE_SCRIPT
 # =============================================================================
 print_step "Installing J-Link (Optional)"
 
-JLINK_VERSION="V794a"
-
 if [ "$SKIP_JLINK" = true ]; then
     print_info "Skipping J-Link installation (--skip-jlink flag set)"
 else
@@ -951,7 +986,9 @@ else
             print_info "J-Link not found on this box - will download and install"
             echo ""
 
-            # Download and install J-Link on the box using debian package
+            # Download and install J-Link on the box using debian package.
+            # ``$JLINK_VERSION`` is empty by default (floating "latest"); set
+            # via ``--jlink-version`` to pin to a specific SEGGER release.
             if download_jlink_on_box "$JLINK_VERSION"; then
                 # Verify installation
                 INSTALLED_JLINK=$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "find /home/${BOX_USER}/third_party -name JLinkGDBServerCLExe 2>/dev/null | head -n 1" || echo "")
