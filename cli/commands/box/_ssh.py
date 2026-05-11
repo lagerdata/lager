@@ -34,8 +34,12 @@ def default_ssh_runner(
     supplied — used by sysctl_apply to ship the conf body to `sudo tee`
     without expanding metacharacters through the shell.
     """
-    from ...box_storage import get_box_user
-    user = get_box_user(box_ip) or "lagerdata"
+    # `box_ip` is already a resolved IP (see _resolve_box). get_box_user
+    # is keyed by name, so reverse-look the name first; otherwise every
+    # box with a custom user silently falls back to "lagerdata".
+    from ...box_storage import get_box_name_by_ip, get_box_user
+    name = get_box_name_by_ip(box_ip)
+    user = (get_box_user(name) if name else None) or "lagerdata"
     proc = subprocess.run(
         ["ssh", "-o", "BatchMode=yes", f"{user}@{box_ip}", cmd],
         input=stdin,
