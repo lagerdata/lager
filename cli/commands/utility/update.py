@@ -1052,7 +1052,7 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
     try:
         result = run_ssh_command_with_output(
             'cd ~/box && chmod +x start_box.sh && ./start_box.sh',
-            timeout_secs=300  # 5 minutes - some boxes are slow to start
+            timeout_secs=600  # 10 minutes - covers docker build + cargo install on slow boxes
         )
 
         if result.returncode != 0:
@@ -1070,7 +1070,7 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
     except subprocess.TimeoutExpired:
         if progress:
             progress.finish(success=False)
-        log_error('Error: Container startup timed out after 5 minutes')
+        log_error('Error: Container startup timed out after 10 minutes')
         click.echo()
         click.echo('The container is taking too long to start. This could be because:', err=True)
         click.echo('  1. The box is slow or overloaded', err=True)
