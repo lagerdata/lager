@@ -182,6 +182,43 @@ class ValidateReservedPaths(unittest.TestCase):
         self.assertIsNone(cfg.suggest_alternative("/Hyphen"))
 
 
+class MigrateRaw(unittest.TestCase):
+    """Schema-migration scaffolding. _MIGRATIONS is empty in v1, so most
+    branches are no-ops — these tests pin the contract so a future v2 can
+    plug in without breaking the existing call sites."""
+
+    def test_current_version_is_passthrough(self):
+        raw = {"version": cfg.SCHEMA_VERSION, "mounts": [{"host": "/a", "container": "/a"}]}
+        self.assertEqual(cfg.migrate_raw(raw), raw)
+
+    def test_newer_version_raises(self):
+        with self.assertRaises(cfg.ValidationError) as ctx:
+            cfg.migrate_raw({"version": cfg.SCHEMA_VERSION + 1})
+        self.assertIn("newer than this CLI supports", str(ctx.exception))
+
+    def test_older_version_with_no_migrator_passes_through(self):
+        # _MIGRATIONS is empty today; older versions fall through and let
+        # validate() report the mismatch with a useful error string.
+        raw = {"version": 0}
+        self.assertEqual(cfg.migrate_raw(raw), raw)
+
+    def test_non_dict_input_is_passthrough(self):
+        # Malformed input shouldn't crash migrate_raw — validate handles it.
+        self.assertEqual(cfg.migrate_raw("not a dict"), "not a dict")
+        self.assertEqual(cfg.migrate_raw(None), None)
+
+    def test_migration_chain_runs_to_current(self):
+        # Inject a fake v0 -> v1 migrator to exercise the while loop. Restore
+        # the empty dict after so we don't pollute other tests in this run.
+        cfg._MIGRATIONS[0] = lambda r: {**r, "version": 1, "migrated": True}
+        try:
+            out = cfg.migrate_raw({"version": 0})
+            self.assertEqual(out["version"], 1)
+            self.assertTrue(out["migrated"])
+        finally:
+            cfg._MIGRATIONS.clear()
+
+
 class AppliedSnapshot(unittest.TestCase):
     def test_read_snapshot_missing_returns_none(self):
         with tempfile.TemporaryDirectory() as d:
@@ -508,6 +545,77 @@ class ValidateCargoPackages(unittest.TestCase):
         ok, reason = cfg.validate_cargo_format("Bad Name")
         self.assertFalse(ok)
         self.assertIn("invalid cargo crate spec", reason)
+
+
+class ValidateNpmPackages(unittest.TestCase):
+    def test_missing_key_is_valid(self):
+        self.assertEqual(cfg.validate(_v()), [])
+
+    def test_empty_list_is_valid(self):
+        self.assertEqual(cfg.validate(_v({"npm_packages": []})), [])
+
+    def test_must_be_list(self):
+        errors = cfg.validate(_v({"npm_packages": "express"}))
+        self.assertTrue(any("'npm_packages' must be an array" in e for e in errors))
+
+    def test_accepts_bare_name(self):
+        self.assertEqual(cfg.validate(_v({"npm_packages": ["express"]})), [])
+
+    def test_accepts_scoped_name(self):
+        self.assertEqual(cfg.validate(_v({"npm_packages": ["@types/node"]})), [])
+
+    def test_accepts_name_at_version(self):
+        self.assertEqual(
+            cfg.validate(_v({"npm_packages": ["lodash@4.17.21", "express@^4.18.0"]})),
+            [],
+        )
+
+    def test_accepts_scoped_at_version(self):
+        self.assertEqual(
+            cfg.validate(_v({"npm_packages": ["@types/node@20.0.0"]})),
+            [],
+        )
+
+    def test_rejects_uppercase(self):
+        # npm registry rejects uppercase in the name part.
+        errors = cfg.validate(_v({"npm_packages": ["Express"]}))
+        self.assertTrue(any("invalid npm package spec" in e for e in errors))
+
+    def test_rejects_shell_metacharacters(self):
+        for bad in ["foo;rm", "foo bar", "$evil", "../etc/passwd"]:
+            errors = cfg.validate(_v({"npm_packages": [bad]}))
+            self.assertTrue(
+                any("invalid npm package spec" in e for e in errors),
+                msg=f"expected rejection for {bad!r}, got {errors}",
+            )
+
+    def test_rejects_overlong_name(self):
+        # npm registry hard limit is 214 chars.
+        too_long = "a" * 215
+        errors = cfg.validate(_v({"npm_packages": [too_long]}))
+        self.assertTrue(any("exceeds 214 chars" in e for e in errors))
+
+    def test_rejects_canonical_duplicate(self):
+        # Same package, different version specs — dedupe by name part.
+        errors = cfg.validate(_v({"npm_packages": ["express", "express@4.18.0"]}))
+        self.assertTrue(any("duplicates" in e for e in errors))
+
+    def test_rejects_scoped_canonical_duplicate(self):
+        errors = cfg.validate(_v({"npm_packages": ["@types/node", "@types/node@20.0.0"]}))
+        self.assertTrue(any("duplicates" in e for e in errors))
+
+    def test_normalize_npm_name_strips_version(self):
+        self.assertEqual(cfg.normalize_npm_name("express@4.18.0"), "express")
+        self.assertEqual(cfg.normalize_npm_name("@types/node@20.0.0"), "@types/node")
+        self.assertEqual(cfg.normalize_npm_name("LODASH"), "lodash")
+
+    def test_validate_npm_format_helper(self):
+        for good in ["express", "@types/node", "lodash@4.17.21", "@scope/pkg@^1.0.0"]:
+            ok, _ = cfg.validate_npm_format(good)
+            self.assertTrue(ok, msg=f"expected {good!r} to validate")
+        ok, reason = cfg.validate_npm_format("Bad Name")
+        self.assertFalse(ok)
+        self.assertIn("invalid npm package spec", reason)
 
 
 class HashIdempotency(unittest.TestCase):

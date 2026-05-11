@@ -10,6 +10,7 @@ run_python_internal.
 """
 from __future__ import annotations
 
+import datetime
 import fcntl
 import json
 import os
@@ -22,6 +23,30 @@ from . import config as cfg
 
 
 _BOX_CONFIG_LOCK_PATH = "/etc/lager/box_config.lock"
+_BOX_CONFIG_AUDIT_PATH = "/etc/lager/box_config.audit.log"
+
+
+def _audit(verb: str, args) -> None:
+    """Append one JSON-Lines record describing a successful mutation.
+
+    Best-effort: failures to write the log do not propagate. The mutation
+    already succeeded by the time we get here, so failing the response
+    over a missing log line would lie about the actual outcome. The log
+    is append-only by design — never rewritten — so operators can correlate
+    box state at any point in time with the verb that produced it.
+    """
+    ts = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    if ts.endswith("+00:00"):
+        ts = ts[:-6] + "Z"
+    entry = {"ts": ts, "verb": verb, "args": args}
+    try:
+        d = os.path.dirname(_BOX_CONFIG_AUDIT_PATH)
+        if d and not os.path.isdir(d):
+            os.makedirs(d, exist_ok=True)
+        with open(_BOX_CONFIG_AUDIT_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass
 
 
 @contextmanager
@@ -71,13 +96,13 @@ def _cmd_validate() -> None:
 
 
 def _cmd_init(force: bool) -> None:
-    import os
     if os.path.exists(cfg.BOX_CONFIG_PATH) and not force:
         _stdout_json({"ok": True, "created": False, "imported": []})
         return
     new_cfg = cfg.init_default()
     imported, skipped = _import_legacy_into(new_cfg)
     cfg.save(new_cfg)
+    _audit("init", {"force": force, "imported_count": len(imported), "skipped_count": len(skipped)})
     _stdout_json({"ok": True, "created": True, "imported": imported, "skipped": skipped})
 
 
@@ -111,6 +136,7 @@ def _cmd_set_applied_hash(value: str) -> None:
             # rather than fail the whole call.
             pass
     cfg.write_applied_hash(value)
+    _audit("set-applied-hash", {"hash": value})
     _stdout_json({"ok": True})
 
 
@@ -122,6 +148,7 @@ def _cmd_restore_applied() -> None:
         _stdout_json({"ok": False, "error": "no applied snapshot available"})
         return
     cfg.save(snap)
+    _audit("restore-applied", {})
     _stdout_json({"ok": True})
 
 
@@ -147,6 +174,7 @@ def _cmd_mount_add(payload: str) -> None:
         _stdout_json({"ok": False, "errors": errors})
         return
     cfg.save(cfg.BoxConfig.from_dict(raw))
+    _audit("mount-add", data)
     _stdout_json({"ok": True})
 
 
@@ -156,6 +184,8 @@ def _cmd_mount_remove(host: str, container: str) -> None:
     current.mounts = [m for m in current.mounts if not (m.host == host and m.container == container)]
     removed = len(current.mounts) != before
     cfg.save(current)
+    if removed:
+        _audit("mount-remove", {"host": host, "container": container})
     _stdout_json({"ok": True, "removed": removed})
 
 
@@ -170,6 +200,7 @@ def _cmd_volume_add(payload: str) -> None:
         _stdout_json({"ok": False, "errors": errors})
         return
     cfg.save(cfg.BoxConfig.from_dict(raw))
+    _audit("volume-add", data)
     _stdout_json({"ok": True})
 
 
@@ -179,6 +210,8 @@ def _cmd_volume_remove(name: str) -> None:
     current.volumes = [v for v in current.volumes if v.name != name]
     removed = len(current.volumes) != before
     cfg.save(current)
+    if removed:
+        _audit("volume-remove", {"name": name})
     _stdout_json({"ok": True, "removed": removed})
 
 
@@ -254,6 +287,7 @@ def _cmd_pip_add(payload: str) -> None:
         _stdout_json({"ok": False, "errors": errors})
         return
     cfg.save(cfg.BoxConfig.from_dict(raw))
+    _audit("pip-add", {"added": added})
     _stdout_json({"ok": True, "added": added})
 
 
@@ -264,6 +298,8 @@ def _cmd_pip_remove(names: list) -> None:
     removed = [p for p in current.pip_packages if cfg.normalize_pip_name(p) in targets]
     current.pip_packages = [p for p in current.pip_packages if cfg.normalize_pip_name(p) not in targets]
     cfg.save(current)
+    if removed:
+        _audit("pip-remove", {"removed": removed})
     _stdout_json({"ok": True, "removed": removed, "removed_count": before - len(current.pip_packages)})
 
 
@@ -277,6 +313,7 @@ def _cmd_pip_import_legacy() -> None:
             _stdout_json({"ok": False, "errors": errors, "imported": [], "skipped": skipped})
             return
         cfg.save(cfg.BoxConfig.from_dict(raw))
+        _audit("pip-import-legacy", {"imported": imported, "skipped_count": len(skipped)})
     _stdout_json({"ok": True, "imported": imported, "skipped": skipped})
 
 
@@ -310,6 +347,7 @@ def _cmd_apt_add(payload: str) -> None:
         _stdout_json({"ok": False, "errors": errors})
         return
     cfg.save(cfg.BoxConfig.from_dict(raw))
+    _audit("apt-add", {"added": added})
     _stdout_json({"ok": True, "added": added})
 
 
@@ -320,6 +358,8 @@ def _cmd_apt_remove(names: list) -> None:
     removed = [p for p in current.apt_packages if p.lower() in targets]
     current.apt_packages = [p for p in current.apt_packages if p.lower() not in targets]
     cfg.save(current)
+    if removed:
+        _audit("apt-remove", {"removed": removed})
     _stdout_json({"ok": True, "removed": removed, "removed_count": before - len(current.apt_packages)})
 
 
@@ -347,6 +387,7 @@ def _cmd_sysctl_set(payload: str) -> None:
         _stdout_json({"ok": False, "errors": errors})
         return
     cfg.save(cfg.BoxConfig.from_dict(raw))
+    _audit("sysctl-set", {"entries": dict(entries)})
     _stdout_json({"ok": True, "set": set_keys})
 
 
@@ -356,6 +397,8 @@ def _cmd_sysctl_unset(keys: list) -> None:
     for k in removed:
         del current.sysctl[k]
     cfg.save(current)
+    if removed:
+        _audit("sysctl-unset", {"removed": removed})
     _stdout_json({"ok": True, "removed": removed})
 
 
@@ -389,6 +432,7 @@ def _cmd_cargo_add(payload: str) -> None:
         _stdout_json({"ok": False, "errors": errors})
         return
     cfg.save(cfg.BoxConfig.from_dict(raw))
+    _audit("cargo-add", {"added": added})
     _stdout_json({"ok": True, "added": added})
 
 
@@ -401,7 +445,57 @@ def _cmd_cargo_remove(names: list) -> None:
         p for p in current.cargo_packages if cfg.normalize_cargo_name(p) not in targets
     ]
     cfg.save(current)
+    if removed:
+        _audit("cargo-remove", {"removed": removed})
     _stdout_json({"ok": True, "removed": removed, "removed_count": before - len(current.cargo_packages)})
+
+
+def _cmd_npm_add(payload: str) -> None:
+    data = json.loads(payload)
+    new_pkgs = data.get("packages", [])
+    if not isinstance(new_pkgs, list):
+        _stdout_json({"ok": False, "errors": ["payload.packages must be an array"]})
+        return
+    current = _load_or_init()
+    seen = {cfg.normalize_npm_name(p): i for i, p in enumerate(current.npm_packages)}
+    added = []
+    for p in new_pkgs:
+        if not isinstance(p, str):
+            _stdout_json({"ok": False, "errors": [f"non-string package: {p!r}"]})
+            return
+        ok, reason = cfg.validate_npm_format(p)
+        if not ok:
+            _stdout_json({"ok": False, "errors": [f"{p!r}: {reason}"]})
+            return
+        canon = cfg.normalize_npm_name(p)
+        if canon in seen:
+            current.npm_packages[seen[canon]] = p
+        else:
+            current.npm_packages.append(p)
+            seen[canon] = len(current.npm_packages) - 1
+        added.append(p)
+    raw = current.to_dict()
+    errors = cfg.validate(raw)
+    if errors:
+        _stdout_json({"ok": False, "errors": errors})
+        return
+    cfg.save(cfg.BoxConfig.from_dict(raw))
+    _audit("npm-add", {"added": added})
+    _stdout_json({"ok": True, "added": added})
+
+
+def _cmd_npm_remove(names: list) -> None:
+    current = _load_or_init()
+    targets = {cfg.normalize_npm_name(n) for n in names}
+    before = len(current.npm_packages)
+    removed = [p for p in current.npm_packages if cfg.normalize_npm_name(p) in targets]
+    current.npm_packages = [
+        p for p in current.npm_packages if cfg.normalize_npm_name(p) not in targets
+    ]
+    cfg.save(current)
+    if removed:
+        _audit("npm-remove", {"removed": removed})
+    _stdout_json({"ok": True, "removed": removed, "removed_count": before - len(current.npm_packages)})
 
 
 def _cmd_applied_show() -> None:
@@ -415,79 +509,93 @@ def _cmd_applied_show() -> None:
     _stdout_json(snap.to_dict())
 
 
+def _cmd_audit_tail(n_arg: str) -> None:
+    """Return the last N JSON-Lines audit entries.
+
+    Reads the whole file and slices the tail — O(file) but the audit log
+    rotates by hand, not on size, and box deployments don't accumulate
+    enough entries for this to matter. If we ever do rotate, just glob the
+    .audit.log.* siblings and slice the concatenation.
+    """
+    try:
+        n = max(0, int(n_arg))
+    except (ValueError, TypeError):
+        n = 20
+    try:
+        with open(_BOX_CONFIG_AUDIT_PATH, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        _stdout_json({"entries": []})
+        return
+    tail = lines[-n:] if n > 0 else lines
+    entries: list = []
+    for line in tail:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            # Skip corrupted lines rather than fail the whole call — an
+            # append could be torn by a power loss mid-write.
+            continue
+    _stdout_json({"entries": entries})
+
+
+def _require(args: list, n: int):
+    """Return args[n] (the nth positional after the verb) or raise."""
+    if len(args) <= n:
+        raise ValueError(f"{args[0]} requires positional arg #{n}")
+    return args[n]
+
+
+def _require_rest(args: list, min_count: int = 1) -> list:
+    """Return args[1:] as a list, or raise if fewer than min_count items."""
+    if len(args) - 1 < min_count:
+        raise ValueError(f"{args[0]} requires at least {min_count} positional arg(s)")
+    return list(args[1:])
+
+
+# Verb -> handler dispatch table. Lambdas all take the full `args` list
+# (including the verb at index 0) and call the matching `_cmd_*`. Single
+# source of truth for the wire protocol; an unrecognized verb is a clean
+# dict miss instead of a fall-through `unknown command` case at the bottom
+# of a 60-line if/elif.
+_DISPATCH = {
+    "show":              lambda args: _cmd_show(),
+    "validate":          lambda args: _cmd_validate(),
+    "init":              lambda args: _cmd_init("--force" in args[1:]),
+    "hash":              lambda args: _cmd_hash(),
+    "applied-hash":      lambda args: _cmd_applied_hash(),
+    "applied-show":      lambda args: _cmd_applied_show(),
+    "restore-applied":   lambda args: _cmd_restore_applied(),
+    "set-applied-hash":  lambda args: _cmd_set_applied_hash(_require(args, 1)),
+    "mount-add":         lambda args: _cmd_mount_add(_require(args, 1)),
+    "mount-remove":      lambda args: _cmd_mount_remove(_require(args, 1), _require(args, 2)),
+    "volume-add":        lambda args: _cmd_volume_add(_require(args, 1)),
+    "volume-remove":     lambda args: _cmd_volume_remove(_require(args, 1)),
+    "pip-add":           lambda args: _cmd_pip_add(_require(args, 1)),
+    "pip-remove":        lambda args: _cmd_pip_remove(_require_rest(args)),
+    "pip-import-legacy": lambda args: _cmd_pip_import_legacy(),
+    "apt-add":           lambda args: _cmd_apt_add(_require(args, 1)),
+    "apt-remove":        lambda args: _cmd_apt_remove(_require_rest(args)),
+    "sysctl-set":        lambda args: _cmd_sysctl_set(_require(args, 1)),
+    "sysctl-unset":      lambda args: _cmd_sysctl_unset(_require_rest(args)),
+    "cargo-add":         lambda args: _cmd_cargo_add(_require(args, 1)),
+    "cargo-remove":      lambda args: _cmd_cargo_remove(_require_rest(args)),
+    "npm-add":           lambda args: _cmd_npm_add(_require(args, 1)),
+    "npm-remove":        lambda args: _cmd_npm_remove(_require_rest(args)),
+    "audit-tail":        lambda args: _cmd_audit_tail(args[1] if len(args) >= 2 else "20"),
+}
+
+
 def _dispatch(args: list) -> None:
     cmd = args[0] if args else "show"
-    if cmd == "show":
-        _cmd_show()
-    elif cmd == "validate":
-        _cmd_validate()
-    elif cmd == "init":
-        force = "--force" in args[1:]
-        _cmd_init(force)
-    elif cmd == "hash":
-        _cmd_hash()
-    elif cmd == "applied-hash":
-        _cmd_applied_hash()
-    elif cmd == "set-applied-hash":
-        if len(args) < 2:
-            raise ValueError("set-applied-hash requires a hash value")
-        _cmd_set_applied_hash(args[1])
-    elif cmd == "restore-applied":
-        _cmd_restore_applied()
-    elif cmd == "mount-add":
-        if len(args) < 2:
-            raise ValueError("mount-add requires JSON payload")
-        _cmd_mount_add(args[1])
-    elif cmd == "mount-remove":
-        if len(args) < 3:
-            raise ValueError("mount-remove requires HOST CONTAINER")
-        _cmd_mount_remove(args[1], args[2])
-    elif cmd == "volume-add":
-        if len(args) < 2:
-            raise ValueError("volume-add requires JSON payload")
-        _cmd_volume_add(args[1])
-    elif cmd == "volume-remove":
-        if len(args) < 2:
-            raise ValueError("volume-remove requires NAME")
-        _cmd_volume_remove(args[1])
-    elif cmd == "pip-add":
-        if len(args) < 2:
-            raise ValueError("pip-add requires JSON payload")
-        _cmd_pip_add(args[1])
-    elif cmd == "pip-remove":
-        if len(args) < 2:
-            raise ValueError("pip-remove requires at least one package name")
-        _cmd_pip_remove(list(args[1:]))
-    elif cmd == "pip-import-legacy":
-        _cmd_pip_import_legacy()
-    elif cmd == "apt-add":
-        if len(args) < 2:
-            raise ValueError("apt-add requires JSON payload")
-        _cmd_apt_add(args[1])
-    elif cmd == "apt-remove":
-        if len(args) < 2:
-            raise ValueError("apt-remove requires at least one package name")
-        _cmd_apt_remove(list(args[1:]))
-    elif cmd == "sysctl-set":
-        if len(args) < 2:
-            raise ValueError("sysctl-set requires JSON payload")
-        _cmd_sysctl_set(args[1])
-    elif cmd == "sysctl-unset":
-        if len(args) < 2:
-            raise ValueError("sysctl-unset requires at least one key")
-        _cmd_sysctl_unset(list(args[1:]))
-    elif cmd == "cargo-add":
-        if len(args) < 2:
-            raise ValueError("cargo-add requires JSON payload")
-        _cmd_cargo_add(args[1])
-    elif cmd == "cargo-remove":
-        if len(args) < 2:
-            raise ValueError("cargo-remove requires at least one package name")
-        _cmd_cargo_remove(list(args[1:]))
-    elif cmd == "applied-show":
-        _cmd_applied_show()
-    else:
+    handler = _DISPATCH.get(cmd)
+    if handler is None:
         _stdout_json({"ok": False, "error": f"unknown command: {cmd}"})
+        return
+    handler(args)
 
 
 def _cli() -> None:

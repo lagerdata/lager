@@ -3,38 +3,21 @@
 
 """
 Host-side helpers for `lager box config pip add`:
-  - format check (delegates to box-side validate_pip_format so behavior stays
-    in sync; see box/lager/box_config/config.py)
   - PyPI existence check (best-effort, network-error tolerant)
+
+Format validation lives box-side only (see box/lager/box_config/config.py).
+Host-side mirroring was deleted to prevent silent drift between the two
+regexes; the cost is one extra SSH round-trip on a typo, which is cheap.
 """
 from __future__ import annotations
 
 import json
-import re
 import urllib.error
 import urllib.request
-from typing import Optional
 
 
 _PYPI_TIMEOUT = 10
 _USER_AGENT = "lager-cli"
-
-_PIP_SPEC_RE = re.compile(
-    r'^[a-zA-Z][a-zA-Z0-9\-_\.]*'
-    r'(\[[a-zA-Z0-9\-_,\s]+\])?'
-    r'(([<>=!~]=?|@)[a-zA-Z0-9\.\-_,\s\*<>=!~@]+)?$'
-)
-
-
-def validate_format(pkg: str) -> tuple[bool, Optional[str]]:
-    """Mirror of box-side validate_pip_format. Kept in sync intentionally."""
-    if not isinstance(pkg, str) or not pkg.strip():
-        return False, "package name cannot be empty"
-    if pkg[0] in '0123456789.-_':
-        return False, "package name must start with a letter"
-    if not _PIP_SPEC_RE.match(pkg):
-        return False, "invalid package specification format"
-    return True, None
 
 
 def normalize_for_pypi(pkg: str) -> str:

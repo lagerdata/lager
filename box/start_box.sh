@@ -232,48 +232,54 @@ fi
 
 # Lager Box config (declarative). Optional. No-op when /etc/lager/box_config.json is absent.
 # A malformed config is logged but never blocks the container start; the box always comes up.
-BOX_CONFIG_MOUNTS=""
-BOX_CONFIG_ENV=""
+#
+# render_docker_args.py writes a bash-sourceable file declaring three arrays
+# (BOX_CONFIG_MOUNTS, BOX_CONFIG_ENV, BOX_CONFIG_HOST_PATHS). Sourcing + array
+# expansion preserves values containing whitespace / $ / quotes through to
+# docker run — the previous stdout-and-unquoted-expansion path mangled them.
 BOX_CONFIG_FILE="/etc/lager/box_config.json"
+BOX_CONFIG_ARGS_FILE="/etc/lager/box_config.docker.sh"
 PIP_REQS_FILE="/etc/lager/user_requirements.txt"
 CARGO_PKGS_FILE="/etc/lager/cargo_packages.txt"
+NPM_PKGS_FILE="/etc/lager/npm_packages.txt"
+BOX_CONFIG_MOUNTS=()
+BOX_CONFIG_ENV=()
+BOX_CONFIG_HOST_PATHS=()
 if [ -f "$BOX_CONFIG_FILE" ]; then
     echo "Lager Box config detected at $BOX_CONFIG_FILE"
-    if BOX_CONFIG_OUTPUT=$(python3 "${SCRIPT_DIR}/lager/box_config/render_docker_args.py" "$BOX_CONFIG_FILE" 2>&1); then
-        BOX_CONFIG_MOUNTS=$(printf '%s\n' "$BOX_CONFIG_OUTPUT" | sed -n '1p')
-        BOX_CONFIG_ENV=$(printf '%s\n' "$BOX_CONFIG_OUTPUT" | sed -n '2p')
-        BOX_CONFIG_HOST_PATHS=$(printf '%s\n' "$BOX_CONFIG_OUTPUT" | sed -n '3p')
-        if [ -n "$BOX_CONFIG_MOUNTS" ]; then
-            echo "  Mounts/volumes: $BOX_CONFIG_MOUNTS"
-        fi
-        if [ -n "$BOX_CONFIG_ENV" ]; then
-            echo "  Env: $BOX_CONFIG_ENV"
-        fi
-        # Pre-create bind-mount host paths so `docker run` doesn't fail when a
-        # path is declared in box_config.json but doesn't exist yet on the host.
-        # We can only mkdir as the current user (lagerdata); root-owned parents
-        # like /srv still need a one-time `sudo mkdir + chown 33:33` from the
-        # operator. Failures here are warnings, never fatal.
-        if [ -n "$BOX_CONFIG_HOST_PATHS" ]; then
-            eval "_box_cfg_host_paths=($BOX_CONFIG_HOST_PATHS)"
-            for _p in "${_box_cfg_host_paths[@]}"; do
-                if [ ! -d "$_p" ]; then
-                    if mkdir -p "$_p" 2>/dev/null; then
-                        echo "  Created host path $_p"
-                    else
-                        echo "  [WARNING] Could not create $_p (try: sudo mkdir -p $_p && sudo chown 33:33 $_p)"
-                    fi
-                fi
-            done
-            unset _box_cfg_host_paths _p
-        fi
-    else
-        echo "[ERROR] box_config.json failed validation:"
-        echo "$BOX_CONFIG_OUTPUT"
-        echo "Container will start without applying box_config.json. Fix and rerun."
-        BOX_CONFIG_MOUNTS=""
-        BOX_CONFIG_ENV=""
+    if ! python3 "${SCRIPT_DIR}/lager/box_config/render_docker_args.py" \
+            "$BOX_CONFIG_FILE" "$BOX_CONFIG_ARGS_FILE"; then
+        echo "[ERROR] box_config.json failed validation; container will start without applying it. Fix and rerun."
     fi
+    # Source whether the renderer succeeded or not — on failure it still
+    # writes empty arrays, which is the right "no box-config" state. Skipping
+    # the source on failure would leave stale arrays from any earlier run in
+    # the same shell.
+    if [ -f "$BOX_CONFIG_ARGS_FILE" ]; then
+        # shellcheck disable=SC1090
+        source "$BOX_CONFIG_ARGS_FILE"
+    fi
+    if [ ${#BOX_CONFIG_MOUNTS[@]} -gt 0 ]; then
+        echo "  Mount/volume args (${#BOX_CONFIG_MOUNTS[@]}): ${BOX_CONFIG_MOUNTS[*]}"
+    fi
+    if [ ${#BOX_CONFIG_ENV[@]} -gt 0 ]; then
+        echo "  Env args (${#BOX_CONFIG_ENV[@]}): ${BOX_CONFIG_ENV[*]}"
+    fi
+    # Pre-create bind-mount host paths so `docker run` doesn't fail when a
+    # path is declared in box_config.json but doesn't exist yet on the host.
+    # We can only mkdir as the current user (lagerdata); root-owned parents
+    # like /srv still need a one-time `sudo mkdir + chown 33:33` from the
+    # operator. Failures here are warnings, never fatal.
+    for _p in "${BOX_CONFIG_HOST_PATHS[@]}"; do
+        if [ ! -d "$_p" ]; then
+            if mkdir -p "$_p" 2>/dev/null; then
+                echo "  Created host path $_p"
+            else
+                echo "  [WARNING] Could not create $_p (try: sudo mkdir -p $_p && sudo chown 33:33 $_p)"
+            fi
+        fi
+    done
+    unset _p
 
     # Render pip_packages from box_config.json into the requirements file that
     # the in-container `pip install -r` step (below) reads. Soft-fail: if render
@@ -288,6 +294,14 @@ if [ -f "$BOX_CONFIG_FILE" ]; then
     if ! python3 "${SCRIPT_DIR}/lager/box_config/render_cargo_packages.py" \
             "$BOX_CONFIG_FILE" "$CARGO_PKGS_FILE" 2>&1; then
         echo "[WARNING] Failed to render cargo_packages; using existing $CARGO_PKGS_FILE."
+    fi
+
+    # Same for npm_packages — flat file the post-run loop reads. Container must
+    # ship npm in its image (or have nodejs+npm in apt_packages); a missing
+    # `npm` binary fails the install loop with a clear error.
+    if ! python3 "${SCRIPT_DIR}/lager/box_config/render_npm_packages.py" \
+            "$BOX_CONFIG_FILE" "$NPM_PKGS_FILE" 2>&1; then
+        echo "[WARNING] Failed to render npm_packages; using existing $NPM_PKGS_FILE."
     fi
     echo ""
 fi
@@ -367,8 +381,8 @@ docker run -d \
     ${JL_MOUNT_PYTHON} \
     ${CUSTOMER_BINARIES_MOUNT} \
     ${OSCILLOSCOPE_MOUNT} \
-    ${BOX_CONFIG_MOUNTS} \
-    ${BOX_CONFIG_ENV} \
+    "${BOX_CONFIG_MOUNTS[@]}" \
+    "${BOX_CONFIG_ENV[@]}" \
     -p 5000:5000 \
     -p 8301:5000 \
     -p 8080:8080 \
@@ -400,15 +414,28 @@ echo ""
 # from BoxConfig.pip_packages; here we apply it. Skipped when the file has no
 # non-comment content. A failure here exits the script non-zero so
 # `lager box config apply` can detect it and skip updating applied-hash.
+#
+# Timeouts: pip is bounded at PIP_INSTALL_TIMEOUT seconds so a stuck dep
+# resolver or wedged download can't run past the SSH ceiling in
+# _bounce_container (~900s) and split-brain with the CLI's rollback path.
+PIP_INSTALL_TIMEOUT="${LAGER_PIP_INSTALL_TIMEOUT:-300}"
+CARGO_INSTALL_TIMEOUT="${LAGER_CARGO_INSTALL_TIMEOUT:-180}"
+NPM_INSTALL_TIMEOUT="${LAGER_NPM_INSTALL_TIMEOUT:-180}"
 if [ -s "$PIP_REQS_FILE" ] && grep -qvE '^[[:space:]]*(#|$)' "$PIP_REQS_FILE"; then
-    echo "Installing user pip packages into container..."
+    echo "Installing user pip packages into container (timeout: ${PIP_INSTALL_TIMEOUT}s)..."
     # Wait briefly for the container's services to be ready enough to exec.
     for _ in 1 2 3 4 5; do
         docker exec lager true 2>/dev/null && break
         sleep 1
     done
-    if ! docker exec lager pip3 install -r "$PIP_REQS_FILE"; then
-        echo "[ERROR] User pip install failed; container is up but pip_packages may be incomplete."
+    if ! timeout "$PIP_INSTALL_TIMEOUT" docker exec lager pip3 install -r "$PIP_REQS_FILE"; then
+        _rc=$?
+        if [ "$_rc" -eq 124 ]; then
+            echo "[ERROR] User pip install timed out after ${PIP_INSTALL_TIMEOUT}s; container is up but pip_packages may be incomplete."
+        else
+            echo "[ERROR] User pip install failed (rc=$_rc); container is up but pip_packages may be incomplete."
+        fi
+        unset _rc
         exit 1
     fi
     echo ""
@@ -417,8 +444,12 @@ fi
 # Install user-requested cargo crates from box_config.json into the running
 # container. Cargo install is idempotent (skips already-installed at the same
 # version with a warning, no error), so always running this is safe.
+#
+# Per-crate timeout (vs. one timeout for the whole loop) so a single
+# slow-compiling crate doesn't budget-starve the others, and so the user
+# gets a precise error pointing at the culprit.
 if [ -s "$CARGO_PKGS_FILE" ] && grep -qvE '^[[:space:]]*(#|$)' "$CARGO_PKGS_FILE"; then
-    echo "Installing user cargo crates into container..."
+    echo "Installing user cargo crates into container (per-crate timeout: ${CARGO_INSTALL_TIMEOUT}s)..."
     for _ in 1 2 3 4 5; do
         docker exec lager true 2>/dev/null && break
         sleep 1
@@ -438,14 +469,52 @@ if [ -s "$CARGO_PKGS_FILE" ] && grep -qvE '^[[:space:]]*(#|$)' "$CARGO_PKGS_FILE
         else
             _args=("$_crate_spec")
         fi
-        if ! docker exec lager bash -lc "cargo install ${_args[*]}"; then
-            echo "[ERROR] cargo install failed for: $_crate_spec"
+        if ! timeout "$CARGO_INSTALL_TIMEOUT" docker exec lager bash -lc "cargo install ${_args[*]}"; then
+            _rc=$?
+            if [ "$_rc" -eq 124 ]; then
+                echo "[ERROR] cargo install timed out after ${CARGO_INSTALL_TIMEOUT}s for: $_crate_spec"
+            else
+                echo "[ERROR] cargo install failed (rc=$_rc) for: $_crate_spec"
+            fi
             _cargo_failed=1
         fi
     done < "$CARGO_PKGS_FILE"
-    unset _crate_spec _name _ver _args
+    unset _crate_spec _name _ver _args _rc
     if [ "$_cargo_failed" -ne 0 ]; then
         echo "[ERROR] One or more cargo crates failed to install; container is up but cargo_packages may be incomplete."
+        exit 1
+    fi
+    echo ""
+fi
+
+# Install user-requested npm packages globally inside the container. `npm
+# install -g <spec>` accepts both `name` and `name@version` directly (no
+# arg splitting needed). Per-package timeout mirrors the cargo loop so one
+# slow registry response can't dominate the SSH budget.
+if [ -s "$NPM_PKGS_FILE" ] && grep -qvE '^[[:space:]]*(#|$)' "$NPM_PKGS_FILE"; then
+    echo "Installing user npm packages into container (per-package timeout: ${NPM_INSTALL_TIMEOUT}s)..."
+    for _ in 1 2 3 4 5; do
+        docker exec lager true 2>/dev/null && break
+        sleep 1
+    done
+    _npm_failed=0
+    while IFS= read -r _npm_spec; do
+        case "$_npm_spec" in
+            ''|\#*) continue ;;
+        esac
+        if ! timeout "$NPM_INSTALL_TIMEOUT" docker exec lager bash -lc "npm install -g $_npm_spec"; then
+            _rc=$?
+            if [ "$_rc" -eq 124 ]; then
+                echo "[ERROR] npm install timed out after ${NPM_INSTALL_TIMEOUT}s for: $_npm_spec"
+            else
+                echo "[ERROR] npm install failed (rc=$_rc) for: $_npm_spec"
+            fi
+            _npm_failed=1
+        fi
+    done < "$NPM_PKGS_FILE"
+    unset _npm_spec _rc
+    if [ "$_npm_failed" -ne 0 ]; then
+        echo "[ERROR] One or more npm packages failed to install; container is up but npm_packages may be incomplete."
         exit 1
     fi
     echo ""
