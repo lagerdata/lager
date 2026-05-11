@@ -10,12 +10,37 @@ run_python_internal.
 """
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import sys
 import traceback
+from contextlib import contextmanager
 from typing import Any
 
 from . import config as cfg
+
+
+_BOX_CONFIG_LOCK_PATH = "/etc/lager/box_config.lock"
+
+
+@contextmanager
+def _box_config_lock():
+    """Serialize shim invocations against /etc/lager/box_config.json.
+
+    Without this, two near-simultaneous `lager box config X` calls do
+    read-modify-write and silently lose one update. Held for the whole
+    dispatch including reads — reads are sub-millisecond so the extra
+    serialization is invisible. Advisory flock; mutual exclusion only
+    holds because every shim invocation goes through the same wrapper.
+    """
+    os.makedirs(os.path.dirname(_BOX_CONFIG_LOCK_PATH), exist_ok=True)
+    with open(_BOX_CONFIG_LOCK_PATH, "a") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 def _stdout_json(obj: Any) -> None:
@@ -390,89 +415,90 @@ def _cmd_applied_show() -> None:
     _stdout_json(snap.to_dict())
 
 
+def _dispatch(args: list) -> None:
+    cmd = args[0] if args else "show"
+    if cmd == "show":
+        _cmd_show()
+    elif cmd == "validate":
+        _cmd_validate()
+    elif cmd == "init":
+        force = "--force" in args[1:]
+        _cmd_init(force)
+    elif cmd == "hash":
+        _cmd_hash()
+    elif cmd == "applied-hash":
+        _cmd_applied_hash()
+    elif cmd == "set-applied-hash":
+        if len(args) < 2:
+            raise ValueError("set-applied-hash requires a hash value")
+        _cmd_set_applied_hash(args[1])
+    elif cmd == "restore-applied":
+        _cmd_restore_applied()
+    elif cmd == "mount-add":
+        if len(args) < 2:
+            raise ValueError("mount-add requires JSON payload")
+        _cmd_mount_add(args[1])
+    elif cmd == "mount-remove":
+        if len(args) < 3:
+            raise ValueError("mount-remove requires HOST CONTAINER")
+        _cmd_mount_remove(args[1], args[2])
+    elif cmd == "volume-add":
+        if len(args) < 2:
+            raise ValueError("volume-add requires JSON payload")
+        _cmd_volume_add(args[1])
+    elif cmd == "volume-remove":
+        if len(args) < 2:
+            raise ValueError("volume-remove requires NAME")
+        _cmd_volume_remove(args[1])
+    elif cmd == "pip-add":
+        if len(args) < 2:
+            raise ValueError("pip-add requires JSON payload")
+        _cmd_pip_add(args[1])
+    elif cmd == "pip-remove":
+        if len(args) < 2:
+            raise ValueError("pip-remove requires at least one package name")
+        _cmd_pip_remove(list(args[1:]))
+    elif cmd == "pip-import-legacy":
+        _cmd_pip_import_legacy()
+    elif cmd == "apt-add":
+        if len(args) < 2:
+            raise ValueError("apt-add requires JSON payload")
+        _cmd_apt_add(args[1])
+    elif cmd == "apt-remove":
+        if len(args) < 2:
+            raise ValueError("apt-remove requires at least one package name")
+        _cmd_apt_remove(list(args[1:]))
+    elif cmd == "sysctl-set":
+        if len(args) < 2:
+            raise ValueError("sysctl-set requires JSON payload")
+        _cmd_sysctl_set(args[1])
+    elif cmd == "sysctl-unset":
+        if len(args) < 2:
+            raise ValueError("sysctl-unset requires at least one key")
+        _cmd_sysctl_unset(list(args[1:]))
+    elif cmd == "cargo-add":
+        if len(args) < 2:
+            raise ValueError("cargo-add requires JSON payload")
+        _cmd_cargo_add(args[1])
+    elif cmd == "cargo-remove":
+        if len(args) < 2:
+            raise ValueError("cargo-remove requires at least one package name")
+        _cmd_cargo_remove(list(args[1:]))
+    elif cmd == "applied-show":
+        _cmd_applied_show()
+    else:
+        _stdout_json({"ok": False, "error": f"unknown command: {cmd}"})
+
+
 def _cli() -> None:
+    args = sys.argv[1:]
     try:
-        args = sys.argv[1:]
-        cmd = args[0] if args else "show"
-
-        if cmd == "show":
-            _cmd_show()
-        elif cmd == "validate":
-            _cmd_validate()
-        elif cmd == "init":
-            force = "--force" in args[1:]
-            _cmd_init(force)
-        elif cmd == "hash":
-            _cmd_hash()
-        elif cmd == "applied-hash":
-            _cmd_applied_hash()
-        elif cmd == "set-applied-hash":
-            if len(args) < 2:
-                raise ValueError("set-applied-hash requires a hash value")
-            _cmd_set_applied_hash(args[1])
-        elif cmd == "restore-applied":
-            _cmd_restore_applied()
-        elif cmd == "mount-add":
-            if len(args) < 2:
-                raise ValueError("mount-add requires JSON payload")
-            _cmd_mount_add(args[1])
-        elif cmd == "mount-remove":
-            if len(args) < 3:
-                raise ValueError("mount-remove requires HOST CONTAINER")
-            _cmd_mount_remove(args[1], args[2])
-        elif cmd == "volume-add":
-            if len(args) < 2:
-                raise ValueError("volume-add requires JSON payload")
-            _cmd_volume_add(args[1])
-        elif cmd == "volume-remove":
-            if len(args) < 2:
-                raise ValueError("volume-remove requires NAME")
-            _cmd_volume_remove(args[1])
-        elif cmd == "pip-add":
-            if len(args) < 2:
-                raise ValueError("pip-add requires JSON payload")
-            _cmd_pip_add(args[1])
-        elif cmd == "pip-remove":
-            if len(args) < 2:
-                raise ValueError("pip-remove requires at least one package name")
-            _cmd_pip_remove(list(args[1:]))
-        elif cmd == "pip-import-legacy":
-            _cmd_pip_import_legacy()
-        elif cmd == "apt-add":
-            if len(args) < 2:
-                raise ValueError("apt-add requires JSON payload")
-            _cmd_apt_add(args[1])
-        elif cmd == "apt-remove":
-            if len(args) < 2:
-                raise ValueError("apt-remove requires at least one package name")
-            _cmd_apt_remove(list(args[1:]))
-        elif cmd == "sysctl-set":
-            if len(args) < 2:
-                raise ValueError("sysctl-set requires JSON payload")
-            _cmd_sysctl_set(args[1])
-        elif cmd == "sysctl-unset":
-            if len(args) < 2:
-                raise ValueError("sysctl-unset requires at least one key")
-            _cmd_sysctl_unset(list(args[1:]))
-        elif cmd == "cargo-add":
-            if len(args) < 2:
-                raise ValueError("cargo-add requires JSON payload")
-            _cmd_cargo_add(args[1])
-        elif cmd == "cargo-remove":
-            if len(args) < 2:
-                raise ValueError("cargo-remove requires at least one package name")
-            _cmd_cargo_remove(list(args[1:]))
-        elif cmd == "applied-show":
-            _cmd_applied_show()
-        else:
-            _stdout_json({"ok": False, "error": f"unknown command: {cmd}"})
-
+        with _box_config_lock():
+            _dispatch(args)
     except cfg.ValidationError as e:
         _stdout_json({"ok": False, "errors": str(e).split("\n")})
-
     except SystemExit:
         _stdout_json({"ok": False, "error": "exit"})
-
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
         _stdout_json({"ok": False, "error": str(e)})
