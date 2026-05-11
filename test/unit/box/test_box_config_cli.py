@@ -963,5 +963,349 @@ class AuditCommand(unittest.TestCase):
         self.assertEqual(payload, entries)
 
 
+class StatusCommand(unittest.TestCase):
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def test_clean_state(self):
+        show = {"version": 1, "apt_packages": ["tcpdump"]}
+        backend = FakeBoxBackend({
+            "show": [show],
+            "hash": [{"hash": "aaa"}],
+            "applied-hash": [{"hash": "aaa"}],
+            "audit-tail": [{"entries": [
+                {"ts": "2026-05-11T12:00:00Z", "verb": "apt-add", "args": {"added": ["tcpdump"]}},
+            ]}],
+        })
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["status", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("clean", result.output)
+        self.assertIn("1 apt", result.output)
+        self.assertIn("apt-add", result.output)
+
+    def test_drift_state(self):
+        backend = FakeBoxBackend({
+            "show": [{"version": 1, "apt_packages": []}],
+            "hash": [{"hash": "aaa"}],
+            "applied-hash": [{"hash": "bbb"}],
+            "audit-tail": [{"entries": []}],
+        })
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["status", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("DRIFT", result.output)
+        self.assertIn("diff --box", result.output)
+
+    def test_no_config(self):
+        backend = FakeBoxBackend({"show": [None]})
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["status", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("no box_config.json", result.output)
+
+    def test_json_round_trips_single(self):
+        backend = FakeBoxBackend({
+            "show": [{"version": 1, "apt_packages": ["tcpdump"]}],
+            "hash": [{"hash": "aaa"}],
+            "applied-hash": [{"hash": "aaa"}],
+            "audit-tail": [{"entries": []}],
+        })
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["status", "--box", "HYP-3", "--json"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        payload = json.loads(result.output)
+        self.assertTrue(payload["clean"])
+        self.assertEqual(payload["counts"]["apt_packages"], 1)
+
+
+class ExportImportCommands(unittest.TestCase):
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def test_export_writes_json_file(self):
+        import os
+        import tempfile
+        payload = {"version": 1, "apt_packages": ["tcpdump"], "mounts": []}
+        backend = FakeBoxBackend({"show": [payload]})
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "out.json")
+            with _patch_resolve(), \
+                 patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+                result = self.runner.invoke(
+                    box_config_cli.box_config,
+                    ["export", out, "--box", "HYP-3"],
+                )
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            with open(out) as f:
+                self.assertEqual(json.load(f), payload)
+
+    def test_export_no_config_exits_nonzero(self):
+        import os
+        import tempfile
+        backend = FakeBoxBackend({"show": [None]})
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "out.json")
+            with _patch_resolve(), \
+                 patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+                result = self.runner.invoke(
+                    box_config_cli.box_config,
+                    ["export", out, "--box", "HYP-3"],
+                )
+            self.assertNotEqual(result.exit_code, 0)
+            self.assertIn("No box_config.json", result.output)
+
+    def test_import_round_trips(self):
+        import os
+        import tempfile
+        payload = {"version": 1, "apt_packages": ["tcpdump"]}
+        backend = FakeBoxBackend({"set-raw": [{"ok": True, "hash": "abc"}]})
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "in.json")
+            with open(src, "w") as f:
+                json.dump(payload, f)
+            with _patch_resolve(), \
+                 patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+                result = self.runner.invoke(
+                    box_config_cli.box_config,
+                    ["import", src, "--box", "HYP-3", "--yes"],
+                )
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            self.assertIn("Imported", result.output)
+            self.assertIn("set-raw", [c[0] for c in backend.calls])
+
+    def test_import_rejects_invalid_json_before_ssh(self):
+        import os
+        import tempfile
+        backend = FakeBoxBackend()
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "bad.json")
+            with open(src, "w") as f:
+                f.write("{ this is not json")
+            with _patch_resolve(), \
+                 patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+                result = self.runner.invoke(
+                    box_config_cli.box_config,
+                    ["import", src, "--box", "HYP-3", "--yes"],
+                )
+            self.assertNotEqual(result.exit_code, 0)
+            self.assertIn("Invalid JSON", result.output)
+            self.assertEqual(backend.calls, [])
+
+    def test_import_surfaces_shim_validation_errors(self):
+        import os
+        import tempfile
+        payload = {"version": 1, "mounts": [{"host": "/h"}]}  # missing container
+        backend = FakeBoxBackend({"set-raw": [{"ok": False, "errors": ["mounts[0]: missing required key 'container'."]}]})
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "in.json")
+            with open(src, "w") as f:
+                json.dump(payload, f)
+            with _patch_resolve(), \
+                 patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+                result = self.runner.invoke(
+                    box_config_cli.box_config,
+                    ["import", src, "--box", "HYP-3", "--yes"],
+                )
+            self.assertNotEqual(result.exit_code, 0)
+            self.assertIn("missing required key 'container'", result.output)
+
+
+class CopyCommand(unittest.TestCase):
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def test_copy_round_trips(self):
+        payload = {"version": 1, "apt_packages": ["tcpdump"]}
+        backend = FakeBoxBackend({
+            "show": [payload],
+            "set-raw": [{"ok": True, "hash": "abc"}],
+        })
+        # _resolve_box gets called twice; mock to return distinct values.
+        with patch.object(box_config_cli, "_resolve_box", side_effect=["1.2.3.4", "5.6.7.8"]), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["copy", "--from", "HYP-3", "--to", "HYP-4", "--yes"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("Copied config", result.output)
+        verbs_called = [c[0] for c in backend.calls]
+        self.assertIn("show", verbs_called)
+        self.assertIn("set-raw", verbs_called)
+
+    def test_copy_refuses_same_box(self):
+        backend = FakeBoxBackend()
+        with patch.object(box_config_cli, "_resolve_box", return_value="1.2.3.4"), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["copy", "--from", "HYP-3", "--to", "HYP-3-alias", "--yes"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("same box", result.output)
+        self.assertEqual(backend.calls, [])
+
+
+class EditCommand(unittest.TestCase):
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def test_edit_saves_valid_changes(self):
+        import os
+        original = {"version": 1, "apt_packages": ["tcpdump"]}
+        edited = {"version": 1, "apt_packages": ["tcpdump", "strace"]}
+        backend = FakeBoxBackend({
+            "show": [original],
+            "set-raw": [{"ok": True, "hash": "new"}],
+        })
+
+        # Fake $EDITOR: rewrite the tempfile with the edited payload, return 0.
+        def fake_editor(argv):
+            tmp_path = argv[1]
+            with open(tmp_path, "w") as f:
+                json.dump(edited, f)
+            return 0
+
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch("subprocess.call", side_effect=fake_editor), \
+             patch.dict(os.environ, {"EDITOR": "fake-editor"}):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["edit", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("Saved on", result.output)
+        verb, args = backend.calls[-1]
+        self.assertEqual(verb, "set-raw")
+        self.assertEqual(json.loads(args[0]), edited)
+
+    def test_edit_reopens_on_validation_error(self):
+        import os
+        original = {"version": 1}
+        bad = {"version": 1, "mounts": [{"host": "rel"}]}
+        good = {"version": 1, "mounts": [{"host": "/a", "container": "/a"}]}
+        backend = FakeBoxBackend({
+            "show": [original],
+            "set-raw": [
+                {"ok": False, "errors": ["mounts[0].host must be an absolute path (got 'rel')."]},
+                {"ok": True, "hash": "new"},
+            ],
+        })
+
+        attempts = {"n": 0}
+
+        def fake_editor(argv):
+            tmp_path = argv[1]
+            attempts["n"] += 1
+            # First edit: write bad config. Second: write good.
+            with open(tmp_path, "w") as f:
+                json.dump(bad if attempts["n"] == 1 else good, f)
+            return 0
+
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch("subprocess.call", side_effect=fake_editor), \
+             patch.dict(os.environ, {"EDITOR": "fake-editor"}):
+            # Auto-answer "yes" to "Re-open editor?" prompt
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["edit", "--box", "HYP-3"],
+                input="y\n",
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertEqual(attempts["n"], 2)
+        self.assertIn("must be an absolute path", result.output)
+        self.assertIn("Saved on", result.output)
+
+
+class MultiBoxFanout(unittest.TestCase):
+    """Comma-separated --box value fans out across boxes for show and apply."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def test_show_renders_each_box_with_separator(self):
+        backend = FakeBoxBackend({
+            "show": [
+                {"version": 1, "apt_packages": ["tcpdump"]},
+                {"version": 1, "apt_packages": ["strace"]},
+            ],
+        })
+        # _resolve_box is called once per name in the comma-separated list.
+        with patch.object(box_config_cli, "_resolve_box", side_effect=["1.2.3.4", "5.6.7.8"]), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["show", "--box", "HYP-3,HYP-4"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("=== 1.2.3.4 ===", result.output)
+        self.assertIn("=== 5.6.7.8 ===", result.output)
+        self.assertIn("tcpdump", result.output)
+        self.assertIn("strace", result.output)
+
+    def test_show_json_emits_per_box_map(self):
+        backend = FakeBoxBackend({
+            "show": [
+                {"version": 1, "apt_packages": ["tcpdump"]},
+                {"version": 1, "apt_packages": ["strace"]},
+            ],
+        })
+        with patch.object(box_config_cli, "_resolve_box", side_effect=["1.2.3.4", "5.6.7.8"]), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["show", "--box", "HYP-3,HYP-4", "--json"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        payload = json.loads(result.output)
+        self.assertIn("1.2.3.4", payload)
+        self.assertIn("5.6.7.8", payload)
+
+    def test_apply_continues_past_first_box_failure(self):
+        # First box: validation fails. Second: applies cleanly. Final exit 1.
+        backend = FakeBoxBackend({
+            "validate": [
+                {"ok": False, "errors": ["bad config"], "exists": True},
+                {"ok": True, "errors": [], "exists": True},
+            ],
+            "hash": [{"hash": "aaa"}],
+            "applied-hash": [{"hash": "bbb"}],
+            "show": [{"version": 1, "mounts": []}],
+            "applied-show": [None],
+            "set-applied-hash": [{"ok": True}],
+        })
+        with patch.object(box_config_cli, "_resolve_box", side_effect=["1.2.3.4", "5.6.7.8"]), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_wait_for_box_api", return_value=True):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "HYP-3,HYP-4", "--yes"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Refusing to apply", result.output)
+        self.assertIn("Apply failed on 1/2", result.output)
+        self.assertIn("1.2.3.4", result.output)
+
+
 if __name__ == "__main__":
     unittest.main()
