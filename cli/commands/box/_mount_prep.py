@@ -22,15 +22,29 @@ branch without a real box.
 from __future__ import annotations
 
 import shlex
-import subprocess
 from dataclasses import dataclass
-from typing import Callable, Optional, Tuple
+from typing import Optional
+
+from ._ssh import SshRunner, default_ssh_runner, sudo_error_message
 
 CONTAINER_UID = 33
 CONTAINER_GID = 33
 EXPECTED_OWNER = f"{CONTAINER_UID}:{CONTAINER_GID}"
 
-SshRunner = Callable[[str, str], Tuple[int, str, str]]
+SUDOERS_BOOTSTRAP = (
+    "Auto-prep needs passwordless sudo for two specific commands. Run this "
+    "ONCE on the box (you'll be prompted for the sudo password the one "
+    "time):\n"
+    "\n"
+    "  echo 'lagerdata ALL=(root) NOPASSWD: /bin/mkdir, /bin/chown' \\\n"
+    "    | sudo tee /etc/sudoers.d/lager-box-config\n"
+    "  sudo chmod 440 /etc/sudoers.d/lager-box-config\n"
+    "\n"
+    "Then re-run `lager box config mount add ...` (or `apply`). The "
+    "rule is narrow-scoped (mkdir + chown only)."
+)
+
+_SUDO_BASE_TEXT = "passwordless sudo is not configured on the box for the auto-prep commands."
 
 
 @dataclass
@@ -49,19 +63,6 @@ def manual_fix_command(host_path: str, *, recursive: bool = False) -> str:
     flag = " -R" if recursive else ""
     quoted = shlex.quote(host_path)
     return f"sudo mkdir -p {quoted} && sudo chown{flag} {EXPECTED_OWNER} {quoted}"
-
-
-def _default_ssh_runner(box_ip: str, cmd: str) -> Tuple[int, str, str]:
-    from ...box_storage import get_box_user
-
-    user = get_box_user(box_ip) or "lagerdata"
-    proc = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", f"{user}@{box_ip}", cmd],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    return proc.returncode, proc.stdout, proc.stderr
 
 
 def ensure_host_path_owned(
@@ -86,7 +87,7 @@ def ensure_host_path_owned(
         PrepResult — `ok` False means the caller should abort and surface
         `message` plus `manual_fix`. `ok` True means the mount is ready.
     """
-    runner = ssh_runner or _default_ssh_runner
+    runner = ssh_runner or default_ssh_runner
     quoted = shlex.quote(host_path)
 
     rc, stdout, _ = runner(box_ip, f"stat -c %u:%g {quoted} 2>/dev/null")
@@ -103,7 +104,7 @@ def ensure_host_path_owned(
                 ok=False,
                 action="sudo_failed",
                 host_path=host_path,
-                message=_sudo_error_message(stderr),
+                message=sudo_error_message(stderr, base_text=_SUDO_BASE_TEXT, bootstrap_text=SUDOERS_BOOTSTRAP),
                 manual_fix=manual_fix_command(host_path),
             )
         return PrepResult(
@@ -162,7 +163,7 @@ def ensure_host_path_owned(
             host_path=host_path,
             current_owner=current_owner,
             is_populated=is_populated,
-            message=_sudo_error_message(stderr),
+            message=sudo_error_message(stderr, base_text=_SUDO_BASE_TEXT, bootstrap_text=SUDOERS_BOOTSTRAP),
             manual_fix=manual_fix_command(host_path, recursive=recursive),
         )
     return PrepResult(
@@ -177,32 +178,3 @@ def ensure_host_path_owned(
             else f"Chowned {host_path} to {EXPECTED_OWNER}."
         ),
     )
-
-
-SUDOERS_BOOTSTRAP = (
-    "Auto-prep needs passwordless sudo for two specific commands. Run this "
-    "ONCE on the box (you'll be prompted for the sudo password the one "
-    "time):\n"
-    "\n"
-    "  echo 'lagerdata ALL=(root) NOPASSWD: /bin/mkdir, /bin/chown' \\\n"
-    "    | sudo tee /etc/sudoers.d/lager-box-config\n"
-    "  sudo chmod 440 /etc/sudoers.d/lager-box-config\n"
-    "\n"
-    "Then re-run `lager box config mount add ...` (or `apply`). The "
-    "rule is narrow-scoped (mkdir + chown only)."
-)
-
-
-def _sudo_error_message(stderr: str) -> str:
-    err = (stderr or "").strip()
-    base = (
-        "passwordless sudo is not configured on the box for the auto-prep "
-        "commands."
-    )
-    if err and "a password is required" not in err.lower() and "sudo:" not in err.lower():
-        # An unexpected sudo error (binary missing, permission, etc.) — surface
-        # the raw stderr without the bootstrap noise; bootstrap won't help.
-        return err
-    if err:
-        base += f" Stderr: {err}"
-    return base + "\n\n" + SUDOERS_BOOTSTRAP
