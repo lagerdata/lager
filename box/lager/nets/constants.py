@@ -34,6 +34,35 @@ class NetType(Enum):
     EnergyAnalyzer = auto()
     Router = auto()
 
+    # UPPERCASE / SCREAMING_SNAKE_CASE aliases for the TitleCase members
+    # above. Python's enum convention is SCREAMING_SNAKE_CASE, so code
+    # (including LLM-generated test scripts) that writes NetType.DEBUG,
+    # NetType.POWER_SUPPLY, etc. resolves to the same member rather than
+    # raising AttributeError. Members already in UPPERCASE form
+    # (GPIO/ADC/DAC/UART/SPI/I2C) need no alias.
+    DEBUG = Debug
+    BATTERY = Battery
+    ANALOG = Analog
+    LOGIC = Logic
+    WAVEFORM = Waveform
+    POWERSUPPLY = PowerSupply
+    POWER_SUPPLY = PowerSupply
+    ELOAD = ELoad
+    THERMOCOUPLE = Thermocouple
+    ROTATION = Rotation
+    WIFI = Wifi
+    ACTUATE = Actuate
+    POWERSUPPLY2Q = PowerSupply2Q
+    POWER_SUPPLY_2Q = PowerSupply2Q
+    ARM = Arm
+    USB = Usb
+    WATTMETER = WattMeter
+    WATT_METER = WattMeter
+    WEBCAM = Webcam
+    ENERGYANALYZER = EnergyAnalyzer
+    ENERGY_ANALYZER = EnergyAnalyzer
+    ROUTER = Router
+
     @classmethod
     def from_role(cls, role):
         mapping = {
