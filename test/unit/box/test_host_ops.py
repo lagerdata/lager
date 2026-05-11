@@ -15,8 +15,8 @@ from cli.commands.box import _host_ops as ops
 def _runner_returning(rc, stdout="", stderr=""):
     calls = []
 
-    def runner(box_ip, cmd):
-        calls.append((box_ip, cmd))
+    def runner(box_ip, cmd, *, stdin=None):
+        calls.append((box_ip, cmd, stdin))
         return rc, stdout, stderr
 
     return runner, calls
@@ -36,7 +36,7 @@ class AptInstall(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(result.action, "installed")
         self.assertEqual(len(calls), 1)
-        _, cmd = calls[0]
+        _, cmd, _ = calls[0]
         self.assertIn("apt-get install -y", cmd)
         self.assertIn("tcpdump", cmd)
         self.assertIn("iptables-persistent", cmd)
@@ -71,7 +71,7 @@ class AptInstall(unittest.TestCase):
         # depth: anything that reaches apt_install gets quoted.
         runner, calls = _runner_returning(0)
         ops.apt_install("1.2.3.4", ["weird name"], ssh_runner=runner)
-        _, cmd = calls[0]
+        _, cmd, _ = calls[0]
         self.assertIn("'weird name'", cmd)
 
 
@@ -82,7 +82,7 @@ class SysctlApply(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(result.action, "cleared")
         self.assertEqual(len(calls), 1)
-        _, cmd = calls[0]
+        _, cmd, _ = calls[0]
         self.assertIn("rm -f", cmd)
         self.assertIn("99-lager-box-config.conf", cmd)
         self.assertIn("sysctl --system", cmd)
@@ -90,8 +90,8 @@ class SysctlApply(unittest.TestCase):
     def test_writes_keys_in_sorted_order(self):
         captured = []
 
-        def runner(box_ip, cmd):
-            captured.append(cmd)
+        def runner(box_ip, cmd, *, stdin=None):
+            captured.append((cmd, stdin))
             return 0, "", ""
 
         result = ops.sysctl_apply(
@@ -100,24 +100,21 @@ class SysctlApply(unittest.TestCase):
             ssh_runner=runner,
         )
         self.assertTrue(result.ok)
-        # The injected runner sees a special encoded form when stdin data is
-        # piped (see _run_with_stdin). The body is included so we can verify
-        # ordering.
         self.assertEqual(len(captured), 1)
-        encoded = captured[0]
-        self.assertIn("__STDIN__", encoded)
+        cmd, body = captured[0]
+        self.assertIsNotNone(body)
         # Sorted by key: kernel.* then net.*
         self.assertLess(
-            encoded.index("kernel.shmmax"),
-            encoded.index("net.ipv4.ip_forward"),
+            body.index("kernel.shmmax"),
+            body.index("net.ipv4.ip_forward"),
         )
-        self.assertIn("kernel.shmmax = 68719476736", encoded)
-        self.assertIn("net.ipv4.ip_forward = 1", encoded)
-        self.assertIn("tee", encoded)
-        self.assertIn("sysctl --system", encoded)
+        self.assertIn("kernel.shmmax = 68719476736", body)
+        self.assertIn("net.ipv4.ip_forward = 1", body)
+        self.assertIn("tee", cmd)
+        self.assertIn("sysctl --system", cmd)
 
     def test_sudo_failure_returns_bootstrap(self):
-        def runner(box_ip, cmd):
+        def runner(box_ip, cmd, *, stdin=None):
             return 1, "", "sudo: a password is required"
 
         result = ops.sysctl_apply(

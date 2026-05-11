@@ -573,14 +573,12 @@ def _wait_for_box_api(
 
 
 def _bounce_container(ctx: click.Context, resolved_box: str) -> bool:
-    from ...box_storage import get_box_user
-    user = get_box_user(resolved_box) or "lagerdata"
-    ssh_host = f"{user}@{resolved_box}"
-    cmd = "cd ~/box && ./start_box.sh"
+    from ._ssh import default_ssh_runner
     click.echo(f"Restarting lager container on {resolved_box} via SSH...")
     try:
-        result = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", ssh_host, cmd],
+        rc, _stdout, _stderr = default_ssh_runner(
+            resolved_box,
+            "cd ~/box && ./start_box.sh",
             timeout=300,
         )
     except subprocess.TimeoutExpired:
@@ -589,7 +587,7 @@ def _bounce_container(ctx: click.Context, resolved_box: str) -> bool:
     except FileNotFoundError:
         click.secho("ssh not found on local machine.", fg="red", err=True)
         return False
-    return result.returncode == 0
+    return rc == 0
 
 
 @box_config.group("mount", help="Manage host-to-container bind mounts.")

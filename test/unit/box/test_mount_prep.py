@@ -4,33 +4,12 @@
 Unit tests for cli/commands/box/_mount_prep.py.
 
 Drives every branch by mocking the SSH runner. No real box, no subprocess,
-no network. Mirrors the importlib-by-path style from test_box_config.py so
-the test stays decoupled from the rest of the package's import graph.
+no network.
 """
 
-import importlib.util
-import os
-import sys
 import unittest
 
-_MOUNT_PREP_PY = os.path.abspath(
-    os.path.join(
-        os.path.dirname(__file__),
-        '..', '..', '..', 'cli', 'commands', 'box', '_mount_prep.py',
-    )
-)
-
-
-def _load_mount_prep_module():
-    name = "mount_prep_under_test"
-    spec = importlib.util.spec_from_file_location(name, _MOUNT_PREP_PY)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
-mp = _load_mount_prep_module()
+from cli.commands.box import _mount_prep as mp
 
 
 class FakeSsh:
