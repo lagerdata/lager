@@ -39,12 +39,19 @@ _VISA_RE = re.compile(
 
 # Vendor IDs handled by each backend. Anything not in this map falls back to
 # the J-Link backend so existing nets keep working when the VID is unknown.
+#
+# Only include VIDs we can map to an OpenOCD interface config without user
+# help — otherwise auto-resolution lands the user on the OpenOCD backend and
+# immediately fails because we have no ``interface/*.cfg`` to load. Keep
+# this set in lockstep with ``openocd.interface_config_for_address``. Users
+# with open-hw probes whose VIDs are NOT listed here (e.g. Black Magic Probe
+# at 0x1209, Glasgow at 0x20b7) can still use the OpenOCD backend by setting
+# ``debug_backend: openocd`` on the net and supplying ``openocd_config``.
 _JLINK_VIDS = {'1366'}                  # SEGGER
 _OPENOCD_VIDS = {
     '0483',  # STMicroelectronics — ST-Link v2 / v2-1 / v3
     '2e8a',  # Raspberry Pi — RP2040 Picoprobe / CMSIS-DAP
     '0403',  # FTDI — FT2232H / FT232H / FT4232H debug adapters
-    '1209',  # Generic InterBiometrics — used by some open hw probes
     '0d28',  # ARM — Cortex-M DAPLink / NXP MK20 CMSIS-DAP
     '03eb',  # Atmel — EDBG / mEDBG
     '15ba',  # Olimex — ARM-USB-OCD-H (FTDI-backed but distinct VID)
