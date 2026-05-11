@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y ca-certificates libusb-1.0-0-dev libude
 	wireless-tools \
 	tini \
 	gnupg \
+	nodejs npm \
 	&& wget -qO /usr/share/keyrings/phidgets.gpg https://www.phidgets.com/gpgkey/pubring.gpg \
 	&& echo deb [signed-by=/usr/share/keyrings/phidgets.gpg] http://www.phidgets.com/debian bookworm main > /etc/apt/sources.list.d/phidgets.list \
 	&& apt-get update \
@@ -99,6 +100,20 @@ RUN /usr/local/bin/python -m pip install --upgrade pip \
 	'git+https://github.com/Vaskivskyi/asusrouter.git@8de97bfa8ffe3efa2f6d1ec30bb95187d13ab37a'
 
 RUN git config --global http.version HTTP/1.1
+
+# Rust toolchain for box_config cargo_packages installs. Installed via rustup
+# into a shared /opt/rust so the runtime user (www-data) can `cargo install`
+# without writing to root's home. CARGO_HOME on PATH makes `cargo` discoverable
+# by start_box.sh's `docker exec lager bash -lc "cargo install ..."` loop.
+# Apt's rustc/cargo (Bookworm = 1.63) is too old for most modern crates; rustup
+# pulls the current stable toolchain (~250MB) and is the standard install path.
+ENV RUSTUP_HOME=/opt/rust/rustup
+ENV CARGO_HOME=/opt/rust/cargo
+ENV PATH=/opt/rust/cargo/bin:${PATH}
+RUN mkdir -p /opt/rust \
+    && wget -qO- https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --no-modify-path \
+    && chown -R www-data:www-data /opt/rust \
+    && chmod -R 755 /opt/rust
 
 # Install nrfutil for Nordic DFU/OTA updates
 # nrfutil v7+ is a standalone binary, not a pip package
