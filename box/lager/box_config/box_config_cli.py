@@ -402,6 +402,45 @@ def _cmd_sysctl_unset(keys: list) -> None:
     _stdout_json({"ok": True, "removed": removed})
 
 
+def _cmd_env_set(payload: str) -> None:
+    data = json.loads(payload)
+    entries = data.get("entries", {})
+    if not isinstance(entries, dict):
+        _stdout_json({"ok": False, "errors": ["payload.entries must be an object"]})
+        return
+    current = _load_or_init()
+    set_keys = []
+    for k, v in entries.items():
+        ok, reason = cfg.validate_env_key(k)
+        if not ok:
+            _stdout_json({"ok": False, "errors": [f"{k!r}: {reason}"]})
+            return
+        if not isinstance(v, str):
+            _stdout_json({"ok": False, "errors": [f"env[{k!r}] value must be a string"]})
+            return
+        current.env[k] = v
+        set_keys.append(k)
+    raw = current.to_dict()
+    errors = cfg.validate(raw)
+    if errors:
+        _stdout_json({"ok": False, "errors": errors})
+        return
+    cfg.save(cfg.BoxConfig.from_dict(raw))
+    _audit("env-set", {"entries": dict(entries)})
+    _stdout_json({"ok": True, "set": set_keys})
+
+
+def _cmd_env_unset(keys: list) -> None:
+    current = _load_or_init()
+    removed = [k for k in keys if k in current.env]
+    for k in removed:
+        del current.env[k]
+    cfg.save(current)
+    if removed:
+        _audit("env-unset", {"removed": removed})
+    _stdout_json({"ok": True, "removed": removed})
+
+
 def _cmd_cargo_add(payload: str) -> None:
     data = json.loads(payload)
     new_pkgs = data.get("packages", [])
@@ -611,6 +650,8 @@ _DISPATCH = {
     "apt-remove":        lambda args: _cmd_apt_remove(_require_rest(args)),
     "sysctl-set":        lambda args: _cmd_sysctl_set(_require(args, 1)),
     "sysctl-unset":      lambda args: _cmd_sysctl_unset(_require_rest(args)),
+    "env-set":           lambda args: _cmd_env_set(_require(args, 1)),
+    "env-unset":         lambda args: _cmd_env_unset(_require_rest(args)),
     "cargo-add":         lambda args: _cmd_cargo_add(_require(args, 1)),
     "cargo-remove":      lambda args: _cmd_cargo_remove(_require_rest(args)),
     "npm-add":           lambda args: _cmd_npm_add(_require(args, 1)),

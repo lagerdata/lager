@@ -437,6 +437,98 @@ class SysctlCli(unittest.TestCase):
         self.assertIn("Removed 1 sysctl key", result.output)
 
 
+class EnvCli(unittest.TestCase):
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def test_set_requires_key_value(self):
+        backend = FakeBoxBackend()
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["env", "set", "no_equals_here", "--box", "HYP-3"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("expected KEY=VALUE", result.output)
+        self.assertEqual(backend.calls, [])
+
+    def test_set_round_trip_payload_shape(self):
+        backend = FakeBoxBackend({
+            "env-set": [{"ok": True, "set": ["LAGER_DEBUG", "LOG_LEVEL"]}],
+        })
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["env", "set", "LAGER_DEBUG=1", "LOG_LEVEL=info", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("Set 2 env var", result.output)
+        verb, args = backend.calls[-1]
+        self.assertEqual(verb, "env-set")
+        sent = json.loads(args[0])
+        self.assertEqual(sent, {"entries": {"LAGER_DEBUG": "1", "LOG_LEVEL": "info"}})
+
+    def test_set_value_with_equals_keeps_value_intact(self):
+        # KEY=VALUE input split must use rsplit-style "first = wins" so values
+        # containing `=` (URL params, query strings, base64 padding) pass
+        # through to the shim unmangled.
+        backend = FakeBoxBackend({"env-set": [{"ok": True, "set": ["DB_URL"]}]})
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["env", "set", "DB_URL=postgres://u:p@h/db?ssl=true", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        sent = json.loads(backend.calls[-1][1][0])
+        self.assertEqual(sent["entries"]["DB_URL"], "postgres://u:p@h/db?ssl=true")
+
+    def test_set_rejects_path_via_shim(self):
+        # Format validation is shim-side; the host CLI's job is to surface
+        # the error message via _print_errors.
+        backend = FakeBoxBackend({
+            "env-set": [{"ok": False, "errors": ["'PATH': env key 'PATH' is not allowed; use 'PATH_PREPEND' to extend PATH inside the container"]}],
+        })
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["env", "set", "PATH=/usr/bin", "--box", "HYP-3"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Failed to set env vars", result.output)
+        self.assertIn("PATH_PREPEND", result.output)
+
+    def test_unset_round_trips(self):
+        backend = FakeBoxBackend({
+            "env-unset": [{"ok": True, "removed": ["LAGER_DEBUG"]}],
+        })
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["env", "unset", "LAGER_DEBUG", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("Removed 1 env var", result.output)
+
+    def test_list_renders_entries(self):
+        backend = FakeBoxBackend({
+            "show": [{"version": 1, "env": {"LAGER_DEBUG": "1", "LOG_LEVEL": "info"}}],
+        })
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["env", "list", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("LAGER_DEBUG=1", result.output)
+        self.assertIn("LOG_LEVEL=info", result.output)
+
+
 class CargoCli(unittest.TestCase):
     def setUp(self):
         self.runner = CliRunner()
@@ -1253,20 +1345,169 @@ class EditCommand(unittest.TestCase):
         self.assertIn("Saved on", result.output)
 
 
+class ShowTreeFormat(unittest.TestCase):
+    """The human renderer draws a host/container tree with box-drawing
+    characters. Pin a small instance so future tweaks don't silently
+    break the structure (e.g., dropping the parent-line `│  ` continuations
+    or losing the `(none)` leaf for `--all` empty sections)."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def _backend(self, payload):
+        return FakeBoxBackend({
+            "show": [payload],
+            "hash": [{"hash": "x"}],
+            "applied-hash": [{"hash": "x"}],
+        })
+
+    def test_sections_indented_under_group_headers(self):
+        # Sections inside HOST/CONTAINER get a 2-space indent so membership
+        # is visually clear; group headers themselves stay flush-left.
+        payload = {"version": 1, "apt_packages": ["jq"]}
+        backend = self._backend(payload)
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["show", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        lines = result.output.splitlines()
+        # Group header flush left, section label indented.
+        self.assertTrue(any(line == "HOST" for line in lines), msg=result.output)
+        self.assertTrue(
+            any(line.startswith("  ") and "Apt packages" in line for line in lines),
+            msg=result.output,
+        )
+        # Entry lines inherit the same indent.
+        self.assertTrue(
+            any(line.startswith("  └── ") for line in lines)
+            or any(line.startswith("  ├── ") for line in lines),
+            msg=result.output,
+        )
+
+    def test_grouped_layout_with_section_branches(self):
+        # HOST/CONTAINER group headers (bold, uppercase, underlined),
+        # sections within each group with `├── /└── ` branches matching
+        # nets's listing style. Need a multi-entry section so both branch
+        # shapes appear.
+        payload = {
+            "version": 1,
+            "apt_packages": ["tcpdump", "strace"],
+            "pip_packages": ["requests"],
+            "env": {"FOO": "1"},
+        }
+        backend = self._backend(payload)
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["show", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        out = result.output
+        self.assertIn("Box config:", out)
+        # No schema-version marker in the header (we shipped only v1 ever).
+        self.assertNotIn("v1", out)
+        # Group headers (caps + underline). Underline length matches the
+        # header word so the visual width is consistent.
+        self.assertIn("HOST", out)
+        self.assertIn("CONTAINER", out)
+        self.assertIn("─" * len("HOST"), out)
+        self.assertIn("─" * len("CONTAINER"), out)
+        # Section labels — plain (no scope-tag suffix).
+        self.assertIn("Apt packages", out)
+        self.assertIn("Pip packages", out)
+        self.assertIn("Env", out)
+        # Scope tags from the previous design must NOT appear anymore.
+        self.assertNotIn("[host]", out)
+        self.assertNotIn("[container]", out)
+        # nets-style branches (4-char incl. trailing space).
+        self.assertIn("├── ", out)
+        self.assertIn("└── ", out)
+        # No deep-tree `│  ` continuation prefix — single-level branches.
+        self.assertNotIn("│  ", out)
+
+    def test_empty_sections_render_with_none_leaf(self):
+        # Discoverability over brevity: every section header appears even
+        # when its content is empty, so operators can see what they could
+        # add. Empty sections show a single `(none)` leaf branch.
+        payload = {"version": 1, "apt_packages": ["tcpdump"]}
+        backend = self._backend(payload)
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["show", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        out = result.output
+        # Group headers are present even when one group is mostly empty.
+        self.assertIn("HOST", out)
+        self.assertIn("CONTAINER", out)
+        # Populated section + every empty section's label visible.
+        self.assertIn("Apt packages", out)
+        self.assertIn("Sysctl", out)
+        self.assertIn("Mounts", out)
+        self.assertIn("Volumes", out)
+        self.assertIn("Pip packages", out)
+        self.assertIn("Cargo packages", out)
+        self.assertIn("Npm packages", out)
+        # Empty sections show a single `(none)` branch.
+        self.assertIn("└── (none)", out)
+
+    def test_status_marker_up_to_date(self):
+        backend = FakeBoxBackend({
+            "show": [{"version": 1, "apt_packages": ["tcpdump"]}],
+            "hash": [{"hash": "aaa"}],
+            "applied-hash": [{"hash": "aaa"}],
+        })
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["show", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("[Up To Date]", result.output)
+        self.assertNotIn("Unapplied", result.output)
+
+    def test_status_marker_unapplied(self):
+        backend = FakeBoxBackend({
+            "show": [{"version": 1, "apt_packages": ["tcpdump"]}],
+            "hash": [{"hash": "aaa"}],
+            "applied-hash": [{"hash": "bbb"}],
+        })
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["show", "--box", "HYP-3"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("[Unapplied Changes!]", result.output)
+        self.assertNotIn("Up To Date", result.output)
+
+
 class MultiBoxFanout(unittest.TestCase):
     """Comma-separated --box value fans out across boxes for show and apply."""
 
     def setUp(self):
         self.runner = CliRunner()
 
-    def test_show_renders_each_box_with_separator(self):
+    def test_show_renders_each_box_with_header(self):
+        # The new format uses per-box headers ("Box config: <label> (...)")
+        # instead of "=== ip ===" separators. show_cmd also calls hash +
+        # applied-hash to compute the clean/DRIFT marker.
         backend = FakeBoxBackend({
             "show": [
                 {"version": 1, "apt_packages": ["tcpdump"]},
                 {"version": 1, "apt_packages": ["strace"]},
             ],
+            "hash": [{"hash": "aaa"}],
+            "applied-hash": [{"hash": "aaa"}],
         })
-        # _resolve_box is called once per name in the comma-separated list.
         with patch.object(box_config_cli, "_resolve_box", side_effect=["1.2.3.4", "5.6.7.8"]), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
@@ -1274,8 +1515,10 @@ class MultiBoxFanout(unittest.TestCase):
                 ["show", "--box", "HYP-3,HYP-4"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
-        self.assertIn("=== 1.2.3.4 ===", result.output)
-        self.assertIn("=== 5.6.7.8 ===", result.output)
+        # Each box gets its own "Box config: ..." header line.
+        self.assertEqual(result.output.count("Box config:"), 2)
+        self.assertIn("1.2.3.4", result.output)
+        self.assertIn("5.6.7.8", result.output)
         self.assertIn("tcpdump", result.output)
         self.assertIn("strace", result.output)
 
@@ -1322,6 +1565,77 @@ class MultiBoxFanout(unittest.TestCase):
         self.assertIn("Refusing to apply", result.output)
         self.assertIn("Apply failed on 1/2", result.output)
         self.assertIn("1.2.3.4", result.output)
+
+
+class RepairCommand(unittest.TestCase):
+    """`lager box config repair` is the rollback path exposed as a verb,
+    for recovering boxes that didn't trigger automatic rollback (e.g.,
+    hand-edited bad JSON, container wedged on stale config)."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def _ssh_runner(self, *, snapshot_exists, cp_succeeds=True, cp_stderr=""):
+        def runner(box_ip, cmd, *, stdin=None, timeout=60):
+            if cmd.startswith("test -f"):
+                return (0 if snapshot_exists else 1), "", ""
+            if cmd.startswith("sudo -n cp "):
+                return (0 if cp_succeeds else 1), "", cp_stderr
+            return 0, "", ""
+        return runner
+
+    def test_repair_succeeds_end_to_end(self):
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "default_ssh_runner",
+                          side_effect=self._ssh_runner(snapshot_exists=True)), \
+             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_wait_for_box_api", return_value=True):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["repair", "--box", "HYP-3", "--yes"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("Snapshot restored", result.output)
+        self.assertIn("Repair complete", result.output)
+
+    def test_repair_no_snapshot_aborts(self):
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "default_ssh_runner",
+                          side_effect=self._ssh_runner(snapshot_exists=False)):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["repair", "--box", "HYP-3", "--yes"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("No applied snapshot", result.output)
+
+    def test_repair_cp_failure_surfaces_hint(self):
+        # Stale sudoers (no cp clause) → sudo asks for password → sudo -n fails.
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "default_ssh_runner",
+                          side_effect=self._ssh_runner(
+                              snapshot_exists=True, cp_succeeds=False,
+                              cp_stderr="sudo: a password is required")):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["repair", "--box", "HYP-3", "--yes"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Failed to restore snapshot", result.output)
+        # The "run lager update" hint should appear for sudo-rule-missing case.
+        self.assertIn("lager update", result.output)
+
+    def test_repair_bounce_failure(self):
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "default_ssh_runner",
+                          side_effect=self._ssh_runner(snapshot_exists=True)), \
+             patch.object(box_config_cli, "_bounce_container", return_value=False):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["repair", "--box", "HYP-3", "--yes"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("container failed to start", result.output)
 
 
 if __name__ == "__main__":
