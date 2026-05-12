@@ -1037,6 +1037,13 @@ def _attempt_rollback(
     """Restore the last applied snapshot and re-bounce. Returns True iff the
     box is back up on the previous good config.
 
+    Critical detail: when start_box.sh fails mid-bounce (typically because
+    docker run rejected something — duplicate mount, malformed flag), the
+    container is GONE — `docker stop && docker rm` ran successfully before
+    the failed `docker run`. The in-container shim is therefore unreachable
+    by HTTP. So this restore goes through direct SSH file ops against the
+    box host, not through the shim's restore-applied verb.
+
     First-apply boxes have no snapshot to fall back to; in that case there's
     nothing we can do remotely and the user has to recover by hand.
 
@@ -1048,16 +1055,37 @@ def _attempt_rollback(
     path never auto-uninstalls — the failed apply may have *added* packages,
     which is harmless to leave in place.
     """
-    raw = _run_box_config_py(ctx, resolved_box, verbs.RESTORE_APPLIED)
-    payload = _parse_response(raw, ctx)
-    if not payload.get("ok"):
+    # Confirm the snapshot exists before announcing rollback. test rc=0 iff
+    # the snapshot file is present; if missing this is a first-apply box and
+    # rollback isn't possible.
+    rc, _stdout, _stderr = default_ssh_runner(
+        resolved_box,
+        "test -f /etc/lager/box_config.applied.json",
+    )
+    if rc != 0:
         return False
+
     click.secho(
         "New config rejected; rolling back to last applied config and "
         "restarting...",
         fg="yellow",
         err=True,
     )
+    # Atomic-ish restore via plain cp. The shim's restore-applied verb uses
+    # tmp+rename, but it's not reachable here (container down); the source
+    # file is a previously-validated snapshot, so atomicity of the write is
+    # the only loss versus the shim path.
+    rc, _stdout, stderr = default_ssh_runner(
+        resolved_box,
+        "cp /etc/lager/box_config.applied.json /etc/lager/box_config.json",
+    )
+    if rc != 0:
+        click.secho(
+            f"Failed to restore snapshot: {(stderr or '').strip()}",
+            fg="red", err=True,
+        )
+        return False
+
     # Reverse-diff sysctl: previous values become "current", failed values
     # become "applied". When neither config touched sysctl this short-circuits
     # to a no-op inside _ensure_sysctl. A failure here is logged but doesn't
