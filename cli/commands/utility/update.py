@@ -888,13 +888,21 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
     # SETENV is permitted (otherwise sudo rejects with "not allowed to
     # set the following environment variables"). Grepping `sudo -l`
     # output is fragile across sudo versions / locales / `requiretty`.
-    # Test BOTH the apt-get/SETENV grant and the cp rule used by rollback.
-    # `sudo -n -l <cmd>` exits 0 iff the policy permits exactly that cmd
-    # without a password — true when the matching NOPASSWD entry is present.
+    # Detection: marker file + functional probe.
+    # - `/etc/lager/.boxcfg-sudoers-v2` is written by the bootstrap; its
+    #   existence indicates the v2 rule shape (with the cp clause for
+    #   rollback) is installed. Bump the version suffix when expanding
+    #   the rule so older boxes re-bootstrap automatically.
+    # - `sudo -n DEBIAN_FRONTEND=...` confirms the rule is still
+    #   functionally live (catches the case where the sudoers file was
+    #   manually deleted but the marker stayed).
+    # The previous `sudo -n -l <cmd>` approach falsely passed because
+    # Ubuntu's default `%sudo` group rule grants the user (ALL:ALL) ALL
+    # with-password, and `-l` returns 0 if the command is permitted at
+    # all — not specifically NOPASSWD.
     boxcfg_sudoers_check = run_ssh_command_with_output(
-        "sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1 "
-        "&& sudo -n -l /bin/cp /etc/lager/box_config.applied.json "
-        "/etc/lager/box_config.json >/dev/null 2>&1"
+        "test -f /etc/lager/.boxcfg-sudoers-v2 "
+        "&& sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1"
     )
     if boxcfg_sudoers_check.returncode == 0:
         log_status('Checking box-config sudoers...', 'OK', 'green')
@@ -916,7 +924,9 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
             "/bin/rm -f /etc/sysctl.d/99-lager-box-config.conf, "
             "/bin/cp /etc/lager/box_config.applied.json /etc/lager/box_config.json' "
             "| sudo tee /etc/sudoers.d/lager-box-config >/dev/null "
-            "&& sudo chmod 440 /etc/sudoers.d/lager-box-config"
+            "&& sudo chmod 440 /etc/sudoers.d/lager-box-config "
+            "&& sudo touch /etc/lager/.boxcfg-sudoers-v2 "
+            "&& sudo chmod 644 /etc/lager/.boxcfg-sudoers-v2"
         )
 
         boxcfg_install_result = run_ssh_command_interactive(

@@ -486,7 +486,9 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
         "/bin/rm -f /etc/sysctl.d/99-lager-box-config.conf, "
         "/bin/cp /etc/lager/box_config.applied.json /etc/lager/box_config.json' "
         "| sudo tee /etc/sudoers.d/lager-box-config >/dev/null "
-        "&& sudo chmod 440 /etc/sudoers.d/lager-box-config"
+        "&& sudo chmod 440 /etc/sudoers.d/lager-box-config "
+        "&& sudo touch /etc/lager/.boxcfg-sudoers-v2 "
+        "&& sudo chmod 644 /etc/lager/.boxcfg-sudoers-v2"
     )
 
     try:
@@ -502,16 +504,15 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                 fg='yellow', err=True,
             )
         else:
-            # Verify the rule took effect — exercise NOPASSWD + SETENV
-            # for apt-get AND the path-scoped cp used by rollback. Plain
-            # `sudo -n apt-get` would pass even if SETENV or the cp rule
-            # were missing, which would leave DEBIAN_FRONTEND broken or
-            # the rollback path unusable.
+            # Verify: marker file written by the bootstrap above (means the
+            # current rule shape was installed) + functional apt-get probe
+            # (means the NOPASSWD/SETENV grant is live). Marker name carries
+            # a version suffix so older boxes upgrading to a future rule
+            # shape re-bootstrap automatically.
             verify_result = subprocess.run(
                 ["ssh", "-o", "BatchMode=yes", ssh_host,
-                 "sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1 "
-                 "&& sudo -n -l /bin/cp /etc/lager/box_config.applied.json "
-                 "/etc/lager/box_config.json >/dev/null 2>&1"],
+                 "test -f /etc/lager/.boxcfg-sudoers-v2 "
+                 "&& sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1"],
                 capture_output=True, timeout=15,
             )
             if verify_result.returncode == 0:

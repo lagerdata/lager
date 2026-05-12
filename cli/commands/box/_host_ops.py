@@ -41,6 +41,7 @@ SUDOERS_BOOTSTRAP = (
     "/bin/cp /etc/lager/box_config.applied.json /etc/lager/box_config.json' \\\n"
     "    | sudo tee /etc/sudoers.d/lager-box-config >/dev/null\n"
     "  sudo chmod 440 /etc/sudoers.d/lager-box-config\n"
+    "  sudo touch /etc/lager/.boxcfg-sudoers-v2 && sudo chmod 644 /etc/lager/.boxcfg-sudoers-v2\n"
     "\n"
     "Then re-run `lager box config apply`. tee/rm/sysctl are path-scoped so a "
     "compromised lagerdata account cannot escalate to root via them; apt-get "
