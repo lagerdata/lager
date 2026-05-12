@@ -129,6 +129,18 @@ def validate_sysctl_key(key: str) -> tuple[bool, Optional[str]]:
     return True, None
 
 
+def validate_env_key(key: str) -> tuple[bool, Optional[str]]:
+    """Format check for a single environment variable name. Rejects PATH
+    explicitly — PATH inside the container is managed via PATH_PREPEND."""
+    if not isinstance(key, str) or not key.strip():
+        return False, "env key cannot be empty"
+    if not _ENV_KEY_RE.match(key):
+        return False, "invalid env variable name (must match [A-Za-z_][A-Za-z0-9_]*)"
+    if key == "PATH":
+        return False, "env key 'PATH' is not allowed; use 'PATH_PREPEND' to extend PATH inside the container"
+    return True, None
+
+
 def validate_cargo_format(pkg: str) -> tuple[bool, Optional[str]]:
     """Format check for a cargo crate spec. Accepts `name` or `name@version`."""
     if not isinstance(pkg, str) or not pkg.strip():

@@ -260,6 +260,22 @@ class ValidateEnv(unittest.TestCase):
     def test_env_path_prepend_allowed(self):
         self.assertEqual(cfg.validate(_v({"env": {"PATH_PREPEND": "/opt/box-tools/.cargo/bin"}})), [])
 
+    def test_validate_env_key_helper(self):
+        # Exported for the shim's env-set handler to reuse the same rule.
+        ok, _ = cfg.validate_env_key("FOO")
+        self.assertTrue(ok)
+        ok, _ = cfg.validate_env_key("PATH_PREPEND")
+        self.assertTrue(ok)
+        ok, reason = cfg.validate_env_key("1bad")
+        self.assertFalse(ok)
+        self.assertIn("invalid env variable name", reason)
+        ok, reason = cfg.validate_env_key("")
+        self.assertFalse(ok)
+        self.assertIn("empty", reason)
+        ok, reason = cfg.validate_env_key("PATH")
+        self.assertFalse(ok)
+        self.assertIn("PATH_PREPEND", reason)
+
 
 class FromDict(unittest.TestCase):
     def test_round_trip_extras(self):
