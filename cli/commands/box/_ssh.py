@@ -13,10 +13,19 @@ fixes don't have to be made three times.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from typing import Callable, Optional, Tuple
 
 SshRunner = Callable[..., Tuple[int, str, str]]
+
+# Dedicated key used by `lager install` / `lager update`. When present,
+# all `lager box config` SSH calls use it too — without this, host-side
+# apt/sysctl/bounce calls fall back to the user's default key, which
+# isn't authorized on the box and the operation fails with
+# "Permission denied (publickey,password)" even though other lager
+# commands work fine.
+_LAGER_BOX_KEY = os.path.expanduser("~/.ssh/lager_box")
 
 
 def default_ssh_runner(
@@ -40,8 +49,12 @@ def default_ssh_runner(
     from ...box_storage import get_box_name_by_ip, get_box_user
     name = get_box_name_by_ip(box_ip)
     user = (get_box_user(name) if name else None) or "lagerdata"
+    ssh_cmd = ["ssh", "-o", "BatchMode=yes"]
+    if os.path.exists(_LAGER_BOX_KEY):
+        ssh_cmd.extend(["-i", _LAGER_BOX_KEY])
+    ssh_cmd.extend([f"{user}@{box_ip}", cmd])
     proc = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", f"{user}@{box_ip}", cmd],
+        ssh_cmd,
         input=stdin,
         capture_output=True,
         text=True,
