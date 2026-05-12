@@ -176,7 +176,13 @@ def box_config(ctx: click.Context, box: Optional[str]) -> None:
 @click.option("--box", help="Lagerbox name or IP (comma-separated for fanout)")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
-def show_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
+def show_cmd(
+    ctx: click.Context,
+    box: Optional[str],
+    as_json: bool,
+) -> None:
+    from ...box_storage import get_box_name_by_ip
+
     targets = _resolve_boxes(ctx, box)
     if as_json and len(targets) > 1:
         out = {}
@@ -186,19 +192,39 @@ def show_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
         click.echo(json.dumps(out, indent=2))
         return
     for i, resolved in enumerate(targets):
-        if len(targets) > 1:
-            if i > 0:
-                click.echo()
-            click.secho(f"=== {resolved} ===", bold=True)
         raw = _run_box_config_py(ctx, resolved, verbs.SHOW)
         payload = _parse_response(raw, ctx)
         if payload is None:
-            click.secho(f"No box_config.json on {resolved}. Run `lager box config init`.", fg="yellow")
+            if i > 0:
+                click.echo()
+            click.secho(
+                f"No box_config.json on {resolved}. Run `lager box config init`.",
+                fg="yellow",
+            )
             continue
         if as_json:
             click.echo(json.dumps(payload, indent=2))
             continue
-        _render_human(payload)
+        # Resolve a display label: prefer the box's stored name; fall back
+        # to the resolved IP. The original --box arg might be "STG-C,HYP-3";
+        # we already split + resolved per-box.
+        name = get_box_name_by_ip(resolved)
+        label = name or resolved
+        # clean/DRIFT marker: two extra shim round-trips, but ~50ms each
+        # and high signal value. Skip the marker if either call returns
+        # None (means we can't compute "clean" reliably).
+        cur_hash = _parse_response(
+            _run_box_config_py(ctx, resolved, verbs.HASH), ctx,
+        ).get("hash")
+        applied_hash = _parse_response(
+            _run_box_config_py(ctx, resolved, verbs.APPLIED_HASH), ctx,
+        ).get("hash")
+        clean = None
+        if cur_hash is not None:
+            clean = cur_hash == applied_hash
+        if i > 0:
+            click.echo()
+        _render_human(payload, box_label=label, clean_state=clean)
 
 
 def _fmt_mount(m: dict) -> str:
@@ -210,20 +236,26 @@ def _fmt_volume(v: dict) -> str:
     return f"{v.get('name', '?')} -> {v.get('container', '?')}"
 
 
-# Registry of first-class config fields: (json_key, human_label, entry_formatter).
-# `_render_human` iterates this to print one section per field; `_FIRST_CLASS_KEYS`
-# is derived from it so the "Extras" detection can't drift when a new field
-# is added.
-_FIRST_CLASS_FIELDS = [
-    ("mounts",         "Mounts",              _fmt_mount),
-    ("volumes",        "Volumes",             _fmt_volume),
-    ("env",            "Env",                 lambda kv: f"{kv[0]}={kv[1]}"),
-    ("pip_packages",   "Pip packages",        str),
-    ("apt_packages",   "Apt packages (host)", str),
-    ("sysctl",         "Sysctl",              lambda kv: f"{kv[0]} = {kv[1]}"),
-    ("cargo_packages", "Cargo packages",      str),
-    ("npm_packages",   "Npm packages",        str),
+# Fields grouped by where they take effect — host OS vs in-container.
+# `show`'s human renderer iterates this for the two-section layout; the
+# flat `_FIRST_CLASS_FIELDS` is derived for the diff renderer (which is
+# field-agnostic). Order within each group matches typical operator
+# scanning: package-managers first, then "what's mounted/configured."
+_FIRST_CLASS_FIELDS_GROUPED = [
+    ("Host", [
+        ("apt_packages",   "Apt packages",        str),
+        ("sysctl",         "Sysctl",              lambda kv: f"{kv[0]} = {kv[1]}"),
+        ("mounts",         "Mounts",              _fmt_mount),
+    ]),
+    ("Container", [
+        ("volumes",        "Volumes",             _fmt_volume),
+        ("env",            "Env",                 lambda kv: f"{kv[0]}={kv[1]}"),
+        ("pip_packages",   "Pip packages",        str),
+        ("cargo_packages", "Cargo packages",      str),
+        ("npm_packages",   "Npm packages",        str),
+    ]),
 ]
+_FIRST_CLASS_FIELDS = [field for _, fields in _FIRST_CLASS_FIELDS_GROUPED for field in fields]
 _FIRST_CLASS_KEYS = frozenset(["version"] + [f[0] for f in _FIRST_CLASS_FIELDS])
 
 
@@ -327,31 +359,112 @@ def _print_diff_human(diff: dict) -> None:
         click.echo()
 
 
-def _render_human(payload: dict) -> None:
-    click.secho(f"Box config (version {payload.get('version', '?')})", bold=True)
+def _render_human(
+    payload: dict,
+    *,
+    box_label: Optional[str] = None,
+    clean_state: Optional[bool] = None,
+) -> None:
+    """Pretty-print box_config in a nets-derived layout:
+    - title with horizontal rule (matches nets's column-header `===` rule)
+    - HOST and CONTAINER group headings, bold uppercase, underlined
+    - within each group: bold section labels with `├── /└── ` branches
+      under each (matches nets's `instrument [addr]` + branches shape)
+    - empty sections still render with a `(none)` leaf so operators see
+      what's available to add
 
-    for key, label, fmt in _FIRST_CLASS_FIELDS:
-        items = payload.get(key)
-        if items is None:
-            items = {} if key in ("env", "sysctl") else []
-        click.echo()
-        click.secho(f"{label}:", bold=True)
-        if not items:
-            click.echo("  (none)")
-            continue
-        if isinstance(items, dict):
-            for k, v in items.items():
-                click.echo(f"  {fmt((k, v))}")
+    box_label: name/IP for the header (None → bare "Box config").
+    clean_state: True → green "clean", False → yellow "DRIFT", None → omitted.
+    """
+    # Header — matches nets's listing intro (title + horizontal rule).
+    header_left = f"Box config: {box_label}" if box_label else "Box config"
+    status = None
+    if clean_state is True:
+        status = click.style("[Up To Date]", fg="green")
+    elif clean_state is False:
+        status = click.style("[Unapplied Changes!]", fg="yellow")
+    header_line = f"{header_left}  {status}" if status else header_left
+    click.secho(header_line, bold=True)
+    import re as _re_local
+    visible_len = len(_re_local.sub(r"\033\[[0-9;]*m", "", header_line))
+    click.echo("─" * visible_len)
+
+    # Linearize into blocks (group headers + sections), each separated by
+    # a single blank line. Uniform spacing across the entire listing.
+    blocks = []
+    for group_label, sections in _FIRST_CLASS_FIELDS_GROUPED:
+        blocks.append(("group", group_label))
+        for key, label, fmt in sections:
+            items = payload.get(key)
+            if items is None:
+                items = {} if key in ("env", "sysctl") else []
+            blocks.append(("section", key, label, fmt, items))
+
+    # 2-space indent under group headers so section membership is visually
+    # obvious. Group headers themselves sit flush-left.
+    SECTION_INDENT = "  "
+    for i, block in enumerate(blocks):
+        click.echo()  # blank line before every block (including the first
+                      # after the rule)
+        if block[0] == "group":
+            upper = block[1].upper()
+            click.secho(upper, bold=True)
+            click.echo("─" * len(upper))
         else:
-            for item in items:
-                click.echo(f"  {fmt(item)}")
+            _, key, label, fmt, items = block
+            click.secho(f"{SECTION_INDENT}{label}", bold=True)
+            entries = _format_tree_entries(key, items, fmt) if items else ["(none)"]
+            for ei, entry in enumerate(entries):
+                is_last = ei == len(entries) - 1
+                branch = "└── " if is_last else "├── "
+                click.echo(f"{SECTION_INDENT}{branch}{entry}")
 
     extras = {k: v for k, v in payload.items() if k not in _FIRST_CLASS_KEYS}
     if extras:
         click.echo()
-        click.secho("Extras (round-tripped, not yet applied):", bold=True)
+        click.secho("Extras (round-tripped, not yet applied)", bold=True)
         for k in extras:
             click.echo(f"  {k}")
+
+
+def _format_tree_entries(key: str, items, fmt) -> list:
+    """Format entries for one section into a list of strings with arrow /
+    equals column alignment inside the section. Returned strings have no
+    leading whitespace — `_render_human` prepends tree-prefix per entry."""
+    if isinstance(items, dict):
+        max_key = max((len(str(k)) for k in items), default=0)
+        sep = " = "
+        return [f"{str(k):<{max_key}}{sep}{v}" for k, v in items.items()]
+    if key == "mounts":
+        max_host = max(
+            (len(m.get("host", "")) for m in items if isinstance(m, dict)),
+            default=0,
+        )
+        out = []
+        for m in items:
+            if not isinstance(m, dict):
+                out.append(str(m))
+                continue
+            host = m.get("host", "?")
+            container = m.get("container", "?")
+            ro = " (ro)" if m.get("readonly") else ""
+            out.append(f"{host:<{max_host}} -> {container}{ro}")
+        return out
+    if key == "volumes":
+        max_name = max(
+            (len(v.get("name", "")) for v in items if isinstance(v, dict)),
+            default=0,
+        )
+        out = []
+        for v in items:
+            if not isinstance(v, dict):
+                out.append(str(v))
+                continue
+            name = v.get("name", "?")
+            container = v.get("container", "?")
+            out.append(f"{name:<{max_name}} -> {container}")
+        return out
+    return [fmt(item) for item in items]
 
 
 @box_config.command("init", help="Create /etc/lager/box_config.json with defaults.")
@@ -697,6 +810,96 @@ def copy_cmd(ctx: click.Context, src: str, dst: str, yes: bool) -> None:
         f"Copied config from {src_resolved} to {dst_resolved}.", fg="green",
     )
     click.echo(f"Run `lager box config apply --box {dst}` to put the new config into effect.")
+
+
+@box_config.command(
+    "repair",
+    help="Restore box_config.json from the last applied snapshot and bounce.",
+)
+@click.option("--box", help="Lagerbox name or IP")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt")
+@click.pass_context
+def repair_cmd(ctx: click.Context, box: Optional[str], yes: bool) -> None:
+    """Recover a box whose box_config.json is broken or whose container
+    is wedged on a bad config.
+
+    Does what `lager box config apply`'s rollback path does automatically
+    when a bounce fails — but exposed as a manual verb for situations
+    that don't trigger automatic rollback:
+    - Operator hand-edited /etc/lager/box_config.json into invalid JSON
+      (bypassing `lager box config edit`'s validation)
+    - First-apply bounce failed AND there's no snapshot yet (rollback
+      can't fire) — in that case this command also exits with no-snapshot
+    - Container is up but the renderer soft-failed on a stale config and
+      the operator wants to revert to last-known-good without an apply
+
+    Uses SSH `sudo cp` (via the cp clause in the sudoers rule installed by
+    `lager install`/`lager update`), so it works even when the in-container
+    shim is unreachable.
+    """
+    resolved = _resolve_box(ctx, box)
+
+    # Confirm snapshot exists before announcing repair.
+    rc, _stdout, _stderr = default_ssh_runner(
+        resolved,
+        "test -f /etc/lager/box_config.applied.json",
+    )
+    if rc != 0:
+        click.secho(
+            f"No applied snapshot on {resolved}; cannot repair. This box has "
+            "never had a successful `lager box config apply`. Manual fix: ssh "
+            "in, delete or hand-edit /etc/lager/box_config.json, then re-run "
+            "`lager box config init`.",
+            fg="red", err=True,
+        )
+        ctx.exit(1)
+
+    if not yes and not click.confirm(
+        f"Restore /etc/lager/box_config.json from the applied snapshot on "
+        f"{resolved} and bounce?",
+        default=False,
+    ):
+        click.secho("Aborted.", fg="yellow")
+        return
+
+    rc, _stdout, stderr = default_ssh_runner(
+        resolved,
+        "sudo -n cp /etc/lager/box_config.applied.json /etc/lager/box_config.json",
+    )
+    if rc != 0:
+        click.secho(
+            f"Failed to restore snapshot: {(stderr or '').strip()}",
+            fg="red", err=True,
+        )
+        # Specific hint for the most likely cause.
+        if "password is required" in (stderr or "").lower() or "sudo:" in (stderr or "").lower():
+            click.secho(
+                "Hint: the box's sudoers rule may not have the cp clause yet. "
+                "Run `lager update --box X` to upgrade the sudoers bootstrap, "
+                "then retry repair.",
+                fg="yellow", err=True,
+            )
+        ctx.exit(1)
+    click.secho(f"Snapshot restored on {resolved}.", fg="green")
+
+    if not _bounce_container(ctx, resolved):
+        click.secho(
+            f"Snapshot restored but container failed to start on {resolved}. "
+            "SSH in and check `docker logs lager` and `docker ps -a`.",
+            fg="red", err=True,
+        )
+        ctx.exit(1)
+
+    if not _wait_for_box_api(resolved):
+        click.secho(
+            f"Container started but the box API didn't respond within "
+            f"{_API_READY_DEADLINE_SECONDS}s. Check `lager hello --box {box or resolved}` "
+            "and the container logs.",
+            fg="yellow", err=True,
+        )
+        ctx.exit(1)
+
+    click.secho(f"Repair complete on {resolved}.", fg="green", bold=True)
 
 
 @box_config.command(
@@ -1663,6 +1866,87 @@ def sysctl_unset_cmd(ctx: click.Context, keys: tuple, box: Optional[str]) -> Non
         click.echo("Run `lager box config apply` to update /etc/sysctl.d/ and reload.")
     else:
         click.secho("No matching sysctl keys were configured.", fg="yellow")
+
+
+# ---------------------------------------------------------------------------
+# env: container environment variables (passed via docker run --env)
+# ---------------------------------------------------------------------------
+
+@box_config.group("env", help="Manage container environment variables.")
+def env_group() -> None:
+    pass
+
+
+@env_group.command("list", help="List configured env vars.")
+@click.option("--box", help="Lagerbox name or IP")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+@click.pass_context
+def env_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
+    _list_field(
+        ctx, box, key="env", empty_msg="No env vars configured.",
+        formatter=lambda kv: f"{kv[0]}={kv[1]}", as_json=as_json,
+    )
+
+
+@env_group.command(
+    "set",
+    help="Set one or more env KEY=VALUE pairs. Upsert; safe to re-run.",
+)
+@click.argument("entries", nargs=-1, required=True)
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def env_set_cmd(ctx: click.Context, entries: tuple, box: Optional[str]) -> None:
+    resolved = _resolve_box(ctx, box)
+    parsed: dict = {}
+    fmt_errors = []
+    # `KEY=VALUE` input split is host-side because the shim takes a JSON
+    # object, not raw entries. Value-format and key-format checks happen
+    # shim-side via cfg.validate_env_key.
+    for entry in entries:
+        if "=" not in entry:
+            fmt_errors.append((entry, "expected KEY=VALUE"))
+            continue
+        key, value = entry.split("=", 1)
+        parsed[key] = value
+    if fmt_errors:
+        click.secho("Invalid env entries:", fg="red", err=True)
+        for e, r in fmt_errors:
+            click.secho(f"  - {e!r}: {r}", fg="red", err=True)
+        ctx.exit(1)
+
+    payload_json = json.dumps({"entries": parsed})
+    raw = _run_box_config_py(ctx, resolved, verbs.ENV_SET, payload_json)
+    payload = _parse_response(raw, ctx)
+    if not payload.get("ok"):
+        click.secho("Failed to set env vars:", fg="red", err=True)
+        _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
+        ctx.exit(1)
+    set_keys = payload.get("set") or list(parsed.keys())
+    click.secho(
+        f"Set {len(set_keys)} env var(s) on {resolved}: " + ", ".join(set_keys),
+        fg="green",
+    )
+    click.echo("Run `lager box config apply` to put the new env vars into effect.")
+
+
+@env_group.command("unset", help="Remove one or more env vars from the box config.")
+@click.argument("keys", nargs=-1, required=True)
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def env_unset_cmd(ctx: click.Context, keys: tuple, box: Optional[str]) -> None:
+    resolved = _resolve_box(ctx, box)
+    raw = _run_box_config_py(ctx, resolved, verbs.ENV_UNSET, *keys)
+    payload = _parse_response(raw, ctx)
+    if not payload.get("ok"):
+        click.secho("Failed to unset env vars:", fg="red", err=True)
+        _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
+        ctx.exit(1)
+    removed = payload.get("removed") or []
+    if removed:
+        click.secho(f"Removed {len(removed)} env var(s): " + ", ".join(removed), fg="green")
+        click.echo("Run `lager box config apply` to update the running container.")
+    else:
+        click.secho("No matching env vars were configured.", fg="yellow")
 
 
 # ---------------------------------------------------------------------------
