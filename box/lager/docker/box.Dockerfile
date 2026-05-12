@@ -101,6 +101,15 @@ RUN /usr/local/bin/python -m pip install --upgrade pip \
 
 RUN git config --global http.version HTTP/1.1
 
+# npm global-install needs a www-data-writable prefix; the default
+# /usr/local is root-owned and /home/www-data/.npm doesn't exist yet. Point
+# npm at a pre-created user-owned dir and put its bin on PATH so
+# `npm install -g X` works from the post-start loop without sudo.
+ENV NPM_CONFIG_PREFIX=/home/www-data/.npm-global
+ENV PATH=/home/www-data/.npm-global/bin:${PATH}
+RUN mkdir -p /home/www-data/.npm /home/www-data/.npm-global \
+    && chown -R www-data:www-data /home/www-data
+
 # Rust toolchain for box_config cargo_packages installs. Installed via rustup
 # into a shared /opt/rust so the runtime user (www-data) can `cargo install`
 # without writing to root's home. CARGO_HOME on PATH makes `cargo` discoverable
