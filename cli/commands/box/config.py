@@ -243,16 +243,16 @@ def _fmt_volume(v: dict) -> str:
 # scanning: package-managers first, then "what's mounted/configured."
 _FIRST_CLASS_FIELDS_GROUPED = [
     ("Host", [
-        ("apt_packages",   "Apt packages",        str),
-        ("sysctl",         "Sysctl",              lambda kv: f"{kv[0]} = {kv[1]}"),
-        ("mounts",         "Mounts",              _fmt_mount),
+        ("apt_packages",   "Apt packages",          str),
+        ("sysctl",         "Sysctl settings",       lambda kv: f"{kv[0]} = {kv[1]}"),
+        ("mounts",         "Mounts",                _fmt_mount),
     ]),
     ("Container", [
-        ("volumes",        "Volumes",             _fmt_volume),
-        ("env",            "Env",                 lambda kv: f"{kv[0]}={kv[1]}"),
-        ("pip_packages",   "Pip packages",        str),
-        ("cargo_packages", "Cargo packages",      str),
-        ("npm_packages",   "Npm packages",        str),
+        ("volumes",        "Volumes",               _fmt_volume),
+        ("env",            "Environment variables", lambda kv: f"{kv[0]}={kv[1]}"),
+        ("pip_packages",   "Pip packages",          str),
+        ("cargo_packages", "Cargo packages",        str),
+        ("npm_packages",   "Npm packages",          str),
     ]),
 ]
 _FIRST_CLASS_FIELDS = [field for _, fields in _FIRST_CLASS_FIELDS_GROUPED for field in fields]
@@ -317,22 +317,10 @@ def _diff_is_empty(diff: dict) -> bool:
 
 
 def _print_diff_human(diff: dict) -> None:
-    field_formatters = {
-        "mounts":         _fmt_mount,
-        "volumes":        _fmt_volume,
-        "env":            lambda kv: f"{kv[0]}={kv[1]}",
-        "sysctl":         lambda kv: f"{kv[0]} = {kv[1]}",
-        "pip_packages":   str,
-        "apt_packages":   str,
-        "cargo_packages": str,
-        "npm_packages":   str,
-    }
-    field_labels = {
-        "mounts": "Mounts", "volumes": "Volumes", "env": "Env",
-        "sysctl": "Sysctl", "pip_packages": "Pip packages",
-        "apt_packages": "Apt packages (host)", "cargo_packages": "Cargo packages",
-        "npm_packages": "Npm packages",
-    }
+    # Single source of truth: derive labels + formatters from the
+    # grouped registry so renames don't have to land in two places.
+    field_labels = {key: label for key, label, _ in _FIRST_CLASS_FIELDS}
+    field_formatters = {key: fmt for key, _, fmt in _FIRST_CLASS_FIELDS}
     for field, parts in diff.items():
         added = parts.get("added") or []
         removed = parts.get("removed") or []
