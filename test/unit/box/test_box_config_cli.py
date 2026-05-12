@@ -239,12 +239,13 @@ class ApplyRollback(unittest.TestCase):
 
     def _ssh_runner(self, *, snapshot_exists, cp_succeeds=True):
         """Fake SSH that responds to the two commands rollback issues:
-        `test -f .../applied.json` and `cp .../applied.json .../box_config.json`.
-        """
+        `test -f .../applied.json` and `sudo -n cp .../applied.json
+        .../box_config.json`. sudo is required because the destination is
+        owned by www-data (uid 33), not the lagerdata SSH user."""
         def runner(box_ip, cmd, *, stdin=None, timeout=60):
             if cmd.startswith("test -f"):
                 return (0 if snapshot_exists else 1), "", ""
-            if cmd.startswith("cp "):
+            if cmd.startswith("sudo -n cp "):
                 return (0 if cp_succeeds else 1), "", "" if cp_succeeds else "cp: permission denied"
             return 0, "", ""
         return runner
