@@ -588,12 +588,20 @@ def edit_cmd(ctx: click.Context, box: Optional[str]) -> None:
     retry on errors) leaves the on-disk config unchanged.
     """
     import os
+    import shutil
     import subprocess
     import tempfile
 
     resolved = _resolve_box(ctx, box)
     payload = _parse_response(_run_box_config_py(ctx, resolved, verbs.SHOW), ctx) or {}
-    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "vi"
+    # $EDITOR / $VISUAL win when set. Otherwise prefer nano (modeless, no
+    # arcane modal commands required) when it's on PATH, falling back to
+    # vi which is universally available on POSIX boxes.
+    editor = (
+        os.environ.get("EDITOR")
+        or os.environ.get("VISUAL")
+        or ("nano" if shutil.which("nano") else "vi")
+    )
 
     body = json.dumps(payload, indent=2) + "\n"
     fd, tmp_path = tempfile.mkstemp(suffix=".json", prefix="lager-box-config-")
