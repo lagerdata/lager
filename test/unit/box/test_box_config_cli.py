@@ -221,31 +221,43 @@ class WaitForBoxApi(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class ApplyRollback(unittest.TestCase):
+    """Rollback uses direct SSH file ops (not the shim) because the
+    container is dead by the time rollback fires — start_box.sh stopped
+    and removed it before the failed `docker run`."""
+
     def setUp(self):
         self.runner = CliRunner()
 
-    def _backend(self, *, restore_ok):
+    def _backend(self):
         return FakeBoxBackend({
             "validate": [{"ok": True, "errors": [], "exists": True}],
             "hash": [{"hash": "aaa"}],
             "applied-hash": [{"hash": "bbb"}],
             "show": [{"version": 1, "mounts": []}],
             "applied-show": [None],
-            "restore-applied": [
-                {"ok": True} if restore_ok else
-                {"ok": False, "error": "no applied snapshot available"}
-            ],
         })
 
+    def _ssh_runner(self, *, snapshot_exists, cp_succeeds=True):
+        """Fake SSH that responds to the two commands rollback issues:
+        `test -f .../applied.json` and `cp .../applied.json .../box_config.json`.
+        """
+        def runner(box_ip, cmd, *, stdin=None, timeout=60):
+            if cmd.startswith("test -f"):
+                return (0 if snapshot_exists else 1), "", ""
+            if cmd.startswith("cp "):
+                return (0 if cp_succeeds else 1), "", "" if cp_succeeds else "cp: permission denied"
+            return 0, "", ""
+        return runner
+
     def test_rollback_succeeds_when_snapshot_exists(self):
-        backend = self._backend(restore_ok=True)
+        backend = self._backend()
         # First bounce: fail. Second bounce (rollback): succeed.
-        bounce = patch.object(
-            box_config_cli, "_bounce_container", side_effect=[False, True],
-        )
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             bounce as bounce_mock:
+             patch.object(box_config_cli, "default_ssh_runner",
+                          side_effect=self._ssh_runner(snapshot_exists=True)), \
+             patch.object(box_config_cli, "_bounce_container",
+                          side_effect=[False, True]) as bounce_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
                 ["apply", "--box", "HYP-3", "--yes"],
@@ -253,16 +265,18 @@ class ApplyRollback(unittest.TestCase):
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("Rolled back", result.output)
         self.assertEqual(bounce_mock.call_count, 2)
-        verbs = [c[0] for c in backend.calls]
-        self.assertIn("restore-applied", verbs)
         # Critical: applied_hash must NOT have been updated to the (rejected)
-        # new config's hash.
+        # new config's hash. The shim should NOT have been called for restore.
+        verbs = [c[0] for c in backend.calls]
         self.assertNotIn("set-applied-hash", verbs)
+        self.assertNotIn("restore-applied", verbs)
 
     def test_no_snapshot_no_rollback(self):
-        backend = self._backend(restore_ok=False)
+        backend = self._backend()
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "default_ssh_runner",
+                          side_effect=self._ssh_runner(snapshot_exists=False)), \
              patch.object(box_config_cli, "_bounce_container", return_value=False) as bounce_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
@@ -270,16 +284,18 @@ class ApplyRollback(unittest.TestCase):
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("rollback was not possible", result.output)
-        # We try restore once; bounce only fired once (the original).
+        # We try the snapshot test once; the initial bounce already fired.
         self.assertEqual(bounce_mock.call_count, 1)
         verbs = [c[0] for c in backend.calls]
         self.assertNotIn("set-applied-hash", verbs)
 
     def test_rollback_bounce_also_fails(self):
-        backend = self._backend(restore_ok=True)
-        # Both bounces fail.
+        backend = self._backend()
+        # Snapshot exists, file copy succeeds, but the rollback bounce also fails.
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "default_ssh_runner",
+                          side_effect=self._ssh_runner(snapshot_exists=True)), \
              patch.object(box_config_cli, "_bounce_container", return_value=False) as bounce_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
