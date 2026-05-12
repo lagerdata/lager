@@ -99,6 +99,28 @@ class ProgressBar:
             sys.stdout.write(f'{self.CLEAR_LINE}{self.CURSOR_START}[{bar}] Failed {elapsed}\n')
         sys.stdout.flush()
 
+    def pause(self):
+        """Stop background rendering so interactive prompts (sudo password,
+        ssh host-key acceptance, etc.) appear cleanly. Pair with resume()
+        after the interactive subprocess returns. Without this the 1-second
+        re-render overwrites the prompt and the user can't see what's
+        waiting on stdin."""
+        if self._thread_started and not self._stop_event.is_set():
+            self._stop_event.set()
+            if self._render_thread is not None:
+                self._render_thread.join(timeout=2)
+            # Clear the in-flight bar so the next stdout write isn't
+            # tacked onto its residual characters.
+            sys.stdout.write(f'{self.CLEAR_LINE}{self.CURSOR_START}')
+            sys.stdout.flush()
+
+    def resume(self):
+        """Restart the background renderer after pause()."""
+        if self._thread_started and self._stop_event.is_set():
+            self._stop_event.clear()
+            self._render_thread = threading.Thread(target=self._periodic_render, daemon=True)
+            self._render_thread.start()
+
 
 @click.command()
 @click.pass_context
@@ -821,7 +843,7 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
             log('Fixing sudoers file ownership...', nl=False)
 
             if not verbose and progress:
-                sys.stdout.write('\n')
+                progress.pause()
                 click.echo('Fixing sudoers file ownership (may require sudo password)...')
             elif verbose:
                 click.echo()
@@ -832,7 +854,7 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
             )
 
             if not verbose and progress:
-                pass  # Progress bar continues
+                progress.resume()
             elif verbose:
                 click.echo()
 
@@ -847,6 +869,90 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
             log_status('Checking sudoers file ownership...', 'OK', 'green')
     else:
         log_status('Checking sudoers file ownership...', 'SKIPPED', 'yellow')
+
+    # Step 6.6: Ensure passwordless sudo for `lager box config apply`.
+    #
+    # `lager box config apply` needs root on the host for apt-get install,
+    # sysctl writes, and mount-path mkdir/chown — all over BatchMode SSH
+    # where sudo can't prompt. The rule grants narrow NOPASSWD for exactly
+    # those operations. This runs on every `lager update` so existing boxes
+    # gradually pick up the rule without a full re-install; idempotent
+    # (skips when already in place).
+    if progress:
+        progress.update("Checking box-config sudoers...")
+    log('Checking box-config sudoers...', nl=False)
+
+    # Functional check: can we actually run the thing the rule grants?
+    # `sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version` succeeds
+    # only when (a) sudo -n is allowed for apt-get (NOPASSWD) and (b)
+    # SETENV is permitted (otherwise sudo rejects with "not allowed to
+    # set the following environment variables"). Grepping `sudo -l`
+    # output is fragile across sudo versions / locales / `requiretty`.
+    # Test BOTH the apt-get/SETENV grant and the cp rule used by rollback.
+    # `sudo -n -l <cmd>` exits 0 iff the policy permits exactly that cmd
+    # without a password — true when the matching NOPASSWD entry is present.
+    boxcfg_sudoers_check = run_ssh_command_with_output(
+        "sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1 "
+        "&& sudo -n -l /bin/cp /etc/lager/box_config.applied.json "
+        "/etc/lager/box_config.json >/dev/null 2>&1"
+    )
+    if boxcfg_sudoers_check.returncode == 0:
+        log_status('Checking box-config sudoers...', 'OK', 'green')
+    else:
+        log_status('Checking box-config sudoers...', 'NEEDS BOOTSTRAP', 'yellow')
+
+        if not verbose and progress:
+            progress.pause()
+            click.echo('Installing box-config sudoers rule (may require sudo password)...')
+        elif verbose:
+            click.echo()
+
+        boxcfg_sudoers_cmd = (
+            "printf '%s\\n' "
+            "'lagerdata ALL=(root) NOPASSWD: SETENV: /usr/bin/apt-get' "
+            "'lagerdata ALL=(root) NOPASSWD: /bin/mkdir, /bin/chown, "
+            "/usr/sbin/sysctl --system, /sbin/sysctl --system, "
+            "/usr/bin/tee /etc/sysctl.d/99-lager-box-config.conf, "
+            "/bin/rm -f /etc/sysctl.d/99-lager-box-config.conf, "
+            "/bin/cp /etc/lager/box_config.applied.json /etc/lager/box_config.json' "
+            "| sudo tee /etc/sudoers.d/lager-box-config >/dev/null "
+            "&& sudo chmod 440 /etc/sudoers.d/lager-box-config"
+        )
+
+        boxcfg_install_result = run_ssh_command_interactive(
+            boxcfg_sudoers_cmd,
+            allow_sudo_prompt=True,
+        )
+
+        if not verbose and progress:
+            progress.resume()
+        elif verbose:
+            click.echo()
+
+        if boxcfg_install_result.returncode == 0:
+            # Same functional check as the pre-install detection — verify
+            # the rule is actually live by running the thing it grants.
+            boxcfg_verify = run_ssh_command_with_output(
+                "sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1"
+            )
+            if boxcfg_verify.returncode == 0:
+                log_status('Installing box-config sudoers...', 'OK', 'green')
+            else:
+                log_status('Installing box-config sudoers...', 'INSTALLED BUT NOT VERIFIED', 'yellow')
+                if verbose:
+                    click.echo(
+                        '  Warning: rule installed but `sudo -n apt-get` still requires a password. '
+                        'Check /etc/sudoers.d/lager-box-config syntax on the box.',
+                        err=True,
+                    )
+        else:
+            log_status('Installing box-config sudoers...', 'FAILED', 'yellow')
+            if verbose:
+                click.echo(
+                    '  Warning: box-config sudoers rule could not be installed. '
+                    '`lager box config apply` will need manual sudoers setup on this box.',
+                    err=True,
+                )
 
     # No git updates and no box/→root flatten work: a second consecutive `lager update`
     # would otherwise still stop every Docker container on the box, remove them, and
