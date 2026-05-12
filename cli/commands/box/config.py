@@ -1071,13 +1071,15 @@ def _attempt_rollback(
         fg="yellow",
         err=True,
     )
-    # Atomic-ish restore via plain cp. The shim's restore-applied verb uses
+    # Atomic-ish restore via sudo cp. The shim's restore-applied verb uses
     # tmp+rename, but it's not reachable here (container down); the source
     # file is a previously-validated snapshot, so atomicity of the write is
-    # the only loss versus the shim path.
+    # the only loss versus the shim path. `sudo` is needed because
+    # /etc/lager/box_config.json is owned by www-data (uid 33, the
+    # container user) — lagerdata can't overwrite it without root.
     rc, _stdout, stderr = default_ssh_runner(
         resolved_box,
-        "cp /etc/lager/box_config.applied.json /etc/lager/box_config.json",
+        "sudo -n cp /etc/lager/box_config.applied.json /etc/lager/box_config.json",
     )
     if rc != 0:
         click.secho(

@@ -459,6 +459,78 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
 
     click.echo()
 
+    # 6.7. Bootstrap passwordless sudo for `lager box config apply`.
+    #
+    # `lager box config apply` needs root on the host for apt-get install,
+    # sysctl writes, and mount-path mkdir/chown. Those run over SSH in a
+    # non-interactive context (no TTY for sudo to prompt against), so the
+    # rule must grant NOPASSWD up front. The rule is narrowly scoped:
+    # tee/rm/sysctl are path-locked to the exact files used so the
+    # lagerdata account can't escalate via them; apt-get and mkdir/chown
+    # are unscoped because the package list and host paths are user-defined.
+    #
+    # Idempotent: re-running install overwrites the file with the same
+    # content. Failure here is a warning, not fatal — the box is otherwise
+    # installed; the operator can apply the rule manually later.
+    click.echo()
+    click.secho("Configuring passwordless sudo for `lager box config apply`...", fg='cyan')
+    click.echo("(One-time setup. You'll be prompted for the sudo password on the box.)")
+    click.echo()
+
+    sudoers_cmd = (
+        "printf '%s\\n' "
+        "'lagerdata ALL=(root) NOPASSWD: SETENV: /usr/bin/apt-get' "
+        "'lagerdata ALL=(root) NOPASSWD: /bin/mkdir, /bin/chown, "
+        "/usr/sbin/sysctl --system, /sbin/sysctl --system, "
+        "/usr/bin/tee /etc/sysctl.d/99-lager-box-config.conf, "
+        "/bin/rm -f /etc/sysctl.d/99-lager-box-config.conf, "
+        "/bin/cp /etc/lager/box_config.applied.json /etc/lager/box_config.json' "
+        "| sudo tee /etc/sudoers.d/lager-box-config >/dev/null "
+        "&& sudo chmod 440 /etc/sudoers.d/lager-box-config"
+    )
+
+    try:
+        bootstrap_result = subprocess.run(
+            ["ssh", "-t", ssh_host, sudoers_cmd],
+            timeout=120,
+        )
+        if bootstrap_result.returncode != 0:
+            click.secho(
+                "Warning: Sudoers rule could not be installed. `lager box config apply` "
+                "will require manual sudoers setup on this box. See `lager box config "
+                "apply --help` for the snippet to paste.",
+                fg='yellow', err=True,
+            )
+        else:
+            # Verify the rule took effect — exercise NOPASSWD + SETENV
+            # for apt-get AND the path-scoped cp used by rollback. Plain
+            # `sudo -n apt-get` would pass even if SETENV or the cp rule
+            # were missing, which would leave DEBIAN_FRONTEND broken or
+            # the rollback path unusable.
+            verify_result = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", ssh_host,
+                 "sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1 "
+                 "&& sudo -n -l /bin/cp /etc/lager/box_config.applied.json "
+                 "/etc/lager/box_config.json >/dev/null 2>&1"],
+                capture_output=True, timeout=15,
+            )
+            if verify_result.returncode == 0:
+                click.secho("Passwordless sudo for `lager box config` configured", fg='green')
+            else:
+                click.secho(
+                    "Warning: Sudoers file installed but `sudo -n apt-get` still fails. "
+                    "Check /etc/sudoers.d/lager-box-config on the box for syntax issues.",
+                    fg='yellow', err=True,
+                )
+    except (subprocess.TimeoutExpired, Exception) as e:
+        click.secho(
+            f"Warning: Sudoers bootstrap failed: {e}. `lager box config apply` "
+            "will require manual sudoers setup.",
+            fg='yellow', err=True,
+        )
+
+    click.echo()
+
     # 7. Prompt to add box to .lager config (skip if --box was used since it's already configured)
     if not box and not yes:
         if click.confirm("Add this box to your configuration?", default=True):
