@@ -600,13 +600,25 @@ def edit_cmd(ctx: click.Context, box: Optional[str]) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(body)
+        original_body = body
         while True:
             rc = subprocess.call([editor, tmp_path])
-            if rc != 0:
-                click.secho(f"Editor exited with rc={rc}; not saving.", fg="yellow", err=True)
-                ctx.exit(1)
             with open(tmp_path, "r", encoding="utf-8") as f:
-                body = f.read()
+                new_body = f.read()
+            # Don't trust the editor's exit code — vim plugins, swap-file
+            # warnings, and odd modal exits can return non-zero even when
+            # :wq succeeded. The real signal is whether the file content
+            # changed.
+            if new_body == original_body:
+                if rc != 0:
+                    click.secho(
+                        f"Editor exited with rc={rc} and no changes were saved.",
+                        fg="yellow", err=True,
+                    )
+                else:
+                    click.secho("No changes saved.", fg="yellow")
+                ctx.exit(rc or 0)
+            body = new_body
             try:
                 json.loads(body)
             except json.JSONDecodeError as e:
