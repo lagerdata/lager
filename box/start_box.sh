@@ -428,7 +428,12 @@ if [ -s "$PIP_REQS_FILE" ] && grep -qvE '^[[:space:]]*(#|$)' "$PIP_REQS_FILE"; t
         docker exec lager true 2>/dev/null && break
         sleep 1
     done
-    if ! timeout "$PIP_INSTALL_TIMEOUT" docker exec lager pip3 install -r "$PIP_REQS_FILE"; then
+    # if/else (not `if ! ...`) so $? inside the else branch is the actual
+    # exit code of the timeout/docker-exec — `!` inverts the exit status
+    # and `$?` after `!cmd` is always 0 or 1, not the underlying rc.
+    if timeout "$PIP_INSTALL_TIMEOUT" docker exec lager pip3 install -r "$PIP_REQS_FILE"; then
+        :
+    else
         _rc=$?
         if [ "$_rc" -eq 124 ]; then
             echo "[ERROR] User pip install timed out after ${PIP_INSTALL_TIMEOUT}s; container is up but pip_packages may be incomplete."
@@ -469,7 +474,13 @@ if [ -s "$CARGO_PKGS_FILE" ] && grep -qvE '^[[:space:]]*(#|$)' "$CARGO_PKGS_FILE
         else
             _args=("$_crate_spec")
         fi
-        if ! timeout "$CARGO_INSTALL_TIMEOUT" docker exec lager bash -lc "cargo install ${_args[*]}"; then
+        # `bash -c` (not `bash -lc`): a login shell re-sources /etc/profile
+        # which resets PATH and drops /opt/rust/cargo/bin from the Dockerfile's
+        # ENV PATH, making `cargo` unfindable. Non-login `-c` inherits docker
+        # ENV cleanly.
+        if timeout "$CARGO_INSTALL_TIMEOUT" docker exec lager bash -c "cargo install ${_args[*]}"; then
+            :
+        else
             _rc=$?
             if [ "$_rc" -eq 124 ]; then
                 echo "[ERROR] cargo install timed out after ${CARGO_INSTALL_TIMEOUT}s for: $_crate_spec"
@@ -502,7 +513,10 @@ if [ -s "$NPM_PKGS_FILE" ] && grep -qvE '^[[:space:]]*(#|$)' "$NPM_PKGS_FILE"; t
         case "$_npm_spec" in
             ''|\#*) continue ;;
         esac
-        if ! timeout "$NPM_INSTALL_TIMEOUT" docker exec lager bash -lc "npm install -g $_npm_spec"; then
+        # See cargo loop above for why `bash -c` (not `bash -lc`).
+        if timeout "$NPM_INSTALL_TIMEOUT" docker exec lager bash -c "npm install -g $_npm_spec"; then
+            :
+        else
             _rc=$?
             if [ "$_rc" -eq 124 ]; then
                 echo "[ERROR] npm install timed out after ${NPM_INSTALL_TIMEOUT}s for: $_npm_spec"
