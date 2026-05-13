@@ -72,7 +72,7 @@ from .commands.measurement.energy import energy
 from .commands.box import hello, boxes, instruments, nets, ssh, box
 
 # Utility commands (from commands.utility package)
-from .commands.utility import defaults, binaries, update, exec_, logs, webcam, install, uninstall, install_wheel
+from .commands.utility import defaults, binaries, update, update_cmd, exec_, logs, webcam, install, uninstall, install_wheel
 
 def _check_venv_shadowing():
     """Warn if a system-installed lager is shadowing the venv version."""
@@ -168,6 +168,11 @@ cli.add_command(boxes)
 cli.add_command(box)
 cli.add_command(instruments)
 cli.add_command(ssh)
+# `lager box` group hosts the canonical `update` subcommand alongside
+# `lager box config`. The top-level `lager update` is registered as a
+# hidden deprecation alias so existing scripts and CI invocations keep
+# working but the help surface points at the new name.
+box.add_command(update_cmd)
 cli.add_command(update)
 cli.add_command(logs)
 cli.add_command(binaries)

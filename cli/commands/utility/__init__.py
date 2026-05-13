@@ -19,7 +19,7 @@ applied alongside mounts/volumes/env via `lager box config apply`).
 # Import all commands from local files (migrated from original locations)
 from .defaults import defaults
 from .binaries import binaries
-from .update import update
+from .update import update, update_cmd
 from .exec_ import exec_
 from .logs import logs
 from .webcam import webcam
@@ -31,6 +31,7 @@ __all__ = [
     "defaults",
     "binaries",
     "update",
+    "update_cmd",
     "exec_",
     "logs",
     "webcam",

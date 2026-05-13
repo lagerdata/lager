@@ -17,7 +17,67 @@ import sys
 import threading
 from ...box_storage import resolve_and_validate_box, get_box_user, list_boxes
 from ...context import get_default_box
+from ...core.ssh_utils import get_ssh_connection_pool
 from ..box.boxes import compare_versions
+
+
+def wait_for_box_ready(box_ip, *, timeout_s=60, initial_delay_s=2):
+    """Poll http://<box_ip>:5000/health until 200 or timeout.
+
+    Returns True on ready, False on timeout. The Python service on port 5000
+    (the on-box script-execution service) is the last to come up after the
+    container restarts, so polling it is more conservative than polling the
+    Flask server on 9000.
+    """
+    deadline = time.monotonic() + timeout_s
+    time.sleep(initial_delay_s)
+    backoff = 1.0
+    while time.monotonic() < deadline:
+        try:
+            r = requests.get(f'http://{box_ip}:5000/health', timeout=3)
+            if r.status_code == 200:
+                return True
+        except requests.exceptions.RequestException:
+            pass
+        time.sleep(backoff)
+        backoff = min(backoff * 1.5, 5.0)
+    return False
+
+
+# Files whose contents legitimately invalidate the cached Docker image.
+# Dockerfile is the universal one; requirements.txt may not exist on every box
+# revision, so we sha256sum it only when present.
+_BUILD_HASH_INPUTS = [
+    '~/box/lager/docker/box.Dockerfile',
+    '~/box/lager/requirements.txt',
+]
+
+
+def _build_hash_shell_cmd():
+    """Shell snippet that prints a hash of the docker-build inputs.
+
+    Missing files are silently skipped (so the hash still works on box
+    revisions without a requirements.txt). Prints an empty string if nothing
+    matched, which we treat as "skip auto-invalidation".
+    """
+    paths = ' '.join(_BUILD_HASH_INPUTS)
+    return (
+        'for f in ' + paths + '; do '
+        '  [ -f "$(eval echo $f)" ] && sha256sum "$(eval echo $f)"; '
+        'done | sha256sum | cut -d" " -f1'
+    )
+
+
+def _format_duration(seconds):
+    seconds = int(seconds)
+    if seconds < 60:
+        return f'{seconds}s'
+    if seconds < 3600:
+        return f'{seconds // 60}m {seconds % 60:02d}s'
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    return f'{h}h {m:02d}m {s:02d}s'
 
 
 class ProgressBar:
@@ -122,17 +182,12 @@ class ProgressBar:
             self._render_thread.start()
 
 
-@click.command()
-@click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
-@click.option('--all', 'update_all', is_flag=True, help='Update all saved boxes that need updating')
-@click.option('--yes', is_flag=True, help='Skip confirmation prompt')
-@click.option('--skip-restart', is_flag=True, help='Skip container restart after update')
-@click.option('--version', required=False, help='Box version/branch to update to (e.g., staging, main)')
-@click.option('--verbose', '-v', is_flag=True, help='Show detailed output (default shows progress bar only)')
-@click.option('--force', is_flag=True, help='Force fresh Docker build by removing cached image (use for major code changes)')
-def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
-    """Update box code from GitHub repository"""
+def _update_logic(ctx, *, box, update_all, yes, skip_restart, version, verbose, force, check):
+    """Core update logic shared by `lager box update` and the legacy `lager update`.
+
+    Not a Click command itself — the two thin Click wrappers at the bottom of
+    this module add option decorators and dispatch here.
+    """
     from ...box_storage import update_box_version
     from ... import __version__ as cli_version
 
@@ -251,11 +306,11 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
             click.echo()
             click.secho(f'═══ Updating {name} ({idx}/{len(boxes_to_update)}) ═══', fg='blue', bold=True)
 
-            # Call update recursively for this single box
+            # Call the logic directly for this single box (we're already
+            # inside the same Click context; no need for ctx.invoke).
             try:
-                # Invoke the update command for this box
-                result = ctx.invoke(
-                    update,
+                _update_logic(
+                    ctx,
                     box=name,
                     update_all=False,
                     yes=True,  # Already confirmed
@@ -263,6 +318,7 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
                     version=version,
                     verbose=verbose,
                     force=force,
+                    check=False,
                 )
                 results['success'].append(name)
             except SystemExit as e:
@@ -303,6 +359,7 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
             ctx.exit(0)
 
     # Default to 'main' version if not specified
+    _start_time = time.time()
     target_version = version or 'main'
 
     # Determine the correct git ref for reset/rev-list operations.
@@ -335,8 +392,9 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
         click.echo(f'CLI:     {cli_version}')
     click.echo()
 
-    # Confirm before proceeding
-    if not yes:
+    # Confirm before proceeding (skipped in --check: the dry-run is read-only,
+    # so there's nothing to confirm).
+    if not yes and not check:
         if not click.confirm('This will update the box code and restart services. Continue?'):
             click.secho('Update cancelled.', fg='yellow')
             ctx.exit(0)
@@ -479,6 +537,21 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
         log_error(f'Error: {str(e)}')
         ctx.exit(1)
 
+    # Multiplex all subsequent SSH commands over a single TCP connection.
+    # ControlMaster=auto starts the master on the first call (which is
+    # `run_ssh_command_with_output` below) and reuses it for everything else.
+    # ControlPersist=10m keeps it alive briefly past command exit so a
+    # follow-up `lager hello` reuses it for free.
+    _ssh_pool = get_ssh_connection_pool()
+    _ssh_control_path = _ssh_pool.get_control_path(ssh_host)
+    _ssh_mux_opts = [
+        '-o', 'ControlMaster=auto',
+        '-o', f'ControlPath={_ssh_control_path}',
+        '-o', 'ControlPersist=10m',
+        '-o', 'ServerAliveInterval=30',
+        '-o', 'ServerAliveCountMax=3',
+    ]
+
     # Helper function to run SSH commands
     def run_ssh_command_with_output(cmd, timeout_secs=120):
         """Run an SSH command and capture output."""
@@ -487,6 +560,7 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
             ssh_cmd.extend(['-i', key_file])
         if not use_interactive_ssh:
             ssh_cmd.extend(['-o', 'BatchMode=yes'])
+        ssh_cmd.extend(_ssh_mux_opts)
         ssh_cmd.append(ssh_host)
         ssh_cmd.append(cmd)
         return subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=timeout_secs)
@@ -509,10 +583,50 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
         # Only use BatchMode if we don't need sudo prompts
         if not use_interactive_ssh and not allow_sudo_prompt:
             ssh_cmd.extend(['-o', 'BatchMode=yes'])
+        ssh_cmd.extend(_ssh_mux_opts)
         ssh_cmd.append(ssh_host)
         ssh_cmd.append(cmd)
         # Don't capture output - let it stream to terminal for interactive prompts
         return subprocess.run(ssh_cmd, timeout=timeout_secs)
+
+    def write_box_version_file(box_cli_version_value):
+        """Write /etc/lager/version on the box. Idempotent (no-op if content matches).
+
+        Returns True on success, False on failure (caller decides whether to
+        treat as fatal). Retries the actual write up to 3 times with backoff.
+
+        This used to live inline at the end of the update flow; extracted so
+        the early-exit "already up to date" branch can also reconcile the
+        on-box version file with the local cache — the previous behavior
+        skipped this and was the primary cause of users having to run
+        `lager update` 2-3 times before it stuck.
+        """
+        if not box_cli_version_value:
+            return True
+        version_content = f'{box_cli_version_value}|{cli_version}'
+
+        # Short-circuit if the box already has exactly this content.
+        existing = run_ssh_command_with_output('cat /etc/lager/version 2>/dev/null')
+        if existing.returncode == 0 and existing.stdout.strip() == version_content:
+            return True
+
+        for attempt in range(3):
+            result = run_ssh_command_with_output(
+                f'echo "{version_content}" > /etc/lager/version',
+                timeout_secs=30,
+            )
+            if result.returncode == 0:
+                return True
+            if attempt < 2:
+                time.sleep(5)
+        return False
+
+    # Capture the pre-update version once so the end-of-run summary can show
+    # the from→to transition. The on-box version is the source of truth here —
+    # the local cache can drift (this is the bug we just fixed).
+    _pre_version_result = run_ssh_command_with_output('cat /etc/lager/version 2>/dev/null || true')
+    _pre_version_raw = _pre_version_result.stdout.strip() if _pre_version_result.returncode == 0 else ''
+    pre_box_version = _pre_version_raw.split('|', 1)[0] if _pre_version_raw else '(unknown)'
 
     # Step 2: Check if box directory exists and is a git repo
     if progress:
@@ -552,56 +666,32 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
     else:
         log_status('Checking remote URL...', 'OK', 'green')
 
-    # Step 2.5: Check for and fix flattened sparse checkout state
-    # After install with --sparse, files are moved from box/ to root, which breaks git tracking
-    # Detect this by checking if lager/ exists at root but git expects it in box/
+    # Step 2.5: Determine whether a flatten will be needed after the git ops.
+    #
+    # The repo uses sparse-checkout to put files under `box/`, but the runtime
+    # expects them at `~/box/<file>` (the flat layout). After a successful
+    # update, the box is permanently in the flat state: `~/box/lager/` exists,
+    # `~/box/box/` does not. That is the **expected** post-update state, not a
+    # broken one.
+    #
+    # The previous heuristic ("files at root + box/ absent + git wants box/"
+    # → broken, must re-fetch and re-flatten) misfired on every consecutive
+    # `lager update`: it'd repeatedly wipe the flat tree, refetch, and
+    # re-flatten, doing 20+ seconds of pointless container churn each run.
+    # We now treat the flat-with-no-box-subdir state as healthy and only set
+    # needs_flatten when there's actually a `~/box/box/` to flatten.
     if progress:
         progress.update("Checking git state...")
-    log('Checking for flattened sparse checkout...', nl=False)
+    log('Checking layout...', nl=False)
 
-    # Check if we have files at root level that git thinks should be in box/
-    flattened_check = run_ssh_command_with_output(
-        'cd ~/box && '
-        'test -d lager && '  # Files exist at root
-        'test ! -d box && '  # No box/ subdirectory
-        'git ls-tree HEAD box/ 2>/dev/null | grep -q .'  # Git expects files in box/
-    )
-
-    # Track if we need to re-flatten after update
     needs_flatten = False
-
-    if flattened_check.returncode == 0:
-        log_status('Checking for flattened sparse checkout...', 'DETECTED', 'yellow')
-        log('Fixing flattened sparse checkout state...', nl=False)
-
-        # Clean up untracked files (the flattened files) and reset to proper git state
-        # This removes root-level files and restores box/ directory structure
-        fix_result = run_ssh_command_with_output(
-            'cd ~/box && '
-            # Remove the flattened files at root (they're untracked)
-            'rm -rf lager oscilloscope-daemon start_box.sh third_party udev_rules verify_restart_policy.sh README.md 2>/dev/null; '
-            # Reset git to restore box/ directory
-            f'git fetch origin {target_version} && '
-            f'git reset --hard {git_ref}'
-        )
-
-        if fix_result.returncode != 0:
-            log_status('Fixing flattened sparse checkout state...', 'FAILED', 'red')
-            if verbose and fix_result.stderr:
-                click.echo(f'  Error: {fix_result.stderr.strip()}', err=True)
-            # Continue anyway - the regular flow might still work
-        else:
-            log_status('Fixing flattened sparse checkout state...', 'OK', 'green')
-            needs_flatten = True  # We restored box/, need to flatten it
+    box_dir_check = run_ssh_command_with_output('cd ~/box && test -d box')
+    if box_dir_check.returncode == 0:
+        # box/ subdirectory present — needs flattening after the git ops below.
+        needs_flatten = True
+        log_status('Checking layout...', 'NEEDS FLATTEN', 'yellow')
     else:
-        # Check if box/ directory exists (needs flattening) or lager/ at root (already flat)
-        box_dir_check = run_ssh_command_with_output('cd ~/box && test -d box')
-        if box_dir_check.returncode == 0:
-            # box/ exists, needs flattening
-            needs_flatten = True
-            log_status('Checking for flattened sparse checkout...', 'NEEDS FLATTEN', 'yellow')
-        else:
-            log_status('Checking for flattened sparse checkout...', 'OK', 'green')
+        log_status('Checking layout...', 'OK (flat)', 'green')
 
     # Step 3: Show current version (verbose only)
     if verbose:
@@ -677,6 +767,76 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
                 log(f'Updates available: {commits_behind} new commit(s)')
                 needs_pull = True
 
+    # --check / dry-run: report what would happen and exit. Must run before
+    # any mutation (no git checkout, no udev install, no docker stop).
+    # Exit codes:
+    #   0 — already in sync, nothing to do
+    #   1 — would update (code, deps, or both)
+    #   2 — could not determine state (network error, etc.)
+    if check:
+        if progress:
+            progress.finish(success=True)
+        click.echo()
+
+        current_version_result = run_ssh_command_with_output(
+            'cat /etc/lager/version 2>/dev/null || true'
+        )
+        current_version_raw = current_version_result.stdout.strip()
+        current_box_version = current_version_raw.split('|', 1)[0] if current_version_raw else '(unknown)'
+
+        # Reuse the same build-hash logic as the real flow.
+        check_new_hash_result = run_ssh_command_with_output(_build_hash_shell_cmd())
+        check_new_hash = check_new_hash_result.stdout.strip() if check_new_hash_result.returncode == 0 else ''
+        check_stored_hash_result = run_ssh_command_with_output('cat /etc/lager/build-hash 2>/dev/null || true')
+        check_stored_hash = check_stored_hash_result.stdout.strip() if check_stored_hash_result.returncode == 0 else ''
+        # Mirror the main flow: only flag as "will rebuild" when there's a
+        # previous hash to compare against. First-run-after-deploy has no
+        # baseline and shouldn't be reported as a rebuild trigger.
+        deps_will_change = bool(check_new_hash) and bool(check_stored_hash) and check_new_hash != check_stored_hash
+
+        if not git_sync_confirmed:
+            click.secho('Could not determine update state (git rev-list failed).', fg='red', err=True)
+            ctx.exit(2)
+
+        if commits_behind == 0:
+            code_status = 'in sync'
+        else:
+            code_status = f'will update ({commits_behind} commit(s) behind {git_ref})'
+
+        if force:
+            deps_status = 'will trigger fresh build (--force)'
+        elif deps_will_change:
+            deps_status = 'will trigger fresh build (Dockerfile or requirements changed)'
+        else:
+            deps_status = 'cache valid (no rebuild)'
+
+        if commits_behind == 0 and not deps_will_change and not force:
+            container_status = 'no restart needed'
+            est = '~5s'
+        elif deps_will_change or force:
+            container_status = 'will restart'
+            est = '~6 min (fresh build)'
+        else:
+            container_status = 'will restart'
+            est = '~90s (cached build)'
+
+        click.secho('Update preview', fg='blue', bold=True)
+        click.echo(f'  Box:        {box_name} ({resolved_box})')
+        click.echo(f'  Current:    {current_box_version}')
+        click.echo(f'  Target:     {target_version}')
+        click.echo(f'  Code:       {code_status}')
+        click.echo(f'  Deps:       {deps_status}')
+        click.echo(f'  Container:  {container_status}')
+        click.echo(f'  Estimated:  {est}')
+        click.echo()
+
+        will_change = commits_behind != 0 or deps_will_change or force
+        if will_change:
+            click.echo('Run without --check to apply.')
+            ctx.exit(1)
+        click.echo('Nothing to do.')
+        ctx.exit(0)
+
     if needs_pull:
         # Step 5: Update git repo
         if progress:
@@ -737,6 +897,23 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
         else:
             # Non-fatal - box might already be flattened
             log_status('Updating file structure...', 'SKIPPED', 'yellow')
+
+        # Verify the flatten actually left the box in a buildable shape.
+        # Previously this step swallowed cp failures silently, and the docker
+        # build would proceed against missing files, producing an image that
+        # passed `docker ps` but failed at runtime — one of the documented
+        # "had to run update 3 times" failure modes.
+        verify_result = run_ssh_command_with_output(
+            'test -f ~/box/lager/box_http_server.py && '
+            'test -f ~/box/lager/docker/box.Dockerfile'
+        )
+        if verify_result.returncode != 0:
+            if progress:
+                progress.finish(success=False)
+            log_error('Error: Source files missing after flatten step')
+            click.echo('Expected to find ~/box/lager/box_http_server.py and ~/box/lager/docker/box.Dockerfile.', err=True)
+            click.echo('The sparse-checkout layout on the box is inconsistent; try a fresh `lager install`.', err=True)
+            ctx.exit(1)
 
     # Step 6: Check and update udev rules if needed
     if progress:
@@ -968,20 +1145,33 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
     # would otherwise still stop every Docker container on the box, remove them, and
     # rebuild — redundant after a successful run and a common source of flaky behavior.
     if git_sync_confirmed and not needs_pull and not needs_flatten and not force:
-        if progress:
-            progress.finish(success=True)
         import re as _re
 
         _vp = _re.match(r'^v?(\d+\.\d+\.\d+)$', target_version)
         _box_v = _vp.group(1) if _vp else cli_version
+
+        # Reconcile /etc/lager/version on the box with the local cache.
+        # Previously this branch only updated the local ~/.lager file, so if
+        # the box's /etc/lager/version was stale (e.g. an earlier update
+        # exited via this same path before the file was ever written) the
+        # next `lager hello` would surface the stale version and the user
+        # would re-run `lager update` thinking the previous one didn't take.
+        if not write_box_version_file(_box_v):
+            if progress:
+                progress.finish(success=False)
+            log_error('Error: Failed to reconcile /etc/lager/version on the box')
+            click.echo('The local cache shows the box is up to date, but writing the version file on the box failed.', err=True)
+            click.echo(f'Manually fix with: ssh {ssh_host} "echo \\"{_box_v}|{cli_version}\\" > /etc/lager/version"', err=True)
+            ctx.exit(1)
+
+        if progress:
+            progress.finish(success=True)
         if _box_v and box:
             update_box_version(box, _box_v)
+        _duration = _format_duration(time.time() - _start_time)
         click.echo()
-        click.secho(
-            'Box code is already up to date; skipping container stop/rebuild.',
-            fg='green',
-            bold=True,
-        )
+        click.secho(f'{box_name} already at {_box_v} ({target_version}) — no restart needed.', fg='green', bold=True)
+        click.echo(f'Duration: {_duration}   Restart: no   Build: skipped')
         click.echo(f'Verify with: lager hello --box {box_name}')
         click.echo()
         ctx.exit(0)
@@ -1007,17 +1197,41 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
     )
     log_status('Stopping containers...', 'OK', 'green')
 
-    # Step 7.5: Remove Docker image if --force flag is set
-    if force:
+    # Step 7.5: Decide whether to wipe the cached Docker image before building.
+    # Two triggers:
+    #   1. --force was passed (explicit user override).
+    #   2. The hash of the build-inputs (Dockerfile, requirements.txt) differs
+    #      from the hash recorded after the last successful build. Without
+    #      this, a pip-dependency change in the Dockerfile would silently
+    #      reuse a stale layer and the user would have to discover --force
+    #      themselves.
+    new_build_hash_result = run_ssh_command_with_output(_build_hash_shell_cmd())
+    new_build_hash = new_build_hash_result.stdout.strip() if new_build_hash_result.returncode == 0 else ''
+
+    stored_hash_result = run_ssh_command_with_output(
+        'cat /etc/lager/build-hash 2>/dev/null || true'
+    )
+    stored_build_hash = stored_hash_result.stdout.strip() if stored_hash_result.returncode == 0 else ''
+
+    # Only invalidate when there's a *previous* hash to compare against — if
+    # the box was last updated by an older CLI it has no /etc/lager/build-hash
+    # yet, and treating that as "cache invalid" would force a 6-minute rebuild
+    # on every existing box's first update after deploy. Bootstrap the hash
+    # silently the first time; real mismatches will be caught from then on.
+    hash_mismatch = bool(new_build_hash) and bool(stored_build_hash) and new_build_hash != stored_build_hash
+    must_wipe_image = force or hash_mismatch
+
+    if must_wipe_image:
         if progress:
             progress.update("Removing cached image...")
-        log('Removing cached Docker image (--force)...', nl=False)
+        reason = '--force' if force else 'build inputs changed'
+        log(f'Removing cached Docker image ({reason})...', nl=False)
 
         run_ssh_command_with_output(
             'docker rmi lager 2>/dev/null || true',
             timeout_secs=30
         )
-        log_status('Removing cached Docker image (--force)...', 'OK', 'green')
+        log_status(f'Removing cached Docker image ({reason})...', 'OK', 'green')
 
     # Step 8: Rebuild Docker container (the slow part)
     if progress:
@@ -1029,6 +1243,7 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
         ssh_cmd.extend(['-i', key_file])
     if not use_interactive_ssh:
         ssh_cmd.extend(['-o', 'BatchMode=yes'])
+    ssh_cmd.extend(_ssh_mux_opts)
     ssh_cmd.extend([ssh_host,
          'cd ~/box/lager && '
          'docker build -f docker/box.Dockerfile -t lager .'])
@@ -1084,6 +1299,15 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
         ctx.exit(1)
     log_status('Building container...', 'OK', 'green')
 
+    # Record the build-inputs hash so the next run can decide whether to
+    # invalidate the cache automatically. Best-effort — a failure here just
+    # means the next update may rebuild unnecessarily.
+    if new_build_hash:
+        run_ssh_command_with_output(
+            f'echo "{new_build_hash}" > /etc/lager/build-hash',
+            timeout_secs=15,
+        )
+
     # Step 8.5: Clean up old images to save disk space (after successful build)
     if progress:
         progress.update("Cleaning up images...")
@@ -1133,30 +1357,15 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
         if progress:
             progress.update("Storing version...")
         log('Storing version information...', nl=False)
-        version_content = f'{box_cli_version}|{cli_version}'
 
-        version_written = False
-        for attempt in range(3):
-            version_write_result = run_ssh_command_with_output(
-                f'echo "{version_content}" > /etc/lager/version',
-                timeout_secs=30
-            )
-            if version_write_result.returncode == 0:
-                version_written = True
-                break
-            if attempt < 2:
-                time.sleep(5)
-
-        if not version_written:
+        if not write_box_version_file(box_cli_version):
             if progress:
                 progress.finish(success=False)
             log_error('Error: Failed to write version file to /etc/lager/version')
             click.echo('The code was updated but the version file could not be written.', err=True)
-            if version_write_result.stderr:
-                click.echo(f'Error: {version_write_result.stderr.strip()}', err=True)
             click.echo()
             click.echo('Manually fix with:', err=True)
-            click.echo(f'  ssh {ssh_host} "echo \\"{version_content}\\" | sudo tee /etc/lager/version"', err=True)
+            click.echo(f'  ssh {ssh_host} "echo \\"{box_cli_version}|{cli_version}\\" | sudo tee /etc/lager/version"', err=True)
             ctx.exit(1)
         log_status('Storing version information...', f'OK ({box_cli_version})', 'green')
 
@@ -1198,8 +1407,25 @@ def update(ctx, box, update_all, yes, skip_restart, version, verbose, force):
         click.echo(f'  ssh lagerdata@{resolved_box} "docker ps -a"', err=True)
         ctx.exit(1)
 
-    # Wait for services
-    time.sleep(5)
+    # Wait for the on-box services to become reachable. Previously this was a
+    # blind `time.sleep(5)`; on slower boxes the Python service on port 5000
+    # could still be initializing past that window, so subsequent steps would
+    # race against an unready service and the user would re-run `lager update`
+    # thinking the previous one didn't take. Poll /health (defined in
+    # box/lager/python/service.py) with a 60s ceiling.
+    if progress:
+        progress.update("Waiting for services...")
+    log('Waiting for box services...', nl=False)
+    if not wait_for_box_ready(resolved_box, timeout_s=60):
+        if progress:
+            progress.finish(success=False)
+        log_error('Error: Box services did not respond within 60s after restart')
+        click.echo(f'The lager container is running but http://{resolved_box}:5000/health did not return 200.', err=True)
+        click.echo('Investigate with:', err=True)
+        click.echo(f'  ssh {ssh_host} "docker logs lager --tail 50"', err=True)
+        click.echo(f'  ssh {ssh_host} "docker ps"', err=True)
+        ctx.exit(1)
+    log_status('Waiting for box services...', 'OK', 'green')
 
     # Step 11: Setup customer binaries directory
     if progress:
@@ -1385,8 +1611,63 @@ fi
     if progress:
         progress.finish(success=True)
 
-    # Final success message
+    # End-of-run summary
+    _duration = _format_duration(time.time() - _start_time)
+    _build_kind = 'fresh' if must_wipe_image else 'cached'
+    _to_version = box_cli_version or target_version
     click.echo()
-    click.secho('Box update completed successfully!', fg='green', bold=True)
+    click.secho(f'Updated {box_name}: {pre_box_version} -> {_to_version}  ({target_version})', fg='green', bold=True)
+    click.echo(f'Duration: {_duration}   Restart: yes   Build: {_build_kind}')
     click.echo(f'Verify with: lager hello --box {box_name}')
     click.echo()
+
+
+# ---------------------------------------------------------------------------
+# Click wrappers
+#
+# `lager box update`  (canonical)  — update_cmd
+# `lager update`      (deprecated alias, hidden in --help)  — update
+#
+# Both delegate to _update_logic above. The deprecated entry prints a one-line
+# notice on every invocation so existing scripts keep working but users are
+# nudged toward the new name.
+# ---------------------------------------------------------------------------
+
+
+@click.command(name='update')
+@click.pass_context
+@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option('--all', 'update_all', is_flag=True, help='Update all saved boxes that need updating')
+@click.option('--yes', is_flag=True, help='Skip confirmation prompt')
+@click.option('--skip-restart', is_flag=True, help='Skip container restart after update')
+@click.option('--version', required=False, help='Box version/branch to update to (e.g., staging, main)')
+@click.option('--verbose', '-v', is_flag=True, help='Show detailed output (default shows progress bar only)')
+@click.option('--force', is_flag=True, help='Force fresh Docker build by removing cached image (overrides automatic cache invalidation)')
+@click.option('--check', is_flag=True, help='Dry run: report what would change without modifying the box')
+def update_cmd(ctx, box, update_all, yes, skip_restart, version, verbose, force, check):
+    """Update box code from GitHub repository."""
+    _update_logic(
+        ctx,
+        box=box, update_all=update_all, yes=yes, skip_restart=skip_restart,
+        version=version, verbose=verbose, force=force, check=check,
+    )
+
+
+@click.command(name='update', hidden=True)
+@click.pass_context
+@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option('--all', 'update_all', is_flag=True, help='Update all saved boxes that need updating')
+@click.option('--yes', is_flag=True, help='Skip confirmation prompt')
+@click.option('--skip-restart', is_flag=True, help='Skip container restart after update')
+@click.option('--version', required=False, help='Box version/branch to update to (e.g., staging, main)')
+@click.option('--verbose', '-v', is_flag=True, help='Show detailed output (default shows progress bar only)')
+@click.option('--force', is_flag=True, help='Force fresh Docker build by removing cached image (overrides automatic cache invalidation)')
+@click.option('--check', is_flag=True, help='Dry run: report what would change without modifying the box')
+def update(ctx, box, update_all, yes, skip_restart, version, verbose, force, check):
+    """[DEPRECATED] Use `lager box update` instead."""
+    click.secho('Note: `lager update` is deprecated; use `lager box update` instead.', fg='yellow', err=True)
+    _update_logic(
+        ctx,
+        box=box, update_all=update_all, yes=yes, skip_restart=skip_restart,
+        version=version, verbose=verbose, force=force, check=check,
+    )
