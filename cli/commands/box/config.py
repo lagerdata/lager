@@ -508,6 +508,41 @@ def validate_cmd(ctx: click.Context, box: Optional[str]) -> None:
     ctx.exit(1)
 
 
+_SINCE_RE = __import__("re").compile(r"^\s*(\d+)\s*([smhdw])\s*$")
+
+
+def _parse_since(since_str: str):
+    """Parse a relative time like `1h`, `30m`, `1d`, `2w` to a UTC cutoff
+    datetime. Units: s=second, m=minute, h=hour, d=day, w=week."""
+    import datetime as _dt
+    m = _SINCE_RE.match(since_str)
+    if not m:
+        raise click.BadParameter(
+            f"unsupported --since format: {since_str!r}; expected e.g. `30m`, `1h`, `2d`, `1w`.",
+            param_hint="--since",
+        )
+    n = int(m.group(1))
+    unit = m.group(2)
+    secs = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}[unit] * n
+    return _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=secs)
+
+
+def _entry_timestamp(entry: dict):
+    import datetime as _dt
+    ts = entry.get("ts")
+    if not isinstance(ts, str) or not ts:
+        return None
+    # fromisoformat in stdlib doesn't accept the literal `Z` suffix on
+    # versions < 3.11; normalize it to a UTC offset so this works
+    # consistently across boxes that may run different Python versions.
+    if ts.endswith("Z"):
+        ts = ts[:-1] + "+00:00"
+    try:
+        return _dt.datetime.fromisoformat(ts)
+    except (ValueError, TypeError):
+        return None
+
+
 @box_config.command(
     "audit",
     help="Show recent box_config mutations recorded on the box.",
@@ -515,20 +550,47 @@ def validate_cmd(ctx: click.Context, box: Optional[str]) -> None:
 @click.option("--box", help="Lagerbox name or IP")
 @click.option(
     "--tail", "tail_n", type=int, default=20,
-    help="Number of most-recent entries to show (default 20; 0 for all).",
+    help="Number of most-recent entries to fetch from the box (default 20; 0 for all).",
+)
+@click.option(
+    "--since", "since",
+    help="Show only entries newer than the given duration (e.g., `30m`, `1h`, `2d`, `1w`).",
+)
+@click.option(
+    "--verb", "verb_filter",
+    help="Show only entries matching this verb exactly (e.g., `apt-add`, `set-applied-hash`).",
 )
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
-def audit_cmd(ctx: click.Context, box: Optional[str], tail_n: int, as_json: bool) -> None:
+def audit_cmd(
+    ctx: click.Context,
+    box: Optional[str],
+    tail_n: int,
+    since: Optional[str],
+    verb_filter: Optional[str],
+    as_json: bool,
+) -> None:
     resolved = _resolve_box(ctx, box)
+    # Fetch the tail from the box, then filter host-side. The audit log is
+    # small enough that doing this client-side is cheaper than expanding
+    # the shim's wire protocol for every new filter dimension.
     raw = _run_box_config_py(ctx, resolved, verbs.AUDIT_TAIL, str(tail_n))
     payload = _parse_response(raw, ctx) or {}
     entries = payload.get("entries", [])
+    if since:
+        cutoff = _parse_since(since)
+        entries = [
+            e for e in entries
+            if (t := _entry_timestamp(e)) is not None and t >= cutoff
+        ]
+    if verb_filter:
+        entries = [e for e in entries if e.get("verb") == verb_filter]
     if as_json:
         click.echo(json.dumps(entries, indent=2))
         return
     if not entries:
-        click.echo("No audit entries.")
+        click.echo("No audit entries." if not (since or verb_filter)
+                   else "No matching audit entries.")
         return
     for e in entries:
         ts = e.get("ts", "?")
@@ -1031,13 +1093,6 @@ def _apply_one(
         click.secho("Config validated; restart skipped (--skip-restart).", fg="yellow")
         return True
 
-    if not yes and not click.confirm(
-        f"Apply box config and restart the lager container on {resolved}?",
-        default=True,
-    ):
-        click.secho("Aborted.", fg="yellow")
-        return False
-
     # Host-side provisioning that has to happen BEFORE the container bounce:
     # apt packages may be needed by services the container talks to, and
     # sysctl values must be in place so first-packet routing works the
@@ -1046,6 +1101,21 @@ def _apply_one(
     applied_snapshot = _parse_response(
         _run_box_config_py(ctx, resolved, verbs.APPLIED_SHOW), ctx
     )
+
+    if not yes:
+        # Show the operator what's about to change so they can confirm with
+        # full context (no need to run `diff` separately first).
+        diff = _compute_diff(current_show, applied_snapshot)
+        if not _diff_is_empty(diff):
+            click.echo()
+            click.secho("Pending changes:", bold=True)
+            _print_diff_human(diff)
+        if not click.confirm(
+            f"Apply box config and restart the lager container on {resolved}?",
+            default=True,
+        ):
+            click.secho("Aborted.", fg="yellow")
+            return False
     if not _ensure_apt_packages(resolved, current_show, applied_snapshot):
         return False
     if not _ensure_sysctl(resolved, current_show, applied_snapshot):
