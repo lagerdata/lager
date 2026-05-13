@@ -46,6 +46,68 @@ def _display_usb_nets(ctx: click.Context, box: str) -> None:
     display_nets_table(nets, empty_message="No USB nets found on this box.")
 
 
+def _try_fast_path(
+    box_ip: str,
+    net_name: str,
+    command: str,
+) -> tuple[bool, str | None]:
+    """
+    POST to the box server's /usb/command on :9000.
+
+    The fast path skips the per-call subprocess+import cost of the slow
+    `:5000/python` script-upload route by invoking the cached hub driver
+    inside the long-lived Flask process (mirrors `lager supply`/`battery`).
+
+    Returns:
+        (handled, message):
+          handled=True, message=... -> command succeeded, print message
+          handled=False, message=msg -> handler returned success=False with
+            a real hardware error; surface and exit (don't retry slow path)
+          handled=False, message=None -> route not present or unreachable;
+            caller should fall through to the slow path
+    """
+    import requests
+
+    url = f"http://{box_ip}:9000/usb/command"
+    try:
+        resp = requests.post(
+            url,
+            json={"netname": net_name, "action": command},
+            timeout=10,
+        )
+    except (requests.ConnectionError, requests.Timeout):
+        return False, None
+    except Exception:
+        return False, None
+
+    if resp.status_code == 200:
+        try:
+            result = resp.json()
+        except ValueError:
+            return False, None
+        if result.get('success'):
+            return True, result.get('message', f"USB port '{net_name}' {command}d")
+        # 200 + success=False: the handler reached the hardware and the
+        # operation failed for a real reason (missing net, port-state, etc).
+        # Falling back to the slow path would just reproduce the same failure
+        # after another ~500ms of subprocess churn.
+        return False, result.get('error') or 'USB command failed'
+
+    if resp.status_code == 404:
+        # Route missing on an older box server. Try slow path.
+        return False, None
+
+    # Other status codes (400/409/500/502) also carry a useful error body.
+    try:
+        result = resp.json()
+        err = result.get('error')
+        if err:
+            return False, err
+    except ValueError:
+        pass
+    return False, None
+
+
 def _invoke_remote(
     ctx: click.Context,
     net_name: str,
@@ -53,13 +115,24 @@ def _invoke_remote(
     command: str,
 ) -> None:
     """
-    Run `impl/usb.py` on the requested box:
+    Send a USB hub command to the box.
 
-        python usb.py <command> <net_name>
-
-    The impl in turn invokes the backend dispatcher inside the box
-    container.
+    Prefers the fast path (POST :9000/usb/command, handler invokes the
+    cached driver in-process). Falls back to the slow path (`impl/usb.py`
+    over :5000/python) only if the route is missing or the box is
+    unreachable on :9000 — never if the handler reports a real hardware
+    error, since the slow path would just reproduce it.
     """
+    # target_box is already the resolved IP (see usb() below); no re-resolve.
+    handled, message = _try_fast_path(target_box, net_name, command)
+    if handled:
+        click.echo(f"[OK] {message}")
+        return
+    if message is not None:
+        click.secho(f"Error: {message}", fg='red', err=True)
+        ctx.exit(1)
+
+    # Fall back to the slow path: upload impl/usb.py and run via :5000/python.
     try:
         run_impl_script(
             ctx,
