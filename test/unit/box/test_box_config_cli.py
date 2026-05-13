@@ -834,6 +834,137 @@ class PostApplyConsistency(unittest.TestCase):
         self.assertNotIn("set-applied-hash", [c[0] for c in backend.calls])
 
 
+class AuditFilters(unittest.TestCase):
+    """Host-side `--since` / `--verb` filters on the audit log."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def _backend(self, entries):
+        return FakeBoxBackend({"audit-tail": [{"entries": entries}]})
+
+    def _entries(self):
+        # Mix of timestamps and verbs so each filter has meaningful data.
+        import datetime
+        now = datetime.datetime.now(datetime.timezone.utc)
+        def iso(dt):
+            return dt.isoformat(timespec="seconds").replace("+00:00", "Z")
+        return [
+            {"ts": iso(now - datetime.timedelta(minutes=5)),  "verb": "apt-add",       "args": {"added": ["jq"]}},
+            {"ts": iso(now - datetime.timedelta(hours=2)),    "verb": "pip-add",       "args": {"added": ["requests"]}},
+            {"ts": iso(now - datetime.timedelta(days=3)),     "verb": "apt-add",       "args": {"added": ["strace"]}},
+            {"ts": iso(now - datetime.timedelta(days=8)),     "verb": "set-applied-hash", "args": {"hash": "x"}},
+        ]
+
+    def test_since_filters_by_recency(self):
+        entries = self._entries()
+        backend = self._backend(entries)
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["audit", "--box", "HYP-3", "--since", "1h"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        # Only the 5-min-ago apt-add should pass the 1h cutoff.
+        self.assertIn("jq", result.output)
+        self.assertNotIn("requests", result.output)
+        self.assertNotIn("strace", result.output)
+        self.assertNotIn("hash", result.output)
+
+    def test_verb_filters_to_exact_match(self):
+        entries = self._entries()
+        backend = self._backend(entries)
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["audit", "--box", "HYP-3", "--verb", "apt-add"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        # Both apt-add entries appear; pip-add and set-applied-hash filtered out.
+        self.assertIn("jq", result.output)
+        self.assertIn("strace", result.output)
+        self.assertNotIn("requests", result.output)
+        self.assertNotIn("set-applied-hash", result.output)
+
+    def test_filters_compose(self):
+        entries = self._entries()
+        backend = self._backend(entries)
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["audit", "--box", "HYP-3", "--since", "1h", "--verb", "apt-add"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        # Intersection: only entries that are BOTH recent AND apt-add → just jq.
+        self.assertIn("jq", result.output)
+        self.assertNotIn("strace", result.output)
+
+    def test_no_matches_says_so(self):
+        entries = self._entries()
+        backend = self._backend(entries)
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["audit", "--box", "HYP-3", "--verb", "never-existed"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("No matching audit entries", result.output)
+
+    def test_since_format_validation(self):
+        backend = FakeBoxBackend({"audit-tail": [{"entries": []}]})
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["audit", "--box", "HYP-3", "--since", "1 fortnight"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("unsupported --since format", result.output)
+
+
+class ApplyPreConfirmDiff(unittest.TestCase):
+    """`apply` without `--yes` shows the diff before its confirm prompt
+    so the operator sees exactly what's about to change."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def test_diff_printed_before_confirm(self):
+        # Backend: pre-bounce validate ok, hash differs from applied-hash
+        # (mutations pending), and show/applied-show reveal one apt change.
+        backend = FakeBoxBackend({
+            "validate": [{"ok": True, "errors": [], "exists": True}],
+            "hash": [{"hash": "aaa"}],
+            "applied-hash": [{"hash": "bbb"}],
+            "show": [
+                {"version": 1, "mounts": []},                     # _preflight_mounts
+                {"version": 1, "apt_packages": ["strace"]},       # current_show
+            ],
+            "applied-show": [{"version": 1, "apt_packages": []}],
+        })
+        # Decline at the confirm prompt — we just want to see the diff appear.
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container") as bounce_mock:
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "HYP-3"],
+                input="n\n",
+            )
+        # Exit non-zero because we declined.
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Pending changes:", result.output)
+        self.assertIn("+ strace", result.output)
+        # The confirm prompt itself is present.
+        self.assertIn("Apply box config", result.output)
+        # We declined, so bounce never fired.
+        bounce_mock.assert_not_called()
+
+
 class DiffHelpers(unittest.TestCase):
     """Pure-function tests for the diff computation. Independent of click /
     SSH plumbing so failures pinpoint the helper, not the command wiring."""
