@@ -1,0 +1,30 @@
+---
+title: "Version 0.18.1"
+description: "May 13, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **J-Link GDB attach no longer halts the target.** Dropped the `-ir` flag from `JLinkGDBServer` and switched GDB into non-stop async mode before target attach, so attaching gdbserver/rtt no longer halts the target CPU on ~15% of attempts.
+
+## <u>Improvements</u>
+
+- **`lager usb` enable / disable / toggle ~2.6x faster.** Routes through a new Flask handler on the box's port 9000 instead of spawning a fresh Python subprocess per call (mirrors the supply/battery fast-path from 0.17.x). Backward compatible — falls back to the slow path against older box images.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.18.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.18.1/)
