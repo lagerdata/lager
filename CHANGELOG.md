@@ -2,6 +2,14 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.18.1] - 2026-05-13
+
+### Fixed
+- **J-Link GDB attach no longer halts the target CPU on ~15% of attaches.** Two compounding changes in `box/lager/debug/`: (1) `gdbserver.py` no longer passes `-ir` (init registers) to `JLinkGDBServer`. The `-ir` flag briefly halts the CPU to seed its register file, but Lager doesn't need that — RTT control-block initialization happens later via `SetRTTAddr` in `detect_and_configure_rtt()`. (2) `gdb.py` now puts GDB into non-stop async mode (`set pagination off`, `set target-async on`, `set non-stop on`) *before* `tar ext`. In GDB's default all-stop mode the inferior is implicitly halted for memory reads and monitor commands, which produced the residual ~15% halt rate after the `-ir` drop landed. The non-stop flag is locked once a target is attached, so the order matters. Bench-validated by Evan over the 5/8 testing window with no halts observed.
+
+### Improvements
+- **`lager usb enable | disable | toggle` ~2.6x faster (~3.9s saved per call on Tailscale-attached boxes).** Mirrors the supply/battery fast-path migration from 0.17.x: the CLI now POSTs to `/usb/command` on the box's port 9000 Flask server instead of uploading `cli/impl/device/usb.py` and spawning a fresh Python subprocess + brainstem/pykush imports on `:5000/python` for every call. The Acroname BrainStem singleton and YKUSH per-serial LRU already live inside the long-lived box-server process, so the speedup comes from skipping per-call subprocess+import cost. Implemented as `box/lager/http_handlers/usb.py` (new) + `register_usb_routes` wired up alongside the supply/battery registrations in `box_http_server.py`. The CLI falls back to the slow path on `ConnectionError`/`Timeout`/404, so a new CLI keeps working against older box images; real handler errors (missing net, port-state) exit fast and do *not* retry the slow path, since the slow path would just reproduce the same failure. Bench-validated on PRD-1's Acroname 8-port over Tailscale: 6.10–6.57s (slow path via 404 fallback) → 2.18–2.66s (fast path post-deploy).
+
 ## [0.18.0] - 2026-05-12
 
 ### Added
