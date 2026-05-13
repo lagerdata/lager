@@ -1,0 +1,66 @@
+---
+title: "Version 0.18.0"
+description: "May 12, 2026"
+---
+
+## <u>Features</u>
+
+- **`lager box config` — declarative per-box provisioning.** A new top-level command tree that replaces ad-hoc SSH-and-edit workflows with a single JSON manifest at `/etc/lager/box_config.json` per Lager Box. The file declares mounts, named Docker volumes, container environment variables, host apt packages, kernel sysctl settings, in-container pip packages, cargo crates, and npm packages — and `lager box config apply` reconciles the box to match. Re-applying the same config is a no-op via SHA-256 comparison against the last applied snapshot, so it's safe to wire into CI. The full operator surface: `init`, `show`, `validate`, `diff`, `apply` (with `--dry-run` and `--yes`), `audit`, `status`, `edit` (round-trips through `$EDITOR`/`nano`/`vi` with shim-side validation on save), `copy --from --to`, `import FILE`, `export FILE`, and `repair`. Multi-box fanout via `--box A,B,C` on `show` and `apply` for fleet operations. Every section has CRUD verbs: `mount add/remove/list`, `pip add/remove/list`, `apt add/remove/list`, `cargo add/remove/list`, `npm add/remove/list`, `sysctl set/unset/list`, `env set/unset/list`, `volume add/remove/list`.
+
+- **npm support inside the container.** A new `npm_packages` first-class field on `box_config.json` lets you declare Node.js global packages alongside the existing pip and cargo lists. Scoped packages (`@types/node`) and versioned packages (`lodash@4.17.21`) are both supported. The container Dockerfile now ships `nodejs npm` and sets `NPM_CONFIG_PREFIX=/home/www-data/.npm-global` (pre-created and chowned to the `www-data` runtime user) so `npm install -g` works without root.
+
+- **Rust toolchain baked into the container image.** rustup is now installed into `/opt/rust` (owned by `www-data`) with `RUSTUP_HOME`, `CARGO_HOME`, and `PATH` set in the Dockerfile, so `cargo install` runs cleanly from the post-bounce loop. No more manual rust installation per Lager Box. `cargo_packages` entries accept both `name` and `name@version`.
+
+- **Audit log of every config mutation.** Every `add`/`set`/`remove`/`unset`/`apply` operation is recorded to `/etc/lager/box_config.audit.log` (JSONL, append-only) with an ISO-8601 timestamp. `lager box config audit` reads it back. Filters compose: `--tail 20`, `--since 1h`, `--verb apt-add`, `--json`. Useful for "what changed today" or "every apt operation ever."
+
+- **Automatic rollback on failed bounces.** When `lager box config apply`'s container restart fails (for example, because docker rejected a malformed mount), the previously applied snapshot is restored to `/etc/lager/box_config.json` via SSH `sudo cp` and a re-bounce brings the box back up on the prior good config. Sysctl values are reverse-diffed to their previous state in the same pass. The restore goes through direct SSH file ops rather than the in-container shim because the container is necessarily dead by the time the rollback fires. `lager box config repair --box X` exposes the same recovery as a standalone command for situations that automatic rollback can't reach — for example, when an operator hand-edits the JSON to invalid syntax outside the CLI.
+
+- **Sudoers auto-bootstrap.** `lager install` (on new boxes) and `lager update` (on existing boxes) now install `/etc/sudoers.d/lager-box-config` with the narrow NOPASSWD grants `lager box config apply` needs: `apt-get` with `SETENV:` for `DEBIAN_FRONTEND`, path-scoped `tee`/`rm`/`sysctl --system` for the sysctl conf, `mkdir`/`chown` for mount auto-prep, and a path-scoped `cp` for the rollback snapshot restore. A marker file at `/etc/lager/.boxcfg-sudoers-v2` lets `lager update` skip re-bootstrapping once the current rule shape is in place. Operators never type a sudoers snippet by hand.
+
+## <u>Bug Fixes</u>
+
+- **`lager update` container startup timeout raised from 5 to 10 minutes.** First-time docker builds with cargo and npm layers were timing out on slower Lager Boxes. `_bounce_container`'s SSH ceiling was also bumped from 300s to 900s for the same reason — covers cargo crate compilation + pip and npm install loops with headroom.
+
+- **SSH user resolution.** The new shared SSH runner used by `lager box config` was calling `get_box_user(box_ip)` even though that helper keys by box *name*, so every Lager Box with a stored custom SSH user silently fell back to `lagerdata`. The runner now reverse-resolves the name via `get_box_name_by_ip` before the lookup, and uses `~/.ssh/lager_box` via `-i` to match the rest of the CLI's SSH conventions.
+
+- **`DEBIAN_FRONTEND=noninteractive` actually propagates on apt installs.** Default Ubuntu sudoers' `env_reset` strips `DEBIAN_FRONTEND` set as a `sudo VAR=value cmd` argument unless `SETENV:` is granted. Packages with debconf prompts (`iptables-persistent` and similar) were hanging on a prompt that never showed. The new sudoers rule grants `SETENV:` only on `/usr/bin/apt-get` so the env var propagates.
+
+- **`cargo` found inside the container during apply.** `start_box.sh`'s cargo install loop used `bash -lc` (login shell), which re-sourced `/etc/profile` and reset `PATH` — wiping the Dockerfile's `ENV PATH=/opt/rust/cargo/bin:...`. Switched to `bash -c` (non-login) so the docker `ENV` is honored. Same fix applied to the npm install loop.
+
+- **Real exit codes captured from pip/cargo/npm install loops.** The previous `if ! cmd; then _rc=$?` pattern in `start_box.sh` captured `$?` *after* bash's `!` inversion — so `_rc` was always `0` even on real failures, and error messages reported `(rc=0)` for non-zero exits. Refactored to `if cmd; then : else _rc=$?` so error codes propagate accurately.
+
+- **Env values with whitespace, `$`, backticks, or single quotes survive the bounce.** The docker-args renderer used to emit `--env 'KEY=hello world'` to stdout, which `start_box.sh` interpolated unquoted into `docker run` — bash variable expansion does not re-parse quotes, so values got word-split and the literal quote characters leaked through. The renderer now writes a bash-sourceable file declaring `BOX_CONFIG_MOUNTS`, `BOX_CONFIG_ENV`, and `BOX_CONFIG_HOST_PATHS` arrays via `shlex.quote`; `start_box.sh` sources that file and uses `"${BOX_CONFIG_MOUNTS[@]}"` so each element preserves its content verbatim.
+
+- **`lager box config edit` no longer rejects valid saves with non-zero editor exit.** Some vim plugins return `1` from `:wq` even when the save succeeded. The command now compares tempfile contents before and after the editor exits — content changed AND non-zero rc means "user saved, proceed"; content unchanged AND non-zero rc means "abort." Bonus: `nano` is preferred over `vi` as the fallback when `$EDITOR` is unset.
+
+## <u>Improvements</u>
+
+- **`lager box config show` reads as a tree.** Bold uppercase `HOST` / `CONTAINER` group headers with horizontal-rule underlines, bold section labels indented two spaces, and `├── /└── ` branches under each section. Mount paths align around `->`; env/sysctl keys align around `=`; empty sections render as `(none)` leaves so operators discover what's configurable. The header carries a color-coded `[Up To Date]` / `[Unapplied Changes!]` marker driven by a `hash` vs `applied-hash` comparison.
+
+- **`apply` shows the pending diff inline before confirming.** When `--yes` is not passed, the confirm prompt is preceded by a per-field diff of what's about to change — closes the most common pre-apply workflow ("run diff first, then apply") into a single command.
+
+- **Tightened sudoers rule.** `tee`, `rm`, and `sysctl --system` in the recommended sudoers grant are now path-locked to the exact files and flags `apply` invokes, so a compromised `lagerdata` account cannot escalate to root via those binaries. `apt-get` and `mkdir`/`chown` stay unscoped because the package list and host paths are user-defined.
+
+- **flock against the in-container shim.** Two concurrent `lager box config X` invocations against the same Lager Box used to do read-modify-write on `box_config.json` and silently drop one mutation. The shim now `flock`s `/etc/lager/box_config.lock` around the whole dispatch.
+
+- **Post-apply consistency check.** After the bounce + API-ready probe but before recording the new applied-hash, the apply path re-runs `validate` + `show` against the box. If either drifts from what was bounced (the JSON was hand-edited mid-apply, say), `applied-hash` is left untouched and the operator is told to re-run apply.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.18.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+After upgrading, run `lager update --box <name>` on each existing Lager Box to deploy the matching box-side code and pick up the sudoers rule.
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.18.0/)
