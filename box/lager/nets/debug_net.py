@@ -197,7 +197,6 @@ try:
                 except Exception:
                     pass
             chunks = []
-            total = 0
             with self.rtt(channel=channel, search_addr=search_addr,
                           search_size=search_size, chunk_size=chunk_size) as rtt:
                 if settle and settle > 0:
@@ -208,8 +207,11 @@ try:
                     data = rtt.read_some(timeout=min(0.5, max(0.05, remaining)))
                     if data:
                         chunks.append(data)
-                        total += len(data)
-                        if max_chars is not None and total >= max_chars:
+                        # max_chars counts decoded characters, not raw bytes —
+                        # decode-and-measure so multi-byte (UTF-8) output isn't
+                        # cut short. Cheap: max_chars is rarely set.
+                        if max_chars is not None and \
+                                len(b"".join(chunks).decode(encoding, errors='replace')) >= max_chars:
                             break
                     else:
                         _time.sleep(0.02)

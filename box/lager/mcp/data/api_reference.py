@@ -228,7 +228,7 @@ API_REFERENCE: dict[str, dict] = {
             {"name": "reset", "sig": "reset(halt=False)", "desc": "Reset the DUT. halt=True stops at first instruction."},
             {"name": "erase", "sig": "erase()", "desc": "Mass-erase DUT flash memory"},
             {"name": "read_memory", "sig": "read_memory(address: int, length: int) -> bytes", "desc": "Read raw memory from DUT"},
-            {"name": "rtt_read", "sig": "rtt_read(timeout=3.0, max_chars=None, channel=0) -> str", "desc": "One-shot RTT read: collect output for `timeout` seconds and return it as decoded text (str, never None). Use this for simple 'flash, reset, read console' tests."},
+            {"name": "rtt_read", "sig": "rtt_read(timeout=3.0, max_chars=None, channel=0, settle=1.5) -> str", "desc": "One-shot RTT read: collect output for `timeout` seconds and return it as decoded text (str, never None). `settle` = seconds to wait after opening RTT before reading (the J-Link relay is silent for ~1s after connect); lower it for faster tests. Use this for simple 'flash, reset, read console' tests."},
             {"name": "rtt", "sig": "rtt(channel=0) -> context_manager", "desc": "Open an RTT channel for bidirectional / streaming use (context manager). Object has .write() and .read_some(timeout). Prefer rtt_read() for one-shot reads."},
             {"name": "status", "sig": "status() -> dict", "desc": "Get probe/target status"},
         ],
