@@ -2,6 +2,33 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.18.2] - 2026-05-13
+
+### Added
+- **`lager box update` — canonical update command.** Replaces the top-level `lager update` (now a hidden deprecation alias that still works for existing scripts and CI). Sits alongside `lager box config` under the `lager box` group.
+- **`--check` / dry-run mode.** `lager box update --box X --check` reports the planned update without modifying the box: current vs target version, code/deps/container state, estimated duration. Exits 0 for no-op, 1 for would-update, 2 on error.
+- **Auto Docker-cache invalidation.** Records sha256 of `Dockerfile` + `requirements.txt` at `/etc/lager/build-hash` after each build. The next update detects drift (Dockerfile or requirements changed) and triggers `docker rmi lager` before the rebuild, replacing the manual `--force` workflow. First-run-after-deploy bootstraps the hash silently without forcing a rebuild.
+- **SSH ControlMaster multiplexing.** All update SSH calls reuse a single OpenSSH master connection via `cli/core/ssh_utils.SSHConnectionPool`. Per-command overhead ~300ms → ~10ms; consecutive no-op runs ~20s → ~1.6s.
+
+### Changed
+- **`lager update` hidden in `--help`** and prints a one-line deprecation notice on every invocation, nudging users toward `lager box update`. Same flag set, same behavior — old scripts keep working.
+- **End-of-run output redesigned.** Single green summary line (`STG-C updated to version 0.18.2 (main)` or `STG-C is already at version 0.18.2 (main)` for no-op). The redundant Restart/Build status, the "Verify with:" hint, and the verbose Duration line are dropped — elapsed time appears on the progress bar itself.
+- **Progress bar rewrite.** Bar width is computed from the live terminal columns with a 2-char right margin (was a fixed 30 chars and would wrap on 80-col terminals, producing stacked-line artifacts because `\r\033[2K` only clears the current row). Elapsed time moved to the left of the bar, padded to a fixed width. The 1-second re-render thread is gated on `sys.stdout.isatty()` so captured output (CI logs, pipes, redirects) gets one frame per step instead of dozens.
+
+### Fixed
+- **Cache-invalidation early-exit silently skipped rebuilds.** The hash mismatch check ran *after* the no-restart early-exit branch, so a corrupted `/etc/lager/build-hash` with code in sync took the no-op path and never rebuilt. Auto-invalidation now also fires on deps-only changes (Dockerfile/requirements moved, code unchanged) as intended.
+- **Stale `/etc/lager/version` after early-exit.** The "already up to date" branch only updated the local `~/.lager` cache, leaving the on-box version file untouched, so the next `lager hello` would surface the stale value and users would re-run `lager update` thinking the previous one didn't take. The primary cause of the recurring "had to run `lager update` 2–3 times before it stuck" reports.
+- **Post-restart `time.sleep(5)` race.** Replaced with a poll of `http://<box>:5000/health` (60s ceiling, exponential backoff). The 5s window was too short on slower boxes; subsequent commands raced against an unready service.
+- **Flatten heuristic misfired on every run.** "Files at root + box/ absent" treated the post-flatten state as broken and wiped+refetched on every consecutive `lager update`, defeating the early-exit branch and forcing ~20s of pointless container churn each run.
+- **Silent flatten failures producing broken images.** Verify `~/box/lager/box_http_server.py` + `box.Dockerfile` after the flatten step; abort cleanly if missing instead of building against an incomplete tree.
+- **Swallowed git errors.** `git checkout` and `git reset --hard` failures used to print only "Failed to checkout version X" without git's underlying message. Now pass stderr through.
+- **Flatten artifact blocked branch switch.** A prior flatten could clobber a root-level tracked file (e.g. `README.md`), making the working tree look modified to git. `git checkout -f` discards spurious modifications from flatten artifacts so the branch switch succeeds.
+
+### Removed
+- **`lager update --all`** and the multi-box loop it drove (~145 lines). Belongs in its own command if multi-box update returns as a feature.
+- **`lager update --force`.** Obsoleted by auto cache-invalidation. The escape-hatch use case (force a rebuild when the hash heuristic misses something) is rare; `docker rmi lager && lager box update` is the manual workaround.
+- **`lager update --skip-restart`.** Produced a half-update state ("pull code but don't restart") with no real workflow — `ssh lagerdata@<box> 'cd ~/box && git pull'` is clearer if that's what you want.
+
 ## [0.18.1] - 2026-05-13
 
 ### Fixed
