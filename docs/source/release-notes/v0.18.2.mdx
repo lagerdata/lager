@@ -1,0 +1,40 @@
+---
+title: "Version 0.18.2"
+description: "May 13, 2026"
+---
+
+## <u>Features</u>
+
+- **`lager box update` is now the canonical update command.** The top-level `lager update` keeps working as a hidden alias for existing scripts but prints a deprecation notice. Same flag set; runs through the same flow.
+- **`--check` flag for dry-run updates.** `lager box update --box X --check` reports what would change (code, deps, container) without touching the box. Useful for CI gating and pre-deploy checks.
+- **Docker cache auto-invalidates when `Dockerfile` or `requirements.txt` change.** No more remembering to pass `--force` after a deps bump — the next update detects the drift and rebuilds.
+
+## <u>Bug Fixes</u>
+
+- **Updates now take effect on the first run.** Fixes a cluster of bugs behind the recurring "had to run `lager update` 2–3 times before it stuck" reports: stale `/etc/lager/version` after the early-exit branch, the flatten heuristic re-fetching on every run, the 5-second post-restart sleep racing against an unready service, silent flatten failures producing broken images, and the cache-invalidation early-exit skipping rebuilds when only deps had changed.
+- **Branch switches with conflicting root-level files no longer fail.** Adds `git checkout -f` so a previous flatten step that clobbered a tracked file (e.g. `README.md`) doesn't block the switch with "local changes would be overwritten."
+- **Git errors are now shown.** `git checkout` and `git reset --hard` failures used to surface only "Failed to checkout version X" without git's underlying error message.
+
+## <u>Improvements</u>
+
+- **Consecutive no-op `lager box update` runs are ~10× faster.** SSH calls multiplex through a single OpenSSH ControlMaster connection — ~20s → ~1.6s.
+- **Cleaner output.** Single green summary line, progress bar adapts to terminal width, elapsed time appears on the bar itself.
+- **`--all`, `--force`, `--skip-restart` flags removed.** `--all` will return as its own command if needed; `--force` is obsoleted by auto cache-invalidation; `--skip-restart` had no real workflow.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.18.2
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.18.2/)
