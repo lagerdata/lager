@@ -58,12 +58,20 @@ def _build_hash_shell_cmd():
     Missing files are silently skipped (so the hash still works on box
     revisions without a requirements.txt). Prints an empty string if nothing
     matched, which we treat as "skip auto-invalidation".
+
+    `~/box/...` paths are tilde-expanded by the for-loop's word-expansion
+    pass before iteration, so `$f` inside the body is already absolute —
+    no `eval` needed. The `[ -n "$out" ]` gate is what makes the "empty
+    string when nothing matched" promise true; without it, an empty pipe
+    into sha256sum would hash the empty string (`e3b0c44...`) and mask the
+    no-files case.
     """
     paths = ' '.join(_BUILD_HASH_INPUTS)
     return (
-        'for f in ' + paths + '; do '
-        '  [ -f "$(eval echo $f)" ] && sha256sum "$(eval echo $f)"; '
-        'done | sha256sum | cut -d" " -f1'
+        'out=$(for f in ' + paths + '; do '
+        '  [ -f "$f" ] && sha256sum "$f"; '
+        'done); '
+        '[ -n "$out" ] && echo "$out" | sha256sum | cut -d" " -f1'
     )
 
 
@@ -122,6 +130,10 @@ class ProgressBar:
         self._stop_event = threading.Event()
         self._render_thread = None
         self._tty = sys.stdout.isatty()
+        # Guards `_render` so the periodic thread's tick and a main-thread
+        # `update()` can't interleave their stdout writes mid-frame. Short
+        # critical section — one read of shared state + one write.
+        self._lock = threading.Lock()
 
     def _start_periodic_thread(self):
         """Spin up the 1s tick thread (idempotent). Only call on a TTY."""
@@ -208,22 +220,26 @@ class ProgressBar:
         """Render the bar. Width is computed against the live terminal width
         so the line never reaches the right edge — that wrap is what causes
         the stacked-bar artifact: \\r\\033[2K only clears the current row,
-        leaving the wrapped portion above as orphan text."""
-        capped_step = min(self.current_step, self.total_steps)
-        elapsed_padded = self._format_elapsed_time().ljust(self._ELAPSED_FIELD_WIDTH)
-        bar_width, label = self._layout(self.current_task, elapsed_padded)
-        if bar_width == 0:
-            output = f'{self.CLEAR_LINE}{self.CURSOR_START}{capped_step}/{self.total_steps}'
-        else:
-            percent = min(self.current_step / self.total_steps, 1.0)
-            filled = int(bar_width * percent)
-            bar = '█' * filled + '░' * (bar_width - filled)
-            output = (
-                f'{self.CLEAR_LINE}{self.CURSOR_START}'
-                f'{elapsed_padded} [{bar}] {capped_step}/{self.total_steps} {label}'
-            )
-        sys.stdout.write(output)
-        sys.stdout.flush()
+        leaving the wrapped portion above as orphan text.
+
+        Held under `_lock` so the periodic 1s thread and the main-thread
+        `update()` can't interleave their writes to stdout mid-frame."""
+        with self._lock:
+            capped_step = min(self.current_step, self.total_steps)
+            elapsed_padded = self._format_elapsed_time().ljust(self._ELAPSED_FIELD_WIDTH)
+            bar_width, label = self._layout(self.current_task, elapsed_padded)
+            if bar_width == 0:
+                output = f'{self.CLEAR_LINE}{self.CURSOR_START}{capped_step}/{self.total_steps}'
+            else:
+                percent = min(self.current_step / self.total_steps, 1.0)
+                filled = int(bar_width * percent)
+                bar = '█' * filled + '░' * (bar_width - filled)
+                output = (
+                    f'{self.CLEAR_LINE}{self.CURSOR_START}'
+                    f'{elapsed_padded} [{bar}] {capped_step}/{self.total_steps} {label}'
+                )
+            sys.stdout.write(output)
+            sys.stdout.flush()
 
     def finish(self, success=True):
         """Complete the progress bar."""
