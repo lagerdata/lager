@@ -10,15 +10,14 @@
 """
 import click
 import requests
-from ...sort_utils import natural_sort_key
+import shutil
 import subprocess
+import threading
 import time
 import sys
-import threading
-from ...box_storage import resolve_and_validate_box, get_box_user, list_boxes
+from ...box_storage import resolve_and_validate_box, get_box_user
 from ...context import get_default_box
 from ...core.ssh_utils import get_ssh_connection_pool
-from ..box.boxes import compare_versions
 
 
 def wait_for_box_ready(box_ip, *, timeout_s=60, initial_delay_s=2):
@@ -68,52 +67,94 @@ def _build_hash_shell_cmd():
     )
 
 
-def _format_duration(seconds):
-    seconds = int(seconds)
-    if seconds < 60:
-        return f'{seconds}s'
-    if seconds < 3600:
-        return f'{seconds // 60}m {seconds % 60:02d}s'
-    h = seconds // 3600
-    m = (seconds % 3600) // 60
-    s = seconds % 60
-    return f'{h}h {m:02d}m {s:02d}s'
+def _read_build_hash_state(ssh_runner):
+    """Return (new_hash, stored_hash, mismatch) for the docker-cache decision.
+
+    new_hash is the sha256 of the box's current Dockerfile + requirements.txt.
+    stored_hash is what was recorded after the last successful build.
+    mismatch is True only when both are non-empty and differ. First-run-after-
+    deploy has no stored hash; we treat that as bootstrap (no rebuild forced —
+    the hash gets written after the build) so it is reported as not-mismatched.
+
+    Centralized so `--check` and the real update flow can't disagree about
+    whether a rebuild is needed.
+    """
+    new_h = ssh_runner(_build_hash_shell_cmd())
+    new = new_h.stdout.strip() if new_h.returncode == 0 else ''
+    stored_h = ssh_runner('cat /etc/lager/build-hash 2>/dev/null || true')
+    stored = stored_h.stdout.strip() if stored_h.returncode == 0 else ''
+    return new, stored, bool(new) and bool(stored) and new != stored
 
 
 class ProgressBar:
-    """Simple progress bar for tracking update steps."""
+    """Simple progress bar for tracking update steps.
+
+    Rendering strategy:
+      * On every `update()` and `finish()`, render once.
+      * Additionally, when stdout is a TTY, a daemon thread re-renders
+        every second so the elapsed-time counter advances during long
+        steps (e.g. 'Building container' ~6 min) instead of appearing
+        frozen at the moment the step started.
+      * When stdout is NOT a TTY (piped, redirected, CI log), the
+        periodic thread does not start — captured output is therefore
+        one frame per step, not dozens. Pastes from live terminal
+        scrollback will still capture every per-second frame; that's
+        unavoidable because the bytes really did go to stdout.
+    """
 
     # ANSI escape codes for cursor control
     CLEAR_LINE = '\033[2K'  # Clear entire line
     CURSOR_START = '\r'     # Move cursor to start of line
 
-    def __init__(self, total_steps, width=30):
+    # Reserved characters in the rendered line that aren't the bar itself:
+    # "[]" brackets + " N/N " step counter (up to 7) + label + " " + elapsed
+    # (up to ~10 for "1h 23m 45s"). Computed dynamically below per-render so
+    # the bar width can shrink when the label or elapsed widens. The hard
+    # cap below is what stops the line from EVER touching the terminal edge,
+    # which is the wrap that produces stacked-line artifacts.
+    _RIGHT_MARGIN = 2  # leave at least this many cols free of the right edge
+
+    def __init__(self, total_steps):
         self.total_steps = total_steps
         self.current_step = 0
-        self.width = width
         self.current_task = ""
         self.start_time = time.time()
         self._stop_event = threading.Event()
         self._render_thread = None
-        self._thread_started = False
+        self._tty = sys.stdout.isatty()
+
+    def _start_periodic_thread(self):
+        """Spin up the 1s tick thread (idempotent). Only call on a TTY."""
+        if self._render_thread is not None and self._render_thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._render_thread = threading.Thread(target=self._periodic_render, daemon=True)
+        self._render_thread.start()
+
+    def _stop_periodic_thread(self):
+        """Stop the 1s tick thread if running (idempotent)."""
+        if self._render_thread is None:
+            return
+        self._stop_event.set()
+        self._render_thread.join(timeout=2)
+        self._render_thread = None
 
     def _periodic_render(self):
-        """Background thread that renders progress bar every second."""
-        while not self._stop_event.is_set():
+        """Tick the bar once per second so elapsed time advances during
+        long steps. Exits when `_stop_event` is set (via `pause()` or
+        `finish()`)."""
+        while not self._stop_event.wait(timeout=1.0):
             self._render()
-            time.sleep(1)
 
     def update(self, task_name):
-        """Update progress bar with new task."""
-        # Start background thread on first update to avoid showing empty 0/13 bar
-        if not self._thread_started:
-            self._render_thread = threading.Thread(target=self._periodic_render, daemon=True)
-            self._render_thread.start()
-            self._thread_started = True
-
+        """Advance to the next step and render."""
         self.current_step += 1
         self.current_task = task_name
         self._render()
+        # Lazy-start the periodic thread on first step so we don't tick a
+        # 0/N bar when nobody has called update() yet.
+        if self._tty:
+            self._start_periodic_thread()
 
     def _format_elapsed_time(self):
         """Format elapsed time as human-readable string."""
@@ -130,59 +171,95 @@ class ProgressBar:
             seconds = elapsed % 60
             return f"{hours}h {minutes:02d}m {seconds:02d}s"
 
+    def _terminal_cols(self):
+        """Best-effort terminal width. Falls back to 80 on detection failure
+        (non-TTY, weird env, etc.) — same default as POSIX."""
+        try:
+            return shutil.get_terminal_size(fallback=(80, 24)).columns
+        except Exception:
+            return 80
+
+    # Pad elapsed to a fixed width so the bar doesn't jitter sideways as
+    # the time grows (e.g. "5s" → "1m 41s" → "1h 23m 45s"). 10 covers the
+    # longest case from `_format_elapsed_time`.
+    _ELAPSED_FIELD_WIDTH = 10
+
+    def _layout(self, label, elapsed_padded):
+        """Pick a bar width that, combined with the rest of the line, stays
+        clear of the right edge. `elapsed_padded` is the elapsed string
+        already padded to `_ELAPSED_FIELD_WIDTH`. Returns (bar_width,
+        truncated_label)."""
+        cols = self._terminal_cols()
+        step_counter = f' {min(self.current_step, self.total_steps)}/{self.total_steps} '
+        # Fixed overhead = elapsed + space + brackets + step counter + space
+        overhead = len(elapsed_padded) + 1 + 2 + len(step_counter) + 1
+        # What's left for bar + label, minus the right margin.
+        budget = cols - overhead - self._RIGHT_MARGIN
+        if budget < 12:
+            # Pathologically narrow terminal: render nothing rather than wrap.
+            return 0, ''
+        # Split: prefer a 20-wide bar, give the rest (up to 25) to the label.
+        bar_width = min(20, max(6, budget - 10))
+        label_room = max(0, budget - bar_width)
+        label = label[:label_room].ljust(label_room)
+        return bar_width, label
+
     def _render(self):
-        """Render the progress bar."""
-        percent = self.current_step / self.total_steps
-        filled = int(self.width * percent)
-        bar = '█' * filled + '░' * (self.width - filled)
-        elapsed = self._format_elapsed_time()
-        task_text = self.current_task[:25]  # Shorter task text to fit on one line
-        # Use ANSI clear line + carriage return for reliable in-place updates
-        output = f'{self.CLEAR_LINE}{self.CURSOR_START}[{bar}] {self.current_step}/{self.total_steps} {task_text:<25} {elapsed}'
+        """Render the bar. Width is computed against the live terminal width
+        so the line never reaches the right edge — that wrap is what causes
+        the stacked-bar artifact: \\r\\033[2K only clears the current row,
+        leaving the wrapped portion above as orphan text."""
+        capped_step = min(self.current_step, self.total_steps)
+        elapsed_padded = self._format_elapsed_time().ljust(self._ELAPSED_FIELD_WIDTH)
+        bar_width, label = self._layout(self.current_task, elapsed_padded)
+        if bar_width == 0:
+            output = f'{self.CLEAR_LINE}{self.CURSOR_START}{capped_step}/{self.total_steps}'
+        else:
+            percent = min(self.current_step / self.total_steps, 1.0)
+            filled = int(bar_width * percent)
+            bar = '█' * filled + '░' * (bar_width - filled)
+            output = (
+                f'{self.CLEAR_LINE}{self.CURSOR_START}'
+                f'{elapsed_padded} [{bar}] {capped_step}/{self.total_steps} {label}'
+            )
         sys.stdout.write(output)
         sys.stdout.flush()
 
     def finish(self, success=True):
         """Complete the progress bar."""
-        # Stop the background rendering thread if it was started
-        if self._thread_started:
-            self._stop_event.set()
-            self._render_thread.join(timeout=2)
-
-        elapsed = self._format_elapsed_time()
+        self._stop_periodic_thread()
+        elapsed_padded = self._format_elapsed_time().ljust(self._ELAPSED_FIELD_WIDTH)
+        # Pick the bar width the same way _render does, but for an empty
+        # label slot (finish text replaces the label). Keeps the closing
+        # frame the same shape as the in-flight ones.
+        bar_width, _ = self._layout('', elapsed_padded)
+        bar_width = max(bar_width, 6)
         if success:
-            bar = '█' * self.width
-            sys.stdout.write(f'{self.CLEAR_LINE}{self.CURSOR_START}[{bar}] Complete! {elapsed}\n')
+            bar = '█' * bar_width
+            sys.stdout.write(f'{self.CLEAR_LINE}{self.CURSOR_START}{elapsed_padded} [{bar}] Complete!\n')
         else:
-            filled = int(self.width * self.current_step / self.total_steps)
-            bar = '█' * filled + '░' * (self.width - filled)
-            sys.stdout.write(f'{self.CLEAR_LINE}{self.CURSOR_START}[{bar}] Failed {elapsed}\n')
+            filled = int(bar_width * self.current_step / self.total_steps)
+            bar = '█' * filled + '░' * (bar_width - filled)
+            sys.stdout.write(f'{self.CLEAR_LINE}{self.CURSOR_START}{elapsed_padded} [{bar}] Failed\n')
         sys.stdout.flush()
 
     def pause(self):
-        """Stop background rendering so interactive prompts (sudo password,
-        ssh host-key acceptance, etc.) appear cleanly. Pair with resume()
-        after the interactive subprocess returns. Without this the 1-second
-        re-render overwrites the prompt and the user can't see what's
-        waiting on stdin."""
-        if self._thread_started and not self._stop_event.is_set():
-            self._stop_event.set()
-            if self._render_thread is not None:
-                self._render_thread.join(timeout=2)
-            # Clear the in-flight bar so the next stdout write isn't
-            # tacked onto its residual characters.
-            sys.stdout.write(f'{self.CLEAR_LINE}{self.CURSOR_START}')
-            sys.stdout.flush()
+        """Stop the periodic re-render and clear the in-flight bar before
+        an interactive prompt — otherwise the next 1s tick would overwrite
+        the prompt and the user couldn't see what's waiting on stdin.
+        Pair with `resume()` after the interactive subprocess returns."""
+        self._stop_periodic_thread()
+        sys.stdout.write(f'{self.CLEAR_LINE}{self.CURSOR_START}')
+        sys.stdout.flush()
 
     def resume(self):
-        """Restart the background renderer after pause()."""
-        if self._thread_started and self._stop_event.is_set():
-            self._stop_event.clear()
-            self._render_thread = threading.Thread(target=self._periodic_render, daemon=True)
-            self._render_thread.start()
+        """Restart the periodic re-render after `pause()`. No-op when
+        stdout isn't a TTY."""
+        if self._tty:
+            self._start_periodic_thread()
 
 
-def _update_logic(ctx, *, box, update_all, yes, skip_restart, version, verbose, force, check):
+def _update_logic(ctx, *, box, yes, version, verbose, check):
     """Core update logic shared by `lager box update` and the legacy `lager update`.
 
     Not a Click command itself — the two thin Click wrappers at the bottom of
@@ -212,154 +289,7 @@ def _update_logic(ctx, *, box, update_all, yes, skip_restart, version, verbose, 
         """Always print errors."""
         click.secho(message, fg='red', err=True)
 
-    # Validate options
-    if update_all and box:
-        click.secho('Error: Cannot use --box with --all', fg='red', err=True)
-        ctx.exit(1)
-
-    # Handle multi-box update
-    if update_all:
-        from ... import __version__ as cli_version
-
-        saved_boxes = list_boxes()
-        if not saved_boxes:
-            click.echo("No boxes found. Add boxes with: lager boxes add --name <NAME> --ip <IP>")
-            ctx.exit(0)
-
-        # Build list of boxes to update
-        boxes_to_update = []
-
-        click.echo()
-        click.secho('Checking boxes...', fg='blue', bold=True)
-        click.echo(f'CLI version: {cli_version}')
-        click.echo()
-
-        for name, box_info in sorted(saved_boxes.items(), key=lambda x: natural_sort_key(x[0])):
-            if isinstance(box_info, dict):
-                ip = box_info.get('ip', 'unknown')
-            else:
-                ip = box_info
-
-            if ip == 'unknown':
-                click.echo(f"  {name}: ", nl=False)
-                click.secho('SKIPPED (no IP)', fg='yellow')
-                continue
-
-            # Check if box is locked by another user
-            from ...box_storage import _check_box_lock
-            try:
-                _check_box_lock(ip, name)
-            except SystemExit:
-                click.echo(f"  {name} ({ip}): ", nl=False)
-                click.secho('SKIPPED (locked)', fg='yellow')
-                continue
-
-            # Query box version to determine if update is needed
-            click.echo(f"  {name} ({ip}): ", nl=False)
-            try:
-                url = f'http://{ip}:5000/cli-version'
-                response = requests.get(url, timeout=5)
-                if response.status_code == 200:
-                    data = response.json()
-                    box_version = data.get('box_version')
-                    if box_version:
-                        version_cmp = compare_versions(box_version, cli_version)
-                        if version_cmp < 0:
-                            # Box is older - needs update
-                            click.secho(f'{box_version} (will update)', fg='yellow')
-                            boxes_to_update.append((name, ip))
-                        elif version_cmp == 0:
-                            click.secho(f'{box_version} (current)', fg='green')
-                        else:
-                            click.secho(f'{box_version} (newer)', fg='cyan')
-                    else:
-                        click.secho('unknown version (will update)', fg='yellow')
-                        boxes_to_update.append((name, ip))
-                else:
-                    click.secho('could not query (will update)', fg='yellow')
-                    boxes_to_update.append((name, ip))
-            except Exception:
-                click.secho('unreachable (skipped)', fg='red')
-
-        if not boxes_to_update:
-            click.echo()
-            click.secho('All boxes are up to date!', fg='green', bold=True)
-            ctx.exit(0)
-
-        # Confirm before proceeding
-        click.echo()
-        click.secho(f'Will update {len(boxes_to_update)} box(es):', fg='blue', bold=True)
-        for name, ip in boxes_to_update:
-            click.echo(f"  - {name} ({ip})")
-        click.echo()
-
-        if not yes:
-            if not click.confirm(f'Update {len(boxes_to_update)} box(es)? This may take several minutes per box.'):
-                click.secho('Update cancelled.', fg='yellow')
-                ctx.exit(0)
-
-        # Update each box sequentially
-        results = {'success': [], 'failed': []}
-        total_start = time.time()
-
-        for idx, (name, ip) in enumerate(boxes_to_update, 1):
-            click.echo()
-            click.secho(f'═══ Updating {name} ({idx}/{len(boxes_to_update)}) ═══', fg='blue', bold=True)
-
-            # Call the logic directly for this single box (we're already
-            # inside the same Click context; no need for ctx.invoke).
-            try:
-                _update_logic(
-                    ctx,
-                    box=name,
-                    update_all=False,
-                    yes=True,  # Already confirmed
-                    skip_restart=skip_restart,
-                    version=version,
-                    verbose=verbose,
-                    force=force,
-                    check=False,
-                )
-                results['success'].append(name)
-            except SystemExit as e:
-                if e.code == 0:
-                    results['success'].append(name)
-                else:
-                    results['failed'].append(name)
-                    click.secho(f'Update failed for {name}', fg='red')
-            except Exception as e:
-                results['failed'].append(name)
-                click.secho(f'Update failed for {name}: {str(e)}', fg='red')
-
-        # Print summary
-        total_elapsed = int(time.time() - total_start)
-        minutes = total_elapsed // 60
-        seconds = total_elapsed % 60
-
-        click.echo()
-        click.secho('═══ Update Summary ═══', fg='blue', bold=True)
-        click.echo(f'Total time: {minutes}m {seconds:02d}s')
-        click.echo()
-        click.secho(f'Successful: {len(results["success"])}', fg='green')
-        for name in results['success']:
-            click.echo(f'  - {name}')
-
-        if results['failed']:
-            click.echo()
-            click.secho(f'Failed: {len(results["failed"])}', fg='red')
-            for name in results['failed']:
-                click.echo(f'  - {name}')
-
-        click.echo()
-        if results['failed']:
-            click.secho(f'{len(results["failed"])} box(es) failed to update', fg='red')
-            ctx.exit(1)
-        else:
-            click.secho('All boxes updated successfully!', fg='green', bold=True)
-            ctx.exit(0)
-
     # Default to 'main' version if not specified
-    _start_time = time.time()
     target_version = version or 'main'
 
     # Determine the correct git ref for reset/rev-list operations.
@@ -399,10 +329,16 @@ def _update_logic(ctx, *, box, update_all, yes, skip_restart, version, verbose, 
             click.secho('Update cancelled.', fg='yellow')
             ctx.exit(0)
 
-    # Initialize progress bar (only in non-verbose mode)
-    # Total steps: connectivity, repo check, git state check, fetch, checkout/pull, flatten, udev, sudoers, docker stop, [force image removal], docker build, cleanup, /etc/lager, docker start, binaries, jlink, verify, version
-    total_steps = 20 if force else 19
-    progress = None if verbose else ProgressBar(total_steps=total_steps)
+    # Initialize progress bar (only in non-verbose mode).
+    #
+    # Use the maximum possible step count (19 always-runs + 1 optional flatten
+    # + 1 optional image-wipe = 21). We can't know whether flatten/wipe will
+    # actually fire until later, so picking the max avoids a mid-flight
+    # denominator jump (19 → 21 reads as a regression). Light paths that
+    # don't take both conditionals will simply finish at 19/21 or 20/21 —
+    # `_render()` already caps the bar fill at 100% via min(percent, 1.0),
+    # and `finish()` overrides with a full bar at the end.
+    progress = None if verbose else ProgressBar(total_steps=21)
 
     if not verbose:
         click.echo()  # Blank line before progress bar
@@ -503,7 +439,7 @@ def _update_logic(ctx, *, box, update_all, yes, skip_restart, version, verbose, 
                 if setup_ssh_key():
                     # Key setup successful, reinitialize progress bar
                     if not verbose:
-                        progress = ProgressBar(total_steps=total_steps)
+                        progress = ProgressBar(total_steps=21)
                         progress.current_step = 1
                 else:
                     # Key setup failed, ask if they want to continue with password
@@ -511,7 +447,7 @@ def _update_logic(ctx, *, box, update_all, yes, skip_restart, version, verbose, 
                     if yes or click.confirm('SSH key setup failed. Continue with password authentication?'):
                         use_interactive_ssh = True
                         if not verbose:
-                            progress = ProgressBar(total_steps=total_steps)
+                            progress = ProgressBar(total_steps=21)
                             progress.current_step = 1
                     else:
                         click.secho('Update cancelled.', fg='yellow')
@@ -620,13 +556,6 @@ def _update_logic(ctx, *, box, update_all, yes, skip_restart, version, verbose, 
             if attempt < 2:
                 time.sleep(5)
         return False
-
-    # Capture the pre-update version once so the end-of-run summary can show
-    # the from→to transition. The on-box version is the source of truth here —
-    # the local cache can drift (this is the bug we just fixed).
-    _pre_version_result = run_ssh_command_with_output('cat /etc/lager/version 2>/dev/null || true')
-    _pre_version_raw = _pre_version_result.stdout.strip() if _pre_version_result.returncode == 0 else ''
-    pre_box_version = _pre_version_raw.split('|', 1)[0] if _pre_version_raw else '(unknown)'
 
     # Step 2: Check if box directory exists and is a git repo
     if progress:
@@ -784,15 +713,9 @@ def _update_logic(ctx, *, box, update_all, yes, skip_restart, version, verbose, 
         current_version_raw = current_version_result.stdout.strip()
         current_box_version = current_version_raw.split('|', 1)[0] if current_version_raw else '(unknown)'
 
-        # Reuse the same build-hash logic as the real flow.
-        check_new_hash_result = run_ssh_command_with_output(_build_hash_shell_cmd())
-        check_new_hash = check_new_hash_result.stdout.strip() if check_new_hash_result.returncode == 0 else ''
-        check_stored_hash_result = run_ssh_command_with_output('cat /etc/lager/build-hash 2>/dev/null || true')
-        check_stored_hash = check_stored_hash_result.stdout.strip() if check_stored_hash_result.returncode == 0 else ''
-        # Mirror the main flow: only flag as "will rebuild" when there's a
-        # previous hash to compare against. First-run-after-deploy has no
-        # baseline and shouldn't be reported as a rebuild trigger.
-        deps_will_change = bool(check_new_hash) and bool(check_stored_hash) and check_new_hash != check_stored_hash
+        _check_new_hash, _check_stored_hash, deps_will_change = _read_build_hash_state(
+            run_ssh_command_with_output
+        )
 
         if not git_sync_confirmed:
             click.secho('Could not determine update state (git rev-list failed).', fg='red', err=True)
@@ -803,17 +726,15 @@ def _update_logic(ctx, *, box, update_all, yes, skip_restart, version, verbose, 
         else:
             code_status = f'will update ({commits_behind} commit(s) behind {git_ref})'
 
-        if force:
-            deps_status = 'will trigger fresh build (--force)'
-        elif deps_will_change:
+        if deps_will_change:
             deps_status = 'will trigger fresh build (Dockerfile or requirements changed)'
         else:
             deps_status = 'cache valid (no rebuild)'
 
-        if commits_behind == 0 and not deps_will_change and not force:
+        if commits_behind == 0 and not deps_will_change:
             container_status = 'no restart needed'
             est = '~5s'
-        elif deps_will_change or force:
+        elif deps_will_change:
             container_status = 'will restart'
             est = '~6 min (fresh build)'
         else:
@@ -830,7 +751,7 @@ def _update_logic(ctx, *, box, update_all, yes, skip_restart, version, verbose, 
         click.echo(f'  Estimated:  {est}')
         click.echo()
 
-        will_change = commits_behind != 0 or deps_will_change or force
+        will_change = commits_behind != 0 or deps_will_change
         if will_change:
             click.echo('Run without --check to apply.')
             ctx.exit(1)
@@ -851,11 +772,20 @@ def _update_logic(ctx, *, box, update_all, yes, skip_restart, version, verbose, 
         log_status('Ensuring required files are tracked...', 'OK', 'green')
 
         log(f'Checking out version {target_version}...', nl=False)
-        result = run_ssh_command_with_output(f'cd ~/box && git checkout {target_version}')
+        # `-f` so a prior flatten artifact (root-level tracked file overwritten
+        # by box/<same-name>) doesn't block the switch. Observed on STG-C:
+        # flatten of a branch that had both root README.md and box/README.md
+        # left the root copy looking modified, and `git checkout main` failed
+        # with "local changes would be overwritten". Editing the on-box git
+        # tree by hand is not a supported workflow, so discarding such
+        # "modifications" is safe.
+        result = run_ssh_command_with_output(f'cd ~/box && git checkout -f {target_version}')
         if result.returncode != 0:
             if progress:
                 progress.finish(success=False)
             log_error(f'Error: Failed to checkout version {target_version}')
+            if result.stderr:
+                click.echo(result.stderr.strip(), err=True)
             ctx.exit(1)
         log_status(f'Checking out version {target_version}...', 'OK', 'green')
 
@@ -865,6 +795,8 @@ def _update_logic(ctx, *, box, update_all, yes, skip_restart, version, verbose, 
             if progress:
                 progress.finish(success=False)
             log_error('Error: Failed to update branch')
+            if result.stderr:
+                click.echo(result.stderr.strip(), err=True)
             ctx.exit(1)
         log_status(f'Updating to match {git_ref}...', 'OK', 'green')
 
@@ -915,6 +847,17 @@ def _update_logic(ctx, *, box, update_all, yes, skip_restart, version, verbose, 
             click.echo('The sparse-checkout layout on the box is inconsistent; try a fresh `lager install`.', err=True)
             ctx.exit(1)
 
+    # Compute the docker-build cache state up front so the early-exit decision
+    # below knows whether deps-only changes require a rebuild. Previously this
+    # only happened after the early-exit, so a corrupted /etc/lager/build-hash
+    # with code in sync would silently take the no-op path — the very case the
+    # auto-invalidation feature is supposed to catch. The result is reused
+    # below for `must_wipe_image`.
+    new_build_hash, stored_build_hash, hash_mismatch = _read_build_hash_state(
+        run_ssh_command_with_output
+    )
+    must_wipe_image = hash_mismatch
+
     # Step 6: Check and update udev rules if needed
     if progress:
         progress.update("Checking udev rules...")
@@ -955,10 +898,13 @@ def _update_logic(ctx, *, box, update_all, yes, skip_restart, version, verbose, 
                     'sudo /bin/rm -f /tmp/99-instrument.rules'
                 )
 
-                # Use interactive mode for sudo commands - allows password prompts
+                # Use interactive mode for sudo commands - allows password prompts.
+                # pause()/resume() match the sudoers and box-config-sudoers
+                # paths below; without them the 1s periodic re-render would
+                # overwrite the sudo password prompt and the user couldn't
+                # see what's waiting on stdin.
                 if not verbose and progress:
-                    # Pause progress bar and inform user
-                    sys.stdout.write('\n')
+                    progress.pause()
                     click.echo('Installing udev rules (may require sudo password)...')
                 elif verbose:
                     click.echo()  # Add newline before potential sudo prompt
@@ -966,8 +912,7 @@ def _update_logic(ctx, *, box, update_all, yes, skip_restart, version, verbose, 
                 result = run_ssh_command_interactive(install_cmd, allow_sudo_prompt=True)
 
                 if not verbose and progress:
-                    # Resume progress tracking after interactive command
-                    pass  # Progress bar continues automatically
+                    progress.resume()
                 elif verbose:
                     click.echo()  # Add newline after sudo command
 
@@ -1141,10 +1086,20 @@ def _update_logic(ctx, *, box, update_all, yes, skip_restart, version, verbose, 
                     err=True,
                 )
 
-    # No git updates and no box/→root flatten work: a second consecutive `lager update`
-    # would otherwise still stop every Docker container on the box, remove them, and
-    # rebuild — redundant after a successful run and a common source of flaky behavior.
-    if git_sync_confirmed and not needs_pull and not needs_flatten and not force:
+    # No git updates, no box/→root flatten work, and the docker-build inputs
+    # match what's already cached: a second consecutive `lager update` would
+    # otherwise still stop every Docker container on the box, remove them, and
+    # rebuild — redundant after a successful run and a common source of flaky
+    # behavior. `hash_mismatch` participates here so the auto-invalidation
+    # feature also fires on a deps-only change (Dockerfile/requirements moved
+    # but code is in sync); previously this branch ignored the hash and the
+    # rebuild silently never happened.
+    if (
+        git_sync_confirmed
+        and not needs_pull
+        and not needs_flatten
+        and not hash_mismatch
+    ):
         import re as _re
 
         _vp = _re.match(r'^v?(\d+\.\d+\.\d+)$', target_version)
@@ -1168,21 +1123,12 @@ def _update_logic(ctx, *, box, update_all, yes, skip_restart, version, verbose, 
             progress.finish(success=True)
         if _box_v and box:
             update_box_version(box, _box_v)
-        _duration = _format_duration(time.time() - _start_time)
         click.echo()
-        click.secho(f'{box_name} already at {_box_v} ({target_version}) — no restart needed.', fg='green', bold=True)
-        click.echo(f'Duration: {_duration}   Restart: no   Build: skipped')
-        click.echo(f'Verify with: lager hello --box {box_name}')
+        click.secho(
+            f'{box_name} is already at version {_box_v} ({target_version})',
+            fg='green', bold=True,
+        )
         click.echo()
-        ctx.exit(0)
-
-    # Skip container restart if requested
-    if skip_restart:
-        if progress:
-            progress.finish(success=True)
-        click.echo()
-        click.secho('Skipping container restart (--skip-restart flag set)', fg='yellow')
-        click.echo(f'Run manually: ssh {ssh_host} "cd ~/box && ./start_box.sh"')
         ctx.exit(0)
 
     # Step 7: Stop containers
@@ -1197,41 +1143,21 @@ def _update_logic(ctx, *, box, update_all, yes, skip_restart, version, verbose, 
     )
     log_status('Stopping containers...', 'OK', 'green')
 
-    # Step 7.5: Decide whether to wipe the cached Docker image before building.
-    # Two triggers:
-    #   1. --force was passed (explicit user override).
-    #   2. The hash of the build-inputs (Dockerfile, requirements.txt) differs
-    #      from the hash recorded after the last successful build. Without
-    #      this, a pip-dependency change in the Dockerfile would silently
-    #      reuse a stale layer and the user would have to discover --force
-    #      themselves.
-    new_build_hash_result = run_ssh_command_with_output(_build_hash_shell_cmd())
-    new_build_hash = new_build_hash_result.stdout.strip() if new_build_hash_result.returncode == 0 else ''
-
-    stored_hash_result = run_ssh_command_with_output(
-        'cat /etc/lager/build-hash 2>/dev/null || true'
-    )
-    stored_build_hash = stored_hash_result.stdout.strip() if stored_hash_result.returncode == 0 else ''
-
-    # Only invalidate when there's a *previous* hash to compare against — if
-    # the box was last updated by an older CLI it has no /etc/lager/build-hash
-    # yet, and treating that as "cache invalid" would force a 6-minute rebuild
-    # on every existing box's first update after deploy. Bootstrap the hash
-    # silently the first time; real mismatches will be caught from then on.
-    hash_mismatch = bool(new_build_hash) and bool(stored_build_hash) and new_build_hash != stored_build_hash
-    must_wipe_image = force or hash_mismatch
-
+    # Step 7.5: Wipe the cached Docker image when build inputs changed
+    # (`hash_mismatch`), so a pip-dependency change in the Dockerfile doesn't
+    # reuse a stale layer. `new_build_hash`, `stored_build_hash`,
+    # `hash_mismatch`, and `must_wipe_image` were all set above just after
+    # the flatten step.
     if must_wipe_image:
         if progress:
             progress.update("Removing cached image...")
-        reason = '--force' if force else 'build inputs changed'
-        log(f'Removing cached Docker image ({reason})...', nl=False)
+        log('Removing cached Docker image (build inputs changed)...', nl=False)
 
         run_ssh_command_with_output(
             'docker rmi lager 2>/dev/null || true',
             timeout_secs=30
         )
-        log_status(f'Removing cached Docker image ({reason})...', 'OK', 'green')
+        log_status('Removing cached Docker image (build inputs changed)...', 'OK', 'green')
 
     # Step 8: Rebuild Docker container (the slow part)
     if progress:
@@ -1611,14 +1537,13 @@ fi
     if progress:
         progress.finish(success=True)
 
-    # End-of-run summary
-    _duration = _format_duration(time.time() - _start_time)
-    _build_kind = 'fresh' if must_wipe_image else 'cached'
+    # End-of-run summary.
     _to_version = box_cli_version or target_version
     click.echo()
-    click.secho(f'Updated {box_name}: {pre_box_version} -> {_to_version}  ({target_version})', fg='green', bold=True)
-    click.echo(f'Duration: {_duration}   Restart: yes   Build: {_build_kind}')
-    click.echo(f'Verify with: lager hello --box {box_name}')
+    click.secho(
+        f'{box_name} updated to version {_to_version} ({target_version})',
+        fg='green', bold=True,
+    )
     click.echo()
 
 
@@ -1634,40 +1559,39 @@ fi
 # ---------------------------------------------------------------------------
 
 
+def _update_options(fn):
+    """Shared option decorators for both `lager box update` and the
+    deprecated top-level `lager update` alias. Keeping them in one place
+    so the two surfaces can't drift apart."""
+    for opt in reversed([
+        click.option('--box', required=False, help='Lagerbox name or IP'),
+        click.option('--yes', is_flag=True, help='Skip confirmation prompt'),
+        click.option('--version', required=False, help='Box version/branch to update to (e.g., staging, main)'),
+        click.option('--verbose', '-v', is_flag=True, help='Show detailed output (default shows progress bar only)'),
+        click.option('--check', is_flag=True, help='Dry run: report what would change without modifying the box'),
+    ]):
+        fn = opt(fn)
+    return fn
+
+
 @click.command(name='update')
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
-@click.option('--all', 'update_all', is_flag=True, help='Update all saved boxes that need updating')
-@click.option('--yes', is_flag=True, help='Skip confirmation prompt')
-@click.option('--skip-restart', is_flag=True, help='Skip container restart after update')
-@click.option('--version', required=False, help='Box version/branch to update to (e.g., staging, main)')
-@click.option('--verbose', '-v', is_flag=True, help='Show detailed output (default shows progress bar only)')
-@click.option('--force', is_flag=True, help='Force fresh Docker build by removing cached image (overrides automatic cache invalidation)')
-@click.option('--check', is_flag=True, help='Dry run: report what would change without modifying the box')
-def update_cmd(ctx, box, update_all, yes, skip_restart, version, verbose, force, check):
+@_update_options
+def update_cmd(ctx, box, yes, version, verbose, check):
     """Update box code from GitHub repository."""
     _update_logic(
         ctx,
-        box=box, update_all=update_all, yes=yes, skip_restart=skip_restart,
-        version=version, verbose=verbose, force=force, check=check,
+        box=box, yes=yes, version=version, verbose=verbose, check=check,
     )
 
 
 @click.command(name='update', hidden=True)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
-@click.option('--all', 'update_all', is_flag=True, help='Update all saved boxes that need updating')
-@click.option('--yes', is_flag=True, help='Skip confirmation prompt')
-@click.option('--skip-restart', is_flag=True, help='Skip container restart after update')
-@click.option('--version', required=False, help='Box version/branch to update to (e.g., staging, main)')
-@click.option('--verbose', '-v', is_flag=True, help='Show detailed output (default shows progress bar only)')
-@click.option('--force', is_flag=True, help='Force fresh Docker build by removing cached image (overrides automatic cache invalidation)')
-@click.option('--check', is_flag=True, help='Dry run: report what would change without modifying the box')
-def update(ctx, box, update_all, yes, skip_restart, version, verbose, force, check):
+@_update_options
+def update(ctx, box, yes, version, verbose, check):
     """[DEPRECATED] Use `lager box update` instead."""
     click.secho('Note: `lager update` is deprecated; use `lager box update` instead.', fg='yellow', err=True)
     _update_logic(
         ctx,
-        box=box, update_all=update_all, yes=yes, skip_restart=skip_restart,
-        version=version, verbose=verbose, force=force, check=check,
+        box=box, yes=yes, version=version, verbose=verbose, check=check,
     )
