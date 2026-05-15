@@ -1,0 +1,37 @@
+---
+title: "Version 0.18.3"
+description: "May 15, 2026"
+---
+
+## <u>Features</u>
+
+- **`lager box update --version <older-ref>` rolls back.** Previously the update flow only counted commits the box was *behind* the target and treated any "ahead" state as in-sync, so you could not downgrade a box to an earlier branch or tag without manually `git reset --hard`-ing on the box. Now diverges in both directions; an explicit second confirmation prompt (skippable via `--yes`) gates the destructive direction so a typo'd `--version` argument can't silently downgrade. `--check` reports "will roll back N commit(s)" / "will switch (N ahead / M behind)".
+
+## <u>Bug Fixes</u>
+
+- **Update no longer aborts on git ≥2.36 with `fatal: 'cli/__init__.py' is not a directory`.** Cone-mode sparse-checkout (default since git 2.36) rejects single-file patterns; the pre-batching version of the sparse-checkout step ran in a separate SSH call whose exit was never checked, so the failure was silently swallowed. The new batched pull script chained it with `&&`, propagating the failure and aborting the whole pull. Now treats the `cli/__init__.py` add as best-effort. Affects boxes on newer git (e.g. git 2.43 on Debian bookworm-backports).
+- **`/etc/lager/version` and the end-of-run summary report the box's actual code, not the CLI's version.** Previously a rollback or branch switch could write the running CLI's version (e.g. `0.18.3`) into the version file even when the code on the box was older (e.g. `v0.18.2`). The CLI now reads `__version__` from `cli/__init__.py` at the box's post-pull HEAD via `git show`, which works even on cone-mode boxes where the file isn't in the working tree.
+
+## <u>Improvements</u>
+
+- **No-op `lager box update` runs ~3× faster (~5s → ~1.6s).** A single SSH probe collapses ~11 separate `test`/`cat`/`git`/`diff`/`stat` round-trips (git-repo check, remote URL, layout, current commit, build-cache hashes, udev rule state, sudoers ownership, box-config sudoers state, `/etc/lager/version`) into one structured shell script. Combined with merging fetch+rev-list, sparse-checkout+checkout+reset, flatten+verify, post-build directory setup, and verify+J-Link presence into single calls.
+- **Typical `lager box update` ~6× faster on boxes with cargo/npm packages in `box_config.json` (~1:40 → ~17s).** Adds two named Docker volumes — `lager-cargo` at `/opt/rust/cargo` and `lager-npm-global` at `/home/www-data/.npm-global` — to `start_box.sh`'s `docker run`, so user-installed cargo crates and global npm packages survive container recreation. Without them, every update reinstalled them from scratch (`cargo install` recompiled from source, ~50–60s per update). With them, the second-and-onward run sees "already installed" and finishes in seconds. The CLI wipes both volumes alongside `docker rmi lager` whenever the build-hash changes, so a Dockerfile rustup/node bump can't leave a stale toolchain in the volume. First update on each existing box is the same speed as today (the volumes seed themselves); the win shows up from the second update on.
+- **`--verbose` output cleanup.** Probe results print as one tidy block instead of a dozen "Checking X... OK" lines; consistent step labels between the progress bar and verbose log; noise lines dropped (e.g. "Checking remote URL" only prints when it actually migrates SSH→HTTPS); a single label for the build step instead of two.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.18.3
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.18.3/)
