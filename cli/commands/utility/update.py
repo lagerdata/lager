@@ -87,14 +87,23 @@ def _read_build_hash(ssh_runner):
     return r.stdout.strip() if r.returncode == 0 else ''
 
 
-def _read_git_describe(ssh_runner):
-    """Return the closest preceding tag (e.g. `v0.18.2`) on the box's current
-    HEAD, or empty string. Used post-pull to label the box's actual git
-    state — the upfront probe's value is from the pre-pull HEAD, so when
-    code actually moved we re-read here.
+def _read_box_source_version(ssh_runner):
+    """Return the `__version__` string declared in `cli/__init__.py` at the
+    box's current HEAD, or empty.
+
+    Reads via `git show HEAD:cli/__init__.py` so the value is available
+    even on cone-mode-sparse-checkout boxes where the file isn't in the
+    working tree but is still in the git object DB. The file is the
+    actual source of truth in this repo — releases bump it first, then
+    tag from there — so it tells us the current version even on untagged
+    commits where `git describe` would only return the previous tag.
     """
-    r = ssh_runner('git -C ~/box describe --tags --abbrev=0 HEAD 2>/dev/null')
-    return r.stdout.strip() if r.returncode == 0 else ''
+    import re
+    r = ssh_runner('git -C ~/box show HEAD:cli/__init__.py 2>/dev/null | grep "^__version__"')
+    if r.returncode != 0:
+        return ''
+    m = re.match(r"""__version__\s*=\s*['"]([^'"]+)['"]""", r.stdout.strip())
+    return m.group(1) if m else ''
 
 
 # --- Box-state probe -------------------------------------------------------
@@ -741,16 +750,8 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
     # look like "already up to date" the way the older one-way `HEAD..ref`
     # rev-list did: that variant only counted commits the box was *behind*
     # and treated any "ahead" state as in-sync, making downgrade impossible.
-    # `--tags --force` so `git describe` later picks up release tags pushed
-    # after the box's last fetch — without `--tags` the box still only knows
-    # about ancient tags and we report a stale `vX.Y.Z` when writing
-    # /etc/lager/version; without `--force` any tag whose origin commit moved
-    # since the box last pulled (e.g. a force-retagged old release) makes the
-    # whole fetch exit non-zero with "would clobber existing tag", which
-    # would falsely surface as a fetch failure here. The box is a pure
-    # consumer of origin, so taking origin's tag-set verbatim is correct.
     fetch_script = (
-        f'cd ~/box && git fetch --tags --force origin {target_version} 2>&1; '
+        f'cd ~/box && git fetch origin {target_version} 2>&1; '
         'echo "LAGER_FETCH_RC=$?"; '
         f'git rev-list --left-right --count HEAD...{git_ref} 2>/dev/null'
     )
@@ -1231,16 +1232,17 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
     ):
         import re as _re
 
-        # Prefer the actual git tag at HEAD over the CLI version. The fetch
-        # above ran with `--tags`, so `git describe` sees fresh tag refs;
-        # HEAD is unchanged in this branch (no pull), so one read suffices.
+        # Prefer the box's source-declared `__version__` over the CLI
+        # version. Reads `cli/__init__.py` at HEAD via `git show`, which
+        # works even when the file isn't in the working tree (cone-mode
+        # boxes). HEAD is unchanged in this branch (no pull), so one read
+        # suffices.
         _vp = _re.match(r'^v?(\d+\.\d+\.\d+)$', target_version)
         if _vp:
             _box_v = _vp.group(1)
         else:
-            _desc = _read_git_describe(run_ssh_command_with_output)
-            _desc_match = _re.match(r'^v?(\d+\.\d+\.\d+)$', _desc)
-            _box_v = _desc_match.group(1) if _desc_match else cli_version
+            _src_v = _read_box_source_version(run_ssh_command_with_output)
+            _box_v = _src_v if _src_v else cli_version
 
         # Reconcile /etc/lager/version on the box with the local cache.
         # Previously this branch only updated the local ~/.lager file, so if
@@ -1428,12 +1430,14 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
     if version_pattern:
         box_cli_version = version_pattern.group(1)
     else:
-        # Branch target — read the closest preceding `vX.Y.Z` tag from the
-        # post-pull HEAD. The earlier fetch ran with `--tags`, so even a box
-        # that hadn't pulled in a long time now has fresh tag refs.
-        described = _read_git_describe(run_ssh_command_with_output)
-        described_match = re.match(r'^v?(\d+\.\d+\.\d+)$', described)
-        box_cli_version = described_match.group(1) if described_match else cli_version
+        # Branch target — read `__version__` from `cli/__init__.py` on the
+        # box's post-pull HEAD. The file is the source of truth (releases
+        # bump it before tagging), so this gives the right answer for both
+        # tagged release commits and untagged work-in-progress commits.
+        # `git show HEAD:cli/__init__.py` works even on cone-mode boxes
+        # where the file isn't in the working tree.
+        src_version = _read_box_source_version(run_ssh_command_with_output)
+        box_cli_version = src_version if src_version else cli_version
 
     if box_cli_version:
         if progress:
