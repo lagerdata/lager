@@ -940,12 +940,20 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
         # `git checkout main` failed with "local changes would be
         # overwritten". Editing the on-box git tree by hand is not a
         # supported workflow, so discarding such "modifications" is safe.
+        # The `cli/__init__.py` add is best-effort: cone-mode sparse-checkout
+        # (default since git 2.36) rejects single-file patterns with
+        # "fatal: 'cli/__init__.py' is not a directory". The pre-batching
+        # version of this code happened to run in a separate SSH call whose
+        # exit was never checked, so the failure was silently swallowed; the
+        # `|| true` here preserves that behavior so a newer-git box (e.g.
+        # PRD-1 at 2.43) doesn't abort the whole pull. udev_rules is a
+        # directory and never hits this, so it stays strict.
         pull_script = (
             'cd ~/box && '
             '{ git sparse-checkout list | grep -q "^udev_rules$" || '
             'git sparse-checkout add udev_rules; } && '
             '{ git sparse-checkout list | grep -q "^cli/__init__.py$" || '
-            'git sparse-checkout add cli/__init__.py; } && '
+            'git sparse-checkout add cli/__init__.py 2>/dev/null || true; } && '
             f'git checkout -f {target_version} && '
             f'git reset --hard {git_ref}'
         )
