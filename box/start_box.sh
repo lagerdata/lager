@@ -360,6 +360,16 @@ fi
 # update the constant too — otherwise users can write a config that validates
 # but blows up at `docker run` mid-bounce with "Duplicate mount point".
 #
+# The two `lager-cargo` / `lager-npm-global` named volumes persist
+# user-installed cargo crates and global npm packages across container
+# recreation. Without them, every `lager box update` (or `box config apply`)
+# rebuilds the container from scratch and the post-run loops below recompile
+# `cargo install` packages from source — minutes per update. With them, the
+# second-and-onward run sees "already installed" and finishes in seconds.
+# `lager box update` wipes both volumes alongside `docker rmi lager` whenever
+# the build-hash (Dockerfile + requirements.txt) changes, so a Dockerfile
+# rustup/node bump can't leave a stale toolchain in the volume.
+#
 # The container's mount convention puts user files at /home/www-data/... (see
 # the -v lines below and BOX_CONFIG_MOUNTS). Override HOME so ~-aware tools
 # (cargo's env file, ssh's default config, pip user installs, etc.) find them.
@@ -378,6 +388,8 @@ docker run -d \
     -v /etc/hostname:/host/etc/hostname:ro \
     -v /opt/SEGGER:/opt/SEGGER:ro \
     -v /opt/picoscope/lib:/opt/picoscope/lib:ro \
+    -v lager-cargo:/opt/rust/cargo \
+    -v lager-npm-global:/home/www-data/.npm-global \
     ${JL_MOUNT_PYTHON} \
     ${CUSTOMER_BINARIES_MOUNT} \
     ${OSCILLOSCOPE_MOUNT} \

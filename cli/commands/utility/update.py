@@ -1198,13 +1198,19 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
 
     # Wipe the cached Docker image when build inputs changed (`hash_mismatch`)
     # so a pip-dependency change in the Dockerfile doesn't reuse a stale layer.
+    # Also wipe the cargo/npm persistence volumes (mounted by start_box.sh) —
+    # a Dockerfile change can move the rust/node toolchain, and a stale volume
+    # would shadow the new image's tree with the old one. `|| true` keeps both
+    # the first-run case (volumes don't exist yet) and the "in use" case
+    # non-fatal; the prior `docker rm` already detached this container.
     if must_wipe_image:
         if progress:
             progress.update("Removing cached image...")
         log('Removing cached image (build inputs changed)...', nl=False)
 
         run_ssh_command_with_output(
-            'docker rmi lager 2>/dev/null || true',
+            'docker rmi lager 2>/dev/null || true; '
+            'docker volume rm lager-cargo lager-npm-global 2>/dev/null || true',
             timeout_secs=30
         )
         log_status('OK', 'green')
