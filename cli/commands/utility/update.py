@@ -75,23 +75,118 @@ def _build_hash_shell_cmd():
     )
 
 
-def _read_build_hash_state(ssh_runner):
-    """Return (new_hash, stored_hash, mismatch) for the docker-cache decision.
+def _read_build_hash(ssh_runner):
+    """Return the sha256 of the box's *current* docker-build inputs.
 
-    new_hash is the sha256 of the box's current Dockerfile + requirements.txt.
-    stored_hash is what was recorded after the last successful build.
-    mismatch is True only when both are non-empty and differ. First-run-after-
-    deploy has no stored hash; we treat that as bootstrap (no rebuild forced —
-    the hash gets written after the build) so it is reported as not-mismatched.
-
-    Centralized so `--check` and the real update flow can't disagree about
-    whether a rebuild is needed.
+    Used after a git update to recompute the hash against the freshly pulled
+    Dockerfile/requirements — the upfront probe's value reflects the pre-pull
+    tree, so it goes stale the moment code actually changes. When nothing was
+    pulled the probe's value is still accurate and this round-trip is skipped.
     """
-    new_h = ssh_runner(_build_hash_shell_cmd())
-    new = new_h.stdout.strip() if new_h.returncode == 0 else ''
-    stored_h = ssh_runner('cat /etc/lager/build-hash 2>/dev/null || true')
-    stored = stored_h.stdout.strip() if stored_h.returncode == 0 else ''
-    return new, stored, bool(new) and bool(stored) and new != stored
+    r = ssh_runner(_build_hash_shell_cmd())
+    return r.stdout.strip() if r.returncode == 0 else ''
+
+
+def _read_box_source_version(ssh_runner):
+    """Return the `__version__` string declared in `cli/__init__.py` at the
+    box's current HEAD, or empty.
+
+    Reads via `git show HEAD:cli/__init__.py` so the value is available
+    even on cone-mode-sparse-checkout boxes where the file isn't in the
+    working tree but is still in the git object DB. The file is the
+    actual source of truth in this repo — releases bump it first, then
+    tag from there — so it tells us the current version even on untagged
+    commits where `git describe` would only return the previous tag.
+    """
+    import re
+    r = ssh_runner('git -C ~/box show HEAD:cli/__init__.py 2>/dev/null | grep "^__version__"')
+    if r.returncode != 0:
+        return ''
+    m = re.match(r"""__version__\s*=\s*['"]([^'"]+)['"]""", r.stdout.strip())
+    return m.group(1) if m else ''
+
+
+# --- Box-state probe -------------------------------------------------------
+#
+# A single SSH round-trip that gathers every read-only fact the update flow
+# needs, replacing ~11 individual test/cat/git/diff/stat calls. Each fact is
+# emitted as a `LAGER_PROBE_<KEY>=<value>` line; the parser ignores anything
+# without that prefix (motd banners, sudo lecture text, etc.).
+_PROBE_PREFIX = 'LAGER_PROBE_'
+
+
+def _probe_shell_script():
+    """Shell script that prints `LAGER_PROBE_<KEY>=<value>` for every
+    read-only fact the update flow needs about the box.
+
+    Every fact is computed independently and guarded, so a missing file or
+    failed sub-command yields an empty value instead of aborting the script
+    — it exits 0 whenever SSH itself connected, and the parser treats absent
+    keys as unknown.
+
+    The build-hash inputs reflect the box's *current* (pre-pull) tree; after
+    a git update the caller recomputes via `_read_build_hash`. The literal
+    `LAGER_PROBE_` prefix below must stay in sync with `_PROBE_PREFIX`.
+    """
+    script = '''\
+if [ -d ~/box/.git ]; then echo "LAGER_PROBE_IS_GIT_REPO=1"; else echo "LAGER_PROBE_IS_GIT_REPO=0"; fi
+echo "LAGER_PROBE_REMOTE_URL=$(git -C ~/box remote get-url origin 2>/dev/null)"
+if [ -d ~/box/box ]; then echo "LAGER_PROBE_HAS_BOX_SUBDIR=1"; else echo "LAGER_PROBE_HAS_BOX_SUBDIR=0"; fi
+echo "LAGER_PROBE_GIT_LOG=$(git -C ~/box log -1 --format='%h - %s (%cr)' 2>/dev/null)"
+echo "LAGER_PROBE_BUILD_HASH_NEW=$(__BUILD_HASH_CMD__)"
+echo "LAGER_PROBE_BUILD_HASH_STORED=$(cat /etc/lager/build-hash 2>/dev/null)"
+if [ -d ~/box/udev_rules ]; then _up=~/box/udev_rules
+elif [ -d ~/box/box/udev_rules ]; then _up=~/box/box/udev_rules
+else _up=""
+fi
+echo "LAGER_PROBE_UDEV_SRC_PATH=$_up"
+if [ -n "$_up" ] && [ -f "$_up/99-instrument.rules" ]; then
+  echo "LAGER_PROBE_UDEV_SRC_RULES=1"
+  if diff -q "$_up/99-instrument.rules" /etc/udev/rules.d/99-instrument.rules >/dev/null 2>&1; then
+    echo "LAGER_PROBE_UDEV_IN_SYNC=1"
+  else
+    echo "LAGER_PROBE_UDEV_IN_SYNC=0"
+  fi
+else
+  echo "LAGER_PROBE_UDEV_SRC_RULES=0"
+  echo "LAGER_PROBE_UDEV_IN_SYNC=0"
+fi
+if [ -f /etc/sudoers.d/lagerdata-udev ]; then
+  echo "LAGER_PROBE_SUDOERS_OWNER=$(stat -c '%u' /etc/sudoers.d/lagerdata-udev 2>/dev/null || stat -f '%u' /etc/sudoers.d/lagerdata-udev 2>/dev/null || echo UNKNOWN)"
+else
+  echo "LAGER_PROBE_SUDOERS_OWNER=NOTFOUND"
+fi
+if test -f /etc/lager/.boxcfg-sudoers-v2 && sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1; then
+  echo "LAGER_PROBE_BOXCFG_SUDOERS_OK=1"
+else
+  echo "LAGER_PROBE_BOXCFG_SUDOERS_OK=0"
+fi
+echo "LAGER_PROBE_ETC_VERSION=$(cat /etc/lager/version 2>/dev/null)"
+'''
+    return script.replace('__BUILD_HASH_CMD__', _build_hash_shell_cmd())
+
+
+def _parse_probe_output(stdout):
+    """Parse `LAGER_PROBE_<KEY>=<value>` lines into a dict.
+
+    Tolerant by design: any line without the prefix is ignored (so a motd
+    banner or sudo lecture can't corrupt the result), and a repeated key
+    keeps its last value.
+    """
+    facts = {}
+    for line in stdout.splitlines():
+        if line.startswith(_PROBE_PREFIX):
+            key, _, value = line[len(_PROBE_PREFIX):].partition('=')
+            facts[key] = value
+    return facts
+
+
+# Progress-bar denominator. 15 steps always run; 3 are conditional (flatten,
+# cached-image wipe, J-Link install). We use the max so the denominator never
+# jumps mid-flight — light paths simply finish below 18/18 and `finish()`
+# overrides with a full bar. Keep in sync with the `progress.update()` calls
+# in `_update_logic`.
+_PROGRESS_TOTAL_STEPS = 18
 
 
 class ProgressBar:
@@ -290,15 +385,12 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
         if verbose:
             click.echo(message, nl=nl, **kwargs)
 
-    def log_status(message, status, color, print_message=False):
-        """Print status in verbose mode.
+    def log_status(status, color):
+        """Append a colored status to the current verbose line.
 
-        If print_message=True, prints the full message + status.
-        If print_message=False (default), only prints the status (assumes message already printed by log()).
+        Pairs with a preceding `log('...', nl=False)`; no-op unless --verbose.
         """
         if verbose:
-            if print_message:
-                click.echo(message, nl=False)
             click.secho(f' {status}', fg=color)
 
     def log_error(message):
@@ -345,16 +437,9 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
             click.secho('Update cancelled.', fg='yellow')
             ctx.exit(0)
 
-    # Initialize progress bar (only in non-verbose mode).
-    #
-    # Use the maximum possible step count (19 always-runs + 1 optional flatten
-    # + 1 optional image-wipe = 21). We can't know whether flatten/wipe will
-    # actually fire until later, so picking the max avoids a mid-flight
-    # denominator jump (19 → 21 reads as a regression). Light paths that
-    # don't take both conditionals will simply finish at 19/21 or 20/21 —
-    # `_render()` already caps the bar fill at 100% via min(percent, 1.0),
-    # and `finish()` overrides with a full bar at the end.
-    progress = None if verbose else ProgressBar(total_steps=21)
+    # Initialize progress bar (only in non-verbose mode). See
+    # `_PROGRESS_TOTAL_STEPS` for why the denominator is the max step count.
+    progress = None if verbose else ProgressBar(total_steps=_PROGRESS_TOTAL_STEPS)
 
     if not verbose:
         click.echo()  # Blank line before progress bar
@@ -362,7 +447,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
     # Step 1: Check SSH connectivity
     if progress:
         progress.update("Checking SSH...")
-    log('Checking connectivity...', nl=False)
+    log('Checking SSH connectivity...', nl=False)
 
     import os
     key_file = os.path.expanduser('~/.ssh/lager_box')
@@ -439,7 +524,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
             )
             if result.returncode == 0:
                 use_explicit_key = True
-                log_status('Checking connectivity...', 'OK', 'green')
+                log_status('OK', 'green')
                 # Skip the rest of connectivity check - key already works
                 result = type('obj', (object,), {'returncode': 0})()
 
@@ -455,7 +540,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
                 if setup_ssh_key():
                     # Key setup successful, reinitialize progress bar
                     if not verbose:
-                        progress = ProgressBar(total_steps=21)
+                        progress = ProgressBar(total_steps=_PROGRESS_TOTAL_STEPS)
                         progress.current_step = 1
                 else:
                     # Key setup failed, ask if they want to continue with password
@@ -463,7 +548,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
                     if yes or click.confirm('SSH key setup failed. Continue with password authentication?'):
                         use_interactive_ssh = True
                         if not verbose:
-                            progress = ProgressBar(total_steps=21)
+                            progress = ProgressBar(total_steps=_PROGRESS_TOTAL_STEPS)
                             progress.current_step = 1
                     else:
                         click.secho('Update cancelled.', fg='yellow')
@@ -557,106 +642,147 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
             return True
         version_content = f'{box_cli_version_value}|{cli_version}'
 
-        # Short-circuit if the box already has exactly this content.
-        existing = run_ssh_command_with_output('cat /etc/lager/version 2>/dev/null')
-        if existing.returncode == 0 and existing.stdout.strip() == version_content:
-            return True
-
+        # One round-trip per attempt: the `[ ... ] ||` guard makes the write
+        # a no-op when the file already matches, folding the old separate
+        # read-then-write into a single command.
+        write_cmd = (
+            f'[ "$(cat /etc/lager/version 2>/dev/null)" = "{version_content}" ] '
+            f'|| echo "{version_content}" > /etc/lager/version'
+        )
         for attempt in range(3):
-            result = run_ssh_command_with_output(
-                f'echo "{version_content}" > /etc/lager/version',
-                timeout_secs=30,
-            )
+            result = run_ssh_command_with_output(write_cmd, timeout_secs=30)
             if result.returncode == 0:
                 return True
             if attempt < 2:
                 time.sleep(5)
         return False
 
-    # Step 2: Check if box directory exists and is a git repo
+    # Step 2: Inspect box state — one SSH round-trip gathers every read-only
+    # fact the rest of the flow needs (git-repo check, remote URL, layout,
+    # current commit, docker-build cache inputs, udev/sudoers state, on-box
+    # version file). This replaces what used to be ~11 separate
+    # test/cat/git/diff/stat round-trips.
     if progress:
-        progress.update("Checking repository...")
-    log('Checking box repository...', nl=False)
+        progress.update("Inspecting box...")
+    log('Inspecting box...')
 
-    result = run_ssh_command_with_output('test -d ~/box/.git')
-    if result.returncode != 0:
+    probe_result = run_ssh_command_with_output(_probe_shell_script())
+    if probe_result.returncode != 0:
+        if progress:
+            progress.finish(success=False)
+        log_error('Error: Could not inspect box state over SSH')
+        if probe_result.stderr and probe_result.stderr.strip():
+            click.echo(probe_result.stderr.strip(), err=True)
+        ctx.exit(1)
+    facts = _parse_probe_output(probe_result.stdout)
+
+    # 2a: the box directory must be a git checkout.
+    if facts.get('IS_GIT_REPO') != '1':
         if progress:
             progress.finish(success=False)
         log_error('Error: Box directory is not a git repository')
         click.echo('The box may have been deployed with rsync instead of git clone.')
         click.echo('Please re-deploy the box using the latest deployment script.')
         ctx.exit(1)
-    log_status('Checking box repository...', 'OK', 'green')
 
-    # Step 2.1: Migrate remote URL from SSH to HTTPS if needed
-    # Boxes deployed before open-source migration may still use git@github.com:
-    if progress:
-        progress.update("Checking remote URL...")
-    log('Checking remote URL...', nl=False)
+    # 2b: migrate a legacy git@github.com: remote to HTTPS (open-source
+    # migration). This is the one probed fact that needs a follow-up write,
+    # and only on boxes deployed before the migration.
+    remote_url = facts.get('REMOTE_URL', '')
+    remote_migrated = False
+    remote_migrate_failed = False
+    if remote_url.startswith('git@github.com:'):
+        https_url = remote_url.replace('git@github.com:', 'https://github.com/')
+        migrate_result = run_ssh_command_with_output(
+            f'git -C ~/box remote set-url origin {https_url}'
+        )
+        remote_migrated = migrate_result.returncode == 0
+        remote_migrate_failed = not remote_migrated
 
-    remote_url_result = run_ssh_command_with_output('cd ~/box && git remote get-url origin')
-    if remote_url_result.returncode == 0:
-        remote_url = remote_url_result.stdout.strip()
-        if remote_url.startswith('git@github.com:'):
-            https_url = remote_url.replace('git@github.com:', 'https://github.com/')
-            migrate_result = run_ssh_command_with_output(f'cd ~/box && git remote set-url origin {https_url}')
-            if migrate_result.returncode == 0:
-                log_status('Checking remote URL...', 'MIGRATED', 'yellow')
-                log(f'Remote URL migrated from SSH to HTTPS')
-            else:
-                log_status('Checking remote URL...', 'FAILED', 'red')
-                log('Warning: Could not migrate remote URL to HTTPS')
-        else:
-            log_status('Checking remote URL...', 'OK', 'green')
-    else:
-        log_status('Checking remote URL...', 'OK', 'green')
+    # 2c: a `~/box/box/` subdirectory is a sparse-checkout artifact that must
+    # be flattened after the git ops below. The flat layout (no box/ subdir)
+    # is the healthy post-update state, not a broken one — only set
+    # needs_flatten when there is actually a `~/box/box/` to flatten.
+    needs_flatten = facts.get('HAS_BOX_SUBDIR') == '1'
 
-    # Step 2.5: Determine whether a flatten will be needed after the git ops.
-    #
-    # The repo uses sparse-checkout to put files under `box/`, but the runtime
-    # expects them at `~/box/<file>` (the flat layout). After a successful
-    # update, the box is permanently in the flat state: `~/box/lager/` exists,
-    # `~/box/box/` does not. That is the **expected** post-update state, not a
-    # broken one.
-    #
-    # The previous heuristic ("files at root + box/ absent + git wants box/"
-    # → broken, must re-fetch and re-flatten) misfired on every consecutive
-    # `lager update`: it'd repeatedly wipe the flat tree, refetch, and
-    # re-flatten, doing 20+ seconds of pointless container churn each run.
-    # We now treat the flat-with-no-box-subdir state as healthy and only set
-    # needs_flatten when there's actually a `~/box/box/` to flatten.
-    if progress:
-        progress.update("Checking git state...")
-    log('Checking layout...', nl=False)
-
-    needs_flatten = False
-    box_dir_check = run_ssh_command_with_output('cd ~/box && test -d box')
-    if box_dir_check.returncode == 0:
-        # box/ subdirectory present — needs flattening after the git ops below.
-        needs_flatten = True
-        log_status('Checking layout...', 'NEEDS FLATTEN', 'yellow')
-    else:
-        log_status('Checking layout...', 'OK (flat)', 'green')
-
-    # Step 3: Show current version (verbose only)
+    # Verbose: print the gathered state as one block instead of the dozen
+    # "Checking X... OK" lines this used to emit.
     if verbose:
-        click.echo('Current version:', nl=False)
-        result = run_ssh_command_with_output('cd ~/box && git log -1 --format="%h - %s (%cr)"')
-        if result.returncode == 0 and result.stdout.strip():
-            click.echo(f' {result.stdout.strip()}')
+        click.echo('  Repository:    OK (git checkout)')
+        if remote_migrated:
+            click.echo('  Remote URL:    migrated SSH -> HTTPS')
+        elif remote_migrate_failed:
+            click.echo('  Remote URL:    WARNING could not migrate to HTTPS')
+        click.echo(f'  Layout:        {"box/ subdir (will flatten)" if needs_flatten else "flat"}')
+        click.echo(f'  Current:       {facts.get("GIT_LOG", "").strip() or "(unknown)"}')
+        _udev_path = facts.get('UDEV_SRC_PATH', '')
+        if not _udev_path:
+            _udev_state = 'source dir missing'
+        elif facts.get('UDEV_SRC_RULES') != '1':
+            _udev_state = 'rules file missing'
+        elif facts.get('UDEV_IN_SYNC') == '1':
+            _udev_state = 'in sync'
         else:
-            click.echo(' (unknown)')
+            _udev_state = 'update needed'
+        click.echo(f'  udev rules:    {_udev_state}')
+        _owner = facts.get('SUDOERS_OWNER', '')
+        if _owner in ('NOTFOUND', 'UNKNOWN', ''):
+            _sudoers_state = 'not present'
+        elif _owner == '0':
+            _sudoers_state = 'OK (root-owned)'
+        else:
+            _sudoers_state = f'fix needed (owned by uid {_owner})'
+        click.echo(f'  sudoers:       {_sudoers_state}')
+        click.echo(f'  box-config:    {"OK" if facts.get("BOXCFG_SUDOERS_OK") == "1" else "needs bootstrap"}')
 
-    # Step 4: Fetch and check for updates
+    # Step 3: Fetch from origin and measure box-vs-target divergence — one call.
     if progress:
         progress.update("Fetching updates...")
-    log(f'Fetching updates from {git_ref}...', nl=False)
+    log(f'Fetching {git_ref}...', nl=False)
 
-    result = run_ssh_command_with_output(f'cd ~/box && git fetch origin {target_version}')
-    if result.returncode != 0:
+    # `git fetch` then `git rev-list` in a single round-trip. fetch's combined
+    # stdout+stderr precedes the `LAGER_FETCH_RC=` marker (so the detailed
+    # error classification below still works); the rev-list line follows it.
+    #
+    # `--left-right --count HEAD...{git_ref}` returns `<ahead>\t<behind>` —
+    # commits on HEAD-not-in-target and on-target-not-in-HEAD respectively.
+    # We need *both* directions so a rollback (`--version <older>`) doesn't
+    # look like "already up to date" the way the older one-way `HEAD..ref`
+    # rev-list did: that variant only counted commits the box was *behind*
+    # and treated any "ahead" state as in-sync, making downgrade impossible.
+    fetch_script = (
+        f'cd ~/box && git fetch origin {target_version} 2>&1; '
+        'echo "LAGER_FETCH_RC=$?"; '
+        f'git rev-list --left-right --count HEAD...{git_ref} 2>/dev/null'
+    )
+    result = run_ssh_command_with_output(fetch_script)
+
+    fetch_lines = []
+    fetch_rc = None
+    revlist_count_str = ''
+    for line in result.stdout.splitlines():
+        if fetch_rc is None:
+            if line.startswith('LAGER_FETCH_RC='):
+                try:
+                    fetch_rc = int(line.split('=', 1)[1])
+                except ValueError:
+                    fetch_rc = -1
+            else:
+                fetch_lines.append(line)
+        elif line.strip():
+            revlist_count_str = line.strip()
+    # `fetch_rc is None` means the marker never arrived — SSH transport itself
+    # failed (or died mid-command), not git. Fold the SSH stderr in so the
+    # classifier below can still reason about it.
+    fetch_stderr = '\n'.join(fetch_lines).strip()
+    if fetch_rc is None:
+        fetch_stderr = (fetch_stderr + '\n' + (result.stderr or '')).strip()
+
+    if fetch_rc != 0:
         if progress:
             progress.finish(success=False)
-        stderr = result.stderr.strip() if result.stderr else ""
+        log_status('FAILED', 'red')
+        stderr = fetch_stderr
         # Distinguish between different fetch error types
         if "Could not resolve host" in stderr or "Name or service not known" in stderr:
             log_error('Error: Could not resolve GitHub hostname')
@@ -689,28 +815,58 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
             if stderr:
                 click.secho(f"Git error: {stderr}", err=True)
         ctx.exit(1)
-    log_status(f'Fetching updates from {git_ref}...', 'OK', 'green')
 
-    # Check if there are updates available
-    result = run_ssh_command_with_output(f'cd ~/box && git rev-list HEAD..{git_ref} --count')
-
+    # Parse "<ahead>\t<behind>" from the rev-list line. Only trust an
+    # "already up to date" fast-path when rev-list produced two integers;
+    # otherwise stay conservative and let the rebuild run. A pull is needed
+    # whenever the box diverges in either direction — forward (behind>0) or
+    # backward (ahead>0, i.e. rollback to an older ref).
     needs_pull = False
-    # Only trust "already up to date" for fast-path if rev-list succeeds with an integer count
     git_sync_confirmed = False
-    if result.returncode == 0:
-        try:
-            commits_behind = int(result.stdout.strip())
-        except ValueError:
-            commits_behind = None
-        if commits_behind is not None:
-            git_sync_confirmed = True
-            if commits_behind == 0:
-                if verbose:
-                    click.secho('Box code is already up to date!', fg='green')
-                needs_pull = False
-            else:
-                log(f'Updates available: {commits_behind} new commit(s)')
-                needs_pull = True
+    commits_ahead = None
+    commits_behind = None
+    if revlist_count_str:
+        parts = revlist_count_str.split()
+        if len(parts) == 2:
+            try:
+                commits_ahead = int(parts[0])
+                commits_behind = int(parts[1])
+            except ValueError:
+                commits_ahead = None
+                commits_behind = None
+    if commits_ahead is not None and commits_behind is not None:
+        git_sync_confirmed = True
+        needs_pull = commits_ahead > 0 or commits_behind > 0
+    is_rollback = bool(commits_ahead) and not commits_behind
+
+    if not git_sync_confirmed:
+        log_status('fetched (update state unknown)', 'yellow')
+    elif not needs_pull:
+        log_status('already up to date', 'green')
+    elif is_rollback:
+        log_status(f'rolling back {commits_ahead} commit(s)', 'yellow')
+    elif commits_ahead == 0:
+        log_status(f'{commits_behind} new commit(s)', 'green')
+    else:
+        log_status(f'switching ({commits_ahead} ahead, {commits_behind} behind)', 'yellow')
+
+    # Rollback is destructive in the sense that it rewrites the on-box git
+    # tree backward, so confirm explicitly when not in --yes / --check mode.
+    # The earlier generic "update the box code and restart services" prompt
+    # fired before we knew direction, so this second confirm catches typo'd
+    # `--version` arguments that would silently downgrade a box.
+    if is_rollback and not yes and not check:
+        if progress:
+            progress.pause()
+        click.echo()
+        if not click.confirm(
+            f'This will ROLL BACK {box_name} by {commits_ahead} commit(s) to {git_ref}. Continue?',
+            default=False,
+        ):
+            click.secho('Update cancelled.', fg='yellow')
+            ctx.exit(0)
+        if progress:
+            progress.resume()
 
     # --check / dry-run: report what would happen and exit. Must run before
     # any mutation (no git checkout, no udev install, no docker stop).
@@ -723,36 +879,51 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
             progress.finish(success=True)
         click.echo()
 
-        current_version_result = run_ssh_command_with_output(
-            'cat /etc/lager/version 2>/dev/null || true'
-        )
-        current_version_raw = current_version_result.stdout.strip()
+        current_version_raw = facts.get('ETC_VERSION', '').strip()
         current_box_version = current_version_raw.split('|', 1)[0] if current_version_raw else '(unknown)'
 
-        _check_new_hash, _check_stored_hash, deps_will_change = _read_build_hash_state(
-            run_ssh_command_with_output
+        # --check does no git pull, so the probe's build-hash inputs still
+        # reflect the tree that would be built — no extra round-trip needed.
+        _check_new_hash = facts.get('BUILD_HASH_NEW', '')
+        _check_stored_hash = facts.get('BUILD_HASH_STORED', '')
+        deps_will_change = (
+            bool(_check_new_hash) and bool(_check_stored_hash)
+            and _check_new_hash != _check_stored_hash
         )
 
         if not git_sync_confirmed:
             click.secho('Could not determine update state (git rev-list failed).', fg='red', err=True)
             ctx.exit(2)
 
-        if commits_behind == 0:
+        if commits_behind == 0 and commits_ahead == 0:
             code_status = 'in sync'
-        else:
+        elif is_rollback:
+            code_status = f'will roll back ({commits_ahead} commit(s) ahead of {git_ref})'
+        elif commits_ahead == 0:
             code_status = f'will update ({commits_behind} commit(s) behind {git_ref})'
+        else:
+            code_status = (
+                f'will switch ({commits_ahead} ahead / {commits_behind} behind {git_ref})'
+            )
 
         if deps_will_change:
             deps_status = 'will trigger fresh build (Dockerfile or requirements changed)'
+        elif is_rollback or commits_ahead > 0:
+            # Probe measured the *current* (pre-pull) Dockerfile/requirements,
+            # so a backward jump can still trigger a rebuild we can't predict
+            # without actually pulling. Be honest about the unknown.
+            deps_status = 'unknown until pull (older ref may differ)'
         else:
             deps_status = 'cache valid (no rebuild)'
 
-        if commits_behind == 0 and not deps_will_change:
+        if commits_behind == 0 and commits_ahead == 0 and not deps_will_change:
             container_status = 'no restart needed'
             est = '~5s'
-        elif deps_will_change:
+        elif deps_will_change or is_rollback or commits_ahead > 0:
+            # Rollback / branch-switch likely flips at least some COPY layers
+            # in the Dockerfile cache; assume a real build.
             container_status = 'will restart'
-            est = '~6 min (fresh build)'
+            est = '~6 min (fresh build possible)'
         else:
             container_status = 'will restart'
             est = '~90s (cached build)'
@@ -767,7 +938,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
         click.echo(f'  Estimated:  {est}')
         click.echo()
 
-        will_change = commits_behind != 0 or deps_will_change
+        will_change = commits_behind != 0 or commits_ahead != 0 or deps_will_change
         if will_change:
             click.echo('Run without --check to apply.')
             ctx.exit(1)
@@ -775,277 +946,218 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
         ctx.exit(0)
 
     if needs_pull:
-        # Step 5: Update git repo
+        # Step 4: Update the git repo — sparse-checkout fixups, checkout, and
+        # reset all chained into a single SSH call.
         if progress:
-            progress.update("Pulling updates...")
-        log('Ensuring required files are tracked...', nl=False)
+            progress.update("Rolling back..." if is_rollback else "Pulling updates...")
+        log(f'{"Rolling back to" if is_rollback else "Pulling"} {git_ref}...', nl=False)
 
-        run_ssh_command_with_output(
+        # `git checkout -f` so a prior flatten artifact (a root-level tracked
+        # file overwritten by box/<same-name>) doesn't block the switch.
+        # Observed on STG-C: flatten of a branch that had both root README.md
+        # and box/README.md left the root copy looking modified, and
+        # `git checkout main` failed with "local changes would be
+        # overwritten". Editing the on-box git tree by hand is not a
+        # supported workflow, so discarding such "modifications" is safe.
+        # The `cli/__init__.py` add is best-effort: cone-mode sparse-checkout
+        # (default since git 2.36) rejects single-file patterns with
+        # "fatal: 'cli/__init__.py' is not a directory". The pre-batching
+        # version of this code happened to run in a separate SSH call whose
+        # exit was never checked, so the failure was silently swallowed; the
+        # `|| true` here preserves that behavior so a newer-git box (e.g.
+        # PRD-1 at 2.43) doesn't abort the whole pull. udev_rules is a
+        # directory and never hits this, so it stays strict.
+        pull_script = (
             'cd ~/box && '
-            'git sparse-checkout list | grep -q "^udev_rules$" || git sparse-checkout add udev_rules && '
-            'git sparse-checkout list | grep -q "^cli/__init__.py$" || git sparse-checkout add cli/__init__.py'
+            '{ git sparse-checkout list | grep -q "^udev_rules$" || '
+            'git sparse-checkout add udev_rules; } && '
+            '{ git sparse-checkout list | grep -q "^cli/__init__.py$" || '
+            'git sparse-checkout add cli/__init__.py 2>/dev/null || true; } && '
+            f'git checkout -f {target_version} && '
+            f'git reset --hard {git_ref}'
         )
-        log_status('Ensuring required files are tracked...', 'OK', 'green')
-
-        log(f'Checking out version {target_version}...', nl=False)
-        # `-f` so a prior flatten artifact (root-level tracked file overwritten
-        # by box/<same-name>) doesn't block the switch. Observed on STG-C:
-        # flatten of a branch that had both root README.md and box/README.md
-        # left the root copy looking modified, and `git checkout main` failed
-        # with "local changes would be overwritten". Editing the on-box git
-        # tree by hand is not a supported workflow, so discarding such
-        # "modifications" is safe.
-        result = run_ssh_command_with_output(f'cd ~/box && git checkout -f {target_version}')
+        result = run_ssh_command_with_output(pull_script)
         if result.returncode != 0:
             if progress:
                 progress.finish(success=False)
-            log_error(f'Error: Failed to checkout version {target_version}')
-            if result.stderr:
-                click.echo(result.stderr.strip(), err=True)
+            log_status('FAILED', 'red')
+            log_error(f'Error: Failed to update box code to {target_version}')
+            for stream in (result.stderr, result.stdout):
+                if stream and stream.strip():
+                    click.echo(stream.strip(), err=True)
             ctx.exit(1)
-        log_status(f'Checking out version {target_version}...', 'OK', 'green')
+        log_status('OK', 'green')
 
-        log(f'Updating to match {git_ref}...', nl=False)
-        result = run_ssh_command_with_output(f'cd ~/box && git reset --hard {git_ref}')
-        if result.returncode != 0:
-            if progress:
-                progress.finish(success=False)
-            log_error('Error: Failed to update branch')
-            if result.stderr:
-                click.echo(result.stderr.strip(), err=True)
-            ctx.exit(1)
-        log_status(f'Updating to match {git_ref}...', 'OK', 'green')
-
+        # `git reset --hard` prints "HEAD is now at <hash> <subject>" — reuse
+        # that line instead of a separate `git log` round-trip.
         if verbose:
-            click.echo('New version:', nl=False)
-            result = run_ssh_command_with_output('cd ~/box && git log -1 --format="%h - %s (%cr)"')
-            if result.returncode == 0 and result.stdout.strip():
-                click.echo(f' {result.stdout.strip()}')
-        needs_flatten = True  # After pull, always flatten
+            for line in result.stdout.splitlines():
+                if line.startswith('HEAD is now at'):
+                    click.echo(f'  New version:   {line[len("HEAD is now at "):].strip()}')
+                    break
+        needs_flatten = True  # After a pull, always flatten.
     else:
         if progress:
             progress.update("Already up to date")
 
-    # Flatten the directory structure if needed (box/ -> root)
-    # This handles sparse checkout where files are in ~/box/box/ but need to be in ~/box/
+    # Flatten the sparse-checkout layout (box/ -> root) when needed. The cp is
+    # best-effort (the box may already be flat), but the post-flatten verify
+    # is fatal: a silently-failed flatten used to let the docker build proceed
+    # against missing files — an image that passed `docker ps` but failed at
+    # runtime, one of the documented "had to run update 3 times" modes. The
+    # `{ ...; true; }` keeps a cp failure non-fatal so the verify always runs
+    # and is what actually decides. Flatten + verify share one SSH call.
     if needs_flatten:
         if progress:
             progress.update("Flattening structure...")
-        log('Updating file structure...', nl=False)
-        result = run_ssh_command_with_output(
+        log('Flattening layout...', nl=False)
+        flatten_script = (
             'cd ~/box && '
-            'if [ -d box ]; then '
-            'shopt -s dotglob && '
-            'cp -rf box/* . && '
-            'rm -rf box; '
-            'fi'
-        )
-        if result.returncode == 0:
-            log_status('Updating file structure...', 'OK', 'green')
-        else:
-            # Non-fatal - box might already be flattened
-            log_status('Updating file structure...', 'SKIPPED', 'yellow')
-
-        # Verify the flatten actually left the box in a buildable shape.
-        # Previously this step swallowed cp failures silently, and the docker
-        # build would proceed against missing files, producing an image that
-        # passed `docker ps` but failed at runtime — one of the documented
-        # "had to run update 3 times" failure modes.
-        verify_result = run_ssh_command_with_output(
+            '{ if [ -d box ]; then shopt -s dotglob && cp -rf box/* . && rm -rf box; fi; true; } && '
             'test -f ~/box/lager/box_http_server.py && '
             'test -f ~/box/lager/docker/box.Dockerfile'
         )
-        if verify_result.returncode != 0:
+        result = run_ssh_command_with_output(flatten_script)
+        if result.returncode != 0:
             if progress:
                 progress.finish(success=False)
+            log_status('FAILED', 'red')
             log_error('Error: Source files missing after flatten step')
-            click.echo('Expected to find ~/box/lager/box_http_server.py and ~/box/lager/docker/box.Dockerfile.', err=True)
+            click.echo('Expected ~/box/lager/box_http_server.py and ~/box/lager/docker/box.Dockerfile.', err=True)
             click.echo('The sparse-checkout layout on the box is inconsistent; try a fresh `lager install`.', err=True)
             ctx.exit(1)
+        log_status('OK', 'green')
 
-    # Compute the docker-build cache state up front so the early-exit decision
-    # below knows whether deps-only changes require a rebuild. Previously this
-    # only happened after the early-exit, so a corrupted /etc/lager/build-hash
-    # with code in sync would silently take the no-op path — the very case the
-    # auto-invalidation feature is supposed to catch. The result is reused
-    # below for `must_wipe_image`.
-    new_build_hash, stored_build_hash, hash_mismatch = _read_build_hash_state(
-        run_ssh_command_with_output
+    # Docker-build cache state. The upfront probe measured the *pre-pull*
+    # tree; if code actually changed we recompute the new hash against the
+    # freshly pulled Dockerfile/requirements (one round-trip). When nothing
+    # was pulled or flattened the probe's value is still accurate, so skip it.
+    # `stored_build_hash` never changes mid-run, so the probe's value always
+    # stands. This decides `must_wipe_image` and feeds the early-exit below.
+    stored_build_hash = facts.get('BUILD_HASH_STORED', '')
+    if needs_pull or needs_flatten:
+        new_build_hash = _read_build_hash(run_ssh_command_with_output)
+    else:
+        new_build_hash = facts.get('BUILD_HASH_NEW', '')
+    hash_mismatch = (
+        bool(new_build_hash) and bool(stored_build_hash)
+        and new_build_hash != stored_build_hash
     )
     must_wipe_image = hash_mismatch
 
-    # Step 6: Check and update udev rules if needed
+    # Step 5: udev rules. The probe already located the source dir and diffed
+    # its 99-instrument.rules against the installed copy, so we only touch the
+    # box when an install/update is actually needed.
     if progress:
         progress.update("Checking udev rules...")
     log('Checking udev rules...', nl=False)
 
-    # Check for udev_rules in the flattened structure first, then fall back to box/udev_rules
-    result = run_ssh_command_with_output('test -d ~/box/udev_rules')
-    udev_path = '~/box/udev_rules' if result.returncode == 0 else '~/box/box/udev_rules'
-
-    result = run_ssh_command_with_output(f'test -d {udev_path}')
-    if result.returncode == 0:
-        # Check if rules file exists in source
-        rules_check = run_ssh_command_with_output(f'test -f {udev_path}/99-instrument.rules')
-        if rules_check.returncode != 0:
-            log_status('Checking udev rules...', 'FAILED (file not found)', 'red')
-            if verbose:
-                click.echo(f'  Error: {udev_path}/99-instrument.rules not found', err=True)
-        else:
-            # Check if already installed and matches source
-            diff_check = run_ssh_command_with_output(
-                f'diff -q {udev_path}/99-instrument.rules /etc/udev/rules.d/99-instrument.rules >/dev/null 2>&1'
-            )
-
-            if diff_check.returncode == 0:
-                # Files match - skip installation
-                log_status('Checking udev rules...', 'OK (already up-to-date)', 'green')
-            else:
-                # Need to install/update
-                log_status('Checking udev rules...', 'UPDATE NEEDED', 'yellow')
-                log('Installing udev rules...', nl=False)
-
-                install_cmd = (
-                    f'cp {udev_path}/99-instrument.rules /tmp/ && '
-                    'sudo /bin/cp /tmp/99-instrument.rules /etc/udev/rules.d/ && '
-                    'sudo /bin/chmod 644 /etc/udev/rules.d/99-instrument.rules && '
-                    'sudo /usr/bin/udevadm control --reload-rules && '
-                    'sudo /usr/bin/udevadm trigger && '
-                    'sudo /bin/rm -f /tmp/99-instrument.rules'
-                )
-
-                # Use interactive mode for sudo commands - allows password prompts.
-                # pause()/resume() match the sudoers and box-config-sudoers
-                # paths below; without them the 1s periodic re-render would
-                # overwrite the sudo password prompt and the user couldn't
-                # see what's waiting on stdin.
-                if not verbose and progress:
-                    progress.pause()
-                    click.echo('Installing udev rules (may require sudo password)...')
-                elif verbose:
-                    click.echo()  # Add newline before potential sudo prompt
-
-                result = run_ssh_command_interactive(install_cmd, allow_sudo_prompt=True)
-
-                if not verbose and progress:
-                    progress.resume()
-                elif verbose:
-                    click.echo()  # Add newline after sudo command
-
-                if result.returncode == 0:
-                    # Verify installation succeeded
-                    verify_result = run_ssh_command_with_output('test -f /etc/udev/rules.d/99-instrument.rules')
-                    if verify_result.returncode == 0:
-                        log_status('Installing udev rules...', 'OK', 'green')
-                    else:
-                        log_status('Installing udev rules...', 'FAILED (verification failed)', 'red')
-                        if verbose:
-                            click.echo('  Error: udev rules file not found after installation', err=True)
-                            click.echo('  This may indicate a sudo permission issue', err=True)
-                else:
-                    log_status('Installing udev rules...', 'FAILED', 'red')
-                    if verbose:
-                        click.echo('  Error: Failed to install udev rules', err=True)
-                        click.echo('  This may be a sudo permission issue. The sudoers file may need updating.', err=True)
-                        click.echo(f'  You can manually install with: ssh {ssh_host}', err=True)
-                        click.echo(f'    sudo cp ~/box/udev_rules/99-instrument.rules /etc/udev/rules.d/', err=True)
-                        click.echo(f'    sudo udevadm control --reload-rules && sudo udevadm trigger', err=True)
-    else:
-        log_status('Checking udev rules...', 'FAILED (directory not found)', 'red')
+    udev_src_path = facts.get('UDEV_SRC_PATH', '')
+    if not udev_src_path:
+        log_status('SKIPPED (source dir missing)', 'yellow')
         if verbose:
-            click.echo(f'  Error: {udev_path} directory not found', err=True)
-            click.echo('  The udev_rules directory should be included in the sparse checkout', err=True)
+            click.echo('  The udev_rules directory is not in the sparse checkout.', err=True)
+    elif facts.get('UDEV_SRC_RULES') != '1':
+        log_status('SKIPPED (rules file missing)', 'yellow')
+        if verbose:
+            click.echo(f'  {udev_src_path}/99-instrument.rules not found.', err=True)
+    elif facts.get('UDEV_IN_SYNC') == '1':
+        log_status('OK (already current)', 'green')
+    else:
+        log_status('update needed', 'yellow')
 
-    # Step 6.5: Fix sudoers file ownership if needed
-    # The /etc/sudoers.d/lagerdata-udev file must be owned by root for sudo to work
-    # If it's owned by uid 1000 (lagerdata user), sudo will refuse to work
+        # The `&&` chain means a non-zero exit already implies the `sudo cp`
+        # to /etc failed, so no separate post-install verify is needed.
+        install_cmd = (
+            f'cp {udev_src_path}/99-instrument.rules /tmp/ && '
+            'sudo /bin/cp /tmp/99-instrument.rules /etc/udev/rules.d/ && '
+            'sudo /bin/chmod 644 /etc/udev/rules.d/99-instrument.rules && '
+            'sudo /usr/bin/udevadm control --reload-rules && '
+            'sudo /usr/bin/udevadm trigger && '
+            'sudo /bin/rm -f /tmp/99-instrument.rules'
+        )
+
+        # Interactive mode so a sudo password prompt can appear. pause()/
+        # resume() stop the 1s progress re-render from overwriting the prompt.
+        if not verbose and progress:
+            progress.pause()
+            click.echo('Installing udev rules (may require sudo password)...')
+        elif verbose:
+            click.echo()
+
+        result = run_ssh_command_interactive(install_cmd, allow_sudo_prompt=True)
+
+        if not verbose and progress:
+            progress.resume()
+        elif verbose:
+            click.echo()
+
+        log('Installing udev rules...', nl=False)
+        if result.returncode == 0:
+            log_status('OK', 'green')
+        else:
+            log_status('FAILED', 'red')
+            if verbose:
+                click.echo('  Could not install udev rules — likely a sudoers permission issue.', err=True)
+                click.echo(f'  Manual fix: ssh {ssh_host}, then:', err=True)
+                click.echo(f'    sudo cp {udev_src_path}/99-instrument.rules /etc/udev/rules.d/', err=True)
+                click.echo('    sudo udevadm control --reload-rules && sudo udevadm trigger', err=True)
+
+    # Step 6: sudoers ownership. /etc/sudoers.d/lagerdata-udev must be
+    # root-owned or sudo refuses it; the probe gave us the owner uid.
     if progress:
         progress.update("Checking sudoers...")
-    log('Checking sudoers file ownership...', nl=False)
+    log('Checking sudoers ownership...', nl=False)
 
-    # Check if the sudoers file exists and get its owner
-    sudoers_check = run_ssh_command_with_output(
-        '[ -f /etc/sudoers.d/lagerdata-udev ] && '
-        'stat -c "%u" /etc/sudoers.d/lagerdata-udev 2>/dev/null || '
-        'stat -f "%u" /etc/sudoers.d/lagerdata-udev 2>/dev/null || '
-        'echo "NOTFOUND"'
-    )
-
-    if sudoers_check.returncode == 0:
-        owner_uid = sudoers_check.stdout.strip()
-        if owner_uid == "NOTFOUND":
-            log_status('Checking sudoers file ownership...', 'SKIPPED (file not found)', 'yellow')
-        elif owner_uid != "0":
-            # File exists but not owned by root - fix it
-            log_status('Checking sudoers file ownership...', f'FIXING (owned by uid {owner_uid})', 'yellow')
-            log('Fixing sudoers file ownership...', nl=False)
-
-            if not verbose and progress:
-                progress.pause()
-                click.echo('Fixing sudoers file ownership (may require sudo password)...')
-            elif verbose:
-                click.echo()
-
-            fix_result = run_ssh_command_interactive(
-                'sudo chown root:root /etc/sudoers.d/lagerdata-udev',
-                allow_sudo_prompt=True
-            )
-
-            if not verbose and progress:
-                progress.resume()
-            elif verbose:
-                click.echo()
-
-            if fix_result.returncode == 0:
-                log_status('Fixing sudoers file ownership...', 'OK', 'green')
-            else:
-                log_status('Fixing sudoers file ownership...', 'FAILED', 'red')
-                if verbose:
-                    click.echo('  Warning: Could not fix sudoers ownership. Sudo may not work correctly.', err=True)
-        else:
-            # File owned by root - all good
-            log_status('Checking sudoers file ownership...', 'OK', 'green')
+    sudoers_owner = facts.get('SUDOERS_OWNER', '')
+    if sudoers_owner in ('NOTFOUND', 'UNKNOWN', ''):
+        log_status('SKIPPED (not present)', 'yellow')
+    elif sudoers_owner == '0':
+        log_status('OK', 'green')
     else:
-        log_status('Checking sudoers file ownership...', 'SKIPPED', 'yellow')
+        log_status(f'fixing (owned by uid {sudoers_owner})', 'yellow')
 
-    # Step 6.6: Ensure passwordless sudo for `lager box config apply`.
+        if not verbose and progress:
+            progress.pause()
+            click.echo('Fixing sudoers ownership (may require sudo password)...')
+        elif verbose:
+            click.echo()
+
+        fix_result = run_ssh_command_interactive(
+            'sudo chown root:root /etc/sudoers.d/lagerdata-udev',
+            allow_sudo_prompt=True
+        )
+
+        if not verbose and progress:
+            progress.resume()
+        elif verbose:
+            click.echo()
+
+        log('Fixing sudoers ownership...', nl=False)
+        if fix_result.returncode == 0:
+            log_status('OK', 'green')
+        else:
+            log_status('FAILED', 'red')
+            if verbose:
+                click.echo('  Warning: could not fix sudoers ownership; sudo may not work correctly.', err=True)
+
+    # Step 7: passwordless sudo for `lager box config apply`.
     #
     # `lager box config apply` needs root on the host for apt-get install,
     # sysctl writes, and mount-path mkdir/chown — all over BatchMode SSH
     # where sudo can't prompt. The rule grants narrow NOPASSWD for exactly
-    # those operations. This runs on every `lager update` so existing boxes
-    # gradually pick up the rule without a full re-install; idempotent
-    # (skips when already in place).
+    # those operations. The probe ran the functional check (marker file
+    # present + `sudo -n apt-get` actually works), so we only bootstrap when
+    # it came back negative. Runs on every update so existing boxes
+    # gradually pick up the rule; idempotent.
     if progress:
         progress.update("Checking box-config sudoers...")
     log('Checking box-config sudoers...', nl=False)
 
-    # Functional check: can we actually run the thing the rule grants?
-    # `sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version` succeeds
-    # only when (a) sudo -n is allowed for apt-get (NOPASSWD) and (b)
-    # SETENV is permitted (otherwise sudo rejects with "not allowed to
-    # set the following environment variables"). Grepping `sudo -l`
-    # output is fragile across sudo versions / locales / `requiretty`.
-    # Detection: marker file + functional probe.
-    # - `/etc/lager/.boxcfg-sudoers-v2` is written by the bootstrap; its
-    #   existence indicates the v2 rule shape (with the cp clause for
-    #   rollback) is installed. Bump the version suffix when expanding
-    #   the rule so older boxes re-bootstrap automatically.
-    # - `sudo -n DEBIAN_FRONTEND=...` confirms the rule is still
-    #   functionally live (catches the case where the sudoers file was
-    #   manually deleted but the marker stayed).
-    # The previous `sudo -n -l <cmd>` approach falsely passed because
-    # Ubuntu's default `%sudo` group rule grants the user (ALL:ALL) ALL
-    # with-password, and `-l` returns 0 if the command is permitted at
-    # all — not specifically NOPASSWD.
-    boxcfg_sudoers_check = run_ssh_command_with_output(
-        "test -f /etc/lager/.boxcfg-sudoers-v2 "
-        "&& sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1"
-    )
-    if boxcfg_sudoers_check.returncode == 0:
-        log_status('Checking box-config sudoers...', 'OK', 'green')
+    if facts.get('BOXCFG_SUDOERS_OK') == '1':
+        log_status('OK', 'green')
     else:
-        log_status('Checking box-config sudoers...', 'NEEDS BOOTSTRAP', 'yellow')
+        log_status('needs bootstrap', 'yellow')
 
         if not verbose and progress:
             progress.pause()
@@ -1077,16 +1189,18 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
         elif verbose:
             click.echo()
 
+        log('Installing box-config sudoers...', nl=False)
         if boxcfg_install_result.returncode == 0:
-            # Same functional check as the pre-install detection — verify
-            # the rule is actually live by running the thing it grants.
+            # `sudo tee` succeeds even if the sudoers content is malformed,
+            # so this functional re-check is genuinely needed (unlike the
+            # udev path above, where the `&&` chain is self-verifying).
             boxcfg_verify = run_ssh_command_with_output(
                 "sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1"
             )
             if boxcfg_verify.returncode == 0:
-                log_status('Installing box-config sudoers...', 'OK', 'green')
+                log_status('OK', 'green')
             else:
-                log_status('Installing box-config sudoers...', 'INSTALLED BUT NOT VERIFIED', 'yellow')
+                log_status('installed but not verified', 'yellow')
                 if verbose:
                     click.echo(
                         '  Warning: rule installed but `sudo -n apt-get` still requires a password. '
@@ -1094,7 +1208,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
                         err=True,
                     )
         else:
-            log_status('Installing box-config sudoers...', 'FAILED', 'yellow')
+            log_status('FAILED', 'yellow')
             if verbose:
                 click.echo(
                     '  Warning: box-config sudoers rule could not be installed. '
@@ -1118,8 +1232,17 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
     ):
         import re as _re
 
+        # Prefer the box's source-declared `__version__` over the CLI
+        # version. Reads `cli/__init__.py` at HEAD via `git show`, which
+        # works even when the file isn't in the working tree (cone-mode
+        # boxes). HEAD is unchanged in this branch (no pull), so one read
+        # suffices.
         _vp = _re.match(r'^v?(\d+\.\d+\.\d+)$', target_version)
-        _box_v = _vp.group(1) if _vp else cli_version
+        if _vp:
+            _box_v = _vp.group(1)
+        else:
+            _src_v = _read_box_source_version(run_ssh_command_with_output)
+            _box_v = _src_v if _src_v else cli_version
 
         # Reconcile /etc/lager/version on the box with the local cache.
         # Previously this branch only updated the local ~/.lager file, so if
@@ -1147,7 +1270,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
         click.echo()
         ctx.exit(0)
 
-    # Step 7: Stop containers
+    # Step 8: Stop containers
     if progress:
         progress.update("Stopping containers...")
     log('Stopping containers...', nl=False)
@@ -1157,28 +1280,31 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
         'docker rm lager pigpio 2>/dev/null || true',
         timeout_secs=30
     )
-    log_status('Stopping containers...', 'OK', 'green')
+    log_status('OK', 'green')
 
-    # Step 7.5: Wipe the cached Docker image when build inputs changed
-    # (`hash_mismatch`), so a pip-dependency change in the Dockerfile doesn't
-    # reuse a stale layer. `new_build_hash`, `stored_build_hash`,
-    # `hash_mismatch`, and `must_wipe_image` were all set above just after
-    # the flatten step.
+    # Wipe the cached Docker image when build inputs changed (`hash_mismatch`)
+    # so a pip-dependency change in the Dockerfile doesn't reuse a stale layer.
+    # Also wipe the cargo/npm persistence volumes (mounted by start_box.sh) —
+    # a Dockerfile change can move the rust/node toolchain, and a stale volume
+    # would shadow the new image's tree with the old one. `|| true` keeps both
+    # the first-run case (volumes don't exist yet) and the "in use" case
+    # non-fatal; the prior `docker rm` already detached this container.
     if must_wipe_image:
         if progress:
             progress.update("Removing cached image...")
-        log('Removing cached Docker image (build inputs changed)...', nl=False)
+        log('Removing cached image (build inputs changed)...', nl=False)
 
         run_ssh_command_with_output(
-            'docker rmi lager 2>/dev/null || true',
+            'docker rmi lager 2>/dev/null || true; '
+            'docker volume rm lager-cargo lager-npm-global 2>/dev/null || true',
             timeout_secs=30
         )
-        log_status('Removing cached Docker image (build inputs changed)...', 'OK', 'green')
+        log_status('OK', 'green')
 
-    # Step 8: Rebuild Docker container (the slow part)
+    # Step 9: Rebuild Docker container (the slow part)
     if progress:
         progress.update("Building container...")
-    log('Rebuilding Docker container (this may take several minutes)...')
+    log('Building container (this may take several minutes)...')
 
     ssh_cmd = ['ssh']
     if use_explicit_key:
@@ -1239,7 +1365,8 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
             elif "permission denied" in full_output.lower():
                 click.secho("Hint: Permission issue. Check Docker daemon is running and user has access.", fg='yellow', err=True)
         ctx.exit(1)
-    log_status('Building container...', 'OK', 'green')
+    if verbose:
+        click.secho('  Build complete', fg='green')
 
     # Record the build-inputs hash so the next run can decide whether to
     # invalidate the cache automatically. Best-effort — a failure here just
@@ -1250,68 +1377,86 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
             timeout_secs=15,
         )
 
-    # Step 8.5: Clean up old images to save disk space (after successful build)
+    # Clean up old images to save disk space (after a successful build).
     if progress:
         progress.update("Cleaning up images...")
-    log('Cleaning up old Docker images...', nl=False)
+    log('Cleaning up old images...', nl=False)
     run_ssh_command_with_output(
         'docker image prune -af --filter "until=24h"',
         timeout_secs=30
     )
-    log_status('Cleaning up old Docker images...', 'OK', 'green')
+    log_status('OK', 'green')
 
-    # Step 9: Ensure /etc/lager directory exists (required by start_box.sh)
+    # Step 10: Create the on-box directories needed before the container
+    # starts — /etc/lager (start_box.sh writes here) and the customer-binaries
+    # mount point (the container runs as www-data and writes uploaded binaries
+    # there; creating it 777 up front keeps docker from auto-creating it
+    # root-owned at mount time). Batched into one call. /etc/lager is fatal on
+    # failure; customer-binaries is best-effort (`{ ...; } || true`).
     if progress:
-        progress.update("Setting up /etc/lager...")
-    log('Ensuring /etc/lager directory exists...', nl=False)
+        progress.update("Setting up directories...")
+    log('Setting up directories...', nl=False)
 
-    # Use full paths to match sudoers whitelist in deployment script
-    # Run mkdir and chmod - they're idempotent and passwordless via sudoers
-    etc_lager_result = run_ssh_command_with_output(
-        'sudo /bin/mkdir -p /etc/lager && sudo /bin/chmod 777 /etc/lager',
+    # Full paths match the sudoers whitelist in the deployment script; mkdir
+    # and chmod are idempotent and passwordless via sudoers.
+    dirs_result = run_ssh_command_with_output(
+        'sudo /bin/mkdir -p /etc/lager && sudo /bin/chmod 777 /etc/lager && '
+        '{ mkdir -p ~/third_party/customer-binaries && '
+        'chmod 777 ~/third_party/customer-binaries; } || true',
         timeout_secs=30
     )
-
-    if etc_lager_result.returncode != 0:
+    if dirs_result.returncode != 0:
         if progress:
             progress.finish(success=False)
-        log_error('Error: Failed to create /etc/lager directory')
-        click.echo('This may be a sudo permission issue. SSH into the box and run:', err=True)
+        log_status('FAILED', 'red')
+        log_error('Error: Failed to create /etc/lager on the box')
+        click.echo('This is usually a sudo permission issue. SSH into the box and run:', err=True)
         click.echo(f'  ssh {ssh_host}', err=True)
-        click.echo(f'  sudo mkdir -p /etc/lager && sudo chmod 777 /etc/lager', err=True)
-        click.echo('Then run lager update again.', err=True)
+        click.echo('  sudo mkdir -p /etc/lager && sudo chmod 777 /etc/lager', err=True)
+        click.echo('Then run `lager box update` again.', err=True)
         ctx.exit(1)
-    log_status('Ensuring /etc/lager directory exists...', 'OK', 'green')
+    log_status('OK', 'green')
 
-    # Write version file BEFORE container restart (SSH is stable at this point)
-    # Determine box version to write:
-    # - If target is a version tag (v0.3.14, 0.3.14), use it directly
-    # - If target is a branch (main, staging), use the CLI version since we're syncing to it
+    # Write the version file BEFORE the container restart (SSH is stable here).
+    # A version tag (v0.3.14 / 0.3.14) is used directly. For a branch target
+    # we ask the box for the closest preceding `vX.Y.Z` tag at HEAD via
+    # `git describe`, which reflects the actual code on disk — not the CLI's
+    # own version, which used to make `Storing version... OK (0.18.3)` print
+    # after a rollback to a v0.18.2 ref. Falls back to the CLI version only
+    # when the box has no tags at all (brand-new repo) or the closest tag
+    # isn't semver-shaped (downstream `compare_versions` parses `X.Y.Z` ints).
     import re
     version_pattern = re.match(r'^v?(\d+\.\d+\.\d+)$', target_version)
-
     if version_pattern:
         box_cli_version = version_pattern.group(1)
     else:
-        box_cli_version = cli_version
+        # Branch target — read `__version__` from `cli/__init__.py` on the
+        # box's post-pull HEAD. The file is the source of truth (releases
+        # bump it before tagging), so this gives the right answer for both
+        # tagged release commits and untagged work-in-progress commits.
+        # `git show HEAD:cli/__init__.py` works even on cone-mode boxes
+        # where the file isn't in the working tree.
+        src_version = _read_box_source_version(run_ssh_command_with_output)
+        box_cli_version = src_version if src_version else cli_version
 
     if box_cli_version:
         if progress:
             progress.update("Storing version...")
-        log('Storing version information...', nl=False)
+        log('Storing version...', nl=False)
 
         if not write_box_version_file(box_cli_version):
             if progress:
                 progress.finish(success=False)
+            log_status('FAILED', 'red')
             log_error('Error: Failed to write version file to /etc/lager/version')
             click.echo('The code was updated but the version file could not be written.', err=True)
             click.echo()
             click.echo('Manually fix with:', err=True)
             click.echo(f'  ssh {ssh_host} "echo \\"{box_cli_version}|{cli_version}\\" | sudo tee /etc/lager/version"', err=True)
             ctx.exit(1)
-        log_status('Storing version information...', f'OK ({box_cli_version})', 'green')
+        log_status(f'OK ({box_cli_version})', 'green')
 
-    # Step 10: Start container
+    # Step 11: Start container
     if progress:
         progress.update("Starting container...")
     log('Starting lager container...', nl=False)
@@ -1325,6 +1470,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
         if result.returncode != 0:
             if progress:
                 progress.finish(success=False)
+            log_status('FAILED', 'red')
             log_error('Error: Failed to start lager container')
             # Show error output even in non-verbose mode so users can see what went wrong
             if result.stdout:
@@ -1333,7 +1479,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
             if result.stderr:
                 click.echo(result.stderr, err=True)
             ctx.exit(1)
-        log_status('Starting lager container...', 'OK', 'green')
+        log_status('OK', 'green')
     except subprocess.TimeoutExpired:
         if progress:
             progress.finish(success=False)
@@ -1361,47 +1507,63 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
     if not wait_for_box_ready(resolved_box, timeout_s=60):
         if progress:
             progress.finish(success=False)
+        log_status('FAILED', 'red')
         log_error('Error: Box services did not respond within 60s after restart')
         click.echo(f'The lager container is running but http://{resolved_box}:5000/health did not return 200.', err=True)
         click.echo('Investigate with:', err=True)
         click.echo(f'  ssh {ssh_host} "docker logs lager --tail 50"', err=True)
         click.echo(f'  ssh {ssh_host} "docker ps"', err=True)
         ctx.exit(1)
-    log_status('Waiting for box services...', 'OK', 'green')
+    log_status('OK', 'green')
 
-    # Step 11: Setup customer binaries directory
+    # Step 12: Verify the lager container is up, and check J-Link presence —
+    # one SSH call returns both. The customer-binaries directory was already
+    # created back in the "Setting up directories" step.
     if progress:
-        progress.update("Setting up binaries...")
-    log('Setting up customer binaries directory...', nl=False)
+        progress.update("Verifying...")
+    log('Verifying...', nl=False)
 
-    # Create the customer-binaries directory with proper permissions
-    # This allows the container (running as www-data) to write uploaded binaries
-    binaries_setup = run_ssh_command_with_output(
-        'mkdir -p ~/third_party/customer-binaries && '
-        'chmod 777 ~/third_party/customer-binaries'
+    verify_result = run_ssh_command_with_output(
+        "docker ps --filter 'name=lager' --format '{{.Names}}\t{{.Status}}'; "
+        "echo '---LAGER-JLINK---'; "
+        "find ~/third_party -name JLinkGDBServerCLExe 2>/dev/null | head -n 1"
     )
-    if binaries_setup.returncode == 0:
-        log_status('Setting up customer binaries directory...', 'OK', 'green')
+    container_lines = []
+    jlink_path = ''
+    _past_marker = False
+    for line in verify_result.stdout.splitlines():
+        if line.strip() == '---LAGER-JLINK---':
+            _past_marker = True
+            continue
+        if _past_marker:
+            if line.strip():
+                jlink_path = line.strip()
+        elif line.strip():
+            container_lines.append(line.strip())
+
+    if container_lines:
+        log_status('OK', 'green')
     else:
-        log_status('Setting up customer binaries directory...', 'SKIPPED', 'yellow')
+        log_status('WARNING (lager container not detected)', 'yellow')
 
-    # Step 12: Install J-Link if not present
-    if progress:
-        progress.update("Checking J-Link...")
-    log('Checking J-Link installation...', nl=False)
+    if verbose and container_lines:
+        click.echo()
+        click.secho('Container status:', fg='blue', bold=True)
+        for line in container_lines:
+            click.echo(f'  {line}')
+        click.echo()
 
-    # Check if J-Link is already installed
-    jlink_check = run_ssh_command_with_output(
-        'find ~/third_party -name JLinkGDBServerCLExe 2>/dev/null | head -n 1'
-    )
-
-    if jlink_check.returncode == 0 and jlink_check.stdout.strip():
-        log_status('Checking J-Link installation...', 'OK (already installed)', 'green')
+    # Step 13: Install J-Link when the verify call above didn't find it.
+    # Failure here is non-fatal — the box falls back to pyOCD.
+    if jlink_path:
+        log('Checking J-Link...', nl=False)
+        log_status('OK (already installed)', 'green')
     else:
-        log_status('Checking J-Link installation...', 'NOT FOUND', 'yellow')
-        log('  Installing J-Link...')
+        if progress:
+            progress.update("Installing J-Link...")
+        log('Installing J-Link (downloading from segger.com)...', nl=False)
 
-        # Create installation script on box
+        # Installation script run on the box.
         install_script = """#!/bin/bash
 set -e
 
@@ -1503,12 +1665,12 @@ fi
         )
 
         if install_result.returncode == 0:
-            log_status('  Installing J-Link...', 'OK', 'green')
+            log_status('OK', 'green')
             if verbose and install_result.stdout:
                 for line in install_result.stdout.strip().split('\n'):
                     click.echo(f'    {line}')
         else:
-            log_status('  Installing J-Link...', 'FAILED (will use pyOCD)', 'yellow')
+            log_status('FAILED (will use pyOCD)', 'yellow')
             if verbose:
                 if install_result.stderr:
                     click.echo(f'    Error: {install_result.stderr.strip()}', err=True)
@@ -1519,33 +1681,8 @@ fi
                 click.echo('      3. Use pyOCD (already installed, works with most debug probes)')
                 click.echo()
 
-    # Step 13: Verify and store version
-    if progress:
-        progress.update("Verifying...")
-    log('Verifying container status...', nl=False)
-
-    result = run_ssh_command_with_output("docker ps --filter 'name=lager' --format '{{.Names}}' | wc -l")
-    if result.returncode == 0:
-        running_count = int(result.stdout.strip())
-        if running_count >= 1:
-            log_status('Verifying container status...', 'OK', 'green')
-        else:
-            log_status('Verifying container status...', 'WARNING', 'yellow')
-    else:
-        log_status('Verifying container status...', 'FAILED', 'red')
-
-    # Show container status (verbose only)
-    if verbose:
-        click.echo()
-        click.secho('Container Status:', fg='blue', bold=True)
-        result = run_ssh_command_with_output(
-            "docker ps --filter 'name=lager' "
-            "--format 'table {{.Names}}\t{{.Status}}'"
-        )
-        if result.returncode == 0:
-            click.echo(result.stdout.strip())
-
-    # Update local .lager file with version (version was already written to box above)
+    # Update local .lager cache with the box version (already written to the
+    # box itself back in the "Storing version" step).
     if box_cli_version and box:
         update_box_version(box, box_cli_version)
 

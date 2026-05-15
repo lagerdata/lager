@@ -45,6 +45,8 @@ RESERVED_CONTAINER_PATHS: Dict[str, str] = {
     "/host/etc/hostname": "host hostname",
     "/opt/SEGGER": "SEGGER J-Link tools",
     "/opt/picoscope/lib": "PicoScope libraries",
+    "/opt/rust/cargo": "named volume persisting user cargo crates",
+    "/home/www-data/.npm-global": "named volume persisting user npm packages",
 }
 
 # Suggested non-colliding alternatives for common reserved paths. The big one
