@@ -716,18 +716,25 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
         click.echo(f'  sudoers:       {_sudoers_state}')
         click.echo(f'  box-config:    {"OK" if facts.get("BOXCFG_SUDOERS_OK") == "1" else "needs bootstrap"}')
 
-    # Step 3: Fetch from origin and measure how far behind we are — one call.
+    # Step 3: Fetch from origin and measure box-vs-target divergence — one call.
     if progress:
         progress.update("Fetching updates...")
     log(f'Fetching {git_ref}...', nl=False)
 
     # `git fetch` then `git rev-list` in a single round-trip. fetch's combined
     # stdout+stderr precedes the `LAGER_FETCH_RC=` marker (so the detailed
-    # error classification below still works); the rev-list count follows it.
+    # error classification below still works); the rev-list line follows it.
+    #
+    # `--left-right --count HEAD...{git_ref}` returns `<ahead>\t<behind>` —
+    # commits on HEAD-not-in-target and on-target-not-in-HEAD respectively.
+    # We need *both* directions so a rollback (`--version <older>`) doesn't
+    # look like "already up to date" the way the older one-way `HEAD..ref`
+    # rev-list did: that variant only counted commits the box was *behind*
+    # and treated any "ahead" state as in-sync, making downgrade impossible.
     fetch_script = (
         f'cd ~/box && git fetch origin {target_version} 2>&1; '
         'echo "LAGER_FETCH_RC=$?"; '
-        f'git rev-list HEAD..{git_ref} --count 2>/dev/null'
+        f'git rev-list --left-right --count HEAD...{git_ref} 2>/dev/null'
     )
     result = run_ssh_command_with_output(fetch_script)
 
@@ -790,27 +797,57 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
                 click.secho(f"Git error: {stderr}", err=True)
         ctx.exit(1)
 
-    # How far behind are we? rev-list ran in the same call as the fetch.
-    # Only trust an "already up to date" fast-path when rev-list produced an
-    # integer count; otherwise stay conservative and let the rebuild run.
+    # Parse "<ahead>\t<behind>" from the rev-list line. Only trust an
+    # "already up to date" fast-path when rev-list produced two integers;
+    # otherwise stay conservative and let the rebuild run. A pull is needed
+    # whenever the box diverges in either direction — forward (behind>0) or
+    # backward (ahead>0, i.e. rollback to an older ref).
     needs_pull = False
     git_sync_confirmed = False
+    commits_ahead = None
     commits_behind = None
     if revlist_count_str:
-        try:
-            commits_behind = int(revlist_count_str)
-        except ValueError:
-            commits_behind = None
-    if commits_behind is not None:
+        parts = revlist_count_str.split()
+        if len(parts) == 2:
+            try:
+                commits_ahead = int(parts[0])
+                commits_behind = int(parts[1])
+            except ValueError:
+                commits_ahead = None
+                commits_behind = None
+    if commits_ahead is not None and commits_behind is not None:
         git_sync_confirmed = True
-        needs_pull = commits_behind > 0
+        needs_pull = commits_ahead > 0 or commits_behind > 0
+    is_rollback = bool(commits_ahead) and not commits_behind
 
     if not git_sync_confirmed:
         log_status('fetched (update state unknown)', 'yellow')
-    elif needs_pull:
+    elif not needs_pull:
+        log_status('already up to date', 'green')
+    elif is_rollback:
+        log_status(f'rolling back {commits_ahead} commit(s)', 'yellow')
+    elif commits_ahead == 0:
         log_status(f'{commits_behind} new commit(s)', 'green')
     else:
-        log_status('already up to date', 'green')
+        log_status(f'switching ({commits_ahead} ahead, {commits_behind} behind)', 'yellow')
+
+    # Rollback is destructive in the sense that it rewrites the on-box git
+    # tree backward, so confirm explicitly when not in --yes / --check mode.
+    # The earlier generic "update the box code and restart services" prompt
+    # fired before we knew direction, so this second confirm catches typo'd
+    # `--version` arguments that would silently downgrade a box.
+    if is_rollback and not yes and not check:
+        if progress:
+            progress.pause()
+        click.echo()
+        if not click.confirm(
+            f'This will ROLL BACK {box_name} by {commits_ahead} commit(s) to {git_ref}. Continue?',
+            default=False,
+        ):
+            click.secho('Update cancelled.', fg='yellow')
+            ctx.exit(0)
+        if progress:
+            progress.resume()
 
     # --check / dry-run: report what would happen and exit. Must run before
     # any mutation (no git checkout, no udev install, no docker stop).
@@ -839,22 +876,35 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
             click.secho('Could not determine update state (git rev-list failed).', fg='red', err=True)
             ctx.exit(2)
 
-        if commits_behind == 0:
+        if commits_behind == 0 and commits_ahead == 0:
             code_status = 'in sync'
-        else:
+        elif is_rollback:
+            code_status = f'will roll back ({commits_ahead} commit(s) ahead of {git_ref})'
+        elif commits_ahead == 0:
             code_status = f'will update ({commits_behind} commit(s) behind {git_ref})'
+        else:
+            code_status = (
+                f'will switch ({commits_ahead} ahead / {commits_behind} behind {git_ref})'
+            )
 
         if deps_will_change:
             deps_status = 'will trigger fresh build (Dockerfile or requirements changed)'
+        elif is_rollback or commits_ahead > 0:
+            # Probe measured the *current* (pre-pull) Dockerfile/requirements,
+            # so a backward jump can still trigger a rebuild we can't predict
+            # without actually pulling. Be honest about the unknown.
+            deps_status = 'unknown until pull (older ref may differ)'
         else:
             deps_status = 'cache valid (no rebuild)'
 
-        if commits_behind == 0 and not deps_will_change:
+        if commits_behind == 0 and commits_ahead == 0 and not deps_will_change:
             container_status = 'no restart needed'
             est = '~5s'
-        elif deps_will_change:
+        elif deps_will_change or is_rollback or commits_ahead > 0:
+            # Rollback / branch-switch likely flips at least some COPY layers
+            # in the Dockerfile cache; assume a real build.
             container_status = 'will restart'
-            est = '~6 min (fresh build)'
+            est = '~6 min (fresh build possible)'
         else:
             container_status = 'will restart'
             est = '~90s (cached build)'
@@ -869,7 +919,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
         click.echo(f'  Estimated:  {est}')
         click.echo()
 
-        will_change = commits_behind != 0 or deps_will_change
+        will_change = commits_behind != 0 or commits_ahead != 0 or deps_will_change
         if will_change:
             click.echo('Run without --check to apply.')
             ctx.exit(1)
@@ -880,8 +930,8 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
         # Step 4: Update the git repo — sparse-checkout fixups, checkout, and
         # reset all chained into a single SSH call.
         if progress:
-            progress.update("Pulling updates...")
-        log(f'Pulling {git_ref}...', nl=False)
+            progress.update("Rolling back..." if is_rollback else "Pulling updates...")
+        log(f'{"Rolling back to" if is_rollback else "Pulling"} {git_ref}...', nl=False)
 
         # `git checkout -f` so a prior flatten artifact (a root-level tracked
         # file overwritten by box/<same-name>) doesn't block the switch.
