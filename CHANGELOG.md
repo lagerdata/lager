@@ -2,6 +2,19 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.18.3] - 2026-05-15
+
+### Added
+- **`lager box update --version <older-ref>` rolls back.** The previous one-way `git rev-list HEAD..target --count` only counted commits the box was *behind* and treated any "ahead" state as in-sync, so downgrading a box that had pulled a newer ref required manual `git reset --hard` on the box. Now uses `git rev-list --left-right --count HEAD...target` to detect divergence in both directions; a pull fires when the box is ahead of the target as well as behind. An explicit second confirmation prompt (skippable via `--yes`) gates the destructive direction so a typo'd `--version` argument can't silently downgrade a box. `--check` reports "will roll back N commit(s) ahead of target" / "will switch (N ahead / M behind)".
+
+### Improvements
+- **Update flow batches read-only state into a single SSH probe.** Replaces ~11 individual `test`/`cat`/`git`/`diff`/`stat` round-trips (git-repo check, remote URL, layout, current commit, build-cache hashes, udev rule state, sudoers ownership, box-config sudoers state, `/etc/lager/version`) with one structured shell script that emits `LAGER_PROBE_<KEY>=<value>` lines parsed locally. Combined with merging fetch+rev-list, sparse-checkout+checkout+reset, flatten+verify, post-build directory setup, and verify+J-Link presence into single calls, a typical no-op `lager box update` goes from ~3-5s to ~1.6s.
+- **Persist user-installed cargo crates and global npm packages across container recreation via Docker named volumes.** Adds `lager-cargo:/opt/rust/cargo` and `lager-npm-global:/home/www-data/.npm-global` mounts to `start_box.sh`'s `docker run`. Without these, every `lager box update` recreated the container from scratch and the post-run loops recompiled `cargo install` packages (e.g., `defmt-print`) from source, adding ~50-60s per update. With them, the second-and-onward run sees "already installed" and finishes in seconds. The CLI wipes both volumes alongside `docker rmi lager` whenever the build-hash changes, so a Dockerfile rustup/node bump can't leave a stale toolchain in the volume. Measured on STG-C: typical update 1:40 → 17s after the volumes seed.
+- **Verbose output cleanup.** Probe results print as one tidy block instead of a dozen "Checking X... OK" lines; consistent step labels between progress bar and `--verbose`; noise lines dropped (e.g. "Checking remote URL" only prints when it actually migrates SSH→HTTPS); single label for the build step instead of two; `log_status` helper signature simplified.
+
+### Fixed
+- **Pull aborted on git ≥2.36 with `fatal: 'cli/__init__.py' is not a directory`.** Cone-mode sparse-checkout (default since git 2.36) rejects single-file patterns. The pre-batching version of the sparse-checkout add ran in a separate SSH call whose exit was never checked, so the failure was silently swallowed; the new batched pull script chained it with `&&`, which propagated the failure and aborted the whole pull. Now treats the `cli/__init__.py` add as best-effort to match the original behavior. Affects boxes running newer git (observed on PRD-1 at git 2.43.0; STG-C at 2.34.1 was unaffected).
+
 ## [0.18.2] - 2026-05-13
 
 ### Added
