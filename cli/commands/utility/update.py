@@ -87,6 +87,16 @@ def _read_build_hash(ssh_runner):
     return r.stdout.strip() if r.returncode == 0 else ''
 
 
+def _read_git_describe(ssh_runner):
+    """Return the closest preceding tag (e.g. `v0.18.2`) on the box's current
+    HEAD, or empty string. Used post-pull to label the box's actual git
+    state — the upfront probe's value is from the pre-pull HEAD, so when
+    code actually moved we re-read here.
+    """
+    r = ssh_runner('git -C ~/box describe --tags --abbrev=0 HEAD 2>/dev/null')
+    return r.stdout.strip() if r.returncode == 0 else ''
+
+
 # --- Box-state probe -------------------------------------------------------
 #
 # A single SSH round-trip that gathers every read-only fact the update flow
@@ -731,8 +741,16 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
     # look like "already up to date" the way the older one-way `HEAD..ref`
     # rev-list did: that variant only counted commits the box was *behind*
     # and treated any "ahead" state as in-sync, making downgrade impossible.
+    # `--tags --force` so `git describe` later picks up release tags pushed
+    # after the box's last fetch — without `--tags` the box still only knows
+    # about ancient tags and we report a stale `vX.Y.Z` when writing
+    # /etc/lager/version; without `--force` any tag whose origin commit moved
+    # since the box last pulled (e.g. a force-retagged old release) makes the
+    # whole fetch exit non-zero with "would clobber existing tag", which
+    # would falsely surface as a fetch failure here. The box is a pure
+    # consumer of origin, so taking origin's tag-set verbatim is correct.
     fetch_script = (
-        f'cd ~/box && git fetch origin {target_version} 2>&1; '
+        f'cd ~/box && git fetch --tags --force origin {target_version} 2>&1; '
         'echo "LAGER_FETCH_RC=$?"; '
         f'git rev-list --left-right --count HEAD...{git_ref} 2>/dev/null'
     )
@@ -1213,8 +1231,16 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
     ):
         import re as _re
 
+        # Prefer the actual git tag at HEAD over the CLI version. The fetch
+        # above ran with `--tags`, so `git describe` sees fresh tag refs;
+        # HEAD is unchanged in this branch (no pull), so one read suffices.
         _vp = _re.match(r'^v?(\d+\.\d+\.\d+)$', target_version)
-        _box_v = _vp.group(1) if _vp else cli_version
+        if _vp:
+            _box_v = _vp.group(1)
+        else:
+            _desc = _read_git_describe(run_ssh_command_with_output)
+            _desc_match = _re.match(r'^v?(\d+\.\d+\.\d+)$', _desc)
+            _box_v = _desc_match.group(1) if _desc_match else cli_version
 
         # Reconcile /etc/lager/version on the box with the local cache.
         # Previously this branch only updated the local ~/.lager file, so if
@@ -1390,11 +1416,24 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
     log_status('OK', 'green')
 
     # Write the version file BEFORE the container restart (SSH is stable here).
-    # A version tag (v0.3.14 / 0.3.14) is used directly; a branch target syncs
-    # to the CLI's own version.
+    # A version tag (v0.3.14 / 0.3.14) is used directly. For a branch target
+    # we ask the box for the closest preceding `vX.Y.Z` tag at HEAD via
+    # `git describe`, which reflects the actual code on disk — not the CLI's
+    # own version, which used to make `Storing version... OK (0.18.3)` print
+    # after a rollback to a v0.18.2 ref. Falls back to the CLI version only
+    # when the box has no tags at all (brand-new repo) or the closest tag
+    # isn't semver-shaped (downstream `compare_versions` parses `X.Y.Z` ints).
     import re
     version_pattern = re.match(r'^v?(\d+\.\d+\.\d+)$', target_version)
-    box_cli_version = version_pattern.group(1) if version_pattern else cli_version
+    if version_pattern:
+        box_cli_version = version_pattern.group(1)
+    else:
+        # Branch target — read the closest preceding `vX.Y.Z` tag from the
+        # post-pull HEAD. The earlier fetch ran with `--tags`, so even a box
+        # that hadn't pulled in a long time now has fresh tag refs.
+        described = _read_git_describe(run_ssh_command_with_output)
+        described_match = re.match(r'^v?(\d+\.\d+\.\d+)$', described)
+        box_cli_version = described_match.group(1) if described_match else cli_version
 
     if box_cli_version:
         if progress:
