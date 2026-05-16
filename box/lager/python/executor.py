@@ -29,6 +29,7 @@ from lager.exec.process import (
     do_cleanup,
     stream_process_output,
     stream_process_output_to_file,
+    set_pipe_size,
 )
 from .exceptions import (
     PipInstallError,
@@ -41,6 +42,31 @@ logger = logging.getLogger(__name__)
 
 MAX_TIMEOUT = 300
 LAGER_PYTHON_IP_ADDR = '172.18.0.10'  # Docker-internal network default; overridden by LOCAL_ADDRESS env var
+
+# Nice-value delta we *try* to apply to scripts so they aren't out-scheduled
+# by the half-dozen other Python services sharing the lager container
+# (python execution / hardware / debug / HTTP / MCP). Critical for tight-
+# timing flows like the DA14695 ROM-bootloader recovery handshake, where the
+# script must respond within 50–120 ms of each byte from the bootloader.
+# Best-effort: silently no-ops if the container/user doesn't hold CAP_SYS_NICE.
+_SCRIPT_NICE_DELTA = -10
+
+
+def _boost_child_priority():
+    """
+    preexec_fn for user-script subprocesses. Best-effort attempt to raise
+    scheduling priority before exec(). Any failure is swallowed — the script
+    will still run at the default nice value, just with more jitter.
+
+    Runs in the forked child between fork() and exec(), so it must not
+    acquire Python-level locks or do anything fancy.
+    """
+    try:
+        # Lower the nice value (= higher priority). Requires CAP_SYS_NICE
+        # or a permissive RLIMIT_NICE; will raise PermissionError otherwise.
+        os.setpriority(os.PRIO_PROCESS, 0, _SCRIPT_NICE_DELTA)
+    except (PermissionError, OSError):
+        pass
 
 
 def safe_unlink(path):
@@ -199,7 +225,11 @@ class PythonExecutor:
             )
 
             # Build command - direct Python execution (no docker exec)
-            command = ['/usr/local/bin/python3']
+            # '-u' forces unbuffered stdout/stderr at the interpreter level.
+            # PYTHONUNBUFFERED=1 is also set in the Dockerfile, but '-u' is the
+            # belt-and-suspenders guarantee that block-buffering can't insert
+            # latency in scripts that print() between time-critical I/O steps.
+            command = ['/usr/local/bin/python3', '-u']
             if script_file:
                 command.append(os.path.join(module_folder, os.path.basename(script.name)))
             else:
@@ -219,15 +249,13 @@ class PythonExecutor:
             full_env = os.environ.copy()
             full_env.update(env_dict)
 
-            # Execute directly
-            if detach:
-                stdin = subprocess.DEVNULL
-                stdout = subprocess.PIPE
-                stderr = subprocess.STDOUT if stdout_is_stderr else subprocess.PIPE
-            else:
-                stdin = subprocess.PIPE
-                stdout = subprocess.PIPE
-                stderr = subprocess.STDOUT if stdout_is_stderr else subprocess.PIPE
+            # Execute directly. stdin is always DEVNULL: scripts run by
+            # `lager python` never have an interactive stdin, and a dangling
+            # subprocess.PIPE that nobody writes to is just a kernel pipe sitting
+            # open. (Previously this was PIPE for the non-detached path.)
+            stdin = subprocess.DEVNULL
+            stdout = subprocess.PIPE
+            stderr = subprocess.STDOUT if stdout_is_stderr else subprocess.PIPE
 
             proc = subprocess.Popen(
                 base_command,
@@ -238,7 +266,18 @@ class PythonExecutor:
                 env=full_env,       # Pass environment directly
                 bufsize=0,
                 start_new_session=detach,  # detached processes survive independently
+                preexec_fn=_boost_child_priority,
             )
+
+            # Enlarge the stdout (and stderr, if separate) pipe buffers so the
+            # user's script can never block on a print() while the parent's
+            # HTTP socket back to the CLI is slow to drain. Default Linux pipe
+            # buffer is 64 KiB; we ask for 1 MiB. Best-effort — falls back to
+            # the kernel default if F_SETPIPE_SZ is not permitted.
+            if proc.stdout is not None:
+                set_pipe_size(proc.stdout.fileno())
+            if proc.stderr is not None:
+                set_pipe_size(proc.stderr.fileno())
 
             # Handle detached mode — capture output to file, return immediately
             if detach:
