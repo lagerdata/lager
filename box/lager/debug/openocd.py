@@ -13,10 +13,13 @@ J-Link needs to free its USB handle for ``JLinkExe`` to flash/erase, but
 OpenOCD does everything through the *running* gdbserver, so we never have
 to bounce it.
 
-Probe → interface config map: only the part we infer from VID. The target
-config (``target/stm32f4x.cfg`` etc.) is derived from the net's ``device``
-field; users can override either via the ``openocd_config`` field on the
-net (mirrors ``jlink_script``).
+Probe → interface config map: derived from (VID, PID). The target config
+(``target/stm32f4x.cfg`` etc.) is derived from the net's ``device`` field;
+users can override either via the ``openocd_config`` field on the net
+(mirrors ``jlink_script``). When ``openocd_config`` is supplied, it
+replaces the auto-detected interface cfg entirely — loading both would
+let the two .cfg files' ``adapter driver`` / ``layout_init`` commands
+collide unpredictably.
 """
 
 import logging
@@ -72,13 +75,34 @@ def get_openocd_script_dir():
 # Probe → interface config map
 # --------------------------------------------------------------------------
 
+# FTDI chips ship across many products with very different pin layouts, so
+# we can't pick a single .cfg from VID alone. The (VID, PID) → cfg table
+# below covers the chips we have a confident default for; anything missing
+# returns None and forces the user to supply ``openocd_config``.
+#
+# * FT232H (PID 6014): single MPSSE channel. The C232HM cable is the
+#   FTDI reference design, and most generic FT232H breakouts (Adafruit,
+#   custom) wire the pins the same way (ADBUS0=TCK, ADBUS1=TDI,
+#   ADBUS2=TDO, ADBUS3=TMS). The stock c232hm.cfg works for the common
+#   case; non-standard layouts override via ``openocd_config``.
+# * FT2232H (PID 6010): dual MPSSE. The Olimex ARM-USB-OCD-H is a
+#   widespread reference board for this chip and was the historical
+#   default for all FTDI cables in this codebase — kept for back-compat.
+# * FT4232H (PID 6011): quad MPSSE, used on boards with wildly different
+#   wiring schemes. No safe default — force user to supply a cfg.
+_FTDI_PID_TO_CFG = {
+    '6014': 'interface/ftdi/c232hm.cfg',                   # FT232H
+    '6010': 'interface/ftdi/olimex-arm-usb-ocd-h.cfg',     # FT2232H
+}
+
+
 def interface_config_for_address(address):
     """Return the OpenOCD ``-f interface/...`` config for a probe address.
 
-    None means we can't infer it from VID and the caller must rely on a
-    user-supplied ``openocd_config``.
+    None means we can't infer it from (VID, PID) and the caller must rely
+    on a user-supplied ``openocd_config``.
     """
-    vid, _pid, _serial = parse_probe_address(address)
+    vid, pid, _serial = parse_probe_address(address)
     if not vid:
         return None
     # ST-Link family — single shared config handles v2/v2-1/v3.
@@ -93,12 +117,10 @@ def interface_config_for_address(address):
     # NXP / ARM DAPLink-style.
     if vid == '0d28':
         return 'interface/cmsis-dap.cfg'
-    # FTDI: ships many subtypes; user almost always needs a custom config.
-    # We pick the generic Olimex ARM-USB-OCD-H as a starting point — works on
-    # FT2232H-based Olimex boards and many clones. Users with non-Olimex FTDI
-    # boards must supply their own ``openocd_config``.
+    # FTDI: dispatch by PID since the chip family determines the pinout.
     if vid == '0403':
-        return 'interface/ftdi/olimex-arm-usb-ocd-h.cfg'
+        return _FTDI_PID_TO_CFG.get(pid)
+    # Olimex ARM-USB-OCD-H uses its own VID but is electrically an FT2232H.
     if vid == '15ba':
         return 'interface/ftdi/olimex-arm-usb-ocd-h.cfg'
     return None
@@ -301,13 +323,21 @@ def _build_openocd_command(
         '-c', f'tcl_port {tcl_port}',
     ])
 
-    if interface_cfg:
+    # When the user attaches a custom ``openocd_config``, treat it as the
+    # sole source of interface configuration: don't also load the auto-detected
+    # interface_cfg, since the two .cfg files would each call ``adapter driver
+    # ftdi`` / ``layout_init`` and override each other unpredictably. The user
+    # cfg gets sourced later (after the target.cfg) so it can still see and
+    # override target-level settings.
+    if user_config_path:
+        pass
+    elif interface_cfg:
         cmd.extend(['-f', interface_cfg])
-    elif not user_config_path:
+    else:
         # Common ways to land here: user set ``debug_backend: openocd``
-        # explicitly on a net whose VID isn't in our auto-classify map
-        # (Black Magic Probe at 0x1209, Glasgow at 0x20b7, custom FTDI
-        # boards, etc.) but didn't supply an ``openocd_config``. The
+        # explicitly on a net whose (VID, PID) isn't in our auto-classify
+        # map (Black Magic Probe at 0x1209, Glasgow at 0x20b7, FT4232H-based
+        # custom boards, etc.) but didn't supply an ``openocd_config``. The
         # message has to be actionable because the failure is otherwise
         # opaque — OpenOCD never starts and the user just sees a generic
         # "OpenOCD exited" log.
@@ -317,7 +347,7 @@ def _build_openocd_command(
             f"Either change ``debug_backend`` to a probe whose VID is "
             f"in lager.debug.probes._OPENOCD_VIDS, or attach a custom "
             f"OpenOCD ``.cfg`` to the net via the ``openocd_config`` "
-            f"field (CLI: ``lager debug set-script <net> <file.cfg>``)."
+            f"field (CLI: ``lager box nets set-openocd-config <net> <file.cfg>``)."
         )
 
     # Multi-channel FTDI: override the interface config's default channel so
