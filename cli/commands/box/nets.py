@@ -301,13 +301,16 @@ def _display_table(records):
         key = f"{instrument}|{address}"
         by_instrument.setdefault(key, []).append(rec)
 
-    # ----- check if any net has a jlink_script attached --------------------
+    # ----- check which optional columns are needed -------------------------
     has_any_script = any(rec.get("jlink_script") for rec in records)
+    has_any_openocd = any(rec.get("openocd_config") for rec in records)
 
     # ----- gather all rows for column width computation --------------------
     headers = ["Name", "Net Type", "Channel"]
     if has_any_script:
         headers.append("Script")
+    if has_any_openocd:
+        headers.append("OpenOCD")
     all_rows = []
     grouped_rows: list[tuple[str, list[list[str]]]] = []
 
@@ -336,6 +339,8 @@ def _display_table(records):
             ]
             if has_any_script:
                 row.append("yes" if rec.get("jlink_script") else "")
+            if has_any_openocd:
+                row.append("yes" if rec.get("openocd_config") else "")
             rows.append(row)
         all_rows.extend(rows)
         grouped_rows.append((group_label, rows))
@@ -345,6 +350,8 @@ def _display_table(records):
     min_w = [8, 10, 7]
     if has_any_script:
         min_w.append(6)
+    if has_any_openocd:
+        min_w.append(7)
     col_w = [
         max(min_w[i], len(headers[i]), max(len(str(r[i])) for r in all_rows))
         for i in range(len(headers))
@@ -563,8 +570,11 @@ def rename_cmd(
 @click.option("--box", help="Lagerbox name or IP")
 @click.option("--jlink-script", type=click.Path(exists=True),
               help="J-Link script file for debug nets (stored on box)")
+@click.option("--openocd-config", type=click.Path(exists=True),
+              help="OpenOCD .cfg/.tcl file for debug nets (stored on box). "
+                   "Replaces the auto-detected interface cfg.")
 @click.pass_context
-def add_cmd(ctx, name, role, channel, address, box, jlink_script):
+def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config):
     """
     Add a net using inferred instrument from VISA address.
     """
@@ -796,6 +806,19 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script):
             ctx.exit(1)
     elif jlink_script and role != "debug":
         click.secho("Warning: --jlink-script is only applicable for debug nets, ignoring.", fg='yellow', err=True)
+
+    # Handle OpenOCD config for debug nets
+    if role == "debug" and openocd_config:
+        import base64
+        try:
+            with open(openocd_config, 'rb') as f:
+                openocd_config_content = base64.b64encode(f.read()).decode('ascii')
+            net_data["openocd_config"] = openocd_config_content
+        except Exception as e:
+            click.secho(f"Error reading OpenOCD config file: {e}", fg='red', err=True)
+            ctx.exit(1)
+    elif openocd_config and role != "debug":
+        click.secho("Warning: --openocd-config is only applicable for debug nets, ignoring.", fg='yellow', err=True)
 
     try:
         _buf = io.StringIO()
@@ -1365,6 +1388,147 @@ def show_script_cmd(
     click.echo(decoded)
 
 
+@nets.command("set-openocd-config", help="Set or update an OpenOCD .cfg/.tcl on an existing debug net.")
+@click.argument("name")
+@click.argument("config_path", type=click.Path(exists=True))
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def set_openocd_config_cmd(
+    ctx: click.Context, name: str, config_path: str, box: str | None
+) -> None:
+    """
+    Attach an OpenOCD .cfg/.tcl file to an existing debug net.
+
+    The config is stored on the box and used by the OpenOCD backend during
+    connect, flash, erase, and reset operations. When set, it replaces the
+    auto-detected interface cfg entirely.
+    """
+    import base64
+
+    resolved_box = _resolve_box(ctx, box)
+    raw = _run_net_py(ctx, resolved_box, "list")
+    try:
+        recs = _parse_backend_json(raw)
+    except json.JSONDecodeError:
+        click.secho("Failed to parse response from backend.", fg="red", err=True)
+        ctx.exit(1)
+
+    target = next((r for r in recs if r.get("name") == name), None)
+    if not target:
+        click.secho(f"Net '{name}' not found on {resolved_box}.", fg="yellow")
+        ctx.exit(1)
+
+    if target.get("role") != "debug":
+        click.secho(
+            f"Net '{name}' is a '{target.get('role')}' net. --openocd-config is only applicable for debug nets.",
+            fg="red",
+        )
+        ctx.exit(1)
+
+    try:
+        with open(config_path, "rb") as f:
+            encoded = base64.b64encode(f.read()).decode("ascii")
+    except Exception as e:
+        click.secho(f"Error reading OpenOCD config file: {e}", fg="red", err=True)
+        ctx.exit(1)
+
+    target["openocd_config"] = encoded
+    _run_net_py(ctx, resolved_box, "save", json.dumps(target))
+    click.secho(
+        f"OpenOCD config set on debug net '{name}' on box {resolved_box}.", fg="green"
+    )
+
+
+@nets.command("remove-openocd-config", help="Remove an OpenOCD config from an existing debug net.")
+@click.argument("name")
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def remove_openocd_config_cmd(
+    ctx: click.Context, name: str, box: str | None
+) -> None:
+    """
+    Remove the OpenOCD config attached to a debug net.
+
+    After removal the OpenOCD backend falls back to the auto-detected
+    interface cfg (based on probe VID/PID).
+    """
+    resolved_box = _resolve_box(ctx, box)
+    raw = _run_net_py(ctx, resolved_box, "list")
+    try:
+        recs = _parse_backend_json(raw)
+    except json.JSONDecodeError:
+        click.secho("Failed to parse response from backend.", fg="red", err=True)
+        ctx.exit(1)
+
+    target = next((r for r in recs if r.get("name") == name), None)
+    if not target:
+        click.secho(f"Net '{name}' not found on {resolved_box}.", fg="yellow")
+        ctx.exit(1)
+
+    if target.get("role") != "debug":
+        click.secho(
+            f"Net '{name}' is a '{target.get('role')}' net, not a debug net.",
+            fg="red",
+        )
+        ctx.exit(1)
+
+    if "openocd_config" not in target:
+        click.secho(f"Net '{name}' does not have an OpenOCD config attached.", fg="yellow")
+        return
+
+    del target["openocd_config"]
+    _run_net_py(ctx, resolved_box, "save", json.dumps(target))
+    click.secho(
+        f"OpenOCD config removed from debug net '{name}' on box {resolved_box}.", fg="green"
+    )
+
+
+@nets.command("show-openocd-config", help="Display the OpenOCD config attached to a debug net.")
+@click.argument("name")
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def show_openocd_config_cmd(
+    ctx: click.Context, name: str, box: str | None
+) -> None:
+    """
+    Print the contents of the OpenOCD config attached to a debug net.
+
+    Output goes to stdout so it can be piped or redirected:
+        lager box nets show-openocd-config my-debug --box mybox > probe.cfg
+    """
+    import base64
+
+    resolved_box = _resolve_box(ctx, box)
+    raw = _run_net_py(ctx, resolved_box, "list")
+    try:
+        recs = _parse_backend_json(raw)
+    except json.JSONDecodeError:
+        click.secho("Failed to parse response from backend.", fg="red", err=True)
+        ctx.exit(1)
+
+    target = next((r for r in recs if r.get("name") == name), None)
+    if not target:
+        click.secho(f"Net '{name}' not found on {resolved_box}.", fg="yellow", err=True)
+        ctx.exit(1)
+
+    if target.get("role") != "debug":
+        click.secho(
+            f"Net '{name}' is a '{target.get('role')}' net, not a debug net.",
+            fg="red", err=True,
+        )
+        ctx.exit(1)
+
+    if not target.get("openocd_config"):
+        click.secho(
+            f"Net '{name}' does not have an OpenOCD config attached.",
+            fg="yellow", err=True,
+        )
+        ctx.exit(1)
+
+    decoded = base64.b64decode(target["openocd_config"]).decode("utf-8")
+    click.echo(decoded)
+
+
 @nets.command("describe", help="Set metadata on a saved net (description, DUT connection, hints, tags).")
 @click.argument("name")
 @click.option("--description", "-d", default=None, help="Human-readable description of the net")
@@ -1465,6 +1629,9 @@ def show_cmd(
 
     if target.get("jlink_script"):
         click.echo("  Script:     (J-Link script attached)")
+
+    if target.get("openocd_config"):
+        click.echo("  OpenOCD:    (OpenOCD config attached)")
 
     desc = target.get("description", "")
     dut_conn = target.get("dut_connection", "")
