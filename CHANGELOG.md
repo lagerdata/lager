@@ -2,6 +2,11 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Added
+- **Bidirectional metadata sync handlers on the box.** New REST endpoints `GET|PUT /nets/<name>/metadata` and `GET|PUT /box/metadata` let an external control plane read and write a human-readable `description` field for the box and each configured net, persisted to `/etc/lager/saved_nets.json` and `/etc/lager/box_metadata.json` respectively. `GET /status` now exposes a `capabilities` block (`netMetadataSync`, `boxMetadataSync`) so callers can detect older boxes and skip the calls, and the per-net entries in the status response now carry the `description` field directly. `lager nets list` prints the per-net description and creation timestamp when present. Implemented in `box/lager/http_handlers/net_metadata_handler.py`, `box/lager/http_handlers/box_metadata_handler.py`, wired into `box/lager/box_http_server.py` behind import-guarded try/except (graceful on partial deploys), with the CLI surface in `cli/commands/box/nets.py`. 327 lines of unit-test coverage in `test/unit/box/test_*_metadata_handler.py`.
+
 ## [0.16.10] - 2026-05-01
 
 ### Fixed
