@@ -30,9 +30,12 @@ lager nets [OPTIONS] [COMMAND]
 | `create-all` | Auto-create all available nets from connected instruments |
 | `create-batch` | Create multiple nets from a JSON file |
 | `tui` | Launch interactive Net Manager TUI |
-| `set-script` | Attach a J-Link script to a debug net |
-| `remove-script` | Remove a J-Link script from a debug net |
-| `show-script` | Display the J-Link script attached to a debug net |
+| `set-script` | Attach a J-Link script *or* OpenOCD `.cfg`/`.tcl` to a debug net (backend auto-detected) |
+| `remove-script` | Remove the debug script (J-Link or OpenOCD) attached to a debug net |
+| `show-script` | Display the debug script attached to a debug net |
+| `set-openocd-config` | Alias for `set-script --backend openocd` |
+| `remove-openocd-config` | Alias for `remove-script --backend openocd` |
+| `show-openocd-config` | Alias for `show-script --backend openocd` |
 
 ## Command Reference
 
@@ -398,7 +401,16 @@ lager nets tui --box my-lager-box
 
 ### `set-script`
 
-Attach a JLinkScript file to an existing debug net. The script is stored on the box and used automatically during connect, flash, erase, and reset operations.
+Attach a debug script — either a JLinkScript or an OpenOCD `.cfg`/`.tcl` — to an existing debug net. The file is stored on the box and used automatically during connect, flash, erase, and reset operations.
+
+The backend (J-Link vs. OpenOCD) is auto-detected from two signals:
+
+1. **The probe's USB VID** on the net's `address` field (J-Link → `jlink`; ST-Link, FTDI, CMSIS-DAP, etc. → `openocd`).
+2. **The file** — extension first (`.JLinkScript` → jlink; `.cfg`/`.tcl`/`.ocd` → openocd), with a content sniff as a tie-breaker for extensionless files or stdin.
+
+If the two signals disagree, `set-script` refuses with a clear error and asks you to pick one via `--backend`.
+
+A debug net only carries **one** script at a time. If the other field is already set, `set-script` clears it and prints a yellow notice on stderr so nothing disappears silently.
 
 ```bash
 lager nets set-script NAME SCRIPT_PATH [OPTIONS]
@@ -406,24 +418,31 @@ lager nets set-script NAME SCRIPT_PATH [OPTIONS]
 
 **Arguments:**
 - `NAME` - Name of the debug net
-- `SCRIPT_PATH` - Path to the J-Link script file (must exist locally)
+- `SCRIPT_PATH` - Path to the script file, or `-` to read from stdin
 
 **Options:**
+- `--backend [jlink|openocd]` - Force a specific backend instead of auto-detecting (required if the probe and file disagree)
 - `--box TEXT` - Lagerbox name or IP
 
 **Example:**
 
 ```bash
-# Attach a J-Link script to a debug net
+# Attach a J-Link script to a J-Link net (auto-detected)
 lager nets set-script debug1 ./custom_connect.JLinkScript --box my-lager-box
 
-# Update an existing script
-lager nets set-script debug1 ./updated_script.JLinkScript --box my-lager-box
+# Attach an OpenOCD config to an FTDI/ST-Link/CMSIS-DAP net (auto-detected)
+lager nets set-script debug1 ./probe.cfg --box my-lager-box
+
+# Read the script from stdin
+cat probe.cfg | lager nets set-script debug1 - --box my-lager-box
+
+# Force a specific backend when the file or probe is ambiguous
+lager nets set-script debug1 ./generic_script --backend openocd --box my-lager-box
 ```
 
 ### `remove-script`
 
-Remove a JLinkScript file from an existing debug net.
+Remove the debug script (J-Link or OpenOCD) attached to a debug net.
 
 ```bash
 lager nets remove-script NAME [OPTIONS]
@@ -433,17 +452,22 @@ lager nets remove-script NAME [OPTIONS]
 - `NAME` - Name of the debug net
 
 **Options:**
+- `--backend [jlink|openocd]` - Only remove the named backend's script (default: remove whichever is set)
 - `--box TEXT` - Lagerbox name or IP
 
 **Example:**
 
 ```bash
+# Remove whichever script is attached
 lager nets remove-script debug1 --box my-lager-box
+
+# Only remove the J-Link script (leave any OpenOCD config in place)
+lager nets remove-script debug1 --backend jlink --box my-lager-box
 ```
 
 ### `show-script`
 
-Display the contents of a JLinkScript attached to a debug net. Output goes to stdout so it can be piped or redirected.
+Display the contents of the debug script attached to a debug net. The script content is written to stdout (so `> out.cfg` works); a one-line summary like `# OpenOCD config, 1247 bytes` is written to stderr so interactive use tells you which backend's script you're looking at without polluting redirects.
 
 ```bash
 lager nets show-script NAME [OPTIONS]
@@ -453,16 +477,27 @@ lager nets show-script NAME [OPTIONS]
 - `NAME` - Name of the debug net
 
 **Options:**
+- `--backend [jlink|openocd]` - Only show the named backend's script (default: show whichever is set)
 - `--box TEXT` - Lagerbox name or IP
 
 **Example:**
 
 ```bash
-# Display script contents
+# Display the attached script (J-Link or OpenOCD)
 lager nets show-script debug1 --box my-lager-box
 
-# Save script to a local file
-lager nets show-script debug1 --box my-lager-box > script.JLinkScript
+# Save to a local file (the stderr banner doesn't end up in the file)
+lager nets show-script debug1 --box my-lager-box > script.txt
+```
+
+### `set-openocd-config` / `remove-openocd-config` / `show-openocd-config`
+
+Aliases for the corresponding `*-script` command with `--backend openocd` pinned. Useful when you want to make the intent explicit in scripts or when you have an ambiguous file and don't want to add `--backend openocd` every time.
+
+```bash
+# Equivalent invocations
+lager nets set-openocd-config debug1 ./probe.cfg --box my-lager-box
+lager nets set-script         debug1 ./probe.cfg --backend openocd --box my-lager-box
 ```
 
 ## Net Types Reference
@@ -487,27 +522,36 @@ lager nets show-script debug1 --box my-lager-box > script.JLinkScript
 | `watt-meter` | Power measurement | Yocto Watt |
 | `thermocouple` | Temperature sensor | Phidget thermocouples |
 
-## JLinkScript Workflow
+## Debug Script Workflow
 
-JLinkScript files allow customization of J-Link debug probe behavior for specific hardware configurations. Scripts can handle custom reset sequences, clock initialization, and other device-specific operations.
+Both J-Link and OpenOCD debug probes can carry a custom script for handling reset sequences, clock initialization, board-specific signal pinning, or other device-specific behavior. Lager stores one script per debug net (either a JLinkScript or an OpenOCD `.cfg`/`.tcl`, never both) and applies it automatically during connect, flash, erase, and reset operations.
 
 ```bash
-# Create a debug net with a J-Link script
-lager nets create debug1 debug STM32F407VG USB::001::002 \
-  --jlink-script ./my_device.JLinkScript --box my-lager-box
-
-# Or attach a script to an existing debug net
+# Attach a J-Link script to a J-Link probe (auto-detected from .JLinkScript extension)
 lager nets set-script debug1 ./my_device.JLinkScript --box my-lager-box
 
-# Verify the script is attached
+# Attach an OpenOCD config to an FTDI / ST-Link / CMSIS-DAP probe (auto-detected)
+lager nets set-script debug1 ./probe.cfg --box my-lager-box
+
+# Verify what's attached (stderr says which backend, stdout has the content)
 lager nets show-script debug1 --box my-lager-box
 
-# The script is used automatically for all debug operations:
+# Scripts are used automatically for all debug operations:
 lager debug debug1 flash --hex firmware.hex --box my-lager-box
 lager debug debug1 gdbserver --box my-lager-box
 
 # Remove the script when no longer needed
 lager nets remove-script debug1 --box my-lager-box
+```
+
+You can also attach a script at net creation time:
+
+```bash
+lager nets create debug1 debug STM32F407VG USB::001::002 \
+  --jlink-script ./my_device.JLinkScript --box my-lager-box
+
+lager nets create debug2 debug d2763 USB::003::004 \
+  --openocd-config ./probe.cfg --box my-lager-box
 ```
 
 You can also configure J-Link scripts per-project in the local `.lager` config file:
@@ -550,8 +594,9 @@ lager nets tui --box my-lager-box
 # Bulk create from JSON file
 lager nets create-batch testbed-nets.json --box my-lager-box
 
-# Manage J-Link scripts
+# Manage debug-probe scripts (J-Link or OpenOCD, auto-detected)
 lager nets set-script debug1 ./custom_init.JLinkScript --box my-lager-box
+lager nets set-script debug2 ./probe.cfg --box my-lager-box
 lager nets show-script debug1 --box my-lager-box
 lager nets remove-script debug1 --box my-lager-box
 ```
@@ -563,4 +608,5 @@ lager nets remove-script debug1 --box my-lager-box
 - The TUI provides the easiest way to set up nets for the first time
 - Use `create-all` to quickly configure a new Lager Box with sensible defaults
 - I2C and SPI nets are supported on LabJack T7 and Aardvark adapters
-- J-Link scripts are base64-encoded for storage and decoded automatically during debug operations
+- Debug scripts (both J-Link and OpenOCD) are base64-encoded for storage and decoded automatically during debug operations
+- A debug net carries at most one script (`jlink_script` or `openocd_config`); `set-script` enforces this by clearing the other field when present
