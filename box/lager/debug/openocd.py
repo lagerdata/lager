@@ -302,10 +302,15 @@ def _build_openocd_command(
     1. Override the default port numbers up front so they take effect when
        the targets later call ``$_TARGETNAME configure -gdb-port`` (no-op for
        most boards, but harmless).
-    2. Load the interface and target configs.
-    3. Apply the user config (if any) — this is the analogue of
-       ``-JLinkScriptFile`` and runs *after* the standard configs so it can
-       override transport, halt mode, RTT search range, etc.
+    2. Load the interface bring-up — either the auto-detected
+       ``interface/*.cfg`` or the user-supplied ``openocd_config``. Either
+       way, this is what sets ``adapter driver`` so the ``-c`` commands
+       that follow (``adapter serial``, ``ftdi channel``, ``transport
+       select``) have a driver to talk to.
+    3. Load the target config (auto-detected from the net's device field).
+       Skipped when the user cfg defines its own target — pick a device
+       string that doesn't match ``_TARGET_PREFIX_MAP`` to avoid double
+       ``target create`` failures.
     4. Set adapter speed and (optionally) halt on reset.
     """
     vid, _pid, serial = parse_probe_address(address)
@@ -326,11 +331,19 @@ def _build_openocd_command(
     # When the user attaches a custom ``openocd_config``, treat it as the
     # sole source of interface configuration: don't also load the auto-detected
     # interface_cfg, since the two .cfg files would each call ``adapter driver
-    # ftdi`` / ``layout_init`` and override each other unpredictably. The user
-    # cfg gets sourced later (after the target.cfg) so it can still see and
-    # override target-level settings.
+    # ftdi`` / ``layout_init`` and override each other unpredictably.
+    #
+    # We load the user cfg *first* — before the adapter-dependent ``-c``
+    # commands below (``ftdi channel``, ``adapter serial``, ``transport
+    # select``). Those commands all require an adapter driver to already be
+    # configured, and for user-cfg probes the driver only gets set when the
+    # cfg itself runs.
     if user_config_path:
-        pass
+        if not os.path.exists(user_config_path):
+            raise FileNotFoundError(
+                f'openocd_config path not found on box: {user_config_path}'
+            )
+        cmd.extend(['-f', user_config_path])
     elif interface_cfg:
         cmd.extend(['-f', interface_cfg])
     else:
@@ -371,7 +384,11 @@ def _build_openocd_command(
 
     # Most STLink configs assume hla_swd; honour the user's requested
     # transport when they passed SWD/JTAG explicitly.
-    if transport:
+    #
+    # Skip when ``user_config_path`` is set: custom configs almost always
+    # call ``transport select`` themselves at the top, and OpenOCD errors
+    # ("Transport already selected") on a second invocation.
+    if transport and not user_config_path:
         transport_lc = transport.lower()
         if interface_cfg and 'stlink' in interface_cfg:
             # ST-Link only supports hla_swd / hla_jtag (high-level).
@@ -390,9 +407,6 @@ def _build_openocd_command(
             f'No OpenOCD target.cfg known for device {device!r} and no '
             f'user openocd_config supplied'
         )
-
-    if user_config_path and os.path.exists(user_config_path):
-        cmd.extend(['-f', user_config_path])
 
     if speed and str(speed).lower() != 'adaptive':
         try:
