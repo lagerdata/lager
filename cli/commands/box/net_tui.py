@@ -47,6 +47,18 @@ from ..development.python import run_python_internal
 
 # ──────────────── helpers / model ─────────────────
 
+
+class UARTNetSaveValidationError(ValueError):
+    """Raised when ``_save_nets_batch`` refuses a batch because a UART
+    net was about to be persisted with a non-addressable ``pin`` (e.g.
+    a bare interface index like ``"2"``).
+
+    The TUI catches this and surfaces the message via ``show_error``,
+    so users get the actionable EEPROM/serial hint instead of the
+    silent box-side failure at first use.
+    """
+
+
 def _parse_backend_json_tui(raw: str):
     """
     Parse JSON response from backend, handling duplicate output from double execution.
@@ -163,10 +175,74 @@ def _run_script(ctx: click.Context, script: str, dut: str, *args) -> str:
         pass
     return buf.getvalue()
 
+_UART_PIN_HINT = (
+    "UART nets need either a /dev/tty* path or a non-empty USB serial in "
+    "the ``pin`` slot — bare interface indices won't survive the box-side "
+    "sysfs lookup. Programme a serial into the adapter's EEPROM (e.g. with "
+    "``ftdi_eeprom``) and rescan instruments, then try again."
+)
+
+
+def _validate_uart_pin(pin) -> bool:
+    """Return True if *pin* can plausibly address a UART bridge.
+
+    Two shapes are accepted, matching what the box-side dispatcher
+    understands (``box/lager/protocols/uart/dispatcher.py``):
+
+    * Direct device path: ``/dev/ttyUSB2``, ``/dev/ttyACM0``.
+    * USB serial string: anything else non-empty and longer than two
+      characters. We don't try to validate the exact serial format
+      because FTDI/CP210x/CDC serials vary widely — we just reject the
+      legacy ``"0"/"1"/"2"/"3"`` placeholders that the old FT4232H
+      scanner used to emit, which were the silent failure mode that
+      motivated this guard in the first place.
+    """
+    if not isinstance(pin, str):
+        return False
+    p = pin.strip()
+    if not p:
+        return False
+    if p.startswith("/dev/"):
+        return True
+    # Anything shorter than 3 chars is almost certainly a bare interface
+    # index. Real USB serials are at least 4 characters in practice
+    # (FT5XYZAB, 0123-4567, etc.).
+    if len(p) < 3:
+        return False
+    return True
+
+
+def _validate_nets_before_save(nets: list["Net"]) -> list[tuple["Net", str]]:
+    """Return ``[(net, reason)]`` for every net that would round-trip badly.
+
+    Empty list means everything's fine; a non-empty list is what the
+    caller surfaces via ``show_error`` before any actual save happens.
+    """
+    bad: list[tuple["Net", str]] = []
+    for n in nets:
+        if n.type == "uart" and not _validate_uart_pin(n.chan):
+            bad.append((
+                n,
+                f"net '{n.net}' has invalid UART pin {n.chan!r}; "
+                + _UART_PIN_HINT,
+            ))
+    return bad
+
+
 def _save_nets_batch(ctx: click.Context, dut: str, nets: list["Net"], custom_names: dict[str, str] | None = None) -> bool:
     """Save multiple nets using batch save with fallback to individual saves."""
     if not nets:
         return True
+
+    invalid = _validate_nets_before_save(nets)
+    if invalid:
+        # Refuse the whole batch so the caller's show_error surfaces the
+        # actionable reason instead of letting the box reject these later
+        # with a cryptic "bridge not found" message at first use.
+        raise UARTNetSaveValidationError(
+            "Refusing to save invalid UART net(s): "
+            + "; ".join(reason for _net, reason in invalid)
+        )
 
     custom_names = custom_names or {}
     nets_data = []
@@ -1569,7 +1645,12 @@ class AddScreen(Screen):
 
         # If no debug nets selected, save immediately using batch save
         if not debug_nets:
-            if _save_nets_batch(main.ctx, main.dut, selected_nets, self.custom_names):
+            try:
+                ok = _save_nets_batch(main.ctx, main.dut, selected_nets, self.custom_names)
+            except UARTNetSaveValidationError as exc:
+                main.show_error(str(exc))
+                return
+            if ok:
                 main.show_success(f"Successfully added {len(selected_nets)} nets")
             else:
                 main.show_error("Failed to save some nets")
@@ -1605,7 +1686,13 @@ class AddScreen(Screen):
                 return
             # All debug prompts done – save all pending nets using batch save
             all_nets_to_save = self._pending_normal_nets + self._pending_debug_nets
-            if _save_nets_batch(main.ctx, main.dut, all_nets_to_save, self.custom_names):
+            try:
+                ok = _save_nets_batch(main.ctx, main.dut, all_nets_to_save, self.custom_names)
+            except UARTNetSaveValidationError as exc:
+                main.show_error(str(exc))
+                main.pop_screen()
+                return
+            if ok:
                 main.show_success(f"Successfully added {len(all_nets_to_save)} nets")
             else:
                 main.show_error("Failed to save some nets")
