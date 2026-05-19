@@ -33,9 +33,6 @@ lager nets [OPTIONS] [COMMAND]
 | `set-script` | Attach a J-Link script *or* OpenOCD `.cfg`/`.tcl` to a debug net (backend auto-detected) |
 | `remove-script` | Remove the debug script (J-Link or OpenOCD) attached to a debug net |
 | `show-script` | Display the debug script attached to a debug net |
-| `set-openocd-config` | Alias for `set-script --backend openocd` |
-| `remove-openocd-config` | Alias for `remove-script --backend openocd` |
-| `show-openocd-config` | Alias for `show-script --backend openocd` |
 
 ## Command Reference
 
@@ -488,16 +485,6 @@ lager nets show-script debug1 --box my-lager-box
 
 # Save to a local file (the stderr banner doesn't end up in the file)
 lager nets show-script debug1 --box my-lager-box > script.txt
-```
-
-### `set-openocd-config` / `remove-openocd-config` / `show-openocd-config`
-
-Aliases for the corresponding `*-script` command with `--backend openocd` pinned. Useful when you want to make the intent explicit in scripts or when you have an ambiguous file and don't want to add `--backend openocd` every time.
-
-```bash
-# Equivalent invocations
-lager nets set-openocd-config debug1 ./probe.cfg --box my-lager-box
-lager nets set-script         debug1 ./probe.cfg --backend openocd --box my-lager-box
 ```
 
 ## Net Types Reference
