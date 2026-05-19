@@ -674,18 +674,25 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
             jlink_script=jlink_script, openocd_config=openocd_config,
         )
     except requests.exceptions.HTTPError as e:
-        # Parse error response for more details
-        error_detail = "Unknown error"
+        # Surface the box's structured error first; the generic checklist
+        # below is just a fallback for transport-level failures (timeout,
+        # bad gateway) where the server didn't get to format a response.
+        error_detail = None
         try:
             error_json = e.response.json()
-            error_detail = error_json.get('error', str(e))
-        except:
-            error_detail = str(e)
+            error_detail = error_json.get('error') or error_json.get('message')
+        except Exception:  # noqa: BLE001 — non-JSON body, treated as empty
+            error_detail = None
 
-        click.secho("Error: Failed to connect to debugger", fg='red', err=True)
+        if error_detail:
+            click.secho(f"Error: {error_detail}", fg='red', err=True)
+        else:
+            click.secho("Error: Failed to connect to debugger", fg='red', err=True)
 
-        # Check for common connection issues
-        if "500" in str(e) or "Internal Server Error" in str(e):
+        # Keep the canned troubleshooting hints on 500s but only when we
+        # had no specific server error to show — otherwise they bury the
+        # real cause under boilerplate.
+        if not error_detail and ("500" in str(e) or "Internal Server Error" in str(e)):
             click.secho("\nPossible causes:", fg='yellow', err=True)
             click.secho("  • Debug probe not connected to target device", fg='yellow', err=True)
             click.secho("  • Target device not powered", fg='yellow', err=True)

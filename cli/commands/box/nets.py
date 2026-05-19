@@ -118,9 +118,28 @@ _VISA_SERIAL_RE = re.compile(
 # --------------------------------------------------------------------------- #
 
 _DEBUG_VISA_RE = re.compile(
-    r'USB\d*::0x([0-9A-Fa-f]+)::0x[0-9A-Fa-f]+::[^:]+::INSTR',
+    # Serial slot may be empty for FTDI chips with an un-programmed
+    # EEPROM (the box scanner emits ``USB0::0x0403::0x6011::::INSTR``
+    # in that case). Match the relaxed shape so backend detection
+    # still works for serial-less probes; keep this in sync with
+    # ``_VISA_RE`` in ``box/lager/debug/probes.py``.
+    r'USB\d*::0x([0-9A-Fa-f]+)::0x[0-9A-Fa-f]+::[^:]*::INSTR',
     re.IGNORECASE,
 )
+
+
+# ``pin`` is overloaded by role; the label needs to track that so users
+# don't read "Channel: 2" and assume the value is an FT4232H interface
+# index when it's actually being interpreted as a USB serial by the
+# UART dispatcher.
+_PIN_LABEL_BY_ROLE = {
+    "uart": "Pin/serial:",
+    "debug": "Device:",
+}
+
+
+def _pin_label_for_role(role: str | None) -> str:
+    return _PIN_LABEL_BY_ROLE.get(role or "", "Channel:")
 # Keep these in sync with `_JLINK_VIDS` / `_OPENOCD_VIDS` in
 # `box/lager/debug/probes.py`.
 _DEBUG_JLINK_VIDS = {'1366'}
@@ -1784,7 +1803,12 @@ def show_cmd(
     click.secho(f"Net: {target.get('name', '')}", bold=True)
     click.echo(f"  Type:       {target.get('role', '')}")
     click.echo(f"  Instrument: {target.get('instrument', '')}")
-    click.echo(f"  Channel:    {target.get('pin', '')}")
+    # ``pin`` is overloaded across roles: device@channel for debug, USB
+    # serial or /dev path for uart, GPIO/ADC pin name elsewhere. The old
+    # blanket "Channel:" label hid real misconfigurations (e.g. a UART
+    # net whose ``pin`` was the integer "2" instead of an FTDI USB
+    # serial). Show the role-appropriate label so misuse is visible.
+    click.echo(f"  {_pin_label_for_role(target.get('role')):<12}{target.get('pin', '')}")
     click.echo(f"  Address:    {target.get('address', '')}")
 
     if target.get("jlink_script"):

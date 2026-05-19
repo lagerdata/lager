@@ -198,11 +198,19 @@ CHANNEL_MAPS = {
         # ``DEVICE_TYPE`` part with a real MCU name, leaving ``@A``/``@B``
         # intact so the OpenOCD backend can route to the right interface.
         "debug": ["DEVICE_TYPE@A", "DEVICE_TYPE@B"],
+        # UART tty paths are populated at scan time (same as FT232H); empty
+        # default avoids handing the TUI raw interface indices like ``0``
+        # that would later land in the saved net's ``pin`` field and break
+        # the UART dispatcher's serial lookup.
+        "uart": [],
     },
     "FTDI_FT4232H": {
         # A and B can drive JTAG/SWD via OpenOCD; C and D are UART-only.
         "debug": ["DEVICE_TYPE@A", "DEVICE_TYPE@B"],
-        "uart": ["0", "1", "2", "3"],
+        # See FT2232H note above — placeholder list is filled with real
+        # ``/dev/ttyUSB*`` paths by the scanner; if enumeration fails the
+        # role is dropped entirely rather than advertised as a bare index.
+        "uart": [],
     },
 
     # debug — J-Link family
@@ -447,10 +455,62 @@ def _get_ttys_for_usb_serial(serial_number: Optional[str] = None):
     """
     if not serial_number:
         return []
+    return _walk_ttys(match=lambda usb_dir: _read_sysfs_text(usb_dir / "serial") == serial_number)
+
+
+@with_timeout(seconds=2, default=None)
+def _get_ttys_for_usb_device(usb_device_path):
+    """Return ``[{'path', 'interface'}]`` for every tty under *usb_device_path*.
+
+    Sibling of :func:`_get_ttys_for_usb_serial` for the case where the
+    physical USB device has no programmed serial number — typical for
+    bare FT2232H/FT4232H chips whose EEPROM was never burnt. We match
+    against the device's sysfs node instead of its ``serial`` file so
+    the UART role can still be enumerated; the resulting ``/dev/tty*``
+    paths land in the saved net's ``pin`` field and round-trip cleanly
+    through the box-side UART dispatcher's device-path fast path.
+
+    Ambiguity caveat: multiple identical chips of the same VID:PID
+    without serials can't be told apart by VISA address, so the rest of
+    the stack will still need a unique serial to drive concurrent
+    OpenOCD / J-Link sessions.
+    """
+    if not usb_device_path:
+        return []
+    try:
+        target = usb_device_path.resolve()
+    except OSError:
+        return []
+    return _walk_ttys(match=lambda usb_dir: usb_dir == target)
+
+
+def _read_sysfs_text(path) -> Optional[str]:
+    """Best-effort non-blocking read of a sysfs string attribute."""
+    if not path.exists():
+        return None
+    try:
+        fd = os.open(str(path), os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            return os.read(fd, 256).decode("utf-8").strip()
+        finally:
+            os.close(fd)
+    except (OSError, UnicodeDecodeError, BlockingIOError):
+        return None
+
+
+def _walk_ttys(*, match):
+    """Walk ``/sys/class/tty`` and collect ttys whose parent USB device
+    satisfies *match(usb_dir)*.
+
+    *match* is invoked at each level of the parent chain with the
+    resolved sysfs directory. The first level where *match* returns
+    truthy wins; we also stop walking once we cross the USB device
+    root (the directory containing ``idVendor``) so we don't climb into
+    the host controller and trigger spurious matches.
+    """
     sys_tty = Path("/sys/class/tty")
     if not sys_tty.exists():
         return []
-
     matches = []
     for tty_dev in sys_tty.iterdir():
         try:
@@ -460,30 +520,41 @@ def _get_ttys_for_usb_serial(serial_number: Optional[str] = None):
             if not device_path.exists():
                 continue
 
-            iface_num = 0
-            usb_device = device_path.resolve()
-            im = _USB_INTERFACE_RE.search(usb_device.name)
-            if im:
-                iface_num = int(im.group(1))
+            resolved = device_path.resolve()
 
+            iface_num = 0
+            iface_match = _USB_INTERFACE_RE.search(resolved.name)
+            if iface_match:
+                iface_num = int(iface_match.group(1))
+
+            usb_device = resolved
             for _ in range(10):
                 im = _USB_INTERFACE_RE.search(usb_device.name)
                 if im:
                     iface_num = int(im.group(1))
-                serial_path = usb_device / "serial"
-                if serial_path.exists():
-                    try:
-                        fd = os.open(str(serial_path), os.O_RDONLY | os.O_NONBLOCK)
-                        dev_serial = os.read(fd, 256).decode('utf-8').strip()
-                        os.close(fd)
-                        if dev_serial == serial_number:
-                            matches.append({
-                                "path": f"/dev/{tty_dev.name}",
-                                "interface": iface_num,
-                            })
-                        break
-                    except (OSError, UnicodeDecodeError, BlockingIOError):
-                        break
+
+                try:
+                    is_usb_device = (usb_device / "idVendor").exists()
+                except OSError:
+                    is_usb_device = False
+
+                try:
+                    hit = bool(match(usb_device))
+                except Exception:  # noqa: BLE001 — match callbacks are user-supplied
+                    hit = False
+
+                if hit:
+                    matches.append({
+                        "path": f"/dev/{tty_dev.name}",
+                        "interface": iface_num,
+                    })
+                    break
+
+                if is_usb_device:
+                    # Reached the device root and didn't match — give up
+                    # on this tty rather than crossing into the hub.
+                    break
+
                 usb_device = usb_device.parent
                 if not usb_device or usb_device == Path("/sys"):
                     break
@@ -596,22 +667,36 @@ def _scan_usb() -> List[dict]:
         # with both ``debug`` and ``uart`` net_types) keep their other roles
         # intact even when no tty is currently enumerable.
         if "uart" in meta.get("net_type", []):
-            if not serial:
-                if meta.get("net_type") == ["uart"]:
-                    continue
-            else:
+            # Resolve actual /dev/tty* paths so the TUI doesn't invent
+            # bridge identifiers from raw interface indices. Prefer the
+            # serial-keyed walk; fall back to the sysfs-device-keyed walk
+            # when the chip has no programmed serial (common on bare-bones
+            # FT4232H/FT2232H modules). Keep this branch in sync with
+            # ``box/lager/http_handlers/usb_scanner.py``.
+            if serial:
                 ttys = _get_ttys_for_usb_serial(serial) or []
-                if ttys:
-                    ttys.sort(key=lambda t: (t.get("interface", 0), t.get("path", "")))
-                    uart_channels = [t["path"] for t in ttys]
-                    if "channels" in entry:
-                        entry["channels"]["uart"] = uart_channels
-                    else:
-                        entry["channels"] = {"uart": uart_channels}
-                    entry["tty_path"] = uart_channels[0]
-                    entry["tty_paths"] = uart_channels
-                elif meta.get("net_type") == ["uart"]:
-                    continue
+            else:
+                ttys = _get_ttys_for_usb_device(dev) or []
+            if ttys:
+                ttys.sort(key=lambda t: (t.get("interface", 0), t.get("path", "")))
+                uart_channels = [t["path"] for t in ttys]
+                if "channels" in entry:
+                    entry["channels"]["uart"] = uart_channels
+                else:
+                    entry["channels"] = {"uart": uart_channels}
+                entry["tty_path"] = uart_channels[0]
+                entry["tty_paths"] = uart_channels
+            elif meta.get("net_type") == ["uart"]:
+                # UART-only chip with no enumerable tty — skip entirely.
+                continue
+            else:
+                # Multi-role chip (FT4232H, FT2232H, FT232H) without any
+                # enumerable tty. Drop the UART role so the TUI never
+                # offers a UART option that can't be addressed.
+                if "uart" in entry.get("channels", {}):
+                    entry["channels"] = {
+                        k: v for k, v in entry["channels"].items() if k != "uart"
+                    }
 
         results.append(entry)
 
