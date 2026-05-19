@@ -7,8 +7,8 @@ Unit tests for the user-script / slot helpers in
 These two helpers are what wire the saved-net ``openocd_config`` /
 ``jlink_script`` (base64) and ``serial`` fields through to the underlying
 backend invocations. Without them, in-box Python tests can't pick up the
-custom debug scripts the user attached via ``lager nets set-openocd-config``
-/ ``set-script`` — see the parity-audit notes for the back-story.
+custom debug scripts the user attached via ``lager nets set-script`` — see
+the parity-audit notes for the back-story.
 
 We load the module by file path so we don't drag in the rest of the lager
 package (the production import chain needs the box-side hardware drivers
