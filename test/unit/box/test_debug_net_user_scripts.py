@@ -328,5 +328,63 @@ class AllocateProbeSlotTests(unittest.TestCase):
         self.assertEqual(slot, 0)
 
 
+class OpenocdSpeedLadderTests(unittest.TestCase):
+    """``openocd_speed_ladder`` — speed-fallback parity with J-Link."""
+
+    def test_adaptive_walks_full_ladder(self):
+        # ``adaptive`` first so adaptive-capable adapters still get the
+        # original behaviour; then descending fixed speeds.
+        self.assertEqual(
+            debug_net.openocd_speed_ladder('adaptive'),
+            ['adaptive', '4000', '1000', '500', '100'],
+        )
+
+    def test_high_speed_walks_descending(self):
+        self.assertEqual(
+            debug_net.openocd_speed_ladder(4000),
+            ['4000', '1000', '500', '100'],
+        )
+        self.assertEqual(
+            debug_net.openocd_speed_ladder('2000'),
+            ['2000', '1000', '500', '100'],
+        )
+
+    def test_medium_speed_skips_lower_tiers(self):
+        self.assertEqual(
+            debug_net.openocd_speed_ladder(750),
+            ['750', '500', '100'],
+        )
+
+    def test_low_speed_drops_to_100_only(self):
+        self.assertEqual(
+            debug_net.openocd_speed_ladder(200),
+            ['200', '100'],
+        )
+
+    def test_already_slow_no_fallback(self):
+        self.assertEqual(debug_net.openocd_speed_ladder(100), ['100'])
+        self.assertEqual(debug_net.openocd_speed_ladder(50), ['50'])
+
+    def test_requested_in_ladder_dedupes(self):
+        # 500 appears in the standard descent — should only show up once.
+        self.assertEqual(
+            debug_net.openocd_speed_ladder(500),
+            ['500', '100'],
+        )
+        self.assertEqual(
+            debug_net.openocd_speed_ladder(1000),
+            ['1000', '500', '100'],
+        )
+
+    def test_garbage_input_returns_single_attempt(self):
+        # Don't blow up on opaque user input — single-element list lets
+        # the connect path still surface the underlying OpenOCD error.
+        self.assertEqual(
+            debug_net.openocd_speed_ladder('garbage'),
+            ['garbage'],
+        )
+        self.assertEqual(debug_net.openocd_speed_ladder(None), [None])
+
+
 if __name__ == '__main__':
     unittest.main()
