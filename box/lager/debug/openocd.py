@@ -24,6 +24,7 @@ collide unpredictably.
 
 import logging
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -632,11 +633,23 @@ class OpenOcdRpc:
     def resume(self):
         return self.cmd('resume')
 
+    # OpenOCD's ``program_error`` proc (in startup.tcl) emits failure
+    # markers of the form ``** <Something> Failed **`` (e.g.
+    # ``** Programming Failed **``, ``** Verify Failed **``). The TCL/RPC
+    # channel does not surface TCL errors out-of-band — they show up only
+    # as text in the response — so we have to scan the output to tell
+    # success from failure. See ``program``/``program_error``.
+    _PROGRAM_FAILURE_RE = re.compile(r'\*\*\s.*Failed\s\*\*', re.IGNORECASE)
+
     def program(self, file_path, verify=True, reset_after=True, address=None):
         """``program`` runs flash erase + write + verify in one go.
 
         OpenOCD's ``program`` proc takes an optional address (for raw bin
         files) and the trailing ``verify``/``reset`` keywords.
+
+        Raises ``OpenOcdRpcError`` if the response contains an OpenOCD
+        ``program_error`` failure marker (``** ... Failed **``); otherwise
+        returns the raw command output for the caller to log.
         """
         parts = ['program', file_path]
         if address is not None:
@@ -645,7 +658,12 @@ class OpenOcdRpc:
             parts.append('verify')
         if reset_after:
             parts.append('reset')
-        return self.cmd(' '.join(parts), timeout=300)
+        out = self.cmd(' '.join(parts), timeout=300)
+        if self._PROGRAM_FAILURE_RE.search(out):
+            raise OpenOcdRpcError(
+                f'OpenOCD program failed for {file_path}:\n{out.rstrip()}'
+            )
+        return out
 
     def flash_erase_all(self):
         """Erase every sector of every flash bank — analog to JLink ``erase``.
@@ -664,7 +682,6 @@ class OpenOcdRpc:
 
         We just need the leading ``#N`` index.
         """
-        import re
         bank_indices = []
         try:
             banks_out = self.cmd('flash banks', timeout=10)
