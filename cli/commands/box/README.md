@@ -11,8 +11,8 @@ This directory implements the `lager nets …` CLI surface and the interactive
     VID (via the duplicated `_DEBUG_*_VIDS` tables — keep in sync with
     `box/lager/debug/probes.py`) and the file's extension/content, and
     enforces mutual exclusivity (`jlink_script` XOR `openocd_config`) on
-    every save. `set-openocd-config` and friends are thin aliases that
-    delegate with `--backend openocd` pinned.
+    every save. `--backend jlink|openocd` is the explicit override when
+    the auto-detection signals conflict.
 - `net_tui.py` — Textual-based interactive manager (`lager nets tui`).
 
 End-user documentation lives at

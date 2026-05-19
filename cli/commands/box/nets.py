@@ -1426,11 +1426,10 @@ def create_batch_cmd(ctx: click.Context, json_file, box: str | None) -> None:
 # --------------------------------------------------------------------------- #
 # Debug-script commands.                                                      #
 #                                                                             #
-# `set-script` / `show-script` / `remove-script` are the canonical entry      #
-# points: they detect whether the file is a J-Link script or an OpenOCD       #
-# .cfg/.tcl and route to the right field on the net record. The legacy        #
-# `set-openocd-config` / `show-openocd-config` / `remove-openocd-config`      #
-# commands are thin wrappers around the same impl with the backend pinned.   #
+# `set-script` / `show-script` / `remove-script` handle both J-Link scripts   #
+# and OpenOCD .cfg/.tcl files: the backend is auto-detected from the probe   #
+# VID and the file extension/content, with `--backend jlink|openocd` as the  #
+# explicit override.                                                          #
 #                                                                             #
 # Mutual exclusivity (KISS): a debug net carries *either* `jlink_script` or  #
 # `openocd_config`, never both. `set-script` clears the other field when it  #
@@ -1469,7 +1468,7 @@ def _set_debug_script_impl(
     box: Optional[str],
     backend: Optional[str],
 ) -> None:
-    """Shared body of ``set-script`` / ``set-openocd-config``.
+    """Shared body of ``set-script``.
 
     ``backend`` is the user's explicit override (``'jlink'`` / ``'openocd'``
     / ``None``). When unset, the backend is derived from the probe VID and
@@ -1519,11 +1518,10 @@ def _show_debug_script_impl(
     box: Optional[str],
     backend: Optional[str],
 ) -> None:
-    """Shared body of ``show-script`` / ``show-openocd-config``.
+    """Shared body of ``show-script``.
 
-    If ``backend`` is set, only that backend's field is considered (preserves
-    the strict behaviour of the legacy alias). Without a backend filter we
-    show whichever field is populated.
+    If ``backend`` is set, only that backend's field is considered. Without
+    a backend filter we show whichever field is populated.
     """
     import base64
 
@@ -1581,7 +1579,7 @@ def _remove_debug_script_impl(
     box: Optional[str],
     backend: Optional[str],
 ) -> None:
-    """Shared body of ``remove-script`` / ``remove-openocd-config``."""
+    """Shared body of ``remove-script``."""
     resolved_box = _resolve_box(ctx, box)
     target = _load_debug_net(ctx, resolved_box, name)
 
@@ -1689,53 +1687,6 @@ def show_script_cmd(
     tells you what you're looking at without polluting redirects.
     """
     _show_debug_script_impl(ctx, name, box, backend)
-
-
-# --- Legacy aliases ---------------------------------------------------------
-# Pinned to a specific backend so existing scripts keep their exact semantics.
-# Functionally these now share their impl with set-script / show-script /
-# remove-script; the only difference is the locked --backend.
-
-@nets.command(
-    "set-openocd-config",
-    help="Alias for `set-script --backend openocd`.",
-)
-@click.argument("name")
-@click.argument("config_path")
-@click.option("--box", help="Lagerbox name or IP")
-@click.pass_context
-def set_openocd_config_cmd(
-    ctx: click.Context, name: str, config_path: str, box: Optional[str],
-) -> None:
-    _set_debug_script_impl(
-        ctx, name, config_path, box, _BACKEND_OPENOCD,
-    )
-
-
-@nets.command(
-    "remove-openocd-config",
-    help="Alias for `remove-script --backend openocd`.",
-)
-@click.argument("name")
-@click.option("--box", help="Lagerbox name or IP")
-@click.pass_context
-def remove_openocd_config_cmd(
-    ctx: click.Context, name: str, box: Optional[str],
-) -> None:
-    _remove_debug_script_impl(ctx, name, box, _BACKEND_OPENOCD)
-
-
-@nets.command(
-    "show-openocd-config",
-    help="Alias for `show-script --backend openocd`.",
-)
-@click.argument("name")
-@click.option("--box", help="Lagerbox name or IP")
-@click.pass_context
-def show_openocd_config_cmd(
-    ctx: click.Context, name: str, box: Optional[str],
-) -> None:
-    _show_debug_script_impl(ctx, name, box, _BACKEND_OPENOCD)
 
 
 @nets.command("describe", help="Set metadata on a saved net (description, DUT connection, hints, tags).")

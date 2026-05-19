@@ -16,8 +16,8 @@ These tests pin the contract that:
   * Probe-vs-file mismatches refuse without ``--force`` / ``--backend``.
   * ``set-script`` enforces mutual exclusivity (clears the other field).
   * Stdin (``SCRIPT_PATH='-'``) works.
-  * The legacy ``set-openocd-config`` family delegates to the same impl
-    with the backend pinned.
+  * ``--backend jlink|openocd`` is the explicit override and short-circuits
+    the probe/file reconciliation so the caller's intent always wins.
 """
 
 from __future__ import annotations
@@ -418,46 +418,41 @@ class TestRemoveScript:
         assert not fake_box['saves']
 
 
-class TestLegacyAliases:
-    def test_set_openocd_config_pins_backend(self, fake_box, cfg_file):
-        runner = CliRunner()
-        res = runner.invoke(nets_group, [
-            'set-openocd-config', 'SWD', cfg_file, '--box', 'JUL-5',
-        ])
-        assert res.exit_code == 0, res.output
-        assert 'OpenOCD config' in res.output
-        saved = fake_box['saves'][-1]
-        assert 'openocd_config' in saved
+class TestExplicitBackendFlag:
+    """When the user passes --backend openocd explicitly, the impl must
+    skip the probe<->file mismatch check (the flag IS the override) but
+    still enforce mutual exclusivity on the resulting write."""
 
-    def test_set_openocd_config_on_jlink_probe_works_without_force(self, fake_box, cfg_file):
-        # The alias pins --backend openocd, which counts as explicit, so the
-        # probe<->file mismatch detection is skipped. This preserves the
-        # legacy behaviour (writes wherever the user asked).
+    def test_backend_openocd_on_jlink_probe_writes_openocd_config(
+        self, fake_box, cfg_file,
+    ):
         runner = CliRunner()
         res = runner.invoke(nets_group, [
-            'set-openocd-config', 'JLINK1', cfg_file, '--box', 'JUL-5',
+            'set-script', 'JLINK1', cfg_file,
+            '--backend', 'openocd', '--box', 'JUL-5',
         ])
         assert res.exit_code == 0, res.output
         saved = fake_box['saves'][-1]
         assert 'openocd_config' in saved
+        assert 'jlink_script' not in saved
 
-    def test_show_openocd_config_only_shows_openocd(self, fake_box):
+    def test_show_backend_filter_only_returns_matching_field(self, fake_box):
+        # Both legacy fields set; --backend openocd must only return that one.
         fake_box['db'][0]['jlink_script'] = base64.b64encode(b'jl').decode('ascii')
+        fake_box['db'][0]['openocd_config'] = base64.b64encode(b'adapter driver ftdi\n').decode('ascii')
         runner = CliRunner()
         res = runner.invoke(nets_group, [
-            'show-openocd-config', 'SWD', '--box', 'JUL-5',
+            'show-script', 'SWD', '--backend', 'openocd', '--box', 'JUL-5',
         ])
-        # No openocd_config attached, so alias errors even though jlink_script
-        # is populated.
-        assert res.exit_code != 0
-        assert 'OpenOCD config' in res.output
+        assert res.exit_code == 0, res.output
+        assert 'adapter driver ftdi' in res.stdout
 
-    def test_remove_openocd_config_only_removes_openocd(self, fake_box):
+    def test_remove_backend_filter_leaves_other_field_alone(self, fake_box):
         fake_box['db'][0]['jlink_script'] = base64.b64encode(b'jl').decode('ascii')
         fake_box['db'][0]['openocd_config'] = base64.b64encode(b'oc').decode('ascii')
         runner = CliRunner()
         res = runner.invoke(nets_group, [
-            'remove-openocd-config', 'SWD', '--box', 'JUL-5',
+            'remove-script', 'SWD', '--backend', 'openocd', '--box', 'JUL-5',
         ])
         assert res.exit_code == 0, res.output
         saved = fake_box['saves'][-1]

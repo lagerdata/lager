@@ -360,7 +360,7 @@ def _build_openocd_command(
             f"Either change ``debug_backend`` to a probe whose VID is "
             f"in lager.debug.probes._OPENOCD_VIDS, or attach a custom "
             f"OpenOCD ``.cfg`` to the net via the ``openocd_config`` "
-            f"field (CLI: ``lager box nets set-openocd-config <net> <file.cfg>``)."
+            f"field (CLI: ``lager nets set-script <net> <file.cfg>``)."
         )
 
     # Multi-channel FTDI: override the interface config's default channel so
