@@ -1,406 +1,328 @@
 # Lager
 
-Monorepo for the Lager Data platform - a hardware test automation system that enables remote control of test equipment and embedded devices.
+**The bench, as data. The tests, as functions. The runs, reproducible.**
 
-## Overview
+Lager turns every hardware operation in your firmware loop — flash, power-cycle, RTT/UART capture, scope and DAQ measurement, instrument control — into a named, networked primitive. Dev, test, QA, and CI compose around the same bench, through the same API, from a laptop, a CI runner, or an AI agent.
 
-Lager provides a client-server architecture where:
-- **CLI** runs on developer machines and sends commands
-- **Box** (dedicated Linux hardware) connects to and controls test equipment
-- **Communication** happens over Tailscale VPN or direct network
+Most embedded CI stops before the part that actually breaks: the interaction between firmware and physical hardware. Lager gives you a scriptable layer around the bench so those interactions can be tested, reproduced, and shared.
 
-## Repository Structure
-
-```
-lager/
-├── cli/                    # Command-line interface (includes deployment scripts)
-├── box/                    # Box hardware control software
-├── test/                   # Integration and API tests
-└── docs/                   # Documentation (Mintlify docs + deployment reference)
-```
+[![PyPI](https://img.shields.io/pypi/v/lager-cli.svg)](https://pypi.org/project/lager-cli/)
+[![Python](https://img.shields.io/pypi/pyversions/lager-cli.svg)](https://pypi.org/project/lager-cli/)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-lagerdata.com-2ea44f)](https://docs.lagerdata.com)
 
 ---
 
-## CLI (`cli/`)
+## The pain
 
-The CLI is a Python Click-based command-line tool installed via `pip install lager-cli`.
+Firmware is increasingly software-like — modern toolchains, type systems, package managers, reproducible builds. The workflow around it isn't.
 
-### Directory Structure
+- The "real" test still requires a specific engineer, a specific desk, a specific board revision, a specific probe, and a specific power supply.
+- Tests stop at unit tests, host-side mocks, or hand-run scripts. The interesting failures show up at the firmware-hardware boundary: boot timing, brownouts, watchdogs, peripheral sequencing, DMA, sleep/wake, radio behavior after reset.
+- When something does fail on the bench, logs and measurements live in a terminal scrollback that someone closed an hour ago.
+- CI cannot meaningfully validate any of this.
 
-```
-cli/
-├── main.py                 # Entry point - registers all commands
-├── config.py               # Configuration management (~/.lager)
-├── box_storage.py          # Box/instrument storage utilities
-│
-├── core/                   # Shared utilities (consolidated)
-│   ├── net_helpers.py      # Net command helpers (resolve_box, run_net_py, etc.)
-│   ├── param_types.py      # Custom Click parameter types
-│   ├── utils.py            # General utilities
-│   ├── ssh_utils.py        # SSH connection utilities
-│   ├── matchers.py         # Pattern matching utilities
-│   └── net_storage.py      # Net storage operations
-│
-├── context/                # Session and authentication management
-│   ├── core.py             # LagerContext class
-│   ├── session.py          # DirectIPSession, LagerSession, DirectHTTPSession
-│   ├── error_handlers.py   # Docker, CANbus error handling
-│   └── ci_detection.py     # CI environment detection
-│
-├── commands/               # Command modules (grouped by domain)
-│   ├── power/              # Power equipment commands
-│   │   ├── supply.py       # Power supply control
-│   │   ├── battery.py      # Battery simulator control
-│   │   ├── solar.py        # Solar simulator control
-│   │   └── eload.py        # Electronic load control
-│   │
-│   ├── measurement/        # Measurement commands
-│   │   ├── adc.py          # Analog-to-digital converter
-│   │   ├── dac.py          # Digital-to-analog converter
-│   │   ├── gpi.py          # General purpose input
-│   │   ├── gpo.py          # General purpose output
-│   │   ├── scope.py        # Oscilloscope commands
-│   │   ├── logic.py        # Logic analyzer
-│   │   ├── thermocouple.py # Temperature measurement
-│   │   └── watt.py         # Power measurement
-│   │
-│   ├── communication/      # Communication commands
-│   │   ├── uart.py         # Serial communication
-│   │   ├── i2c.py          # I2C communication
-│   │   ├── spi.py          # SPI communication
-│   │   ├── ble.py          # Bluetooth Low Energy
-│   │   ├── blufi.py        # BluFi provisioning
-│   │   ├── wifi.py         # WiFi configuration
-│   │   └── usb.py          # USB hub control
-│   │
-│   ├── development/        # Development commands
-│   │   ├── debug/          # Embedded debugging (GDB, flash, etc.)
-│   │   ├── arm.py          # Robotic arm control
-│   │   ├── python.py       # Remote Python execution
-│   │   └── devenv.py       # Development environment
-│   │
-│   ├── box/                # Box management commands
-│   │   ├── hello.py        # Connectivity test
-│   │   ├── status/         # Box status
-│   │   ├── boxes.py        # Box registration
-│   │   ├── instruments.py  # Instrument listing
-│   │   ├── nets.py         # Net management
-│   │   └── ssh.py          # SSH access
-│   │
-│   └── utility/            # Utility commands
-│       ├── defaults.py     # Default settings
-│       ├── update.py       # Box software updates
-│       ├── pip.py          # Package management
-│       └── webcam.py       # Webcam streaming
-│
-├── impl/                   # Implementation scripts (run on box)
-│   ├── power/              # supply.py, battery.py, solar.py, eload.py
-│   ├── measurement/        # adc.py, dac.py, scope.py, etc.
-│   ├── communication/      # uart.py, ble.py, wifi.py
-│   └── device/             # usb.py, arm.py, hello.py, webcam.py
-│
-└── vendor/                 # Vendored third-party libraries
-    ├── PyCRC/              # CRC calculation
-    └── (elftools at cli/elftools/)
-```
-
-### Command Groups
-
-| Group | Commands | Description |
-|-------|----------|-------------|
-| **Power** | `supply`, `battery`, `solar`, `eload` | Control power equipment |
-| **Measurement** | `adc`, `dac`, `gpi`, `gpo`, `scope`, `logic`, `thermocouple`, `watt`, `energy` | Read sensors and instruments |
-| **Communication** | `uart`, `i2c`, `spi`, `ble`, `blufi`, `wifi`, `usb` | Device communication |
-| **Development** | `debug`, `arm`, `python`, `devenv`, `terminal` | Embedded development |
-| **Box** | `hello`, `status`, `boxes`, `instruments`, `nets`, `ssh` | Box management |
-| **Utility** | `defaults`, `update`, `pip`, `webcam`, `exec`, `logs`, `binaries`, `install`, `install-wheel`, `uninstall` | Utilities |
+Lager exists because every embedded team eventually rebuilds the same bespoke bench-orchestration scripts, badly.
 
 ---
 
-## Box (`box/lager/`)
+## What Lager gives you
 
-Python libraries and services running on box hardware that control test equipment.
-
-### Directory Structure
-
-```
-box/lager/
-├── __init__.py             # Main exports (Net, NetType, etc.)
-├── core.py                 # Core utilities (Interface, Transport)
-├── cache.py                # Thread-safe NetsCache singleton
-├── constants.py            # Centralized configuration constants
-├── exceptions.py           # Unified exception hierarchy
-├── box_http_server.py      # Main Flask+WebSocket server
-│
-├── mcp/                    # MCP server for AI agent integration
-│   ├── server.py           # FastMCP server (port 8100)
-│   ├── tools/              # Tool implementations (power, debug, spi, etc.)
-│   ├── resources/          # Bench discovery resources
-│   ├── schemas/            # Pydantic models (bench, nets, scenarios)
-│   └── engine/             # Scenario runner, bench loader, capability graph
-│
-├── dispatchers/            # Shared dispatcher infrastructure
-│   ├── base.py             # BaseDispatcher abstract class
-│   └── helpers.py          # Shared helper functions
-│
-├── power/                  # Power equipment control
-│   ├── supply/             # Power supplies (Rigol, Keithley, Keysight)
-│   │   ├── dispatcher.py   # Routes commands to drivers
-│   │   ├── supply_net.py   # Abstract interface
-│   │   └── *.py            # Driver implementations
-│   ├── battery/            # Battery simulators (Keithley 2281S)
-│   ├── solar/              # Solar simulators (EA PSI/EL)
-│   └── eload/              # Electronic loads (Rigol DL3021)
-│
-├── io/                     # I/O hardware (LabJack T7)
-│   ├── adc/                # Analog input
-│   ├── dac/                # Analog output
-│   └── gpio/               # Digital I/O
-│
-├── measurement/            # Measurement devices
-│   ├── thermocouple/       # Temperature (Phidget)
-│   ├── watt/               # Power meter (Yocto-Watt)
-│   └── scope/              # Oscilloscope (Rigol MSO5000)
-│
-├── protocols/              # Communication protocols
-│   ├── uart/               # Serial communication
-│   ├── i2c/                # I2C communication
-│   ├── spi/                # SPI communication
-│   ├── ble/                # Bluetooth Low Energy
-│   └── wifi/               # WiFi management
-│
-├── automation/             # Automation hardware
-│   ├── arm/                # Robotic arm (Rotrics)
-│   ├── usb_hub/            # USB hubs (Acroname, YKUSH)
-│   └── webcam/             # Camera streaming
-│
-├── nets/                   # Core net framework
-│   ├── net.py              # Net class - hardware abstraction
-│   ├── device.py           # Device proxy (HTTP to hardware)
-│   ├── mux.py              # Multiplexer management
-│   └── mappers/            # Net-to-device mappers
-│
-├── http_handlers/          # HTTP/WebSocket handlers
-│   ├── app.py              # Flask app factory
-│   ├── uart.py             # UART streaming handlers
-│   ├── supply.py           # Supply monitoring handlers
-│   ├── battery.py          # Battery monitoring handlers
-│   └── state.py            # Shared state management
-│
-├── debug/                  # Embedded debugging
-│   ├── api.py              # Debug API
-│   └── service.py          # GDB/J-Link integration
-│
-└── instrument_wrappers/    # Instrument enums and defines
-    └── *.py                # Per-vendor definitions
-```
-
-### Key Design Patterns
-
-#### Dispatcher Pattern
-Each hardware domain uses a dispatcher that routes commands to the appropriate driver:
-
-```python
-# Example: box/lager/power/supply/dispatcher.py
-from lager.dispatchers import BaseDispatcher
-from lager.dispatchers.helpers import find_saved_net, resolve_address
-
-def voltage(netname: str, value: float = None):
-    net = find_saved_net(netname, SupplyBackendError)
-    driver = _choose_driver(net)
-    return driver.voltage(value)
-```
-
-#### Net Abstraction
-"Nets" represent physical test points on PCBs:
-
-```python
-from lager import Net, NetType
-
-# Get a net and control it
-supply = Net.get("power-rail", type=NetType.PowerSupply)
-supply.voltage(3.3)
-supply.enable()
-```
-
-#### Caching Layer
-Thread-safe singleton cache for net lookups:
-
-```python
-from lager.cache import get_nets_cache
-
-cache = get_nets_cache()
-net = cache.find_by_name("my-net")  # O(1) lookup
-```
+- **Named benches and named nets.** Declare your bench once in JSON on the box ([`/etc/lager/bench.json`](box/lager/mcp/engine/bench_loader.py) + `/etc/lager/saved_nets.json`) and address everything by name from then on. Same names in the CLI, the Python SDK, and over MCP.
+- **Firmware flash.** `lager debug <net> flash --elf|--hex|--bin` ships the binary to the box and programs the target via J-Link `loadfile` ([`box/lager/debug/jlink.py`](box/lager/debug/jlink.py), [`box/lager/debug/service.py`](box/lager/debug/service.py)). ELF defaults from any toolchain — including `cargo build` — work as-is.
+- **Reset and power-cycle.** SWD reset (`rnh` / halt) via J-Link, plus real power-cycle through the bench PSU or per-port USB-hub power ([`box/lager/automation/usb_hub/`](box/lager/automation/usb_hub/)).
+- **RTT and UART log capture.** First-class RTT over J-Link with auto-discovery of the control block ([`box/lager/debug/api.py`](box/lager/debug/api.py)); UART streaming over WebSocket ([`box/lager/http_handlers/uart.py`](box/lager/http_handlers/uart.py)) and `pyserial` in scripts.
+- **Instruments under one API.** Power supplies, electronic loads, oscilloscopes, DAQs, watt meters (Yocto-Watt, Nordic PPK2, Joulescope), thermocouples, USB hubs, robot arms — see the [supported hardware](#supported-hardware) table.
+- **Four ways to drive the same bench, one vocabulary.** CLI (`lager-cli` on PyPI), Python SDK (`from lager import Net, NetType`), HTTP/WebSocket API on the box at `:5000`, and an MCP server on `:8100`. Net names are identical across all four.
+- **Agent-ready.** The MCP server lets Cursor, Claude Desktop, or your own agent introspect the bench and run real hardware steps without a shell — `discover_bench` returns named nets and capabilities, then the agent writes Python and runs it with `lager python`. See the [MCP section](#mcp-server-optional-for-agent-workflows).
+- **Artifacts that survive the test.** Logs, measurements, and traces come back as data instead of evaporating in a terminal.
 
 ---
 
-## Tests (`test/`)
+## Quickstart
 
-Organized test suite matching the CLI/box domain structure.
+> **~5 minutes once you have a Lager box.** First-time box provisioning (a fresh Ubuntu 22.04+ machine + `lager install`) takes another 20–30 min — see the [deployment guide](docs/reference/deployment/README.md). Lager runs against real hardware; there is no zero-hardware demo in this repo today.
 
-### Directory Structure
+### What a bench looks like
 
-```
-test/
-├── framework/              # Shared test infrastructure
-│   ├── harness.sh          # Bash test framework
-│   ├── colors.sh           # Terminal color definitions
-│   ├── test_utils.py       # Python test utilities
-│   └── fixtures.py         # Reusable pytest fixtures
-│
-├── assets/                 # Test assets
-│   ├── firmware/           # Test firmware (*.elf, *.hex)
-│   └── data/               # Test data files
-│
-├── integration/            # Bash integration tests
-│   ├── power/              # supply.sh, battery.sh, solar.sh, eload.sh
-│   ├── io/                 # labjack.sh
-│   ├── usb/                # usb.sh, acroname.sh, ykush.sh
-│   ├── communication/      # uart.sh, debug.sh
-│   ├── sensors/            # thermocouple.sh
-│   └── infrastructure/     # deployment.sh, generic.sh, nets.sh
-│
-├── api/                    # Python API tests
-│   ├── power/              # test_supply_*.py, test_battery_*.py
-│   ├── io/                 # test_adc_*.py, test_dac_*.py, test_gpio_*.py
-│   ├── usb/                # test_usb_*.py
-│   ├── communication/      # test_uart_*.py, test_ble_*.py
-│   ├── sensors/            # test_thermocouple_*.py, test_watt_*.py
-│   └── peripherals/        # test_arm_*.py, test_scope_*.py
-│
-└── unit/                   # Unit tests
-    └── cli/                # CLI unit tests
+The bench is two JSON files on the box. From there, every CLI, SDK, and MCP call addresses hardware by name:
+
+```json
+// /etc/lager/saved_nets.json — one entry per named connection on the bench
+[
+  {"name": "vbat",    "role": "power-supply", "instrument": "rigol_dp800", "channel": "1"},
+  {"name": "swd0",    "role": "debug",        "instrument": "jlink",       "channel": "NRF52840_XXAA"},
+  {"name": "uart1",   "role": "uart",         "instrument": "usb",         "channel": "/dev/ttyUSB0"},
+  {"name": "imu_pwr", "role": "usb",          "instrument": "acroname",    "channel": "3"}
+]
 ```
 
-### Running Tests
+`lager nets add-all` discovers attached instruments and writes this file for you; you can hand-edit it too. The shape is the same one `_net_from_raw` consumes in [box/lager/mcp/engine/bench_loader.py](box/lager/mcp/engine/bench_loader.py).
+
+### 1. Install the CLI on your laptop
 
 ```bash
-# Integration tests (requires hardware)
-cd test/integration/power
-./supply.sh <box-ip> <net-name>
-
-# Python API tests
-lager python test/api/power/test_supply_comprehensive.py --box <box-name>
-
-# Unit tests (no hardware)
-pytest unit/
-```
-
----
-
-## Deployment (`cli/deployment/`)
-
-Box deployment and security automation, packaged with the CLI.
-
-### Directory Structure
-
-```
-cli/deployment/
-├── scripts/                # Deployment scripts
-│   ├── setup_and_deploy_box.sh    # Main deployment
-│   ├── setup_ssh_key.sh           # SSH key setup
-│   └── convert_to_sparse_checkout.sh  # Fix directory structure
-└── security/               # Security scripts
-    └── secure_box_firewall.sh     # UFW configuration
-```
-
-Additional deployment docs (cloud-init, process guides) live in `docs/reference/deployment/`.
-
-### Deploying a Box
-
-```bash
-# Using the CLI (recommended)
-lager install --ip <BOX_IP>
-
-# Or run the script directly
-cli/deployment/scripts/setup_and_deploy_box.sh <BOX_IP>
-```
-
----
-
-## Quick Start
-
-### Installation
-
-```bash
-# Install CLI
 pip install lager-cli
+```
 
-# Add a box
+### 2. Provision a box
+
+Any x86 machine running Ubuntu 22.04+ becomes a Lager box.
+
+```bash
+lager install --ip <BOX_IP>
 lager boxes add --name my-box --ip <BOX_IP>
-
-# Test connectivity
 lager hello --box my-box
 ```
 
-### Common Commands
+`lager hello` hits `http://<box>:5000/hello` and confirms the box services are up ([cli/commands/box/hello.py](cli/commands/box/hello.py)).
+
+### 3. Declare what's wired up
 
 ```bash
-# Power supply control
-lager supply my-net voltage 3.3 --box my-box
-lager supply my-net enable --box my-box
+lager nets add-all --box my-box   # discover instruments and offer to save them
+lager nets list    --box my-box
+```
 
-# Read ADC
-lager adc my-net --box my-box
+### 4. Talk to the hardware
 
-# Flash firmware
-lager debug my-net flash --hex firmware.hex --box my-box
-
-# Open UART terminal
+```bash
+lager supply vbat enable --box my-box
+lager supply vbat voltage 3.3 --box my-box
+lager debug swd0 flash --elf target/thumbv7em-none-eabihf/release/firmware --box my-box
+lager debug swd0 reset --box my-box
 lager uart --box my-box --baudrate 115200
 ```
 
-### Python API
+### 5. Or the same thing from Python
 
 ```python
 from lager import Net, NetType
 
-# Connect to a power supply net
-supply = Net.get("power-rail", type=NetType.PowerSupply)
-supply.voltage(3.3)
-supply.enable()
+vbat = Net.get("vbat", type=NetType.PowerSupply)
+swd  = Net.get("swd0", type=NetType.Debug)
 
-# Read temperature
-tc = Net.get("temp-sensor", type=NetType.Thermocouple)
-print(f"Temperature: {tc.read()}°C")
+vbat.voltage(3.3); vbat.enable()
+swd.flash(elf="firmware.elf")
+swd.reset(halt=False)
 ```
+
+Run that file against the box with:
+
+```bash
+lager python --serial my-box hil_smoke.py
+```
+
+`lager python` syncs your project to the box and executes the script there, so anything in your repo — pytest, your test framework, custom modules — is available. See [docs/examples/demo_script.py](docs/examples/demo_script.py) and [test/api/communication/test_debug_comprehensive.py](test/api/communication/test_debug_comprehensive.py) for fuller examples.
 
 ---
 
-## MCP Server (AI Agent Integration)
+## In CI
 
-The Lager box includes an **MCP (Model Context Protocol) server** that lets AI coding agents control hardware directly. Any MCP-compatible client can connect over HTTP and run hardware operations without writing CLI commands.
+Any GitHub Actions / GitLab / Drone / Bitbucket / Jenkins runner becomes a HIL runner. The CLI detects the environment automatically ([cli/context/ci_detection.py](cli/context/ci_detection.py)) and `lager python` exit codes propagate, so a failed assertion fails the job.
 
-### How It Works
-
+```yaml
+# .github/workflows/hil.yml
+name: HIL smoke
+on: [pull_request]
+jobs:
+  hil:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install lager-cli
+      - run: cargo build --release --target thumbv7em-none-eabihf
+      - run: |
+          lager python --serial ${{ secrets.LAGER_BOX }} \
+            tests/hil_smoke.py \
+            --add-file target/thumbv7em-none-eabihf/release/firmware
 ```
-MCP-compatible AI agent
-    |  MCP (streamable-http)
-    v
-Lager MCP Server (on-box, port 8100)
-    |  direct lager.Net API
-    v
-Hardware (power supplies, debug probes, GPIO, protocols, etc.)
+
+The runner needs network reach to the box (Tailscale, VPN, or LAN). Auth lives in the box record on the runner side; in CI you point `--serial` at the box name and rely on credentials provisioned during setup.
+
+---
+
+## For Rust embedded teams
+
+Rust has made firmware feel like serious software. Cargo, type-checked HALs, defmt, probe-rs, and frameworks like Embassy and RTIC have closed a lot of the gap with general-purpose software development.
+
+But eventually the firmware has to run on the board. The hard failures still happen at the boundary between code and hardware: boot timing, power rails, brownouts, watchdogs, radio behavior, sensor state, peripheral sequencing, DMA, sleep/wake transitions, and the specific way a particular silicon revision responds after reset.
+
+Lager gives Rust embedded teams a programmable layer around the bench so a test can flash the firmware, start log capture, reset or power-cycle the DUT, drive external inputs, control instruments, measure current, collect artifacts, and fail with evidence. It does not replace Embassy, RTIC, probe-rs, defmt, RTT, OpenOCD, pyOCD, or your vendor SDK. It orchestrates the bench around them.
+
+**How Lager fits with your existing Rust toolchain.**
+
+- **The bench layer is independent of your flash tool.** PSU control, USB-hub power-cycling, RTT capture, scope and DAQ measurement, current measurement (PPK2, Joulescope, Yocto-Watt), and CI integration are useful even if your team's flash flow stays `cargo embed` / `probe-rs run`. Drive them from `lager python` scripts alongside your existing probe-rs invocation.
+- **cargo-built ELFs flash directly** via `lager debug <net> flash --elf target/.../firmware` if you want Lager to do the flashing too. Goes through `JLinkExe loadfile` ([box/lager/debug/jlink.py](box/lager/debug/jlink.py)) — Lager doesn't care which toolchain produced the ELF.
+- **defmt over RTT.** Lager surfaces RTT as raw bytes ([box/lager/debug/api.py](box/lager/debug/api.py)). Pipe stdout into `defmt-print -e firmware.elf` to decode; the CLI handles `SIGPIPE` for exactly this pattern ([cli/commands/development/debug/commands.py](cli/commands/development/debug/commands.py) L685–687).
+- **GDB.** `lager debug <net> gdbserver` starts `JLinkGDBServerCLExe` and exposes the port ([box/lager/debug/gdbserver.py](box/lager/debug/gdbserver.py)). Point `rust-gdb` or `arm-none-eabi-gdb` at it.
+- **Embassy, RTIC, embedded-hal, vendor HALs.** Framework-agnostic — Lager sees a target chip and an ELF.
+- **probe-rs / OpenOCD / pyOCD as the integrated flasher** isn't wired today; J-Link is the only first-class debug backend (the legacy OpenOCD path was removed — see [CHANGELOG.md](CHANGELOG.md), "J-Link is now the only debug backend"). If you want a single command that does both bench orchestration and a probe-rs flash, install probe-rs on the box via `lager box config cargo` and call it from a `lager python` script. Deeper first-class integration is an open area; PRs welcome.
+
+**What a Rust HIL test typically does on Lager.** Flash an Embassy or RTIC firmware image, capture defmt logs over RTT, drive a GPIO or supply rail as a stimulus, power-cycle the DUT, measure sleep current with a PPK2 or Joulescope net, detect a panic or watchdog reset or unexpected log line, and save the captured logs and measurements as artifacts the next engineer can replay.
+
+---
+
+## Writing a HIL test
+
+A small smoke test that flashes a Rust firmware image, resets the board, and asserts on RTT output. Assumes `debug1` is declared on the bench (see [test/api/communication/test_debug_comprehensive.py](test/api/communication/test_debug_comprehensive.py) for a fuller pattern; `RTT` shape from [box/lager/debug/api.py](box/lager/debug/api.py)).
+
+```python
+import time
+from lager import Net, NetType
+
+debug = Net.get("debug1", type=NetType.Debug)
+
+debug.connect()
+debug.flash(elf="firmware.elf")
+debug.reset(halt=False)
+
+with debug.rtt() as rtt:
+    deadline = time.monotonic() + 10
+    seen = b""
+    while time.monotonic() < deadline:
+        chunk = rtt.read_some(timeout=0.25)
+        if chunk:
+            seen += chunk
+            if b"boot_ok" in seen:
+                break
+    assert b"boot_ok" in seen, f"no boot frame in {len(seen)} bytes"
 ```
 
-The server runs inside the box's Docker container alongside existing services. All hardware operations execute directly on-box — no CLI subprocess calls, no round trips back to the agent.
+`seen` is raw RTT bytes. For defmt firmware, pipe it through `defmt-print -e firmware.elf` or decode in-process with the `defmt-decoder` crate / Python bindings. The example asserts on a sentinel substring so it works for both raw and defmt logs.
 
-### Connecting Your Agent
+Run it from your laptop or from CI:
 
-Add the Lager box as an MCP server in your client's configuration. Replace `<box-ip>` with the box's IP address (Tailscale IP, LAN IP, etc.). Most MCP clients accept the standard JSON form below; consult your client's documentation for its exact config location and syntax.
+```bash
+lager python --serial my-box hil_smoke.py --add-file firmware.elf
+```
+
+`--add-file` ships the binary alongside the script. Exit code propagates back, so a failed assertion fails the CI step.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph callers [Callers]
+        Laptop[Your laptop]
+        CI[CI runner]
+        Agent[AI agent]
+    end
+
+    subgraph surfaces [Control surfaces]
+        CLI[Lager CLI]
+        SDK[Python SDK]
+        MCP[MCP server]
+    end
+
+    Box["Lager Box<br/>x86 Ubuntu 22.04+"]
+    Bench["Bench config<br/>bench.json + saved_nets.json"]
+    HW["Real hardware<br/>DUT - probe - PSU<br/>scope - DAQ - hubs"]
+
+    Laptop --> CLI
+    Laptop --> SDK
+    CI --> CLI
+    Agent --> MCP
+    CLI --> Box
+    SDK --> Box
+    MCP --> Box
+    Box --> Bench
+    Bench --> HW
+```
+
+Box services speak HTTP/WebSocket on port `5000` ([box/lager/box_http_server.py](box/lager/box_http_server.py)); the MCP server runs alongside on port `8100` ([box/lager/mcp/server.py](box/lager/mcp/server.py)). Bench state lives in JSON on the box (`/etc/lager/bench.json`, `/etc/lager/saved_nets.json`) and is the single source of truth every control surface reads from.
+
+---
+
+## What Lager is / what it is not
+
+**Lager is.** Bench orchestration. A unified, named-resource API over instruments, debug probes, and DUTs. A way to make HIL tests reproducible across people, machines, and CI. A way to share a single bench across a team without everyone needing the same local lab setup.
+
+**Lager is not.** A firmware framework. A replacement for Embassy, RTIC, probe-rs, defmt, RTT, OpenOCD, pyOCD, or vendor SDKs. A simulator or a way to avoid real hardware. A dashboard-only observability product. A hosted-cloud requirement — you can run everything on machines you own. A magic auto-generated-driver system. A way to skip understanding the hardware.
+
+It complements the embedded tools you already trust by orchestrating the physical bench around them.
+
+**Hosting model.** Lager is Apache-2.0 open source and runs entirely on hardware you own — no cloud dependency ([SECURITY.md](SECURITY.md) L71). Commercial control planes that add org/RBAC/SSO, audit logging, and bench scheduling on top of Lager — for teams running fleets of boxes — are listed on the [Professional Services directory](https://lagerdata.com/professional-services).
+
+---
+
+## Supported hardware
+
+| Category | Devices |
+|----------|---------|
+| **Power Supplies** | Rigol DP800, Keithley 2200/2280, Keysight E36200/E36300 |
+| **Battery Simulators** | Keithley 2281S |
+| **Solar Simulators** | EA PSI/EL series |
+| **Electronic Loads** | Rigol DL3021 |
+| **Oscilloscopes** | Rigol MSO5000 series, PicoScope 2000/2000a |
+| **DAQ / I/O** | LabJack T7 (ADC / DAC / GPIO) |
+| **Temperature** | Phidget thermocouples |
+| **Power Meters** | Yocto-Watt, Nordic PPK2, Joulescope |
+| **USB Hubs** | Acroname, YKUSH (per-port power) |
+| **Debug Probes** | SEGGER J-Link (integrated). See note below. |
+| **Robot Arms** | Rotrics Dexarm |
+
+**On debug probes.** Lager's integrated flash, SWD reset, GDB server, and RTT path uses J-Link tooling ([box/lager/debug/jlink.py](box/lager/debug/jlink.py)). CMSIS-DAP and ST-Link are addressable via J-Link's interface settings. probe-rs, OpenOCD, and pyOCD aren't first-class today — install them on the box (e.g. `lager box config cargo` for probe-rs) and invoke them from `lager python` scripts.
+
+Adding a driver follows the dispatcher pattern in [box/lager/](box/lager/) — PRs welcome.
+
+---
+
+## CLI surface
+
+| Group | Commands |
+|-------|----------|
+| **Power** | `supply`, `battery`, `solar`, `eload` |
+| **Measurement** | `adc`, `dac`, `gpi`, `gpo`, `scope`, `logic`, `thermocouple`, `watt`, `energy` |
+| **Communication** | `uart`, `i2c`, `spi`, `ble`, `blufi`, `wifi`, `usb` |
+| **Development** | `debug`, `arm`, `python`, `devenv`, `terminal` |
+| **Box** | `hello`, `status`, `boxes`, `instruments`, `nets`, `ssh` |
+| **Utility** | `defaults`, `update`, `pip`, `webcam`, `exec`, `logs`, `binaries`, `install` |
+
+`lager --help` or `lager <group> --help` for everything. Full reference: [docs.lagerdata.com/reference/cli](https://docs.lagerdata.com/reference/cli).
+
+---
+
+## MCP server (optional, for agent workflows)
+
+Lager ships an MCP server on every box so agents (Cursor, Claude Desktop, your own) can introspect the bench and run real hardware steps directly, without a shell. We use this in-house for agentic AI workflows where a model needs to pick the right net for a test before writing or running it — discovery first, action second.
+
+Add it to your agent's config:
 
 ```json
 {
   "mcpServers": {
-    "lager": {
-      "url": "http://<box-ip>:8100/mcp"
-    }
+    "lager": { "url": "http://<box-ip>:8100/mcp" }
   }
 }
 ```
 
-**Python (programmatic)**:
+The tools actually registered today ([`box/lager/mcp/server.py`](box/lager/mcp/server.py)):
+
+| Tool | What it does |
+|------|--------------|
+| `discover_bench` | Returns the bench (DUT slots, instruments, nets, capability summary) as JSON. Pass a `net_name` to expand one net plus its capabilities. |
+| `assess_suitability` | Given a test type, returns whether the bench can run it, missing roles, candidate nets, and an explanation. |
+| `plan_firmware_test` | Returns a structured test plan tying available nets to a firmware-test goal. |
+| `get_test_example` | Finds runnable example scripts in `test/api/` by keyword. |
+| `quick_io` | Single-net spot-check (e.g. "what's the voltage on `vbat` right now?"). |
+| `install_dependency` | `pip install` on the box for things the script needs. |
+| `box_manage` | Box admin (config reload, etc.). |
+
+For everything beyond `quick_io`, the agent writes a Python file and runs it with `lager python` — the same surface a human uses. Bench discovery + Python execution is the loop.
+
+Port defaults from [`box/lager/mcp/config.py`](box/lager/mcp/config.py) (`LAGER_MCP_PORT=8100`, `LAGER_MCP_HOST=0.0.0.0`).
+
+<details>
+<summary>Connectivity check and Python client</summary>
+
+```bash
+curl http://<box-ip>:8100/mcp
+docker exec lager tail -20 /tmp/lager-mcp-server.log
+```
+
 ```python
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
@@ -412,103 +334,54 @@ async with streamablehttp_client("http://<box-ip>:8100/mcp") as (read, write, _)
         result = await session.call_tool("discover_bench", {})
 ```
 
-### Recommended Workflow
+</details>
 
-1. **Discover hardware** — the agent calls `discover_bench()` to see available instruments, nets, and capabilities.
-2. **Run scenarios** — use `run_scenario()` with a multi-step test plan. All steps execute on-box in one round trip, keeping latency low.
-3. **Debug interactively** — fine-grained tools (`supply_set_voltage`, `debug_flash`, `spi_transfer`, etc.) are available for one-off operations.
+---
 
-### Verifying the Server
+## Repo layout
 
-```bash
-# Quick connectivity check from any machine
-curl http://<box-ip>:8100/mcp
-
-# Check logs on the box
-docker exec lager tail -20 /tmp/lager-mcp-server.log
+```
+lager/
+├── cli/                  # Python Click CLI (pip install lager-cli) + deployment scripts
+├── box/                  # Software that runs on the Lager box
+│   ├── lager/            # Python services: nets, dispatchers, MCP server, HTTP/WS handlers
+│   └── oscilloscope-daemon/  # Rust WebSocket/WebTransport scope streamer
+├── test/                 # Integration (bash) + API (pytest) + unit tests
+└── docs/                 # Mintlify docs source + deployment reference
 ```
 
-### Available Tools
-
-| Category | Tools |
-|----------|-------|
-| **Discovery** | `discover_bench`, `assess_suitability` |
-| **Scenarios** | `run_scenario` (multi-step, one round trip), `run_hil_program` (escape hatch) |
-| **Power** | `supply_set_voltage`, `supply_enable`, `supply_measure`, `battery_*`, `eload_*`, `solar_*` |
-| **Debug** | `debug_flash`, `debug_reset`, `debug_connect`, `debug_gdbserver`, `rtt_write`, `rtt_read` |
-| **Communication** | `spi_transfer`, `i2c_scan`, `i2c_read`, `uart_send`, `uart_read` |
-| **Measurement** | `adc_read`, `dac_set`, `gpio_read`, `gpio_set`, `watt_read`, `thermocouple_read` |
-| **Scope** | `scope_enable`, `scope_measure`, `scope_trigger_edge`, `picoscope_capture` |
-| **Other** | `usb_enable`, `webcam_start`, `ble_scan`, `wifi_status`, `router_info`, `flash_firmware` |
+Deeper architecture — dispatcher pattern, caching, deployment internals, per-driver layouts — lives at [docs.lagerdata.com](https://docs.lagerdata.com).
 
 ---
 
 ## Development
 
-### CLI Development
-
 ```bash
-cd cli
-pip install -e .
-lager --help
-```
+# CLI (editable install)
+cd cli && pip install -e . && lager --help
 
-### Box Development
-
-```bash
+# Box services (deploy to a target host)
 lager install --ip <box-ip>
-```
 
-### Oscilloscope Daemon (Rust)
+# Oscilloscope daemon (Rust 1.85+, edition 2024)
+cd box/oscilloscope-daemon && cargo build --release
 
-The `box/oscilloscope-daemon/` directory contains a Rust-based WebSocket/WebTransport server for real-time oscilloscope streaming. Building it requires **Rust 1.85+** (edition 2024).
-
-```bash
-cd box/oscilloscope-daemon
-cargo build --release
-```
-
-### Running Tests
-
-```bash
-# Unit tests
-cd test
-pytest unit/
-
-# Integration tests (requires box)
-./integration/power/supply.sh <box-ip> <net-name>
+# Tests
+cd test && pytest unit/                              # no hardware
+./integration/power/supply.sh <box-ip> <net-name>    # hardware required
 ```
 
 ---
 
-## Supported Hardware
+## Docs and community
 
-| Category | Devices |
-|----------|---------|
-| **Power Supplies** | Rigol DP800, Keithley 2200/2280, Keysight E36200/E36300 |
-| **Battery Simulators** | Keithley 2281S |
-| **Solar Simulators** | EA PSI/EL series |
-| **Electronic Loads** | Rigol DL3021 |
-| **Oscilloscopes** | Rigol MSO5000 series, PicoScope 2000/2000a |
-| **I/O** | LabJack T7 (ADC/DAC/GPIO) |
-| **Temperature** | Phidget thermocouples |
-| **Power Meters** | Yocto-Watt |
-| **USB Hubs** | Acroname, YKUSH |
-| **Debug Probes** | J-Link, CMSIS-DAP, ST-Link (via pyOCD) |
-| **Robot Arms** | Rotrics Dexarm |
-
----
-
-## Documentation
-
-Full documentation available at [docs.lagerdata.com](https://docs.lagerdata.com)
-
-- [CLI Reference](https://docs.lagerdata.com/reference/cli)
-- [Python API Reference](https://docs.lagerdata.com/reference/python)
-- [Getting Started Guide](https://docs.lagerdata.com/essentials/quickstart)
+- [Getting started](https://docs.lagerdata.com/essentials/quickstart)
+- [CLI reference](https://docs.lagerdata.com/reference/cli)
+- [Python SDK reference](https://docs.lagerdata.com/reference/python)
+- Issues and discussions: [github.com/lagerdata/lager](https://github.com/lagerdata/lager)
 
 ---
 
 ## License
 
-Apache License 2.0 - Lager Data. See [LICENSE](LICENSE) for details.
+Apache License 2.0 — Lager Data. See [LICENSE](LICENSE) for details.
