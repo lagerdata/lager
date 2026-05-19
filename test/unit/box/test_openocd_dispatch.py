@@ -169,6 +169,51 @@ class BuildOpenOcdCommandTests(unittest.TestCase):
         )
         self.assertIn(user_cfg, cmd)
 
+    def test_user_cfg_loads_before_adapter_serial(self):
+        # ``adapter serial`` requires ``adapter driver <X>`` to already be
+        # set. With a user cfg, the driver only appears inside that cfg, so
+        # the ``-f user.cfg`` must precede ``-c adapter serial ...``.
+        user_cfg = os.path.abspath(__file__)
+        cmd = self._build(
+            address='USB0::0x0403::0x6011::FT4XYZW::INSTR',  # FT4232H
+            device='custom-chip',  # no target.cfg auto-match
+            user_config_path=user_cfg,
+        )
+        user_cfg_idx = cmd.index(user_cfg)
+        serial_idx = next(
+            i for i, arg in enumerate(cmd) if arg.startswith('adapter serial')
+        )
+        self.assertLess(user_cfg_idx, serial_idx,
+                        msg='user cfg must load before `adapter serial`')
+
+    def test_user_cfg_suppresses_auto_transport_select(self):
+        # User cfgs almost always call ``transport select`` themselves at
+        # the top; a second select trips "Transport already selected".
+        user_cfg = os.path.abspath(__file__)
+        cmd = self._build(
+            address='USB0::0x0403::0x6011::FT4XYZW::INSTR',
+            device='custom-chip',
+            transport='SWD',
+            user_config_path=user_cfg,
+        )
+        self.assertFalse(
+            any(arg.startswith('transport select') for arg in cmd),
+            msg='auto `transport select` must be skipped when user cfg is set',
+        )
+
+    def test_auto_transport_select_still_emitted_without_user_cfg(self):
+        # Regression: the user-cfg gating must not strip transport select
+        # from the normal auto-detected path.
+        cmd = self._build(
+            address='USB0::0x0403::0x6014::FTA3W13P::INSTR',  # FT232H
+            transport='SWD',
+            user_config_path=None,
+        )
+        self.assertTrue(
+            any(arg == 'transport select swd' for arg in cmd),
+            msg='auto `transport select` should still appear in non-user-cfg path',
+        )
+
 
 if __name__ == '__main__':
     unittest.main()
