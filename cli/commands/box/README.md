@@ -6,6 +6,13 @@ This directory implements the `lager nets …` CLI surface and the interactive
 - `nets.py` — Click command group: `nets create`, `create-all`, `delete`,
   `rename`, `add-batch`, `set-script`, `remove-script`, etc. Also hosts the
   default `list` view.
+  - The `set-script` / `show-script` / `remove-script` trio is
+    backend-agnostic: it auto-detects J-Link vs. OpenOCD from the probe's
+    VID (via the duplicated `_DEBUG_*_VIDS` tables — keep in sync with
+    `box/lager/debug/probes.py`) and the file's extension/content, and
+    enforces mutual exclusivity (`jlink_script` XOR `openocd_config`) on
+    every save. `set-openocd-config` and friends are thin aliases that
+    delegate with `--backend openocd` pinned.
 - `net_tui.py` — Textual-based interactive manager (`lager nets tui`).
 
 End-user documentation lives at

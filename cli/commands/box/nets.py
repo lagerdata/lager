@@ -108,6 +108,178 @@ _VISA_SERIAL_RE = re.compile(
 )
 
 
+# --------------------------------------------------------------------------- #
+# Debug-script backend detection (mirror of box/lager/debug/probes.py).       #
+#                                                                             #
+# Kept duplicated client-side on purpose: detection has to work against any   #
+# box version, including ones older than the smart `set-script` change. The   #
+# only state we need is the net record (which `_run_net_py list` always       #
+# returns) plus the file the user just handed us.                             #
+# --------------------------------------------------------------------------- #
+
+_DEBUG_VISA_RE = re.compile(
+    r'USB\d*::0x([0-9A-Fa-f]+)::0x[0-9A-Fa-f]+::[^:]+::INSTR',
+    re.IGNORECASE,
+)
+# Keep these in sync with `_JLINK_VIDS` / `_OPENOCD_VIDS` in
+# `box/lager/debug/probes.py`.
+_DEBUG_JLINK_VIDS = {'1366'}
+_DEBUG_OPENOCD_VIDS = {'0483', '2e8a', '0403', '0d28', '03eb', '15ba'}
+
+_JLINK_EXTS = {'.jlinkscript', '.jlinkscriptfile'}
+_OPENOCD_EXTS = {'.cfg', '.tcl', '.ocd'}
+
+_BACKEND_JLINK = 'jlink'
+_BACKEND_OPENOCD = 'openocd'
+
+_FIELD_FOR_BACKEND = {
+    _BACKEND_JLINK: 'jlink_script',
+    _BACKEND_OPENOCD: 'openocd_config',
+}
+_BACKEND_LABEL = {
+    _BACKEND_JLINK: 'J-Link script',
+    _BACKEND_OPENOCD: 'OpenOCD config',
+}
+
+
+def _probe_backend_for_net(net: Any) -> Optional[str]:
+    """Return ``'jlink'``/``'openocd'`` for *net*, or ``None`` if unknown.
+
+    Mirrors ``box/lager/debug/probes.py::resolve_backend`` but never defaults
+    to J-Link — callers want to know when the probe signal is absent so they
+    can fall back to file sniffing without being misled by the default.
+    """
+    if not isinstance(net, dict):
+        return None
+    explicit = (net.get('debug_backend') or '').strip().lower()
+    if explicit in (_BACKEND_JLINK, _BACKEND_OPENOCD):
+        return explicit
+    address = net.get('address') or ''
+    m = _DEBUG_VISA_RE.match(str(address).strip())
+    if not m:
+        return None
+    vid = m.group(1).lower().lstrip('0').zfill(4) or '0000'
+    if vid in _DEBUG_OPENOCD_VIDS:
+        return _BACKEND_OPENOCD
+    if vid in _DEBUG_JLINK_VIDS:
+        return _BACKEND_JLINK
+    return None
+
+
+def _sniff_script_backend(filename: str, content: bytes) -> Optional[str]:
+    """Return ``'jlink'``/``'openocd'``/``None`` from filename + content.
+
+    Extension is the dominant signal. Content sniff is only consulted when
+    the extension is unrecognised (e.g. stdin or extensionless paths) and
+    abstains when both/neither family of markers is present so we don't
+    guess silently.
+    """
+    import os
+    _, ext = os.path.splitext((filename or '').lower())
+    if ext in _JLINK_EXTS:
+        return _BACKEND_JLINK
+    if ext in _OPENOCD_EXTS:
+        return _BACKEND_OPENOCD
+    try:
+        head = content[:4096].decode('utf-8', errors='replace').lower()
+    except Exception:
+        return None
+    openocd_markers = (
+        'adapter driver', 'transport select', 'ftdi vid_pid',
+        'source [find', 'target create', 'swj_newdap', 'dap create',
+        'jtag newtap', 'flash bank',
+    )
+    jlink_markers = (
+        'reset()', 'inittarget()', 'mem_writeu32', 'jlink_executecommand',
+        'beforetargetreset', 'aftertargetreset', 'aftertargetdownload',
+    )
+    has_openocd = any(m in head for m in openocd_markers)
+    has_jlink = any(m in head for m in jlink_markers)
+    if has_openocd and not has_jlink:
+        return _BACKEND_OPENOCD
+    if has_jlink and not has_openocd:
+        return _BACKEND_JLINK
+    return None
+
+
+def _choose_script_backend(
+    *,
+    explicit: Optional[str],
+    probe: Optional[str],
+    file: Optional[str],
+) -> tuple[Optional[str], str, bool]:
+    """Reconcile the three backend signals.
+
+    Returns ``(backend, reason, mismatch)``:
+
+    * ``backend`` is the chosen backend or ``None`` when undetermined.
+    * ``reason`` is a one-line human explanation for status messages.
+    * ``mismatch`` is True when probe and file both have a value and
+      disagree; callers must surface a clear error so the user can pick
+      a side with ``--backend``.
+    """
+    if explicit:
+        return explicit, f"--backend {explicit} (explicit)", False
+    signals = [(k, v) for k, v in (('probe', probe), ('file', file)) if v]
+    if not signals:
+        return None, (
+            "no backend signal — pass --backend, or use a recognised "
+            "file extension (.JLinkScript / .cfg / .tcl)"
+        ), False
+    values = {v for _k, v in signals}
+    if len(values) == 1:
+        chosen = next(iter(values))
+        sources = '+'.join(k for k, _v in signals)
+        return chosen, f"{chosen} (matched {sources})", False
+    return None, (
+        f"probe says '{probe}', file says '{file}' "
+        "— pass --backend to override"
+    ), True
+
+
+def _read_debug_script_input(script_path: str) -> tuple[str, bytes]:
+    """Return ``(display_name, raw_bytes)`` for *script_path*.
+
+    ``script_path == '-'`` reads from stdin as binary; otherwise reads the
+    given path. Raises ``click.ClickException`` on read failure so the
+    caller can render a consistent error.
+    """
+    import sys
+    if script_path == '-':
+        try:
+            return ('<stdin>', sys.stdin.buffer.read())
+        except Exception as e:
+            raise click.ClickException(f"Failed to read script from stdin: {e}")
+    try:
+        with open(script_path, 'rb') as f:
+            return (script_path, f.read())
+    except FileNotFoundError:
+        raise click.ClickException(f"Script file not found: {script_path}")
+    except Exception as e:
+        raise click.ClickException(f"Failed to read script file: {e}")
+
+
+def _clear_other_script_field(
+    target: dict, chosen_field: str,
+) -> tuple[Optional[str], int]:
+    """If the net has the *other* debug-script field set, delete it.
+
+    Returns ``(cleared_field, decoded_byte_count)`` or ``(None, 0)`` when
+    nothing was cleared. ``decoded_byte_count`` is the size of the
+    base64-decoded content, or ``-1`` if it couldn't be decoded.
+    """
+    import base64
+    other = 'openocd_config' if chosen_field == 'jlink_script' else 'jlink_script'
+    if not target.get(other):
+        return (None, 0)
+    try:
+        n = len(base64.b64decode(target[other]))
+    except Exception:
+        n = -1
+    del target[other]
+    return (other, n)
+
+
 def _serial_from_visa_address(address) -> str:
     """Extract the USB serial segment from a VISA-style address.
 
@@ -1251,67 +1423,23 @@ def create_batch_cmd(ctx: click.Context, json_file, box: str | None) -> None:
     _save_nets_batch(ctx, resolved_box, normalized_nets)
 
 
-@nets.command("set-script", help="Set or update a J-Link script on an existing debug net.")
-@click.argument("name")
-@click.argument("script_path", type=click.Path(exists=True))
-@click.option("--box", help="Lagerbox name or IP")
-@click.pass_context
-def set_script_cmd(
-    ctx: click.Context, name: str, script_path: str, box: str | None
-) -> None:
-    """
-    Attach a JLinkScript file to an existing debug net.
-
-    The script is stored on the box and used automatically during
-    connect, flash, erase, and reset operations.
-    """
-    import base64
-
-    resolved_box = _resolve_box(ctx, box)
-    raw = _run_net_py(ctx, resolved_box, "list")
-    try:
-        recs = _parse_backend_json(raw)
-    except json.JSONDecodeError:
-        click.secho("Failed to parse response from backend.", fg="red", err=True)
-        ctx.exit(1)
-
-    target = next((r for r in recs if r.get("name") == name), None)
-    if not target:
-        click.secho(f"Net '{name}' not found on {resolved_box}.", fg="yellow")
-        ctx.exit(1)
-
-    if target.get("role") != "debug":
-        click.secho(
-            f"Net '{name}' is a '{target.get('role')}' net. --jlink-script is only applicable for debug nets.",
-            fg="red",
-        )
-        ctx.exit(1)
-
-    try:
-        with open(script_path, "rb") as f:
-            encoded = base64.b64encode(f.read()).decode("ascii")
-    except Exception as e:
-        click.secho(f"Error reading script file: {e}", fg="red", err=True)
-        ctx.exit(1)
-
-    target["jlink_script"] = encoded
-    _run_net_py(ctx, resolved_box, "save", json.dumps(target))
-    click.secho(
-        f"J-Link script set on debug net '{name}' on box {resolved_box}.", fg="green"
-    )
+# --------------------------------------------------------------------------- #
+# Debug-script commands.                                                      #
+#                                                                             #
+# `set-script` / `show-script` / `remove-script` are the canonical entry      #
+# points: they detect whether the file is a J-Link script or an OpenOCD       #
+# .cfg/.tcl and route to the right field on the net record. The legacy        #
+# `set-openocd-config` / `show-openocd-config` / `remove-openocd-config`      #
+# commands are thin wrappers around the same impl with the backend pinned.   #
+#                                                                             #
+# Mutual exclusivity (KISS): a debug net carries *either* `jlink_script` or  #
+# `openocd_config`, never both. `set-script` clears the other field when it  #
+# writes; the caller sees a yellow notice so no data goes missing silently.  #
+# --------------------------------------------------------------------------- #
 
 
-@nets.command("remove-script", help="Remove a J-Link script from an existing debug net.")
-@click.argument("name")
-@click.option("--box", help="Lagerbox name or IP")
-@click.pass_context
-def remove_script_cmd(
-    ctx: click.Context, name: str, box: str | None
-) -> None:
-    """
-    Remove a JLinkScript file from an existing debug net.
-    """
-    resolved_box = _resolve_box(ctx, box)
+def _load_debug_net(ctx: click.Context, resolved_box: str, name: str) -> dict:
+    """Fetch the named debug net or click-exit with a useful message."""
     raw = _run_net_py(ctx, resolved_box, "list")
     try:
         recs = _parse_backend_json(raw)
@@ -1331,202 +1459,283 @@ def remove_script_cmd(
         )
         ctx.exit(1)
 
-    if "jlink_script" not in target:
-        click.secho(f"Net '{name}' does not have a J-Link script attached.", fg="yellow")
-        return
-
-    del target["jlink_script"]
-    _run_net_py(ctx, resolved_box, "save", json.dumps(target))
-    click.secho(
-        f"J-Link script removed from debug net '{name}' on box {resolved_box}.", fg="green"
-    )
+    return target
 
 
-@nets.command("show-script", help="Display the J-Link script attached to a debug net.")
-@click.argument("name")
-@click.option("--box", help="Lagerbox name or IP")
-@click.pass_context
-def show_script_cmd(
-    ctx: click.Context, name: str, box: str | None
+def _set_debug_script_impl(
+    ctx: click.Context,
+    name: str,
+    script_path: str,
+    box: Optional[str],
+    backend: Optional[str],
 ) -> None:
-    """
-    Print the contents of a JLinkScript attached to a debug net.
+    """Shared body of ``set-script`` / ``set-openocd-config``.
 
-    Output goes to stdout so it can be piped or redirected:
-        lager nets show-script my-debug --box mybox > script.JLinkScript
+    ``backend`` is the user's explicit override (``'jlink'`` / ``'openocd'``
+    / ``None``). When unset, the backend is derived from the probe VID and
+    the file's extension/content; if the two disagree the caller is forced
+    to pick one with ``--backend`` so we never silently misroute the write.
     """
     import base64
 
     resolved_box = _resolve_box(ctx, box)
-    raw = _run_net_py(ctx, resolved_box, "list")
-    try:
-        recs = _parse_backend_json(raw)
-    except json.JSONDecodeError:
-        click.secho("Failed to parse response from backend.", fg="red", err=True)
+    target = _load_debug_net(ctx, resolved_box, name)
+
+    display_name, raw_bytes = _read_debug_script_input(script_path)
+
+    probe_be = _probe_backend_for_net(target)
+    file_be = _sniff_script_backend(display_name, raw_bytes)
+    chosen, reason, _mismatch = _choose_script_backend(
+        explicit=backend, probe=probe_be, file=file_be,
+    )
+
+    if chosen is None:
+        click.secho(reason, fg="red", err=True)
         ctx.exit(1)
 
-    target = next((r for r in recs if r.get("name") == name), None)
-    if not target:
-        click.secho(f"Net '{name}' not found on {resolved_box}.", fg="yellow", err=True)
-        ctx.exit(1)
+    field = _FIELD_FOR_BACKEND[chosen]
+    cleared_field, cleared_bytes = _clear_other_script_field(target, field)
 
-    if target.get("role") != "debug":
+    target[field] = base64.b64encode(raw_bytes).decode("ascii")
+    _run_net_py(ctx, resolved_box, "save", json.dumps(target))
+
+    if cleared_field:
+        size = f"{cleared_bytes} bytes" if cleared_bytes >= 0 else "unknown size"
         click.secho(
-            f"Net '{name}' is a '{target.get('role')}' net, not a debug net.",
-            fg="red", err=True,
+            f"Cleared existing {cleared_field} ({size}) — a debug net holds "
+            f"only one of jlink_script / openocd_config at a time.",
+            fg="yellow",
         )
-        ctx.exit(1)
+    click.secho(
+        f"{_BACKEND_LABEL[chosen]} set on debug net '{name}' on box "
+        f"{resolved_box} ({reason}).",
+        fg="green",
+    )
 
-    if not target.get("jlink_script"):
+
+def _show_debug_script_impl(
+    ctx: click.Context,
+    name: str,
+    box: Optional[str],
+    backend: Optional[str],
+) -> None:
+    """Shared body of ``show-script`` / ``show-openocd-config``.
+
+    If ``backend`` is set, only that backend's field is considered (preserves
+    the strict behaviour of the legacy alias). Without a backend filter we
+    show whichever field is populated.
+    """
+    import base64
+
+    resolved_box = _resolve_box(ctx, box)
+    target = _load_debug_net(ctx, resolved_box, name)
+
+    has_jlink = bool(target.get("jlink_script"))
+    has_openocd = bool(target.get("openocd_config"))
+
+    if backend == _BACKEND_JLINK:
+        candidates = [(_BACKEND_JLINK, has_jlink)]
+    elif backend == _BACKEND_OPENOCD:
+        candidates = [(_BACKEND_OPENOCD, has_openocd)]
+    else:
+        candidates = [(_BACKEND_JLINK, has_jlink), (_BACKEND_OPENOCD, has_openocd)]
+
+    available = [be for be, present in candidates if present]
+    if not available:
+        wanted = _BACKEND_LABEL.get(backend, "debug script")
         click.secho(
-            f"Net '{name}' does not have a J-Link script attached.",
+            f"Net '{name}' does not have a {wanted} attached.",
             fg="yellow", err=True,
         )
         ctx.exit(1)
 
-    decoded = base64.b64decode(target["jlink_script"]).decode("utf-8")
-    click.echo(decoded)
-
-
-@nets.command("set-openocd-config", help="Set or update an OpenOCD .cfg/.tcl on an existing debug net.")
-@click.argument("name")
-@click.argument("config_path", type=click.Path(exists=True))
-@click.option("--box", help="Lagerbox name or IP")
-@click.pass_context
-def set_openocd_config_cmd(
-    ctx: click.Context, name: str, config_path: str, box: str | None
-) -> None:
-    """
-    Attach an OpenOCD .cfg/.tcl file to an existing debug net.
-
-    The config is stored on the box and used by the OpenOCD backend during
-    connect, flash, erase, and reset operations. When set, it replaces the
-    auto-detected interface cfg entirely.
-    """
-    import base64
-
-    resolved_box = _resolve_box(ctx, box)
-    raw = _run_net_py(ctx, resolved_box, "list")
-    try:
-        recs = _parse_backend_json(raw)
-    except json.JSONDecodeError:
-        click.secho("Failed to parse response from backend.", fg="red", err=True)
-        ctx.exit(1)
-
-    target = next((r for r in recs if r.get("name") == name), None)
-    if not target:
-        click.secho(f"Net '{name}' not found on {resolved_box}.", fg="yellow")
-        ctx.exit(1)
-
-    if target.get("role") != "debug":
+    if len(available) > 1:
+        # Defensive: should never happen after set-script enforces exclusivity,
+        # but legacy records may have both fields. Ask the user to disambiguate
+        # rather than silently picking one.
         click.secho(
-            f"Net '{name}' is a '{target.get('role')}' net. --openocd-config is only applicable for debug nets.",
-            fg="red",
+            f"Net '{name}' has both jlink_script and openocd_config set "
+            "(legacy record). Pass --backend jlink|openocd to choose.",
+            fg="red", err=True,
         )
         ctx.exit(1)
 
+    chosen = available[0]
+    field = _FIELD_FOR_BACKEND[chosen]
+    raw = base64.b64decode(target[field])
+    click.echo(
+        f"# {_BACKEND_LABEL[chosen]}, {len(raw)} bytes", err=True,
+    )
     try:
-        with open(config_path, "rb") as f:
-            encoded = base64.b64encode(f.read()).decode("ascii")
-    except Exception as e:
-        click.secho(f"Error reading OpenOCD config file: {e}", fg="red", err=True)
-        ctx.exit(1)
+        click.echo(raw.decode("utf-8"))
+    except UnicodeDecodeError:
+        # Binary content (shouldn't happen for .cfg/.JLinkScript but be safe):
+        # write raw bytes to stdout so redirection still produces an exact copy.
+        import sys
+        sys.stdout.buffer.write(raw)
 
-    target["openocd_config"] = encoded
+
+def _remove_debug_script_impl(
+    ctx: click.Context,
+    name: str,
+    box: Optional[str],
+    backend: Optional[str],
+) -> None:
+    """Shared body of ``remove-script`` / ``remove-openocd-config``."""
+    resolved_box = _resolve_box(ctx, box)
+    target = _load_debug_net(ctx, resolved_box, name)
+
+    has_jlink = bool(target.get("jlink_script"))
+    has_openocd = bool(target.get("openocd_config"))
+
+    if backend == _BACKEND_JLINK:
+        wanted = [("jlink_script", has_jlink)]
+    elif backend == _BACKEND_OPENOCD:
+        wanted = [("openocd_config", has_openocd)]
+    else:
+        wanted = [("jlink_script", has_jlink), ("openocd_config", has_openocd)]
+
+    present = [f for f, exists in wanted if exists]
+    if not present:
+        label = _BACKEND_LABEL.get(backend, "debug script")
+        click.secho(
+            f"Net '{name}' does not have a {label} attached.",
+            fg="yellow",
+        )
+        return
+
+    for field in present:
+        del target[field]
     _run_net_py(ctx, resolved_box, "save", json.dumps(target))
+
+    removed = ", ".join(present)
     click.secho(
-        f"OpenOCD config set on debug net '{name}' on box {resolved_box}.", fg="green"
+        f"Removed {removed} from debug net '{name}' on box {resolved_box}.",
+        fg="green",
     )
 
 
-@nets.command("remove-openocd-config", help="Remove an OpenOCD config from an existing debug net.")
+_BACKEND_CLICK_CHOICE = click.Choice([_BACKEND_JLINK, _BACKEND_OPENOCD])
+
+
+@nets.command(
+    "set-script",
+    help="Attach a J-Link script or OpenOCD .cfg/.tcl to a debug net. "
+    "Backend is auto-detected from the probe VID and the file extension; "
+    "use SCRIPT_PATH='-' to read from stdin.",
+)
+@click.argument("name")
+@click.argument("script_path")
+@click.option(
+    "--backend", "backend", type=_BACKEND_CLICK_CHOICE, default=None,
+    help="Force a specific backend instead of auto-detecting. Required when "
+    "the detected probe and file backends disagree.",
+)
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def set_script_cmd(
+    ctx: click.Context, name: str, script_path: str,
+    backend: Optional[str], box: Optional[str],
+) -> None:
+    """Attach a J-Link script or OpenOCD .cfg/.tcl to an existing debug net.
+
+    The file is stored on the box and used automatically during connect,
+    flash, erase, and reset operations. A debug net only carries one script
+    at a time; if the other field is already populated, it is cleared (with
+    a yellow notice on stderr so nothing disappears silently).
+
+    Pass ``SCRIPT_PATH='-'`` to read from stdin, e.g.::
+
+        cat custom.cfg | lager nets set-script SWD - --box JUL-5
+    """
+    _set_debug_script_impl(ctx, name, script_path, box, backend)
+
+
+@nets.command(
+    "remove-script",
+    help="Remove the J-Link script or OpenOCD config attached to a debug net.",
+)
+@click.argument("name")
+@click.option(
+    "--backend", "backend", type=_BACKEND_CLICK_CHOICE, default=None,
+    help="Only remove the named backend's script (default: remove whichever is set).",
+)
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def remove_script_cmd(
+    ctx: click.Context, name: str, backend: Optional[str], box: Optional[str],
+) -> None:
+    _remove_debug_script_impl(ctx, name, box, backend)
+
+
+@nets.command(
+    "show-script",
+    help="Display the J-Link script or OpenOCD config attached to a debug net.",
+)
+@click.argument("name")
+@click.option(
+    "--backend", "backend", type=_BACKEND_CLICK_CHOICE, default=None,
+    help="Only show the named backend's script (default: show whichever is set).",
+)
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def show_script_cmd(
+    ctx: click.Context, name: str, backend: Optional[str], box: Optional[str],
+) -> None:
+    """Print the script attached to a debug net.
+
+    Script content goes to stdout (so ``> out.cfg`` works); a one-line
+    "# OpenOCD config, N bytes" banner goes to stderr so interactive use
+    tells you what you're looking at without polluting redirects.
+    """
+    _show_debug_script_impl(ctx, name, box, backend)
+
+
+# --- Legacy aliases ---------------------------------------------------------
+# Pinned to a specific backend so existing scripts keep their exact semantics.
+# Functionally these now share their impl with set-script / show-script /
+# remove-script; the only difference is the locked --backend.
+
+@nets.command(
+    "set-openocd-config",
+    help="Alias for `set-script --backend openocd`.",
+)
+@click.argument("name")
+@click.argument("config_path")
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def set_openocd_config_cmd(
+    ctx: click.Context, name: str, config_path: str, box: Optional[str],
+) -> None:
+    _set_debug_script_impl(
+        ctx, name, config_path, box, _BACKEND_OPENOCD,
+    )
+
+
+@nets.command(
+    "remove-openocd-config",
+    help="Alias for `remove-script --backend openocd`.",
+)
 @click.argument("name")
 @click.option("--box", help="Lagerbox name or IP")
 @click.pass_context
 def remove_openocd_config_cmd(
-    ctx: click.Context, name: str, box: str | None
+    ctx: click.Context, name: str, box: Optional[str],
 ) -> None:
-    """
-    Remove the OpenOCD config attached to a debug net.
-
-    After removal the OpenOCD backend falls back to the auto-detected
-    interface cfg (based on probe VID/PID).
-    """
-    resolved_box = _resolve_box(ctx, box)
-    raw = _run_net_py(ctx, resolved_box, "list")
-    try:
-        recs = _parse_backend_json(raw)
-    except json.JSONDecodeError:
-        click.secho("Failed to parse response from backend.", fg="red", err=True)
-        ctx.exit(1)
-
-    target = next((r for r in recs if r.get("name") == name), None)
-    if not target:
-        click.secho(f"Net '{name}' not found on {resolved_box}.", fg="yellow")
-        ctx.exit(1)
-
-    if target.get("role") != "debug":
-        click.secho(
-            f"Net '{name}' is a '{target.get('role')}' net, not a debug net.",
-            fg="red",
-        )
-        ctx.exit(1)
-
-    if "openocd_config" not in target:
-        click.secho(f"Net '{name}' does not have an OpenOCD config attached.", fg="yellow")
-        return
-
-    del target["openocd_config"]
-    _run_net_py(ctx, resolved_box, "save", json.dumps(target))
-    click.secho(
-        f"OpenOCD config removed from debug net '{name}' on box {resolved_box}.", fg="green"
-    )
+    _remove_debug_script_impl(ctx, name, box, _BACKEND_OPENOCD)
 
 
-@nets.command("show-openocd-config", help="Display the OpenOCD config attached to a debug net.")
+@nets.command(
+    "show-openocd-config",
+    help="Alias for `show-script --backend openocd`.",
+)
 @click.argument("name")
 @click.option("--box", help="Lagerbox name or IP")
 @click.pass_context
 def show_openocd_config_cmd(
-    ctx: click.Context, name: str, box: str | None
+    ctx: click.Context, name: str, box: Optional[str],
 ) -> None:
-    """
-    Print the contents of the OpenOCD config attached to a debug net.
-
-    Output goes to stdout so it can be piped or redirected:
-        lager box nets show-openocd-config my-debug --box mybox > probe.cfg
-    """
-    import base64
-
-    resolved_box = _resolve_box(ctx, box)
-    raw = _run_net_py(ctx, resolved_box, "list")
-    try:
-        recs = _parse_backend_json(raw)
-    except json.JSONDecodeError:
-        click.secho("Failed to parse response from backend.", fg="red", err=True)
-        ctx.exit(1)
-
-    target = next((r for r in recs if r.get("name") == name), None)
-    if not target:
-        click.secho(f"Net '{name}' not found on {resolved_box}.", fg="yellow", err=True)
-        ctx.exit(1)
-
-    if target.get("role") != "debug":
-        click.secho(
-            f"Net '{name}' is a '{target.get('role')}' net, not a debug net.",
-            fg="red", err=True,
-        )
-        ctx.exit(1)
-
-    if not target.get("openocd_config"):
-        click.secho(
-            f"Net '{name}' does not have an OpenOCD config attached.",
-            fg="yellow", err=True,
-        )
-        ctx.exit(1)
-
-    decoded = base64.b64decode(target["openocd_config"]).decode("utf-8")
-    click.echo(decoded)
+    _show_debug_script_impl(ctx, name, box, _BACKEND_OPENOCD)
 
 
 @nets.command("describe", help="Set metadata on a saved net (description, DUT connection, hints, tags).")
