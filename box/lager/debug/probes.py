@@ -33,7 +33,12 @@ without a parseable address.
 import re
 
 _VISA_RE = re.compile(
-    r'USB\d*::0x([0-9A-Fa-f]+)::0x([0-9A-Fa-f]+)::([^:]+)::INSTR',
+    # Serial slot may be empty for FTDI chips whose EEPROM was never
+    # programmed (the scanner emits ``USB0::0x0403::0x6011::::INSTR`` in
+    # that case). We still want VID/PID extraction to succeed so backend
+    # resolution can pick OpenOCD vs J-Link; ``parse_probe_address``
+    # normalises the empty serial to ``None``.
+    r'USB\d*::0x([0-9A-Fa-f]+)::0x([0-9A-Fa-f]+)::([^:]*)::INSTR',
     re.IGNORECASE,
 )
 
