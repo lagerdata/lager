@@ -215,5 +215,73 @@ class BuildOpenOcdCommandTests(unittest.TestCase):
         )
 
 
+class OpenOcdRpcProgramTests(unittest.TestCase):
+    """``OpenOcdRpc.program`` must surface OpenOCD ``program_error`` markers.
+
+    The TCL/RPC channel returns the ``program`` proc's stdout as plain text
+    even when the underlying flash write/verify failed — there's no
+    out-of-band success/failure flag. ``program_error`` echoes
+    ``** <Something> Failed **`` (e.g. ``** Programming Failed **``,
+    ``** Verify Failed **``); the wrapper must spot those and raise so
+    callers don't tell the user "Flashed!" after a bad write.
+    """
+
+    def _rpc_with_canned_output(self, output):
+        rpc = openocd.OpenOcdRpc(host='127.0.0.1', port=6666)
+        rpc.cmd = lambda command, timeout=None: output  # noqa: ARG005
+        return rpc
+
+    def test_success_returns_output(self):
+        success_out = (
+            '** Programming Started **\n'
+            'wrote 65536 bytes from file foo.bin in 1.23s\n'
+            '** Programming Finished **\n'
+            '** Verify Started **\n'
+            '** Verified OK **\n'
+            '** Resetting Target **\n'
+        )
+        rpc = self._rpc_with_canned_output(success_out)
+        self.assertEqual(rpc.program('foo.bin'), success_out)
+
+    def test_programming_failed_marker_raises(self):
+        failure_out = (
+            '** Programming Started **\n'
+            'embedded:startup.tcl:1516: Error: ** Programming Failed **\n'
+            "in procedure 'program'\n"
+        )
+        rpc = self._rpc_with_canned_output(failure_out)
+        with self.assertRaises(openocd.OpenOcdRpcError) as ctx:
+            rpc.program('xl.bin', address=0x16000000)
+        # Caller-friendly message: includes the file we tried to flash and
+        # the OpenOCD output so the operator can see the real reason.
+        msg = str(ctx.exception)
+        self.assertIn('xl.bin', msg)
+        self.assertIn('** Programming Failed **', msg)
+
+    def test_verify_failed_marker_raises(self):
+        # ``program ... verify`` can succeed at write but fail verify; the
+        # ``program_error`` marker is ``** Verify Failed **`` in that case.
+        failure_out = (
+            '** Programming Started **\n'
+            '** Programming Finished **\n'
+            '** Verify Started **\n'
+            'Error: ** Verify Failed **\n'
+        )
+        rpc = self._rpc_with_canned_output(failure_out)
+        with self.assertRaises(openocd.OpenOcdRpcError):
+            rpc.program('xl.bin')
+
+    def test_benign_text_with_failed_word_does_not_raise(self):
+        # The marker pattern requires the ``** ... **`` framing — a stray
+        # ``Failed`` in unrelated log text must not be treated as a fault.
+        benign_out = (
+            '** Programming Started **\n'
+            'note: Failed attempts logged separately\n'
+            '** Programming Finished **\n'
+        )
+        rpc = self._rpc_with_canned_output(benign_out)
+        self.assertEqual(rpc.program('xl.bin'), benign_out)
+
+
 if __name__ == '__main__':
     unittest.main()
