@@ -11,6 +11,115 @@ from __future__ import annotations
 from .constants import NetType
 
 
+# Shared temp paths the HTTP debug service writes user scripts to.
+# DebugNet writes the same files on the in-box Python API path so
+# downstream J-Link helpers (``api._get_script_file``) and OpenOCD
+# (``-f /tmp/lager_openocd_user.cfg``) pick them up without changes.
+# Keep in lockstep with the constants in ``box/lager/debug/service.py``.
+_JLINK_SCRIPT_TEMP_PATH = '/tmp/lager_jlink_script.JLinkScript'
+_OPENOCD_CONFIG_TEMP_PATH = '/tmp/lager_openocd_user.cfg'
+
+_SHARED_PATH_FOR_SUFFIX = {
+    '.JLinkScript': _JLINK_SCRIPT_TEMP_PATH,
+    '.cfg':         _OPENOCD_CONFIG_TEMP_PATH,
+}
+
+
+def materialise_user_script(net_info, *, explicit_key, b64_key, suffix):
+    """Decode an inline base64 script/cfg to the shared temp path.
+
+    Resolution order:
+
+    1. An explicit ``*_path`` field on the net record — the file is already
+       on the box, just use it.
+    2. A base64 blob under *b64_key* — decode and write to the shared temp
+       path for *suffix*.
+    3. None — no user override; the backend uses its built-in defaults.
+
+    We use the shared paths (not per-net) for two reasons:
+
+    * J-Link's ``reset_device`` / ``read_memory`` internally call
+      ``api._get_script_file()`` which *only* checks the shared path; a
+      per-net path wouldn't be picked up.
+    * OpenOCD reads the cfg once at daemon startup, so subsequent writes
+      to the shared path don't affect an already-running daemon.
+
+    Caveat: two debug nets with different scripts that connect concurrently
+    will clobber the shared path. In practice the in-box Python API is used
+    sequentially against a single net per test, and the HTTP service path
+    has the same limitation (it handles concurrency at the request boundary
+    by rewriting the file on every endpoint).
+    """
+    import base64
+    import os
+
+    net = net_info or {}
+
+    explicit = net.get(explicit_key)
+    if isinstance(explicit, str) and explicit and os.path.exists(explicit):
+        return explicit
+
+    encoded = net.get(b64_key)
+    if not isinstance(encoded, str) or not encoded.strip():
+        return None
+
+    shared_path = _SHARED_PATH_FOR_SUFFIX[suffix]
+    try:
+        with open(shared_path, 'wb') as f:
+            f.write(base64.b64decode(encoded))
+        return shared_path
+    except Exception:  # noqa: BLE001 — surface as "no user cfg"
+        return None
+
+
+def allocate_probe_slot(serial, get_nets_cache_fn=None, parse_probe_serial_fn=None,
+                        compute_slot_fn=None):
+    """Pick a probe's slot index using the shared NetsCache.
+
+    Mirrors ``service._resolve_probe``: probes share the slot pool keyed by
+    USB serial so concurrent debug nets on the same box get distinct
+    GDB/TCL/RTT port windows.
+
+    Returns 0 when any of the following hold (in priority order):
+
+    * ``serial`` is falsy (legacy single-probe path),
+    * ``lager.cache`` isn't importable (tests / minimal envs),
+    * any unexpected error happens while walking the cache (defensive —
+      a slot-allocator failure must never block a debug session).
+
+    The injectable ``*_fn`` arguments exist so tests can substitute their
+    own implementations without monkeypatching globals.
+    """
+    if not serial:
+        return 0
+    if get_nets_cache_fn is None:
+        try:
+            from ..cache import get_nets_cache as get_nets_cache_fn  # type: ignore
+        except Exception:
+            return 0
+    if parse_probe_serial_fn is None or compute_slot_fn is None:
+        try:
+            from ..debug.probes import (
+                parse_probe_serial as _parse_probe_serial,
+                compute_slot as _compute_slot,
+            )
+            parse_probe_serial_fn = parse_probe_serial_fn or _parse_probe_serial
+            compute_slot_fn = compute_slot_fn or _compute_slot
+        except Exception:
+            return 0
+    try:
+        all_serials = []
+        for n in get_nets_cache_fn().get_nets():
+            if not isinstance(n, dict) or n.get('role') != 'debug':
+                continue
+            s = parse_probe_serial_fn(n.get('address'))
+            if s:
+                all_serials.append(s)
+        return compute_slot_fn(serial, all_serials)
+    except Exception:  # noqa: BLE001 — slot=0 is always safe
+        return 0
+
+
 # -------- _NullDebug fallback (always defined for imports) --------
 class _NullDebug:
     """Fallback debug class when debug module is not available."""
@@ -58,6 +167,8 @@ try:
         openocd_telnet_port_for_slot,
         openocd_tcl_port_for_slot,
         parse_device_field,
+        parse_probe_serial,
+        compute_slot,
         BACKEND_JLINK,
         BACKEND_OPENOCD,
     )
@@ -189,16 +300,35 @@ try:
             self.transport = 'SWD'  # default transport
             self.backend = resolve_backend(net_info)
             self.serial = resolve_serial_from_net(net_info)
-            # Slot 0 is the legacy/single-probe path; the *box service* may
-            # promote this probe to a higher slot via the shared NetsCache
-            # allocator, but the Python API path (used inside tests running
-            # on the box) sticks with slot 0 to preserve existing behaviour.
-            self.slot = 0
+            # Slot allocation mirrors the HTTP service path
+            # (``service._resolve_probe``): probes share the slot pool keyed
+            # by USB serial so concurrent debug nets running on the same box
+            # get distinct GDB/TCL/RTT port windows instead of colliding on
+            # slot-0 ports. Falls back to slot 0 for nets without a parseable
+            # serial or when the cache isn't reachable (preserves
+            # single-probe legacy behaviour).
+            self.slot = allocate_probe_slot(self.serial)
             self.gdb_port = gdb_port_for_slot(self.slot)
             self.rtt_telnet_port = rtt_port_for_slot(self.slot)
             self.openocd_telnet_port = openocd_telnet_port_for_slot(self.slot)
             self.openocd_tcl_port = openocd_tcl_port_for_slot(self.slot)
-            self._openocd_config_path = net_info.get('openocd_config_path')
+            # Materialise the user-supplied debug scripts to disk so the
+            # underlying backends can ``-f`` / ``-JLinkScriptFile`` them. The
+            # CLI stores them as base64-encoded content on the net record
+            # (``openocd_config`` / ``jlink_script``); an explicit
+            # ``*_path`` field wins when the file is already on the box.
+            self._openocd_config_path = materialise_user_script(
+                net_info,
+                explicit_key='openocd_config_path',
+                b64_key='openocd_config',
+                suffix='.cfg',
+            )
+            self._jlink_script_path = materialise_user_script(
+                net_info,
+                explicit_key='jlink_script_path',
+                b64_key='jlink_script',
+                suffix='.JLinkScript',
+            )
 
         # ---- OpenOCD helpers (in-process Python API) ------------------------
 
@@ -239,6 +369,7 @@ try:
                 serial=self.serial,
                 gdb_port=self.gdb_port,
                 rtt_telnet_port=self.rtt_telnet_port,
+                script_file=self._jlink_script_path,
             )
 
         def disconnect(self):
@@ -298,6 +429,7 @@ try:
             for line in flash_device(
                 files, mcu=self.device, serial=self.serial,
                 gdb_port=self.gdb_port, rtt_telnet_port=self.rtt_telnet_port,
+                script_file=self._jlink_script_path,
             ):
                 results.append(line)
             return '\n'.join(results)
@@ -310,7 +442,7 @@ try:
             results = []
             for line in chip_erase(
                 device=self.device, speed=self.speed, transport=self.transport,
-                serial=self.serial,
+                serial=self.serial, script_file=self._jlink_script_path,
             ):
                 results.append(line)
             return '\n'.join(results)
@@ -376,4 +508,7 @@ if not _debug_available:
     DebugNet = _NullDebug  # type: ignore
 
 
-__all__ = ['DebugNet', '_NullDebug', 'make_debug', '_debug_available']
+__all__ = [
+    'DebugNet', '_NullDebug', 'make_debug', '_debug_available',
+    'materialise_user_script', 'allocate_probe_slot',
+]
