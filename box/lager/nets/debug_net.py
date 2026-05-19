@@ -72,6 +72,50 @@ def materialise_user_script(net_info, *, explicit_key, b64_key, suffix):
         return None
 
 
+def openocd_speed_ladder(requested):
+    """Speed-fallback ladder for OpenOCD connect attempts.
+
+    Mirrors ``connect_jlink``'s strategy (``debug/api.py``): try the
+    requested speed first, then progressively slower fallbacks. Returned
+    list always starts with *requested* and de-duplicates while preserving
+    order.
+
+    Rationale: the J-Link CLI does its own internal speed ladder during
+    ``connect``, so the J-Link path gets retries "for free". OpenOCD's
+    ``adapter speed`` is set once at daemon startup with no built-in
+    fallback, so we have to wrap the launch in our own loop to keep the
+    ``DebugNet.connect()`` UX symmetric.
+
+    Heuristics:
+
+    * ``'adaptive'`` -> ``['adaptive', '4000', '1000', '500', '100']``
+    * speed > 1000  -> ``[requested, '1000', '500', '100']``
+    * speed > 500   -> ``[requested, '500', '100']``
+    * speed > 100   -> ``[requested, '100']``
+    * speed <= 100  -> ``[requested]``  (already conservative)
+    * Non-numeric, non-'adaptive' input is returned as a single-element
+      list so the caller still gets one attempt instead of an exception.
+    """
+    if requested == 'adaptive':
+        attempts = ['adaptive', '4000', '1000', '500', '100']
+    else:
+        try:
+            n = int(requested)
+        except (TypeError, ValueError):
+            return [requested]
+        requested_str = str(n)
+        if n > 1000:
+            attempts = [requested_str, '1000', '500', '100']
+        elif n > 500:
+            attempts = [requested_str, '500', '100']
+        elif n > 100:
+            attempts = [requested_str, '100']
+        else:
+            attempts = [requested_str]
+    seen = set()
+    return [s for s in attempts if not (s in seen or seen.add(s))]
+
+
 def allocate_probe_slot(serial, get_nets_cache_fn=None, parse_probe_serial_fn=None,
                         compute_slot_fn=None):
     """Pick a probe's slot index using the shared NetsCache.
@@ -343,25 +387,85 @@ try:
 
         # ---- Public API -----------------------------------------------------
 
-        def connect(self, speed=None, transport=None):
-            """Start the gdbserver for this probe (backend chosen automatically)."""
+        def connect(self, speed=None, transport=None, *,
+                    force=False, ignore_if_connected=False):
+            """Start the gdbserver for this probe.
+
+            Backend chosen automatically from the probe VID (or net's
+            explicit ``debug_backend``). Behaviour is symmetric across
+            backends:
+
+            * ``force=True``: stop any running gdbserver for this probe
+              and start fresh.
+            * ``ignore_if_connected=True``: if a gdbserver is already
+              running for this probe, return its status dict without
+              touching it.
+            * Default (neither flag): raise ``RuntimeError`` (OpenOCD) or
+              ``JLinkAlreadyRunningError`` (J-Link) when a gdbserver is
+              already up — matches the behaviour of the underlying
+              ``connect_jlink``.
+
+            On OpenOCD, ``connect`` walks a speed-fallback ladder
+            (:func:`openocd_speed_ladder`) so a flaky link doesn't
+            immediately bomb out at the requested clock — same UX as
+            ``connect_jlink``, which has the equivalent ladder baked into
+            ``debug/api.py``.
+            """
             speed = speed or self.speed
             transport = transport or self.transport
+
             if self.backend == BACKEND_OPENOCD:
-                return start_openocd_gdbserver(
-                    device=self.device,
-                    address=self._net_info.get('address'),
-                    speed=speed,
-                    transport=transport,
-                    halt=False,
-                    gdb_port=self.gdb_port,
-                    telnet_port=self.openocd_telnet_port,
-                    tcl_port=self.openocd_tcl_port,
-                    rtt_telnet_port=self.rtt_telnet_port,
-                    serial=self.serial,
-                    openocd_config=self._openocd_config_path,
-                    probe_channel=self.probe_channel,
+                existing = get_openocd_status(serial=self.serial)
+                if existing['running']:
+                    if ignore_if_connected:
+                        return {
+                            'already_running': 'ok',
+                            'pid': existing.get('pid'),
+                            'serial': self.serial,
+                            'gdb_port': self.gdb_port,
+                            'tcl_port': self.openocd_tcl_port,
+                            'telnet_port': self.openocd_telnet_port,
+                            'rtt_telnet_port': self.rtt_telnet_port,
+                            'backend': BACKEND_OPENOCD,
+                        }
+                    if not force:
+                        raise RuntimeError(
+                            f"OpenOCD is already running for debug net "
+                            f"'{self.name}' (pid {existing.get('pid')}). "
+                            f"Pass force=True to restart or "
+                            f"ignore_if_connected=True to reuse."
+                        )
+                    # force=True: start_openocd_gdbserver internally calls
+                    # stop_openocd before launching, so we don't need to
+                    # stop here explicitly.
+
+                # Speed ladder. Each attempt fully tears down and re-launches
+                # OpenOCD, so this is an expensive loop (~8s per failed
+                # attempt). The ladder is short on purpose.
+                last_exc = None
+                for attempt_speed in openocd_speed_ladder(speed):
+                    try:
+                        return start_openocd_gdbserver(
+                            device=self.device,
+                            address=self._net_info.get('address'),
+                            speed=attempt_speed,
+                            transport=transport,
+                            halt=False,
+                            gdb_port=self.gdb_port,
+                            telnet_port=self.openocd_telnet_port,
+                            tcl_port=self.openocd_tcl_port,
+                            rtt_telnet_port=self.rtt_telnet_port,
+                            serial=self.serial,
+                            openocd_config=self._openocd_config_path,
+                            probe_channel=self.probe_channel,
+                        )
+                    except Exception as exc:  # noqa: BLE001 — surface last error
+                        last_exc = exc
+                        continue
+                raise last_exc if last_exc is not None else RuntimeError(
+                    f"OpenOCD failed to connect to debug net '{self.name}'"
                 )
+
             return connect_jlink(
                 speed=speed,
                 device=self.device,
@@ -370,6 +474,8 @@ try:
                 gdb_port=self.gdb_port,
                 rtt_telnet_port=self.rtt_telnet_port,
                 script_file=self._jlink_script_path,
+                force=force,
+                ignore_if_connected=ignore_if_connected,
             )
 
         def disconnect(self):
@@ -458,14 +564,43 @@ try:
             )
 
         def status(self):
-            """Get connection status."""
+            """Get connection status as a backend-agnostic dict.
+
+            Always contains:
+
+            * ``running`` (bool): is a gdbserver up for this probe?
+            * ``pid`` (int or None): the gdbserver PID, when running.
+            * ``backend`` (str): ``'jlink'`` or ``'openocd'``.
+
+            Backend-specific extras (e.g. J-Link's ``cmdline``) pass
+            through unchanged, but consumers writing portable code should
+            stick to the three guaranteed keys.
+            """
             if self.backend == BACKEND_OPENOCD:
-                return get_openocd_status(serial=self.serial)
-            status = get_jlink_status(serial=self.serial, gdb_port=self.gdb_port)
-            gdbserver_status = get_jlink_gdbserver_status(serial=self.serial)
-            if gdbserver_status['running'] and not status['running']:
-                return gdbserver_status
-            return status
+                raw = get_openocd_status(serial=self.serial)
+            else:
+                jlink_st = get_jlink_status(serial=self.serial, gdb_port=self.gdb_port)
+                gdbserver_st = get_jlink_gdbserver_status(serial=self.serial)
+                # Either PID file path may carry truth (CLI uses gdbserver,
+                # Python API uses legacy /tmp/jlink.pid). Prefer the running
+                # one; if both report running, J-Link status wins (it's the
+                # more authoritative cmdline source).
+                if gdbserver_st['running'] and not jlink_st['running']:
+                    raw = gdbserver_st
+                else:
+                    raw = jlink_st
+
+            normalised = {
+                'running': bool(raw.get('running', False)),
+                'pid': raw.get('pid'),
+                'backend': self.backend,
+            }
+            # Pass through backend-specific extras (cmdline, etc.) without
+            # letting them clobber the guaranteed keys above.
+            for k, v in raw.items():
+                if k not in normalised:
+                    normalised[k] = v
+            return normalised
 
         def rtt(self, channel=0, search_addr=None, search_size=None, chunk_size=None):
             """Open an RTT (Real-Time Transfer) session.
@@ -511,4 +646,5 @@ if not _debug_available:
 __all__ = [
     'DebugNet', '_NullDebug', 'make_debug', '_debug_available',
     'materialise_user_script', 'allocate_probe_slot',
+    'openocd_speed_ladder',
 ]
