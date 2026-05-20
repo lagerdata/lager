@@ -2,6 +2,12 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.18.4] - 2026-05-20
+
+### Fixed
+- **`lager python` scripts no longer miss tight response deadlines under streaming back-pressure.** A running script's stdout/stderr were drained from their kernel pipes *inline* on the same generator that forwards bytes to the CLI over HTTP, so any stall on that socket (slow link, Nagle, retransmit) stopped pipe drainage. Once the 64 KiB pipe filled, the script blocked on its next `print()`. For scripts with tight timing budgets — e.g. a DA14695 ROM-bootloader handshake that must reply within 50–120 ms of each byte — this stretched response windows enough to fail ~90% of the time, even though the same script run directly on the host (no executor, no stream-forwarder) succeeded every time. Output is now drained on background threads into a bounded queue, decoupling the script from HTTP-write latency; stdout/stderr pipe buffers are enlarged to 1 MiB (`F_SETPIPE_SZ`); the interpreter runs with `-u` for guaranteed unbuffered I/O; and the unused stdin is closed (`DEVNULL`). Wire format and public API are unchanged.
+- **Avoid a potential deadlock when launching a `lager python` script.** The per-script scheduling-priority boost (`os.setpriority(-10)`) was applied via a `preexec_fn`, which runs in the forked child between `fork()` and `exec()`. Python documents `preexec_fn` as unsafe in a multithreaded process — and the python execution service is a `ThreadingHTTPServer` — because the child can deadlock if another thread held an allocator/import lock at fork time. The boost is now applied from the parent on the child's PID, with identical effect and permission semantics (`CAP_SYS_NICE`) and no fork/exec window.
+
 ## [0.18.3] - 2026-05-15
 
 ### Added
