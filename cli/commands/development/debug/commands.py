@@ -714,6 +714,16 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
     # Effective port may differ from --gdb-port when the box assigns a per-probe slot.
     effective_gdb_port = result.get('gdb_server', {}).get('gdb_port', gdb_port) if isinstance(result, dict) else gdb_port
 
+    # Pick a backend-appropriate name for the "X started!" line. The
+    # box-side response carries ``backend`` at the top level (one of
+    # ``jlink`` / ``openocd``); fall back to ``J-Link`` so legacy boxes
+    # that don't yet emit ``backend`` keep their existing wording.
+    backend = result.get('backend') if isinstance(result, dict) else None
+    backend_label = {
+        'openocd': 'OpenOCD',
+        'jlink': 'JLinkGDBServer',
+    }.get(backend, 'JLinkGDBServer')
+
     if not quiet:
         if json_output:
             click.echo(json.dumps(result, indent=2))
@@ -722,18 +732,18 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
             if 'gdb_server' in result:
                 gdb_info = result['gdb_server']
                 if gdb_info.get('status') == 'started':
-                    click.secho("JLinkGDBServer started!", fg='green', err=True)
+                    click.secho(f"{backend_label} started!", fg='green', err=True)
                     click.secho(f"GDB server listening on {target_box}:{effective_gdb_port}", fg='cyan', err=True)
                     click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{effective_gdb_port}'", fg='cyan', err=True)
                 elif gdb_info.get('status') == 'already_running':
-                    click.secho("JLinkGDBServer already running!", fg='green', err=True)
+                    click.secho(f"{backend_label} already running!", fg='green', err=True)
                     click.secho(f"GDB server listening on {target_box}:{effective_gdb_port}", fg='cyan', err=True)
                     click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{effective_gdb_port}'", fg='cyan', err=True)
                 elif 'error' in gdb_info:
                     click.secho(f"Error: GDB server failed to start: {gdb_info.get('message', 'Unknown error')}", fg='red', err=True)
                     ctx.exit(1)
             else:
-                click.secho("JLinkGDBServer started!", fg='green', err=True)
+                click.secho(f"{backend_label} started!", fg='green', err=True)
                 click.secho(f"GDB server listening on {target_box}:{effective_gdb_port}", fg='cyan', err=True)
                 click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{effective_gdb_port}'", fg='cyan', err=True)
 

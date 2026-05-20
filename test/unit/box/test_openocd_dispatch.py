@@ -214,6 +214,83 @@ class BuildOpenOcdCommandTests(unittest.TestCase):
             msg='auto `transport select` should still appear in non-user-cfg path',
         )
 
+    def test_user_cfg_suppresses_auto_adapter_speed(self):
+        # When a user cfg is attached they manage adapter setup themselves
+        # and almost always set ``adapter speed`` inside the cfg. Lager's
+        # OpenOCD argv sources the user cfg early, but the speed override
+        # was previously appended *last* — so an ``adapter speed 500`` in
+        # the cfg would be silently clobbered to ``4000`` (the CLI default
+        # for ``lager debug SWD flash``), which on the DA1469x flash_loader
+        # path manifests as the chunked program loop hanging on the first
+        # write while pings/erase happen to survive. Mirror the same gating
+        # used for ``transport select``.
+        user_cfg = os.path.abspath(__file__)
+        cmd = self._build(
+            address='USB0::0x0403::0x6011::FT4XYZW::INSTR',  # FT4232H
+            device='custom-chip',
+            speed='4000',
+            user_config_path=user_cfg,
+        )
+        self.assertFalse(
+            any(arg.startswith('adapter speed') for arg in cmd),
+            msg=f'auto `adapter speed` must be skipped when user cfg is set; '
+                f'got: {[a for a in cmd if a.startswith("adapter speed")]}',
+        )
+
+    def test_auto_adapter_speed_still_emitted_without_user_cfg(self):
+        # Regression: the user-cfg gating must not strip ``adapter speed``
+        # from the normal auto-detected path — that's where lager *is* the
+        # source of truth for adapter setup.
+        cmd = self._build(
+            address='USB0::0x0403::0x6014::FTA3W13P::INSTR',  # FT232H
+            speed='4000',
+            user_config_path=None,
+        )
+        self.assertIn('adapter speed 4000', cmd)
+
+    def test_adaptive_speed_never_emits_adapter_speed(self):
+        # Sanity: the legacy ``adaptive`` value is intentionally a no-op
+        # under both the auto and user-cfg branches.
+        for user_cfg in (None, os.path.abspath(__file__)):
+            cmd = self._build(
+                address='USB0::0x0403::0x6014::FTA3W13P::INSTR',
+                speed='adaptive',
+                user_config_path=user_cfg,
+            )
+            self.assertFalse(
+                any(arg.startswith('adapter speed') for arg in cmd),
+                msg=f'`adapter speed` must not be emitted for adaptive speed '
+                    f'(user_cfg={user_cfg!r}); got: '
+                    f'{[a for a in cmd if a.startswith("adapter speed")]}',
+            )
+
+    def test_bindto_all_interfaces_is_set(self):
+        # OpenOCD ≥ 0.11 defaults bindto to 127.0.0.1 — that combined with
+        # docker's port forward leaves off-box gdb clients unable to reach
+        # the gdb_port even though it shows as listening to ``ss`` inside
+        # the container. We must explicitly widen the bind via ``bindto
+        # 0.0.0.0`` so the J-Link parity (``JLinkGDBServer`` binds all
+        # interfaces by default) holds for OpenOCD too. Sits adjacent to
+        # the port-setup ``-c`` block so it always applies before any
+        # init that would otherwise lock the bind to the default.
+        for address, user_cfg in (
+            ('USB0::0x0403::0x6014::FTA3W13P::INSTR', None),       # auto
+            ('USB0::0x0403::0x6011::FT4XYZW::INSTR', __file__),    # user cfg
+        ):
+            cmd = self._build(address=address, user_config_path=user_cfg)
+            bindto_idx = next(
+                (i for i, arg in enumerate(cmd) if arg == 'bindto 0.0.0.0'),
+                None,
+            )
+            self.assertIsNotNone(
+                bindto_idx,
+                msg=f'expected `bindto 0.0.0.0` in argv for address={address}, '
+                    f'user_cfg={user_cfg!r}; got: {cmd}',
+            )
+            # Must be wired through ``-c`` so OpenOCD evaluates it as TCL,
+            # not treated as a positional config file path.
+            self.assertEqual(cmd[bindto_idx - 1], '-c')
+
 
 class OpenOcdRpcProgramTests(unittest.TestCase):
     """``OpenOcdRpc.program`` must surface OpenOCD ``program_error`` markers.

@@ -508,18 +508,35 @@ def _fl_program(rpc: OpenOcdRpc, syms: Dict[str, int],
 
                 rpc.mww(fl_cmd_addr_addr, offset + written)
                 rpc.mww(fl_cmd_amount_addr, this_chunk)
-                rpc.mww(fl_cmd_rc_addr, 0)
+                # NB: do NOT clear ``fl_cmd_rc`` per-chunk. The upstream
+                # ``fl_program`` macro in
+                # [openocd/flash_loader/flash_loader.gdb:104-130] only ever
+                # sets ``fl_cmd_rc=0`` inside ``fl_ping`` / ``fl_erase``;
+                # for program it relies on the value latched to ``1`` by the
+                # preceding ``fl_ping`` and only checks rc *after the whole
+                # loop*. The loader writes ``fl_cmd_rc`` only on overall
+                # completion or on error — it does NOT re-assert ``rc=1``
+                # after each chunk. Clearing it here turns every successful
+                # chunk into a false ``rc=0`` failure (which is exactly the
+                # bug we hit on first hardware bring-up: erase ok, then
+                # ``program chunk @0x0 (+32768 bytes) returned rc=0``).
                 rpc.mww(fl_cmd_addr, FL_CMD_PROGRAM_VERIFY)
 
-                # Wait for the loader to finish this iteration: it sets
-                # ``fl_cmd`` back to 0 once the chunk is written + verified.
+                # Per-chunk handshake: the loader sets ``fl_cmd`` back to 0
+                # once it has consumed the command (data buffer copied into
+                # flash + verified). This is the only per-chunk signal —
+                # rc is checked once at the end.
                 _poll_word(
                     rpc, fl_cmd_addr, lambda v: v == FL_CMD_NONE,
                     timeout_s=_FL_CHUNK_TIMEOUT_S,
                     label=f'program chunk@{hex(offset + written)} (fl_cmd==0)',
                 )
+                # Mid-loop early-exit: if the loader has already latched a
+                # *non-OK* rc (i.e. an actual error, not the 0 we used to
+                # mistakenly clear), stop now and surface it. This mirrors
+                # the upstream loop guard ``while fl_cmd_rc == 1 && ...``.
                 rc = rpc.mdw(fl_cmd_rc_addr)
-                if rc != FL_RC_OK:
+                if rc not in (0, FL_RC_OK):
                     raise Da1469xLoaderError(
                         f'flash_loader program chunk @{hex(offset + written)} '
                         f'(+{this_chunk} bytes) returned rc={rc}'
@@ -533,13 +550,21 @@ def _fl_program(rpc: OpenOcdRpc, syms: Dict[str, int],
             except OSError:
                 pass
 
-    # Final: wait for the loader to fully return to its idle state
-    # (``while fl_state != 1``).
+    # Final phase, mirroring the ``while fl_state != 1`` + ``if fl_cmd_rc == 1``
+    # tail of the upstream ``fl_program`` macro at
+    # [openocd/flash_loader/flash_loader.gdb:128-135]: wait for the loader to
+    # return to the idle state, then confirm overall success once.
     _poll_word(
         rpc, fl_state_addr, lambda v: v == FL_STATE_READY,
         timeout_s=_FL_FINAL_READY_TIMEOUT_S,
         label='post-program (fl_state==1)',
     )
+    final_rc = rpc.mdw(fl_cmd_rc_addr)
+    if final_rc != FL_RC_OK:
+        raise Da1469xLoaderError(
+            f'flash_loader program: overall rc={final_rc} after '
+            f'{written}/{file_size} bytes'
+        )
     yield f'Programmed {file_size} bytes successfully'
 
 
