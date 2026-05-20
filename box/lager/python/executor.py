@@ -52,19 +52,24 @@ LAGER_PYTHON_IP_ADDR = '172.18.0.10'  # Docker-internal network default; overrid
 _SCRIPT_NICE_DELTA = -10
 
 
-def _boost_child_priority():
+def _boost_process_priority(pid):
     """
-    preexec_fn for user-script subprocesses. Best-effort attempt to raise
-    scheduling priority before exec(). Any failure is swallowed — the script
-    will still run at the default nice value, just with more jitter.
+    Best-effort attempt to raise the scheduling priority of ``pid``. Any
+    failure is swallowed — the script will still run at the default nice
+    value, just with more jitter.
 
-    Runs in the forked child between fork() and exec(), so it must not
-    acquire Python-level locks or do anything fancy.
+    Called from the *parent* immediately after Popen rather than via a
+    preexec_fn: the python execution service is a ThreadingHTTPServer, and
+    Python documents preexec_fn as unsafe in a multithreaded process (the
+    forked child can deadlock before exec() if another thread held an
+    allocator/import lock at fork time). Setting priority from the parent on
+    the child's pid has identical permission semantics (still needs
+    CAP_SYS_NICE) with no fork/exec window to deadlock in.
     """
     try:
         # Lower the nice value (= higher priority). Requires CAP_SYS_NICE
         # or a permissive RLIMIT_NICE; will raise PermissionError otherwise.
-        os.setpriority(os.PRIO_PROCESS, 0, _SCRIPT_NICE_DELTA)
+        os.setpriority(os.PRIO_PROCESS, pid, _SCRIPT_NICE_DELTA)
     except (PermissionError, OSError):
         pass
 
@@ -266,8 +271,11 @@ class PythonExecutor:
                 env=full_env,       # Pass environment directly
                 bufsize=0,
                 start_new_session=detach,  # detached processes survive independently
-                preexec_fn=_boost_child_priority,
             )
+
+            # Raise scheduling priority from the parent (see
+            # _boost_process_priority for why this isn't a preexec_fn).
+            _boost_process_priority(proc.pid)
 
             # Enlarge the stdout (and stderr, if separate) pipe buffers so the
             # user's script can never block on a print() while the parent's
