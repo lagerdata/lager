@@ -527,10 +527,10 @@ def _fl_program(rpc: OpenOcdRpc, syms: Dict[str, int],
     fl_state_addr = syms['fl_state']
 
     written = 0
+    chunk_paths_to_clean: list = []
     with open(image_path, 'rb') as image:
-        with tempfile.NamedTemporaryFile(suffix='.bin', delete=False) as chunk_tmp:
-            chunk_path = chunk_tmp.name
         try:
+            chunk_index = 0
             while written < file_size:
                 this_chunk = min(buf_sz, file_size - written)
                 chunk_bytes = image.read(this_chunk)
@@ -539,14 +539,27 @@ def _fl_program(rpc: OpenOcdRpc, syms: Dict[str, int],
                         f'short read from {image_path}: wanted {this_chunk}, '
                         f'got {len(chunk_bytes)} at offset {written}'
                     )
-                # Write the chunk to a temp file so OpenOCD's ``load_image``
-                # can stream it efficiently into RAM at fl_cmd_data. The GDB
-                # script uses ``restore <file> binary <bias> <off> <end>``
-                # with a per-chunk bias to land every chunk at fl_cmd_data;
-                # our equivalent is "write the slice, load it at the buffer
+                # Write the chunk to a *unique* temp file so OpenOCD's
+                # ``load_image`` can stream it efficiently into RAM at
+                # fl_cmd_data. The GDB script uses
+                # ``restore <file> binary <bias> <off> <end>`` with a
+                # per-chunk bias to land every chunk at fl_cmd_data; our
+                # equivalent is "write the slice, load it at the buffer
                 # address every iteration".
-                with open(chunk_path, 'wb') as f:
-                    f.write(chunk_bytes)
+                #
+                # Per-chunk-unique paths avoid an OpenOCD edge case where
+                # repeated ``load_image`` of the same path can re-read
+                # cached image-section metadata even when the underlying
+                # bytes have been rewritten — a likely cause of the
+                # "first 3 chunks ok, 4th hangs" pattern observed on
+                # JUL-5 hardware. Files are cleaned up unconditionally
+                # in the ``finally`` block below.
+                with tempfile.NamedTemporaryFile(
+                    suffix=f'.chunk{chunk_index}.bin', delete=False,
+                ) as chunk_tmp:
+                    chunk_path = chunk_tmp.name
+                    chunk_tmp.write(chunk_bytes)
+                chunk_paths_to_clean.append(chunk_path)
                 rpc.load_image(chunk_path, fl_cmd_data_addr, fmt='bin')
 
                 rpc.mww(fl_cmd_addr_addr, offset + written)
@@ -590,14 +603,29 @@ def _fl_program(rpc: OpenOcdRpc, syms: Dict[str, int],
                     timeout_s=_FL_CHUNK_TIMEOUT_S,
                     label=f'program chunk@{hex(offset + written)} (fl_cmd==0)',
                 )
+                # Settle delay between iterations. The upstream GDB-driven
+                # path has tens-to-hundreds of milliseconds of natural
+                # overhead per iteration (remote-stub round-trips, macro
+                # parsing). Pure-RPC has none of that, and on JUL-5
+                # hardware we observed a hang at chunk 4 (offset 0x18000)
+                # where the loader did transition ``fl_cmd → 0`` but had
+                # not yet returned to its idle/poll state when we started
+                # writing the next chunk. The smallest defensible pacing
+                # is a sleep that's still much shorter than any plausible
+                # erase/write latency, so it's effectively free for the
+                # happy path but enough to cover the loader's internal
+                # transition.
+                rpc.sleep_ms(50)
 
                 written += this_chunk
+                chunk_index += 1
                 yield f'  programmed {hex(offset + written)} ({written}/{file_size})'
         finally:
-            try:
-                os.unlink(chunk_path)
-            except OSError:
-                pass
+            for path in chunk_paths_to_clean:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
 
     # Final phase, mirroring the ``while fl_state != 1`` + ``if fl_cmd_rc == 1``
     # tail of the upstream ``fl_program`` macro at
