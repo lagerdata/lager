@@ -1,0 +1,628 @@
+# Copyright 2024-2026 Lager Data LLC
+# SPDX-License-Identifier: Apache-2.0
+"""
+Unit tests for box/lager/debug/da1469x_loader.py
+
+Covers:
+  - Minimal ELF32 symbol-table reader vs. a synthesised fixture ELF.
+  - ``_resolve_loader_paths`` env override + missing-file error.
+  - ``flash_image`` / ``erase_range`` against an in-memory fake OpenOcdRpc
+    that mimics the real loader's ``fl_*`` global behaviour, and verifies
+    the exact OpenOCD command sequence matches the working ``flash.gdb`` /
+    ``erase.gdb`` scripts in [xl/openocd/flash_loader/].
+  - Failure modes: rc != 1 from ping / erase / program raises with the rc.
+  - Timeout paths: a fake that never advances ``fl_state`` raises
+    ``Da1469xLoaderError``.
+
+Module is loaded via the same stub-package trick as
+``test_openocd_dispatch.py`` so the real ``lager`` package's hardware
+imports stay out of the test environment.
+"""
+
+import importlib.util
+import os
+import struct
+import sys
+import tempfile
+import types
+import unittest
+
+
+HERE = os.path.dirname(__file__)
+DEBUG_DIR = os.path.normpath(
+    os.path.join(HERE, '..', '..', '..', 'box', 'lager', 'debug')
+)
+PROBES_PATH = os.path.join(DEBUG_DIR, 'probes.py')
+OPENOCD_PATH = os.path.join(DEBUG_DIR, 'openocd.py')
+LOADER_PATH = os.path.join(DEBUG_DIR, 'da1469x_loader.py')
+
+
+def _load_module(name, path, package=None):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    if package:
+        module.__package__ = package
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_pkg_name = 'stub_debug_loader_pkg'
+_pkg = types.ModuleType(_pkg_name)
+_pkg.__path__ = [DEBUG_DIR]
+sys.modules[_pkg_name] = _pkg
+_load_module(f'{_pkg_name}.probes', PROBES_PATH, package=_pkg_name)
+openocd = _load_module(f'{_pkg_name}.openocd', OPENOCD_PATH, package=_pkg_name)
+loader = _load_module(f'{_pkg_name}.da1469x_loader', LOADER_PATH, package=_pkg_name)
+
+
+# ---------------------------------------------------------------------------
+# Tiny ELF32 fixture builder
+# ---------------------------------------------------------------------------
+
+
+def _build_elf32(symbols):
+    """Synthesise a minimal little-endian ELF32 with *symbols* in SYMTAB.
+
+    *symbols* is ``{name: st_value}`` — section indices are made up because
+    our reader doesn't care, it only pulls names + addresses.
+
+    Layout:
+        [Elf32_Ehdr (52)][SYMTAB data][STRTAB data][SHT (4 sections * 40)]
+
+    Sections:
+        [0] = SHN_UNDEF (zeroed entry, mandatory)
+        [1] = .symtab (SHT_SYMTAB), sh_link = 2
+        [2] = .strtab (SHT_STRTAB)
+    """
+    # Build .strtab first (\0-prefixed, \0-separated) so we know each name's
+    # offset before laying out symbols.
+    strtab = bytearray(b'\x00')
+    name_offsets = {}
+    for name in symbols:
+        name_offsets[name] = len(strtab)
+        strtab += name.encode('utf-8') + b'\x00'
+
+    # Build .symtab. Entry 0 is reserved (all zeros).
+    sym_entry_size = 16
+    symtab = bytearray(sym_entry_size)  # zero entry
+    for name, value in symbols.items():
+        st_name = name_offsets[name]
+        st_value = value & 0xFFFFFFFF
+        st_size = 0
+        st_info = 0x12  # STB_GLOBAL << 4 | STT_FUNC — irrelevant to reader
+        st_other = 0
+        st_shndx = 1
+        symtab += struct.pack('<IIIBBH',
+                              st_name, st_value, st_size,
+                              st_info, st_other, st_shndx)
+
+    # Lay out the file: Ehdr (52) + symtab + strtab + 4 section headers.
+    eh_size = 52
+    sh_entsize = 40
+    sh_count = 4
+
+    symtab_off = eh_size
+    strtab_off = symtab_off + len(symtab)
+    shoff = strtab_off + len(strtab)
+    file_size = shoff + sh_count * sh_entsize
+
+    out = bytearray(file_size)
+
+    # ---- Ehdr ----
+    e_ident = bytearray(16)
+    e_ident[:4] = b'\x7fELF'
+    e_ident[4] = 1   # ELFCLASS32
+    e_ident[5] = 1   # ELFDATA2LSB
+    e_ident[6] = 1   # EV_CURRENT
+    out[0:16] = bytes(e_ident)
+    struct.pack_into(
+        '<HHIIIIIHHHHHH',
+        out, 16,
+        2,            # e_type ET_EXEC
+        0x28,         # e_machine EM_ARM
+        1,            # e_version
+        0,            # e_entry
+        0,            # e_phoff
+        shoff,        # e_shoff
+        0,            # e_flags
+        eh_size,      # e_ehsize
+        0, 0,         # e_phentsize / e_phnum
+        sh_entsize,   # e_shentsize
+        sh_count,     # e_shnum
+        2,            # e_shstrndx (we don't use it but a valid index helps)
+    )
+
+    # ---- payload ----
+    out[symtab_off:symtab_off + len(symtab)] = bytes(symtab)
+    out[strtab_off:strtab_off + len(strtab)] = bytes(strtab)
+
+    # ---- Section headers ----
+    # Helper: write a section header at `out[base:base+40]`.
+    def _write_sh(idx, sh_type, sh_offset, sh_size, sh_link=0, sh_entsize_=0):
+        base = shoff + idx * sh_entsize
+        struct.pack_into(
+            '<IIIIIIIIII',
+            out, base,
+            0, sh_type, 0, 0,
+            sh_offset, sh_size, sh_link, 0, 0, sh_entsize_,
+        )
+
+    _write_sh(0, 0, 0, 0)                      # SHN_UNDEF
+    _write_sh(1, 2, symtab_off, len(symtab),
+              sh_link=2, sh_entsize_=sym_entry_size)  # SHT_SYMTAB
+    _write_sh(2, 3, strtab_off, len(strtab))   # SHT_STRTAB
+
+    return bytes(out)
+
+
+# ---------------------------------------------------------------------------
+# Fake OpenOcdRpc that mimics the real flash_loader's behaviour
+# ---------------------------------------------------------------------------
+
+
+class FakeRpc:
+    """In-memory model of the loader's protocol.
+
+    Tracks every issued OpenOCD command in ``calls``, maintains a ``mem``
+    dict of address -> 32-bit word, and auto-services ``fl_cmd`` writes by
+    transitioning the loader's state machine the way the real loader does.
+
+    Parameters let individual tests inject failures at precise points:
+
+    * ``ping_rc`` / ``erase_rc`` / ``program_rc`` — value to return in
+      ``fl_cmd_rc`` after each command class. Default 1 (FL_RC_OK).
+    * ``boot_state`` — value to publish at ``fl_state``. Default 1 (ready);
+      tests pass 0 to model a loader that never comes up so the boot
+      timeout fires.
+    * ``buf_sz`` — value to return for ``fl_cmd_data_sz``. Default 0x40.
+    """
+
+    def __init__(self, syms, *, ping_rc=1, erase_rc=1, program_rc=1,
+                 boot_state=1, buf_sz=0x40, stale_bps=()):
+        self.syms = syms
+        self.calls = []
+        self.mem = {}
+        self.ping_rc = ping_rc
+        self.erase_rc = erase_rc
+        self.program_rc = program_rc
+        self.boot_state = boot_state
+        self.buf_sz = buf_sz
+        # Pre-existing breakpoints — drains via ``bp_list``+``rbp``; tests
+        # that exercise the defensive cleanup pass populate this.
+        self.bps = list(stale_bps)
+        self.bp_set_failures = set()  # addresses for which bp() raises
+        self.error_after_bp_set = False
+        # Pre-populate the loader-internal globals the loader code reads.
+        self.mem[syms['fl_state']] = boot_state
+        self.mem[syms['fl_cmd']] = 0
+        self.mem[syms['fl_cmd_rc']] = 0
+        self.mem[syms['fl_cmd_data_sz']] = buf_sz
+        # ``mdw(LOADER_RAM_BASE)`` / ``mdw(LOADER_RAM_BASE+4)`` need
+        # plausible MSP/PC values so ``_prepare_loader`` doesn't blow up
+        # decoding.
+        self.mem[loader.LOADER_RAM_BASE] = 0x20040000     # MSP
+        self.mem[loader.LOADER_RAM_BASE + 4] = 0x20000401  # PC
+        # Don't auto-set fl_state to ready until after _prepare_loader has
+        # walked through reset/load_image/etc — the tests using a
+        # boot_state=0 fake start "broken" and stay broken. Tests using
+        # default boot_state=1 already see ready immediately.
+
+    # ---- low-level helpers --------------------------------------------------
+
+    def _record(self, cmd):
+        self.calls.append(cmd)
+
+    # ---- methods used by da1469x_loader ------------------------------------
+
+    def reset(self, halt=False):
+        self._record(f'reset {"halt" if halt else "run"}')
+
+    def sleep_ms(self, ms):
+        self._record(f'sleep {int(ms)}')
+
+    def load_image(self, path, addr, fmt='bin'):
+        self._record(f'load_image {path} {hex(int(addr))} {fmt}')
+        # Emulate "loader app dropped into RAM, loader greets us".
+        # If this is the loader's main bin (target == LOADER_RAM_BASE), make
+        # sure MSP/PC stay populated.
+        return ''
+
+    def mww(self, addr, value):
+        addr = int(addr)
+        value = int(value) & 0xFFFFFFFF
+        self._record(f'mww {hex(addr)} {hex(value)}')
+        self.mem[addr] = value
+        # Trigger the protocol transitions the real loader would make:
+        if addr == self.syms['fl_cmd']:
+            if value == loader.FL_CMD_PING:
+                self.mem[self.syms['fl_cmd_rc']] = self.ping_rc
+                self.mem[self.syms['fl_cmd']] = 0
+            elif value == loader.FL_CMD_ERASE:
+                self.mem[self.syms['fl_cmd_rc']] = self.erase_rc
+                self.mem[self.syms['fl_cmd']] = 0
+            elif value == loader.FL_CMD_PROGRAM_VERIFY:
+                self.mem[self.syms['fl_cmd_rc']] = self.program_rc
+                self.mem[self.syms['fl_cmd']] = 0
+
+    def mwb(self, addr, value):
+        self._record(f'mwb {hex(int(addr))} {hex(int(value) & 0xFF)}')
+
+    def mdw(self, addr, count=1):
+        addr = int(addr)
+        # Always record the read so tests can assert on poll order.
+        self._record(f'mdw {hex(addr)} {count}')
+        if count == 1:
+            return self.mem.get(addr, 0)
+        return [self.mem.get(addr + 4 * i, 0) for i in range(count)]
+
+    def reg_write(self, name, value):
+        self._record(f'reg {name} {hex(int(value) & 0xFFFFFFFF)}')
+
+    def bp(self, address, length=4, hw=True):
+        self._record(f'bp {hex(int(address))} {length} {"hw" if hw else "sw"}')
+        if int(address) in self.bp_set_failures:
+            raise openocd.OpenOcdRpcError(
+                f'OpenOCD bp failed:\nError: Breakpoint at {hex(int(address))} '
+                f'already exists'
+            )
+        self.bps.append(int(address))
+
+    def rbp(self, address):
+        self._record(f'rbp {hex(int(address))}')
+        try:
+            self.bps.remove(int(address))
+        except ValueError:
+            pass
+
+    def bp_list(self):
+        self._record('bp')
+        return list(self.bps)
+
+    def resume(self, address=None):
+        self._record('resume' if address is None else f'resume {hex(int(address))}')
+
+    def wait_halt(self, timeout_ms=5000):
+        self._record(f'wait_halt {int(timeout_ms)}')
+
+
+_DEFAULT_SYM_ADDRS = {
+    'fl_state': 0x20003000,
+    'fl_cmd': 0x20003004,
+    'fl_cmd_rc': 0x20003008,
+    'fl_cmd_flash_id': 0x2000300C,
+    'fl_cmd_flash_addr': 0x20003010,
+    'fl_cmd_amount': 0x20003014,
+    'fl_cmd_data': 0x20004000,
+    'fl_cmd_data_sz': 0x20003018,
+    'mynewt_main': 0x20000801,
+}
+
+
+def _bake_loader_dir(tmpdir, family='da1469x'):
+    """Drop fixture loader artefacts under *tmpdir*/<family>/. Returns the
+    paths so tests can assert on them.
+    """
+    family_dir = os.path.join(tmpdir, family)
+    os.makedirs(family_dir, exist_ok=True)
+    elf_path = os.path.join(family_dir, loader.LOADER_ELF_NAME)
+    bin_path = os.path.join(family_dir, loader.LOADER_BIN_NAME)
+    with open(elf_path, 'wb') as f:
+        f.write(_build_elf32(_DEFAULT_SYM_ADDRS))
+    with open(bin_path, 'wb') as f:
+        # Vector table-ish: MSP at +0, PC at +4, then padding.
+        f.write(struct.pack('<II', 0x20040000, 0x20000401) + b'\x00' * 32)
+    return elf_path, bin_path
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+class ParseElf32SymbolsTests(unittest.TestCase):
+    def test_returns_expected_addresses(self):
+        elf = _build_elf32({'foo': 0x12345678, 'bar': 0xDEADBEEF, 'baz': 0})
+        syms = loader._parse_elf32_symbols(elf)
+        self.assertEqual(syms.get('foo'), 0x12345678)
+        self.assertEqual(syms.get('bar'), 0xDEADBEEF)
+        # Symbols with st_name=0 are skipped (the reserved zero entry); a
+        # named symbol with st_value=0 should still appear, though.
+        self.assertIn('baz', syms)
+
+    def test_rejects_non_elf(self):
+        with self.assertRaises(ValueError):
+            loader._parse_elf32_symbols(b'not an elf')
+
+    def test_rejects_64bit_elf(self):
+        elf = bytearray(_build_elf32({'foo': 1}))
+        elf[4] = 2  # ELFCLASS64
+        with self.assertRaises(ValueError):
+            loader._parse_elf32_symbols(bytes(elf))
+
+
+class ResolveLoaderSymbolsTests(unittest.TestCase):
+    def test_resolves_required_symbols(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            elf_path, _ = _bake_loader_dir(tmp)
+            syms = loader._resolve_loader_symbols(elf_path)
+        for name in loader.LOADER_SYMBOLS:
+            self.assertIn(name, syms)
+            self.assertEqual(syms[name], _DEFAULT_SYM_ADDRS[name])
+
+    def test_missing_symbol_raises_actionable_error(self):
+        partial = dict(_DEFAULT_SYM_ADDRS)
+        partial.pop('fl_cmd_data')
+        elf = _build_elf32(partial)
+        with tempfile.NamedTemporaryFile(suffix='.elf', delete=False) as f:
+            f.write(elf)
+            elf_path = f.name
+        try:
+            with self.assertRaises(loader.Da1469xLoaderError) as ctx:
+                loader._resolve_loader_symbols(elf_path)
+            self.assertIn('fl_cmd_data', str(ctx.exception))
+        finally:
+            os.unlink(elf_path)
+
+
+class ResolveLoaderPathsTests(unittest.TestCase):
+    def test_env_override_used(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            elf_path, bin_path = _bake_loader_dir(tmp)
+            old = os.environ.get(loader.ENV_LOADER_DIR_OVERRIDE)
+            os.environ[loader.ENV_LOADER_DIR_OVERRIDE] = tmp
+            try:
+                got_elf, got_bin = loader._resolve_loader_paths('da1469x')
+            finally:
+                if old is None:
+                    os.environ.pop(loader.ENV_LOADER_DIR_OVERRIDE, None)
+                else:
+                    os.environ[loader.ENV_LOADER_DIR_OVERRIDE] = old
+            self.assertEqual(got_elf, elf_path)
+            self.assertEqual(got_bin, bin_path)
+
+    def test_missing_files_raises_actionable_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = os.environ.get(loader.ENV_LOADER_DIR_OVERRIDE)
+            os.environ[loader.ENV_LOADER_DIR_OVERRIDE] = tmp
+            try:
+                with self.assertRaises(loader.Da1469xLoaderError) as ctx:
+                    loader._resolve_loader_paths('da1469x')
+            finally:
+                if old is None:
+                    os.environ.pop(loader.ENV_LOADER_DIR_OVERRIDE, None)
+                else:
+                    os.environ[loader.ENV_LOADER_DIR_OVERRIDE] = old
+            msg = str(ctx.exception)
+            self.assertIn('flash_loader.elf', msg)
+            self.assertIn('lager box ssh', msg)
+
+
+class FlashImageTests(unittest.TestCase):
+    """End-to-end command-trace assertions for ``flash_image``.
+
+    Patches the resolver/symbol seams so we can drive the loader against
+    fixture artefacts without dropping them under
+    ``/home/www-data/flash-loaders``.
+    """
+
+    def _run(self, fake, image_size=80, family='da1469x', **flash_kwargs):
+        with tempfile.NamedTemporaryFile(suffix='.bin', delete=False) as f:
+            f.write(b'\xab' * image_size)
+            image_path = f.name
+
+        def fake_resolver(_family):
+            return ('/fake/elf', '/fake/bin')
+
+        def fake_sym_resolver(_path):
+            return _DEFAULT_SYM_ADDRS
+
+        try:
+            output = list(loader.flash_image(
+                fake, image_path,
+                family=family,
+                _resolver=fake_resolver,
+                _symbol_resolver=fake_sym_resolver,
+                **flash_kwargs,
+            ))
+        finally:
+            os.unlink(image_path)
+        return output
+
+    def test_prepare_then_erase_then_chunked_program(self):
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS, buf_sz=0x20)  # 32-byte chunks
+        out = self._run(fake, image_size=80)  # 32 + 32 + 16 = 3 chunks
+        # The protocol trace must contain, in order:
+        # 1. POR pin debug enable, reset halt, sleep
+        # 2. load_image of loader bin into RAM
+        # 3. MSP/PC reads (mdw 0x20000000 / +4) + reg writes
+        # 4. QSPIC + MTB pokes
+        # 5. bp <mynewt_main>; resume; wait_halt; rbp; resume; mww MPU
+        # 6. fl_state poll == 1
+        # 7. ping (fl_cmd_rc=0; fl_cmd=1; poll fl_cmd_rc != 0)
+        # 8. erase params + fl_cmd=3 + poll
+        # 9. ping again at start of program; fl_cmd_data_sz read; flash_id
+        #    write; per-chunk: load_image of slice; flash_addr/amount/rc;
+        #    fl_cmd=5; poll fl_cmd==0; rc check; final fl_state poll
+        # 10. SYS_CTRL_REG write (software reset).
+        c = fake.calls
+
+        # Reset / load / vector-table read sequence.
+        self.assertEqual(c[0],
+                         f'mww {hex(loader.REG_POR_PIN_DEBUG_ENABLE)} '
+                         f'{hex(loader.REG_POR_PIN_DEBUG_ENABLE_VALUE)}')
+        self.assertEqual(c[1], 'reset halt')
+        self.assertEqual(c[2], 'sleep 1000')
+        self.assertEqual(c[3],
+                         f'load_image /fake/bin {hex(loader.LOADER_RAM_BASE)} bin')
+        self.assertEqual(c[4], 'sleep 1000')
+        self.assertEqual(c[5], f'mdw {hex(loader.LOADER_RAM_BASE)} 1')
+        self.assertEqual(c[6], f'mdw {hex(loader.LOADER_RAM_BASE + 4)} 1')
+        self.assertEqual(c[7], 'reg msp 0x20040000')
+        self.assertEqual(c[8], 'reg pc 0x20000401')
+        # QSPIC / MTB writes (4 of them, in the same order as the GDB script).
+        self.assertEqual(c[9], f'mww {hex(loader.REG_QSPIC_DUMMYBYTES)} 0x0')
+        self.assertEqual(c[10], f'mww {hex(loader.REG_MTB_POSITION)} 0x0')
+        self.assertEqual(c[11], f'mww {hex(loader.REG_MTB_MASTER)} 0x0')
+        self.assertEqual(c[12], f'mww {hex(loader.REG_MTB_FLOW)} 0x0')
+        # Defensive bp list (no stale bps in this test) precedes our own
+        # bp set — same address space, but the list is read-only and
+        # short-circuits when empty.
+        self.assertEqual(c[13], 'bp')
+        # Breakpoint dance.
+        self.assertEqual(c[14],
+                         f'bp {hex(_DEFAULT_SYM_ADDRS["mynewt_main"])} 4 hw')
+        self.assertEqual(c[15], 'resume')
+        self.assertEqual(c[16], 'wait_halt 5000')
+        self.assertEqual(c[17],
+                         f'rbp {hex(_DEFAULT_SYM_ADDRS["mynewt_main"])}')
+        self.assertEqual(c[18], 'resume')
+        self.assertEqual(c[19], f'mww {hex(loader.REG_MPU_CTRL)} 0x0')
+
+        # SYS_CTRL_REG SW reset is the very last command issued by flash_image.
+        self.assertEqual(c[-1], f'mww {hex(loader.REG_SYS_CTRL_REG)} 0x1')
+
+        # The trace must contain three program commands (one per chunk).
+        program_writes = [
+            cmd for cmd in c
+            if cmd == f'mww {hex(_DEFAULT_SYM_ADDRS["fl_cmd"])} 0x5'
+        ]
+        self.assertEqual(len(program_writes), 3,
+                         msg=f'expected 3 chunked programs, saw {len(program_writes)}')
+
+        # And exactly one erase command.
+        erase_writes = [
+            cmd for cmd in c
+            if cmd == f'mww {hex(_DEFAULT_SYM_ADDRS["fl_cmd"])} 0x3'
+        ]
+        self.assertEqual(len(erase_writes), 1)
+
+        # Output must mention progress + final reset.
+        joined = '\n'.join(out)
+        self.assertIn('Programmed 80 bytes successfully', joined)
+        self.assertIn('Issued software reset', joined)
+
+    def test_ping_rc_failure_raises(self):
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS, ping_rc=99)
+        with self.assertRaises(loader.Da1469xLoaderError) as ctx:
+            self._run(fake, image_size=16)
+        self.assertIn('ping returned rc=99', str(ctx.exception))
+
+    def test_erase_rc_failure_raises(self):
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS, erase_rc=2)
+        with self.assertRaises(loader.Da1469xLoaderError) as ctx:
+            self._run(fake, image_size=16)
+        self.assertIn('rc=2', str(ctx.exception))
+        self.assertIn('erase', str(ctx.exception))
+
+    def test_program_rc_failure_raises(self):
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS, program_rc=7)
+        with self.assertRaises(loader.Da1469xLoaderError) as ctx:
+            self._run(fake, image_size=16)
+        self.assertIn('rc=7', str(ctx.exception))
+        self.assertIn('program', str(ctx.exception))
+
+    def test_stale_breakpoints_are_cleared_before_bp_set(self):
+        # Regression: if a previous bring-up timed out at ``wait_halt``,
+        # OpenOCD's internal bp table still holds the stale entry. Without
+        # the defensive sweep, the next ``rpc.bp(mynewt_main, ...)`` would
+        # fail with "Breakpoint at 0x... already exists". With the sweep,
+        # we ``rbp`` every listed address before setting our own.
+        stale = [_DEFAULT_SYM_ADDRS['mynewt_main'], 0x20009999]
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS, buf_sz=0x40, stale_bps=stale)
+        out = self._run(fake, image_size=16)
+        c = fake.calls
+        # The ``bp`` listing must come before each rbp, and all rbps must
+        # come before our own ``bp <mynewt_main> 4 hw`` set.
+        list_idx = c.index('bp')
+        rbp_main_defensive = c.index(
+            f'rbp {hex(_DEFAULT_SYM_ADDRS["mynewt_main"])}', list_idx,
+        )
+        rbp_other = c.index('rbp 0x20009999', list_idx)
+        bp_set_idx = c.index(
+            f'bp {hex(_DEFAULT_SYM_ADDRS["mynewt_main"])} 4 hw',
+        )
+        self.assertLess(list_idx, rbp_main_defensive)
+        self.assertLess(list_idx, rbp_other)
+        self.assertLess(rbp_main_defensive, bp_set_idx)
+        self.assertLess(rbp_other, bp_set_idx)
+        # Output mentions the cleanup so the operator can see what happened.
+        self.assertTrue(
+            any('Clearing stale breakpoint' in line for line in out),
+            msg=f'expected stale-clear progress in output, got: {out}',
+        )
+
+    def test_bp_list_failure_does_not_block_flash(self):
+        # If OpenOCD's bp listing itself errors (very unusual — e.g. target
+        # not yet examined), we log + skip the defensive clear and proceed.
+        # The flash must still complete because losing the cleanup pass is
+        # only painful when there *is* a stale bp.
+        class FakeRpcFlakyBpList(FakeRpc):
+            def bp_list(self):
+                self._record('bp')
+                raise openocd.OpenOcdRpcError('OpenOCD bp list failed:\n'
+                                              'Error: target not examined yet')
+
+        fake = FakeRpcFlakyBpList(_DEFAULT_SYM_ADDRS, buf_sz=0x40)
+        out = self._run(fake, image_size=16)
+        self.assertIn(
+            f'bp {hex(_DEFAULT_SYM_ADDRS["mynewt_main"])} 4 hw',
+            fake.calls,
+            msg='our own bp set must still happen when bp_list errors',
+        )
+        self.assertIn('Programmed 16 bytes successfully', '\n'.join(out))
+
+    def test_loader_boot_timeout_raises(self):
+        # boot_state=0 -> fl_state never reaches READY.
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS, boot_state=0)
+        # Shrink the boot timeout so the test is fast — patch via attr swap.
+        orig = loader._LOADER_BOOT_TIMEOUT_S
+        loader._LOADER_BOOT_TIMEOUT_S = 0.01
+        try:
+            with self.assertRaises(loader.Da1469xLoaderError) as ctx:
+                self._run(fake, image_size=16)
+        finally:
+            loader._LOADER_BOOT_TIMEOUT_S = orig
+        self.assertIn('boot', str(ctx.exception))
+
+
+class EraseRangeTests(unittest.TestCase):
+    def _run(self, fake, **kwargs):
+        def fake_resolver(_family):
+            return ('/fake/elf', '/fake/bin')
+
+        def fake_sym_resolver(_path):
+            return _DEFAULT_SYM_ADDRS
+
+        return list(loader.erase_range(
+            fake,
+            _resolver=fake_resolver,
+            _symbol_resolver=fake_sym_resolver,
+            **kwargs,
+        ))
+
+    def test_erase_range_emits_one_erase_command(self):
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS)
+        out = self._run(fake, length=0x1000)
+        c = fake.calls
+        # Bring-up sequence is the same — last commands should be:
+        # ping (set rc=0; fl_cmd=1; poll), then erase (set params; fl_cmd=3;
+        # poll). No software reset (erase doesn't reboot the chip).
+        erases = [cmd for cmd in c
+                  if cmd == f'mww {hex(_DEFAULT_SYM_ADDRS["fl_cmd"])} 0x3']
+        self.assertEqual(len(erases), 1)
+        self.assertNotIn(f'mww {hex(loader.REG_SYS_CTRL_REG)} 0x1', c)
+        # The erase parameters use the requested length / offset.
+        self.assertIn(
+            f'mww {hex(_DEFAULT_SYM_ADDRS["fl_cmd_amount"])} {hex(0x1000)}', c,
+        )
+        self.assertIn('Erased 4096 bytes successfully', '\n'.join(out))
+
+    def test_zero_length_rejected(self):
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS)
+        with self.assertRaises(loader.Da1469xLoaderError):
+            self._run(fake, length=0)
+
+
+if __name__ == '__main__':
+    unittest.main()
