@@ -1,0 +1,27 @@
+---
+title: "Version 0.18.4"
+description: "May 20, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **`lager python` scripts no longer miss tight response deadlines under streaming back-pressure.** A running script's stdout/stderr were drained from their kernel pipes *inline* on the same generator that forwards bytes back to the CLI over HTTP, so any stall on that socket (slow link, Nagle, retransmit) stopped pipe drainage. Once the 64 KiB kernel pipe filled, the script blocked on its next `print()`. For scripts with tight timing budgets — for example a DA14695 ROM-bootloader handshake that must reply within 50–120 ms of each received byte — this stretched response windows enough to fail roughly 90% of the time, even though the same script run directly on the host succeeded every time. Output is now drained on background threads into a bounded queue so HTTP-write latency can no longer back-pressure the script, stdout/stderr pipe buffers are enlarged to 1 MiB, and the interpreter runs unbuffered (`python -u`). The wire format and public API are unchanged.
+- **Removed a potential deadlock when launching a `lager python` script.** The per-script scheduling-priority boost was applied inside the `fork()`/`exec()` window via a `preexec_fn`, which Python documents as unsafe in a multithreaded service. It is now applied from the parent process after the script starts, with identical effect and no window in which a concurrent request could deadlock the launch.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.18.4
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.18.4/)
