@@ -869,14 +869,24 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                             DA1469X_FAMILY,
                             Da1469xLoaderError,
                             flash_image,
+                            xip_to_flash_offset,
                         )
                         try:
+                            # ``flash_address`` is the CLI value from
+                            # ``--bin <file>,<addr>`` (set above for the
+                            # binfile branch; ``None`` for hex/elf). The
+                            # CLI accepts absolute XIP addresses
+                            # (matching the J-Link path); the loader
+                            # wants flash-relative offsets. Translate here
+                            # so the user-facing CLI behaves the same
+                            # across backends.
+                            loader_offset = xip_to_flash_offset(flash_address)
                             flash_output = []
                             for line in flash_image(
                                 rpc, flash_path,
                                 family=DA1469X_FAMILY,
                                 flash_id=0,
-                                offset=0,
+                                offset=loader_offset,
                             ):
                                 logger.info('[FLASH] %s', line)
                                 flash_output.append(line)

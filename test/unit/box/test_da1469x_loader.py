@@ -407,6 +407,53 @@ class ResolveLoaderPathsTests(unittest.TestCase):
             self.assertIn('lager box ssh', msg)
 
 
+class XipToFlashOffsetTests(unittest.TestCase):
+    """``xip_to_flash_offset`` translates the CLI's absolute XIP addresses
+    (e.g. ``0x16000000``) to the flash-relative offsets the loader's
+    ``fl_cmd_flash_addr`` expects. This is the missing translation that on
+    real hardware caused ``lager debug SWD flash --bin xl.img,0x16000000``
+    to silently mean "flash to absolute offset 0x16000000 in QSPI" — far
+    past the end of any plausible flash chip.
+    """
+
+    def test_none_maps_to_zero(self):
+        # No CLI ``--bin <file>,<addr>`` (hex/elf path) → start of QSPI.
+        self.assertEqual(loader.xip_to_flash_offset(None), 0)
+
+    def test_zero_maps_to_zero(self):
+        # ``--bin <file>,0x0`` is the explicit "boot image at QSPI start"
+        # form. We accept it and don't treat it as out-of-range.
+        self.assertEqual(loader.xip_to_flash_offset(0), 0)
+
+    def test_xip_base_maps_to_zero(self):
+        # The whole point of this helper: ``--bin <file>,0x16000000`` →
+        # flash offset 0, identical to ``fl_load <file> 0 0x00000000``.
+        self.assertEqual(
+            loader.xip_to_flash_offset(loader.QSPI_XIP_BASE), 0,
+        )
+
+    def test_xip_offset_is_subtracted(self):
+        self.assertEqual(
+            loader.xip_to_flash_offset(loader.QSPI_XIP_BASE + 0x4000),
+            0x4000,
+        )
+
+    def test_below_xip_base_rejected_with_actionable_message(self):
+        # 0x1000 (e.g. someone passes a flash offset by mistake) is
+        # below the XIP window and almost always indicates user error.
+        with self.assertRaises(loader.Da1469xLoaderError) as ctx:
+            loader.xip_to_flash_offset(0x1000)
+        msg = str(ctx.exception)
+        self.assertIn('XIP', msg)
+        self.assertIn(hex(loader.QSPI_XIP_BASE), msg)
+
+    def test_above_xip_window_rejected(self):
+        with self.assertRaises(loader.Da1469xLoaderError):
+            loader.xip_to_flash_offset(loader.QSPI_XIP_END)
+        with self.assertRaises(loader.Da1469xLoaderError):
+            loader.xip_to_flash_offset(loader.QSPI_XIP_END + 0x100)
+
+
 class FlashImageTests(unittest.TestCase):
     """End-to-end command-trace assertions for ``flash_image``.
 
@@ -525,11 +572,58 @@ class FlashImageTests(unittest.TestCase):
         self.assertIn('erase', str(ctx.exception))
 
     def test_program_rc_failure_raises(self):
+        # Non-OK program rc is now surfaced *after the loop*, mirroring the
+        # upstream macro (which does not read rc inside the loop). The error
+        # message changes from per-chunk to overall, but the rc value still
+        # appears verbatim and the message still mentions "program".
         fake = FakeRpc(_DEFAULT_SYM_ADDRS, program_rc=7)
         with self.assertRaises(loader.Da1469xLoaderError) as ctx:
             self._run(fake, image_size=16)
         self.assertIn('rc=7', str(ctx.exception))
         self.assertIn('program', str(ctx.exception))
+
+    def test_program_does_not_read_rc_mid_loop(self):
+        # Regression: on real DA1469x hardware (JUL-5) the loader can leave
+        # ``fl_cmd_rc`` holding a transient address-shaped value at the
+        # moment ``fl_cmd`` returns to 0, e.g. ``0x66A4E0``. The upstream
+        # macro side-steps that race by only reading rc once, after the
+        # final ``while fl_state != 1`` poll. Lager must do the same — no
+        # ``mdw fl_cmd_rc`` calls between chunks. Lock that in.
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS, buf_sz=0x20)
+        self._run(fake, image_size=64)  # 2 chunks
+        rc_addr = _DEFAULT_SYM_ADDRS['fl_cmd_rc']
+        # ``mdw <addr> 1`` is the only form we use, so this matches every
+        # rc read in the trace. We expect:
+        #   * 1 read inside the program-loop bring-up's `_fl_ping`
+        #     (poll until fl_cmd_rc != 0). That call only happens once
+        #     before the loop starts, not per-chunk.
+        #   * 1 final read after the loop.
+        # Plus one for `_fl_ping` during `_prepare_loader`, plus one for
+        # `_fl_erase`'s ping/poll, plus one for the erase poll itself —
+        # all of which are *outside* the program chunk loop. The hard
+        # constraint we want to lock in is "no rc reads PER CHUNK".
+        # Use the rc-read count as a ceiling that doesn't grow with
+        # chunk count: re-run with twice as many chunks and assert it
+        # didn't double.
+        rc_reads_2_chunks = sum(
+            1 for cmd in fake.calls if cmd == f'mdw {hex(rc_addr)} 1'
+        )
+
+        fake4 = FakeRpc(_DEFAULT_SYM_ADDRS, buf_sz=0x20)
+        self._run(fake4, image_size=128)  # 4 chunks
+        rc_reads_4_chunks = sum(
+            1 for cmd in fake4.calls if cmd == f'mdw {hex(rc_addr)} 1'
+        )
+        self.assertEqual(
+            rc_reads_2_chunks, rc_reads_4_chunks,
+            msg=(
+                f'fl_cmd_rc reads scaled with chunk count '
+                f'(2-chunk: {rc_reads_2_chunks}, 4-chunk: {rc_reads_4_chunks}). '
+                'A per-chunk rc read regressed; this races against the '
+                "loader's transient use of fl_cmd_rc and produces "
+                'address-shaped false failures on hardware.'
+            ),
+        )
 
     def test_program_does_not_clear_rc_per_chunk(self):
         # Regression: the upstream ``fl_program`` macro at
