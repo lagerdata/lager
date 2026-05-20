@@ -329,6 +329,19 @@ def _build_openocd_command(
         '-c', f'tcl_port {tcl_port}',
     ])
 
+    # Bind all listening ports to 0.0.0.0 so off-box gdb / telnet clients
+    # can reach them through the docker port forward (``-p 2331-2342:...``
+    # in start_box.sh). OpenOCD ≥ 0.11 defaults ``bindto`` to ``127.0.0.1``
+    # for security, which means the docker forward delivers traffic to the
+    # container's veth interface and finds nothing listening — the on-laptop
+    # gdb client times out without any error from OpenOCD itself. This
+    # matches the J-Link path's default (``JLinkGDBServer`` binds all
+    # interfaces unless ``-localhostonly 1`` is set, which we don't pass).
+    # The TCL/RPC port (used by the box-side service via 127.0.0.1) is
+    # unaffected by this change either way; ``bindto`` widens the listen
+    # set, it doesn't restrict it.
+    cmd.extend(['-c', 'bindto 0.0.0.0'])
+
     # When the user attaches a custom ``openocd_config``, treat it as the
     # sole source of interface configuration: don't also load the auto-detected
     # interface_cfg, since the two .cfg files would each call ``adapter driver
@@ -409,7 +422,19 @@ def _build_openocd_command(
             f'user openocd_config supplied'
         )
 
-    if speed and str(speed).lower() != 'adaptive':
+    # When the user attached a custom ``openocd_config`` they've signalled
+    # "I'm managing adapter setup myself" — appending ``adapter speed <N>``
+    # *after* their cfg silently clobbers any ``adapter speed`` they set
+    # (their cfg is sourced earlier in argv, so OpenOCD's last-write-wins
+    # makes lager's default override theirs). This is the same gating used
+    # for ``transport select`` above, for the same reason. CLI ``--speed``
+    # still works against auto-detected interface cfgs, where lager is the
+    # source of truth for adapter setup.
+    if (
+        speed
+        and str(speed).lower() != 'adaptive'
+        and not user_config_path
+    ):
         try:
             cmd.extend(['-c', f'adapter speed {int(speed)}'])
         except ValueError:

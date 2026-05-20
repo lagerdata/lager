@@ -242,7 +242,16 @@ class FakeRpc:
                 self.mem[self.syms['fl_cmd_rc']] = self.erase_rc
                 self.mem[self.syms['fl_cmd']] = 0
             elif value == loader.FL_CMD_PROGRAM_VERIFY:
-                self.mem[self.syms['fl_cmd_rc']] = self.program_rc
+                # Real protocol (per the upstream ``fl_program`` macro at
+                # [openocd/flash_loader/flash_loader.gdb:104-130]): the
+                # loader does NOT touch ``fl_cmd_rc`` on a successful
+                # chunk. ``rc`` stays latched at ``1`` (set by the ping
+                # that precedes the program loop) until either an error
+                # occurs or the run completes. We model that here so the
+                # tests catch the bug we hit on first hardware bring-up
+                # (per-chunk ``rc=0`` clears producing false failures).
+                if self.program_rc != loader.FL_RC_OK:
+                    self.mem[self.syms['fl_cmd_rc']] = self.program_rc
                 self.mem[self.syms['fl_cmd']] = 0
 
     def mwb(self, addr, value):
@@ -521,6 +530,38 @@ class FlashImageTests(unittest.TestCase):
             self._run(fake, image_size=16)
         self.assertIn('rc=7', str(ctx.exception))
         self.assertIn('program', str(ctx.exception))
+
+    def test_program_does_not_clear_rc_per_chunk(self):
+        # Regression: the upstream ``fl_program`` macro at
+        # [openocd/flash_loader/flash_loader.gdb:104-130] never clears
+        # ``fl_cmd_rc`` inside the chunk loop — it relies on rc being
+        # latched at ``1`` by the preceding ping. Our first port DID
+        # clear it before each chunk, which on real hardware produced
+        # ``flash_loader program chunk @0x0 (+32768 bytes) returned
+        # rc=0`` on the very first chunk because the loader doesn't
+        # re-assert rc on each successful write. Lock the cleaner-up
+        # behaviour in.
+        fake = FakeRpc(_DEFAULT_SYM_ADDRS, buf_sz=0x20)
+        self._run(fake, image_size=64)  # 2 chunks
+        rc_addr = _DEFAULT_SYM_ADDRS['fl_cmd_rc']
+        rc_clears_to_zero = [
+            cmd for cmd in fake.calls
+            if cmd == f'mww {hex(rc_addr)} 0x0'
+        ]
+        # The only legitimate rc-clears are inside ``_fl_ping`` (called
+        # twice: once during _prepare_loader, once at the start of the
+        # program loop) and inside ``_fl_erase`` (called once before
+        # the program loop). That's three. Anything more means we're
+        # clobbering rc per-chunk again.
+        self.assertEqual(
+            len(rc_clears_to_zero), 3,
+            msg=(
+                'Expected exactly 3 fl_cmd_rc=0 writes (2x ping + 1x erase); '
+                f'saw {len(rc_clears_to_zero)}. If this jumped up, the '
+                'per-chunk clear regressed and the loader will return '
+                'rc=0 on the first program chunk again.'
+            ),
+        )
 
     def test_stale_breakpoints_are_cleared_before_bp_set(self):
         # Regression: if a previous bring-up timed out at ``wait_halt``,
