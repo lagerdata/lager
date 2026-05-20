@@ -60,6 +60,16 @@ LOADER_BIN_NAME = 'flash_loader.elf.bin'
 # directory and (optionally) another sequencer module.
 DA1469X_FAMILY = 'da1469x'
 
+# DA1469x QSPI XIP window. Absolute CPU memory addresses inside this range
+# correspond to ``addr - QSPI_XIP_BASE`` flash offsets — which is what the
+# loader's ``fl_cmd_flash_addr`` actually wants. Keeping the constants here
+# (and not in jlink.py) lets both backends translate the same way; the J-Link
+# path uses absolute XIP, the loader path uses flash-relative offsets, and
+# the CLI accepts the absolute form (matching the J-Link convention).
+QSPI_XIP_BASE = 0x16000000
+QSPI_XIP_RANGE = 0x02000000  # 32 MiB — datasheet maximum XIP window.
+QSPI_XIP_END = QSPI_XIP_BASE + QSPI_XIP_RANGE  # exclusive upper bound
+
 # RAM address the Mynewt RAM-resident loader links at. Vector table sits at
 # the very start: word[0] = MSP, word[1] = reset handler PC. Matches
 # [xl/openocd/flash_loader/flash.gdb:7-10](xl/openocd/flash_loader/flash.gdb).
@@ -126,6 +136,39 @@ class Da1469xLoaderError(Exception):
     bounced us back with an error code" / "the loader never came up" apart
     from raw RPC transport / OpenOCD-side failures.
     """
+
+
+# ---------------------------------------------------------------------------
+# Address translation: CLI XIP addresses → loader flash offsets
+# ---------------------------------------------------------------------------
+
+
+def xip_to_flash_offset(addr: Optional[int]) -> int:
+    """Translate a CLI ``--bin <file>,<addr>`` value to a QSPI flash offset.
+
+    The CLI convention (matching the J-Link DA1469x path at
+    ``lager/box/lager/debug/jlink.py``) is to accept absolute CPU/XIP
+    addresses, e.g. ``0x16000000`` for "start of QSPI". The loader's
+    ``fl_cmd_flash_addr`` field, however, is a flash-relative offset
+    (``0x0`` for the same location). Translate by subtracting
+    :data:`QSPI_XIP_BASE`. ``None`` and ``0`` are treated as "no address
+    given — write from the start of QSPI".
+
+    Raises :class:`Da1469xLoaderError` when *addr* is non-zero but does
+    not lie inside the QSPI XIP window — that nearly always means the
+    caller passed a flash offset by mistake (where they meant XIP) or
+    something completely off-target.
+    """
+    if addr is None or addr == 0:
+        return 0
+    if not (QSPI_XIP_BASE <= addr < QSPI_XIP_END):
+        raise Da1469xLoaderError(
+            f'flash address {hex(addr)} is outside the DA1469x QSPI XIP '
+            f'window ({hex(QSPI_XIP_BASE)}–{hex(QSPI_XIP_END - 1)}). Pass '
+            f'an absolute XIP address (e.g. {hex(QSPI_XIP_BASE)}) or omit '
+            f'the address to flash from the start of QSPI.'
+        )
+    return addr - QSPI_XIP_BASE
 
 
 # ---------------------------------------------------------------------------
@@ -524,23 +567,29 @@ def _fl_program(rpc: OpenOcdRpc, syms: Dict[str, int],
 
                 # Per-chunk handshake: the loader sets ``fl_cmd`` back to 0
                 # once it has consumed the command (data buffer copied into
-                # flash + verified). This is the only per-chunk signal —
-                # rc is checked once at the end.
+                # flash + verified). This is the ONLY per-chunk signal we
+                # consume — we deliberately do NOT read ``fl_cmd_rc`` mid-
+                # loop. Rationale:
+                #
+                # 1. The upstream ``fl_program`` macro at
+                #    [openocd/flash_loader/flash_loader.gdb:104-130] never
+                #    reads rc inside the loop except via the loop guard,
+                #    which only triggers on rc *transitioning away from 1*.
+                #    On every successful program we've seen by hand, rc
+                #    stays latched at 1 the whole time.
+                # 2. On real DA1469x hardware (JUL-5) the loader appears
+                #    to use ``fl_cmd_rc`` as scratch during a chunk, so an
+                #    eager mid-loop read after ``fl_cmd==0`` can catch a
+                #    transient value (we observed ``rc=0x66A4E0``) right
+                #    before the loader restores it. The upstream macro
+                #    side-steps this race entirely by only checking rc
+                #    *after* the post-loop ``while fl_state != 1`` returns.
+                #    We do the same.
                 _poll_word(
                     rpc, fl_cmd_addr, lambda v: v == FL_CMD_NONE,
                     timeout_s=_FL_CHUNK_TIMEOUT_S,
                     label=f'program chunk@{hex(offset + written)} (fl_cmd==0)',
                 )
-                # Mid-loop early-exit: if the loader has already latched a
-                # *non-OK* rc (i.e. an actual error, not the 0 we used to
-                # mistakenly clear), stop now and surface it. This mirrors
-                # the upstream loop guard ``while fl_cmd_rc == 1 && ...``.
-                rc = rpc.mdw(fl_cmd_rc_addr)
-                if rc not in (0, FL_RC_OK):
-                    raise Da1469xLoaderError(
-                        f'flash_loader program chunk @{hex(offset + written)} '
-                        f'(+{this_chunk} bytes) returned rc={rc}'
-                    )
 
                 written += this_chunk
                 yield f'  programmed {hex(offset + written)} ({written}/{file_size})'
