@@ -624,21 +624,189 @@ class OpenOcdRpc:
 
     # ---- Higher-level helpers ------------------------------------------------
 
+    # OpenOCD's TCL/RPC channel does not surface TCL errors out-of-band — they
+    # show up only as text in the response (lines starting with ``Error:`` or
+    # the TCL backtrace form ``<file>:<line>: Error: ...``). Helpers below run
+    # ``cmd()`` then call ``_check_for_tcl_error()`` to convert those into
+    # ``OpenOcdRpcError`` so callers can't silently read past failures (the
+    # bug class that made ``Flashed!`` print after a failed ``program``).
+    _ERROR_LINE_RE = re.compile(r'(?m)^[^\n]*\bError:\s')
+
+    @classmethod
+    def _check_for_tcl_error(cls, out, *, command=None):
+        """Raise ``OpenOcdRpcError`` if *out* contains an OpenOCD error line."""
+        if cls._ERROR_LINE_RE.search(out):
+            prefix = f'OpenOCD {command} failed' if command else 'OpenOCD command failed'
+            raise OpenOcdRpcError(f'{prefix}:\n{out.rstrip()}')
+
+    def cmd_checked(self, command, *, timeout=None, label=None):
+        """Run *command* and raise ``OpenOcdRpcError`` on TCL ``Error:`` output.
+
+        Use this for any command where the *response* — not just the socket —
+        determines success. Returns the raw output on success.
+        """
+        out = self.cmd(command, timeout=timeout)
+        self._check_for_tcl_error(out, command=label or command.split()[0])
+        return out
+
+    # ---- Reset / halt / resume ----------------------------------------------
+
     def reset(self, halt=False):
-        return self.cmd('reset halt' if halt else 'reset run')
+        return self.cmd_checked(
+            'reset halt' if halt else 'reset run', timeout=30, label='reset',
+        )
 
     def halt(self):
-        return self.cmd('halt')
+        return self.cmd_checked('halt', timeout=10, label='halt')
 
-    def resume(self):
-        return self.cmd('resume')
+    def resume(self, address=None):
+        cmd = 'resume' if address is None else f'resume {hex(address)}'
+        return self.cmd_checked(cmd, timeout=10, label='resume')
+
+    def wait_halt(self, timeout_ms=5000):
+        """Block until the target halts (or *timeout_ms* expires).
+
+        OpenOCD reports timeout as ``Error: timed out while waiting for target
+        halted`` — surfaced as ``OpenOcdRpcError``.
+        """
+        # Add a generous margin to the socket timeout so the RPC layer doesn't
+        # cut OpenOCD off mid-poll.
+        sock_timeout = max(self.timeout, (timeout_ms / 1000.0) + 5.0)
+        return self.cmd_checked(
+            f'wait_halt {int(timeout_ms)}', timeout=sock_timeout, label='wait_halt',
+        )
+
+    def sleep_ms(self, ms):
+        """OpenOCD ``sleep <ms>`` — host-side wait, target keeps running."""
+        sock_timeout = max(self.timeout, (ms / 1000.0) + 5.0)
+        return self.cmd_checked(
+            f'sleep {int(ms)}', timeout=sock_timeout, label='sleep',
+        )
+
+    # ---- Memory access -------------------------------------------------------
+
+    _MDW_VALUE_RE = re.compile(r'0x[0-9a-fA-F]+:\s*((?:[0-9a-fA-F]{8}\s*)+)')
+
+    def mww(self, address, value):
+        """Write a 32-bit word: ``mww <addr> <value>``."""
+        return self.cmd_checked(
+            f'mww {hex(int(address))} {hex(int(value) & 0xFFFFFFFF)}',
+            timeout=10, label='mww',
+        )
+
+    def mwb(self, address, value):
+        """Write a single byte: ``mwb <addr> <value>``."""
+        return self.cmd_checked(
+            f'mwb {hex(int(address))} {hex(int(value) & 0xFF)}',
+            timeout=10, label='mwb',
+        )
+
+    def mdw(self, address, count=1):
+        """Read *count* 32-bit words at *address*. Returns ``int`` for
+        ``count == 1``, otherwise ``list[int]``.
+
+        OpenOCD output looks like::
+
+            0x20000000: 12345678
+            0x20000000: 12345678 9abcdef0 fedcba98 76543210
+        """
+        out = self.cmd_checked(
+            f'mdw {hex(int(address))} {int(count)}',
+            timeout=15, label='mdw',
+        )
+        words = []
+        for m in self._MDW_VALUE_RE.finditer(out):
+            for token in m.group(1).split():
+                words.append(int(token, 16))
+        if not words:
+            raise OpenOcdRpcError(
+                f'OpenOCD mdw {hex(address)} returned no values:\n{out.rstrip()}'
+            )
+        if count == 1:
+            return words[0]
+        return words[:count]
+
+    def load_image(self, file_path, address, fmt='bin'):
+        """Load *file_path* into target memory at *address* via OpenOCD's
+        ``load_image``. ``fmt`` is ``'bin'`` for raw binary; OpenOCD accepts
+        ``elf``/``ihex``/``s19``/``mem``/``bin``.
+        """
+        return self.cmd_checked(
+            f'load_image {file_path} {hex(int(address))} {fmt}',
+            timeout=120, label='load_image',
+        )
+
+    # ---- Registers -----------------------------------------------------------
+
+    _REG_VALUE_RE = re.compile(r':\s*(0x[0-9a-fA-F]+)')
+
+    def reg_write(self, name, value):
+        """Write *value* to the named register."""
+        return self.cmd_checked(
+            f'reg {name} {hex(int(value) & 0xFFFFFFFF)}',
+            timeout=10, label='reg',
+        )
+
+    def reg_read(self, name):
+        """Read the named register and return it as an ``int``.
+
+        OpenOCD prints e.g. ``pc (/32): 0x12345678``.
+        """
+        out = self.cmd_checked(f'reg {name}', timeout=10, label='reg')
+        m = self._REG_VALUE_RE.search(out)
+        if not m:
+            raise OpenOcdRpcError(
+                f'OpenOCD reg {name} returned no value:\n{out.rstrip()}'
+            )
+        return int(m.group(1), 16)
+
+    # ---- Breakpoints ---------------------------------------------------------
+
+    def bp(self, address, length=4, hw=True):
+        """Set a breakpoint at *address*. ``hw=True`` requests hardware."""
+        suffix = ' hw' if hw else ''
+        return self.cmd_checked(
+            f'bp {hex(int(address))} {int(length)}{suffix}',
+            timeout=10, label='bp',
+        )
+
+    def rbp(self, address):
+        """Remove a breakpoint at *address*."""
+        return self.cmd_checked(
+            f'rbp {hex(int(address))}', timeout=10, label='rbp',
+        )
+
+    # ``bp`` (no args) lists active breakpoints, one per line, e.g.::
+    #
+    #     Breakpoint(IVA): 0x20001234, 0x4, hard
+    #     Breakpoint: 0x20005678, 0x2, hard
+    #
+    # The lead-in word and the punctuation around the address vary slightly
+    # between OpenOCD versions; the only reliable anchor is "Breakpoint"
+    # followed (after some non-digit chars) by a hex address. Any line
+    # without that combination is ignored.
+    _BP_LIST_LINE_RE = re.compile(r'Breakpoint[^0-9]*0x([0-9a-fA-F]+)')
+
+    def bp_list(self):
+        """Return the list of active breakpoint addresses as ``list[int]``.
+
+        Empty list when no breakpoints are set. Used by the DA1469x flash
+        loader to clear out stale entries left behind when a previous
+        bring-up hit ``wait_halt`` timeout — without this, the next attempt
+        fails with ``Breakpoint at 0x... already exists`` because OpenOCD's
+        internal bp table outlives ``reset halt``.
+        """
+        out = self.cmd_checked('bp', timeout=10, label='bp list')
+        return [int(m.group(1), 16) for m in self._BP_LIST_LINE_RE.finditer(out)]
+
+    # ---- Flash / program -----------------------------------------------------
 
     # OpenOCD's ``program_error`` proc (in startup.tcl) emits failure
     # markers of the form ``** <Something> Failed **`` (e.g.
-    # ``** Programming Failed **``, ``** Verify Failed **``). The TCL/RPC
-    # channel does not surface TCL errors out-of-band — they show up only
-    # as text in the response — so we have to scan the output to tell
-    # success from failure. See ``program``/``program_error``.
+    # ``** Programming Failed **``, ``** Verify Failed **``). ``program``
+    # output legitimately contains echoes like ``** Programming Started **``,
+    # so the asterisk markers are checked separately from the generic
+    # ``Error:`` line scan to avoid false positives.
     _PROGRAM_FAILURE_RE = re.compile(r'\*\*\s.*Failed\s\*\*', re.IGNORECASE)
 
     def program(self, file_path, verify=True, reset_after=True, address=None):
@@ -648,8 +816,8 @@ class OpenOcdRpc:
         files) and the trailing ``verify``/``reset`` keywords.
 
         Raises ``OpenOcdRpcError`` if the response contains an OpenOCD
-        ``program_error`` failure marker (``** ... Failed **``); otherwise
-        returns the raw command output for the caller to log.
+        ``program_error`` failure marker (``** ... Failed **``) or any
+        TCL ``Error:`` line; otherwise returns the raw command output.
         """
         parts = ['program', file_path]
         if address is not None:
@@ -663,6 +831,7 @@ class OpenOcdRpc:
             raise OpenOcdRpcError(
                 f'OpenOCD program failed for {file_path}:\n{out.rstrip()}'
             )
+        self._check_for_tcl_error(out, command=f'program {file_path}')
         return out
 
     def flash_erase_all(self):
@@ -684,18 +853,25 @@ class OpenOcdRpc:
         """
         bank_indices = []
         try:
-            banks_out = self.cmd('flash banks', timeout=10)
+            banks_out = self.cmd_checked(
+                'flash banks', timeout=10, label='flash banks',
+            )
             for line in banks_out.splitlines():
                 m = re.match(r'\s*#(\d+)\s*:', line)
                 if m:
                     bank_indices.append(int(m.group(1)))
         except OpenOcdRpcError as exc:
+            # No flash banks enumerable usually means the target.cfg has no
+            # ``flash bank`` directive at all. Fall back to bank 0 / the
+            # erase_address path; if those also fail we surface the TCL
+            # error rather than printing a misleading "Erase complete!"
+            # (the old behaviour silently swallowed both).
             logger.warning(
                 'flash banks enumeration failed (%s); falling back to bank 0 only', exc,
             )
 
         # If enumeration produced nothing usable (older OpenOCD, exotic
-        # target.cfg), default to "bank 0 only" — same behaviour as before.
+        # target.cfg, or no flash bank declared), default to "bank 0 only".
         if not bank_indices:
             bank_indices = [0]
 
@@ -703,7 +879,10 @@ class OpenOcdRpc:
         last_exc = None
         for bank in bank_indices:
             try:
-                outputs.append(self.cmd(f'flash erase_sector {bank} 0 last', timeout=120))
+                outputs.append(self.cmd_checked(
+                    f'flash erase_sector {bank} 0 last',
+                    timeout=120, label=f'flash erase_sector {bank}',
+                ))
             except OpenOcdRpcError as exc:
                 last_exc = exc
                 logger.warning(
@@ -711,8 +890,9 @@ class OpenOcdRpc:
                     bank, exc,
                 )
                 try:
-                    outputs.append(self.cmd(
-                        f'flash erase_address 0 0xFFFFFFFF', timeout=120,
+                    outputs.append(self.cmd_checked(
+                        'flash erase_address 0 0xFFFFFFFF',
+                        timeout=120, label='flash erase_address',
                     ))
                     # erase_address ignores the bank index and walks all
                     # banks itself on most target.cfgs, so one fallback is
@@ -722,14 +902,16 @@ class OpenOcdRpc:
                     last_exc = exc2
                     logger.warning('flash erase_address fallback failed: %s', exc2)
         if not outputs and last_exc is not None:
+            # All paths failed — propagate the last error so callers don't
+            # report a successful erase.
             raise last_exc
         return '\n'.join(outputs)
 
     def flash_erase_range(self, start, length):
         end = start + length - 1
-        return self.cmd(
+        return self.cmd_checked(
             f'flash erase_address {hex(start)} {hex(end)}',
-            timeout=120,
+            timeout=120, label='flash erase_address',
         )
 
     def read_memory(self, address, length):

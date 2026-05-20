@@ -856,8 +856,53 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                         )
                         return
 
+                    rpc = OpenOcdRpc(port=openocd_tcl_port, timeout=300)
+
+                    # DA1469x family: mainline OpenOCD has no QSPI flash
+                    # driver, so ``program ... 0x16000000 verify reset``
+                    # cannot touch external NOR. Drive the RAM-resident
+                    # Apache Mynewt flash_loader instead — the OpenOCD
+                    # counterpart of the J-Link DA1469x special path in
+                    # ``lager/box/lager/debug/jlink.py``.
+                    if 'DA1469' in device_type.upper():
+                        from .da1469x_loader import (
+                            DA1469X_FAMILY,
+                            Da1469xLoaderError,
+                            flash_image,
+                        )
+                        try:
+                            flash_output = []
+                            for line in flash_image(
+                                rpc, flash_path,
+                                family=DA1469X_FAMILY,
+                                flash_id=0,
+                                offset=0,
+                            ):
+                                logger.info('[FLASH] %s', line)
+                                flash_output.append(line)
+                        except (Da1469xLoaderError, OpenOcdRpcError) as exc:
+                            self.send_error_response(500, str(exc))
+                            return
+
+                        # Drop the active connection entry so the next
+                        # ``/debug/connect`` re-initialises cleanly — the
+                        # software reset above leaves the chip running its
+                        # bootrom, which puts it in a fresh state for any
+                        # following ``gdbserver --rtt`` attach. Mirrors the
+                        # J-Link DA1469x post-flash bookkeeping at
+                        # ``service.py:handle_flash`` (J-Link branch).
+                        connection_id = f"{net.get('name', 'unknown')}:{device_type}"
+                        with connections_lock:
+                            active_connections.pop(connection_id, None)
+
+                        self.send_json_response(200, {
+                            'status': 'flash_complete',
+                            'output': flash_output,
+                            'backend': BACKEND_OPENOCD,
+                        })
+                        return
+
                     try:
-                        rpc = OpenOcdRpc(port=openocd_tcl_port, timeout=300)
                         # ``program <file> [<addr>] verify reset`` runs erase +
                         # write + verify + reset on the existing daemon — the
                         # OpenOCD equivalent of the JLinkExe ``loadfile`` path.
@@ -1019,8 +1064,46 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                         'OpenOCD is not running; call /debug/connect first',
                     )
                     return
+                rpc = OpenOcdRpc(port=openocd_tcl_port, timeout=120)
+
+                # DA1469x family: route to the RAM-resident flash_loader
+                # (matching the J-Link DA1469x address-range erase path).
+                # Mainline OpenOCD has no QSPI flash bank for DA1469x, so
+                # ``flash erase_sector`` would silently do nothing.
+                if 'DA1469' in device_type.upper():
+                    from .da1469x_loader import (
+                        DA1469X_FAMILY,
+                        DEFAULT_ERASE_LENGTH,
+                        Da1469xLoaderError,
+                        erase_range,
+                    )
+                    try:
+                        erase_output = []
+                        for line in erase_range(
+                            rpc,
+                            family=DA1469X_FAMILY,
+                            flash_id=0,
+                            offset=0,
+                            length=DEFAULT_ERASE_LENGTH,
+                        ):
+                            logger.info('[ERASE] %s', line)
+                            erase_output.append(line)
+                    except (Da1469xLoaderError, OpenOcdRpcError) as exc:
+                        self.send_error_response(500, str(exc))
+                        return
+
+                    connection_id = f"{net.get('name', 'unknown')}:{device_type}"
+                    with connections_lock:
+                        active_connections.pop(connection_id, None)
+
+                    self.send_json_response(200, {
+                        'status': 'erase_complete',
+                        'output': '\n'.join(erase_output) if erase_output else 'Erase completed',
+                        'backend': BACKEND_OPENOCD,
+                    })
+                    return
+
                 try:
-                    rpc = OpenOcdRpc(port=openocd_tcl_port, timeout=120)
                     out = rpc.flash_erase_all()
                 except OpenOcdRpcError as exc:
                     self.send_error_response(500, str(exc))
