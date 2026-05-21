@@ -27,6 +27,23 @@ loader build. The operator drops them onto the box under
 ``/home/www-data/flash-loaders/<family>/`` (override the parent dir with
 ``LAGER_FLASH_LOADERS_DIR``); we resolve symbol addresses by parsing the
 ``.elf`` directly so any compatible loader build "just works".
+
+Note on ``fl_cmd_data``: in the upstream
+`apache/mynewt-core apps/flash_loader src/fl.c
+<https://github.com/apache/mynewt-core/blob/master/apps/flash_loader/src/fl.c>`_,
+``fl_cmd_data`` is declared ``volatile uint8_t *fl_cmd_data`` — a *pointer
+variable*, not a buffer. The loader allocates ``fl_data`` as
+``2 * fl_cmd_data_sz`` bytes on the heap and double-buffers: every
+``LOAD`` / ``LOAD_VERIFY`` / ``VERIFY`` triggers ``fl_rotate_databuf()``,
+which snapshots the current pointer into ``fl_write.buf`` and toggles
+``fl_cmd_data`` to the other half so the host can stage chunk N+1 while
+the loader is still flashing chunk N. The host therefore must
+*dereference* ``fl_cmd_data`` (read the pointer's current value) before
+each ``load_image`` — the static ELF symbol address points at the
+pointer variable itself. The GDB macro at
+[xl/openocd/flash_loader/flash_loader.gdb] does this automatically by
+re-evaluating bare ``fl_cmd_data`` each iteration; the pure-RPC path
+issues an extra ``mdw`` per chunk for the same effect.
 """
 
 import logging
@@ -502,7 +519,25 @@ def _fl_erase(rpc: OpenOcdRpc, syms: Dict[str, int],
 def _fl_program(rpc: OpenOcdRpc, syms: Dict[str, int],
                 image_path: str, flash_id: int, offset: int) -> Iterator[str]:
     """Equivalent of the ``fl_program`` GDB macro: stream the image through
-    the ``fl_cmd_data`` buffer in ``fl_cmd_data_sz``-byte chunks."""
+    the loader's double-buffered ``fl_cmd_data`` staging area in
+    ``fl_cmd_data_sz``-byte chunks.
+
+    ``fl_cmd_data`` is a *pointer variable* in the upstream loader
+    (``volatile uint8_t *fl_cmd_data;`` in
+    [apache/mynewt-core apps/flash_loader src/fl.c](https://github.com/apache/mynewt-core/blob/master/apps/flash_loader/src/fl.c)).
+    On every ``LOAD`` / ``LOAD_VERIFY`` / ``VERIFY`` command the loader's
+    ``fl_rotate_databuf()`` snapshots the current pointer into
+    ``fl_write.buf`` and toggles ``fl_cmd_data`` to the *other* half of
+    the malloc'd ``fl_data`` buffer. The host stages chunk N+1 while the
+    loader is still flashing/verifying chunk N.
+
+    The driver therefore must dereference ``fl_cmd_data`` (read the
+    pointer's current value with ``mdw``) before each ``load_image`` —
+    the static ELF symbol address points at the pointer variable itself,
+    not the staging buffer. This mirrors the way
+    [flash_loader.gdb](xl/openocd/flash_loader/flash_loader.gdb)
+    re-resolves bare ``fl_cmd_data`` on every iteration.
+    """
     _fl_ping(rpc, syms)
 
     file_size = os.path.getsize(image_path)
@@ -521,16 +556,21 @@ def _fl_program(rpc: OpenOcdRpc, syms: Dict[str, int],
 
     fl_cmd_addr = syms['fl_cmd']
     fl_cmd_rc_addr = syms['fl_cmd_rc']
-    fl_cmd_addr_addr = syms['fl_cmd_flash_addr']
+    fl_cmd_flash_addr_addr = syms['fl_cmd_flash_addr']
     fl_cmd_amount_addr = syms['fl_cmd_amount']
-    fl_cmd_data_addr = syms['fl_cmd_data']
+    fl_cmd_data_ptr_addr = syms['fl_cmd_data']
     fl_state_addr = syms['fl_state']
 
     written = 0
-    chunk_paths_to_clean: list = []
-    with open(image_path, 'rb') as image:
-        try:
-            chunk_index = 0
+    # One reusable temp file: rewriting it in place is fine because
+    # ``load_image`` reopens the path each call. The previous workaround
+    # (per-chunk-unique paths) was added while debugging what turned out
+    # to be a different bug — staging chunks at the address of the
+    # ``fl_cmd_data`` pointer variable instead of dereferencing it.
+    with tempfile.NamedTemporaryFile(suffix='.fl_chunk.bin', delete=False) as chunk_tmp:
+        chunk_path = chunk_tmp.name
+    try:
+        with open(image_path, 'rb') as image:
             while written < file_size:
                 this_chunk = min(buf_sz, file_size - written)
                 chunk_bytes = image.read(this_chunk)
@@ -539,30 +579,16 @@ def _fl_program(rpc: OpenOcdRpc, syms: Dict[str, int],
                         f'short read from {image_path}: wanted {this_chunk}, '
                         f'got {len(chunk_bytes)} at offset {written}'
                     )
-                # Write the chunk to a *unique* temp file so OpenOCD's
-                # ``load_image`` can stream it efficiently into RAM at
-                # fl_cmd_data. The GDB script uses
-                # ``restore <file> binary <bias> <off> <end>`` with a
-                # per-chunk bias to land every chunk at fl_cmd_data; our
-                # equivalent is "write the slice, load it at the buffer
-                # address every iteration".
-                #
-                # Per-chunk-unique paths avoid an OpenOCD edge case where
-                # repeated ``load_image`` of the same path can re-read
-                # cached image-section metadata even when the underlying
-                # bytes have been rewritten — a likely cause of the
-                # "first 3 chunks ok, 4th hangs" pattern observed on
-                # JUL-5 hardware. Files are cleaned up unconditionally
-                # in the ``finally`` block below.
-                with tempfile.NamedTemporaryFile(
-                    suffix=f'.chunk{chunk_index}.bin', delete=False,
-                ) as chunk_tmp:
-                    chunk_path = chunk_tmp.name
-                    chunk_tmp.write(chunk_bytes)
-                chunk_paths_to_clean.append(chunk_path)
-                rpc.load_image(chunk_path, fl_cmd_data_addr, fmt='bin')
+                with open(chunk_path, 'wb') as chunk_out:
+                    chunk_out.write(chunk_bytes)
 
-                rpc.mww(fl_cmd_addr_addr, offset + written)
+                # Dereference ``fl_cmd_data`` to get the active staging-
+                # buffer half. The loader toggles this on every
+                # ``LOAD_VERIFY``, so we must re-read it per iteration.
+                buffer_addr = rpc.mdw(fl_cmd_data_ptr_addr)
+                rpc.load_image(chunk_path, buffer_addr, fmt='bin')
+
+                rpc.mww(fl_cmd_flash_addr_addr, offset + written)
                 rpc.mww(fl_cmd_amount_addr, this_chunk)
                 # NB: do NOT clear ``fl_cmd_rc`` per-chunk. The upstream
                 # ``fl_program`` macro in
@@ -578,11 +604,12 @@ def _fl_program(rpc: OpenOcdRpc, syms: Dict[str, int],
                 # ``program chunk @0x0 (+32768 bytes) returned rc=0``).
                 rpc.mww(fl_cmd_addr, FL_CMD_PROGRAM_VERIFY)
 
-                # Per-chunk handshake: the loader sets ``fl_cmd`` back to 0
-                # once it has consumed the command (data buffer copied into
-                # flash + verified). This is the ONLY per-chunk signal we
-                # consume — we deliberately do NOT read ``fl_cmd_rc`` mid-
-                # loop. Rationale:
+                # Per-chunk handshake: ``fl_rotate_databuf()`` retargets
+                # ``fl_cmd_data`` and *then* the loader sets ``fl_cmd`` back
+                # to 0. So when this poll returns, the next iteration's
+                # ``mdw(fl_cmd_data_ptr_addr)`` will see the new (rotated)
+                # pointer value. We deliberately do NOT read ``fl_cmd_rc``
+                # mid-loop:
                 #
                 # 1. The upstream ``fl_program`` macro at
                 #    [openocd/flash_loader/flash_loader.gdb:104-130] never
@@ -590,42 +617,26 @@ def _fl_program(rpc: OpenOcdRpc, syms: Dict[str, int],
                 #    which only triggers on rc *transitioning away from 1*.
                 #    On every successful program we've seen by hand, rc
                 #    stays latched at 1 the whole time.
-                # 2. On real DA1469x hardware (JUL-5) the loader appears
-                #    to use ``fl_cmd_rc`` as scratch during a chunk, so an
-                #    eager mid-loop read after ``fl_cmd==0`` can catch a
-                #    transient value (we observed ``rc=0x66A4E0``) right
-                #    before the loader restores it. The upstream macro
-                #    side-steps this race entirely by only checking rc
-                #    *after* the post-loop ``while fl_state != 1`` returns.
-                #    We do the same.
+                # 2. On real DA1469x hardware the loader appears to use
+                #    ``fl_cmd_rc`` as scratch during a chunk, so an eager
+                #    mid-loop read after ``fl_cmd==0`` can catch a transient
+                #    value (we observed ``rc=0x66A4E0``) right before the
+                #    loader restores it. The upstream macro side-steps this
+                #    race entirely by only checking rc *after* the post-loop
+                #    ``while fl_state != 1`` returns. We do the same.
                 _poll_word(
                     rpc, fl_cmd_addr, lambda v: v == FL_CMD_NONE,
                     timeout_s=_FL_CHUNK_TIMEOUT_S,
                     label=f'program chunk@{hex(offset + written)} (fl_cmd==0)',
                 )
-                # Settle delay between iterations. The upstream GDB-driven
-                # path has tens-to-hundreds of milliseconds of natural
-                # overhead per iteration (remote-stub round-trips, macro
-                # parsing). Pure-RPC has none of that, and on JUL-5
-                # hardware we observed a hang at chunk 4 (offset 0x18000)
-                # where the loader did transition ``fl_cmd → 0`` but had
-                # not yet returned to its idle/poll state when we started
-                # writing the next chunk. The smallest defensible pacing
-                # is a sleep that's still much shorter than any plausible
-                # erase/write latency, so it's effectively free for the
-                # happy path but enough to cover the loader's internal
-                # transition.
-                rpc.sleep_ms(50)
 
                 written += this_chunk
-                chunk_index += 1
                 yield f'  programmed {hex(offset + written)} ({written}/{file_size})'
-        finally:
-            for path in chunk_paths_to_clean:
-                try:
-                    os.unlink(path)
-                except OSError:
-                    pass
+    finally:
+        try:
+            os.unlink(chunk_path)
+        except OSError:
+            pass
 
     # Final phase, mirroring the ``while fl_state != 1`` + ``if fl_cmd_rc == 1``
     # tail of the upstream ``fl_program`` macro at

@@ -176,10 +176,17 @@ class FakeRpc:
       tests pass 0 to model a loader that never comes up so the boot
       timeout fires.
     * ``buf_sz`` — value to return for ``fl_cmd_data_sz``. Default 0x40.
+    * ``fl_cmd_data_base`` — base address of the heap-allocated double
+      buffer the loader's ``fl_cmd_data`` pointer toggles between. We
+      model the upstream ``fl_rotate_databuf()`` toggle on every
+      ``FL_CMD_PROGRAM_VERIFY`` write so tests catch the regression
+      class "host stages chunks at the static symbol address of the
+      pointer variable instead of dereferencing it".
     """
 
     def __init__(self, syms, *, ping_rc=1, erase_rc=1, program_rc=1,
-                 boot_state=1, buf_sz=0x40, stale_bps=()):
+                 boot_state=1, buf_sz=0x40, stale_bps=(),
+                 fl_cmd_data_base=0x20010000):
         self.syms = syms
         self.calls = []
         self.mem = {}
@@ -198,6 +205,15 @@ class FakeRpc:
         self.mem[syms['fl_cmd']] = 0
         self.mem[syms['fl_cmd_rc']] = 0
         self.mem[syms['fl_cmd_data_sz']] = buf_sz
+        # Model the upstream loader's double buffer: ``fl_data`` is
+        # malloc'd at ``fl_cmd_data_base`` and is ``2 * buf_sz`` bytes
+        # long; ``fl_cmd_data`` (a *pointer variable* — see
+        # ``apache/mynewt-core apps/flash_loader/src/fl.c``) starts
+        # aimed at the low half and toggles on every LOAD/LOAD_VERIFY.
+        # The driver must dereference it via ``mdw`` per iteration.
+        self._fl_cmd_data_low = fl_cmd_data_base
+        self._fl_cmd_data_high = fl_cmd_data_base + buf_sz
+        self.mem[syms['fl_cmd_data']] = self._fl_cmd_data_low
         # ``mdw(LOADER_RAM_BASE)`` / ``mdw(LOADER_RAM_BASE+4)`` need
         # plausible MSP/PC values so ``_prepare_loader`` doesn't blow up
         # decoding.
@@ -252,6 +268,16 @@ class FakeRpc:
                 # (per-chunk ``rc=0`` clears producing false failures).
                 if self.program_rc != loader.FL_RC_OK:
                     self.mem[self.syms['fl_cmd_rc']] = self.program_rc
+                # Mirror ``fl_rotate_databuf`` (apps/flash_loader/src/fl.c):
+                # toggle ``fl_cmd_data`` between the two halves of the
+                # heap buffer *before* setting fl_cmd back to 0. The
+                # driver re-reads ``fl_cmd_data`` on the next iteration
+                # to find the staging area for the upcoming chunk.
+                cur = self.mem[self.syms['fl_cmd_data']]
+                if cur == self._fl_cmd_data_low:
+                    self.mem[self.syms['fl_cmd_data']] = self._fl_cmd_data_high
+                else:
+                    self.mem[self.syms['fl_cmd_data']] = self._fl_cmd_data_low
                 self.mem[self.syms['fl_cmd']] = 0
 
     def mwb(self, addr, value):
@@ -654,6 +680,103 @@ class FlashImageTests(unittest.TestCase):
                 f'saw {len(rc_clears_to_zero)}. If this jumped up, the '
                 'per-chunk clear regressed and the loader will return '
                 'rc=0 on the first program chunk again.'
+            ),
+        )
+
+    def test_program_load_image_uses_dereferenced_fl_cmd_data(self):
+        # Regression for the JUL-5 hang at chunk@0x10000: ``fl_cmd_data``
+        # is a *pointer variable* in the upstream loader
+        # (``apache/mynewt-core apps/flash_loader/src/fl.c``) that the
+        # loader's ``fl_rotate_databuf()`` toggles between two halves of
+        # the malloc'd ``fl_data`` buffer. The driver must dereference
+        # it (``mdw``) per chunk; using the static ELF symbol address
+        # writes chunks on top of the loader's own BSS, which on
+        # hardware bus-faults the Cortex-M33 once the chunk's first 4
+        # bytes form an unmappable pointer.
+        buf_sz = 0x20
+        base = 0x20020000  # distinct from any sym address
+        fake = FakeRpc(
+            _DEFAULT_SYM_ADDRS, buf_sz=buf_sz, fl_cmd_data_base=base,
+        )
+        self._run(fake, image_size=4 * buf_sz)  # 4 chunks
+        load_dests = [
+            int(cmd.split()[2], 16)
+            for cmd in fake.calls
+            if cmd.startswith('load_image ') and 'fake/bin' not in cmd
+        ]
+        self.assertEqual(
+            len(load_dests), 4,
+            msg=f'expected 4 chunk load_images, saw {len(load_dests)}: '
+                f'{load_dests}',
+        )
+        # The destinations must alternate between the two halves of the
+        # double buffer — never landing on the static symbol address.
+        self.assertEqual(
+            load_dests, [base, base + buf_sz, base, base + buf_sz],
+            msg=(
+                f'load_image destinations did not follow fl_cmd_data '
+                f'rotation. Got {[hex(d) for d in load_dests]}; '
+                f'expected alternation between {hex(base)} and '
+                f'{hex(base + buf_sz)}. If any destination equals '
+                f'{hex(_DEFAULT_SYM_ADDRS["fl_cmd_data"])} the '
+                f'pointer-deref regressed.'
+            ),
+        )
+        # And explicitly: never the static symbol address.
+        self.assertNotIn(
+            _DEFAULT_SYM_ADDRS['fl_cmd_data'], load_dests,
+            msg='load_image was called at the fl_cmd_data symbol address; '
+                'the driver is treating the pointer var as if it were a '
+                'buffer. This is the JUL-5 chunk@0x10000 hang regression.',
+        )
+
+    def test_program_rereads_fl_cmd_data_each_chunk(self):
+        # Sentinel test: if the driver caches fl_cmd_data once (instead
+        # of re-reading per chunk), changing the pointer mid-flash will
+        # not affect later chunk destinations. A correct driver re-reads
+        # so the new value takes effect on the very next chunk.
+        buf_sz = 0x20
+        base = 0x20030000
+        sentinel = 0xDEADBEE0  # obviously distinct, word-aligned
+
+        class TogglingFake(FakeRpc):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self._chunks_seen = 0
+                self._sentinel_after = 0  # after chunk 0, swap in sentinel
+
+            def mww(self, addr, value):
+                super().mww(addr, value)
+                if (int(addr) == self.syms['fl_cmd']
+                        and int(value) == loader.FL_CMD_PROGRAM_VERIFY):
+                    if self._chunks_seen == self._sentinel_after:
+                        # Override the (just-toggled) pointer with the
+                        # sentinel so the next iteration's ``mdw`` would
+                        # observe it iff the driver re-reads.
+                        self.mem[self.syms['fl_cmd_data']] = sentinel
+                    self._chunks_seen += 1
+
+        fake = TogglingFake(
+            _DEFAULT_SYM_ADDRS, buf_sz=buf_sz, fl_cmd_data_base=base,
+        )
+        self._run(fake, image_size=3 * buf_sz)  # 3 chunks
+        load_dests = [
+            int(cmd.split()[2], 16)
+            for cmd in fake.calls
+            if cmd.startswith('load_image ') and 'fake/bin' not in cmd
+        ]
+        self.assertEqual(len(load_dests), 3)
+        # Chunk 0 uses the initial low half; after chunk 0 the fake
+        # patches the pointer to the sentinel, so chunk 1 must observe
+        # it. (Chunk 2 then re-toggles via the fake's normal rotate.)
+        self.assertEqual(load_dests[0], base)
+        self.assertEqual(
+            load_dests[1], sentinel,
+            msg=(
+                f'chunk 1 load_image destination was {hex(load_dests[1])}; '
+                f'expected sentinel {hex(sentinel)}. The driver appears to '
+                f'have cached fl_cmd_data instead of re-reading it per '
+                f'chunk — the same bug class that produced the JUL-5 hang.'
             ),
         )
 
