@@ -238,6 +238,26 @@ def cleanup_controller(cache_key):
                 del _gdb_use_counts[cache_key]
 
 
+def _discard_failed_controller(gdbmi):
+    """Close a GdbController that failed before it was cached.
+
+    get_controller() builds a fresh GdbController per retry attempt. A failed
+    attempt is never stored in _gdb_controller_cache, so cleanup_controller()
+    can never reach it -- its gdb-multiarch subprocess and the pipe fds to it
+    leak. Repeated failures (common during the flash/RTT timing races this
+    retry loop exists for) eventually push the long-lived debug service past
+    1024 open fds, at which point select() in pexpect (erase/flash) and RTT
+    streaming start raising "filedescriptor out of range in select()".
+    """
+    if gdbmi is None:
+        return
+    try:
+        gdbmi.exit()
+    except Exception:
+        pass  # Ignore cleanup errors
+    reap_gdb_zombies()
+
+
 def disconnect_gdb_client(device=None, host='127.0.0.1', port=2331):
     """
     Disconnect the debug service's GDB client connection without stopping J-Link.
@@ -370,6 +390,7 @@ def get_controller(device=None, host='127.0.0.1', port=2331, max_retries=3):
     # Retry connection to handle J-Link startup timing
     last_error = None
     for attempt in range(max_retries):
+        gdbmi = None
         try:
             gdbmi = GdbController(["gdb-multiarch", "--interpreter=mi3"])
             gdbmi.get_gdb_response()
@@ -409,6 +430,9 @@ def get_controller(device=None, host='127.0.0.1', port=2331, max_retries=3):
             return gdbmi
 
         except (GdbTimeoutError, DebuggerNotConnectedError) as e:
+            # This attempt's gdb-multiarch is never cached -- close it now or
+            # its pipe fds leak (see _discard_failed_controller).
+            _discard_failed_controller(gdbmi)
             last_error = e
             if attempt < max_retries - 1:
                 time.sleep(1.0)  # Wait before retry
@@ -417,6 +441,7 @@ def get_controller(device=None, host='127.0.0.1', port=2331, max_retries=3):
             raise DebuggerNotConnectedError(f"Failed to connect after {max_retries} attempts: {e}")
         except Exception as e:
             # For other exceptions, don't retry
+            _discard_failed_controller(gdbmi)
             raise DebuggerNotConnectedError(f"Unexpected error connecting to debugger: {e}")
 
     # Should not reach here, but just in case
