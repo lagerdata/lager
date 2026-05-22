@@ -2,6 +2,11 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.18.5] - 2026-05-22
+
+### Fixed
+- **`/debug/erase` and `/debug/flash` started returning 500 (`ValueError: filedescriptor out of range in select()`) on long-running boxes.** The debug service is a long-lived process. `get_controller()` builds a fresh `gdb-multiarch` `GdbController` on every retry attempt — the retry loop exists for the J-Link/RTT startup-timing races that are routine during a flash/RTT session — but a *failed* attempt is never stored in `_gdb_controller_cache`, so `cleanup_controller()` could never reach it. Each failed attempt leaked the `gdb-multiarch` subprocess and the pipe fds to it. Once the debug service crossed 1024 open fds, every newly spawned `JLinkExe` child PTY landed at an fd ≥ `FD_SETSIZE` (1024), and `pexpect`'s `REPLWrapper` — used by the erase/flash `commander()` path — crashed in `select()`. (`/debug/connect` was unaffected: it spawns `JLinkGDBServer` via `subprocess`, not `pexpect`.) Failed-attempt controllers are now closed (`_discard_failed_controller`), and `commander()` spawns `JLinkExe` with `use_poll=True` so `pexpect` uses `poll()` — which has no `FD_SETSIZE` ceiling — instead of `select()`.
+
 ## [0.18.4] - 2026-05-20
 
 ### Fixed
