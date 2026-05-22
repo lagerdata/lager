@@ -1,0 +1,26 @@
+---
+title: "Version 0.18.5"
+description: "May 22, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **`lager debug ... flash` and `... erase` no longer fail with a 500 (`filedescriptor out of range in select()`) on a Lager Box that has been running for a long time.** The box debug service is a long-lived process. Its GDB controller helper rebuilds a fresh `gdb-multiarch` connection on every retry attempt — retries that happen routinely while a debugger connection is coming up during flash and RTT — but a *failed* attempt was never registered for cleanup, so each one leaked the `gdb-multiarch` subprocess and the pipe handles to it. After enough leaks the service crossed the operating system's 1024 file-descriptor limit for `select()`, at which point the tool that performs erase and flash crashed instead of running. Failed attempts are now closed immediately, and the erase/flash path uses `poll()` instead of `select()` so it is no longer bound by the 1024 limit even if descriptors run high. Recovering a box that has already hit this no longer needs anything beyond restarting the debug service.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.18.5
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.18.5/)
