@@ -164,7 +164,12 @@ def commander(args, script_file=None, serial=None):
     elif script_file:
         logger.warning('JLink commander: script_file %r missing on disk; continuing without', script_file)
 
-    child = pexpect.spawn(jlink_exe, full_args, encoding='utf-8')
+    # use_poll=True so REPLWrapper's expect loop uses poll() instead of select().
+    # The debug service is long-lived; once it holds >= 1024 open fds, JLinkExe's
+    # child PTY lands at an fd >= FD_SETSIZE (1024) and select() raises
+    # "ValueError: filedescriptor out of range in select()" — which surfaces as a
+    # 500 on /debug/erase and /debug/flash. poll() has no FD_SETSIZE ceiling.
+    child = pexpect.spawn(jlink_exe, full_args, encoding='utf-8', use_poll=True)
     with closing(child):
         try:
             repl = replwrap.REPLWrapper(child, "J-Link>", None)
