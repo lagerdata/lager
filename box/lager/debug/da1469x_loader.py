@@ -24,9 +24,13 @@ the same code path used for J-Link DA14695.
 Loader artefacts (``flash_loader.elf`` + ``flash_loader.elf.bin``) are not
 shipped as part of lager — they're build artefacts of the chip-specific
 loader build. The operator drops them onto the box under
-``/home/www-data/flash-loaders/<family>/`` (override the parent dir with
-``LAGER_FLASH_LOADERS_DIR``); we resolve symbol addresses by parsing the
-``.elf`` directly so any compatible loader build "just works".
+``/home/www-data/customer-binaries/openocd/flash-loaders/<family>/``
+(override the parent dir with ``LAGER_FLASH_LOADERS_DIR``); we resolve
+symbol addresses by parsing the ``.elf`` directly so any compatible
+loader build "just works". Living under ``customer-binaries`` (the bind
+mount from ``~/third_party/customer-binaries`` on the host) means the
+artefacts survive ``lager update`` of the box image — unlike anything
+baked into the container filesystem itself.
 
 Note on ``fl_cmd_data``: in the upstream
 `apache/mynewt-core apps/flash_loader src/fl.c
@@ -63,10 +67,15 @@ logger = logging.getLogger(__name__)
 # Constants / memory map
 # ---------------------------------------------------------------------------
 
-# Default location for chip-family-keyed loader artefacts on the box. Sits
-# next to ``customer-binaries`` so operators can drop files via ``lager box
-# ssh`` the same way they upload custom tools.
-DEFAULT_FLASH_LOADERS_DIR = '/home/www-data/flash-loaders'
+# Default location for chip-family-keyed loader artefacts on the box. Lives
+# *under* the ``customer-binaries`` bind mount (host
+# ``~/third_party/customer-binaries/openocd/flash-loaders/<family>/`` ->
+# container ``/home/www-data/customer-binaries/openocd/flash-loaders/<family>/``)
+# so the files persist across ``lager update`` — anything baked directly
+# into the container filesystem gets blown away when the image is
+# refreshed. Operators drop files in via ``lager box ssh`` the same way
+# they upload custom tools.
+DEFAULT_FLASH_LOADERS_DIR = '/home/www-data/customer-binaries/openocd/flash-loaders'
 ENV_LOADER_DIR_OVERRIDE = 'LAGER_FLASH_LOADERS_DIR'
 LOADER_ELF_NAME = 'flash_loader.elf'
 LOADER_BIN_NAME = 'flash_loader.elf.bin'

@@ -485,7 +485,7 @@ class FlashImageTests(unittest.TestCase):
 
     Patches the resolver/symbol seams so we can drive the loader against
     fixture artefacts without dropping them under
-    ``/home/www-data/flash-loaders``.
+    ``/home/www-data/customer-binaries/openocd/flash-loaders``.
     """
 
     def _run(self, fake, image_size=80, family='da1469x', **flash_kwargs):

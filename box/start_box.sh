@@ -196,12 +196,32 @@ if [ -d "$CUSTOMER_BIN_DIR" ]; then
     echo "  Host: $CUSTOMER_BIN_DIR"
     echo "  Container: /home/www-data/customer-binaries"
 
-    # List binaries if directory is not empty
-    if [ "$(ls -A $CUSTOMER_BIN_DIR 2>/dev/null)" ]; then
+    # Ensure the well-known subtree used by RAM-resident flash loaders
+    # exists (see lager/box/lager/debug/da1469x_loader.py). This lets
+    # operators just `scp` a `flash_loader.elf` + `.elf.bin` pair into
+    # `~/third_party/customer-binaries/openocd/flash-loaders/<family>/`
+    # without first mkdir-ing the chain. Default perms (umask) are fine
+    # because the container only reads these files; we don't chmod 777
+    # like we do for the customer-binaries root (the container writes
+    # uploaded binaries there as www-data, hence the wider perms above).
+    # Best-effort — a failure here must not stop the container from
+    # starting, since custom binaries / flash-loaders are an optional
+    # feature.
+    mkdir -p "$CUSTOMER_BIN_DIR/openocd/flash-loaders" 2>/dev/null || true
+
+    # List uploaded binaries (files only — skips subdirectories like the
+    # `openocd/` flash-loaders tree ensured above, which is intentionally
+    # not a user-uploaded executable). `-L` follows symlinks before the
+    # `-type f` test so a symlinked binary (e.g. `ln -s /usr/bin/jq jq`)
+    # still surfaces, matching the `os.path.isfile()` filtering used by
+    # `_handle_binaries_list` (lager/box/lager/python/service.py) and
+    # `lager.binaries.runner.list_binaries`.
+    binaries_found=$(find -L "$CUSTOMER_BIN_DIR" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort)
+    if [ -n "$binaries_found" ]; then
         echo "  Binaries available:"
-        ls -1 "$CUSTOMER_BIN_DIR" | sed 's/^/    - /'
+        echo "$binaries_found" | sed 's/^/    - /'
     else
-        echo "  (directory is empty)"
+        echo "  (no uploaded binaries)"
     fi
     echo ""
 fi
