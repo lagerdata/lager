@@ -1393,6 +1393,11 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
     # there; creating it 777 up front keeps docker from auto-creating it
     # root-owned at mount time). Batched into one call. /etc/lager is fatal on
     # failure; customer-binaries is best-effort (`{ ...; } || true`).
+    # Note: subpaths *inside* customer-binaries (e.g. the
+    # ``openocd/flash-loaders/`` tree consumed by da1469x_loader.py) are
+    # created by start_box.sh on every container start — they don't need
+    # pre-creation here because they're not mount targets, only paths
+    # inside an existing mount.
     if progress:
         progress.update("Setting up directories...")
     log('Setting up directories...', nl=False)
