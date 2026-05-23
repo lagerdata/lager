@@ -170,14 +170,21 @@ communication testing and validation.
 
 # 4. Debug & Flashing
 
-Lager supports industry-standard ARM debug probes, enabling remote
-flashing, reset control, and automated debugging within CI pipelines.
+Lager supports industry-standard ARM debug probes, all driven through
+the same `lager debug` command so probe choice is transparent to your
+scripts and CI pipelines.
 
 | Manufacturer | Model | Control Command |
 |---|---|---|
 | SEGGER | J-Link | `lager debug` |
 | SEGGER | J-Link Plus | `lager debug` |
 | SEGGER | Flasher ARM | `lager debug` |
+| STMicroelectronics | ST-Link/V2, V2-1, V3 | `lager debug` |
+| Raspberry Pi | Debug Probe (RP2040 / Picoprobe, CMSIS-DAP) | `lager debug` |
+| FTDI | FT232H (e.g. C232HM cable, Adafruit FT232H breakout) | `lager debug` |
+| FTDI | FT2232H (e.g. Olimex ARM-USB-OCD-H) | `lager debug` |
+| FTDI | FT4232H (requires custom `openocd_config`) | `lager debug` |
+| Any vendor | CMSIS-DAP compatible (Atmel EDBG, NXP DAPLink, etc.) | `lager debug` |
 
 **Capabilities:**
 - Flash firmware
@@ -185,6 +192,25 @@ flashing, reset control, and automated debugging within CI pipelines.
 - Reset target
 - Launch GDB server
 - Memory read/write
+
+**Notes:**
+- OpenOCD-backed probes auto-select an interface configuration from
+  the USB VID/PID for the chips listed above. The FT4232H is supported
+  but has no safe default — there are too many wiring variants on
+  quad-MPSSE boards — so you must pass an `openocd_config` pointing at
+  the right interface cfg for your board. The same escape hatch covers
+  non-standard FT232H/FT2232H wiring and any probe not in the table
+  (e.g. Black Magic Probe, Glasgow Interface Explorer).
+- Multi-channel FTDIs (FT2232H, FT4232H) expose each MPSSE channel as
+  a separate debug net via an `@A`/`@B`/`@C`/`@D` suffix on the device
+  field, so a single chip can drive multiple targets independently;
+  channels C and D on the FT4232H are UART-only. See the
+  [nets reference](../reference/cli/nets) for the channel-suffix
+  syntax.
+- Target chip configuration is auto-selected from the device name for
+  STM32, nRF5x, RP2040/RP2350, ATSAM, LPC, i.MX RT, and ESP32
+  families; anything else can be driven via a custom OpenOCD target
+  config.
 
 ---
 
