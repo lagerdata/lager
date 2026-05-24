@@ -1,0 +1,77 @@
+---
+title: "Version 0.19.0"
+description: "May 23, 2026"
+---
+
+## <u>Features</u>
+
+- **OpenOCD debug backend.** Non-Segger debug probes are now first-class peers of J-Link under `lager debug` — same `connect` / `gdbserver` / `flash` / `erase` / `reset` / `memrd` / RTT command surface, same multi-probe slot allocator, same Net Manager TUI. The Lager Box dispatches each debug net to the right backend automatically based on the probe's USB vendor ID. Auto-detected OpenOCD probes:
+  - **ST-Link V2 / V2-1 / V3** (STMicroelectronics, VID `0483`)
+  - **Raspberry Pi Debug Probe** (RP2040 Picoprobe / CMSIS-DAP, VID `2e8a`)
+  - **FTDI FT232H** (`0403:6014`, mapped to `c232hm.cfg`)
+  - **FTDI FT2232H** (`0403:6010`, mapped to `olimex-arm-usb-ocd-h.cfg`)
+  - **ARM DAPLink / NXP MK20 CMSIS-DAP** (VID `0d28`)
+  - **Atmel EDBG / mEDBG** (VID `03eb`)
+  - **Olimex ARM-USB-OCD-H** (VID `15ba`)
+
+  **FTDI FT4232H** is supported via a user-supplied OpenOCD config — the chip exposes four channels and Lager can't guess which one carries SWD without it. Other open-hardware probes whose VIDs aren't on the auto-list (Black Magic Probe, Glasgow, etc.) can also be used by setting `debug_backend: openocd` on the net and supplying an `openocd_config`. Probes already on a J-Link USB ID stay on the J-Link backend, so existing nets are unaffected. OpenOCD nets can run concurrently with J-Link nets on the same Lager Box; the existing J-Link multi-probe slot stride is reused, and OpenOCD adds its own per-slot telnet (`4444 + slot`) and TCL/RPC (`6666 + slot`) ports.
+
+- **DA1469x flash programming over OpenOCD via the Apache Mynewt RAM-resident flash_loader.** Mainline OpenOCD has no QSPI flash driver for the Dialog/Renesas DA1469x family, so before this release `lager debug SWD flash` against an FT4232H rig connected to a DA1469x silently did nothing despite a green `Flashed!` log line. The Lager Box now ports the upstream GDB-script protocol (`flash.gdb` / `erase.gdb` / `flash_loader.gdb`) to a pure OpenOCD TCL/RPC implementation: it brings the loader up in RAM, drives the `fl_cmd` command struct, programs in chunks, and software-resets on success. The CLI side is unchanged — `lager debug SWD flash --bin <file>,0x16000000` and `lager debug SWD erase` just work — and absolute XIP addresses are accepted with a clear error if the user passes a flash-relative offset by mistake. The two loader artefacts (`flash_loader.elf` + `flash_loader.elf.bin`) are dropped into `~/third_party/customer-binaries/openocd/flash-loaders/da1469x/` once per box; `lager update` no longer wipes them out, and `start_box.sh` creates the directory tree on every container start so an operator can `scp` the pair in without first `mkdir -p`. Validated end-to-end on JUL-5 after a few bring-up fixes for the loader's double-buffer pointer rotation, the `fl_cmd_rc` post-loop handshake, and the CLI's absolute-XIP-to-flash-offset translation. The J-Link DA1469x flash path is unchanged; this release adds a working OpenOCD path for the same target.
+
+- **Concurrent multi-probe slots extended to OpenOCD.** A Lager Box can now run up to four debug probes simultaneously across any mix of J-Link and OpenOCD adapters. Each probe gets a deterministic per-slot port window — GDB on `2331+3·slot`, RTT base on `9090+2·slot`, OpenOCD telnet on `4444+slot`, OpenOCD TCL on `6666+slot`. The legacy single-probe configuration (slot 0: GDB 2331, RTT 9090, OpenOCD telnet 4444, OpenOCD TCL 6666) is preserved exactly as before. `lager python` scripts that resolve a debug net via `Net.get(name, NetType.Debug).connect()` now share the same slot pool as the HTTP debug service, so concurrent scripts no longer collide on slot-0 ports.
+
+- **`lager nets add --openocd-config <PATH>` and an `openocd_config` field on `nets add-batch`.** Parallels the existing `--jlink-script` flag — the user's `.cfg` is stored on the saved net and materialised on the box before each `openocd` spawn. Required for FT4232H, supported on every other adapter as an escape hatch for vendor-supplied configs.
+
+- **`lager nets set-script` / `show-script` / `remove-script` now work for both backends.** The script-routing trio is backend-agnostic: it detects the target backend from the probe VID + the file's extension and content, and writes to the right slot on the saved net (`jlink_script` for J-Link probes, `openocd_config` for OpenOCD). Pass `--backend jlink|openocd` to override; ambiguous cases are refused with a clear hint instead of silently guessing. `SCRIPT_PATH='-'` reads from stdin. A debug net carries either field but never both, and any switch clears the other slot with a yellow stderr notice.
+
+- **`--jlink-version <ver>` on `setup_and_deploy_box.sh`.** Pin the J-Link tools version installed on a new Lager Box at deploy time, instead of taking whatever Segger ships at the moment of the box build. The deployment options table in the README is also corrected to match the current flag set.
+
+- **Documentation: ST-Link, RP2040, and FTDI listed under Debug & Flashing**, the OpenOCD RTT `chunk_size` knob is documented in the `lager nets` reference, and `lager nets` documents the new `--openocd-config` flag and the unified `set-script` / `show-script` / `remove-script` commands.
+
+## <u>Bug Fixes</u>
+
+- **The Net Manager TUI no longer lets you assign two roles to a single Keithley 2281S (or EA PSB).** A single physical Keithley 2281S can run as a `power-supply` *or* a `battery` but never both — its two firmware entry functions are mutually exclusive. The Add Net wizard's duplicate-detection was checking per-role, so once a `supply` net was saved on a Keithley the wizard kept offering a `battery` row for the *same* VISA address (and vice-versa). The two saved nets fought for the entry function on every command, surfacing as `[Errno 16] Resource busy` — the same hardware constraint that the v0.16.7 known-limitations entry and the v0.16.9 hardware-service shared-session work were spent papering over. The TUI now treats `_SINGLE_CHANNEL_INST` chips as one-net-per-(instrument, address) regardless of role, hiding the second-role row entirely once any role binds the chip; the user-visible message tightens from "Only one net per role may be added per ..." to "Only one net may be added per ...". The same hardening applies to EA PSB (`solar` / `supply`). Direct CLI paths (`lager nets add` / `add-batch`) are unaffected, so power users keep an escape hatch.
+
+- **FTDI adapters whose EEPROM was never programmed now work end-to-end.** A FT4232H with no readable USB serial caused a chain of silent failures on the prior release: the UART scanner emitted bare interface indices (`"0"`/`"1"`/`"2"`/`"3"`) into the saved net's `pin` field, and the box-side UART dispatcher then failed at first use with `UART bridge with serial 2 not found`; the debug-probe regex rejected the empty serial slot in the VISA address and silently fell back to J-Link for what was actually an OpenOCD-backed FTDI, so `lager debug gdbserver` came back as the canned "Failed to connect to debugger" checklist with no real cause; and the `nets show` output labelled the overloaded `pin` field as "Channel:" regardless of role, hiding misconfigurations. Fixed across the whole stack: the scanner now matches `/dev/ttyUSB*` paths by sysfs node instead of by USB serial, the legacy `["0","1","2","3"]` static channel fallback is removed, the VISA regex tolerates the empty serial slot, the TUI refuses to persist a UART net with an unprogrammed-EEPROM placeholder pin (with an actionable message pointing at the EEPROM), and `nets show` is now role-aware (`Pin/serial:` for UART, `Device:` for debug). On `lager debug gdbserver` failures the CLI surfaces the box's structured error directly instead of falling back to the generic checklist.
+
+- **OpenOCD flash failures are no longer reported as success.** OpenOCD's TCL/RPC channel returns `program ...`'s stdout as plain text even when the underlying flash write or verify failed, so a bad flash looked successful to callers — hence the long-standing "Flashed!" line that didn't actually flash. The box debug service now scans the response for `program_error` markers (`** Programming Failed **`, `** Verify Failed **`, etc.) and any `Error:` lines, and surfaces them up to the CLI. Side effect: `Erase complete!` / `Flashed!` no longer print on rigs whose `target.cfg` declares no flash bank — those calls now fail fast with the underlying error.
+
+- **Custom OpenOCD configs uploaded via `lager nets set-script` were silently stored in the wrong slot.** `set-script` previously routed every upload to the `jlink_script` field regardless of which backend the probe used, so OpenOCD configs uploaded that way were ignored at run time. The new backend-detection in `set-script` writes to the correct slot, and the in-box `DebugNet` Python API also picks up `openocd_config` correctly — it was being looked up under the wrong key (`openocd_config_path`) and never decoded to disk, so custom OpenOCD configs had no effect when scripts ran `Net.get(name, NetType.Debug).connect()`. Same shape of bug for `jlink_script` on the in-box API path.
+
+- **Custom OpenOCD configs failed to start with "adapter driver is not configured".** Lager was emitting `-c "adapter serial <s>"` and `-c "transport select swd"` *before* `-f <user.cfg>`, but those `-c` commands require an adapter driver that only gets set inside the user's cfg, so OpenOCD bailed out before the cfg ever loaded. The user cfg now occupies the same command-line slot the auto-detected interface cfg would, and the auto `transport select` is suppressed when a user cfg is supplied (vendor cfgs almost always call it themselves, and OpenOCD errors on duplicate sets).
+
+- **Off-box GDB clients can now reach OpenOCD's gdb / telnet / TCL ports.** OpenOCD ≥ 0.11 defaults `bindto` to `127.0.0.1`, so `docker run -p 2331-2342:2331-2342` forwarded traffic to a listener that wasn't accepting it and clients timed out without an error. OpenOCD now binds all interfaces by default, matching `JLinkGDBServer`. The TCL/RPC channel remains 127.0.0.1-only on the wire because the box-side service drives it locally.
+
+- **The Net Manager TUI's "script attached" indicator covers OpenOCD configs.** `has_script` was computed only from `jlink_script`, so debug nets carrying only an `openocd_config` (the new normal for FT4232H rigs) showed no indicator even though one was attached. Now checks both fields.
+
+- **Hardened Lager Boxes admit OpenOCD telnet and TCL traffic.** `secure_box_firewall.sh`'s `LAGER_PORTS` allowlist was scoped to the J-Link-only port window, so on a box hardened with this script any external client reaching OpenOCD's telnet (`4444-4447`) or TCL (`6666-6669`) port was silently dropped while J-Link sessions kept working. The allowlist now mirrors the slot pool published by `start_box.sh`.
+
+## <u>Improvements</u>
+
+- **`DebugNet.connect()` and `.status()` are now symmetric across J-Link and OpenOCD.** `connect()` accepts `force=False` (restart the daemon if already running) and `ignore_if_connected=False` (return the existing status instead of raising) on both backends. `status()` always returns a dict containing at minimum `running`, `pid`, and `backend` keys regardless of which backend handled the probe — backend-specific extras pass through unchanged, so consumers writing portable code can rely on the three guaranteed fields.
+
+- **OpenOCD speed-fallback ladder.** `connect_jlink` already walked `[requested, 4000, 1000, 500, 100]` kHz when the requested speed didn't take; OpenOCD's `adapter speed` is set once at daemon startup with no built-in retry, so a vendor cfg expecting 500 kHz against Lager's 4 MHz default would die silently at the first SWD transaction. The same ladder is now applied at the `DebugNet` layer for the OpenOCD branch.
+
+- **VID/PID-based FTDI dispatch.** The original VID-only FTDI mapping fell over the moment a Lager Box had both an FT232H and an FT2232H plugged in. The dispatcher now keys on the full VID/PID pair and refuses ambiguous cases with a hint pointing at `lager nets set-script --backend openocd` for the FT4232H path.
+
+- **Cleaner debug-script command surface.** The short-lived `set-openocd-config` / `show-openocd-config` / `remove-openocd-config` aliases (which existed only on this branch and never shipped in a tagged release) are removed in favour of the unified `set-script` / `show-script` / `remove-script` trio with `--backend openocd`. There's nothing to migrate; existing CLI usage is unchanged.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.19.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+After upgrading, run `lager update --box <name>` on each existing Lager Box to deploy the OpenOCD backend, the new firewall ports, and the matching box-side code. To use the new DA1469x OpenOCD flash path, drop the `flash_loader.elf` and `flash_loader.elf.bin` pair into `~/third_party/customer-binaries/openocd/flash-loaders/da1469x/` on the box.
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.19.0/)
