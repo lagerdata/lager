@@ -7,9 +7,9 @@
     Box commands for managing local configurations
 """
 import click
-import ipaddress
 import json
 from texttable import Texttable
+from ...address_utils import validate_ip_or_hostname
 from ...box_storage import add_box, delete_box, delete_all_boxes, list_boxes, load_boxes, save_boxes, get_lager_file_path, format_lock_user
 from ...sort_utils import natural_sort_key
 
@@ -214,7 +214,7 @@ def boxes(ctx):
 
 @boxes.command()
 @click.option('--name', required=True, help='Name to assign to the box')
-@click.option('--ip', required=True, help='IP address of the box')
+@click.option('--ip', required=True, help='IP address or DNS hostname of the box')
 @click.option('--user', required=False, help='Username for SSH connection (defaults to lagerdata)')
 @click.option('--version', required=False, help='Box version/branch (e.g., staging, main)')
 @click.option('--yes', is_flag=True, help='Confirm the action without prompting.')
@@ -224,18 +224,15 @@ def add(name, ip, user, version, yes):
         click.echo(click.style("Error: Box name cannot be empty", fg='red'), err=True)
         raise click.Abort()
 
-    if not ip or ip.strip() == "":
-        click.echo(click.style("Error: IP address cannot be empty", fg='red'), err=True)
-        raise click.Abort()
-
     try:
-        ipaddress.ip_address(ip)
-    except ValueError:
-        click.echo(click.style(f"Error: '{ip}' is not a valid IP address", fg='red'), err=True)
+        ip = validate_ip_or_hostname(ip)
+    except ValueError as e:
+        click.echo(click.style(f"Error: {e}", fg='red'), err=True)
         click.echo("Valid formats:", err=True)
         click.echo("  IPv4: 192.168.1.100, 10.0.0.1", err=True)
         click.echo("  IPv6: 2001:db8::1, fe80::1", err=True)
         click.echo("  Tailscale: 100.x.x.x (get from 'tailscale status')", err=True)
+        click.echo("  Hostname: my-box, demo.lagerdata.com, box-1.tailXYZ.ts.net", err=True)
         raise click.Abort()
 
     existing_boxes = list_boxes()
@@ -453,7 +450,7 @@ def delete(ctx, name, yes):
 
 @boxes.command('edit')
 @click.option('--name', required=True, help='Name of the box to edit')
-@click.option('--ip', required=False, help='New IP address for the box')
+@click.option('--ip', required=False, help='New IP address or DNS hostname for the box')
 @click.option('--user', required=False, help='New username for SSH connection')
 @click.option('--version', required=False, help='New box version/branch')
 @click.option('--new-name', required=False, help='New name for the box')
@@ -479,26 +476,23 @@ def edit(name, ip, user, version, new_name, yes):
         current_user = None
         current_version = None
 
+    if ip is not None:
+        try:
+            ip = validate_ip_or_hostname(ip)
+        except ValueError as e:
+            click.echo(click.style(f"Error: {e}", fg='red'), err=True)
+            click.echo("Valid formats:", err=True)
+            click.echo("  IPv4: 192.168.1.100, 10.0.0.1", err=True)
+            click.echo("  IPv6: 2001:db8::1, fe80::1", err=True)
+            click.echo("  Tailscale: 100.x.x.x (get from 'tailscale status')", err=True)
+            click.echo("  Hostname: my-box, demo.lagerdata.com, box-1.tailXYZ.ts.net", err=True)
+            raise click.Abort()
+
     # Determine new values (keep old if not specified)
     updated_ip = ip if ip else current_ip
     updated_user = user if user is not None else current_user
     updated_version = version if version is not None else current_version
     updated_name = new_name if new_name else name
-
-    if ip is not None:
-        if not ip or ip.strip() == "":
-            click.echo(click.style("Error: IP address cannot be empty", fg='red'), err=True)
-            raise click.Abort()
-
-        try:
-            ipaddress.ip_address(ip)
-        except ValueError:
-            click.echo(click.style(f"Error: '{ip}' is not a valid IP address", fg='red'), err=True)
-            click.echo("Valid formats:", err=True)
-            click.echo("  IPv4: 192.168.1.100, 10.0.0.1", err=True)
-            click.echo("  IPv6: 2001:db8::1, fe80::1", err=True)
-            click.echo("  Tailscale: 100.x.x.x (get from 'tailscale status')", err=True)
-            raise click.Abort()
 
     if new_name is not None:
         if not new_name or new_name.strip() == "":
