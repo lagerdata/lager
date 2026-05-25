@@ -2,9 +2,9 @@
 
 **The bench, as data. The tests, as functions. The runs, reproducible.**
 
-Lager turns every hardware operation in your firmware loop — flash, power-cycle, RTT/UART capture, scope and DAQ measurement, instrument control — into a named, networked primitive. Dev, test, QA, and CI compose around the same bench, through the same API, from a laptop, a CI runner, or an AI agent.
+Lager turns every hardware operation in your firmware loop — flash, power-cycle, RTT/UART capture, scope and DAQ measurement, instrument control — into a named, networked primitive. Same names, same API, same exit codes from your laptop, your CI pipeline, or an AI agent — so the HIL test that passes on your desk is the same one that gates the merge on the runner.
 
-Most embedded CI stops before the part that actually breaks: the interaction between firmware and physical hardware. Lager gives you a scriptable layer around the bench so those interactions can be tested, reproduced, and shared.
+Most embedded CI stops before the part that actually breaks: the interaction between firmware and physical hardware. Release confidence still comes from "we ran it on the bench once before we tagged" instead of from a green check. Lager closes that gap — the bench becomes a programmable peer of the rest of your release process.
 
 [![PyPI](https://img.shields.io/pypi/v/lager-cli.svg)](https://pypi.org/project/lager-cli/)
 [![Python](https://img.shields.io/pypi/pyversions/lager-cli.svg)](https://pypi.org/project/lager-cli/)
@@ -20,7 +20,7 @@ Firmware is increasingly software-like — modern toolchains, type systems, pack
 - The "real" test still requires a specific engineer, a specific desk, a specific board revision, a specific probe, and a specific power supply.
 - Tests stop at unit tests, host-side mocks, or hand-run scripts. The interesting failures show up at the firmware-hardware boundary: boot timing, brownouts, watchdogs, peripheral sequencing, DMA, sleep/wake, radio behavior after reset.
 - When something does fail on the bench, logs and measurements live in a terminal scrollback that someone closed an hour ago.
-- CI cannot meaningfully validate any of this.
+- CI cannot meaningfully validate any of this. The hardware-dependent half of the system — boot timing, brownouts, watchdogs, peripheral sequencing, sleep/wake, radio behavior after reset — never sees the merge gate. A HIL regression isn't bisectable, isn't reproducible across runners, and shows up in production instead of in a failed CI job.
 
 Lager exists because every embedded team eventually rebuilds the same bespoke bench-orchestration scripts, badly.
 
@@ -29,11 +29,12 @@ Lager exists because every embedded team eventually rebuilds the same bespoke be
 ## What Lager gives you
 
 - **Named benches and named nets.** Declare your bench once in JSON on the box ([`/etc/lager/bench.json`](box/lager/mcp/engine/bench_loader.py) + `/etc/lager/saved_nets.json`) and address everything by name from then on. Same names in the CLI, the Python SDK, and over MCP.
-- **Firmware flash.** `lager debug <net> flash --elf|--hex|--bin` ships the binary to the box and programs the target via J-Link `loadfile` ([`box/lager/debug/jlink.py`](box/lager/debug/jlink.py), [`box/lager/debug/service.py`](box/lager/debug/service.py)). ELF defaults from any toolchain — including `cargo build` — work as-is.
-- **Reset and power-cycle.** SWD reset (`rnh` / halt) via J-Link, plus real power-cycle through the bench PSU or per-port USB-hub power ([`box/lager/automation/usb_hub/`](box/lager/automation/usb_hub/)).
-- **RTT and UART log capture.** First-class RTT over J-Link with auto-discovery of the control block ([`box/lager/debug/api.py`](box/lager/debug/api.py)); UART streaming over WebSocket ([`box/lager/http_handlers/uart.py`](box/lager/http_handlers/uart.py)) and `pyserial` in scripts.
+- **Firmware flash.** `lager debug <net> flash --elf|--hex|--bin` ships the binary to the box and programs the target through the attached debug probe. J-Link (`JLinkExe loadfile`) and OpenOCD (`openocd program`) are both first-class backends, selected automatically from the probe's USB VID ([`box/lager/debug/probes.py`](box/lager/debug/probes.py), [`box/lager/debug/jlink.py`](box/lager/debug/jlink.py), [`box/lager/debug/openocd.py`](box/lager/debug/openocd.py), [`box/lager/debug/service.py`](box/lager/debug/service.py)). ELF defaults from any toolchain — including `cargo build` — work as-is.
+- **Reset and power-cycle.** SWD reset (halt or run-no-halt) via the debug probe, plus real power-cycle through the bench PSU or per-port USB-hub power ([`box/lager/automation/usb_hub/`](box/lager/automation/usb_hub/)).
+- **RTT and UART log capture.** First-class RTT with auto-discovery of the control block over either debug backend ([`box/lager/debug/api.py`](box/lager/debug/api.py), [`box/lager/debug/openocd.py`](box/lager/debug/openocd.py)); UART streaming over WebSocket ([`box/lager/http_handlers/uart.py`](box/lager/http_handlers/uart.py)) and `pyserial` in scripts.
 - **Instruments under one API.** Power supplies, electronic loads, oscilloscopes, DAQs, watt meters (Yocto-Watt, Nordic PPK2, Joulescope), thermocouples, USB hubs, robot arms — see the [supported hardware](#supported-hardware) table.
 - **Four ways to drive the same bench, one vocabulary.** CLI (`lager-cli` on PyPI), Python SDK (`from lager import Net, NetType`), HTTP/WebSocket API on the box at `:5000`, and an MCP server on `:8100`. Net names are identical across all four.
+- **CI as a first-class caller.** `lager python` exit codes propagate, environment auto-detection ([`cli/context/ci_detection.py`](cli/context/ci_detection.py)) handles GitHub Actions / GitLab / Drone / Bitbucket / Jenkins out of the box, and the same net names that work on your laptop work on the runner. Bench access becomes the merge gate. See [For teams running HIL in CI](#for-teams-running-hil-in-ci).
 - **Agent-ready.** The MCP server lets Cursor, Claude Desktop, or your own agent introspect the bench and run real hardware steps without a shell — `discover_bench` returns named nets and capabilities, then the agent writes Python and runs it with `lager python`. See the [MCP section](#mcp-server-optional-for-agent-workflows).
 - **Artifacts that survive the test.** Logs, measurements, and traces come back as data instead of evaporating in a terminal.
 
@@ -117,9 +118,20 @@ lager python --serial my-box hil_smoke.py
 
 ---
 
-## In CI
+## For teams running HIL in CI
 
-Any GitHub Actions / GitLab / Drone / Bitbucket / Jenkins runner becomes a HIL runner. The CLI detects the environment automatically ([cli/context/ci_detection.py](cli/context/ci_detection.py)) and `lager python` exit codes propagate, so a failed assertion fails the job.
+If you treat CI as part of the release process — not a separate ritual someone runs by hand before tagging — Lager is built for you. The same `lager python` script that runs on your laptop runs on a CI runner against a real board, with the same net names, the same API, and the same exit codes. A failed assertion is a failed job. Bench access is wired into the merge gate the same way unit tests are.
+
+What changes for a team that already invests in CI:
+
+- **Hardware tests live in the same repo, on the same branch, as the firmware.** No more "the smoke test is on Sarah's laptop." Versioned, reviewed, blamable, replayable.
+- **HIL runs on the PR, not post-merge.** Boot timing, brownouts, watchdogs, peripheral sequencing, sleep/wake, radio-after-reset behavior — caught before merge, on the runner, with logs and measurements attached to the failed job.
+- **Releases gated on real-hardware evidence.** Tag a release → CI flashes the candidate firmware on a real DUT, runs the regression suite, attaches the captured RTT/UART/scope/current traces as artifacts. The green check on the tag means the bench saw the firmware behave, not that someone remembered to run the smoke test.
+- **Determinism across runners.** The bench lives on the box, not on the runner. Self-hosted runner, GitHub-hosted runner, developer laptop, on-call engineer's laptop — `--serial <BOX>` always resolves to the same physical bench. A passing run on one machine is a passing run on every machine.
+- **Flake triage with evidence.** Logs, measurements, and traces come back as artifacts on the CI job, not as terminal scrollback someone already closed. Bisecting a HIL regression looks like bisecting a unit-test regression — `git bisect run lager python ...` works the way you'd hope.
+- **The bench is the bottleneck, not the runner.** A Lager box can fan multiple concurrent debug probes / DUTs on per-slot port windows ([`box/lager/debug/probes.py`](box/lager/debug/probes.py)), so a single box can serve PR jobs, nightly regressions, and developer ad-hoc runs without serializing the team behind one DUT.
+
+Any GitHub Actions / GitLab / Drone / Bitbucket / Jenkins runner becomes a HIL runner. The CLI detects the environment automatically ([`cli/context/ci_detection.py`](cli/context/ci_detection.py)) and `lager python` exit codes propagate, so a failed assertion fails the job.
 
 ```yaml
 # .github/workflows/hil.yml
@@ -132,13 +144,14 @@ jobs:
       - uses: actions/checkout@v4
       - run: pip install lager-cli
       - run: cargo build --release --target thumbv7em-none-eabihf
+      - run: lager hello --box ${{ secrets.LAGER_BOX }}   # fail fast if the bench is down
       - run: |
           lager python --serial ${{ secrets.LAGER_BOX }} \
             tests/hil_smoke.py \
             --add-file target/thumbv7em-none-eabihf/release/firmware
 ```
 
-The runner needs network reach to the box (Tailscale, VPN, or LAN). Auth lives in the box record on the runner side; in CI you point `--serial` at the box name and rely on credentials provisioned during setup.
+The runner needs network reach to the box (Tailscale, VPN, or LAN). Auth lives in the box record on the runner side; in CI you point `--serial` at the box name and rely on credentials provisioned during setup. The `lager hello` step is a cheap pre-flight check — if the bench is offline, the job fails in under a second instead of after a 30-second flash timeout.
 
 ---
 
@@ -148,16 +161,16 @@ Rust has made firmware feel like serious software. Cargo, type-checked HALs, def
 
 But eventually the firmware has to run on the board. The hard failures still happen at the boundary between code and hardware: boot timing, power rails, brownouts, watchdogs, radio behavior, sensor state, peripheral sequencing, DMA, sleep/wake transitions, and the specific way a particular silicon revision responds after reset.
 
-Lager gives Rust embedded teams a programmable layer around the bench so a test can flash the firmware, start log capture, reset or power-cycle the DUT, drive external inputs, control instruments, measure current, collect artifacts, and fail with evidence. It does not replace Embassy, RTIC, probe-rs, defmt, RTT, OpenOCD, pyOCD, or your vendor SDK. It orchestrates the bench around them.
+Lager gives Rust embedded teams a programmable layer around the bench so a test can flash the firmware, start log capture, reset or power-cycle the DUT, drive external inputs, control instruments, measure current, collect artifacts, and fail with evidence. It does not replace Embassy, RTIC, probe-rs, defmt, RTT, pyOCD, or your vendor SDK. It orchestrates the bench around them.
 
 **How Lager fits with your existing Rust toolchain.**
 
 - **The bench layer is independent of your flash tool.** PSU control, USB-hub power-cycling, RTT capture, scope and DAQ measurement, current measurement (PPK2, Joulescope, Yocto-Watt), and CI integration are useful even if your team's flash flow stays `cargo embed` / `probe-rs run`. Drive them from `lager python` scripts alongside your existing probe-rs invocation.
-- **cargo-built ELFs flash directly** via `lager debug <net> flash --elf target/.../firmware` if you want Lager to do the flashing too. Goes through `JLinkExe loadfile` ([box/lager/debug/jlink.py](box/lager/debug/jlink.py)) — Lager doesn't care which toolchain produced the ELF.
-- **defmt over RTT.** Lager surfaces RTT as raw bytes ([box/lager/debug/api.py](box/lager/debug/api.py)). Pipe stdout into `defmt-print -e firmware.elf` to decode; the CLI handles `SIGPIPE` for exactly this pattern ([cli/commands/development/debug/commands.py](cli/commands/development/debug/commands.py) L685–687).
-- **GDB.** `lager debug <net> gdbserver` starts `JLinkGDBServerCLExe` and exposes the port ([box/lager/debug/gdbserver.py](box/lager/debug/gdbserver.py)). Point `rust-gdb` or `arm-none-eabi-gdb` at it.
+- **cargo-built ELFs flash directly** via `lager debug <net> flash --elf target/.../firmware` if you want Lager to do the flashing too. Goes through `JLinkExe loadfile` ([box/lager/debug/jlink.py](box/lager/debug/jlink.py)) or `openocd program` ([box/lager/debug/openocd.py](box/lager/debug/openocd.py)) depending on the probe — Lager doesn't care which toolchain produced the ELF.
+- **defmt over RTT.** Lager surfaces RTT as raw bytes over both debug backends ([box/lager/debug/api.py](box/lager/debug/api.py), [box/lager/debug/openocd.py](box/lager/debug/openocd.py)). Pipe stdout into `defmt-print -e firmware.elf` to decode; the CLI handles `SIGPIPE` for exactly this pattern ([cli/commands/development/debug/commands.py](cli/commands/development/debug/commands.py)).
+- **GDB.** `lager debug <net> gdbserver` starts a GDB server on the box and exposes the port — `JLinkGDBServerCLExe` for J-Link probes ([box/lager/debug/gdbserver.py](box/lager/debug/gdbserver.py)), `openocd` for ST-Link / RP2040 Picoprobe / CMSIS-DAP / FTDI ([box/lager/debug/openocd.py](box/lager/debug/openocd.py)). Point `rust-gdb` or `arm-none-eabi-gdb` at it.
 - **Embassy, RTIC, embedded-hal, vendor HALs.** Framework-agnostic — Lager sees a target chip and an ELF.
-- **probe-rs / OpenOCD / pyOCD as the integrated flasher** isn't wired today; J-Link is the only first-class debug backend (the legacy OpenOCD path was removed — see [CHANGELOG.md](CHANGELOG.md), "J-Link is now the only debug backend"). If you want a single command that does both bench orchestration and a probe-rs flash, install probe-rs on the box via `lager box config cargo` and call it from a `lager python` script. Deeper first-class integration is an open area; PRs welcome.
+- **Two first-class debug backends: J-Link and OpenOCD.** SEGGER probes route to J-Link; ST-Link V2/V2-1/V3, Raspberry Pi Debug Probe (RP2040 Picoprobe / CMSIS-DAP), ARM DAPLink, Atmel EDBG, FTDI FT232H/FT2232H/FT4232H, and Olimex ARM-USB-OCD-H route to OpenOCD. Routing is automatic from the probe's USB VID ([box/lager/debug/probes.py](box/lager/debug/probes.py)); both backends share the same `connect` / `flash` / `reset` / `gdbserver` / `memrd` / RTT surface. probe-rs and pyOCD aren't integrated as backends today — if you want a single command that does both bench orchestration and a probe-rs flash, install probe-rs on the box via `lager box config cargo` and call it from a `lager python` script. PRs welcome.
 
 **What a Rust HIL test typically does on Lager.** Flash an Embassy or RTIC firmware image, capture defmt logs over RTT, drive a GPIO or supply rail as a stimulus, power-cycle the DUT, measure sleep current with a PPK2 or Joulescope net, detect a panic or watchdog reset or unexpected log line, and save the captured logs and measurements as artifacts the next engineer can replay.
 
@@ -240,7 +253,7 @@ Box services speak HTTP/WebSocket on port `5000` ([box/lager/box_http_server.py]
 
 **Lager is.** Bench orchestration. A unified, named-resource API over instruments, debug probes, and DUTs. A way to make HIL tests reproducible across people, machines, and CI. A way to share a single bench across a team without everyone needing the same local lab setup.
 
-**Lager is not.** A firmware framework. A replacement for Embassy, RTIC, probe-rs, defmt, RTT, OpenOCD, pyOCD, or vendor SDKs. A simulator or a way to avoid real hardware. A dashboard-only observability product. A hosted-cloud requirement — you can run everything on machines you own. A magic auto-generated-driver system. A way to skip understanding the hardware.
+**Lager is not.** A firmware framework. A replacement for Embassy, RTIC, probe-rs, defmt, RTT, pyOCD, or vendor SDKs. A simulator or a way to avoid real hardware. A dashboard-only observability product. A hosted-cloud requirement — you can run everything on machines you own. A magic auto-generated-driver system. A way to skip understanding the hardware.
 
 It complements the embedded tools you already trust by orchestrating the physical bench around them.
 
@@ -261,10 +274,10 @@ It complements the embedded tools you already trust by orchestrating the physica
 | **Temperature** | Phidget thermocouples |
 | **Power Meters** | Yocto-Watt, Nordic PPK2, Joulescope |
 | **USB Hubs** | Acroname, YKUSH (per-port power) |
-| **Debug Probes** | SEGGER J-Link (integrated). See note below. |
+| **Debug Probes** | SEGGER J-Link, ST-Link V2 / V2-1 / V3, Raspberry Pi Debug Probe (RP2040 Picoprobe / CMSIS-DAP), ARM DAPLink, Atmel EDBG / mEDBG, FTDI FT232H / FT2232H / FT4232H, Olimex ARM-USB-OCD-H. See note below. |
 | **Robot Arms** | Rotrics Dexarm |
 
-**On debug probes.** Lager's integrated flash, SWD reset, GDB server, and RTT path uses J-Link tooling ([box/lager/debug/jlink.py](box/lager/debug/jlink.py)). CMSIS-DAP and ST-Link are addressable via J-Link's interface settings. probe-rs, OpenOCD, and pyOCD aren't first-class today — install them on the box (e.g. `lager box config cargo` for probe-rs) and invoke them from `lager python` scripts.
+**On debug probes.** Lager has two first-class debug backends: J-Link (`JLinkExe` / `JLinkGDBServerCLExe`, [`box/lager/debug/jlink.py`](box/lager/debug/jlink.py)) for SEGGER probes, and OpenOCD ([`box/lager/debug/openocd.py`](box/lager/debug/openocd.py)) for ST-Link, RP2040 Picoprobe / CMSIS-DAP, DAPLink, Atmel EDBG, and FTDI-based adapters. Routing is automatic from the probe's USB VID ([`box/lager/debug/probes.py`](box/lager/debug/probes.py)); both backends share the same `connect` / `flash` / `reset` / `gdbserver` / `memrd` / RTT surface, run concurrently on per-slot port windows, and are driven by identical CLI / SDK / MCP commands. FT4232H needs a user-supplied OpenOCD config (its four MPSSE channels can't be auto-mapped) — attach one with `lager nets set-script --backend openocd`. probe-rs and pyOCD aren't integrated as backends — install them on the box (e.g. `lager box config cargo` for probe-rs) and invoke them from `lager python` scripts.
 
 Adding a driver follows the dispatcher pattern in [box/lager/](box/lager/) — PRs welcome.
 
