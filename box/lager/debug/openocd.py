@@ -757,7 +757,7 @@ class OpenOcdRpc:
         ``elf``/``ihex``/``s19``/``mem``/``bin``.
         """
         return self.cmd_checked(
-            f'load_image {file_path} {hex(int(address))} {fmt}',
+            f'load_image "{file_path}" {hex(int(address))} {fmt}',
             timeout=120, label='load_image',
         )
 
@@ -844,7 +844,7 @@ class OpenOcdRpc:
         ``program_error`` failure marker (``** ... Failed **``) or any
         TCL ``Error:`` line; otherwise returns the raw command output.
         """
-        parts = ['program', file_path]
+        parts = ['program', f'"{file_path}"']
         if address is not None:
             parts.append(hex(address))
         if verify:

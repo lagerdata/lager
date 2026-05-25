@@ -330,7 +330,12 @@ def _parse_elf32_symbols(elf_bytes: bytes) -> Dict[str, int]:
         st_name, st_value = struct.unpack_from('<II', elf_bytes, sym_off)
         if st_name == 0 or st_name >= strtab_size:
             continue
-        end = elf_bytes.index(b'\x00', strtab_off + st_name)
+        end = elf_bytes.find(b'\x00', strtab_off + st_name)
+        if end == -1:
+            raise ValueError(
+                f'strtab entry at offset {strtab_off + st_name} is missing '
+                f'a null terminator (truncated ELF?)'
+            )
         name = elf_bytes[strtab_off + st_name:end].decode('utf-8', errors='replace')
         if not name:
             continue
