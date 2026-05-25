@@ -443,7 +443,7 @@ class OpenOcdRpcHelperTests(unittest.TestCase):
             'downloaded 8192 bytes in 0.001s (8000.00 KiB/s)\n'
         )
         rpc.load_image('/tmp/loader.bin', 0x20000000)
-        self.assertEqual(sent, ['load_image /tmp/loader.bin 0x20000000 bin'])
+        self.assertEqual(sent, ['load_image "/tmp/loader.bin" 0x20000000 bin'])
 
     def test_load_image_raises_on_error(self):
         rpc, _ = self._rpc("Error: can't open file 'missing'\n")
