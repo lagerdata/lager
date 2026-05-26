@@ -31,7 +31,13 @@ def get_instrument(address):
     global _instruments
     if address not in _instruments:
         rm = get_resource_manager()
-        instr = rm.open_resource(address)
+        # Cross-process advisory lock around the open — defends against an
+        # ad-hoc box-side pyvisa client racing for the same USB-TMC interface
+        # on this Rigol oscilloscope. See power/battery/keithley.py for the
+        # longer rationale.
+        from lager.util.device_lock import device_lock
+        with device_lock(address, timeout=2.0):
+            instr = rm.open_resource(address)
         instr.timeout = 5000  # 5 second timeout
         _instruments[address] = instr
         logger.info(f"Connected to Rigol oscilloscope at {address}")

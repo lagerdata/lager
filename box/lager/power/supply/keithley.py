@@ -84,8 +84,14 @@ class Keithley2281S(SupplyNet):
             if pyvisa is None:
                 raise LibraryMissingError("PyVISA library is not installed.")
             try:
+                # Cross-process advisory lock — see commentary in
+                # power/battery/keithley.py. Keithley 2281S supply+battery
+                # share one physical USB-TMC device; the lock is keyed on
+                # VISA address so siblings serialize their opens cleanly.
+                from lager.util.device_lock import device_lock
                 rm = pyvisa.ResourceManager()
-                raw = rm.open_resource(addr)
+                with device_lock(addr, timeout=2.0):
+                    raw = rm.open_resource(addr)
                 self._rm = rm
                 # best-effort VISA tuning
                 try:
