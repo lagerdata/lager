@@ -9,7 +9,7 @@
 import click
 import json
 from texttable import Texttable
-from ...address_utils import validate_ip_or_hostname
+from ...address_utils import validate_ip_or_hostname, VALID_FORMATS_CHEATSHEET
 from ...box_storage import add_box, delete_box, delete_all_boxes, list_boxes, load_boxes, save_boxes, get_lager_file_path, format_lock_user
 from ...sort_utils import natural_sort_key
 
@@ -228,11 +228,8 @@ def add(name, ip, user, version, yes):
         ip = validate_ip_or_hostname(ip)
     except ValueError as e:
         click.echo(click.style(f"Error: {e}", fg='red'), err=True)
-        click.echo("Valid formats:", err=True)
-        click.echo("  IPv4: 192.168.1.100, 10.0.0.1", err=True)
-        click.echo("  IPv6: 2001:db8::1, fe80::1", err=True)
-        click.echo("  Tailscale: 100.x.x.x (get from 'tailscale status')", err=True)
-        click.echo("  Hostname: my-box, demo.lagerdata.com, box-1.tailXYZ.ts.net", err=True)
+        for line in VALID_FORMATS_CHEATSHEET:
+            click.echo(line, err=True)
         raise click.Abort()
 
     existing_boxes = list_boxes()
@@ -481,11 +478,8 @@ def edit(name, ip, user, version, new_name, yes):
             ip = validate_ip_or_hostname(ip)
         except ValueError as e:
             click.echo(click.style(f"Error: {e}", fg='red'), err=True)
-            click.echo("Valid formats:", err=True)
-            click.echo("  IPv4: 192.168.1.100, 10.0.0.1", err=True)
-            click.echo("  IPv6: 2001:db8::1, fe80::1", err=True)
-            click.echo("  Tailscale: 100.x.x.x (get from 'tailscale status')", err=True)
-            click.echo("  Hostname: my-box, demo.lagerdata.com, box-1.tailXYZ.ts.net", err=True)
+            for line in VALID_FORMATS_CHEATSHEET:
+                click.echo(line, err=True)
             raise click.Abort()
 
     # Determine new values (keep old if not specified)
