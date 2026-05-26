@@ -32,6 +32,17 @@ _HOSTNAME_LABEL_RE = re.compile(
     r"^[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?$"
 )
 
+# User-facing cheatsheet printed after a validation failure. Single source of
+# truth so the four CLI call sites can't drift out of sync. Indented two
+# spaces to match the surrounding "Error: ..." lines.
+VALID_FORMATS_CHEATSHEET: tuple[str, ...] = (
+    "Valid formats:",
+    "  IPv4: 192.168.1.100, 10.0.0.1",
+    "  IPv6: 2001:db8::1, fe80::1",
+    "  Tailscale: 100.x.x.x (get from 'tailscale status')",
+    "  Hostname: my-box, demo.lagerdata.com, box-1.tailXYZ.ts.net",
+)
+
 
 def validate_ip_or_hostname(value: str | None) -> str:
     """Return ``value`` (stripped) if it's a valid IP address or DNS hostname.
@@ -58,6 +69,14 @@ def validate_ip_or_hostname(value: str | None) -> str:
             f"'{addr}' contains a path — pass a bare hostname or IP without paths"
         )
     if ":" in addr:
+        # Multiple colons or brackets => the user is attempting IPv6 syntax,
+        # but ip_address() above already accepted every well-formed bare IPv6,
+        # so this is malformed, bracketed, or bracket-with-port. The user
+        # advice is the same in all three cases: drop brackets/port.
+        if addr.count(":") > 1 or "[" in addr or "]" in addr:
+            raise ValueError(
+                f"'{addr}' is not a valid IPv6 address — pass a bare address without brackets or port"
+            )
         raise ValueError(
             f"'{addr}' contains a port — pass a bare hostname or IP; the CLI appends its own port"
         )

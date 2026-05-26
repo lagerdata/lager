@@ -12,7 +12,7 @@ import tempfile
 import shutil
 from pathlib import Path
 from importlib import resources
-from ...address_utils import validate_ip_or_hostname
+from ...address_utils import validate_ip_or_hostname, VALID_FORMATS_CHEATSHEET
 from ...box_storage import add_box, get_box_ip, get_box_user
 from ...core.ssh_utils import host_in_known_hosts
 
@@ -120,11 +120,8 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
         ip = validate_ip_or_hostname(ip)
     except ValueError as e:
         click.secho(f"Error: {e}", fg='red', err=True)
-        click.echo("Valid formats:", err=True)
-        click.echo("  IPv4: 192.168.1.100, 10.0.0.1", err=True)
-        click.echo("  IPv6: 2001:db8::1, fe80::1", err=True)
-        click.echo("  Tailscale: 100.x.x.x (get from 'tailscale status')", err=True)
-        click.echo("  Hostname: my-box, demo.lagerdata.com, box-1.tailXYZ.ts.net", err=True)
+        for line in VALID_FORMATS_CHEATSHEET:
+            click.echo(line, err=True)
         ctx.exit(1)
 
     ssh_host = f"{user}@{ip}"

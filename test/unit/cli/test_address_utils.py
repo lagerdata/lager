@@ -124,3 +124,31 @@ def test_rejects_overly_long_hostname():
     assert len(too_long) > 253
     with pytest.raises(ValueError, match="too long"):
         validate_ip_or_hostname(too_long)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2001:db8::g",        # malformed IPv6 (invalid hexit)
+        "2001:db8:::1",       # malformed IPv6 (triple-colon)
+        "[2001:db8::1]",      # bracketed IPv6 (legal in URLs, not here)
+        "[2001:db8::1]:5000", # bracketed IPv6 with port
+        "[::1]",              # bracketed loopback
+    ],
+)
+def test_rejects_ipv6_shaped_with_precise_error(value):
+    """Anything that *looks* like IPv6 but isn't a bare valid address should
+    say so explicitly instead of falling into the generic 'contains a port'
+    branch. The user advice is identical for all three sub-cases (malformed,
+    bracketed, bracketed-with-port), so they share one message."""
+    with pytest.raises(ValueError, match="not a valid IPv6 address"):
+        validate_ip_or_hostname(value)
+
+
+def test_single_colon_host_port_still_reports_port():
+    # Non-IPv6-shaped "host:port" must keep the original port-specific message
+    # so we don't regress users typing a stray port on a hostname.
+    with pytest.raises(ValueError, match="contains a port"):
+        validate_ip_or_hostname("demo.lagerdata.com:5000")
+    with pytest.raises(ValueError, match="contains a port"):
+        validate_ip_or_hostname("box-1:9000")
