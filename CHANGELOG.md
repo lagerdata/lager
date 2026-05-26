@@ -2,6 +2,11 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.19.2] - 2026-05-25
+
+### Changed
+- **`--ip` now accepts DNS hostnames in addition to IP addresses** on `lager boxes add`, `lager boxes edit`, `lager install`, and `lager uninstall`. Lets a Lager Box sit behind a DNS name (e.g. `demo.lagerdata.com`) or a Tailscale MagicDNS short name (e.g. `box-1.tailXYZ.ts.net`) instead of requiring the operator to look up and pin a numeric address. Validation is purely syntactic — IPv4/IPv6 (incl. Tailscale `100.x.x.x`) take the existing `ipaddress.ip_address` fast path; everything else is checked against RFC 1123 hostname rules (1–63 char alphanumeric/hyphen labels, ≤253 chars total, single-label allowed for MagicDNS), with actual resolution deferred to SSH/HTTP. The shared validator lives in the new `cli/address_utils.py` (covered by 34 unit tests in `test/unit/cli/test_address_utils.py`); the four call sites all share one error path that prints a "Valid formats:" cheatsheet on failure (`install` / `uninstall` previously printed only the bare error). Inputs that already carry a scheme, port, or path (e.g. `http://...`, `host:5000`, `host/api`) are rejected with a specific message instead of the previous generic "not a valid IP" — the rest of the CLI composes `http://{addr}:port/...` itself, so an embedded one of those would conflict.
+
 ## [0.19.1] - 2026-05-25
 
 ### Fixed
