@@ -144,7 +144,7 @@ RUN pip3 install -r /tmp/user_requirements.txt
 # Copy Python lager package modules (grouped structure)
 # Copy Python files at root level
 COPY __init__.py actuate.py box_http_server.py cache.py constants.py core.py \
-     exceptions.py hardware_service.py log.py rotation.py util.py \
+     exceptions.py hardware_service.py log.py rotation.py \
      /app/lager/lager/
 
 # Copy core subpackages
@@ -157,6 +157,10 @@ COPY http_handlers /app/lager/lager/http_handlers
 COPY instrument_wrappers /app/lager/lager/instrument_wrappers
 COPY nets /app/lager/lager/nets
 COPY python /app/lager/lager/python
+# util/ — small helpers + cross-process device locks (0.20.0+).
+# Was a single util.py module pre-0.20; converted to a package so
+# lager.util.device_lock could live alongside the existing helpers.
+COPY util /app/lager/lager/util
 
 # MCP server: AI agent integration
 COPY mcp /app/lager/lager/mcp
