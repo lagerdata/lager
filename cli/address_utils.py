@@ -8,7 +8,7 @@ A box address may be one of:
 * An IPv4 address (``192.168.1.100``, ``10.0.0.1``)
 * An IPv6 address (``2001:db8::1``, ``fe80::1``)
 * A Tailscale IP (``100.x.x.x``)
-* A DNS hostname (``my-box``, ``demo.lagerdata.com``, ``box-1.tailXYZ.ts.net``)
+* A DNS hostname (``my-box``, ``box.example.com``, ``box-1.tailXYZ.ts.net``)
 
 The rest of the CLI talks to boxes by appending its own ``:port`` and
 request paths (``http://{addr}:5000/...``) — so the validator rejects any
@@ -40,7 +40,7 @@ VALID_FORMATS_CHEATSHEET: tuple[str, ...] = (
     "  IPv4: 192.168.1.100, 10.0.0.1",
     "  IPv6: 2001:db8::1, fe80::1",
     "  Tailscale: 100.x.x.x (get from 'tailscale status')",
-    "  Hostname: my-box, demo.lagerdata.com, box-1.tailXYZ.ts.net",
+    "  Hostname: my-box, box.example.com, box-1.tailXYZ.ts.net",
 )
 
 

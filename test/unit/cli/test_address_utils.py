@@ -7,7 +7,7 @@
 Pins the contract that box addresses accept any of:
 * IPv4 / IPv6 / Tailscale IPs (the historical behaviour)
 * DNS hostnames (added so a Lager box can sit behind a hostname like
-  ``demo.lagerdata.com`` or a Tailscale MagicDNS name)
+  ``box.example.com`` or a Tailscale MagicDNS name)
 
 …and reject anything that already carries a scheme, port, or path,
 since the rest of the CLI composes ``http://{addr}:port/...`` itself.
@@ -50,7 +50,7 @@ def test_accepts_ip_addresses(value):
     [
         "my-box",                          # single-label MagicDNS
         "lager-demo",
-        "demo.lagerdata.com",
+        "box.example.com",
         "box-1.tailXYZ.ts.net",
         "a.b.c.d.example.com",             # multiple labels
         "x",                               # single character single label
@@ -63,7 +63,7 @@ def test_accepts_hostnames(value):
 
 def test_strips_surrounding_whitespace():
     assert validate_ip_or_hostname("  10.0.0.1  ") == "10.0.0.1"
-    assert validate_ip_or_hostname("  demo.lagerdata.com\n") == "demo.lagerdata.com"
+    assert validate_ip_or_hostname("  box.example.com\n") == "box.example.com"
 
 
 @pytest.mark.parametrize("value", [None, "", "   ", "\t\n"])
@@ -75,9 +75,9 @@ def test_rejects_empty(value):
 @pytest.mark.parametrize(
     "value",
     [
-        "http://demo.lagerdata.com",
-        "https://demo.lagerdata.com",
-        "ws://demo.lagerdata.com",
+        "http://box.example.com",
+        "https://box.example.com",
+        "ws://box.example.com",
     ],
 )
 def test_rejects_urls_with_scheme(value):
@@ -87,14 +87,14 @@ def test_rejects_urls_with_scheme(value):
 
 def test_rejects_paths():
     with pytest.raises(ValueError, match="path"):
-        validate_ip_or_hostname("demo.lagerdata.com/api")
+        validate_ip_or_hostname("box.example.com/api")
 
 
 def test_rejects_explicit_ports():
     # We accept bare IPv6 ("::1") via ip_address parsing, but reject
     # anything else with a ":" because the CLI appends its own port.
     with pytest.raises(ValueError, match="port"):
-        validate_ip_or_hostname("demo.lagerdata.com:5000")
+        validate_ip_or_hostname("box.example.com:5000")
     with pytest.raises(ValueError, match="port"):
         validate_ip_or_hostname("box-1:9000")
 
@@ -149,6 +149,6 @@ def test_single_colon_host_port_still_reports_port():
     # Non-IPv6-shaped "host:port" must keep the original port-specific message
     # so we don't regress users typing a stray port on a hostname.
     with pytest.raises(ValueError, match="contains a port"):
-        validate_ip_or_hostname("demo.lagerdata.com:5000")
+        validate_ip_or_hostname("box.example.com:5000")
     with pytest.raises(ValueError, match="contains a port"):
         validate_ip_or_hostname("box-1:9000")
