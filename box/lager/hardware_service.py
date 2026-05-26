@@ -241,6 +241,43 @@ def health_check():
         'port': SERVICE_PORT
     })
 
+
+@app.route('/diagnose/dispatcher', methods=['GET'])
+def diagnose_dispatcher():
+    """Report the in-process VISA session pool + driver cache state for a
+    given VISA address. Consumed by `lager diagnose <net>` (0.20.0+) to
+    classify a misbehaving net as "hw_service has a stale handle" vs
+    other failure modes.
+
+    Query params:
+      address   VISA address (required) — looked up in the shared session
+                pool and matched against device_cache keys whose second
+                element is this address.
+    """
+    address = (request.args.get('address') or '').strip()
+    if not address:
+        return jsonify({'error': 'address parameter required'}), 400
+
+    with _visa_resources_meta_lock:
+        cached_session = address in _visa_resources
+
+    cached_drivers = []
+    for cache_key, dev in list(device_cache.items()):
+        # cache_key is (device_name, address) when an address was used.
+        if len(cache_key) >= 2 and cache_key[1] == address:
+            cached_drivers.append({
+                'device_name': cache_key[0],
+                'driver_class': type(dev).__name__,
+            })
+
+    return jsonify({
+        'address': address,
+        'cached_session': cached_session,
+        'cached_drivers': cached_drivers,
+        'shared_pool_size': len(_visa_resources),
+    })
+
+
 def _is_visa_session_error(exc):
     """Check if an exception indicates a stale VISA session."""
     error_msg = str(exc).lower()

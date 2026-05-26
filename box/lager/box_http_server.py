@@ -131,6 +131,14 @@ except Exception as e:
     logger.warning("SSH handlers not available: %s", e)
     _has_ssh = False
 
+# Import diagnose handler (0.20.0+)
+try:
+    from lager.http_handlers.diagnose import register_diagnose_routes
+    _has_diagnose = True
+except Exception as e:
+    logger.warning("Diagnose handlers not available: %s", e)
+    _has_diagnose = False
+
 # Global dictionary to track active supply monitoring sessions
 # Format: {session_id: {'netname': str, 'stop_event': event_obj, 'thread': thread_obj, 'instrument_lock': Lock}}
 active_supply_sessions = {}
@@ -252,6 +260,14 @@ if _has_ssh:
     print("[INIT] SSH authorization REST endpoints registered", flush=True)
 else:
     print("[INIT] SSH authorization REST endpoints NOT available", flush=True)
+
+# Register diagnose REST handlers (0.20.0+)
+if _has_diagnose:
+    register_diagnose_routes(app)
+    logger.info("Diagnose REST endpoints registered (/diagnose/usb, /diagnose/visa)")
+    print("[INIT] Diagnose REST endpoints registered", flush=True)
+else:
+    print("[INIT] Diagnose REST endpoints NOT available", flush=True)
 
 
 # Supply HTTP endpoint (handled by supply.py module, this is now commented out)
