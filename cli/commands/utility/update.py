@@ -151,6 +151,30 @@ else
   echo "LAGER_PROBE_UDEV_SRC_RULES=0"
   echo "LAGER_PROBE_UDEV_IN_SYNC=0"
 fi
+# modprobe.d blacklist files (0.20.0+: usbtmc blacklist). Same shape as the
+# udev probe above — find the source dir, check whether the specific file
+# exists in /etc/modprobe.d/ and matches the source contents.
+if [ -d ~/box/modprobe_d ]; then _mp=~/box/modprobe_d
+elif [ -d ~/box/box/modprobe_d ]; then _mp=~/box/box/modprobe_d
+else _mp=""
+fi
+echo "LAGER_PROBE_MODPROBE_SRC_PATH=$_mp"
+if [ -n "$_mp" ] && [ -f "$_mp/blacklist-usbtmc.conf" ]; then
+  echo "LAGER_PROBE_MODPROBE_SRC_CONFS=1"
+  if diff -q "$_mp/blacklist-usbtmc.conf" /etc/modprobe.d/blacklist-usbtmc.conf >/dev/null 2>&1; then
+    echo "LAGER_PROBE_MODPROBE_IN_SYNC=1"
+  else
+    echo "LAGER_PROBE_MODPROBE_IN_SYNC=0"
+  fi
+else
+  echo "LAGER_PROBE_MODPROBE_SRC_CONFS=0"
+  echo "LAGER_PROBE_MODPROBE_IN_SYNC=0"
+fi
+if lsmod 2>/dev/null | grep -q '^usbtmc'; then
+  echo "LAGER_PROBE_USBTMC_LOADED=1"
+else
+  echo "LAGER_PROBE_USBTMC_LOADED=0"
+fi
 if [ -f /etc/sudoers.d/lagerdata-udev ]; then
   echo "LAGER_PROBE_SUDOERS_OWNER=$(stat -c '%u' /etc/sudoers.d/lagerdata-udev 2>/dev/null || stat -f '%u' /etc/sudoers.d/lagerdata-udev 2>/dev/null || echo UNKNOWN)"
 else
@@ -725,6 +749,17 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
         else:
             _udev_state = 'update needed'
         click.echo(f'  udev rules:    {_udev_state}')
+        _mp_path = facts.get('MODPROBE_SRC_PATH', '')
+        if not _mp_path:
+            _mp_state = 'source dir missing (older box code)'
+        elif facts.get('MODPROBE_SRC_CONFS') != '1':
+            _mp_state = 'blacklist file missing'
+        elif facts.get('MODPROBE_IN_SYNC') == '1':
+            _mp_state = 'in sync'
+        else:
+            _mp_state = 'update needed'
+        _usbtmc = 'loaded (will try to unload)' if facts.get('USBTMC_LOADED') == '1' else 'not loaded'
+        click.echo(f'  modprobe.d:    {_mp_state} (usbtmc {_usbtmc})')
         _owner = facts.get('SUDOERS_OWNER', '')
         if _owner in ('NOTFOUND', 'UNKNOWN', ''):
             _sudoers_state = 'not present'
@@ -971,6 +1006,8 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
             'cd ~/box && '
             '{ git sparse-checkout list | grep -q "^udev_rules$" || '
             'git sparse-checkout add udev_rules; } && '
+            '{ git sparse-checkout list | grep -q "^modprobe_d$" || '
+            'git sparse-checkout add modprobe_d 2>/dev/null || true; } && '
             '{ git sparse-checkout list | grep -q "^cli/__init__.py$" || '
             'git sparse-checkout add cli/__init__.py 2>/dev/null || true; } && '
             f'git checkout -f {target_version} && '
@@ -1102,6 +1139,76 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
                 click.echo(f'  Manual fix: ssh {ssh_host}, then:', err=True)
                 click.echo(f'    sudo cp {udev_src_path}/99-instrument.rules /etc/udev/rules.d/', err=True)
                 click.echo('    sudo udevadm control --reload-rules && sudo udevadm trigger', err=True)
+
+    # Step 5b: modprobe.d blacklists (0.20.0+: usbtmc blacklist for USB-TMC
+    # instrument drivers). Same shape as the udev step above — probe diffed
+    # the source vs installed; only touch the box when an install is needed.
+    # After install, try `modprobe -r usbtmc`; if a USB-TMC instrument is in
+    # use the unload fails with EBUSY and we note that a reboot is required.
+    if progress:
+        progress.update("Checking modprobe.d blacklists...")
+    log('Checking modprobe.d blacklists...', nl=False)
+
+    mp_src_path = facts.get('MODPROBE_SRC_PATH', '')
+    if not mp_src_path:
+        log_status('SKIPPED (source dir missing)', 'yellow')
+        if verbose:
+            click.echo('  The modprobe_d directory is not in the sparse checkout.', err=True)
+    elif facts.get('MODPROBE_SRC_CONFS') != '1':
+        log_status('SKIPPED (blacklist file missing)', 'yellow')
+        if verbose:
+            click.echo(f'  {mp_src_path}/blacklist-usbtmc.conf not found.', err=True)
+    elif facts.get('MODPROBE_IN_SYNC') == '1':
+        log_status('OK (already current)', 'green')
+        # Even if the file is in sync, the kernel module may still be loaded
+        # from before the blacklist was installed. Try to unload silently.
+        if facts.get('USBTMC_LOADED') == '1':
+            run_ssh_command_with_output('sudo /sbin/modprobe -r usbtmc 2>/dev/null || true')
+    else:
+        log_status('update needed', 'yellow')
+
+        install_cmd = (
+            f'cp {mp_src_path}/blacklist-usbtmc.conf /tmp/ && '
+            'sudo /bin/cp /tmp/blacklist-usbtmc.conf /etc/modprobe.d/ && '
+            'sudo /bin/chmod 644 /etc/modprobe.d/blacklist-usbtmc.conf && '
+            'sudo /bin/rm -f /tmp/blacklist-usbtmc.conf; '
+            # Try to unload immediately so the change takes effect without a
+            # reboot. Fails with EBUSY if a USB-TMC instrument is in use; we
+            # tolerate that and note a reboot is needed.
+            'if lsmod | grep -q "^usbtmc"; then '
+            '  sudo /sbin/modprobe -r usbtmc 2>/dev/null && '
+            '  echo "LAGER_MP_UNLOAD=OK" || echo "LAGER_MP_UNLOAD=BUSY"; '
+            'else echo "LAGER_MP_UNLOAD=NOT_LOADED"; fi'
+        )
+
+        if not verbose and progress:
+            progress.pause()
+            click.echo('Installing modprobe.d blacklists (may require sudo password)...')
+        elif verbose:
+            click.echo()
+
+        result = run_ssh_command_interactive(install_cmd, allow_sudo_prompt=True)
+
+        if not verbose and progress:
+            progress.resume()
+        elif verbose:
+            click.echo()
+
+        log('Installing modprobe.d blacklists...', nl=False)
+        if result.returncode == 0:
+            log_status('OK', 'green')
+            if verbose:
+                if 'LAGER_MP_UNLOAD=BUSY' in (result.stdout or ''):
+                    click.echo('  Note: usbtmc still loaded (instrument in use); reboot the box to fully apply.', err=True)
+                elif 'LAGER_MP_UNLOAD=OK' in (result.stdout or ''):
+                    click.echo('  usbtmc kernel module unloaded; blacklist now in effect.')
+        else:
+            log_status('FAILED', 'red')
+            if verbose:
+                click.echo('  Could not install modprobe.d blacklist — likely a sudoers permission issue.', err=True)
+                click.echo(f'  Manual fix: ssh {ssh_host}, then:', err=True)
+                click.echo(f'    sudo cp {mp_src_path}/blacklist-usbtmc.conf /etc/modprobe.d/', err=True)
+                click.echo('    sudo modprobe -r usbtmc  # optional: takes effect immediately', err=True)
 
     # Step 6: sudoers ownership. /etc/sudoers.d/lagerdata-udev must be
     # root-owned or sudo refuses it; the probe gave us the owner uid.
