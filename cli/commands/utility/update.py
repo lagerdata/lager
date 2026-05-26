@@ -1150,6 +1150,32 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
     log('Checking modprobe.d blacklists...', nl=False)
 
     mp_src_path = facts.get('MODPROBE_SRC_PATH', '')
+    # The probe runs BEFORE the git pull. When modprobe_d first lands on a
+    # box (i.e. this very update), the pre-pull probe correctly reports it
+    # missing — but now it exists post-pull/flatten. Re-detect by checking
+    # the canonical post-flatten path and the pre-flatten fallback.
+    if not mp_src_path:
+        recheck = run_ssh_command_with_output(
+            'if [ -d ~/box/modprobe_d ]; then echo ~/box/modprobe_d; '
+            'elif [ -d ~/box/box/modprobe_d ]; then echo ~/box/box/modprobe_d; fi'
+        )
+        mp_src_path = (recheck.stdout or '').strip()
+        # Re-check whether the file is in sync against the rediscovered path.
+        if mp_src_path:
+            conf_file = f'{mp_src_path}/blacklist-usbtmc.conf'
+            confs_check = run_ssh_command_with_output(
+                f'test -f {conf_file} && echo 1 || echo 0'
+            )
+            facts['MODPROBE_SRC_CONFS'] = (confs_check.stdout or '').strip()
+            sync_check = run_ssh_command_with_output(
+                f'diff -q {conf_file} /etc/modprobe.d/blacklist-usbtmc.conf '
+                '>/dev/null 2>&1 && echo 1 || echo 0'
+            )
+            facts['MODPROBE_IN_SYNC'] = (sync_check.stdout or '').strip()
+            usbtmc_check = run_ssh_command_with_output(
+                'lsmod 2>/dev/null | grep -q "^usbtmc" && echo 1 || echo 0'
+            )
+            facts['USBTMC_LOADED'] = (usbtmc_check.stdout or '').strip()
     if not mp_src_path:
         log_status('SKIPPED (source dir missing)', 'yellow')
         if verbose:
