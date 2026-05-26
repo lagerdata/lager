@@ -33,15 +33,15 @@ _HOSTNAME_LABEL_RE = re.compile(
 )
 
 
-def validate_ip_or_hostname(value: object) -> str:
+def validate_ip_or_hostname(value: str | None) -> str:
     """Return ``value`` (stripped) if it's a valid IP address or DNS hostname.
 
     Raises :class:`ValueError` with a user-facing message otherwise.
     """
-    if value is None or not str(value).strip():
+    if value is None or not value.strip():
         raise ValueError("address cannot be empty")
 
-    addr = str(value).strip()
+    addr = value.strip()
 
     try:
         ipaddress.ip_address(addr)
