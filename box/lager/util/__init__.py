@@ -1,7 +1,19 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
+"""
+Lager box-side utilities.
+
+Historically `lager.util` was a single `util.py` module containing two HTTP
+response helpers (`raise_for_status`, `echo_response`). In 0.20.0 the module
+was converted into a package so it can host additional utilities — first of
+which is `lager.util.device_lock` (cross-process advisory locks for USB
+instruments). The original helpers below are preserved unchanged so
+`from lager.util import raise_for_status` keeps working.
+"""
+
 import sys
+
 
 def raise_for_status(resp):
     """Raises :class:`HTTPError`, if one occurred.
@@ -37,7 +49,7 @@ def raise_for_status(resp):
     if http_error_msg:
         raise HTTPError(http_error_msg, response=resp)
 
+
 def echo_response(resp, file=sys.stderr.buffer):
     for byte in resp.iter_content(chunk_size=1):
         file.write(byte)
-

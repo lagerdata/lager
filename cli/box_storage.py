@@ -379,24 +379,37 @@ def resolve_and_validate_box_with_name(ctx, box_name: Optional[str] = None, _ski
         if not _skip_lock_check:
             _check_box_lock(ip, name)
 
+    def _do_version_check(ip, name):
+        # 0.20.0+: warn once per process if the CLI is a minor version
+        # ahead of the box. Fails open — wraps so a flaky import / network
+        # error can never break a working command.
+        try:
+            from .core.version_skew import check_and_warn
+            check_and_warn(ip, name)
+        except Exception:
+            pass
+
     # If no box name provided, use default box
     if not box_name:
         # Get the default box name before resolving to IP
         default_name = os.getenv('LAGER_BOX') or getattr(ctx.obj, 'default_box', None)
         resolved_ip = get_default_box(ctx)
         _do_lock_check(resolved_ip, default_name)
+        _do_version_check(resolved_ip, default_name)
         return (resolved_ip, default_name)
 
     # Check if it's a saved box name
     saved_ip = get_box_ip(box_name)
     if saved_ip:
         _do_lock_check(saved_ip, box_name)
+        _do_version_check(saved_ip, box_name)
         return (saved_ip, box_name)
 
     # Check if it's a valid IP address
     try:
         ipaddress.ip_address(box_name)
         _do_lock_check(box_name, None)
+        _do_version_check(box_name, None)
         return (box_name, None)  # Direct IP, no box name
     except ValueError:
         # Not a valid IP and not in local boxes - Show helpful error

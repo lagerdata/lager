@@ -70,6 +70,7 @@ from .commands.measurement.energy import energy
 
 # Box commands (from commands.box package)
 from .commands.box import hello, boxes, instruments, nets, ssh, box
+from .commands.box.diagnose import diagnose
 
 # Utility commands (from commands.utility package)
 from .commands.utility import defaults, binaries, update, update_cmd, exec_, logs, webcam, install, uninstall, install_wheel
@@ -157,6 +158,7 @@ cli.add_command(spi)
 cli.add_command(i2c)
 cli.add_command(router)
 cli.add_command(hello)
+cli.add_command(diagnose)
 cli.add_command(arm)
 cli.add_command(thermocouple)
 cli.add_command(watt)

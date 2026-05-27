@@ -107,6 +107,22 @@ def _is_resource_busy_error(exc):
     return 'resource busy' in msg or 'errno 16' in msg
 
 
+# Substrings that classify an error as ENODEV (libusb's "device disappeared"
+# signature after USB re-enumeration — mains power-cycle of the instrument,
+# accidental unplug, or USB hub port toggle). Different from a stale session:
+# the file descriptor still resolves but points at nothing. Recovery requires
+# evicting every cached entry for the affected address — both this driver's
+# cached instance AND any sibling drivers (e.g. Keithley 2281S supply +
+# battery share one address) AND the shared pyvisa session pool entry.
+_ENODEV_ERROR_KEYWORDS = ('no such device', 'cannot find', 'errno 19', 'enodev')
+
+
+def _is_enodev_error(exc):
+    """True when the error looks like libusb ENODEV (USB re-enumeration)."""
+    msg = str(exc).lower()
+    return any(kw in msg for kw in _ENODEV_ERROR_KEYWORDS)
+
+
 def _get_or_open_visa_resource(address):
     """Return (rm, raw_session) for `address`, opening a new pyvisa session
     on first call and reusing it on subsequent calls. Thread-safe.
@@ -181,7 +197,17 @@ def _close_visa_resource(address):
 # retry loop (pop the live cache entry, then call create_device on the same address
 # while the original session is still alive in this process) producing a second
 # Resource busy. Removed in v0.16.7.
-_VISA_SESSION_ERROR_KEYWORDS = ('session', 'closed', 'invalid')
+#
+# ENODEV keywords ('no such device', 'cannot find', 'errno 19', 'enodev') added
+# in 0.20.0 — libusb returns these after USB re-enumeration (e.g. instrument
+# mains power-cycle) when the held file descriptor points at a device number
+# the kernel has since reassigned. Detected separately via _is_enodev_error()
+# so the retry path can do a more aggressive cleanup (evict siblings + force
+# shared-session refresh) than for a plain stale-session error.
+_VISA_SESSION_ERROR_KEYWORDS = (
+    'session', 'closed', 'invalid',
+    'no such device', 'cannot find', 'errno 19', 'enodev',
+)
 
 def get_net_info_hash(net_info):
     """Create a hashable representation of net_info dict
@@ -214,6 +240,43 @@ def health_check():
         'version': SERVICE_VERSION,
         'port': SERVICE_PORT
     })
+
+
+@app.route('/diagnose/dispatcher', methods=['GET'])
+def diagnose_dispatcher():
+    """Report the in-process VISA session pool + driver cache state for a
+    given VISA address. Consumed by `lager diagnose <net>` (0.20.0+) to
+    classify a misbehaving net as "hw_service has a stale handle" vs
+    other failure modes.
+
+    Query params:
+      address   VISA address (required) — looked up in the shared session
+                pool and matched against device_cache keys whose second
+                element is this address.
+    """
+    address = (request.args.get('address') or '').strip()
+    if not address:
+        return jsonify({'error': 'address parameter required'}), 400
+
+    with _visa_resources_meta_lock:
+        cached_session = address in _visa_resources
+
+    cached_drivers = []
+    for cache_key, dev in list(device_cache.items()):
+        # cache_key is (device_name, address) when an address was used.
+        if len(cache_key) >= 2 and cache_key[1] == address:
+            cached_drivers.append({
+                'device_name': cache_key[0],
+                'driver_class': type(dev).__name__,
+            })
+
+    return jsonify({
+        'address': address,
+        'cached_session': cached_session,
+        'cached_drivers': cached_drivers,
+        'shared_pool_size': len(_visa_resources),
+    })
+
 
 def _is_visa_session_error(exc):
     """Check if an exception indicates a stale VISA session."""
@@ -425,6 +488,23 @@ def invoke():
                 old_device = device_cache.pop(cache_key, None)
                 if old_device is not None:
                     _close_device(old_device, cache_key)
+                # ENODEV (USB re-enumeration: instrument mains-cycle, accidental
+                # unplug, USB hub port toggle) invalidates every cached session
+                # for this address, not just the calling driver's. Evict siblings
+                # so a subsequent call against a different role on the same
+                # physical instrument (e.g. Keithley supply when battery just
+                # hit ENODEV) doesn't reuse a stale fd and EBUSY/ENODEV again.
+                is_enodev = _is_enodev_error(e)
+                if is_enodev and address:
+                    sibling_keys = [
+                        k for k in list(device_cache.keys())
+                        if len(k) > 1 and k[1] == address
+                    ]
+                    for sib_key in sibling_keys:
+                        sib = device_cache.pop(sib_key, None)
+                        if sib is not None:
+                            logger.warning(f"ENODEV cascade: evicting sibling cache entry {sib_key}")
+                            _close_device(sib, sib_key)
                 # Clear the module's resource cache if available
                 if hasattr(mod, 'clear_resource_cache'):
                     mod.clear_resource_cache()
@@ -433,16 +513,24 @@ def invoke():
                 # session: the underlying pyvisa handle is the same one that
                 # just raised, so reusing it would produce the same error.
                 # Closing and reopening releases the USB claim and gives both
-                # drivers a clean session. Non-shared drivers fall through to
-                # the legacy single-driver-opens-its-own-session retry.
+                # drivers a clean session.
+                #
+                # On ENODEV, force-close the shared pool entry for this address
+                # even for non-shared drivers — the cached pyvisa session holds
+                # a stale fd after USB re-enumeration regardless of which driver
+                # owns it. Reopen only for drivers that actually share.
                 shared_raw = None
-                if address and device_name in _SHARED_VISA_DEVICE_NAMES:
+                should_close_shared = address and (
+                    device_name in _SHARED_VISA_DEVICE_NAMES or is_enodev
+                )
+                if should_close_shared:
                     _close_visa_resource(address)
+                if address and device_name in _SHARED_VISA_DEVICE_NAMES:
                     try:
                         _, shared_raw = _get_or_open_visa_resource(address)
-                    except Exception as e:
+                    except Exception as e2:
                         logger.warning(
-                            f"Could not reopen shared pyvisa session for {address} during retry: {e}; "
+                            f"Could not reopen shared pyvisa session for {address} during retry: {e2}; "
                             f"falling back to per-driver session"
                         )
                         shared_raw = None

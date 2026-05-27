@@ -50,11 +50,18 @@ class RigolDP800(SupplyNet):
         last_exc = None
         instr = None
 
-        # Try default backend first, then @py backend (pyvisa-py)
+        # Try default backend first, then @py backend (pyvisa-py).
+        # Cross-process advisory lock around the open — defends against an
+        # ad-hoc box-side pyvisa client racing for the same USB-TMC interface
+        # (kernel rejects the second set_configuration with [Errno 16]). The
+        # lock is held only across the open; hardware_service serializes
+        # subsequent SCPI calls via its in-process per-address lock.
+        from lager.util.device_lock import device_lock
         for backend in (None, "@py"):
             try:
                 rm = pyvisa.ResourceManager() if backend is None else pyvisa.ResourceManager(backend)
-                instr = rm.open_resource(address)
+                with device_lock(address, timeout=2.0):
+                    instr = rm.open_resource(address)
                 break
             except Exception as exc:
                 last_exc = exc

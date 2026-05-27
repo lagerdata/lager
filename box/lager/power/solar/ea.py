@@ -4,9 +4,6 @@
 from __future__ import annotations
 import re
 import time
-import fcntl
-import os
-import tempfile
 from typing import Any, Optional
 
 # Attempt to import PyVISA
@@ -18,6 +15,16 @@ except (ImportError, ModuleNotFoundError):
 from lager.instrument_wrappers.instrument_wrap import InstrumentWrap
 from .solar_net import SolarNet, SolarBackendError, LibraryMissingError, DeviceNotFoundError, DeviceLockError as SolarDeviceLockError
 
+# The cross-process advisory-lock primitives moved to lager.util.device_lock
+# in 0.20.0 so the same pattern can defend USB-TMC drivers (Keithley/Rigol/
+# Keysight) that previously had no protection against direct-instantiation
+# racing on libusb. The local DeviceLockError subclass and EA-specific
+# manager singleton below preserve the EA public API + on-disk lock dir.
+from lager.util.device_lock import (
+    DeviceLockManager as _UtilDeviceLockManager,
+    DeviceLockError as _UtilDeviceLockError,
+)
+
 # Enable basic logging for errors
 import logging
 logger = logging.getLogger(__name__)
@@ -25,110 +32,37 @@ logger = logging.getLogger(__name__)
 # Helper regex to detect USBTMC VISA address
 _USBTMC_RE = re.compile(r"^USB\d*::0x?([0-9A-Fa-f]{4})::0x?([0-9A-Fa-f]{4})::([^:]+)::INSTR$")
 
+
 class DeviceLockError(SolarDeviceLockError):
-    """Raised when a device is locked by another process."""
+    """Public EA-side DeviceLockError. Subclasses SolarDeviceLockError so
+    existing `except SolarDeviceLockError` and `except DeviceLockError`
+    callers keep working unchanged after the util extraction."""
     pass
 
-class DeviceLockManager:
-    """
-    Manages exclusive locks on EA devices to prevent concurrent access.
-    EA power supplies can only handle one VISA connection at a time.
-    """
-    def __init__(self):
-        self.lock_dir = os.path.join(tempfile.gettempdir(), "lager_ea_locks")
-        os.makedirs(self.lock_dir, exist_ok=True)
-        self.lock_handles = {}
 
-    def _get_lock_path(self, address: str) -> str:
-        """Generate a unique lock file path for a given device address."""
-        # Sanitize address to create a valid filename
-        safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', address)
-        return os.path.join(self.lock_dir, f"ea_device_{safe_name}.lock")
+class _EaDeviceLockManager(_UtilDeviceLockManager):
+    """EA lock manager — same fcntl flock impl as the util base class, but
+    keeps the legacy on-disk lock directory at ${TMPDIR}/lager_ea_locks/ so
+    a 0.20.0 upgrade doesn't lose lock state vs. running 0.19 processes.
+    Translates the util's DeviceLockError into the local
+    SolarDeviceLockError subclass so callers' except clauses keep matching."""
+
+    def __init__(self):
+        super().__init__(lock_subdir='lager_ea_locks')
 
     def acquire_lock(self, address: str, timeout: float = 0.5) -> bool:
-        """
-        Attempt to acquire an exclusive lock on the device.
-        Returns True if lock acquired, raises DeviceLockError if timeout exceeded.
-
-        Args:
-            address: VISA address of the device
-            timeout: Maximum time to wait for lock (seconds)
-
-        Raises:
-            DeviceLockError: If device is locked by another process
-        """
-        lock_path = self._get_lock_path(address)
-
-        # If we already have the lock, return success
-        if address in self.lock_handles:
-            return True
-
-        # Try to acquire the lock
-        start_time = time.time()
-        lock_file = None
-
         try:
-            lock_file = open(lock_path, 'w')
-
-            # Try non-blocking lock first
-            try:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                self.lock_handles[address] = lock_file
-                lock_file.write(f"{os.getpid()}\n")
-                lock_file.flush()
-                return True
-            except (IOError, OSError):
-                # Lock is held by another process
-                pass
-
-            # Wait for lock with timeout
-            while (time.time() - start_time) < timeout:
-                try:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    self.lock_handles[address] = lock_file
-                    lock_file.write(f"{os.getpid()}\n")
-                    lock_file.flush()
-                    return True
-                except (IOError, OSError):
-                    time.sleep(0.05)  # Wait 50ms before retry
-
-            # Timeout exceeded
-            if lock_file:
-                lock_file.close()
-
+            return super().acquire_lock(address, timeout=timeout)
+        except _UtilDeviceLockError as e:
             raise DeviceLockError(
                 f"EA device at {address} is currently in use by another command. "
                 f"EA solar simulators can only handle one operation at a time. "
                 f"Please wait for the current operation to complete and try again."
-            )
+            ) from e
 
-        except DeviceLockError:
-            raise
-        except Exception as e:
-            if lock_file:
-                lock_file.close()
-            # If locking mechanism fails, log but don't block operation
-            logger.warning(f"Device locking failed for {address}: {e}")
-            return True  # Allow operation to continue
-
-    def release_lock(self, address: str) -> None:
-        """Release the lock on the device."""
-        if address in self.lock_handles:
-            try:
-                lock_file = self.lock_handles[address]
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-                lock_file.close()
-                del self.lock_handles[address]
-            except Exception as e:
-                logger.warning(f"Failed to release lock for {address}: {e}")
-
-    def __del__(self):
-        """Clean up all locks on destruction."""
-        for address in list(self.lock_handles.keys()):
-            self.release_lock(address)
 
 # Global device lock manager
-_device_lock_manager = DeviceLockManager()
+_device_lock_manager = _EaDeviceLockManager()
 
 def _is_usbtmc_address(addr: str) -> bool:
     return bool(_USBTMC_RE.match(addr or ""))

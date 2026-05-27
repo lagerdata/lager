@@ -73,8 +73,16 @@ class KeithleyBattery(BatteryNet):
             if pyvisa is None:
                 raise LibraryMissingError("PyVISA library is not installed.")
             try:
+                # Cross-process advisory lock — defends against an ad-hoc
+                # `docker exec python3 -c "import pyvisa; ..."` debug script or
+                # any other in-box process racing for this Keithley's libusb
+                # interface. hardware_service serializes subsequent SCPI calls
+                # via its in-process per-address lock; this lock only spans
+                # the open_resource call itself.
+                from lager.util.device_lock import device_lock
                 rm = pyvisa.ResourceManager()
-                raw = rm.open_resource(addr)
+                with device_lock(addr, timeout=2.0):
+                    raw = rm.open_resource(addr)
                 self._rm = rm
                 try:
                     raw.read_termination = "\n"

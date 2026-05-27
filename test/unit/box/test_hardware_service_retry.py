@@ -280,5 +280,182 @@ class SharedVisaResourceTests(unittest.TestCase):
             sys.modules.pop('lager.power.supply.rigol_dp800', None)
 
 
+class EnodevDetectionTests(unittest.TestCase):
+    """Direct coverage of _is_enodev_error — the helper that distinguishes
+    libusb's 'device disappeared' signature (after USB re-enumeration) from
+    other stale-session errors, so the retry path can do a more aggressive
+    cleanup."""
+
+    def test_matches_no_such_device(self):
+        self.assertTrue(hw._is_enodev_error(Exception('[Errno 19] No such device (it may have been disconnected)')))
+
+    def test_matches_errno_19(self):
+        self.assertTrue(hw._is_enodev_error(Exception('USBError: [Errno 19]')))
+
+    def test_matches_enodev_literal(self):
+        self.assertTrue(hw._is_enodev_error(Exception('VI_ERROR_NLISTENERS / ENODEV')))
+
+    def test_matches_cannot_find(self):
+        self.assertTrue(hw._is_enodev_error(Exception('Cannot find device at address USB0::...')))
+
+    def test_does_not_match_resource_busy(self):
+        self.assertFalse(hw._is_enodev_error(Exception('[Errno 16] Resource busy')))
+
+    def test_does_not_match_stale_session(self):
+        self.assertFalse(hw._is_enodev_error(Exception('Invalid VISA session: handle is no longer valid')))
+
+    def test_does_not_match_timeout(self):
+        self.assertFalse(hw._is_enodev_error(Exception('[Errno 110] Operation timed out')))
+
+
+class EnodevRetryTests(unittest.TestCase):
+    """Phase 3 / 0.20.0: when a cached driver hits ENODEV, the retry path must
+    evict every cached device for the same address (sibling roles on the same
+    physical instrument — e.g. Keithley supply + battery share one USB device)
+    AND force-close the shared pyvisa pool entry even if the calling driver
+    isn't normally a shared-session user. Otherwise the next call against a
+    sibling reuses a stale file descriptor and ENODEV/EBUSYs again."""
+
+    def setUp(self):
+        hw.device_cache.clear()
+        hw.module_cache.clear()
+        with hw.device_locks_meta_lock:
+            hw.device_locks.clear()
+        with hw._visa_resources_meta_lock:
+            hw._visa_resources.clear()
+        self.client = hw.app.test_client()
+
+    def _make_enodev_device(self, call_log, name):
+        class EnodevDevice:
+            def __init__(self):
+                self.closed = False
+
+            def some_method(self_inner):
+                # Matches _is_enodev_error AND _is_visa_session_error.
+                raise Exception('[Errno 19] No such device (it may have been disconnected)')
+
+            def close(self_inner):
+                self_inner.closed = True
+                call_log.append(('close', name))
+        return EnodevDevice()
+
+    def test_enodev_evicts_sibling_cache_entries_for_same_address(self):
+        call_log = []
+        address = 'USB0::0x05E6::0x2281::ENODEV::INSTR'
+        battery_key = ('keithley_battery', address)
+        supply_key = ('keithley', address)
+        unrelated_key = ('keithley', 'USB0::0xOTHER::INSTR')
+
+        battery_device = self._make_enodev_device(call_log, 'battery')
+        supply_device = self._make_enodev_device(call_log, 'supply')
+        unrelated_device = self._make_enodev_device(call_log, 'unrelated')
+
+        fake_module = FakeModule(call_log)
+
+        hw.device_cache[battery_key] = battery_device
+        hw.device_cache[supply_key] = supply_device
+        hw.device_cache[unrelated_key] = unrelated_device
+        hw.module_cache[battery_key] = fake_module
+
+        resp = self.client.post('/invoke', json={
+            'device': 'keithley_battery',
+            'function': 'some_method',
+            'args': [],
+            'kwargs': {},
+            'net_info': {'address': address, 'channel': 1},
+        })
+
+        self.assertEqual(resp.status_code, 200, resp.get_json())
+        # battery (the calling driver) is recreated by the retry — cache holds
+        # the fresh device, not the original stale one.
+        self.assertIs(hw.device_cache[battery_key], fake_module.fresh_device)
+        # supply (sibling on the same address) is evicted by the ENODEV cascade
+        # and NOT recreated (the calling /invoke only recreates its own driver).
+        self.assertNotIn(supply_key, hw.device_cache)
+        # Unrelated entry on a different address must NOT be evicted.
+        self.assertIn(unrelated_key, hw.device_cache)
+        # Both addressed devices got close() — battery via the existing pop+close
+        # path, supply via the new ENODEV cascade. Unrelated stays untouched.
+        closed_names = [
+            entry[1] for entry in call_log
+            if isinstance(entry, tuple) and entry[0] == 'close'
+        ]
+        self.assertIn('battery', closed_names)
+        self.assertIn('supply', closed_names)
+        self.assertNotIn('unrelated', closed_names)
+
+    def test_enodev_force_closes_shared_pool_for_non_shared_driver(self):
+        """A driver not in _SHARED_VISA_DEVICE_NAMES (e.g. a Rigol) still
+        benefits from the shared pool being force-closed on ENODEV — otherwise
+        a future shared-session user against the same address would reuse the
+        stale pool entry."""
+        fake_raw = MagicMock(name='stale_raw')
+        fake_rm = MagicMock(name='stale_rm')
+        fake_rm.open_resource.return_value = fake_raw
+        import pyvisa
+        pyvisa.ResourceManager = MagicMock(return_value=fake_rm)  # type: ignore[attr-defined]
+
+        address = 'USB0::0x1AB1::0x0E11::ENODEV::INSTR'
+        # Pre-populate the shared pool as if a previous call had opened one.
+        hw._get_or_open_visa_resource(address)
+        self.assertIn(address, hw._visa_resources)
+
+        call_log = []
+        cache_key = ('rigol_dp800', address)
+        hw.device_cache[cache_key] = self._make_enodev_device(call_log, 'rigol')
+        hw.module_cache[cache_key] = FakeModule(call_log)
+
+        resp = self.client.post('/invoke', json={
+            'device': 'rigol_dp800',
+            'function': 'some_method',
+            'args': [],
+            'kwargs': {},
+            'net_info': {'address': address, 'channel': 1},
+        })
+
+        self.assertEqual(resp.status_code, 200, resp.get_json())
+        # Shared pool entry was force-closed on ENODEV even though Rigol isn't
+        # normally a shared-session user.
+        self.assertNotIn(address, hw._visa_resources)
+
+    def test_non_enodev_session_error_does_not_evict_siblings(self):
+        """Regression guard: a plain stale-session error (not ENODEV) must NOT
+        trigger the wider sibling-eviction logic — otherwise we'd reconnect
+        more aggressively than necessary on every minor pyvisa hiccup."""
+        call_log = []
+        address = 'USB0::0x05E6::0x2281::STALE::INSTR'
+        battery_key = ('keithley_battery', address)
+        supply_key = ('keithley', address)
+
+        # FakeStaleDevice raises 'Invalid VISA session' — matches the original
+        # _VISA_SESSION_ERROR_KEYWORDS but NOT _ENODEV_ERROR_KEYWORDS.
+        battery_device = FakeStaleDevice(call_log)
+        supply_device = FakeStaleDevice(call_log)
+
+        fake_module = FakeModule(call_log)
+
+        hw.device_cache[battery_key] = battery_device
+        hw.device_cache[supply_key] = supply_device
+        hw.module_cache[battery_key] = fake_module
+
+        resp = self.client.post('/invoke', json={
+            'device': 'keithley_battery',
+            'function': 'some_method',
+            'args': [],
+            'kwargs': {},
+            'net_info': {'address': address, 'channel': 1},
+        })
+
+        self.assertEqual(resp.status_code, 200, resp.get_json())
+        # Battery (the calling driver) is recreated by the existing retry path —
+        # cache holds the new fresh device, original stale one was closed.
+        self.assertIs(hw.device_cache[battery_key], fake_module.fresh_device)
+        self.assertTrue(battery_device.closed)
+        # Supply sibling is NOT evicted — the ENODEV cascade only fires on
+        # ENODEV-class errors, not on plain stale-session errors like this one.
+        self.assertIs(hw.device_cache[supply_key], supply_device)
+        self.assertFalse(supply_device.closed)
+
+
 if __name__ == '__main__':
     unittest.main()
