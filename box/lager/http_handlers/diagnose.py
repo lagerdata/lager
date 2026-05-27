@@ -160,14 +160,23 @@ def register_diagnose_routes(app: Flask) -> None:
 
         # Heads-up: if hw_service already has a shared session pool entry
         # for this address (the common case for Keithley dual-role drivers),
-        # we WILL collide with it and almost certainly hang or return
-        # garbage. Detect that via the hardware_service module — if the
-        # address is in `_visa_resources` we skip the open and report.
+        # we WILL collide with it and almost certainly return EBUSY at the
+        # set_configuration call. Detection has to go cross-process —
+        # box_http_server (this Flask app, port 9000) is a SEPARATE PROCESS
+        # from hardware_service (port 8080), so importing _visa_resources
+        # locally would see this process's own empty copy, not the live
+        # state. Ask hw_service over HTTP for the canonical answer.
         try:
-            from lager.hardware_service import _visa_resources, _visa_resources_meta_lock
-            with _visa_resources_meta_lock:
-                has_shared = addr in _visa_resources
+            import urllib.request as _urlreq
+            import urllib.parse as _urlparse
+            import json as _json
+            disp_url = f'http://127.0.0.1:8080/diagnose/dispatcher?address={_urlparse.quote(addr, safe=":/")}'
+            with _urlreq.urlopen(disp_url, timeout=2.0) as resp:
+                disp_body = _json.loads(resp.read().decode('utf-8'))
+            has_shared = bool(disp_body.get('cached_session'))
         except Exception:
+            # If hw_service is unreachable, fall through to a real probe —
+            # there's nothing to collide with if it's down.
             has_shared = False
 
         if has_shared:
@@ -175,8 +184,8 @@ def register_diagnose_routes(app: Flask) -> None:
                 'address': addr,
                 'skipped': True,
                 'reason': 'hw_service already holds a shared session for this address; '
-                          'would collide. Probe /diagnose/dispatcher (port 8080) for the '
-                          'cached session state instead.',
+                          'fresh pyvisa open would collide and EBUSY. See '
+                          'the Dispatcher section for cached-session state.',
             })
 
         # Open a fresh session and query IDN. Short timeout so a wedged
