@@ -40,7 +40,7 @@ from flask import Flask, jsonify, request
 logger = logging.getLogger(__name__)
 
 
-_USB_VID_RE = re.compile(r'USB\d*::0x?([0-9A-Fa-f]{4})::0x?([0-9A-Fa-f]{4})::([^:]+)::INSTR', re.IGNORECASE)
+_USB_VID_RE = re.compile(r'USB\d*::0x?([0-9A-Fa-f]{4})::0x?([0-9A-Fa-f]{4})::([^:]*)::INSTR', re.IGNORECASE)
 
 
 def _parse_visa_address(addr: str):

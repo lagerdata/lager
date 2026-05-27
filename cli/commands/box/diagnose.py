@@ -72,8 +72,10 @@ def _fetch_net_info(box_ip: str, net: str, requested_type: str) -> tuple[str | N
         candidates = match or candidates
 
     chosen = candidates[0]
-    instr = chosen.get('instrument') or {}
-    return instr.get('address'), chosen.get('role')
+    # /nets/list shape: 'address' is a top-level field (a VISA-or-other
+    # address string). 'instrument' is the human-readable instrument
+    # name (e.g. 'Keithley_2281S'), not a nested dict.
+    return chosen.get('address'), chosen.get('role')
 
 
 def _call(url: str, timeout: float = 8.0) -> dict:
@@ -138,6 +140,21 @@ def _classify(usb_info: dict, visa_info: dict, disp_info: dict) -> tuple[str, st
                     'HEALTHY (hw_service has an active shared session for this address; '
                     'fresh pyvisa probe skipped to avoid colliding with it).')
 
+    # Non-USB-TMC instruments (LabJack, Picoscope, Acroname, etc.) use their
+    # own vendor SDKs rather than pyvisa, so the VISA probe predictably fails
+    # with "invalid resource" or "No device found". Surface that as a clear
+    # "tool doesn't apply" message instead of the catch-all UNCLEAR.
+    visa_err_raw = (visa_info.get('error') or '').lower()
+    if any(s in visa_err_raw for s in (
+        'invalid resource', 'no device found', 'parsing error',
+        'vi_error_inv_rsrc_name', 'vi_error_rsrc_nfound',
+    )):
+        return ('yellow',
+                'NOT USB-TMC: this instrument uses a vendor SDK (LabJack/LJM, '
+                'Picoscope/Pico SDK, Acroname/BrainStem, etc.), not pyvisa. '
+                '`lager diagnose` only covers USB-TMC instruments today; for '
+                'this net, check `lager <role> <netname> ...` directly.')
+
     return ('yellow', 'UNCLEAR — review the per-section output above and rerun if needed.')
 
 
@@ -185,9 +202,13 @@ def diagnose(ctx, net, box, net_type):
     click.echo(f'  resolved role: {role}    address: {address}')
 
     # Fire the three endpoints in parallel.
+    # Port mapping inside the box container:
+    #   5000 — lager.python.service (legacy /cli-version, /status, /nets/list)
+    #   8080 — hardware_service.py  (/invoke, /diagnose/dispatcher)
+    #   9000 — box_http_server.py   (Flask+SocketIO; /diagnose/usb, /diagnose/visa)
     urls = {
-        'usb': f'http://{resolved_box}:5000/diagnose/usb?address={address}',
-        'visa': f'http://{resolved_box}:5000/diagnose/visa?address={address}',
+        'usb': f'http://{resolved_box}:9000/diagnose/usb?address={address}',
+        'visa': f'http://{resolved_box}:9000/diagnose/visa?address={address}',
         'dispatcher': f'http://{resolved_box}:8080/diagnose/dispatcher?address={address}',
     }
     results: dict[str, dict] = {}

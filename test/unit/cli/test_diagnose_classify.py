@@ -116,6 +116,23 @@ class ClassifyTests(unittest.TestCase):
         self.assertIn('HEALTHY', msg)
         self.assertIn('shared session', msg.lower())
 
+    def test_non_usb_tmc_instrument_gets_clear_message(self):
+        """LabJack/Picoscope/Acroname all return characteristic VISA errors
+        when probed with pyvisa-py; we surface a 'tool doesn't apply' message
+        rather than the catch-all UNCLEAR."""
+        for err in [
+            'VI_ERROR_INV_RSRC_NAME (-1073807342): Invalid resource reference specified. Parsing error.',
+            'No device found.',
+        ]:
+            color, msg = _classify(
+                usb_info={'enumerated': True, 'usbtmc_loaded': False, 'lsof': []},
+                visa_info={'error': err},
+                disp_info={'cached_session': False},
+            )
+            self.assertEqual(color, 'yellow', f'wrong color for err={err!r}')
+            self.assertIn('NOT USB-TMC', msg)
+            self.assertIn('vendor SDK', msg)
+
     def test_unclear_fallback(self):
         """Everything else falls into 'unclear' — yellow, asks user to look."""
         color, msg = _classify(
