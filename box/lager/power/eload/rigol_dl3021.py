@@ -55,8 +55,14 @@ class RigolDL3021(ELoadNet):
 
     def _connect(self):
         """Connect to the device."""
+        # Cross-process advisory lock around the open — defends against an
+        # ad-hoc box-side pyvisa client racing for the same USB-TMC interface
+        # on this Rigol electronic load. See power/battery/keithley.py for
+        # the longer rationale.
+        from lager.util.device_lock import device_lock
         try:
-            self.visa_resource = self.rm.open_resource(self.address)
+            with device_lock(self.address, timeout=2.0):
+                self.visa_resource = self.rm.open_resource(self.address)
             self.visa_resource.timeout = 5000
 
             # Verify connection

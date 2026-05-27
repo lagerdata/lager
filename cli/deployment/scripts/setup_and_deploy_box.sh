@@ -497,6 +497,11 @@ ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/udev/rules.d/*.rules
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/udevadm control --reload-rules
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/udevadm trigger
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /tmp/*.rules
+# Modprobe blacklist deployment (0.20.0+: usbtmc blacklist for USB-TMC drivers)
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/cp /tmp/*.conf /etc/modprobe.d/
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/modprobe.d/*.conf
+${BOX_USER} ALL=(ALL) NOPASSWD: /sbin/modprobe -r usbtmc
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /tmp/*.conf
 # Allow ${BOX_USER} user to manage /etc/lager directory permissions
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod * /etc/lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod * /etc/lager/saved_nets.json
@@ -631,6 +636,7 @@ print_step "Deploying Box Code"
 
 BOX_SRC="${SCRIPT_DIR}/../../box/"
 UDEV_RULES_DIR="${SCRIPT_DIR}/../../box/udev_rules"
+MODPROBE_D_DIR="${SCRIPT_DIR}/../../box/modprobe_d"
 
     # ==========================================================================
     # Sparse Checkout Deployment via HTTPS (no authentication needed)
@@ -780,6 +786,49 @@ if [ -d "${UDEV_RULES_DIR}" ]; then
     fi
 else
     print_warning "udev_rules directory not found at ${UDEV_RULES_DIR}"
+fi
+
+# Deploy modprobe.d blacklist files (mirrors udev_rules pattern; 0.20.0+).
+# This persistently keeps the Linux usbtmc kernel module from auto-binding
+# to USB-TMC instruments, which would otherwise race pyvisa-py's libusb
+# claim and produce [Errno 16] Resource busy.
+echo ""
+print_info "Deploying modprobe.d blacklists..."
+if [ -d "${MODPROBE_D_DIR}" ]; then
+    CONF_COUNT=$(find "${MODPROBE_D_DIR}" -name "*.conf" 2>/dev/null | wc -l)
+    if [ "$CONF_COUNT" -gt 0 ]; then
+        echo "Found $CONF_COUNT modprobe.d config(s) to deploy"
+
+        # Copy all .conf files to /tmp on box
+        scp $SCP_OPTS "${MODPROBE_D_DIR}"/*.conf "${BOX_USER}@${BOX_IP}:/tmp/"
+
+        # Install configs and try to unload usbtmc so the change takes effect
+        # immediately. `modprobe -r usbtmc` fails with EBUSY if anything has the
+        # device open; we treat that as fine — a reboot will clear it.
+        ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
+            echo 'Installing modprobe.d configs...'
+            sudo cp /tmp/*.conf /etc/modprobe.d/
+            sudo chmod 644 /etc/modprobe.d/*.conf
+            echo 'Deployed modprobe.d configs:'
+            ls -1 /tmp/*.conf | xargs -n1 basename
+            rm -f /tmp/*.conf
+            if lsmod | grep -q '^usbtmc'; then
+                echo 'Attempting to unload usbtmc (will fail if a USB-TMC instrument is in use)...'
+                if sudo modprobe -r usbtmc 2>/dev/null; then
+                    echo '[OK] usbtmc unloaded; blacklist now in effect'
+                else
+                    echo '[WARN] usbtmc still loaded with a device in use — reboot the box to clear'
+                fi
+            else
+                echo '[OK] usbtmc not currently loaded'
+            fi
+        "
+        print_success "Modprobe.d blacklists deployed successfully"
+    else
+        print_warning "No .conf files found in ${MODPROBE_D_DIR}"
+    fi
+else
+    print_warning "modprobe_d directory not found at ${MODPROBE_D_DIR}"
 fi
 
 

@@ -47,13 +47,31 @@ def main() -> None:
     except LibraryMissingError as exc:
         die(f"ERROR [library-missing] {exc}", code=2)
     except DeviceNotFoundError as exc:
-        die(f"ERROR [device-not-found] {exc}", code=3)
+        # 0.20.0+: map raw libusb/pyvisa errnos (16/19/110) into actionable
+        # messages instead of dumping the raw "[Errno 16] Resource busy"
+        # string. Fall back to the raw error if no mapping applies.
+        _die_mapped_or_raw(exc, fallback_prefix="ERROR [device-not-found]", code=3)
     except BatteryBackendError as exc:
-        die(f"ERROR [backend] {exc}", code=4)
+        _die_mapped_or_raw(exc, fallback_prefix="ERROR [backend]", code=4)
     except SystemExit:
         raise  # let deliberate exits bubble
     except Exception as exc:
-        die(f"ERROR [unexpected] {exc}", code=1)
+        _die_mapped_or_raw(exc, fallback_prefix="ERROR [unexpected]", code=1)
+
+
+def _die_mapped_or_raw(exc, fallback_prefix, code):
+    """Try the 0.20.0 system-error mapper; if it recognizes the exception
+    (errno 16/19/110), print the actionable text. Otherwise fall back to
+    the bare exception string with the legacy `ERROR [xxx]` prefix."""
+    try:
+        from cli.context.error_handlers import format_system_error_for_user
+        mapped = format_system_error_for_user(str(exc))
+    except Exception:
+        mapped = None
+    if mapped:
+        die(mapped, code=code)
+    else:
+        die(f"{fallback_prefix} {exc}", code=code)
 
 
 if __name__ == '__main__':
