@@ -251,8 +251,13 @@ class SupplyTUI(App):
 
             # Connection successful - no log message needed
         except Exception as e:
-            self._add_log_entry("Error", f"[red]WebSocket connection failed: {e}[/red]")
-            self.exit_error = f"WebSocket connection failed: {e}"
+            # Diagnose-then-report (added in 0.20.0): see battery_tui for the
+            # rationale. Probes /health on port 9000 to differentiate
+            # box-unreachable from box-up-but-WS-missing.
+            from cli.core.ws_diagnose import make_ws_failure_message
+            actionable = make_ws_failure_message(self.box_ip, original_error=e)
+            self._add_log_entry("Error", f"[red]{actionable}[/red]")
+            self.exit_error = actionable
             self.exit(1)
 
     def _handle_state_update(self, state):
