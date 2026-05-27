@@ -43,7 +43,9 @@ NET_ROLE_CHOICES = [
 ]
 
 
-def _fetch_net_info(box_ip: str, net: str, requested_type: str) -> tuple[str | None, str | None]:
+def _fetch_net_info(
+    box_ip: str, net: str, requested_type: str, display_name: str,
+) -> tuple[str | None, str | None]:
     """Return (address, role) for the named net by querying /nets/list on
     the box. If requested_type != 'auto' and matches the net's role, use
     that — otherwise the returned role wins."""
@@ -51,6 +53,19 @@ def _fetch_net_info(box_ip: str, net: str, requested_type: str) -> tuple[str | N
         r = requests.get(f'http://{box_ip}:5000/nets/list', timeout=5)
         r.raise_for_status()
         nets = r.json()
+    except requests.exceptions.ConnectionError:
+        click.echo(click.style(
+            f'Box {display_name!r} unreachable at {box_ip}:5000 (connection refused). '
+            f'The lager container may be stopped. Check with:\n'
+            f'  lager ssh --box {display_name} -- "sudo docker ps"',
+            fg='red'), err=True)
+        return None, None
+    except requests.exceptions.Timeout:
+        click.echo(click.style(
+            f'Box {display_name!r} did not respond within 5s at {box_ip}:5000. '
+            f'Check network/Tailscale connectivity, then `lager hello --box {display_name}`.',
+            fg='red'), err=True)
+        return None, None
     except Exception as e:
         click.echo(click.style(f'Could not fetch net list from box: {e}', fg='red'), err=True)
         return None, None
@@ -80,17 +95,19 @@ def _fetch_net_info(box_ip: str, net: str, requested_type: str) -> tuple[str | N
 
 def _call(url: str, timeout: float = 8.0) -> dict:
     """Fetch a diagnose endpoint. Returns the JSON body on success, or a
-    dict with 'unavailable' / 'error' keys on failure so callers don't have
-    to retry-catch."""
+    dict with 'unavailable' / 'transport_error' keys on failure so callers
+    don't have to retry-catch. Endpoint-returned JSON (including endpoints
+    that report their own structured 'error' field) is passed through
+    unchanged so the section renderer can show all fields."""
     try:
         r = requests.get(url, timeout=timeout)
         if r.status_code == 404:
             return {'unavailable': 'endpoint not on this box (pre-0.20 image)'}
         if r.status_code >= 400:
-            return {'error': f'HTTP {r.status_code}', 'body': r.text[:200]}
+            return {'transport_error': f'HTTP {r.status_code}: {r.text[:200]}'}
         return r.json()
     except Exception as e:
-        return {'error': str(e)}
+        return {'transport_error': str(e)}
 
 
 def _classify(usb_info: dict, visa_info: dict, disp_info: dict) -> tuple[str, str]:
@@ -164,8 +181,8 @@ def _print_section(title: str, data: dict, fmt_lines):
     if 'unavailable' in data:
         click.echo(click.style(f'   {data["unavailable"]}', fg='yellow'))
         return
-    if 'error' in data:
-        click.echo(click.style(f'   error: {data["error"]}', fg='red'))
+    if 'transport_error' in data:
+        click.echo(click.style(f'   transport error: {data["transport_error"]}', fg='red'))
         return
     for line in fmt_lines(data):
         click.echo(f'   {line}')
@@ -193,7 +210,7 @@ def diagnose(ctx, net, box, net_type):
     resolved_box, box_name = resolve_and_validate_box_with_name(ctx, box)
     display_name = box_name or resolved_box
 
-    address, role = _fetch_net_info(resolved_box, net, net_type)
+    address, role = _fetch_net_info(resolved_box, net, net_type, display_name)
     if not address:
         click.echo(click.style('Cannot diagnose without a VISA address.', fg='red'), err=True)
         ctx.exit(1)
