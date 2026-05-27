@@ -1,0 +1,27 @@
+---
+title: "Version 0.19.1"
+description: "May 25, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **`lager debug ... flash` and the DA1469x flash loader now quote the firmware path before handing it to OpenOCD.** OpenOCD parses its TCL commands word-by-word, so a `program` or `load_image` argument with a space in it was being chopped into two TCL words and the underlying flash op either failed loudly with `wrong # args` or hit the wrong file. In practice the path comes from `tempfile.NamedTemporaryFile()` or the fixed `~/third_party/customer-binaries/openocd/flash-loaders/da1469x/` tree (no spaces), so the bug never bit in normal operation; the fix is defensive and aligns `box/lager/debug/openocd.py`'s `OpenOcdRpc.program()` and `OpenOcdRpc.load_image()` with the existing quoting pattern in `OpenOcdRpc.rtt_setup()`. Notable for operators who relocate the flash-loader tree via `LAGER_FLASH_LOADERS_DIR=/path/with spaces/`.
+- **DA1469x flash_loader ELF parser now reports a clear error on a truncated symbol-table name instead of a Python `ValueError` traceback.** `box/lager/debug/da1469x_loader.py`'s ELF32 symbol walker used `bytes.index(b'\x00', ...)` to locate the null terminator for each name in the string table, which raised an unwrapped `ValueError` if the strtab itself was truncated. Switched to `bytes.find()` with an explicit error message that names the offending offset; `_resolve_loader_symbols()` still rewraps it as `Da1469xLoaderError` so the call site error type is unchanged.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.19.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.19.1/)

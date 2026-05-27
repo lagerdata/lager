@@ -106,10 +106,16 @@ echo -e "${GREEN}Allowing SSH (port 22) from anywhere${NC}"
 ufw allow 22/tcp comment "SSH access"
 
 # Lager service ports.
-# Single ports plus the 2331-2342 (J-Link GDB + SWO + Telnet, 3 ports per slot
-# × 4 slots) and 9090-9097 (J-Link RTT telnet, 2 channels per probe × 4 slots)
-# ranges so each concurrent J-Link probe gets its own non-overlapping window.
-LAGER_PORTS=(5000 8301 8765 2331:2342 9090:9097)
+# Single ports plus the per-slot ranges that back concurrent debug probes:
+#   2331-2342: GDB + SWO + Telnet (3 ports per slot × 4 slots, shared between
+#              the J-Link and OpenOCD backends — server type is determined by
+#              which probe occupies the slot)
+#   4444-4447: OpenOCD interactive telnet (one port per slot)
+#   6666-6669: OpenOCD TCL/RPC (one port per slot; the lager debug service
+#              dispatches all OpenOCD runtime commands through these)
+#   9090-9097: RTT telnet (2 channels per slot × 4 slots, J-Link or OpenOCD)
+# Keep this list in sync with the `docker run -p` ranges in box/start_box.sh.
+LAGER_PORTS=(5000 8301 8765 2331:2342 4444:4447 6666:6669 9090:9097)
 
 # Detect Tailscale interface
 TAILSCALE_IFACE=""

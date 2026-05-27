@@ -42,20 +42,41 @@ from lager.debug.gdbserver import (
 )
 from lager.debug.probes import (
     resolve_serial_from_net,
+    resolve_backend,
     parse_jlink_serial,
+    parse_probe_serial,
+    parse_device_field,
     compute_slot,
     gdb_port_for_slot,
     swo_port_for_slot,
     telnet_port_for_slot,
     rtt_port_for_slot,
+    openocd_telnet_port_for_slot,
+    openocd_tcl_port_for_slot,
+    BACKEND_JLINK,
+    BACKEND_OPENOCD,
+)
+from lager.debug.openocd import (
+    start_openocd_gdbserver,
+    stop_openocd,
+    get_openocd_status,
+    OpenOcdRpc,
+    OpenOcdRpcError,
 )
 
 # Temp path for J-Link script file (written during connect)
 JLINK_SCRIPT_TEMP_PATH = '/tmp/lager_jlink_script.JLinkScript'
+OPENOCD_CONFIG_TEMP_PATH = '/tmp/lager_openocd_user.cfg'
 
 
 def _resolve_device_type(net: Dict[str, Any]) -> str:
-    """Extract device type from net config. Raises ValueError if unresolvable."""
+    """Extract device type from net config. Raises ValueError if unresolvable.
+
+    The returned string may still carry an ``@<channel>`` suffix used to pick
+    an FTDI interface; the OpenOCD backend strips it via
+    :func:`lager.debug.probes.parse_device_field` before doing target.cfg
+    lookup. The J-Link backend ignores it (J-Link probes are single-channel).
+    """
     device = net.get('channel') or net.get('pin')
     if not device or device == 'unknown':
         raise ValueError(
@@ -65,17 +86,37 @@ def _resolve_device_type(net: Dict[str, Any]) -> str:
     return device
 
 
+def _resolve_probe_channel(net: Dict[str, Any]):
+    """Pick the FTDI interface channel (0..3) for *net*, or None.
+
+    Net-level ``probe_channel`` wins; otherwise we parse it out of the
+    ``@<channel>`` suffix on the device field. Non-int values are ignored.
+    """
+    raw = net.get('probe_channel')
+    if raw is not None:
+        try:
+            ch = int(raw)
+            if 0 <= ch <= 3:
+                return ch
+        except (TypeError, ValueError):
+            pass
+    device = net.get('channel') or net.get('pin')
+    _target, parsed = parse_device_field(device)
+    return parsed
+
+
 def _resolve_probe(net: Dict[str, Any]):
     """Return (serial, slot, gdb_port, swo_port, telnet_port, rtt_port) for *net*.
 
-    The slot is computed deterministically from the sorted list of all debug
-    nets' J-Link serials currently in saved_nets.json. Each probe gets a
-    distinct three-port window:
+    The slot is computed deterministically from the sorted list of *all*
+    debug-probe serials currently in saved_nets.json (J-Link **and** OpenOCD
+    probes share the slot pool, so their port windows never collide). Each
+    probe gets a distinct three-port GDB-side window:
 
-    * GDB protocol:  ``2331 + 3*slot``
-    * SWO output:    ``2332 + 3*slot``
-    * Telnet I/O:    ``2333 + 3*slot``
-    * RTT base:      ``9090 + 2*slot``
+    * GDB protocol:  ``2331 + 3*slot`` (consumed by either backend)
+    * SWO output:    ``2332 + 3*slot`` (J-Link only)
+    * Telnet I/O:    ``2333 + 3*slot`` (J-Link only)
+    * RTT base:      ``9090 + 2*slot`` (either backend)
 
     Probes without a parseable serial — and any failure to read the cache —
     fall back to slot 0 / legacy ports for backwards compatibility.
@@ -89,7 +130,9 @@ def _resolve_probe(net: Dict[str, Any]):
             for n in get_nets_cache().get_nets():
                 if n.get('role') != 'debug':
                     continue
-                s = parse_jlink_serial(n.get('address'))
+                # parse_probe_serial accepts any recognised debug probe VID,
+                # so OpenOCD probes participate in the same slot pool.
+                s = parse_probe_serial(n.get('address'))
                 if s:
                     all_serials.append(s)
             slot = compute_slot(serial, all_serials)
@@ -109,6 +152,72 @@ def _resolve_probe(net: Dict[str, Any]):
         telnet_port_for_slot(slot),
         rtt_port_for_slot(slot),
     )
+
+
+def _openocd_ports_for_slot(slot):
+    """OpenOCD-only port pair (telnet, tcl) for *slot*."""
+    return (openocd_telnet_port_for_slot(slot), openocd_tcl_port_for_slot(slot))
+
+
+def _gdbserver_running_for_net(net, serial):
+    """Backend-aware version of ``get_jlink_gdbserver_status``.
+
+    Returns ``(running, pid, backend)`` so handlers don't have to duplicate
+    the dispatch logic.
+    """
+    backend = resolve_backend(net)
+    if backend == BACKEND_OPENOCD:
+        st = get_openocd_status(serial=serial)
+        return (st['running'], st.get('pid'), backend)
+    st = get_jlink_gdbserver_status(serial=serial)
+    return (st['running'], st.get('pid'), backend)
+
+
+def _get_openocd_config_file(net=None):
+    """Resolve a user OpenOCD ``.cfg`` for *net*, write to disk, return path.
+
+    Mirrors ``_get_script_file`` but for the OpenOCD backend. Priority order:
+
+    1. ``net['openocd_config']`` from the POST body (base64-encoded content).
+    2. ``openocd_config`` on the saved net via NetsCache.
+    3. An existing temp file from a previous connect.
+
+    None means "no user config, rely on built-in interface/target configs".
+    """
+    import os
+    import base64
+    from lager.cache import get_nets_cache
+
+    def _write_b64(b64: str, source: str) -> str:
+        try:
+            with open(OPENOCD_CONFIG_TEMP_PATH, 'wb') as f:
+                f.write(base64.b64decode(b64))
+            logger.info(f'Wrote OpenOCD config to {OPENOCD_CONFIG_TEMP_PATH} ({source})')
+            return OPENOCD_CONFIG_TEMP_PATH
+        except Exception as e:
+            logger.warning(f'Failed to write OpenOCD config from {source}: {e}')
+            return None
+
+    if isinstance(net, dict):
+        emb = net.get('openocd_config')
+        if isinstance(emb, str) and emb.strip():
+            path = _write_b64(emb, 'POST net body')
+            if path:
+                return path
+        name = net.get('name')
+        if name:
+            try:
+                saved = get_nets_cache().find_by_name(name)
+                if saved and saved.get('openocd_config'):
+                    path = _write_b64(saved['openocd_config'], f'NetsCache:{name}')
+                    if path:
+                        return path
+            except Exception as e:
+                logger.warning(f'Failed to reconstruct openocd_config from NetsCache: {e}')
+
+    if os.path.exists(OPENOCD_CONFIG_TEMP_PATH):
+        return OPENOCD_CONFIG_TEMP_PATH
+    return None
 
 
 def _get_script_file(net=None):
@@ -339,7 +448,12 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
         return None
 
     def handle_connect(self, data: Dict[str, Any]):
-        """Handle debug connect command - starts JLinkGDBServer."""
+        """Handle debug connect — start the right backend for *net*'s probe.
+
+        J-Link probes start ``JLinkGDBServer``; everything else starts OpenOCD.
+        The HTTP response shape is identical in both cases so the CLI doesn't
+        care which backend is running.
+        """
         try:
             import base64
 
@@ -349,14 +463,16 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             force = data.get('force', False)
             halt = data.get('halt', False)
             gdb = data.get('gdb', True)  # Default to starting GDB server
+            backend = resolve_backend(net)
             (
                 serial,
-                _slot,
+                slot,
                 default_gdb_port,
                 _default_swo_port,
                 _default_telnet_port,
                 default_rtt_port,
             ) = _resolve_probe(net)
+            openocd_telnet_port, openocd_tcl_port = _openocd_ports_for_slot(slot)
             # Only honour an explicit override; absence => use the slot allocator.
             gdb_port = data.get('gdb_port', default_gdb_port)
             rtt_telnet_port = data.get('rtt_telnet_port', default_rtt_port)
@@ -368,26 +484,48 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             swo_port = data.get('swo_port', gdb_port + 1)
             telnet_port = data.get('telnet_port', gdb_port + 2)
 
-            # Handle J-Link script file
-            # Priority 1: Script sent in POST body (local .lager config override)
-            # Priority 2: Script stored with net in saved_nets.json (NetsCache)
-            jlink_script = data.get('jlink_script')
-            if not jlink_script:
-                jlink_script = self._get_jlink_script_from_net(net)
+            # Resolve the user-supplied script/config file for whichever backend
+            # we're about to start. ``jlink_script`` is used by J-Link;
+            # ``openocd_config`` is used by OpenOCD. Both follow the same
+            # POST-body-first, NetsCache-second resolution.
             script_file_path = None
-            if jlink_script:
-                try:
-                    script_content = base64.b64decode(jlink_script)
-                    script_file_path = '/tmp/lager_jlink_script.JLinkScript'
-                    with open(script_file_path, 'wb') as f:
-                        f.write(script_content)
-                    logger.info(f'Wrote J-Link script to {script_file_path}')
-                except Exception as e:
-                    logger.warning(f'Failed to write J-Link script file: {e}')
-                    script_file_path = None
+            openocd_config_path = None
+            if backend == BACKEND_JLINK:
+                jlink_script = data.get('jlink_script') or self._get_jlink_script_from_net(net)
+                if jlink_script:
+                    try:
+                        script_content = base64.b64decode(jlink_script)
+                        script_file_path = JLINK_SCRIPT_TEMP_PATH
+                        with open(script_file_path, 'wb') as f:
+                            f.write(script_content)
+                        logger.info(f'Wrote J-Link script to {script_file_path}')
+                    except Exception as e:
+                        logger.warning(f'Failed to write J-Link script file: {e}')
+                        script_file_path = None
+            else:  # OpenOCD
+                openocd_b64 = data.get('openocd_config')
+                if openocd_b64:
+                    # POST body wins — write it through the same helper so the
+                    # NetsCache fallback inside _get_openocd_config_file still
+                    # works on later requests in the same session.
+                    try:
+                        content = base64.b64decode(openocd_b64)
+                        with open(OPENOCD_CONFIG_TEMP_PATH, 'wb') as f:
+                            f.write(content)
+                        openocd_config_path = OPENOCD_CONFIG_TEMP_PATH
+                        logger.info(f'Wrote OpenOCD config to {openocd_config_path}')
+                    except Exception as e:
+                        logger.warning(f'Failed to write OpenOCD config: {e}')
+                if openocd_config_path is None:
+                    openocd_config_path = _get_openocd_config_file(net)
 
-            # Check if JLinkGDBServer is already running for *this* probe
-            status = get_jlink_gdbserver_status(serial=serial)
+            # Check if a server is already running for *this* probe (correct
+            # backend). If the wrong backend is running for this probe slot —
+            # e.g. user reconfigured a probe — force a restart.
+            if backend == BACKEND_OPENOCD:
+                status = get_openocd_status(serial=serial)
+            else:
+                status = get_jlink_gdbserver_status(serial=serial)
             if status['running'] and not force:
                 # Verify the running server matches the requested device
                 net_name = net.get('name', 'unknown')
@@ -397,54 +535,98 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
 
                 if existing and existing.get('device') == device_type:
                     # Same device, reuse existing connection
-                    logger.info(f'Reusing existing JLinkGDBServer connection (PID {status["pid"]})')
+                    server_label = 'OpenOCD' if backend == BACKEND_OPENOCD else 'JLinkGDBServer'
+                    logger.info(f'Reusing existing {server_label} connection (PID {status["pid"]})')
                     self.send_json_response(200, {
                         'status': 'connected',
                         'device': device_type,
                         'probe': net.get('instrument'),
                         'serial': serial,
-                        'message': 'JLinkGDBServer ready for operations',
+                        'backend': backend,
+                        'message': f'{server_label} ready for operations',
                         'pid': status['pid'],
                         'gdb_server': {
                             'status': 'already_running',
                             'gdb_port': gdb_port,
-                            'swo_port': swo_port,
-                            'telnet_port': telnet_port,
+                            'swo_port': swo_port if backend == BACKEND_JLINK else None,
+                            'telnet_port': telnet_port if backend == BACKEND_JLINK else openocd_telnet_port,
+                            'tcl_port': openocd_tcl_port if backend == BACKEND_OPENOCD else None,
                             'rtt_telnet_port': rtt_telnet_port,
                             'pid': status['pid']
                         }
                     })
                     return
                 else:
-                    # Different device or unknown state -- restart this probe's server
-                    logger.info(f'Existing JLinkGDBServer does not match requested device {device_type}, restarting')
-                    stop_jlink_gdbserver(serial=serial)
+                    # Different device or unknown state -- restart this probe's server.
+                    logger.info(
+                        f'Existing {backend} server does not match requested device {device_type}, restarting'
+                    )
+                    if backend == BACKEND_OPENOCD:
+                        stop_openocd(serial=serial, tcl_port=openocd_tcl_port)
+                    else:
+                        stop_jlink_gdbserver(serial=serial)
                     time.sleep(0.3)
 
             # Stop existing connection if force=True
             if status['running'] and force:
-                logger.info('Force reconnect: stopping existing JLinkGDBServer')
-                stop_jlink_gdbserver(serial=serial)
+                logger.info(f'Force reconnect: stopping existing {backend} server')
+                if backend == BACKEND_OPENOCD:
+                    stop_openocd(serial=serial, tcl_port=openocd_tcl_port)
+                else:
+                    stop_jlink_gdbserver(serial=serial)
                 time.sleep(0.3)  # Give hardware time to settle
 
-            # Start JLinkGDBServer
+            # Always stop the *other* backend on the same probe slot, in case
+            # the probe was previously bound to it. This prevents the new
+            # OpenOCD process from failing because JLinkGDBServer still owns
+            # the GDB port (or vice versa).
+            if backend == BACKEND_OPENOCD:
+                stop_jlink_gdbserver(serial=serial)
+            else:
+                stop_openocd(serial=serial, tcl_port=openocd_tcl_port)
+
+            # Start the backend
             logger.info(
-                f'Starting JLinkGDBServer for device {device_type}, speed {speed}, '
+                f'Starting {backend} gdbserver for device {device_type}, speed {speed}, '
                 f'probe serial={serial or "<any>"}, gdb_port={gdb_port}, '
-                f'swo_port={swo_port}, telnet_port={telnet_port}, rtt_port={rtt_telnet_port}'
+                f'rtt_port={rtt_telnet_port}'
             )
-            result = start_jlink_gdbserver(
-                device=device_type,
-                speed=speed,
-                transport='SWD',
-                halt=halt,
-                gdb_port=gdb_port,
-                swo_port=swo_port,
-                telnet_port=telnet_port,
-                rtt_telnet_port=rtt_telnet_port,
-                serial=serial,
-                script_file=script_file_path,
-            )
+            if backend == BACKEND_OPENOCD:
+                result = start_openocd_gdbserver(
+                    device=device_type,
+                    address=(net or {}).get('address'),
+                    speed=speed,
+                    transport='SWD',
+                    halt=halt,
+                    gdb_port=gdb_port,
+                    telnet_port=openocd_telnet_port,
+                    tcl_port=openocd_tcl_port,
+                    rtt_telnet_port=rtt_telnet_port,
+                    serial=serial,
+                    openocd_config=openocd_config_path,
+                    probe_channel=_resolve_probe_channel(net or {}),
+                )
+                # Normalise the response so the JSON shape stays identical:
+                # JLink returns swo_port + telnet_port; OpenOCD returns
+                # openocd's own telnet/tcl ports. The CLI only uses gdb_port
+                # and rtt_telnet_port from this struct, so the extras are
+                # informational.
+                result.setdefault('swo_port', None)
+                # ``telnet_port`` already set by start_openocd_gdbserver to the
+                # OpenOCD telnet port — fine to leave as-is.
+            else:
+                result = start_jlink_gdbserver(
+                    device=device_type,
+                    speed=speed,
+                    transport='SWD',
+                    halt=halt,
+                    gdb_port=gdb_port,
+                    swo_port=swo_port,
+                    telnet_port=telnet_port,
+                    rtt_telnet_port=rtt_telnet_port,
+                    serial=serial,
+                    script_file=script_file_path,
+                )
 
             # Track connection (thread-safe)
             net_name = net.get('name', 'unknown')
@@ -453,27 +635,32 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 active_connections[connection_id] = {
                     'timestamp': time.time(),
                     'device': device_type,
+                    'backend': backend,
                     'pid': result['pid'],
                     'serial': serial,
                     'gdb_port': gdb_port,
-                    'swo_port': swo_port,
-                    'telnet_port': telnet_port,
+                    'swo_port': swo_port if backend == BACKEND_JLINK else None,
+                    'telnet_port': telnet_port if backend == BACKEND_JLINK else openocd_telnet_port,
+                    'tcl_port': openocd_tcl_port if backend == BACKEND_OPENOCD else None,
                     'rtt_telnet_port': rtt_telnet_port,
                 }
 
-            logger.info(f'JLinkGDBServer started successfully (PID {result["pid"]})')
+            server_label = 'OpenOCD' if backend == BACKEND_OPENOCD else 'JLinkGDBServer'
+            logger.info(f'{server_label} started successfully (PID {result["pid"]})')
             self.send_json_response(200, {
                 'status': 'connected',
                 'device': device_type,
                 'probe': net.get('instrument'),
                 'serial': serial,
-                'message': 'JLinkGDBServer started successfully',
+                'backend': backend,
+                'message': f'{server_label} started successfully',
                 'pid': result['pid'],
                 'gdb_server': {
                     'status': 'started',
                     'gdb_port': gdb_port,
-                    'swo_port': swo_port,
-                    'telnet_port': telnet_port,
+                    'swo_port': swo_port if backend == BACKEND_JLINK else None,
+                    'telnet_port': telnet_port if backend == BACKEND_JLINK else openocd_telnet_port,
+                    'tcl_port': openocd_tcl_port if backend == BACKEND_OPENOCD else None,
                     'rtt_telnet_port': rtt_telnet_port,
                     'pid': result['pid']
                 }
@@ -494,17 +681,26 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             self.send_error_response(500, error_msg)
 
     def handle_disconnect(self, data: Dict[str, Any]):
-        """Handle debug disconnect command - stops JLinkGDBServer."""
-        try:
-            # Check if user wants to keep server running
-            keep_jlink_running = data.get('keep_jlink_running', False)
-            net = data.get('net', {})
-            serial, _slot, gdb_port, _swo_port, _telnet_port, rtt_telnet_port = _resolve_probe(net)
+        """Handle debug disconnect command — stop the running gdbserver.
 
-            if not keep_jlink_running:
-                # Stop JLinkGDBServer for *this* probe
-                logger.info(f'Stopping JLinkGDBServer (serial={serial or "<any>"})')
-                stop_jlink_gdbserver(serial=serial)
+        The ``keep_jlink_running`` flag retains its name for backwards
+        compatibility but applies to both backends: when True we leave the
+        gdbserver running so an external GDB client can stay connected.
+        """
+        try:
+            keep_running = data.get('keep_jlink_running', False)
+            net = data.get('net', {})
+            backend = resolve_backend(net)
+            serial, slot, gdb_port, _swo_port, _telnet_port, rtt_telnet_port = _resolve_probe(net)
+            _openocd_telnet, openocd_tcl_port = _openocd_ports_for_slot(slot)
+            server_label = 'OpenOCD' if backend == BACKEND_OPENOCD else 'JLinkGDBServer'
+
+            if not keep_running:
+                logger.info(f'Stopping {server_label} (serial={serial or "<any>"})')
+                if backend == BACKEND_OPENOCD:
+                    stop_openocd(serial=serial, tcl_port=openocd_tcl_port)
+                else:
+                    stop_jlink_gdbserver(serial=serial)
 
             # Clear connection tracking (thread-safe)
             try:
@@ -515,11 +711,12 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             with connections_lock:
                 active_connections.pop(connection_id, None)
 
-            message = 'JLinkGDBServer still running' if keep_jlink_running else 'JLinkGDBServer stopped'
+            message = f'{server_label} still running' if keep_running else f'{server_label} stopped'
             self.send_json_response(200, {
                 'status': 'disconnected',
                 'message': message,
                 'serial': serial,
+                'backend': backend,
                 'gdb_port': gdb_port,
                 'rtt_telnet_port': rtt_telnet_port,
             })
@@ -529,20 +726,41 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             self.send_error_response(500, str(e))
 
     def handle_reset(self, data: Dict[str, Any]):
-        """Handle debug reset command."""
+        """Handle debug reset — backend-aware."""
         try:
             halt = data.get('halt', False)
             net = data.get('net') or {}
-            serial, _slot, _gdb_port, _swo_port, _telnet_port, _rtt_port = _resolve_probe(net)
+            backend = resolve_backend(net)
+            serial, slot, _gdb_port, _swo_port, _telnet_port, _rtt_port = _resolve_probe(net)
+            _openocd_telnet, openocd_tcl_port = _openocd_ports_for_slot(slot)
 
-            # Check if J-Link GDB server is running for this probe
+            if backend == BACKEND_OPENOCD:
+                # OpenOCD path: drive the running daemon through its TCL/RPC
+                # port. No JLinkExe-style process bouncing required.
+                if not get_openocd_status(serial=serial)['running']:
+                    self.send_error_response(400, 'No debugger connection found')
+                    return
+                try:
+                    rpc = OpenOcdRpc(port=openocd_tcl_port)
+                    out = rpc.reset(halt=halt)
+                except OpenOcdRpcError as exc:
+                    self.send_error_response(500, str(exc))
+                    return
+                logger.info(f'[RESET] OpenOCD reset complete, halt={halt}')
+                self.send_json_response(200, {
+                    'status': 'reset_complete',
+                    'halt': halt,
+                    'output': [out] if out else [],
+                    'backend': BACKEND_OPENOCD,
+                })
+                return
+
+            # ---- J-Link path (unchanged) ----------------------------------
             gdbserver_status = get_jlink_gdbserver_status(serial=serial)
             if not gdbserver_status['running']:
                 self.send_error_response(400, 'No debugger connection found')
                 return
 
-            # Get the cmdline from the running gdbserver process
-            # This is needed to construct the JLink object with correct device/speed args
             pid = gdbserver_status.get('pid')
             if not pid:
                 self.send_error_response(400, 'No debugger connection found')
@@ -556,8 +774,6 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 self.send_error_response(400, 'No debugger connection found')
                 return
 
-            # Use J-Link Commander approach (same as Python API)
-            # This avoids the device type resolution issue with the GDB-based approach
             try:
                 jlink = JLink(cmdline, script_file=_get_script_file(net), serial=serial)
             except (ValueError, KeyError) as e:
@@ -571,6 +787,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 'status': 'reset_complete',
                 'halt': halt,
                 'output': reset_output,
+                'backend': BACKEND_JLINK,
             })
 
         except JLinkNotRunning:
@@ -580,11 +797,15 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             self.send_error_response(500, str(e))
 
     def handle_flash(self, data: Dict[str, Any]):
-        """Handle debug flash command.
+        """Handle debug flash — backend-aware.
 
-        Programming uses JLinkExe (``flash_device``), not GDB. A GDB server is optional:
-        when absent (e.g. immediately after ``/debug/erase`` on DA1469x), we skip GDB health
-        checks and flash anyway.
+        J-Link: uses ``JLinkExe`` (``flash_device``), which requires the
+        gdbserver to release its USB handle. We don't enforce an existing
+        gdbserver — if /debug/erase just stopped it for DA1469x we flash
+        anyway.
+
+        OpenOCD: dispatches ``program <file> verify reset`` over the
+        already-running daemon's TCL/RPC port. No process bouncing.
         """
         try:
             import base64
@@ -593,8 +814,133 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
 
             net = data.get('net', {})
             device_type = _resolve_device_type(net)
-            serial, _slot, gdb_port, swo_port, telnet_port, rtt_telnet_port = _resolve_probe(net)
+            backend = resolve_backend(net)
+            serial, slot, gdb_port, swo_port, telnet_port, rtt_telnet_port = _resolve_probe(net)
+            _openocd_telnet, openocd_tcl_port = _openocd_ports_for_slot(slot)
 
+            # OpenOCD path: program via TCL/RPC, no JLinkExe-style bouncing.
+            if backend == BACKEND_OPENOCD:
+                hexfile = data.get('hexfile')
+                elffile = data.get('elffile')
+                binfile = data.get('binfile')
+                temp_files = []
+                flash_path = None
+                flash_address = None
+                try:
+                    if hexfile:
+                        content = base64.b64decode(hexfile['content'])
+                        with tempfile.NamedTemporaryFile(mode='wb', suffix='.hex', delete=False) as f:
+                            f.write(content)
+                            temp_files.append(f.name)
+                            flash_path = f.name
+                    elif elffile:
+                        content = base64.b64decode(elffile['content'])
+                        with tempfile.NamedTemporaryFile(mode='wb', suffix='.elf', delete=False) as f:
+                            f.write(content)
+                            temp_files.append(f.name)
+                            flash_path = f.name
+                    elif binfile:
+                        content = base64.b64decode(binfile['content'])
+                        flash_address = binfile.get('address', 0)
+                        with tempfile.NamedTemporaryFile(mode='wb', suffix='.bin', delete=False) as f:
+                            f.write(content)
+                            temp_files.append(f.name)
+                            flash_path = f.name
+                    else:
+                        raise ValueError('No firmware file provided')
+
+                    if not get_openocd_status(serial=serial)['running']:
+                        self.send_error_response(
+                            400,
+                            'OpenOCD is not running; call /debug/connect first',
+                        )
+                        return
+
+                    rpc = OpenOcdRpc(port=openocd_tcl_port, timeout=300)
+
+                    # DA1469x family: mainline OpenOCD has no QSPI flash
+                    # driver, so ``program ... 0x16000000 verify reset``
+                    # cannot touch external NOR. Drive the RAM-resident
+                    # Apache Mynewt flash_loader instead — the OpenOCD
+                    # counterpart of the J-Link DA1469x special path in
+                    # ``lager/box/lager/debug/jlink.py``.
+                    if 'DA1469' in device_type.upper():
+                        from .da1469x_loader import (
+                            DA1469X_FAMILY,
+                            Da1469xLoaderError,
+                            flash_image,
+                            xip_to_flash_offset,
+                        )
+                        try:
+                            # ``flash_address`` is the CLI value from
+                            # ``--bin <file>,<addr>`` (set above for the
+                            # binfile branch; ``None`` for hex/elf). The
+                            # CLI accepts absolute XIP addresses
+                            # (matching the J-Link path); the loader
+                            # wants flash-relative offsets. Translate here
+                            # so the user-facing CLI behaves the same
+                            # across backends.
+                            loader_offset = xip_to_flash_offset(flash_address)
+                            flash_output = []
+                            for line in flash_image(
+                                rpc, flash_path,
+                                family=DA1469X_FAMILY,
+                                flash_id=0,
+                                offset=loader_offset,
+                            ):
+                                logger.info('[FLASH] %s', line)
+                                flash_output.append(line)
+                        except (Da1469xLoaderError, OpenOcdRpcError) as exc:
+                            self.send_error_response(500, str(exc))
+                            return
+
+                        # Drop the active connection entry so the next
+                        # ``/debug/connect`` re-initialises cleanly — the
+                        # software reset above leaves the chip running its
+                        # bootrom, which puts it in a fresh state for any
+                        # following ``gdbserver --rtt`` attach. Mirrors the
+                        # J-Link DA1469x post-flash bookkeeping at
+                        # ``service.py:handle_flash`` (J-Link branch).
+                        connection_id = f"{net.get('name', 'unknown')}:{device_type}"
+                        with connections_lock:
+                            active_connections.pop(connection_id, None)
+
+                        self.send_json_response(200, {
+                            'status': 'flash_complete',
+                            'output': flash_output,
+                            'backend': BACKEND_OPENOCD,
+                        })
+                        return
+
+                    try:
+                        # ``program <file> [<addr>] verify reset`` runs erase +
+                        # write + verify + reset on the existing daemon — the
+                        # OpenOCD equivalent of the JLinkExe ``loadfile`` path.
+                        out = rpc.program(
+                            flash_path,
+                            verify=True,
+                            reset_after=True,
+                            address=flash_address,
+                        )
+                    except OpenOcdRpcError as exc:
+                        self.send_error_response(500, str(exc))
+                        return
+
+                    logger.info('[FLASH] OpenOCD program complete')
+                    self.send_json_response(200, {
+                        'status': 'flash_complete',
+                        'output': [out] if out else [],
+                        'backend': BACKEND_OPENOCD,
+                    })
+                    return
+                finally:
+                    for temp_file in temp_files:
+                        try:
+                            os.unlink(temp_file)
+                        except OSError:
+                            pass
+
+            # ---- J-Link path (unchanged below this point) -----------------
             gdbserver_status = get_jlink_gdbserver_status(serial=serial)
             if gdbserver_status['running']:
                 try:
@@ -702,24 +1048,87 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             self.send_error_response(500, str(e))
 
     def handle_erase(self, data: Dict[str, Any]):
-        """Handle debug erase command.
+        """Handle debug erase — backend-aware.
 
-        chip_erase() stops J-Link processes for the target probe so JLinkExe can use it.
-        Clear active_connections since the GDB server is gone. ``flash`` does not require
-        reconnecting before ``/debug/flash`` (JLinkExe-only).
+        J-Link: ``chip_erase()`` stops the probe's J-Link processes so
+        ``JLinkExe`` can take exclusive USB access; we clear
+        active_connections accordingly. Callers don't need to reconnect
+        before ``/debug/flash`` (JLinkExe handles its own session).
+
+        OpenOCD: send ``flash erase_sector 0 0 last`` to the running daemon
+        via TCL/RPC — no process bouncing, no connection state to clear.
         """
         try:
             net = data.get('net', {})
             device_type = _resolve_device_type(net)
             speed = data.get('speed', '4000')
             transport = data.get('transport', 'SWD')
-            serial, _slot, _gdb_port, _swo_port, _telnet_port, _rtt_port = _resolve_probe(net)
+            backend = resolve_backend(net)
+            serial, slot, _gdb_port, _swo_port, _telnet_port, _rtt_port = _resolve_probe(net)
+            _openocd_telnet, openocd_tcl_port = _openocd_ports_for_slot(slot)
 
+            if backend == BACKEND_OPENOCD:
+                if not get_openocd_status(serial=serial)['running']:
+                    self.send_error_response(
+                        400,
+                        'OpenOCD is not running; call /debug/connect first',
+                    )
+                    return
+                rpc = OpenOcdRpc(port=openocd_tcl_port, timeout=120)
+
+                # DA1469x family: route to the RAM-resident flash_loader
+                # (matching the J-Link DA1469x address-range erase path).
+                # Mainline OpenOCD has no QSPI flash bank for DA1469x, so
+                # ``flash erase_sector`` would silently do nothing.
+                if 'DA1469' in device_type.upper():
+                    from .da1469x_loader import (
+                        DA1469X_FAMILY,
+                        DEFAULT_ERASE_LENGTH,
+                        Da1469xLoaderError,
+                        erase_range,
+                    )
+                    try:
+                        erase_output = []
+                        for line in erase_range(
+                            rpc,
+                            family=DA1469X_FAMILY,
+                            flash_id=0,
+                            offset=0,
+                            length=DEFAULT_ERASE_LENGTH,
+                        ):
+                            logger.info('[ERASE] %s', line)
+                            erase_output.append(line)
+                    except (Da1469xLoaderError, OpenOcdRpcError) as exc:
+                        self.send_error_response(500, str(exc))
+                        return
+
+                    connection_id = f"{net.get('name', 'unknown')}:{device_type}"
+                    with connections_lock:
+                        active_connections.pop(connection_id, None)
+
+                    self.send_json_response(200, {
+                        'status': 'erase_complete',
+                        'output': '\n'.join(erase_output) if erase_output else 'Erase completed',
+                        'backend': BACKEND_OPENOCD,
+                    })
+                    return
+
+                try:
+                    out = rpc.flash_erase_all()
+                except OpenOcdRpcError as exc:
+                    self.send_error_response(500, str(exc))
+                    return
+                logger.info('[ERASE] OpenOCD erase complete')
+                self.send_json_response(200, {
+                    'status': 'erase_complete',
+                    'output': out or 'Erase completed',
+                    'backend': BACKEND_OPENOCD,
+                })
+                return
+
+            # ---- J-Link path (unchanged below this point) -----------------
             script_path = _get_script_file(net)
 
-            # chip_erase() returns a generator - must consume it to execute
-            # NOTE: chip_erase() stops running J-Link / JLinkGDBServer for *this*
-            # probe so JLinkExe has exclusive USB access.
             erase_output = list(chip_erase(
                 device=device_type,
                 speed=speed,
@@ -735,7 +1144,8 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
 
             self.send_json_response(200, {
                 'status': 'erase_complete',
-                'output': '\n'.join(erase_output) if erase_output else 'Erase completed'
+                'output': '\n'.join(erase_output) if erase_output else 'Erase completed',
+                'backend': BACKEND_JLINK,
             })
 
         except Exception as e:
@@ -743,11 +1153,13 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             self.send_error_response(500, str(e))
 
     def handle_memrd(self, data: Dict[str, Any]):
-        """Handle memory read command using J-Link Commander.
+        """Handle memory read — backend-aware.
 
-        Uses J-Link Commander directly instead of GDB MI to avoid the
-        "Truncated register" errors that occur with some Cortex-M33 devices
-        (like nRF5340) due to XML target description parsing issues.
+        J-Link: uses J-Link Commander (mem8) directly instead of GDB MI to
+        avoid "Truncated register" errors on some Cortex-M33 devices.
+
+        OpenOCD: dispatches ``mdb <addr> <length>`` over the running
+        daemon's TCL/RPC port and parses the response.
         """
         try:
             start_addr = data.get('start_addr')
@@ -758,9 +1170,33 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 return
 
             net = data.get('net') or {}
-            serial, _slot, _gdb_port, _swo_port, _telnet_port, _rtt_port = _resolve_probe(net)
+            backend = resolve_backend(net)
+            serial, slot, _gdb_port, _swo_port, _telnet_port, _rtt_port = _resolve_probe(net)
+            _openocd_telnet, openocd_tcl_port = _openocd_ports_for_slot(slot)
 
-            # Check if GDB server is running for this probe
+            if backend == BACKEND_OPENOCD:
+                if not get_openocd_status(serial=serial)['running']:
+                    self.send_error_response(400, 'No debugger connection found')
+                    return
+                try:
+                    rpc = OpenOcdRpc(port=openocd_tcl_port, timeout=30)
+                    memory_data = rpc.read_memory(start_addr, length)
+                except OpenOcdRpcError as exc:
+                    self.send_error_response(500, str(exc))
+                    return
+                if not memory_data:
+                    self.send_error_response(500, 'Memory read returned no data')
+                    return
+                self.send_json_response(200, {
+                    'status': 'read_complete',
+                    'address': hex(start_addr),
+                    'length': length,
+                    'data': memory_data.hex(),
+                    'backend': BACKEND_OPENOCD,
+                })
+                return
+
+            # ---- J-Link path (unchanged below this point) -----------------
             gdbserver_status = get_jlink_gdbserver_status(serial=serial)
             if not gdbserver_status['running']:
                 self.send_error_response(400, 'No debugger connection found')
@@ -810,20 +1246,22 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             self.send_error_response(500, str(e))
 
     def handle_info(self, data: Dict[str, Any]):
-        """Handle info command."""
+        """Handle info command — backend-aware connection state."""
         try:
             net = data.get('net', {})
             device_type = _resolve_device_type(net)
+            backend = resolve_backend(net)
             serial, _slot, _gdb_port, _swo_port, _telnet_port, _rtt_port = _resolve_probe(net)
 
-            # Try to get architecture
             try:
                 arch = get_arch(device_type)
             except Exception:
-                arch = "Unknown"
+                arch = 'Unknown'
 
-            # Get current debugger status via GDB server (per probe)
-            gdbserver_status = get_jlink_gdbserver_status(serial=serial)
+            if backend == BACKEND_OPENOCD:
+                running = get_openocd_status(serial=serial)['running']
+            else:
+                running = get_jlink_gdbserver_status(serial=serial)['running']
 
             self.send_json_response(200, {
                 'net_name': net.get('name', 'unknown'),
@@ -831,7 +1269,8 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 'arch': arch,
                 'probe': net.get('instrument', ''),
                 'serial': serial,
-                'connected': gdbserver_status['running'],
+                'backend': backend,
+                'connected': running,
             })
 
         except Exception as e:
@@ -839,16 +1278,22 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             self.send_error_response(500, str(e))
 
     def handle_debug_status(self, data: Dict[str, Any]):
-        """Handle status command."""
+        """Handle status command — backend-aware."""
         try:
             net = data.get('net') or {}
+            backend = resolve_backend(net)
             serial, _slot, _gdb_port, _swo_port, _telnet_port, _rtt_port = _resolve_probe(net)
-            gdbserver_status = get_jlink_gdbserver_status(serial=serial)
+
+            if backend == BACKEND_OPENOCD:
+                status = get_openocd_status(serial=serial)
+            else:
+                status = get_jlink_gdbserver_status(serial=serial)
 
             self.send_json_response(200, {
-                'connected': gdbserver_status['running'],
-                'pid': gdbserver_status.get('pid') if gdbserver_status['running'] else None,
+                'connected': status['running'],
+                'pid': status.get('pid') if status['running'] else None,
                 'serial': serial,
+                'backend': backend,
             })
 
         except Exception as e:
@@ -856,7 +1301,21 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             self.send_error_response(500, str(e))
 
     def handle_rtt(self, data: Dict[str, Any]):
-        """Handle RTT streaming command."""
+        """Handle RTT streaming — backend-aware setup, identical TCP streaming.
+
+        Both backends expose the same RTT-over-TCP interface (a telnet-ish
+        listener on ``rtt_port_base + channel`` that emits the target's RTT
+        output as raw bytes), so the streaming loop is identical. The only
+        difference is the per-backend setup we do here:
+
+        * J-Link: call ``detect_and_configure_rtt`` which walks RAM and
+          issues ``monitor exec SetRTTAddr`` via GDB MI. J-Link starts its
+          RTT telnet server automatically once the address is known.
+        * OpenOCD: send ``rtt setup``, ``rtt start``, and
+          ``rtt server start <port> <channel>`` over TCL/RPC. The server
+          binds to the same per-slot RTT port as J-Link, so downstream
+          streaming code is unchanged.
+        """
         import socket
         import select
 
@@ -866,40 +1325,63 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
 
             net = data.get('net', {})
             device_type = _resolve_device_type(net)
-            serial, _slot, gdb_port, _swo_port, _telnet_port, rtt_port_base = _resolve_probe(net)
-
-            # Check if GDB server is running for this probe
-            gdbserver_status = get_jlink_gdbserver_status(serial=serial)
-            if not gdbserver_status['running']:
-                self.send_error_response(400, 'No debugger connection found')
-                return
-
-            # AUTO-DETECT RTT CONTROL BLOCK
-            # This is the right time to detect RTT because:
-            # 1. Firmware has already booted (after reset + 3.5s delay in CLI)
-            # 2. We're about to connect to RTT, so J-Link needs to know the address
-            # 3. Detection at connect time was too early (firmware not yet booted)
-            from .api import detect_and_configure_rtt
-
-            rtt_kwargs = {
-                'device_type': device_type,
-                'serial': serial,
-                'gdb_port': gdb_port,
-            }
-            if 'search_addr' in data:
-                rtt_kwargs['search_addr'] = data['search_addr']
-            if 'search_size' in data:
-                rtt_kwargs['search_size'] = data['search_size']
-            if 'chunk_size' in data:
-                rtt_kwargs['chunk_size'] = data['chunk_size']
-            rtt_result = detect_and_configure_rtt(**rtt_kwargs)
-            if rtt_result['found']:
-                logger.info(f"RTT auto-detection successful: {rtt_result['address']}")
-            elif rtt_result['error']:
-                logger.warning(f"RTT auto-detection failed (continuing anyway): {rtt_result['error']}")
-
-            # Per-probe RTT base + channel offset (e.g. slot 0 ch 0 = 9090; slot 1 ch 0 = 9092).
+            backend = resolve_backend(net)
+            serial, slot, gdb_port, _swo_port, _telnet_port, rtt_port_base = _resolve_probe(net)
+            _openocd_telnet, openocd_tcl_port = _openocd_ports_for_slot(slot)
             rtt_port = rtt_port_base + channel
+
+            # Optional RTT search overrides — both backends accept them, but
+            # they're applied through different mechanisms.
+            search_addr = data.get('search_addr', 0x20000000)
+            search_size = data.get('search_size', 0x10000)
+
+            if backend == BACKEND_OPENOCD:
+                if not get_openocd_status(serial=serial)['running']:
+                    self.send_error_response(400, 'No debugger connection found')
+                    return
+                try:
+                    rpc = OpenOcdRpc(port=openocd_tcl_port, timeout=10.0)
+                    # ``rtt setup`` + ``rtt start`` are idempotent in OpenOCD —
+                    # safe to call on every /debug/rtt request.
+                    rpc.rtt_setup(search_addr=search_addr, search_size=search_size)
+                    rpc.rtt_start()
+                    # ``rtt server start`` fails with "RTT server already
+                    # started" on subsequent calls; bounce it so the next
+                    # client connection succeeds.
+                    try:
+                        rpc.rtt_server_stop(rtt_port)
+                    except OpenOcdRpcError:
+                        pass
+                    rpc.rtt_server_start(rtt_port, channel=channel)
+                except OpenOcdRpcError as exc:
+                    self.send_error_response(500, f'OpenOCD RTT setup failed: {exc}')
+                    return
+            else:
+                # J-Link path: existing behaviour.
+                gdbserver_status = get_jlink_gdbserver_status(serial=serial)
+                if not gdbserver_status['running']:
+                    self.send_error_response(400, 'No debugger connection found')
+                    return
+
+                # AUTO-DETECT RTT CONTROL BLOCK
+                from .api import detect_and_configure_rtt
+
+                rtt_kwargs = {
+                    'device_type': device_type,
+                    'serial': serial,
+                    'gdb_port': gdb_port,
+                }
+                if 'search_addr' in data:
+                    rtt_kwargs['search_addr'] = data['search_addr']
+                if 'search_size' in data:
+                    rtt_kwargs['search_size'] = data['search_size']
+                if 'chunk_size' in data:
+                    rtt_kwargs['chunk_size'] = data['chunk_size']
+                rtt_result = detect_and_configure_rtt(**rtt_kwargs)
+                if rtt_result['found']:
+                    logger.info(f"RTT auto-detection successful: {rtt_result['address']}")
+                elif rtt_result['error']:
+                    logger.warning(f"RTT auto-detection failed (continuing anyway): {rtt_result['error']}")
 
             # Connect to J-Link RTT telnet server with retry logic
             # This is needed because after a device reset, the RTT telnet port may not be
@@ -979,7 +1461,13 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             import time
             start_time = time.time()
             bytes_streamed = 0
-            banner_skipped = False  # Track if we've skipped the J-Link telnet banner
+            # OpenOCD's ``rtt server`` doesn't emit a banner — it streams raw
+            # RTT bytes from the moment a client connects. Only J-Link's
+            # RTTTelnetPort prefixes "SEGGER J-Link V... - Real time terminal
+            # output\r\n...\r\nProcess: JLinkGDBServerCLExe\r\n", which we
+            # strip here so downstream consumers (defmt-print etc.) see clean
+            # RTT.
+            banner_skipped = (backend == BACKEND_OPENOCD)
 
             try:
                 while True:

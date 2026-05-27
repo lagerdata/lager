@@ -196,12 +196,32 @@ if [ -d "$CUSTOMER_BIN_DIR" ]; then
     echo "  Host: $CUSTOMER_BIN_DIR"
     echo "  Container: /home/www-data/customer-binaries"
 
-    # List binaries if directory is not empty
-    if [ "$(ls -A $CUSTOMER_BIN_DIR 2>/dev/null)" ]; then
+    # Ensure the well-known subtree used by RAM-resident flash loaders
+    # exists (see lager/box/lager/debug/da1469x_loader.py). This lets
+    # operators just `scp` a `flash_loader.elf` + `.elf.bin` pair into
+    # `~/third_party/customer-binaries/openocd/flash-loaders/<family>/`
+    # without first mkdir-ing the chain. Default perms (umask) are fine
+    # because the container only reads these files; we don't chmod 777
+    # like we do for the customer-binaries root (the container writes
+    # uploaded binaries there as www-data, hence the wider perms above).
+    # Best-effort — a failure here must not stop the container from
+    # starting, since custom binaries / flash-loaders are an optional
+    # feature.
+    mkdir -p "$CUSTOMER_BIN_DIR/openocd/flash-loaders" 2>/dev/null || true
+
+    # List uploaded binaries (files only — skips subdirectories like the
+    # `openocd/` flash-loaders tree ensured above, which is intentionally
+    # not a user-uploaded executable). `-L` follows symlinks before the
+    # `-type f` test so a symlinked binary (e.g. `ln -s /usr/bin/jq jq`)
+    # still surfaces, matching the `os.path.isfile()` filtering used by
+    # `_handle_binaries_list` (lager/box/lager/python/service.py) and
+    # `lager.binaries.runner.list_binaries`.
+    binaries_found=$(find -L "$CUSTOMER_BIN_DIR" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | sort)
+    if [ -n "$binaries_found" ]; then
         echo "  Binaries available:"
-        ls -1 "$CUSTOMER_BIN_DIR" | sed 's/^/    - /'
+        echo "$binaries_found" | sed 's/^/    - /'
     else
-        echo "  (directory is empty)"
+        echo "  (no uploaded binaries)"
     fi
     echo ""
 fi
@@ -349,11 +369,20 @@ fi
 # Port 8765: Debug Service
 # Port 9000: UART HTTP+WebSocket Server
 # Port 8081-8090: Remote debugging (PDB, etc.)
-# Port 2331-2342: J-Link GDB / SWO / Telnet (3 ports per slot × 4 slots).
-#   Slot N gets GDB=2331+3N, SWO=2332+3N, Telnet=2333+3N. The 3-port stride
-#   is required because JLinkGDBServer's hardcoded SWO/Telnet defaults
-#   (2332/2333) collide with adjacent slots if the stride is 1.
-# Port 9090-9097: J-Link RTT telnet (two channels per probe slot; up to 4 probes × 2 channels)
+# Port 2331-2342: GDB / SWO / Telnet ports for the GDB-side window (3 ports
+#   per slot × 4 slots). Slot N gets GDB=2331+3N, SWO=2332+3N, Telnet=2333+3N.
+#   This window is shared between the J-Link and OpenOCD backends — the
+#   server type bound to a port is determined by which probe occupies that
+#   slot. The 3-port stride is required because JLinkGDBServer's hardcoded
+#   SWO/Telnet defaults (2332/2333) collide with adjacent slots if the
+#   stride is 1; OpenOCD just leaves SWO/Telnet unused.
+# Port 4444-4447: OpenOCD interactive telnet (one port per slot, slot N=4444+N).
+# Port 6666-6669: OpenOCD TCL/RPC (one port per slot, slot N=6666+N). The
+#   lager debug service dispatches all OpenOCD runtime commands (flash/erase/
+#   reset/memrd/RTT) through these ports.
+# Port 9090-9097: RTT telnet (two channels per probe slot; up to 4 probes × 2
+#   channels). Both J-Link (RTTTelnetPort) and OpenOCD (rtt server start)
+#   bind to this range — slot N's RTT base is 9090+2N.
 # NOTE: the hard-coded -v list below is reproduced as RESERVED_CONTAINER_PATHS
 # in box/lager/box_config/config.py so that `lager box config mount add`
 # rejects user mounts that would collide. If you add or rename anything here,
@@ -403,6 +432,8 @@ docker run -d \
     -p 8765:8765 \
     -p 9000:9000 \
     -p 2331-2342:2331-2342 \
+    -p 4444-4447:4444-4447 \
+    -p 6666-6669:6666-6669 \
     -p 9090-9097:9090-9097 \
     --env "PIGPIO_ADDR=$PIGPIO_ADDR" \
     --env "LAGER_HOST=$DOCKER_IFACE" \
@@ -556,8 +587,10 @@ echo "  - MCP Server (AI): port 8100 (MCP clients: http://<box-ip>:8100/mcp)"
 echo "  - Debug Service: port 8765"
 echo "  - UART HTTP+WebSocket: port 9000"
 echo "  - Remote PDB: ports 8081-8090"
-echo "  - J-Link GDB / SWO / Telnet: ports 2331-2342 (3 ports per slot, up to 4 slots)"
-echo "  - J-Link RTT telnet: ports 9090-9097"
+echo "  - Debug GDB / SWO / Telnet (J-Link or OpenOCD): ports 2331-2342 (3 per slot × 4 slots)"
+echo "  - OpenOCD interactive telnet: ports 4444-4447 (one per slot)"
+echo "  - OpenOCD TCL/RPC: ports 6666-6669 (one per slot)"
+echo "  - RTT telnet (J-Link or OpenOCD): ports 9090-9097 (2 channels × 4 slots)"
 echo ""
 echo "IMPORTANT: The controller container is NO LONGER NEEDED!"
 echo "  All functionality has been moved to the lager container."

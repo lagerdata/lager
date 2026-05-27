@@ -47,14 +47,55 @@ def _get_jlink_script_content(ctx, net_name, debug_net):
 
     script_path = get_debug_script_for_net(net_name)
     if script_path:
-        try:
-            with open(script_path, 'rb') as f:
-                return base64.b64encode(f.read()).decode('ascii')
-        except Exception as e:
-            click.secho(f"Warning: Could not read J-Link script from config: {e}", fg='yellow', err=True)
+        # The .lager DEBUG section historically only carried J-Link scripts,
+        # so we treat anything ending in .JLinkScript as J-Link. Files for
+        # the OpenOCD backend (.cfg / .tcl) are handled by
+        # ``_get_openocd_config_content`` below.
+        suffix = str(script_path).lower()
+        if suffix.endswith('.jlinkscript'):
+            try:
+                with open(script_path, 'rb') as f:
+                    return base64.b64encode(f.read()).decode('ascii')
+            except Exception as e:
+                click.secho(f"Warning: Could not read J-Link script from config: {e}", fg='yellow', err=True)
 
     if debug_net:
         embedded = debug_net.get('jlink_script')
+        if isinstance(embedded, str) and embedded.strip():
+            return embedded
+
+    return None
+
+
+def _get_openocd_config_content(ctx, net_name, debug_net):
+    """Get base64-encoded OpenOCD ``.cfg`` content for /debug/connect.
+
+    Mirrors ``_get_jlink_script_content`` for the OpenOCD backend. Resolution
+    order:
+
+    1. Local .lager DEBUG section (project override), only when the file
+       extension looks like an OpenOCD config (``.cfg`` / ``.tcl``).
+    2. ``openocd_config`` on the debug net dict (from saved_nets on the box).
+    3. None — the box falls back to built-in interface + target configs.
+    """
+    import base64
+    from ....config import get_debug_script_for_net
+
+    script_path = get_debug_script_for_net(net_name)
+    if script_path:
+        suffix = str(script_path).lower()
+        if suffix.endswith('.cfg') or suffix.endswith('.tcl'):
+            try:
+                with open(script_path, 'rb') as f:
+                    return base64.b64encode(f.read()).decode('ascii')
+            except Exception as e:
+                click.secho(
+                    f"Warning: Could not read OpenOCD config from .lager: {e}",
+                    fg='yellow', err=True,
+                )
+
+    if debug_net:
+        embedded = debug_net.get('openocd_config')
         if isinstance(embedded, str) and embedded.strip():
             return embedded
 
@@ -264,7 +305,37 @@ def _is_connected(client):
     except Exception:
         return False
 
-def _auto_connect_if_needed(client, debug_net, ctx, quiet=False, jlink_script=None):
+def _resolve_debug_scripts(ctx, net_name, debug_net):
+    """Return (jlink_script, openocd_config) for a debug net.
+
+    Both fields are computed unconditionally — the box ignores the one that
+    doesn't match the resolved backend. Callers should forward both to
+    ``client.connect(...)`` so the CLI stays backend-agnostic.
+
+    If the local ``.lager`` config points at a debug script whose extension
+    doesn't match either backend (J-Link ``.JLinkScript`` / OpenOCD
+    ``.cfg``/``.tcl``), warn the user — otherwise the script is silently
+    dropped and the resulting connect uses the box's defaults, which is
+    almost never what the user intended.
+    """
+    j = _get_jlink_script_content(ctx, net_name, debug_net)
+    o = _get_openocd_config_content(ctx, net_name, debug_net)
+    if j is None and o is None:
+        from ....config import get_debug_script_for_net
+        configured = get_debug_script_for_net(net_name)
+        if configured:
+            click.secho(
+                f"Warning: ignoring debug script {configured!r} for net "
+                f"{net_name!r}: extension not recognised. Use "
+                f"`.JLinkScript` for J-Link probes or `.cfg`/`.tcl` for "
+                f"OpenOCD probes.",
+                fg='yellow', err=True,
+            )
+    return (j, o)
+
+
+def _auto_connect_if_needed(client, debug_net, ctx, quiet=False,
+                            jlink_script=None, openocd_config=None):
     """
     Auto-connect to debugger if not already connected.
     Does NOT reconnect if already connected.
@@ -274,7 +345,10 @@ def _auto_connect_if_needed(client, debug_net, ctx, quiet=False, jlink_script=No
         debug_net: Debug net configuration
         ctx: Click context
         quiet: Suppress informational messages
-        jlink_script: Optional base64-encoded J-Link script (override or net-embedded)
+        jlink_script: Optional base64-encoded J-Link script (used when the
+            box resolves the probe to the J-Link backend).
+        openocd_config: Optional base64-encoded OpenOCD ``.cfg`` content
+            (used when the box resolves the probe to the OpenOCD backend).
 
     Returns:
         True if connected (either already or newly), False on failure
@@ -288,7 +362,10 @@ def _auto_connect_if_needed(client, debug_net, ctx, quiet=False, jlink_script=No
         click.secho("Auto-connecting to debugger...", fg='cyan', dim=True)
 
     try:
-        client.connect(debug_net, speed=None, force=False, halt=False, jlink_script=jlink_script)
+        client.connect(
+            debug_net, speed=None, force=False, halt=False,
+            jlink_script=jlink_script, openocd_config=openocd_config,
+        )
         if not quiet:
             click.secho("Auto-connected!", fg='cyan', dim=True)
         return True
@@ -551,8 +628,11 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
 
     debug_net = _get_debug_net(ctx, target_box, net_name)
 
-    # Get J-Link script content if configured
-    jlink_script = _get_jlink_script_content(ctx, net_name or debug_net.get('name'), debug_net)
+    # Resolve per-backend customisation files. Both are computed; only the
+    # one matching the resolved backend takes effect on the box.
+    jlink_script, openocd_config = _resolve_debug_scripts(
+        ctx, net_name or debug_net.get('name'), debug_net
+    )
 
     client = _get_service_client(target_box)
     if not client:
@@ -588,20 +668,31 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
 
     # Connect to debugger and start GDB server
     try:
-        result = client.connect(debug_net, speed=speed, force=force, halt=halt, gdb=True, gdb_port=gdb_port, jlink_script=jlink_script)
+        result = client.connect(
+            debug_net, speed=speed, force=force, halt=halt, gdb=True,
+            gdb_port=gdb_port,
+            jlink_script=jlink_script, openocd_config=openocd_config,
+        )
     except requests.exceptions.HTTPError as e:
-        # Parse error response for more details
-        error_detail = "Unknown error"
+        # Surface the box's structured error first; the generic checklist
+        # below is just a fallback for transport-level failures (timeout,
+        # bad gateway) where the server didn't get to format a response.
+        error_detail = None
         try:
             error_json = e.response.json()
-            error_detail = error_json.get('error', str(e))
-        except:
-            error_detail = str(e)
+            error_detail = error_json.get('error') or error_json.get('message')
+        except Exception:  # noqa: BLE001 — non-JSON body, treated as empty
+            error_detail = None
 
-        click.secho("Error: Failed to connect to debugger", fg='red', err=True)
+        if error_detail:
+            click.secho(f"Error: {error_detail}", fg='red', err=True)
+        else:
+            click.secho("Error: Failed to connect to debugger", fg='red', err=True)
 
-        # Check for common connection issues
-        if "500" in str(e) or "Internal Server Error" in str(e):
+        # Keep the canned troubleshooting hints on 500s but only when we
+        # had no specific server error to show — otherwise they bury the
+        # real cause under boilerplate.
+        if not error_detail and ("500" in str(e) or "Internal Server Error" in str(e)):
             click.secho("\nPossible causes:", fg='yellow', err=True)
             click.secho("  • Debug probe not connected to target device", fg='yellow', err=True)
             click.secho("  • Target device not powered", fg='yellow', err=True)
@@ -623,6 +714,16 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
     # Effective port may differ from --gdb-port when the box assigns a per-probe slot.
     effective_gdb_port = result.get('gdb_server', {}).get('gdb_port', gdb_port) if isinstance(result, dict) else gdb_port
 
+    # Pick a backend-appropriate name for the "X started!" line. The
+    # box-side response carries ``backend`` at the top level (one of
+    # ``jlink`` / ``openocd``); fall back to ``J-Link`` so legacy boxes
+    # that don't yet emit ``backend`` keep their existing wording.
+    backend = result.get('backend') if isinstance(result, dict) else None
+    backend_label = {
+        'openocd': 'OpenOCD',
+        'jlink': 'JLinkGDBServer',
+    }.get(backend, 'JLinkGDBServer')
+
     if not quiet:
         if json_output:
             click.echo(json.dumps(result, indent=2))
@@ -631,18 +732,18 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
             if 'gdb_server' in result:
                 gdb_info = result['gdb_server']
                 if gdb_info.get('status') == 'started':
-                    click.secho("JLinkGDBServer started!", fg='green', err=True)
+                    click.secho(f"{backend_label} started!", fg='green', err=True)
                     click.secho(f"GDB server listening on {target_box}:{effective_gdb_port}", fg='cyan', err=True)
                     click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{effective_gdb_port}'", fg='cyan', err=True)
                 elif gdb_info.get('status') == 'already_running':
-                    click.secho("JLinkGDBServer already running!", fg='green', err=True)
+                    click.secho(f"{backend_label} already running!", fg='green', err=True)
                     click.secho(f"GDB server listening on {target_box}:{effective_gdb_port}", fg='cyan', err=True)
                     click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{effective_gdb_port}'", fg='cyan', err=True)
                 elif 'error' in gdb_info:
                     click.secho(f"Error: GDB server failed to start: {gdb_info.get('message', 'Unknown error')}", fg='red', err=True)
                     ctx.exit(1)
             else:
-                click.secho("JLinkGDBServer started!", fg='green', err=True)
+                click.secho(f"{backend_label} started!", fg='green', err=True)
                 click.secho(f"GDB server listening on {target_box}:{effective_gdb_port}", fg='cyan', err=True)
                 click.secho(f"Connect with: arm-none-eabi-gdb -ex 'target remote {target_box}:{effective_gdb_port}'", fg='cyan', err=True)
 
@@ -836,7 +937,9 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
 
     debug_net = _get_debug_net(ctx, target_box, net_name)
 
-    jlink_script = _get_jlink_script_content(ctx, net_name or debug_net.get('name'), debug_net)
+    jlink_script, openocd_config = _resolve_debug_scripts(
+        ctx, net_name or debug_net.get('name'), debug_net
+    )
 
     client = _get_service_client(target_box)
     if not client:
@@ -844,7 +947,10 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
         ctx.exit(1)
 
     # Auto-connect if not already connected
-    if not _auto_connect_if_needed(client, debug_net, ctx, jlink_script=jlink_script):
+    if not _auto_connect_if_needed(
+        client, debug_net, ctx,
+        jlink_script=jlink_script, openocd_config=openocd_config,
+    ):
         client.close()
         ctx.exit(1)
 
@@ -869,7 +975,10 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
                 except Exception:
                     pass
                 time.sleep(0.5)
-                client.connect(debug_net, force=True, halt=False, jlink_script=jlink_script)
+                client.connect(
+                    debug_net, force=True, halt=False,
+                    jlink_script=jlink_script, openocd_config=openocd_config,
+                )
         except Exception as e:
             click.secho(f"Flash erase failed: {e}", fg='red', err=True)
             client.close()
@@ -884,7 +993,10 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
             import time
             time.sleep(0.5)
             # Reconnect with force
-            client.connect(debug_net, force=True, halt=False, jlink_script=jlink_script)
+            client.connect(
+                debug_net, force=True, halt=False,
+                jlink_script=jlink_script, openocd_config=openocd_config,
+            )
             click.echo("Reconnect complete", err=True)
         except Exception as e:
             click.secho(f"Warning: Force reconnect failed: {e}", fg='yellow', err=True)
@@ -982,7 +1094,9 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
     target_box, username = _resolve_box_with_username(ctx, target_box)
 
     debug_net = _get_debug_net(ctx, target_box, net_name)
-    jlink_script = _get_jlink_script_content(ctx, net_name or debug_net.get('name'), debug_net)
+    jlink_script, openocd_config = _resolve_debug_scripts(
+        ctx, net_name or debug_net.get('name'), debug_net
+    )
     device_type = _debug_net_jlink_device(debug_net) or 'unknown'
 
     # Confirm the erase operation (skip if quiet or json mode)
@@ -1005,7 +1119,10 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
         ctx.exit(1)
 
     # Auto-connect if not already connected
-    if not _auto_connect_if_needed(client, debug_net, ctx, quiet=quiet, jlink_script=jlink_script):
+    if not _auto_connect_if_needed(
+        client, debug_net, ctx, quiet=quiet,
+        jlink_script=jlink_script, openocd_config=openocd_config,
+    ):
         client.close()
         ctx.exit(1)
 
@@ -1049,7 +1166,10 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
         except Exception:
             pass
         time.sleep(0.3)
-        client.connect(debug_net, speed=None, force=True, halt=halt, jlink_script=jlink_script)
+        client.connect(
+            debug_net, speed=None, force=True, halt=halt,
+            jlink_script=jlink_script, openocd_config=openocd_config,
+        )
         if halt:
             if not quiet:
                 click.secho("Reconnected and halted!", fg='cyan', dim=True)
@@ -1080,7 +1200,9 @@ def reset(ctx, box, halt, force_reconnect):
 
     debug_net = _get_debug_net(ctx, target_box, net_name)
 
-    jlink_script = _get_jlink_script_content(ctx, net_name or debug_net.get('name'), debug_net)
+    jlink_script, openocd_config = _resolve_debug_scripts(
+        ctx, net_name or debug_net.get('name'), debug_net
+    )
 
     client = _get_service_client(target_box)
     if not client:
@@ -1089,7 +1211,10 @@ def reset(ctx, box, halt, force_reconnect):
 
     # Auto-connect if not already connected (unless force-reconnect, which handles its own connection)
     if not force_reconnect:
-        if not _auto_connect_if_needed(client, debug_net, ctx, jlink_script=jlink_script):
+        if not _auto_connect_if_needed(
+            client, debug_net, ctx,
+            jlink_script=jlink_script, openocd_config=openocd_config,
+        ):
             client.close()
             ctx.exit(1)
 
@@ -1100,7 +1225,10 @@ def reset(ctx, box, halt, force_reconnect):
             client.disconnect(debug_net)
             import time
             time.sleep(0.5)
-            client.connect(debug_net, force=True, halt=False, jlink_script=jlink_script)
+            client.connect(
+                debug_net, force=True, halt=False,
+                jlink_script=jlink_script, openocd_config=openocd_config,
+            )
             click.echo("Reconnect complete", err=True)
         except Exception as e:
             click.secho(f"Warning: Force reconnect failed: {e}", fg='yellow', err=True)
@@ -1146,7 +1274,9 @@ def memrd(ctx, start_addr, length, box, json_output, halt, no_halt):
 
     debug_net = _get_debug_net(ctx, target_box, net_name)
 
-    jlink_script = _get_jlink_script_content(ctx, net_name or debug_net.get('name'), debug_net)
+    jlink_script, openocd_config = _resolve_debug_scripts(
+        ctx, net_name or debug_net.get('name'), debug_net
+    )
 
     client = _get_service_client(target_box)
     if not client:
@@ -1182,7 +1312,10 @@ def memrd(ctx, start_addr, length, box, json_output, halt, no_halt):
     # Ensure halted attach when we need it (reconnect if already connected running).
     if effective_halt and _is_connected(client):
         try:
-            client.connect(debug_net, speed=None, force=True, halt=True, jlink_script=jlink_script)
+            client.connect(
+                debug_net, speed=None, force=True, halt=True,
+                jlink_script=jlink_script, openocd_config=openocd_config,
+            )
         except Exception as e:
             click.secho(f"Warning: could not re-connect halted for memrd: {e}", fg='yellow', err=True)
 
@@ -1194,7 +1327,8 @@ def memrd(ctx, start_addr, length, box, json_output, halt, no_halt):
             click.secho("Auto-connecting to debugger...", fg='cyan', dim=True)
         try:
             client.connect(
-                debug_net, speed=None, force=False, halt=effective_halt, jlink_script=jlink_script
+                debug_net, speed=None, force=False, halt=effective_halt,
+                jlink_script=jlink_script, openocd_config=openocd_config,
             )
             if effective_halt:
                 click.secho("Auto-connected and halted!", fg='cyan', dim=True)

@@ -8,11 +8,11 @@
 """
 import click
 import subprocess
-import ipaddress
 import tempfile
 import shutil
 from pathlib import Path
 from importlib import resources
+from ...address_utils import validate_ip_or_hostname, VALID_FORMATS_CHEATSHEET
 from ...box_storage import add_box, get_box_ip, get_box_user
 from ...core.ssh_utils import host_in_known_hosts
 
@@ -74,7 +74,7 @@ def get_script_path(script_name: str, subdir: str = "scripts") -> Path:
 @click.command()
 @click.pass_context
 @click.option("--box", default=None, help="Box name (uses stored IP and username)")
-@click.option("--ip", default=None, help="Target box IP address")
+@click.option("--ip", default=None, help="Target box IP address or DNS hostname")
 @click.option("--user", default=None, help="SSH username (default: lagerdata, or stored username if using --box)")
 @click.option("--version", "version", default="main", help="Box version to deploy: a release tag (e.g. v0.15.0) or a git branch (default: main)")
 @click.option("--skip-jlink", is_flag=True, help="Skip J-Link installation")
@@ -115,11 +115,13 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
         if user is None:
             user = "lagerdata"
 
-    # 2. Validate IP address
+    # 2. Validate address (IP or hostname)
     try:
-        ipaddress.ip_address(ip)
-    except ValueError:
-        click.secho(f"Error: '{ip}' is not a valid IP address", fg='red', err=True)
+        ip = validate_ip_or_hostname(ip)
+    except ValueError as e:
+        click.secho(f"Error: {e}", fg='red', err=True)
+        for line in VALID_FORMATS_CHEATSHEET:
+            click.echo(line, err=True)
         ctx.exit(1)
 
     ssh_host = f"{user}@{ip}"

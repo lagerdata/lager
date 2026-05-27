@@ -85,12 +85,246 @@ def _parse_backend_json(raw: str) -> Any:
 
             raise  # Re-raise original exception
 
+def _debug_channel_suffix(value) -> str:
+    """Return the ``@<channel>`` portion of a debug net's device field.
+
+    Multi-channel FTDIs encode the interface index in the device field as
+    ``STM32F4x@A``; this helper extracts the trailing ``@A``/``@0``/``@B``
+    (lower-cased, leading ``@`` retained) so two saved nets on the same
+    physical probe can be compared by channel. Returns ``""`` when no
+    suffix is present — that's the implicit channel A.
+    """
+    if not value:
+        return ""
+    s = str(value)
+    if "@" not in s:
+        return ""
+    return f"@{s.rpartition('@')[2].lower()}"
+
+
+_VISA_SERIAL_RE = re.compile(
+    r'USB\d*::0x[0-9A-Fa-f]+::0x[0-9A-Fa-f]+::([^:]+)::INSTR',
+    re.IGNORECASE,
+)
+
+
+# --------------------------------------------------------------------------- #
+# Debug-script backend detection (mirror of box/lager/debug/probes.py).       #
+#                                                                             #
+# Kept duplicated client-side on purpose: detection has to work against any   #
+# box version, including ones older than the smart `set-script` change. The   #
+# only state we need is the net record (which `_run_net_py list` always       #
+# returns) plus the file the user just handed us.                             #
+# --------------------------------------------------------------------------- #
+
+_DEBUG_VISA_RE = re.compile(
+    # Serial slot may be empty for FTDI chips with an un-programmed
+    # EEPROM (the box scanner emits ``USB0::0x0403::0x6011::::INSTR``
+    # in that case). Match the relaxed shape so backend detection
+    # still works for serial-less probes; keep this in sync with
+    # ``_VISA_RE`` in ``box/lager/debug/probes.py``.
+    r'USB\d*::0x([0-9A-Fa-f]+)::0x[0-9A-Fa-f]+::[^:]*::INSTR',
+    re.IGNORECASE,
+)
+
+
+# ``pin`` is overloaded by role; the label needs to track that so users
+# don't read "Channel: 2" and assume the value is an FT4232H interface
+# index when it's actually being interpreted as a USB serial by the
+# UART dispatcher.
+_PIN_LABEL_BY_ROLE = {
+    "uart": "Pin/serial:",
+    "debug": "Device:",
+}
+
+
+def _pin_label_for_role(role: str | None) -> str:
+    return _PIN_LABEL_BY_ROLE.get(role or "", "Channel:")
+# Keep these in sync with `_JLINK_VIDS` / `_OPENOCD_VIDS` in
+# `box/lager/debug/probes.py`.
+_DEBUG_JLINK_VIDS = {'1366'}
+_DEBUG_OPENOCD_VIDS = {'0483', '2e8a', '0403', '0d28', '03eb', '15ba'}
+
+_JLINK_EXTS = {'.jlinkscript', '.jlinkscriptfile'}
+_OPENOCD_EXTS = {'.cfg', '.tcl', '.ocd'}
+
+_BACKEND_JLINK = 'jlink'
+_BACKEND_OPENOCD = 'openocd'
+
+_FIELD_FOR_BACKEND = {
+    _BACKEND_JLINK: 'jlink_script',
+    _BACKEND_OPENOCD: 'openocd_config',
+}
+_BACKEND_LABEL = {
+    _BACKEND_JLINK: 'J-Link script',
+    _BACKEND_OPENOCD: 'OpenOCD config',
+}
+
+
+def _probe_backend_for_net(net: Any) -> Optional[str]:
+    """Return ``'jlink'``/``'openocd'`` for *net*, or ``None`` if unknown.
+
+    Mirrors ``box/lager/debug/probes.py::resolve_backend`` but never defaults
+    to J-Link — callers want to know when the probe signal is absent so they
+    can fall back to file sniffing without being misled by the default.
+    """
+    if not isinstance(net, dict):
+        return None
+    explicit = (net.get('debug_backend') or '').strip().lower()
+    if explicit in (_BACKEND_JLINK, _BACKEND_OPENOCD):
+        return explicit
+    address = net.get('address') or ''
+    m = _DEBUG_VISA_RE.match(str(address).strip())
+    if not m:
+        return None
+    vid = m.group(1).lower().lstrip('0').zfill(4) or '0000'
+    if vid in _DEBUG_OPENOCD_VIDS:
+        return _BACKEND_OPENOCD
+    if vid in _DEBUG_JLINK_VIDS:
+        return _BACKEND_JLINK
+    return None
+
+
+def _sniff_script_backend(filename: str, content: bytes) -> Optional[str]:
+    """Return ``'jlink'``/``'openocd'``/``None`` from filename + content.
+
+    Extension is the dominant signal. Content sniff is only consulted when
+    the extension is unrecognised (e.g. stdin or extensionless paths) and
+    abstains when both/neither family of markers is present so we don't
+    guess silently.
+    """
+    import os
+    _, ext = os.path.splitext((filename or '').lower())
+    if ext in _JLINK_EXTS:
+        return _BACKEND_JLINK
+    if ext in _OPENOCD_EXTS:
+        return _BACKEND_OPENOCD
+    try:
+        head = content[:4096].decode('utf-8', errors='replace').lower()
+    except Exception:
+        return None
+    openocd_markers = (
+        'adapter driver', 'transport select', 'ftdi vid_pid',
+        'source [find', 'target create', 'swj_newdap', 'dap create',
+        'jtag newtap', 'flash bank',
+    )
+    jlink_markers = (
+        'reset()', 'inittarget()', 'mem_writeu32', 'jlink_executecommand',
+        'beforetargetreset', 'aftertargetreset', 'aftertargetdownload',
+    )
+    has_openocd = any(m in head for m in openocd_markers)
+    has_jlink = any(m in head for m in jlink_markers)
+    if has_openocd and not has_jlink:
+        return _BACKEND_OPENOCD
+    if has_jlink and not has_openocd:
+        return _BACKEND_JLINK
+    return None
+
+
+def _choose_script_backend(
+    *,
+    explicit: Optional[str],
+    probe: Optional[str],
+    file: Optional[str],
+) -> tuple[Optional[str], str, bool]:
+    """Reconcile the three backend signals.
+
+    Returns ``(backend, reason, mismatch)``:
+
+    * ``backend`` is the chosen backend or ``None`` when undetermined.
+    * ``reason`` is a one-line human explanation for status messages.
+    * ``mismatch`` is True when probe and file both have a value and
+      disagree; callers must surface a clear error so the user can pick
+      a side with ``--backend``.
+    """
+    if explicit:
+        return explicit, f"--backend {explicit} (explicit)", False
+    signals = [(k, v) for k, v in (('probe', probe), ('file', file)) if v]
+    if not signals:
+        return None, (
+            "no backend signal — pass --backend, or use a recognised "
+            "file extension (.JLinkScript / .cfg / .tcl)"
+        ), False
+    values = {v for _k, v in signals}
+    if len(values) == 1:
+        chosen = next(iter(values))
+        sources = '+'.join(k for k, _v in signals)
+        return chosen, f"{chosen} (matched {sources})", False
+    return None, (
+        f"probe says '{probe}', file says '{file}' "
+        "— pass --backend to override"
+    ), True
+
+
+def _read_debug_script_input(script_path: str) -> tuple[str, bytes]:
+    """Return ``(display_name, raw_bytes)`` for *script_path*.
+
+    ``script_path == '-'`` reads from stdin as binary; otherwise reads the
+    given path. Raises ``click.ClickException`` on read failure so the
+    caller can render a consistent error.
+    """
+    import sys
+    if script_path == '-':
+        try:
+            return ('<stdin>', sys.stdin.buffer.read())
+        except Exception as e:
+            raise click.ClickException(f"Failed to read script from stdin: {e}")
+    try:
+        with open(script_path, 'rb') as f:
+            return (script_path, f.read())
+    except FileNotFoundError:
+        raise click.ClickException(f"Script file not found: {script_path}")
+    except Exception as e:
+        raise click.ClickException(f"Failed to read script file: {e}")
+
+
+def _clear_other_script_field(
+    target: dict, chosen_field: str,
+) -> tuple[Optional[str], int]:
+    """If the net has the *other* debug-script field set, delete it.
+
+    Returns ``(cleared_field, decoded_byte_count)`` or ``(None, 0)`` when
+    nothing was cleared. ``decoded_byte_count`` is the size of the
+    base64-decoded content, or ``-1`` if it couldn't be decoded.
+    """
+    import base64
+    other = 'openocd_config' if chosen_field == 'jlink_script' else 'jlink_script'
+    if not target.get(other):
+        return (None, 0)
+    try:
+        n = len(base64.b64decode(target[other]))
+    except Exception:
+        n = -1
+    del target[other]
+    return (other, n)
+
+
+def _serial_from_visa_address(address) -> str:
+    """Extract the USB serial segment from a VISA-style address.
+
+    Returns ``""`` for non-VISA strings. Used by the UART dedup pass to
+    recognise legacy saved nets where the ``pin`` field stores the USB
+    serial (pre-multi-tty enumeration) rather than a ``/dev/tty*`` path.
+    """
+    if not address:
+        return ""
+    m = _VISA_SERIAL_RE.match(str(address).strip())
+    return m.group(1).strip() if m else ""
+
+
 _MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port"}
 _SINGLE_CHANNEL_INST = {
     "Keithley_2281S": ("batt", "supply"),
     "EA_PSB_10060_60": ("solar", "supply"),
     "EA_PSB_10080_60": ("solar", "supply"),
 }
+# Chips that can run in exactly one mode at a time, across ALL roles. The
+# canonical case is the FT232H: one physical channel, hardware-multiplexed
+# between MPSSE (spi/i2c/gpio/debug) and async-serial (uart). Once the user
+# claims any role on one of these chips, the other roles must disappear
+# from the "add nets" menu. Multi-channel FTDIs (FT2232H, FT4232H) are NOT
+# in this set — they get one role per channel via the @A/@B/... suffix.
+_MODE_EXCLUSIVE_INST = {"FTDI_FT232H"}
 INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     # supply
     "Rigol_DP811": ["supply"],
@@ -111,12 +345,27 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     # adc / gpio / dac / spi
     "LabJack_T7": ["gpio", "adc", "dac", "spi", "i2c"],
     "Aardvark": ["spi", "i2c", "gpio"],
-    "FTDI_FT232H": ["spi", "i2c", "gpio"],
+    "FTDI_FT232H": ["spi", "i2c", "gpio", "debug", "uart"],
+    # FT2232H / FT4232H carry the new multi-channel debug role plus UART.
+    # The OpenOCD backend reads the FTDI interface index off the net's
+    # device field (``STM32F4x@A``); single-channel FTDIs default to A.
+    "FTDI_FT2232H": ["spi", "i2c", "gpio", "debug", "uart"],
+    "FTDI_FT4232H": ["debug", "uart"],
 
-    # debug
+    # debug — J-Link family
     "J-Link": ["debug"],
     "J-Link_Plus": ["debug"],
     "Flasher_ARM": ["debug"],
+    "J-Link_Flasher_Pro": ["debug"],
+    # debug — OpenOCD-backed probes
+    "STLink_v2": ["debug"],
+    "STLink_v2_1": ["debug"],
+    "STLink_v3_Mini": ["debug"],
+    "STLink_v3": ["debug"],
+    "STLink_v3_2VCP": ["debug"],
+    "RP2040_Picoprobe": ["debug"],
+    "Atmel_EDBG": ["debug"],
+    "DAPLink": ["debug"],
 
     # usb
     "Acroname_8Port": ["usb"],
@@ -141,7 +390,6 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     "Prolific_USB_Serial": ["uart"],
     "SiLabs_CP210x": ["uart"],
     "FTDI_FT232R": ["uart"],
-    "FTDI_FT4232H": ["uart"],
     "ESP32_JTAG_Serial": ["uart"],
 }
 
@@ -244,13 +492,16 @@ def _display_table(records):
         key = f"{instrument}|{address}"
         by_instrument.setdefault(key, []).append(rec)
 
-    # ----- check if any net has a jlink_script attached --------------------
+    # ----- check which optional columns are needed -------------------------
     has_any_script = any(rec.get("jlink_script") for rec in records)
+    has_any_openocd = any(rec.get("openocd_config") for rec in records)
 
     # ----- gather all rows for column width computation --------------------
     headers = ["Name", "Net Type", "Channel"]
     if has_any_script:
         headers.append("Script")
+    if has_any_openocd:
+        headers.append("OpenOCD")
     all_rows = []
     grouped_rows: list[tuple[str, list[list[str]]]] = []
 
@@ -279,6 +530,8 @@ def _display_table(records):
             ]
             if has_any_script:
                 row.append("yes" if rec.get("jlink_script") else "")
+            if has_any_openocd:
+                row.append("yes" if rec.get("openocd_config") else "")
             rows.append(row)
         all_rows.extend(rows)
         grouped_rows.append((group_label, rows))
@@ -288,6 +541,8 @@ def _display_table(records):
     min_w = [8, 10, 7]
     if has_any_script:
         min_w.append(6)
+    if has_any_openocd:
+        min_w.append(7)
     col_w = [
         max(min_w[i], len(headers[i]), max(len(str(r[i])) for r in all_rows))
         for i in range(len(headers))
@@ -506,8 +761,11 @@ def rename_cmd(
 @click.option("--box", help="Lagerbox name or IP")
 @click.option("--jlink-script", type=click.Path(exists=True),
               help="J-Link script file for debug nets (stored on box)")
+@click.option("--openocd-config", type=click.Path(exists=True),
+              help="OpenOCD .cfg/.tcl file for debug nets (stored on box). "
+                   "Replaces the auto-detected interface cfg.")
 @click.pass_context
-def add_cmd(ctx, name, role, channel, address, box, jlink_script):
+def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config):
     """
     Add a net using inferred instrument from VISA address.
     """
@@ -740,6 +998,19 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script):
     elif jlink_script and role != "debug":
         click.secho("Warning: --jlink-script is only applicable for debug nets, ignoring.", fg='yellow', err=True)
 
+    # Handle OpenOCD config for debug nets
+    if role == "debug" and openocd_config:
+        import base64
+        try:
+            with open(openocd_config, 'rb') as f:
+                openocd_config_content = base64.b64encode(f.read()).decode('ascii')
+            net_data["openocd_config"] = openocd_config_content
+        except Exception as e:
+            click.secho(f"Error reading OpenOCD config file: {e}", fg='red', err=True)
+            ctx.exit(1)
+    elif openocd_config and role != "debug":
+        click.secho("Warning: --openocd-config is only applicable for debug nets, ignoring.", fg='yellow', err=True)
+
     try:
         _buf = io.StringIO()
         with redirect_stdout(_buf):
@@ -865,6 +1136,29 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
                 duplicate_hubs.add(net["instrument"])
             chan_seen[net["instrument"]].add(net["chan"])
 
+    # Mode-exclusive chips (FT232H): if a chip+addr has no saved net yet AND
+    # the scanner produced candidates for more than one role, ``add-all``
+    # can't pick for the user — refuse the whole chip and tell them to use
+    # ``lager nets add`` or the TUI to choose a single role explicitly.
+    mode_excl_roles: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for net in all_possible_nets:
+        if net["instrument"] in _MODE_EXCLUSIVE_INST:
+            mode_excl_roles[(net["instrument"], net["addr"])].add(net["type"])
+    ambiguous_mode_excl: set[tuple[str, str]] = set()
+    for key, roles in mode_excl_roles.items():
+        instrument, addr = key
+        if len(roles) > 1 and not any(
+            s.get("instrument") == instrument and s.get("address") == addr
+            for s in saved_nets
+        ):
+            ambiguous_mode_excl.add(key)
+            roles_str = ", ".join(sorted(roles))
+            warnings.append(
+                f"{instrument} at {addr} supports multiple modes ({roles_str}); "
+                f"run `lager nets add` (or the TUI) to pick one — "
+                f"this chip only runs one mode at a time."
+            )
+
     # Filter out blocked instrument families
     filtered_nets = []
     dup_single: set[tuple[str, str]] = set()
@@ -880,24 +1174,66 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
                 dup_single.add((net["instrument"], net["addr"]))
                 continue
 
-        # Skip if duplicate debug net for same instrument/address (check BEFORE prompting)
+        # Mode-exclusive chips (FT232H): once ANY role is saved on this
+        # chip+address, every other role becomes unavailable because the
+        # underlying hardware can only run one mode at a time. Also skip
+        # chips flagged ambiguous in the pre-pass above (multiple candidate
+        # roles, no saved net yet — user must pick interactively).
+        if net["instrument"] in _MODE_EXCLUSIVE_INST:
+            key = (net["instrument"], net["addr"])
+            if key in ambiguous_mode_excl:
+                continue
+            if any(
+                s.get("instrument") == net["instrument"]
+                and s.get("address") == net["addr"]
+                for s in saved_nets
+            ):
+                dup_single.add(key)
+                continue
+
+        # Skip if duplicate debug net for same instrument/address.
+        # Multi-channel FTDI: one debug net per (address, probe_channel),
+        # since the user may want channel A for JTAG and channel B for a
+        # second debug session. We compare the @suffix portion if present.
         if net["type"] == "debug":
+            chan_suffix = _debug_channel_suffix(net["chan"])
             if any(
                 s.get("role") == "debug" and
                 s.get("instrument") == net["instrument"] and
-                s.get("address") == net["addr"]
+                s.get("address") == net["addr"] and
+                _debug_channel_suffix(s.get("pin") or s.get("channel")) == chan_suffix
                 for s in saved_nets
             ):
                 continue
 
-        # Skip if exact duplicate of saved net exists
-        # For UART nets, check against USB serial number (pin field)
+        # Skip if exact duplicate of saved net exists.
+        # UART dedup needs to handle two ``pin`` formats coexisting in the
+        # same saved_nets file:
+        #   * Legacy (pre per-tty enumeration): ``pin`` == USB serial, one
+        #     net per chip — even multi-channel FT4232H got collapsed to a
+        #     single entry. Treat any such net as claiming the WHOLE chip,
+        #     so we don't double-add when the new scanner expands to one
+        #     net per tty.
+        #   * Current: ``pin`` == ``/dev/ttyUSB<N>`` path; one saved net per
+        #     interface. Strict ``pin == pin`` match.
         if net["type"] == "uart":
-            if any(
-                s.get("role") == "uart" and
-                s.get("pin") == net["pin"]  # Match USB serial number
-                for s in saved_nets
-            ):
+            duplicate = False
+            for s in saved_nets:
+                if s.get("role") != "uart":
+                    continue
+                if s.get("instrument") != net["instrument"]:
+                    continue
+                if s.get("address") != net["addr"]:
+                    continue
+                saved_pin = s.get("pin")
+                # Legacy form: pin == USB serial extracted from address.
+                if saved_pin and saved_pin == _serial_from_visa_address(s.get("address")):
+                    duplicate = True
+                    break
+                if saved_pin == net["pin"]:
+                    duplicate = True
+                    break
+            if duplicate:
                 continue
         else:
             if any(
@@ -909,11 +1245,22 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
             ):
                 continue
 
-        # Handle debug nets - prompt for device type if channel is DEVICE_TYPE
-        # (only after we've confirmed this net will actually be created)
-        if net["type"] == "debug" and net["chan"] == "DEVICE_TYPE":
-            device_type = click.prompt(f"Enter device type for debug net on {net['instrument']} at {net['addr']}", type=str)
-            net["chan"] = device_type
+        # Handle debug nets — prompt for device type. The chan starts as one
+        # of ``"DEVICE_TYPE"`` (single-channel) or ``"DEVICE_TYPE@A"``/``@B``
+        # (multi-channel FTDI). We replace the ``DEVICE_TYPE`` portion while
+        # preserving the channel suffix so the OpenOCD backend can route it.
+        if net["type"] == "debug" and "DEVICE_TYPE" in str(net["chan"]):
+            chan_str = str(net["chan"])
+            suffix = ""
+            if "@" in chan_str:
+                _, _, suffix = chan_str.partition("@")
+                suffix = f"@{suffix}"
+            channel_hint = f" (channel {suffix[1:]})" if suffix else ""
+            device_type = click.prompt(
+                f"Enter device type for debug net on {net['instrument']} at {net['addr']}{channel_hint}",
+                type=str,
+            )
+            net["chan"] = f"{device_type}{suffix}"
 
         filtered_nets.append(net)
 
@@ -1095,67 +1442,22 @@ def create_batch_cmd(ctx: click.Context, json_file, box: str | None) -> None:
     _save_nets_batch(ctx, resolved_box, normalized_nets)
 
 
-@nets.command("set-script", help="Set or update a J-Link script on an existing debug net.")
-@click.argument("name")
-@click.argument("script_path", type=click.Path(exists=True))
-@click.option("--box", help="Lagerbox name or IP")
-@click.pass_context
-def set_script_cmd(
-    ctx: click.Context, name: str, script_path: str, box: str | None
-) -> None:
-    """
-    Attach a JLinkScript file to an existing debug net.
-
-    The script is stored on the box and used automatically during
-    connect, flash, erase, and reset operations.
-    """
-    import base64
-
-    resolved_box = _resolve_box(ctx, box)
-    raw = _run_net_py(ctx, resolved_box, "list")
-    try:
-        recs = _parse_backend_json(raw)
-    except json.JSONDecodeError:
-        click.secho("Failed to parse response from backend.", fg="red", err=True)
-        ctx.exit(1)
-
-    target = next((r for r in recs if r.get("name") == name), None)
-    if not target:
-        click.secho(f"Net '{name}' not found on {resolved_box}.", fg="yellow")
-        ctx.exit(1)
-
-    if target.get("role") != "debug":
-        click.secho(
-            f"Net '{name}' is a '{target.get('role')}' net. --jlink-script is only applicable for debug nets.",
-            fg="red",
-        )
-        ctx.exit(1)
-
-    try:
-        with open(script_path, "rb") as f:
-            encoded = base64.b64encode(f.read()).decode("ascii")
-    except Exception as e:
-        click.secho(f"Error reading script file: {e}", fg="red", err=True)
-        ctx.exit(1)
-
-    target["jlink_script"] = encoded
-    _run_net_py(ctx, resolved_box, "save", json.dumps(target))
-    click.secho(
-        f"J-Link script set on debug net '{name}' on box {resolved_box}.", fg="green"
-    )
+# --------------------------------------------------------------------------- #
+# Debug-script commands.                                                      #
+#                                                                             #
+# `set-script` / `show-script` / `remove-script` handle both J-Link scripts   #
+# and OpenOCD .cfg/.tcl files: the backend is auto-detected from the probe   #
+# VID and the file extension/content, with `--backend jlink|openocd` as the  #
+# explicit override.                                                          #
+#                                                                             #
+# Mutual exclusivity (KISS): a debug net carries *either* `jlink_script` or  #
+# `openocd_config`, never both. `set-script` clears the other field when it  #
+# writes; the caller sees a yellow notice so no data goes missing silently.  #
+# --------------------------------------------------------------------------- #
 
 
-@nets.command("remove-script", help="Remove a J-Link script from an existing debug net.")
-@click.argument("name")
-@click.option("--box", help="Lagerbox name or IP")
-@click.pass_context
-def remove_script_cmd(
-    ctx: click.Context, name: str, box: str | None
-) -> None:
-    """
-    Remove a JLinkScript file from an existing debug net.
-    """
-    resolved_box = _resolve_box(ctx, box)
+def _load_debug_net(ctx: click.Context, resolved_box: str, name: str) -> dict:
+    """Fetch the named debug net or click-exit with a useful message."""
     raw = _run_net_py(ctx, resolved_box, "list")
     try:
         recs = _parse_backend_json(raw)
@@ -1175,61 +1477,235 @@ def remove_script_cmd(
         )
         ctx.exit(1)
 
-    if "jlink_script" not in target:
-        click.secho(f"Net '{name}' does not have a J-Link script attached.", fg="yellow")
-        return
-
-    del target["jlink_script"]
-    _run_net_py(ctx, resolved_box, "save", json.dumps(target))
-    click.secho(
-        f"J-Link script removed from debug net '{name}' on box {resolved_box}.", fg="green"
-    )
+    return target
 
 
-@nets.command("show-script", help="Display the J-Link script attached to a debug net.")
-@click.argument("name")
-@click.option("--box", help="Lagerbox name or IP")
-@click.pass_context
-def show_script_cmd(
-    ctx: click.Context, name: str, box: str | None
+def _set_debug_script_impl(
+    ctx: click.Context,
+    name: str,
+    script_path: str,
+    box: Optional[str],
+    backend: Optional[str],
 ) -> None:
-    """
-    Print the contents of a JLinkScript attached to a debug net.
+    """Shared body of ``set-script``.
 
-    Output goes to stdout so it can be piped or redirected:
-        lager nets show-script my-debug --box mybox > script.JLinkScript
+    ``backend`` is the user's explicit override (``'jlink'`` / ``'openocd'``
+    / ``None``). When unset, the backend is derived from the probe VID and
+    the file's extension/content; if the two disagree the caller is forced
+    to pick one with ``--backend`` so we never silently misroute the write.
     """
     import base64
 
     resolved_box = _resolve_box(ctx, box)
-    raw = _run_net_py(ctx, resolved_box, "list")
-    try:
-        recs = _parse_backend_json(raw)
-    except json.JSONDecodeError:
-        click.secho("Failed to parse response from backend.", fg="red", err=True)
+    target = _load_debug_net(ctx, resolved_box, name)
+
+    display_name, raw_bytes = _read_debug_script_input(script_path)
+
+    probe_be = _probe_backend_for_net(target)
+    file_be = _sniff_script_backend(display_name, raw_bytes)
+    chosen, reason, _mismatch = _choose_script_backend(
+        explicit=backend, probe=probe_be, file=file_be,
+    )
+
+    if chosen is None:
+        click.secho(reason, fg="red", err=True)
         ctx.exit(1)
 
-    target = next((r for r in recs if r.get("name") == name), None)
-    if not target:
-        click.secho(f"Net '{name}' not found on {resolved_box}.", fg="yellow", err=True)
-        ctx.exit(1)
+    field = _FIELD_FOR_BACKEND[chosen]
+    cleared_field, cleared_bytes = _clear_other_script_field(target, field)
 
-    if target.get("role") != "debug":
+    target[field] = base64.b64encode(raw_bytes).decode("ascii")
+    _run_net_py(ctx, resolved_box, "save", json.dumps(target))
+
+    if cleared_field:
+        size = f"{cleared_bytes} bytes" if cleared_bytes >= 0 else "unknown size"
         click.secho(
-            f"Net '{name}' is a '{target.get('role')}' net, not a debug net.",
-            fg="red", err=True,
+            f"Cleared existing {cleared_field} ({size}) — a debug net holds "
+            f"only one of jlink_script / openocd_config at a time.",
+            fg="yellow",
         )
-        ctx.exit(1)
+    click.secho(
+        f"{_BACKEND_LABEL[chosen]} set on debug net '{name}' on box "
+        f"{resolved_box} ({reason}).",
+        fg="green",
+    )
 
-    if not target.get("jlink_script"):
+
+def _show_debug_script_impl(
+    ctx: click.Context,
+    name: str,
+    box: Optional[str],
+    backend: Optional[str],
+) -> None:
+    """Shared body of ``show-script``.
+
+    If ``backend`` is set, only that backend's field is considered. Without
+    a backend filter we show whichever field is populated.
+    """
+    import base64
+
+    resolved_box = _resolve_box(ctx, box)
+    target = _load_debug_net(ctx, resolved_box, name)
+
+    has_jlink = bool(target.get("jlink_script"))
+    has_openocd = bool(target.get("openocd_config"))
+
+    if backend == _BACKEND_JLINK:
+        candidates = [(_BACKEND_JLINK, has_jlink)]
+    elif backend == _BACKEND_OPENOCD:
+        candidates = [(_BACKEND_OPENOCD, has_openocd)]
+    else:
+        candidates = [(_BACKEND_JLINK, has_jlink), (_BACKEND_OPENOCD, has_openocd)]
+
+    available = [be for be, present in candidates if present]
+    if not available:
+        wanted = _BACKEND_LABEL.get(backend, "debug script")
         click.secho(
-            f"Net '{name}' does not have a J-Link script attached.",
+            f"Net '{name}' does not have a {wanted} attached.",
             fg="yellow", err=True,
         )
         ctx.exit(1)
 
-    decoded = base64.b64decode(target["jlink_script"]).decode("utf-8")
-    click.echo(decoded)
+    if len(available) > 1:
+        # Defensive: should never happen after set-script enforces exclusivity,
+        # but legacy records may have both fields. Ask the user to disambiguate
+        # rather than silently picking one.
+        click.secho(
+            f"Net '{name}' has both jlink_script and openocd_config set "
+            "(legacy record). Pass --backend jlink|openocd to choose.",
+            fg="red", err=True,
+        )
+        ctx.exit(1)
+
+    chosen = available[0]
+    field = _FIELD_FOR_BACKEND[chosen]
+    raw = base64.b64decode(target[field])
+    click.echo(
+        f"# {_BACKEND_LABEL[chosen]}, {len(raw)} bytes", err=True,
+    )
+    try:
+        click.echo(raw.decode("utf-8"))
+    except UnicodeDecodeError:
+        # Binary content (shouldn't happen for .cfg/.JLinkScript but be safe):
+        # write raw bytes to stdout so redirection still produces an exact copy.
+        import sys
+        sys.stdout.buffer.write(raw)
+
+
+def _remove_debug_script_impl(
+    ctx: click.Context,
+    name: str,
+    box: Optional[str],
+    backend: Optional[str],
+) -> None:
+    """Shared body of ``remove-script``."""
+    resolved_box = _resolve_box(ctx, box)
+    target = _load_debug_net(ctx, resolved_box, name)
+
+    has_jlink = bool(target.get("jlink_script"))
+    has_openocd = bool(target.get("openocd_config"))
+
+    if backend == _BACKEND_JLINK:
+        wanted = [("jlink_script", has_jlink)]
+    elif backend == _BACKEND_OPENOCD:
+        wanted = [("openocd_config", has_openocd)]
+    else:
+        wanted = [("jlink_script", has_jlink), ("openocd_config", has_openocd)]
+
+    present = [f for f, exists in wanted if exists]
+    if not present:
+        label = _BACKEND_LABEL.get(backend, "debug script")
+        click.secho(
+            f"Net '{name}' does not have a {label} attached.",
+            fg="yellow",
+        )
+        return
+
+    for field in present:
+        del target[field]
+    _run_net_py(ctx, resolved_box, "save", json.dumps(target))
+
+    removed = ", ".join(present)
+    click.secho(
+        f"Removed {removed} from debug net '{name}' on box {resolved_box}.",
+        fg="green",
+    )
+
+
+_BACKEND_CLICK_CHOICE = click.Choice([_BACKEND_JLINK, _BACKEND_OPENOCD])
+
+
+@nets.command(
+    "set-script",
+    help="Attach a J-Link script or OpenOCD .cfg/.tcl to a debug net. "
+    "Backend is auto-detected from the probe VID and the file extension; "
+    "use SCRIPT_PATH='-' to read from stdin.",
+)
+@click.argument("name")
+@click.argument("script_path")
+@click.option(
+    "--backend", "backend", type=_BACKEND_CLICK_CHOICE, default=None,
+    help="Force a specific backend instead of auto-detecting. Required when "
+    "the detected probe and file backends disagree.",
+)
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def set_script_cmd(
+    ctx: click.Context, name: str, script_path: str,
+    backend: Optional[str], box: Optional[str],
+) -> None:
+    """Attach a J-Link script or OpenOCD .cfg/.tcl to an existing debug net.
+
+    The file is stored on the box and used automatically during connect,
+    flash, erase, and reset operations. A debug net only carries one script
+    at a time; if the other field is already populated, it is cleared (with
+    a yellow notice on stderr so nothing disappears silently).
+
+    Pass ``SCRIPT_PATH='-'`` to read from stdin, e.g.::
+
+        cat custom.cfg | lager nets set-script SWD - --box JUL-5
+    """
+    _set_debug_script_impl(ctx, name, script_path, box, backend)
+
+
+@nets.command(
+    "remove-script",
+    help="Remove the J-Link script or OpenOCD config attached to a debug net.",
+)
+@click.argument("name")
+@click.option(
+    "--backend", "backend", type=_BACKEND_CLICK_CHOICE, default=None,
+    help="Only remove the named backend's script (default: remove whichever is set).",
+)
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def remove_script_cmd(
+    ctx: click.Context, name: str, backend: Optional[str], box: Optional[str],
+) -> None:
+    _remove_debug_script_impl(ctx, name, box, backend)
+
+
+@nets.command(
+    "show-script",
+    help="Display the J-Link script or OpenOCD config attached to a debug net.",
+)
+@click.argument("name")
+@click.option(
+    "--backend", "backend", type=_BACKEND_CLICK_CHOICE, default=None,
+    help="Only show the named backend's script (default: show whichever is set).",
+)
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def show_script_cmd(
+    ctx: click.Context, name: str, backend: Optional[str], box: Optional[str],
+) -> None:
+    """Print the script attached to a debug net.
+
+    Script content goes to stdout (so ``> out.cfg`` works); a one-line
+    "# OpenOCD config, N bytes" banner goes to stderr so interactive use
+    tells you what you're looking at without polluting redirects.
+    """
+    _show_debug_script_impl(ctx, name, box, backend)
 
 
 @nets.command("describe", help="Set metadata on a saved net (description, DUT connection, hints, tags).")
@@ -1327,11 +1803,19 @@ def show_cmd(
     click.secho(f"Net: {target.get('name', '')}", bold=True)
     click.echo(f"  Type:       {target.get('role', '')}")
     click.echo(f"  Instrument: {target.get('instrument', '')}")
-    click.echo(f"  Channel:    {target.get('pin', '')}")
+    # ``pin`` is overloaded across roles: device@channel for debug, USB
+    # serial or /dev path for uart, GPIO/ADC pin name elsewhere. The old
+    # blanket "Channel:" label hid real misconfigurations (e.g. a UART
+    # net whose ``pin`` was the integer "2" instead of an FTDI USB
+    # serial). Show the role-appropriate label so misuse is visible.
+    click.echo(f"  {_pin_label_for_role(target.get('role')):<12}{target.get('pin', '')}")
     click.echo(f"  Address:    {target.get('address', '')}")
 
     if target.get("jlink_script"):
         click.echo("  Script:     (J-Link script attached)")
+
+    if target.get("openocd_config"):
+        click.echo("  OpenOCD:    (OpenOCD config attached)")
 
     desc = target.get("description", "")
     dut_conn = target.get("dut_connection", "")

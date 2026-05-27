@@ -8,7 +8,7 @@
 """
 import click
 import subprocess
-import ipaddress
+from ...address_utils import validate_ip_or_hostname, VALID_FORMATS_CHEATSHEET
 from ...box_storage import get_box_ip, get_box_user, get_box_name_by_ip, delete_box
 from ...core.ssh_utils import host_in_known_hosts, get_ssh_connection_pool
 
@@ -16,7 +16,7 @@ from ...core.ssh_utils import host_in_known_hosts, get_ssh_connection_pool
 @click.command()
 @click.pass_context
 @click.option("--box", default=None, help="Box name (uses stored IP and username)")
-@click.option("--ip", default=None, help="Target box IP address")
+@click.option("--ip", default=None, help="Target box IP address or DNS hostname")
 @click.option("--user", default=None, help="SSH username (default: lagerdata, or stored username if using --box)")
 @click.option("--keep-config", is_flag=True, help="Keep /etc/lager directory (saved nets, etc.)")
 @click.option("--keep-docker-images", is_flag=True, help="Keep Docker images (only remove containers)")
@@ -53,11 +53,13 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
         if user is None:
             user = "lagerdata"
 
-    # 2. Validate IP address
+    # 2. Validate address (IP or hostname)
     try:
-        ipaddress.ip_address(ip)
-    except ValueError:
-        click.secho(f"Error: '{ip}' is not a valid IP address", fg='red', err=True)
+        ip = validate_ip_or_hostname(ip)
+    except ValueError as e:
+        click.secho(f"Error: {e}", fg='red', err=True)
+        for line in VALID_FORMATS_CHEATSHEET:
+            click.echo(line, err=True)
         ctx.exit(1)
 
     ssh_host = f"{user}@{ip}"

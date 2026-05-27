@@ -74,6 +74,24 @@ from .gdbserver import (
     get_jlink_gdbserver_status,
 )
 
+# OpenOCD backend — used when the probe is anything other than a J-Link
+# (ST-Link, RP2040 Picoprobe, FTDI-based, …). Imported lazily-tolerant: if
+# openocd.py fails to import for any reason we don't want to break J-Link.
+try:
+    from .openocd import (
+        start_openocd_gdbserver,
+        stop_openocd,
+        get_openocd_status,
+        OpenOcdRpc,
+        OpenOcdRpcError,
+    )
+except Exception:  # pragma: no cover — defensive import
+    start_openocd_gdbserver = None  # type: ignore
+    stop_openocd = None  # type: ignore
+    get_openocd_status = None  # type: ignore
+    OpenOcdRpc = None  # type: ignore
+    OpenOcdRpcError = Exception  # type: ignore
+
 __all__ = [
     # Core API
     'connect',
@@ -103,6 +121,12 @@ __all__ = [
     'start_jlink_gdbserver',
     'stop_jlink_gdbserver',
     'get_jlink_gdbserver_status',
+    # OpenOCD backend
+    'start_openocd_gdbserver',
+    'stop_openocd',
+    'get_openocd_status',
+    'OpenOcdRpc',
+    'OpenOcdRpcError',
 ]
 
 __version__ = '1.0.0'

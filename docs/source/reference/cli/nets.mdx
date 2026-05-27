@@ -30,9 +30,9 @@ lager nets [OPTIONS] [COMMAND]
 | `create-all` | Auto-create all available nets from connected instruments |
 | `create-batch` | Create multiple nets from a JSON file |
 | `tui` | Launch interactive Net Manager TUI |
-| `set-script` | Attach a J-Link script to a debug net |
-| `remove-script` | Remove a J-Link script from a debug net |
-| `show-script` | Display the J-Link script attached to a debug net |
+| `set-script` | Attach a J-Link script *or* OpenOCD `.cfg`/`.tcl` to a debug net (backend auto-detected) |
+| `remove-script` | Remove the debug script (J-Link or OpenOCD) attached to a debug net |
+| `show-script` | Display the debug script attached to a debug net |
 
 ## Command Reference
 
@@ -128,8 +128,95 @@ The `--jlink-script` option is only applicable for debug nets. If used with othe
 **Validation Rules:**
 - Net names must be globally unique across all types
 - The (role, instrument, channel, address) tuple must match a connected instrument
-- Only one net per channel is allowed for most instruments
-- Debug probes (J-Link) allow only one net per instrument/address
+- Channel binding follows the per-instrument rules described in [Channel & Role Constraints](#channel--role-constraints) below
+
+### Channel & Role Constraints
+
+Different instrument families bind nets to channels differently. Lager classifies every supported instrument into one of three categories and enforces the rules consistently across `create`, `create-all`, and the TUI.
+
+#### 1. Multi-channel instruments
+
+Instruments with physically independent outputs / inputs. Each channel is its own circuit and can host its own net.
+
+| Instrument | Channels | Notes |
+|---|---|---|
+| `Rigol_DP811` / `DP821` / `DP831` / `DP832` | `1`, `2`, `3` | One `supply` net per output |
+| `KEYSIGHT_E36233A` | `1`, `2` | Dual-output supply |
+| `KEYSIGHT_E36313A` / `E36312A` | `1`, `2`, `3` | Triple-output supply |
+| `LabJack_T7` | `AIN0`–`AIN13`, `FIO0`–`FIO7`, `DAC0`–`DAC1`, etc. | One net per pin |
+| `Aardvark` | `SPI0`, `I2C0`, GPIO pins | Mixed-mode multi-channel |
+| `MCC_USB-202` | `CH0`–`CH7`, `DIO0`–`DIO7`, `DAC0`–`DAC1` | One net per channel |
+| `Phidget` | `0`–`3` | One `thermocouple` net per channel |
+| `Acroname_8Port` / `4Port`, `YKUSH_Hub` | Port indices | One `usb` net per port |
+
+**Rule:** at most one net per `(instrument, address, role, channel)` tuple. Two nets that share `(instrument, address, role)` but differ in `channel` are fine — that's exactly what multi-channel is for.
+
+#### 2. Single-channel, multi-mode instruments
+
+Instruments with one physical channel that can run in one of several **modes** but not multiple modes at once. The role tells the box which firmware mode to flip the chip into.
+
+| Instrument | Allowed roles | Why exclusive |
+|---|---|---|
+| `Keithley_2281S` | `batt` or `supply` | One channel: battery-simulator firmware OR power-supply firmware |
+| `EA_PSB_10080_60` | `solar` or `supply` | One channel: solar-array simulator OR straight supply |
+| `EA_PSB_10060_60` | `solar` or `supply` | Same as above |
+| `FTDI_FT232H` | `spi` or `i2c` or `gpio` or `debug` or `uart` | One channel hardware-multiplexed between MPSSE (libftdi) and async-serial (`ftdi_sio`) modes |
+
+**Rule:** at most one net per `(instrument, address)`. Once any role is saved on the chip, every other role disappears from the add list. To switch modes, delete the existing net first.
+
+These chips are tracked in `_SINGLE_CHANNEL_INST` (Keithley, EA) and `_MODE_EXCLUSIVE_INST` (FTDI_FT232H) in `cli/commands/box/nets.py` and `cli/commands/box/net_tui.py`.
+
+#### 3. Single-role debug probes
+
+Standalone debugger boxes — one probe drives one target MCU.
+
+| Instrument | Backend | Role |
+|---|---|---|
+| `J-Link` / `J-Link_Plus` / `Flasher_ARM` / `J-Link_Flasher_Pro` | J-Link (SEGGER) | `debug` |
+| `STLink_v2` / `v2_1` / `v3` / `v3_Mini` / `v3_2VCP` | OpenOCD | `debug` |
+| `RP2040_Picoprobe` | OpenOCD (CMSIS-DAP) | `debug` |
+| `Atmel_EDBG` | OpenOCD (CMSIS-DAP) | `debug` |
+| `DAPLink` | OpenOCD (CMSIS-DAP) | `debug` |
+
+**Rule:** at most one `debug` net per `(instrument, address)`.
+
+#### 4. Multi-channel FTDI debug adapters
+
+`FT2232H` (2 channels: A, B) and `FT4232H` (4 channels: A, B, C, D) physically expose multiple USB interfaces. Channels A and B are MPSSE-capable (JTAG/SWD via OpenOCD); channels C and D on the FT4232H are UART-only. The user picks an interface per net via an `@` suffix on the device type.
+
+**Debug nets** encode the channel in the device field:
+
+```bash
+# Channel A (interface 0) — by far the most common
+lager nets create debug_a debug STM32F4x@A USB0::0x0403::0x6010::ABCDEF::INSTR
+
+# Channel B (interface 1) — second target on the same FT2232H
+lager nets create debug_b debug NRF52840_XXAA@B USB0::0x0403::0x6010::ABCDEF::INSTR
+```
+
+Equivalent forms: `@A`/`@0`, `@B`/`@1`, `@C`/`@2`, `@D`/`@3`. Devices without an `@` suffix default to the interface OpenOCD's interface config picks (typically channel A).
+
+**UART nets** distinguish channels by their tty path. The USB scanner enumerates every `/dev/ttyUSB<N>` bound to the chip's USB serial; each shows up as a separate add-list entry, so on an FT4232H you'll see up to four UART options.
+
+**Rule:** a debug net is unique per `(instrument, address, channel-suffix)`. So a single FT2232H can host:
+- one `debug` net on `@A`
+- one `debug` net on `@B`
+- one `uart` net on a `/dev/ttyUSB<N>` belonging to whichever channels you didn't claim for MPSSE
+- one each of `spi` / `i2c` / `gpio` (which all bind to channel A in the OpenOCD interface config — incompatible with `debug@A`)
+
+The user is responsible for not double-booking channel A (e.g. picking `debug@A` *and* `spi`); the box doesn't validate that today.
+
+#### Quick decision table
+
+| You want to add a second net on the same chip | Allowed? |
+|---|---|
+| `supply` on `Rigol_DP811` CH1 + `supply` on Rigol_DP811 CH2 | Yes |
+| `batt` on `Keithley_2281S` + `supply` on the same Keithley | **No** — pick one |
+| `solar` on `EA_PSB_10080_60` + `supply` on the same EA | **No** — pick one |
+| `spi` on `FTDI_FT232H` + `uart` on the same FT232H | **No** — pick one |
+| `debug@A` on `FTDI_FT2232H` + `uart` on a different interface of the same FT2232H | Yes |
+| Two `debug@A` nets on the same `FTDI_FT2232H` | **No** — same channel |
+| Two `debug` nets on the same J-Link | **No** — single-target probe |
 
 ### `create-all`
 
@@ -311,7 +398,16 @@ lager nets tui --box my-lager-box
 
 ### `set-script`
 
-Attach a JLinkScript file to an existing debug net. The script is stored on the box and used automatically during connect, flash, erase, and reset operations.
+Attach a debug script — either a JLinkScript or an OpenOCD `.cfg`/`.tcl` — to an existing debug net. The file is stored on the box and used automatically during connect, flash, erase, and reset operations.
+
+The backend (J-Link vs. OpenOCD) is auto-detected from two signals:
+
+1. **The probe's USB VID** on the net's `address` field (J-Link → `jlink`; ST-Link, FTDI, CMSIS-DAP, etc. → `openocd`).
+2. **The file** — extension first (`.JLinkScript` → jlink; `.cfg`/`.tcl`/`.ocd` → openocd), with a content sniff as a tie-breaker for extensionless files or stdin.
+
+If the two signals disagree, `set-script` refuses with a clear error and asks you to pick one via `--backend`.
+
+A debug net only carries **one** script at a time. If the other field is already set, `set-script` clears it and prints a yellow notice on stderr so nothing disappears silently.
 
 ```bash
 lager nets set-script NAME SCRIPT_PATH [OPTIONS]
@@ -319,24 +415,31 @@ lager nets set-script NAME SCRIPT_PATH [OPTIONS]
 
 **Arguments:**
 - `NAME` - Name of the debug net
-- `SCRIPT_PATH` - Path to the J-Link script file (must exist locally)
+- `SCRIPT_PATH` - Path to the script file, or `-` to read from stdin
 
 **Options:**
+- `--backend [jlink|openocd]` - Force a specific backend instead of auto-detecting (required if the probe and file disagree)
 - `--box TEXT` - Lagerbox name or IP
 
 **Example:**
 
 ```bash
-# Attach a J-Link script to a debug net
+# Attach a J-Link script to a J-Link net (auto-detected)
 lager nets set-script debug1 ./custom_connect.JLinkScript --box my-lager-box
 
-# Update an existing script
-lager nets set-script debug1 ./updated_script.JLinkScript --box my-lager-box
+# Attach an OpenOCD config to an FTDI/ST-Link/CMSIS-DAP net (auto-detected)
+lager nets set-script debug1 ./probe.cfg --box my-lager-box
+
+# Read the script from stdin
+cat probe.cfg | lager nets set-script debug1 - --box my-lager-box
+
+# Force a specific backend when the file or probe is ambiguous
+lager nets set-script debug1 ./generic_script --backend openocd --box my-lager-box
 ```
 
 ### `remove-script`
 
-Remove a JLinkScript file from an existing debug net.
+Remove the debug script (J-Link or OpenOCD) attached to a debug net.
 
 ```bash
 lager nets remove-script NAME [OPTIONS]
@@ -346,17 +449,22 @@ lager nets remove-script NAME [OPTIONS]
 - `NAME` - Name of the debug net
 
 **Options:**
+- `--backend [jlink|openocd]` - Only remove the named backend's script (default: remove whichever is set)
 - `--box TEXT` - Lagerbox name or IP
 
 **Example:**
 
 ```bash
+# Remove whichever script is attached
 lager nets remove-script debug1 --box my-lager-box
+
+# Only remove the J-Link script (leave any OpenOCD config in place)
+lager nets remove-script debug1 --backend jlink --box my-lager-box
 ```
 
 ### `show-script`
 
-Display the contents of a JLinkScript attached to a debug net. Output goes to stdout so it can be piped or redirected.
+Display the contents of the debug script attached to a debug net. The script content is written to stdout (so `> out.cfg` works); a one-line summary like `# OpenOCD config, 1247 bytes` is written to stderr so interactive use tells you which backend's script you're looking at without polluting redirects.
 
 ```bash
 lager nets show-script NAME [OPTIONS]
@@ -366,16 +474,17 @@ lager nets show-script NAME [OPTIONS]
 - `NAME` - Name of the debug net
 
 **Options:**
+- `--backend [jlink|openocd]` - Only show the named backend's script (default: show whichever is set)
 - `--box TEXT` - Lagerbox name or IP
 
 **Example:**
 
 ```bash
-# Display script contents
+# Display the attached script (J-Link or OpenOCD)
 lager nets show-script debug1 --box my-lager-box
 
-# Save script to a local file
-lager nets show-script debug1 --box my-lager-box > script.JLinkScript
+# Save to a local file (the stderr banner doesn't end up in the file)
+lager nets show-script debug1 --box my-lager-box > script.txt
 ```
 
 ## Net Types Reference
@@ -400,27 +509,36 @@ lager nets show-script debug1 --box my-lager-box > script.JLinkScript
 | `watt-meter` | Power measurement | Yocto Watt |
 | `thermocouple` | Temperature sensor | Phidget thermocouples |
 
-## JLinkScript Workflow
+## Debug Script Workflow
 
-JLinkScript files allow customization of J-Link debug probe behavior for specific hardware configurations. Scripts can handle custom reset sequences, clock initialization, and other device-specific operations.
+Both J-Link and OpenOCD debug probes can carry a custom script for handling reset sequences, clock initialization, board-specific signal pinning, or other device-specific behavior. Lager stores one script per debug net (either a JLinkScript or an OpenOCD `.cfg`/`.tcl`, never both) and applies it automatically during connect, flash, erase, and reset operations.
 
 ```bash
-# Create a debug net with a J-Link script
-lager nets create debug1 debug STM32F407VG USB::001::002 \
-  --jlink-script ./my_device.JLinkScript --box my-lager-box
-
-# Or attach a script to an existing debug net
+# Attach a J-Link script to a J-Link probe (auto-detected from .JLinkScript extension)
 lager nets set-script debug1 ./my_device.JLinkScript --box my-lager-box
 
-# Verify the script is attached
+# Attach an OpenOCD config to an FTDI / ST-Link / CMSIS-DAP probe (auto-detected)
+lager nets set-script debug1 ./probe.cfg --box my-lager-box
+
+# Verify what's attached (stderr says which backend, stdout has the content)
 lager nets show-script debug1 --box my-lager-box
 
-# The script is used automatically for all debug operations:
+# Scripts are used automatically for all debug operations:
 lager debug debug1 flash --hex firmware.hex --box my-lager-box
 lager debug debug1 gdbserver --box my-lager-box
 
 # Remove the script when no longer needed
 lager nets remove-script debug1 --box my-lager-box
+```
+
+You can also attach a script at net creation time:
+
+```bash
+lager nets create debug1 debug STM32F407VG USB::001::002 \
+  --jlink-script ./my_device.JLinkScript --box my-lager-box
+
+lager nets create debug2 debug d2763 USB::003::004 \
+  --openocd-config ./probe.cfg --box my-lager-box
 ```
 
 You can also configure J-Link scripts per-project in the local `.lager` config file:
@@ -463,8 +581,9 @@ lager nets tui --box my-lager-box
 # Bulk create from JSON file
 lager nets create-batch testbed-nets.json --box my-lager-box
 
-# Manage J-Link scripts
+# Manage debug-probe scripts (J-Link or OpenOCD, auto-detected)
 lager nets set-script debug1 ./custom_init.JLinkScript --box my-lager-box
+lager nets set-script debug2 ./probe.cfg --box my-lager-box
 lager nets show-script debug1 --box my-lager-box
 lager nets remove-script debug1 --box my-lager-box
 ```
@@ -476,4 +595,5 @@ lager nets remove-script debug1 --box my-lager-box
 - The TUI provides the easiest way to set up nets for the first time
 - Use `create-all` to quickly configure a new Lager Box with sensible defaults
 - I2C and SPI nets are supported on LabJack T7 and Aardvark adapters
-- J-Link scripts are base64-encoded for storage and decoded automatically during debug operations
+- Debug scripts (both J-Link and OpenOCD) are base64-encoded for storage and decoded automatically during debug operations
+- A debug net carries at most one script (`jlink_script` or `openocd_config`); `set-script` enforces this by clearing the other field when present

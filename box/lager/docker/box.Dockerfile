@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y ca-certificates libusb-1.0-0-dev libude
 	tini \
 	gnupg \
 	nodejs npm \
+	openocd \
 	&& wget -qO /usr/share/keyrings/phidgets.gpg https://www.phidgets.com/gpgkey/pubring.gpg \
 	&& echo deb [signed-by=/usr/share/keyrings/phidgets.gpg] http://www.phidgets.com/debian bookworm main > /etc/apt/sources.list.d/phidgets.list \
 	&& apt-get update \
