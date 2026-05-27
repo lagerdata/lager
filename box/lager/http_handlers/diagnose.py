@@ -122,22 +122,7 @@ def register_diagnose_routes(app: Flask) -> None:
             })
 
         device_path = _usbfs_path_for_sysfs(sysfs)
-        lsof_lines = []
-        if device_path:
-            # Use lsof to find processes holding the USB device file. Needs
-            # sudo for the kernel to see other users' fds; on the box,
-            # juultest has lsof access to /dev/bus/usb already.
-            rc, out, _ = _run(f'sudo lsof {device_path} 2>/dev/null', timeout=3)
-            if rc == 0 and out:
-                # First line is header; keep PID + COMMAND for each holder.
-                for line in out.strip().splitlines()[1:]:
-                    fields = line.split(None, 3)
-                    if len(fields) >= 2:
-                        lsof_lines.append({
-                            'command': fields[0],
-                            'pid': fields[1],
-                            'user': fields[2] if len(fields) > 2 else '',
-                        })
+        lsof_lines = _holders_via_proc(device_path) if device_path else []
 
         return jsonify({
             'address': addr,
@@ -213,7 +198,12 @@ def register_diagnose_routes(app: Flask) -> None:
             msg = str(e).lower()
             if 'resource busy' in msg or 'errno 16' in msg:
                 klass = 'busy'
-            elif 'no such device' in msg or 'errno 19' in msg:
+            elif (
+                'no such device' in msg
+                or 'errno 19' in msg
+                or 'errno 2' in msg
+                or 'entity not found' in msg
+            ):
                 klass = 'nodev'
             elif 'timed out' in msg or 'errno 110' in msg or 'timeout' in msg:
                 klass = 'timeout'
@@ -235,6 +225,36 @@ def register_diagnose_routes(app: Flask) -> None:
                 rm.close()
             except Exception:
                 pass
+
+
+def _holders_via_proc(device_path: str) -> list[dict]:
+    """Find processes whose /proc/<pid>/fd/* points at device_path.
+    PID-namespace-local — sees holders inside the same container as
+    box_http_server. Replaces the previous `sudo lsof` shell-out, which
+    silently failed on container images that don't ship lsof or sudo
+    (lager box image as of 0.20.0)."""
+    holders: list[dict] = []
+    for pid_dir in glob.glob('/proc/[0-9]*'):
+        pid = os.path.basename(pid_dir)
+        fd_dir = os.path.join(pid_dir, 'fd')
+        try:
+            entries = os.listdir(fd_dir)
+        except (FileNotFoundError, PermissionError, OSError):
+            continue
+        for fd_name in entries:
+            try:
+                target = os.readlink(os.path.join(fd_dir, fd_name))
+            except (FileNotFoundError, OSError):
+                continue
+            if target == device_path:
+                try:
+                    with open(os.path.join(pid_dir, 'comm')) as f:
+                        command = f.read().strip()
+                except (FileNotFoundError, OSError):
+                    command = '?'
+                holders.append({'command': command, 'pid': pid, 'user': ''})
+                break
+    return holders
 
 
 def _usbtmc_loaded() -> bool:
