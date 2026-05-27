@@ -80,14 +80,15 @@ The decision tree, in order (first match wins):
 ```
 $ lager diagnose battery1 --box PRD-1
 lager diagnose — PRD-1 → battery1
-  resolved role: battery    address: USB0::0x05E6::0x2281::4518305::INSTR
+  NetType: battery    address: USB0::0x05E6::0x2281::4518305::INSTR
 
 == USB (host-side) ==
-   enumerated:  True
-   sysfs:       /sys/bus/usb/devices/1-4
-   device:      /dev/bus/usb/001/033
-   usbtmc:      not loaded (good)
-   lsof:        no holders
+   enumerated:   True
+   sysfs:        /sys/bus/usb/devices/1-4
+   device:       /dev/bus/usb/001/033
+   usb-tmc class: yes
+   usbtmc kmod:  not loaded (good)
+   lsof:         no holders
 
 == VISA (instrument-side) ==
    idn:         KEITHLEY INSTRUMENTS,MODEL 2281S-20-6,4518305,01.08b

@@ -115,6 +115,7 @@ def register_diagnose_routes(app: Flask) -> None:
                 'enumerated': False,
                 'sysfs_path': None,
                 'device_path': None,
+                'is_usbtmc': False,
                 'lsof': [],
                 'usbtmc_loaded': _usbtmc_loaded(),
                 'dmesg_tail': _dmesg_usb_tail(),
@@ -132,6 +133,7 @@ def register_diagnose_routes(app: Flask) -> None:
             'vid': vid,
             'pid': pid,
             'serial': serial,
+            'is_usbtmc': _device_is_usbtmc(sysfs),
             'lsof': lsof_lines,
             'usbtmc_loaded': _usbtmc_loaded(),
             'dmesg_tail': _dmesg_usb_tail(),
@@ -225,6 +227,26 @@ def register_diagnose_routes(app: Flask) -> None:
                 rm.close()
             except Exception:
                 pass
+
+
+def _device_is_usbtmc(sysfs: str) -> bool:
+    """True if any USB interface of the device at sysfs declares
+    Application-Specific class (0xFE) + USB-TMC subclass (0x03).
+    Used by the classifier to distinguish 'this is a USB-TMC instrument
+    that pyvisa should handle' from 'this is a vendor-SDK device (LabJack,
+    Picoscope, Acroname) that pyvisa cannot reach by design'."""
+    base = os.path.basename(sysfs)
+    for iface in glob.glob(os.path.join(sysfs, f'{base}:*')):
+        try:
+            with open(os.path.join(iface, 'bInterfaceClass')) as f:
+                cls = int(f.read().strip(), 16)
+            with open(os.path.join(iface, 'bInterfaceSubClass')) as f:
+                subcls = int(f.read().strip(), 16)
+        except (FileNotFoundError, ValueError, OSError):
+            continue
+        if cls == 0xFE and subcls == 0x03:
+            return True
+    return False
 
 
 def _holders_via_proc(device_path: str) -> list[dict]:

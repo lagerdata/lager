@@ -157,20 +157,43 @@ def _classify(usb_info: dict, visa_info: dict, disp_info: dict) -> tuple[str, st
                     'HEALTHY (hw_service has an active shared session for this address; '
                     'fresh pyvisa probe skipped to avoid colliding with it).')
 
-    # Non-USB-TMC instruments (LabJack, Picoscope, Acroname, etc.) use their
-    # own vendor SDKs rather than pyvisa, so the VISA probe predictably fails
-    # with "invalid resource" or "No device found". Surface that as a clear
-    # "tool doesn't apply" message instead of the catch-all UNCLEAR.
+    # Probe couldn't open the device. Two distinct cases here that the
+    # endpoint's `is_usbtmc` flag disambiguates:
+    #
+    #   1. Device IS a USB-TMC instrument (Keithley, Keysight, Rigol, ...)
+    #      that pyvisa SHOULD be able to talk to. Fresh-open failure with
+    #      "no device found" / "invalid resource" almost always means
+    #      box_http_server's libusb context went stale after a USB
+    #      re-enumeration (power-cycle, hub toggle). hw_service runs in a
+    #      separate process with a separate libusb context and will recover
+    #      transparently on the next /invoke. Classify as TRANSIENT with
+    #      the recovery hint.
+    #   2. Device is a vendor-SDK instrument (LabJack/LJM, Picoscope/Pico
+    #      SDK, Acroname/BrainStem) that pyvisa cannot reach by design.
+    #      `lager diagnose` doesn't cover these — point the user at the
+    #      role-specific CLI subcommand. Same error strings, gated on
+    #      `is_usbtmc: False` to disambiguate.
     visa_err_raw = (visa_info.get('error') or '').lower()
-    if any(s in visa_err_raw for s in (
+    no_device_keywords = (
         'invalid resource', 'no device found', 'parsing error',
         'vi_error_inv_rsrc_name', 'vi_error_rsrc_nfound',
-    )):
-        return ('yellow',
-                'NOT USB-TMC: this instrument uses a vendor SDK (LabJack/LJM, '
-                'Picoscope/Pico SDK, Acroname/BrainStem, etc.), not pyvisa. '
-                '`lager diagnose` only covers USB-TMC instruments today; for '
-                'this net, check `lager <role> <netname> ...` directly.')
+    )
+    if any(s in visa_err_raw for s in no_device_keywords):
+        if usb_info.get('enumerated') and usb_info.get('is_usbtmc'):
+            return ('yellow',
+                    "TRANSIENT: device is enumerated as USB-TMC but the fresh "
+                    "pyvisa probe couldn't reach it — most often a stale libusb "
+                    "context in box_http_server after a USB re-enumeration. "
+                    "Run any command for this net (e.g. `lager battery <net> "
+                    "state`) so hw_service caches a session, then diagnose will "
+                    "report HEALTHY. If it persists, reset libusb state with: "
+                    "lager ssh <box> -- 'sudo docker exec lager pkill -f box_http_server'.")
+        if usb_info.get('is_usbtmc') is not True:
+            return ('yellow',
+                    'NOT USB-TMC: this instrument uses a vendor SDK (LabJack/LJM, '
+                    'Picoscope/Pico SDK, Acroname/BrainStem, etc.), not pyvisa. '
+                    '`lager diagnose` only covers USB-TMC instruments today; for '
+                    'this net, check `lager <role> <netname> ...` directly.')
 
     return ('yellow', 'UNCLEAR — review the per-section output above and rerun if needed.')
 
@@ -216,7 +239,7 @@ def diagnose(ctx, net, box, net_type):
         ctx.exit(1)
 
     click.echo(click.style(f'lager diagnose — {display_name} → {net}', bold=True))
-    click.echo(f'  resolved role: {role}    address: {address}')
+    click.echo(f'  NetType: {role}    address: {address}')
 
     # Fire the three endpoints in parallel.
     # Port mapping inside the box container:
@@ -235,12 +258,13 @@ def diagnose(ctx, net, box, net_type):
             results[futures[fut]] = fut.result()
 
     _print_section('USB (host-side)', results['usb'], lambda d: [
-        f'enumerated:  {d.get("enumerated")}',
-        f'sysfs:       {d.get("sysfs_path") or "—"}',
-        f'device:      {d.get("device_path") or "—"}',
-        f'usbtmc:      {"LOADED (problem)" if d.get("usbtmc_loaded") else "not loaded (good)"}',
-        f'lsof:        {", ".join(f"{h.get('command')}({h.get('pid')})" for h in (d.get("lsof") or [])) or "no holders"}',
-        f'dmesg tail:  {d.get("dmesg_tail", "")[:300] or "(empty)"}',
+        f'enumerated:   {d.get("enumerated")}',
+        f'sysfs:        {d.get("sysfs_path") or "—"}',
+        f'device:       {d.get("device_path") or "—"}',
+        f'usb-tmc class:{" yes" if d.get("is_usbtmc") else " no" if "is_usbtmc" in d else " —"}',
+        f'usbtmc kmod:  {"LOADED (problem)" if d.get("usbtmc_loaded") else "not loaded (good)"}',
+        f'lsof:         {", ".join(f"{h.get('command')}({h.get('pid')})" for h in (d.get("lsof") or [])) or "no holders"}',
+        f'dmesg tail:   {d.get("dmesg_tail", "")[:300] or "(empty)"}',
     ])
 
     _print_section('VISA (instrument-side)', results['visa'], lambda d: [
