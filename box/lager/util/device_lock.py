@@ -79,14 +79,25 @@ class DeviceLockManager:
         lock_file = None
         start = time.time()
         try:
-            lock_file = open(lock_path, 'w')
+            # Open without truncating — preserves the existing holder's PID
+            # in the file until we successfully acquire the lock. Opening
+            # with 'w' would erase that debugging info even if our own
+            # acquire then times out, leaving the lock file empty under
+            # contention.
+            fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+            lock_file = os.fdopen(fd, 'r+')
+
+            def _record_pid() -> None:
+                lock_file.seek(0)
+                lock_file.truncate()
+                lock_file.write(f'{os.getpid()}\n')
+                lock_file.flush()
 
             # Non-blocking attempt first — common case.
             try:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 self.lock_handles[address] = lock_file
-                lock_file.write(f'{os.getpid()}\n')
-                lock_file.flush()
+                _record_pid()
                 return True
             except (IOError, OSError):
                 pass
@@ -96,8 +107,7 @@ class DeviceLockManager:
                 try:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                     self.lock_handles[address] = lock_file
-                    lock_file.write(f'{os.getpid()}\n')
-                    lock_file.flush()
+                    _record_pid()
                     return True
                 except (IOError, OSError):
                     time.sleep(0.05)

@@ -263,7 +263,7 @@ def diagnose(ctx, net, box, net_type):
         f'device:       {d.get("device_path") or "—"}',
         f'usb-tmc class:{" yes" if d.get("is_usbtmc") else " no" if "is_usbtmc" in d else " —"}',
         f'usbtmc kmod:  {"LOADED (problem)" if d.get("usbtmc_loaded") else "not loaded (good)"}',
-        f'lsof:         {", ".join(f"{h.get('command')}({h.get('pid')})" for h in (d.get("lsof") or [])) or "no holders"}',
+        f"lsof:         {', '.join(h.get('command', '?') + '(' + h.get('pid', '?') + ')' for h in (d.get('lsof') or [])) or 'no holders'}",
         f'dmesg tail:   {d.get("dmesg_tail", "")[:300] or "(empty)"}',
     ])
 
@@ -277,7 +277,7 @@ def diagnose(ctx, net, box, net_type):
 
     _print_section('Dispatcher (hw_service in-process)', results['dispatcher'], lambda d: [
         f'cached_session:  {d.get("cached_session")}',
-        f'cached_drivers:  {", ".join(f"{c.get("device_name")}({c.get("driver_class")})" for c in (d.get("cached_drivers") or [])) or "—"}',
+        f"cached_drivers:  {', '.join(c.get('device_name', '?') + '(' + c.get('driver_class', '?') + ')' for c in (d.get('cached_drivers') or [])) or '—'}",
         f'shared_pool:     {d.get("shared_pool_size")} entry/entries',
     ])
 

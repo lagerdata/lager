@@ -294,8 +294,16 @@ def _usbtmc_loaded() -> bool:
 def _dmesg_usb_tail() -> str:
     """Last few lines of dmesg matching USB / usbtmc. Best-effort — needs
     CAP_SYSLOG; if not available, returns an explanatory string instead of
-    blowing up."""
-    rc, out, err = _run('sudo dmesg 2>&1 | tail -200 | grep -iE "usb|usbtmc" | tail -20', timeout=3)
+    blowing up. Uses `sudo -n` so a missing passwordless-sudo grant fails
+    fast instead of blocking on a password prompt, and filters in Python
+    rather than via a shell pipeline so the dmesg rc isn't masked by a
+    downstream `tail` succeeding and so stderr text isn't filtered away by
+    `grep`."""
+    rc, out, err = _run('sudo -n dmesg', timeout=3)
     if rc != 0:
         return f'(dmesg unavailable: {err.strip() or "permission denied"})'
-    return out.strip()
+    matches = [
+        line for line in out.splitlines()[-200:]
+        if 'usb' in line.lower() or 'usbtmc' in line.lower()
+    ]
+    return '\n'.join(matches[-20:])
