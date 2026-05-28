@@ -2,6 +2,23 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.20.1] - 2026-05-27
+
+### Added
+- **`--force` flag on `lager update`.** Bypasses the "already up to date" early-exit *and* forces a clean rebuild (wipes the cached image plus the `lager-cargo` / `lager-npm-global` volumes). The version file is written to `/etc/lager/version` *before* the container is started, so a box whose update failed at container start still reports the new version and reads as "up to date" — a normal `lager update` then refuses to act. `--force` is the recovery path for that state; the "Removing cached image…" status line now names the actual trigger (`--force` vs `build inputs changed`).
+
+### Changed
+- **`lager update` is the canonical box-update command again.** It is no longer deprecated and is the documented way to update a Lager Box. Internally both surfaces always shared one implementation; this just promotes the shorter top-level spelling and drops the deprecation notice.
+- **Box updates reuse the Docker build cache instead of rebuilding from scratch every run.** The post-build cleanup changed from `docker image prune -af` (which deleted *all* unused images, including the layer cache, forcing a ~40-package pip reinstall + Rust toolchain rebuild on every update) to `docker image prune -f` (dangling only). Because `box.Dockerfile` copies source *after* the heavy apt/pip/rust/nrfutil layers, a code-only update now reuses those layers and finishes in ~30s instead of ~15min; full builds happen only when the Dockerfile or requirements actually change.
+- **The container image is built once per update, not twice.** `lager update` builds the image in its own step (with full build-error reporting) and now invokes `start_box.sh` with `LAGER_SKIP_BUILD=1` so the box-side script skips its redundant second `docker build`. Standalone/deploy invocations of `start_box.sh` still build as before.
+
+### Fixed
+- **`lager update` survives a transient DNS/connection blip during `git fetch`.** The fetch step retries up to 3 times (3s/6s backoff) when the box hits a transient resolver/connection error (`Could not resolve host`, `Name or service not known`, connection timeouts) — common on boxes behind a flaky WiFi resolver. Non-transient failures (auth, missing branch) still fail fast with the original clear error.
+- **Docker image builds can resolve external hosts on systemd-resolved boxes.** `cli/deployment/scripts/setup_and_deploy_box.sh` now writes `/etc/docker/daemon.json` pointing Docker's container DNS at the box's real uplink resolvers (discovered from `/run/systemd/resolve/resolv.conf`, with `1.1.1.1`/`8.8.8.8` fallbacks). Boxes whose `/etc/resolv.conf` only exposes the `127.0.0.53` stub previously left Docker falling back to `8.8.8.8` inside build containers; where that resolver was unreachable, `docker build` could not clone the GitHub-hosted pip dependencies and the image build failed mid-run — the root cause behind updates that hung for ~15 minutes and then reported a container-start timeout.
+
+### Removed
+- **`lager box update`.** Removed in favor of the canonical top-level `lager update`. Any scripts or automation calling `lager box update` should switch to `lager update`.
+
 ## [0.20.0] - 2026-05-26
 
 This release is a direct response to the JUL-7 "battery net not responding" incident on 2026-05-26, where a Keithley 2281S misbehavior took ~2 hours of debugging across `lsof`, `dmesg`, bare `pyvisa` probes, and hardware-service introspection to root-cause. The biggest items below — `lager diagnose`, the `usbtmc` blacklist, automatic ENODEV recovery, and cross-process device locks — collectively eliminate the most common failure modes that drove that session, and surface the rest (e.g. wedged instrument firmware that only mains-power-cycling can fix) with a single one-line diagnosis.
