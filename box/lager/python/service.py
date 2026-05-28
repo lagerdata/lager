@@ -475,6 +475,10 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                 self._handle_python_kill()
             elif self.path == '/python/attach':
                 self._handle_python_attach()
+            elif self.path == '/python/continue':
+                self._handle_python_continue()
+            elif self.path == '/python/breakpoint':
+                self._handle_python_breakpoint()
             elif self.path == '/pip':
                 self._handle_pip()
             elif self.path == '/test-execute':
@@ -737,6 +741,69 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
 
         generator = stream_log_file(log_path, meta_path)
         self.send_streaming_response(generator)
+
+    def _handle_python_continue(self):
+        """Handle POST /python/continue - Resume a script paused at a breakpoint.
+
+        Writes a `resume` marker into the process dir that the script's
+        lager.pause() poll loop is watching for. Returns whether a paused
+        breakpoint was present.
+        """
+        import os
+        import uuid as uuid_mod
+
+        try:
+            data = self._read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json_response(400, {'error': 'Invalid JSON'})
+            return
+
+        lager_process_id = data.get('lager_process_id')
+        if not lager_process_id:
+            self.send_error_response(400, 'lager_process_id is required')
+            return
+        try:
+            uuid_mod.UUID(lager_process_id)
+        except ValueError:
+            raise LagerPythonInvalidProcessIdError(lager_process_id)
+
+        process_dir = f'/tmp/lager_processes/{lager_process_id}'
+        was_paused = os.path.exists(os.path.join(process_dir, 'breakpoint.json'))
+        if was_paused:
+            with open(os.path.join(process_dir, 'resume'), 'w') as f:
+                f.write('1')
+        self.send_json_response(200, {'resumed': was_paused})
+
+    def _handle_python_breakpoint(self):
+        """Handle POST /python/breakpoint - Report current breakpoint state.
+
+        Returns the breakpoint.json written by lager.pause(), or
+        {'paused': False} if the script is not currently paused.
+        """
+        import os
+        import uuid as uuid_mod
+
+        try:
+            data = self._read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json_response(400, {'error': 'Invalid JSON'})
+            return
+
+        lager_process_id = data.get('lager_process_id')
+        if not lager_process_id:
+            self.send_error_response(400, 'lager_process_id is required')
+            return
+        try:
+            uuid_mod.UUID(lager_process_id)
+        except ValueError:
+            raise LagerPythonInvalidProcessIdError(lager_process_id)
+
+        state_path = f'/tmp/lager_processes/{lager_process_id}/breakpoint.json'
+        try:
+            with open(state_path, 'r') as f:
+                self.send_json_response(200, json.load(f))
+        except (FileNotFoundError, json.JSONDecodeError):
+            self.send_json_response(200, {'paused': False})
 
     def _handle_test_execute(self):
         """Handle POST /test-execute - Simple test of Python execution"""

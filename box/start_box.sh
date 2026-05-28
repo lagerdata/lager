@@ -437,10 +437,8 @@ docker run -d \
     -p 9090-9097:9090-9097 \
     --env "PIGPIO_ADDR=$PIGPIO_ADDR" \
     --env "LAGER_HOST=$DOCKER_IFACE" \
-    --env "PYTHONBREAKPOINT=remote_pdb.set_trace" \
+    --env "PYTHONBREAKPOINT=lager.breakpoint.pause" \
     --env "LOCAL_ADDRESS=172.18.0.10" \
-    --env "REMOTE_PDB_HOST=0.0.0.0" \
-    --env "REMOTE_PDB_PORT=5555" \
     -e HOME=/home/www-data \
     --log-driver json-file \
     --log-opt max-size=10m \
