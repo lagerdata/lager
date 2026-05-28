@@ -352,7 +352,7 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
             click.secho('The box endpoint may not be available. Check that the box is properly set up.', err=True)
         elif resp.status_code == 500:
             click.secho('Error: Internal server error on box (HTTP 500)', fg='red', err=True)
-            click.secho('Check box logs with: lager logs --box <box-name>', err=True)
+            click.secho('Check box logs with: lager logs --box [BOX_NAME]', err=True)
         elif resp.status_code == 502:
             click.secho('Error: Bad gateway (HTTP 502)', fg='red', err=True)
             click.secho('The box service may be restarting. Try again in a few seconds.', err=True)

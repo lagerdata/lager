@@ -430,7 +430,7 @@ def resolve_and_validate_box_with_name(ctx, box_name: Optional[str] = None, _ski
 
         click.echo("", err=True)
         click.echo("To add a new box, use:", err=True)
-        click.echo(f"  lager boxes add --name {box_name} --ip <IP_ADDRESS>", err=True)
+        click.echo(f"  lager boxes add --name {box_name} --ip [IP_ADDRESS]", err=True)
         ctx.exit(1)
 
 
@@ -493,5 +493,5 @@ def resolve_and_validate_box(ctx, box_name: Optional[str] = None, _skip_lock_che
 
         click.echo("", err=True)
         click.echo("To add a new box, use:", err=True)
-        click.echo(f"  lager boxes add --name {box_name} --ip <IP_ADDRESS>", err=True)
+        click.echo(f"  lager boxes add --name {box_name} --ip [IP_ADDRESS]", err=True)
         ctx.exit(1)

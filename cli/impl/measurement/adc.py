@@ -23,7 +23,7 @@ def main() -> int:
     except KeyError as e:
         # Handle invalid net names specifically
         sys.stderr.write(f"{RED}Error: Net '{netname}' not found{RESET}\n")
-        sys.stderr.write(f"Use 'lager nets --box <box>' to list available nets\n")
+        sys.stderr.write(f"Use 'lager nets --box [BOX_NAME]' to list available nets\n")
         if os.getenv('LAGER_DEBUG') or os.getenv('DEBUG'):
             import traceback
             sys.stderr.write(f"\nDebug traceback:\n{traceback.format_exc()}\n")
@@ -34,7 +34,7 @@ def main() -> int:
         error_msg = str(e)
         if "wrong type" in error_msg.lower() or "expected" in error_msg.lower():
             sys.stderr.write(f"{RED}Error: Invalid net type for '{netname}'{RESET}\n")
-            sys.stderr.write(f"This command requires an ADC net. Use 'lager nets --box <box>' to verify net types\n")
+            sys.stderr.write(f"This command requires an ADC net. Use 'lager nets --box [BOX_NAME]' to verify net types\n")
         else:
             sys.stderr.write(f"{RED}Error: {e}{RESET}\n")
         if os.getenv('LAGER_DEBUG') or os.getenv('DEBUG'):

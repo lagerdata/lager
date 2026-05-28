@@ -36,7 +36,7 @@ def _run_router(ctx: click.Context, box_ip: str, args_dict: dict) -> None:
 
 @click.group(name="router")
 def router():
-    """Manage routers as Lager nets."""
+    """Manage routers as Lager nets"""
     pass
 
 
@@ -51,7 +51,7 @@ def router():
 @click.pass_context
 def add_net(ctx, name, address, username, password, instrument, use_ssl, box):
     """
-    Register a router as a net on the box.
+    Register a router as a net on the box
 
     Example:
 
@@ -83,7 +83,7 @@ def add_net(ctx, name, address, username, password, instrument, use_ssl, box):
 @click.pass_context
 def connect(ctx, netname, box):
     """
-    Verify connectivity to a router net.
+    Verify connectivity to a router net
 
     Example:
 
@@ -99,7 +99,7 @@ def connect(ctx, netname, box):
 @click.pass_context
 def interfaces(ctx, netname, box):
     """
-    List network interfaces on a router net.
+    List network interfaces on a router net
 
     Example:
 
@@ -115,7 +115,7 @@ def interfaces(ctx, netname, box):
 @click.pass_context
 def wireless_interfaces(ctx, netname, box):
     """
-    List wireless interfaces and their configuration.
+    List wireless interfaces and their configuration
 
     Example:
 
@@ -125,7 +125,7 @@ def wireless_interfaces(ctx, netname, box):
     _run_router(ctx, box_ip, {"action": "wireless_interfaces", "netname": netname})
 
 
-@router.command("wireless-clients")
+@router.command("wireless-clients", short_help="List connected wireless clients")
 @click.argument("netname")
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.pass_context
@@ -141,7 +141,7 @@ def wireless_clients(ctx, netname, box):
     _run_router(ctx, box_ip, {"action": "wireless_clients", "netname": netname})
 
 
-@router.command("dhcp-leases")
+@router.command("dhcp-leases", short_help="List DHCP leases on a router net")
 @click.argument("netname")
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.pass_context
@@ -163,7 +163,7 @@ def dhcp_leases(ctx, netname, box):
 @click.pass_context
 def system_info(ctx, netname, box):
     """
-    Get system resource information from a router net.
+    Get system resource information from a router net
 
     Example:
 
@@ -180,7 +180,7 @@ def system_info(ctx, netname, box):
 @click.pass_context
 def reboot(ctx, netname, yes, box):
     """
-    Reboot a router net.
+    Reboot a router net
 
     Example:
 
@@ -201,7 +201,7 @@ def reboot(ctx, netname, yes, box):
 @click.pass_context
 def enable_interface(ctx, netname, interface, box):
     """
-    Enable a wireless interface on a router net.
+    Enable a wireless interface on a router net
 
     Example:
 
@@ -219,7 +219,7 @@ def enable_interface(ctx, netname, interface, box):
 @click.pass_context
 def disable_interface(ctx, netname, interface, box):
     """
-    Disable a wireless interface on a router net.
+    Disable a wireless interface on a router net
 
     Example:
 
@@ -230,7 +230,7 @@ def disable_interface(ctx, netname, interface, box):
                                "interface": interface})
 
 
-@router.command("block-internet")
+@router.command("block-internet", short_help="Block all internet access on a router net")
 @click.argument("netname")
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.pass_context
@@ -257,7 +257,7 @@ def block_internet(ctx, netname, box):
 @click.pass_context
 def reset(ctx, netname, ssid, password, yes, box):
     """
-    Reset a router net to a clean baseline state.
+    Reset a router net to a clean baseline state
 
     Removes all test-tagged firewall rules, bandwidth limits, and access list
     entries. Re-enables DHCP and all wireless interfaces. If --ssid and
@@ -289,7 +289,7 @@ def reset(ctx, netname, ssid, password, yes, box):
 @click.pass_context
 def run_cmd(ctx, netname, path, box):
     """
-    Run an arbitrary router REST API GET call.
+    Run an arbitrary router REST API GET call
 
     PATH is the API path relative to /rest, e.g. /ip/address
 

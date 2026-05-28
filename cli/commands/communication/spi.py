@@ -26,6 +26,7 @@ import click
 import requests
 from texttable import Texttable
 
+from ...core.net_group import NetGroupHelpMixin
 from ...core.net_helpers import resolve_box
 from ...context import get_impl_path, get_default_net
 from ..development.python import run_python_internal
@@ -34,7 +35,7 @@ SPI_ROLE = "spi"
 
 
 # Custom group class to handle --box after netname
-class SPIGroup(click.Group):
+class SPIGroup(NetGroupHelpMixin, click.Group):
     """
     Custom Click Group that allows --box option after NETNAME argument
     when no subcommand is invoked.
@@ -407,7 +408,7 @@ def _run_spi_backend(ctx, box_ip, action: str, **params):
 # ---------- CLI ----------
 
 @click.group(name="spi", cls=SPIGroup, invoke_without_command=True)
-@click.argument("NETNAME", required=False)
+@click.argument("NETNAME", required=False, metavar="[NET_NAME]")
 @click.pass_context
 @click.option('--box', required=False, help="Lagerbox name or IP")
 def spi(ctx, netname, box):
@@ -432,6 +433,14 @@ def spi(ctx, netname, box):
         else:
             # Show specific net configuration
             display_nets(ctx, target_box, netname)
+
+
+spi.net_examples = [
+    "lager spi spi1 transfer --data 0x9f 4 --box JUL-12",
+    "lager spi spi1 read 4 --fill 0xFF --box JUL-12",
+    "lager spi spi1 config --mode 0 --frequency 1M --box JUL-12",
+    "lager spi spi1 --box JUL-12             (show net config)",
+]
 
 
 @spi.command()
@@ -461,7 +470,7 @@ def spi(ctx, netname, box):
 def transfer(ctx, num_words, box, mode, bit_order, frequency, cs_active, keep_cs,
              word_size, data_str, data_file, fill, output_format):
     """
-    Perform SPI transfer.
+    Perform SPI transfer
 
     Sends data and receives response simultaneously (full-duplex).
     If data is shorter than NUM_WORDS, pads with --fill value.
@@ -552,7 +561,7 @@ def transfer(ctx, num_words, box, mode, bit_order, frequency, cs_active, keep_cs
 def read(ctx, num_words, box, mode, bit_order, frequency, cs_active, keep_cs,
          word_size, fill, output_format):
     """
-    Read data from SPI slave.
+    Read data from SPI slave
 
     Sends fill bytes while reading response.
 
@@ -609,7 +618,7 @@ def read(ctx, num_words, box, mode, bit_order, frequency, cs_active, keep_cs,
               help='CS assertion mode: auto (hardware SS) or manual (user-managed GPIO)')
 def config(ctx, box, mode, bit_order, frequency, cs_active, word_size, cs_mode):
     """
-    Configure SPI parameters.
+    Configure SPI parameters
 
     Sets the SPI configuration for subsequent transfers.
 
@@ -668,7 +677,7 @@ def config(ctx, box, mode, bit_order, frequency, cs_active, word_size, cs_mode):
 def write(ctx, data, box, mode, bit_order, frequency, cs_active, keep_cs,
           word_size, output_format):
     """
-    Write data to SPI slave.
+    Write data to SPI slave
 
     Performs a full-duplex transfer but outputs the received data.
 

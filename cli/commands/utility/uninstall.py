@@ -25,7 +25,7 @@ from ...core.ssh_utils import host_in_known_hosts, get_ssh_connection_pool
 @click.option("--dry-run", is_flag=True, help="Show what would be removed without making changes")
 def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, yes, dry_run):
     """
-    Uninstall Lager box code from a box.
+    Uninstall Lager box code from a box
     """
     # 1. Resolve box name to IP and username if --box is provided
     if box and ip:
@@ -576,7 +576,7 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
         click.echo()
         click.secho("Note: ~/.ssh/lager_box key pair is shared across boxes and was removed", fg='yellow')
         click.secho("from this box. If you have other boxes using it, you may need to", fg='yellow')
-        click.secho("re-deploy the key with: ssh-copy-id -i ~/.ssh/lager_box <user>@<ip>", fg='yellow')
+        click.secho("re-deploy the key with: ssh-copy-id -i ~/.ssh/lager_box [USERNAME]@[IP_ADDRESS]", fg='yellow')
 
     # 10. Local config cleanup - offer to remove box from .lager config
     box_name = box

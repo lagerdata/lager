@@ -6,9 +6,9 @@ Solar simulator CLI commands.
 
 Usage:
     lager solar                         -> lists solar nets
-    lager solar <NETNAME> irradiance 1000  -> set irradiance to 1000 W/m²
-    lager solar <NETNAME> set           -> initialize solar mode
-    lager solar <NETNAME> stop          -> stop solar mode
+    lager solar [NET_NAME] irradiance 1000  -> set irradiance to 1000 W/m²
+    lager solar [NET_NAME] set           -> initialize solar mode
+    lager solar [NET_NAME] stop          -> stop solar mode
 """
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ import json
 
 import click
 
+from ...core.net_group import NetGroup
 # Import consolidated helpers from cli.core.net_helpers
 from ...core.net_helpers import (
     require_netname,
@@ -90,8 +91,8 @@ def _run_backend(ctx: click.Context, box: str | None, action: str, **params) -> 
 
 # ---------- CLI ----------
 
-@click.group(invoke_without_command=True, help="Control solar simulator settings and output")
-@click.argument("netname", required=False)
+@click.group(cls=NetGroup, invoke_without_command=True, help="Control solar simulator settings and output")
+@click.argument("netname", required=False, metavar="[NET_NAME]")
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.pass_context
 def solar(ctx, netname, box):
@@ -116,6 +117,14 @@ def solar(ctx, netname, box):
     if ctx.invoked_subcommand is None:
         resolved_box = resolve_box(ctx, box)
         display_nets(ctx, resolved_box, None, SOLAR_ROLE, "solar")
+
+
+solar.net_examples = [
+    "lager solar solar1 set --box JUL-12",
+    "lager solar solar1 irradiance 1000 --box JUL-12",
+    "lager solar solar1 voc --box JUL-12",
+    "lager solar --box JUL-12                (list solar nets)",
+]
 
 
 @solar.command("set", help="Initialize and start solar simulation mode")

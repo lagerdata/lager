@@ -13,6 +13,7 @@ import click
 from texttable import Texttable
 
 from ...context import get_default_box, get_default_net, get_impl_path
+from ...core.net_group import NetGroup
 from ...core.net_helpers import resolve_box, run_net_py, list_nets_by_role, validate_net_exists
 
 ARM_ROLE = "arm"
@@ -102,16 +103,17 @@ def _resolve_box_for_command(ctx, target_box):
 
 @click.group(
     name="arm",
+    cls=NetGroup,
     invoke_without_command=True,
     context_settings={"max_content_width": 100},
     help="Control robot arm position and movement (units: mm)",
 )
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
-@click.argument("netname", required=False)
+@click.argument("netname", required=False, metavar="[NET_NAME]")
 def arm(ctx, box, netname):
     """
-    Usage: lager arm [OPTIONS] [NETNAME] COMMAND [ARGS]
+    Usage: lager arm [NET_NAME] [COMMAND] --box [BOX_NAME]
     """
     # Preserve whatever the top-level CLI stored in ctx.obj (don't replace with dict)
     if ctx.obj is None:
@@ -139,6 +141,14 @@ def arm(ctx, box, netname):
     if ctx.invoked_subcommand is None:
         resolved = resolve_box(ctx, box)
         _display_arm_nets(ctx, resolved)
+
+
+arm.net_examples = [
+    "lager arm arm1 position --box JUL-12",
+    "lager arm arm1 move --x 100 --y 200 --z 50 --box JUL-12",
+    "lager arm arm1 go-home --box JUL-12",
+    "lager arm --box JUL-12                  (list arm nets)",
+]
 
 
 @arm.command(name="position", help="Print current arm position (mm)")

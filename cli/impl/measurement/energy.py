@@ -74,7 +74,7 @@ def main() -> int:
         return 0
     except KeyError as e:
         sys.stderr.write(f"{RED}Error: Net '{netname}' not found{RESET}\n")
-        sys.stderr.write("Use 'lager nets --box <box>' to list available nets\n")
+        sys.stderr.write("Use 'lager nets --box [BOX_NAME]' to list available nets\n")
         if os.getenv('LAGER_DEBUG') or os.getenv('DEBUG'):
             import traceback
             sys.stderr.write(f"\nDebug traceback:\n{traceback.format_exc()}\n")

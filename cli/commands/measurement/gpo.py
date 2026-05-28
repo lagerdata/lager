@@ -14,6 +14,7 @@ import json
 import click
 
 from ...context import get_default_net
+from ...core.net_group import NetCommand
 from ...core.net_helpers import (
     resolve_box,
     list_nets_by_role,
@@ -26,13 +27,13 @@ from ...core.net_helpers import (
 GPIO_ROLE = "gpio"
 
 
-@click.command(name="gpo", help="Set GPIO output level (0/1, low/high, off/on, toggle)")
+@click.command(name="gpo", cls=NetCommand, help="Set GPIO output level (0/1, low/high, off/on, toggle)")
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.option("--hold", is_flag=True, default=False,
               help="Hold output state (keeps process alive until Ctrl+C)")
-@click.argument("netname", required=False)
-@click.argument("level", required=False,
+@click.argument("netname", required=False, metavar="[NET_NAME]")
+@click.argument("level", required=False, metavar="[LEVEL]",
                 type=click.Choice(["low", "high", "on", "off", "0", "1", "toggle"], case_sensitive=False))
 def gpo(ctx, box, netname, level, hold):
     """Set the output level of a GPIO output net.
@@ -60,12 +61,12 @@ def gpo(ctx, box, netname, level, hold):
     # If we have a net but no level, show error with detailed explanation
     if level is None:
         click.secho("Error: LEVEL argument required", fg='red', err=True)
-        click.echo("\nUsage: lager gpo <NET_NAME> <LEVEL>", err=True)
+        click.echo("\nUsage: lager gpo [NET_NAME] [LEVEL] --box [BOX_NAME]", err=True)
         click.echo("\nAvailable levels:", err=True)
         click.echo("  high, on, 1   - Set output HIGH (typically 3.3V or 5V)", err=True)
         click.echo("  low, off, 0   - Set output LOW (0V / ground)", err=True)
         click.echo("  toggle        - Invert current state (HIGH->LOW or LOW->HIGH)", err=True)
-        click.echo(f"\nExample: lager gpo {netname} high --box {box or '<box>'}", err=True)
+        click.echo(f"\nExample: lager gpo {netname} high --box {box or '[BOX_NAME]'}", err=True)
         ctx.exit(1)
 
     payload = json.dumps({"netname": netname, "action": "output", "level": level, "hold": hold})
@@ -77,3 +78,10 @@ def gpo(ctx, box, netname, level, hold):
         args=(payload,),
         timeout=None,
     )
+
+
+gpo.net_examples = [
+    "lager gpo gpo1 high --box JUL-12",
+    "lager gpo gpo1 toggle --box JUL-12",
+    "lager gpo --box JUL-12          (list GPIO nets)",
+]

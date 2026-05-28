@@ -134,7 +134,8 @@ def _run_command_local(section, path, cmd_to_run, mount, extra_args, debug, inte
         return 1
 
 
-@click.command(name='exec', context_settings={"ignore_unknown_options": True})
+@click.command(name='exec', context_settings={"ignore_unknown_options": True},
+               short_help="Run a saved command in a local docker container")
 @click.pass_context
 @click.argument('cmd_name', required=False, metavar='COMMAND')
 @click.argument('extra_args', required=False, nargs=-1, metavar='EXTRA_ARGS')
