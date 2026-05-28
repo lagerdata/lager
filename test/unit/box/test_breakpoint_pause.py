@@ -44,6 +44,7 @@ def fast_poll(monkeypatch):
     monkeypatch.setattr(bp, "_POLL_INTERVAL", 0.01)
     monkeypatch.delenv("LAGER_BREAKPOINTS", raising=False)
     monkeypatch.delenv("LAGER_BREAKPOINT_TIMEOUT", raising=False)
+    monkeypatch.delenv("LAGER_RUNNABLE", raising=False)
 
 
 @pytest.mark.parametrize(
@@ -121,6 +122,32 @@ def test_resume_marker_unblocks_and_cleans_up(tmp_path, monkeypatch):
     # coordination files removed on resume
     assert not (proc_dir / "breakpoint.json").exists()
     assert not (proc_dir / "resume").exists()
+
+
+def test_breakpoint_file_uses_runnable_name(tmp_path, monkeypatch):
+    """The banner/state report the invoked script name (LAGER_RUNNABLE), not the
+    box's opaque temp filename."""
+    monkeypatch.setattr(bp, "PROCESS_DIR_BASE", str(tmp_path))
+    monkeypatch.setenv("LAGER_PROCESS_ID", PID)
+    monkeypatch.setenv("LAGER_RUNNABLE", "my_test.py")
+    proc_dir = tmp_path / PID
+    captured = {}
+
+    def writer():
+        state = proc_dir / "breakpoint.json"
+        for _ in range(500):
+            if state.exists():
+                captured.update(json.loads(state.read_text()))
+                break
+            time.sleep(0.005)
+        (proc_dir / "resume").write_text("1")
+
+    t = threading.Thread(target=writer)
+    t.start()
+    bp.pause("x", timeout=10)
+    t.join(timeout=2)
+
+    assert captured.get("file") == "my_test.py"
 
 
 def test_auto_resume_on_timeout(tmp_path, monkeypatch):

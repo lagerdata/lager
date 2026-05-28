@@ -236,6 +236,12 @@ def _run_breakpoint(process_id, label, timeout, interactive):
     lineno = frame.f_lineno if frame else 0
     func = frame.f_code.co_name if frame else '?'
 
+    # `lager python script.py` runs the script from an opaque temp file on the box
+    # (co_filename is tmpXXXX.py), so prefer the name the user actually invoked.
+    # Line numbers match since the temp file is a verbatim copy of the script.
+    runnable = os.environ.get('LAGER_RUNNABLE', '')
+    display_file = os.path.basename(runnable) if runnable.endswith('.py') else os.path.basename(filename)
+
     proc_dir = _process_dir(process_id)
     os.makedirs(proc_dir, exist_ok=True)
     state_path = os.path.join(proc_dir, 'breakpoint.json')
@@ -257,7 +263,7 @@ def _run_breakpoint(process_id, label, timeout, interactive):
     state = {
         'paused': True,
         'label': label,
-        'file': filename,
+        'file': display_file,
         'line': lineno,
         'func': func,
         'since': time.time(),
@@ -269,7 +275,7 @@ def _run_breakpoint(process_id, label, timeout, interactive):
         json.dump(state, f)
 
     try:
-        _emit_banner(process_id, label, filename, lineno, timeout, console_port)
+        _emit_banner(process_id, label, display_file, lineno, timeout, console_port)
         _wait(resume_path, timeout)
     finally:
         if console is not None:
