@@ -9,6 +9,7 @@ This module provides CLI commands for running Python scripts on Lager boxes.
 import os
 import shutil
 import gzip
+import codecs
 import json
 import uuid
 import sys
@@ -497,6 +498,8 @@ def _proxy_console(ctx, host, port):
         ctx.exit(1)
 
     click.echo('Connected to interactive console (Ctrl+D to disconnect)')
+    # Incremental decoder buffers partial multibyte chars split across recv chunks.
+    decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
     try:
         while True:
             rlist, _w, _x = select.select([sock, sys.stdin], [], [])
@@ -504,7 +507,7 @@ def _proxy_console(ctx, host, port):
                 data = sock.recv(4096)
                 if not data:
                     break
-                sys.stdout.write(data.decode('utf-8', errors='replace'))
+                sys.stdout.write(decoder.decode(data))
                 sys.stdout.flush()
             if sys.stdin in rlist:
                 line = sys.stdin.readline()

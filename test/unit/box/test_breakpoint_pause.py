@@ -73,6 +73,15 @@ def test_resolve_timeout_precedence(monkeypatch):
     assert bp._resolve_timeout(None) == bp.DEFAULT_TIMEOUT
 
 
+def test_resolve_timeout_coercion(monkeypatch):
+    monkeypatch.delenv("LAGER_BREAKPOINT_TIMEOUT", raising=False)
+    assert bp._resolve_timeout("10") == 10                      # numeric string → int
+    assert bp._resolve_timeout(0.3) == 0.3                      # float preserved (not truncated)
+    assert bp._resolve_timeout("0.5") == 0.5                    # fractional string → float
+    assert bp._resolve_timeout("garbage") == bp.DEFAULT_TIMEOUT # non-numeric → default
+    assert bp._resolve_timeout(0) == 0                          # 0 (block-forever) preserved
+
+
 def test_noop_without_process_id(monkeypatch):
     monkeypatch.delenv("LAGER_PROCESS_ID", raising=False)
     # Must return promptly and not raise even with a long timeout.

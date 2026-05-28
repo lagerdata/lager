@@ -52,21 +52,35 @@ def _enabled():
     return os.environ.get('LAGER_BREAKPOINTS', '').strip().lower() not in _OFF_VALUES
 
 
+def _coerce_number(value, fallback):
+    """Coerce to int/float, preserving the numeric type; fallback on failure.
+
+    Keeps fractional-second timeouts working (don't truncate floats to int),
+    while a stray string/None can't reach the wait loop's numeric comparison.
+    """
+    if isinstance(value, bool):
+        return fallback
+    if isinstance(value, (int, float)):
+        return value
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return fallback
+
+
 def _resolve_timeout(timeout):
     """Effective auto-resume timeout: arg > LAGER_BREAKPOINT_TIMEOUT > default.
 
     A value of 0 (or negative) means block indefinitely until resumed.
     """
     if timeout is None:
-        env = os.environ.get('LAGER_BREAKPOINT_TIMEOUT')
-        if env is not None:
-            try:
-                timeout = int(env)
-            except ValueError:
-                timeout = DEFAULT_TIMEOUT
-        else:
-            timeout = DEFAULT_TIMEOUT
-    return timeout
+        timeout = os.environ.get('LAGER_BREAKPOINT_TIMEOUT')
+        if timeout is None:
+            return DEFAULT_TIMEOUT
+    return _coerce_number(timeout, DEFAULT_TIMEOUT)
 
 
 def _process_dir(process_id):
@@ -103,13 +117,14 @@ class _SocketConsole:
 
     def start(self):
         for port in CONSOLE_PORT_RANGE:
+            server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
-                server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 server.bind(('0.0.0.0', port))
                 server.listen(1)
                 server.settimeout(0.5)
             except OSError as exc:
+                server.close()  # don't leak the fd when bind/listen fails
                 if exc.errno in (errno.EADDRINUSE, errno.EACCES):
                     continue
                 raise
@@ -231,7 +246,12 @@ def pause(label=None, *, timeout=None, interactive=False):
 
 
 def _run_breakpoint(process_id, label, timeout, interactive):
-    frame = inspect.currentframe().f_back.f_back  # caller of pause()
+    # Walk up past this module's own frames (pause / _run_breakpoint, plus any
+    # builtin breakpoint() hook indirection) to the user's calling frame —
+    # more robust than a hardcoded depth, which breaks under wrappers/decorators.
+    frame = inspect.currentframe()
+    while frame and frame.f_code.co_filename == __file__:
+        frame = frame.f_back
     filename = frame.f_code.co_filename if frame else '?'
     lineno = frame.f_lineno if frame else 0
     func = frame.f_code.co_name if frame else '?'

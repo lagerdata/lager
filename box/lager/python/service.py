@@ -802,7 +802,9 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         try:
             with open(state_path, 'r') as f:
                 self.send_json_response(200, json.load(f))
-        except (FileNotFoundError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError):
+            # OSError covers missing file (FileNotFoundError) plus permission /
+            # is-a-directory issues — treat any unreadable state as "not paused".
             self.send_json_response(200, {'paused': False})
 
     def _handle_test_execute(self):
