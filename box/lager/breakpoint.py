@@ -180,9 +180,13 @@ class _SocketConsole:
 
         console.runcode = runcode
         console.raw_input = lambda prompt='': _raw_input(rfile, write, prompt)
+        # Route the console's own output (banner, exit message, syntax errors,
+        # tracebacks) to the socket too — the default writes to the script's
+        # stderr, which would leak the prompt into the `lager python` terminal.
+        console.write = write
         try:
             console.interact(
-                banner='lager interactive console — inspect script state; Ctrl-D to disconnect',
+                banner='lager interactive console - inspect script state; Ctrl-D to disconnect',
                 exitmsg='disconnected',
             )
         except (EOFError, OSError):
