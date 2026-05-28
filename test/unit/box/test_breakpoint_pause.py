@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import json
 import time
+import socket
 import threading
 import importlib.util
 
@@ -144,3 +145,60 @@ def test_stale_resume_marker_is_cleared(tmp_path, monkeypatch):
     start = time.monotonic()
     bp.pause("x", timeout=0.3)  # should auto-resume on timeout, not the stale marker
     assert time.monotonic() - start >= 0.2
+
+
+def test_interactive_console_evaluates_script_state(monkeypatch):
+    """End-to-end proof the interactive console can read the paused script's
+    namespace, run statements, and survive errors — all over the socket."""
+    monkeypatch.setattr(bp, "CONSOLE_PORT_RANGE", range(8401, 8411))
+    ns = {"measurements": {"vbat": 3.71, "cycle": 3}, "x": 42}
+    console = bp._SocketConsole(ns)
+    port = console.start()
+    assert port is not None, "console failed to bind a port"
+
+    conn = None
+    try:
+        conn = socket.create_connection(("127.0.0.1", port), timeout=5)
+        conn.settimeout(0.5)
+
+        def recv_until(needle, timeout=5):
+            buf = ""
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                try:
+                    chunk = conn.recv(4096)
+                except socket.timeout:
+                    continue
+                if not chunk:
+                    break
+                buf += chunk.decode("utf-8", errors="replace")
+                if needle in buf:
+                    return buf
+            raise AssertionError(f"never saw {needle!r}; got: {buf!r}")
+
+        recv_until(">>>")  # banner + first prompt
+
+        # Read a variable from the paused script's namespace
+        conn.sendall(b"measurements\n")
+        out = recv_until("'cycle'")
+        assert "'vbat': 3.71" in out and "'cycle': 3" in out
+
+        # Compute on a script local
+        conn.sendall(b"x * 2\n")
+        assert "84" in recv_until("84")
+
+        # Statement then read it back
+        conn.sendall(b"z = x + 1\n")
+        recv_until(">>>")
+        conn.sendall(b"z\n")
+        assert "43" in recv_until("43")
+
+        # An error is reported, not fatal — console keeps working
+        conn.sendall(b"does_not_exist\n")
+        assert "NameError" in recv_until("NameError")
+        conn.sendall(b"1 + 1\n")
+        assert "2" in recv_until("2")
+    finally:
+        if conn is not None:
+            conn.close()
+        console.stop()
