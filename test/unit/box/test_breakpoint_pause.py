@@ -19,6 +19,7 @@ Covered:
 from __future__ import annotations
 
 import os
+import sys
 import json
 import time
 import socket
@@ -151,6 +152,11 @@ def test_interactive_console_evaluates_script_state(monkeypatch):
     """End-to-end proof the interactive console can read the paused script's
     namespace, run statements, and survive errors — all over the socket."""
     monkeypatch.setattr(bp, "CONSOLE_PORT_RANGE", range(8401, 8411))
+    # Pin the default excepthook: another test module importing the real lager
+    # package installs lager_excepthook globally, and InteractiveConsole routes
+    # tracebacks through a non-default sys.excepthook. On the box that's fine
+    # (LAGER_HOST_MODULE_FOLDER is set); here it isn't, so keep the test isolated.
+    monkeypatch.setattr(sys, "excepthook", sys.__excepthook__)
     ns = {"measurements": {"vbat": 3.71, "cycle": 3}, "x": 42}
     console = bp._SocketConsole(ns)
     port = console.start()
