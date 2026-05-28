@@ -1,0 +1,35 @@
+---
+title: "Version 0.20.1"
+description: "May 27, 2026"
+---
+
+## <u>Features</u>
+
+- **New `--force` option on `lager update`.** Re-runs an update even when Lager thinks your box is already up to date, and rebuilds the box cleanly from scratch. Reach for this if a previous update didn't finish and the box is acting strangely — `lager update --box <name> --force`.
+
+## <u>Bug Fixes</u>
+
+- **Updates no longer hang or fail on some networks.** On certain setups a box couldn't reach GitHub while updating, which made `lager update` appear to freeze for around 15 minutes and then fail. Boxes now connect reliably during an update, and a brief network hiccup is retried automatically instead of stopping the whole update.
+
+## <u>Improvements</u>
+
+- **Updating a box is much faster — about 30 seconds instead of ~15 minutes.** Lager now reuses the work from your last update instead of rebuilding everything from scratch each time. (A longer update still happens when the box's software dependencies actually change.)
+- **Use `lager update` to update a box.** This is now the one command to remember. The older `lager box update` has been removed.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.20.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.20.1/)
