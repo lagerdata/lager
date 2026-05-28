@@ -1,0 +1,219 @@
+---
+title: Breakpoints
+description: Pause a running lager python script to inspect the bench, then continue
+---
+
+Pause a `lager python` script mid-run so you can inspect the bench with ad-hoc `lager`
+commands (or a live Python prompt), then resume where it left off. Useful for a long test
+that reaches a known trouble spot, or for checking on a device in an unknown state without
+killing and restarting the run.
+
+Introduced in **lager 0.21.0**.
+
+## Import
+
+```python
+from lager import pause
+```
+
+## `pause(label=None, *, timeout=None, interactive=False)`
+
+Blocks the script at the call site until it is resumed (or the timeout elapses).
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `label` | `None` | A short note shown in the pause banner and console — e.g. the reason for the breakpoint. |
+| `timeout` | `None` | Seconds to wait before auto-resuming. `None` uses the `LAGER_BREAKPOINT_TIMEOUT` env var, or **300 s** if unset. `0` waits indefinitely (until you resume). |
+| `interactive` | `False` | When `True`, also exposes a Python console attached to the paused script (see [Interactive console](#interactive-console)). |
+
+```python
+from lager import pause
+
+pause("check the DUT before the final step")
+```
+
+When the line runs, the script prints a banner and stops:
+
+```
+=== lager breakpoint "check the DUT before the final step" at test.py:14  (id 7f3a…e9)
+    resume: press Enter here, or `lager python --continue 7f3a…e9 --box mybox`
+    inspect: `lager python --console 7f3a…e9 --box mybox`
+    auto-resume in 300s
+```
+
+`pause()` is a safe no-op when it can't pause — when the script isn't running under
+`lager python` (no breakpoint context), or when [breakpoints are disabled](#disabling-breakpoints).
+It never raises.
+
+## Resuming
+
+A paused script can be resumed three ways:
+
+1. **Press Enter** in the terminal running the script (the foreground `lager python` session).
+2. **`lager python --continue <id> --box <box>`** — from any terminal, anywhere. Use the `id`
+   from the banner. Handy when the script is detached or you're already in another terminal.
+3. **Auto-resume** — after the timeout (default 300 s) the script continues on its own and logs
+   that it did. This keeps an unattended or forgotten breakpoint from hanging a run.
+
+### Controlling the auto-resume timeout
+
+The default is **300 seconds**. Override it per breakpoint, per run, or disable it entirely:
+
+```python
+pause("inspect", timeout=1800)   # wait up to 30 minutes
+pause("inspect", timeout=0)      # wait forever — never auto-resume
+```
+
+```bash
+# whole run, via the existing --env flag (applies to pause() calls with no explicit timeout=)
+lager python test.py --box mybox --env LAGER_BREAKPOINT_TIMEOUT=1800
+```
+
+Resolution order is **`timeout=` argument → `LAGER_BREAKPOINT_TIMEOUT` env → 300 s default**, so an
+explicit `timeout=` in the script wins over the env var.
+
+<Note>
+`lager python --timeout` is a different setting — the script's total runtime limit, capped at
+300 s on the box — and it will terminate the whole run when it elapses, paused or not. Leave it
+at its default (`0`, unlimited) when using long breakpoint pauses.
+</Note>
+
+## Interactive console
+
+With `pause(interactive=True)`, the breakpoint also opens a Python console **running inside the
+paused script's process**, seeded with the variables in scope at the pause:
+
+```python
+readings = read_adcs()
+pause("inspect bench", interactive=True)
+```
+
+Connect to it from another terminal:
+
+```bash
+lager python --console <id> --box mybox
+```
+
+```
+Connected to interactive console (Ctrl+D to disconnect)
+>>> readings
+{'adc1': -10.6032, 'adc2': -10.6031, 'adc3': -10.6032}
+>>> readings['adc1'] * 1000
+-10603.2
+>>> read_adcs()
+{'adc1': -10.6032, 'adc2': -10.6032, 'adc3': -10.6032}
+```
+
+You can read any variable, evaluate expressions, and call functions the script defines.
+`Ctrl+D` disconnects (the script stays paused).
+
+<Note>
+The console is for **inspection**: it operates on a snapshot of the script's namespace, so
+changes you make in the console do **not** carry back into the running script when it resumes.
+</Note>
+
+## Inspecting hardware while paused
+
+Because a paused script holds no box-wide lock, you can run normal `lager` commands against the
+bench from another terminal while it waits:
+
+```bash
+lager supply supply2 state --box mybox     # power supply
+lager battery battery1 state --box mybox   # battery
+lager adc adc4 --box mybox                 # an ADC the script isn't using
+```
+
+Two hardware rules to keep in mind, both a consequence of USB instruments allowing only one
+owner at a time:
+
+- **A device the script itself has open is claimed by the paused process.** Reading it from a
+  second terminal returns a "device busy / claimed by another process" error. Read it through the
+  **`--console`** instead — that runs in the same process and shares the open handle.
+- **One net per physical instrument per process.** Two nets on the same instrument can't both be
+  open at once in a single script (e.g. the two channels of one Rigol DP821, `supply2`/`supply3`,
+  or the dual-role Keithley 2281S, `supply1`/`battery1`). Read them from separate terminals, or
+  one at a time.
+
+## Built-in `breakpoint()`
+
+Calling Python's built-in `breakpoint()` in a `lager python` script triggers the same interactive
+pause as `lager.pause()`:
+
+```python
+breakpoint()              # same as pause()
+breakpoint("check DUT")   # same as pause("check DUT")
+```
+
+## Disabling breakpoints
+
+Set `LAGER_BREAKPOINTS` to an off value to turn every `pause()` (and `breakpoint()`) into a no-op
+— useful for a clean, non-interactive run of a script that has breakpoints left in it:
+
+```bash
+lager python test.py --box mybox --env LAGER_BREAKPOINTS=off
+```
+
+Accepts `off`, `0`, `false`, or `no` (case-insensitive).
+
+## Full example
+
+`test.py`:
+
+```python
+import time
+from lager import Net, NetType, pause
+
+adc_nets = ["adc1", "adc2", "adc3"]
+
+
+def read_adcs():
+    return {n: round(float(Net.get(n, type=NetType.ADC).input()), 4) for n in adc_nets}
+
+
+print("Running test...")
+for step in range(1, 4):
+    print(f"  step {step}/3 ...")
+    time.sleep(1)
+
+readings = read_adcs()
+print(f"sensor readings: {readings}")
+
+pause("inspect bench before final step", interactive=True)
+
+print("Resuming - running final step.")
+print("Done.")
+```
+
+Run it (terminal 1):
+
+```bash
+lager python test.py --box mybox
+```
+
+```
+Running test...
+  step 1/3 ...
+  step 2/3 ...
+  step 3/3 ...
+sensor readings: {'adc1': -10.6032, 'adc2': -10.6031, 'adc3': -10.6032}
+=== lager breakpoint "inspect bench before final step" at test.py:18  (id 7f3a…e9)
+    resume: press Enter here, or `lager python --continue 7f3a…e9 --box mybox`
+    inspect: `lager python --console 7f3a…e9 --box mybox`
+    auto-resume in 300s
+```
+
+While it's paused, check the bench (terminal 2):
+
+```bash
+lager supply supply2 state --box mybox        # a shared instrument — reads fine
+lager python --console 7f3a…e9 --box mybox    # then: readings / read_adcs()
+```
+
+Press **Enter** in terminal 1 (or run `lager python --continue 7f3a…e9 --box mybox`) and the
+script finishes:
+
+```
+=== resumed
+Resuming - running final step.
+Done.
+```

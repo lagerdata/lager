@@ -2,6 +2,32 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.21.0] - 2026-05-28
+
+Interactive breakpoints for `lager python` scripts. A long-running test can now pause itself mid-run so the operator can inspect the bench with ad-hoc `lager` commands (or a live Python prompt) and then continue — the workflow customers asked for when debugging tests against a device in an unknown state. Before this, `lager python` scripts ran start-to-finish with `stdin` set to `DEVNULL` and there was no way to hold execution at a chosen point.
+
+### Added
+- **`lager.pause(label=None, *, timeout=None, interactive=False)`** — drop it anywhere in a `lager python` script and execution blocks at that line. Resume three ways: press **Enter** in the script's foreground terminal, run **`lager python --continue <id> --box <box>`** from any terminal, or let it **auto-resume after `timeout` seconds (default 300)**. A paused script holds no box-wide lock, so other `lager` commands keep working against the bench while it waits. Coordination is file-based under `/tmp/lager_processes/{id}/` (`breakpoint.json` describing the pause + a `resume` marker), polled by the script — deliberately chosen over adding a channel to the timing-sensitive `stream_process_output()` path (which has 50–120 ms UART budgets). The `id` is the existing client-generated `LAGER_PROCESS_ID`, so it is known for both foreground and detached runs.
+- **`POST /python/continue` and `POST /python/breakpoint`** endpoints on the box Python service (port 5000): `continue` drops the `resume` marker for a process id (returns `{resumed: bool}`); `breakpoint` reports the current pause state. Both validate the id as a UUID.
+- **`lager python --continue <id>` and `lager python --console <id>`** flags (alongside `--kill`/`--reattach`, lock-check skipped), plus a foreground stdin watcher so **Enter resumes** a paused run. New session helpers `continue_python()` / `breakpoint_status()` in `cli/context/session.py`.
+- **Interactive console** via `pause(interactive=True)` + `lager python --console <id>` — a Python REPL bound to a socket (a free port in the already-exposed 8081–8090 range), seeded with the paused frame's globals + locals. Read any variable, evaluate expressions, or call the script's functions. **This is the way to inspect a device the script itself holds open** (e.g. a LabJack), since it runs *inside* the paused process. It operates on a snapshot — mutations in the console do not write back into the running script.
+- **Configuration**: `timeout=` (per call) or `LAGER_BREAKPOINT_TIMEOUT` (env, set via `lager python --env`) override the auto-resume duration; `timeout=0` waits indefinitely; `LAGER_BREAKPOINTS=off|0|false` makes every `pause()` a no-op (and `pause()` outside `lager python` — no `LAGER_PROCESS_ID` — is a safe no-op).
+- **Dedicated docs**: a Python API guide at `docs/source/reference/python/breakpoints.mdx` covering the API, the three resume paths, the console, configuration, and the device-ownership behavior observed during hardware validation.
+
+### Changed
+- **`PYTHONBREAKPOINT` now points at `lager.breakpoint.pause`** (was `remote_pdb.set_trace`, set in `box/lager/python/executor.py` and `box/start_box.sh`). `remote_pdb` was never installed in the box image, so the builtin `breakpoint()` raised `ImportError`; it now invokes the same interactive pause as `lager.pause()`. The dead `REMOTE_PDB_HOST` / `REMOTE_PDB_PORT` envs were dropped.
+- **The breakpoint banner reports the script name you invoked** (from `LAGER_RUNNABLE`) instead of the box-side temp filename — `lager python` runs a single-file script from an opaque `tmpXXXX.py`, so the location previously read `tmpXXXX.py:NN`. Line numbers are unchanged (the temp file is a verbatim copy).
+
+### Fixed
+- **`box/lager/breakpoint.py` is now copied into the box image.** `box.Dockerfile` enumerates the top-level `lager/*.py` files by name in its `COPY`, so the new module was initially omitted and `lager/__init__.py`'s import of it failed the image build; it has been added to the manifest.
+- **Console output (banner, exit message, syntax errors, tracebacks) is routed to the console socket** rather than the script's stderr, so it no longer leaks into the `lager python` terminal.
+
+### Verified on PRD-1 (live, not just unit-tested)
+- Pause/resume via **Enter** and via `lager python --continue <id>`; **auto-resume** after the timeout.
+- **Interactive console**: read the captured `readings` dict, a live in-process `read_adcs()` (succeeds where a separate `lager adc` returns `LJME_DEVICE_CURRENTLY_CLAIMED_BY_ANOTHER_PROCESS`, because the paused script owns the LabJack handle), and arbitrary Python.
+- Reading `supply2` and `battery1` state from a second terminal while the script was paused.
+- **Device-ownership behavior documented from this testing**: a paused script keeps every instrument it opened claimed for the duration of the pause — inspect script-held devices via `--console`, shared instruments from a second terminal; and a single process can hold only one net per physical instrument at a time (Rigol `supply2`/`supply3`; dual-role Keithley `supply1`/`battery1`).
+
 ## [0.20.1] - 2026-05-27
 
 ### Added
