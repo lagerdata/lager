@@ -14,6 +14,7 @@ import json
 import click
 
 from ...context import get_default_net
+from ...core.net_group import NetCommand
 from ...core.net_helpers import (
     resolve_box,
     list_nets_by_role,
@@ -26,7 +27,7 @@ from ...core.net_helpers import (
 GPIO_ROLE = "gpio"
 
 
-@click.command(name="gpi", help="Read GPIO input state (0 or 1)")
+@click.command(name="gpi", cls=NetCommand, help="Read GPIO input state (0 or 1)")
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.option(
@@ -40,7 +41,7 @@ GPIO_ROLE = "gpio"
 @click.option("--scan-rate", type=int, default=None, help="LabJack streaming sample rate in Hz (advanced)")
 @click.option("--scans-per-read", type=int, default=None, help="LabJack scans per read batch (advanced)")
 @click.option("--poll-interval", type=float, default=None, help="Poll interval in seconds for non-streaming drivers (advanced)")
-@click.argument("netname", required=False)
+@click.argument("netname", required=False, metavar="[NET_NAME]")
 def gpi(ctx, box, wait_for, timeout, scan_rate, scans_per_read, poll_interval, netname):
     """Read the state of a GPIO input net.
 
@@ -91,3 +92,10 @@ def gpi(ctx, box, wait_for, timeout, scan_rate, scans_per_read, poll_interval, n
         args=(payload,),
         timeout=None,
     )
+
+
+gpi.net_examples = [
+    "lager gpi gpi1 --box JUL-12",
+    "lager gpi gpi1 --wait-for high --timeout 5 --box JUL-12",
+    "lager gpi --box JUL-12          (list GPIO nets)",
+]

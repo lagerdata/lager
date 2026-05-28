@@ -11,6 +11,7 @@ import json
 import click
 from ...context import get_default_net, get_impl_path
 from ..development.python import run_python_internal
+from ...core.net_group import NetCommand
 from ...core.net_helpers import (
     resolve_box,
     display_nets,
@@ -20,10 +21,10 @@ from ...core.net_helpers import (
 THERMOCOUPLE_ROLE = "thermocouple"
 
 
-@click.command(name="thermocouple", help="Read thermocouple temperature in degrees Celsius")
+@click.command(name="thermocouple", cls=NetCommand, help="Read thermocouple temperature in degrees Celsius")
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
-@click.argument("netname", required=False)
+@click.argument("netname", required=False, metavar="[NET_NAME]")
 def thermocouple(ctx, box, netname):
     # Use provided netname, or fall back to default if not provided
     if netname is None:
@@ -74,3 +75,9 @@ def thermocouple(ctx, box, netname):
         click.secho(f"  2. Verify net configuration: lager nets --box {box or box_ip}", err=True)
         click.secho(f"  3. Check box connectivity: lager hello --box {box or box_ip}", err=True)
         ctx.exit(1)
+
+
+thermocouple.net_examples = [
+    "lager thermocouple tc1 --box JUL-12",
+    "lager thermocouple --box JUL-12     (list thermocouple nets)",
+]

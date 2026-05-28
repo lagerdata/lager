@@ -41,7 +41,7 @@ def _launch_terminal():
 
 @click.command('terminal')
 def terminal_cmd():
-    """Launch the interactive Lager Terminal."""
+    """Launch the interactive Lager Terminal"""
     if not _launch_terminal():
         raise SystemExit(1)
 
@@ -109,7 +109,76 @@ def _decode_environment():
         if key.startswith('LAGER_'):
             os.environ[key] = urllib.parse.unquote(os.environ[key])
 
-@click.group(invoke_without_command=True)
+
+class SectionedGroup(click.Group):
+    """Root CLI group that lists commands under category headings.
+
+    A flat, alphabetical wall of 40+ commands is hard for a new user to scan.
+    This renders ``lager --help`` with the commands grouped into the same
+    categories the codebase already organises them by (see imports above), so
+    a newcomer can find "the power-supply one" or "the debug one" at a glance.
+
+    Any command not listed in ``COMMAND_SECTIONS`` (e.g. a newly added one that
+    nobody categorised yet) still shows up — under a trailing "Other" section —
+    so commands can never silently disappear from help.
+    """
+
+    COMMAND_SECTIONS = [
+        ("Debug & development", ["debug", "python", "arm", "devenv", "exec"]),
+        ("Power", ["supply", "battery", "solar", "eload"]),
+        ("Measurement & I/O", ["scope", "logic", "energy", "adc", "dac",
+                                "gpi", "gpo", "thermocouple", "watt"]),
+        ("Communication", ["uart", "usb", "spi", "i2c", "ble", "blufi",
+                            "router"]),
+        ("Box setup & management", ["hello", "boxes", "box", "nets",
+                                    "instruments", "ssh", "defaults", "webcam"]),
+        ("Install & maintenance", ["update", "install", "uninstall",
+                                   "install-wheel", "binaries", "logs",
+                                   "terminal"]),
+    ]
+
+    def format_commands(self, ctx, formatter):
+        # Collect visible commands keyed by name.
+        commands = {}
+        for name in self.list_commands(ctx):
+            cmd = self.get_command(ctx, name)
+            if cmd is None or getattr(cmd, "hidden", False):
+                continue
+            commands[name] = cmd
+
+        if not commands:
+            return
+
+        # One shared column width so every section's short-help lines up.
+        col_max = max(len(name) for name in commands)
+        limit = formatter.width - 6 - col_max
+
+        assigned = set()
+        sections = []
+        for title, names in self.COMMAND_SECTIONS:
+            rows = []
+            for name in names:
+                cmd = commands.get(name)
+                if cmd is None:
+                    continue
+                assigned.add(name)
+                rows.append((name, cmd.get_short_help_str(limit)))
+            if rows:
+                sections.append((title, rows))
+
+        leftovers = sorted(
+            (name, commands[name].get_short_help_str(limit))
+            for name in commands if name not in assigned
+        )
+        if leftovers:
+            sections.append(("Other", leftovers))
+
+        for title, rows in sections:
+            with formatter.section(title):
+                formatter.write_dl(rows, col_max=col_max)
+
+
+@click.group(cls=SectionedGroup, invoke_without_command=True)
 @click.pass_context
 @click.option('--version', 'see_version', is_flag=True, help='See package version')
 @click.option('--debug', 'debug', is_flag=True, help='Show debug output', default=False)

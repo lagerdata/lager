@@ -15,7 +15,7 @@ from .config import box_config
 
 @click.group(name="box")
 def box() -> None:
-    """Box-side configuration and provisioning."""
+    """Box-side configuration and provisioning"""
 
 
 box.add_command(box_config, name="config")

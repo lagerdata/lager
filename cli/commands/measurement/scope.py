@@ -11,6 +11,7 @@ import json
 import click
 from ...context import get_impl_path, get_default_net
 from ..development.python import run_python_internal
+from ...core.net_group import NetGroup
 from ...core.net_helpers import (
     require_netname,
     resolve_box,
@@ -109,8 +110,8 @@ def _run_backend(ctx, dut, action: str, **params):
 
 # ---------- CLI ----------
 
-@click.group(invoke_without_command=True)
-@click.argument("NETNAME", required=False)
+@click.group(cls=NetGroup, invoke_without_command=True)
+@click.argument("NETNAME", required=False, metavar="[NET_NAME]")
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def scope(ctx, box, netname):
@@ -125,6 +126,15 @@ def scope(ctx, box, netname):
     if ctx.invoked_subcommand is None:
         box_ip = _resolve_box(ctx, box)
         display_nets(ctx, box_ip, None, SCOPE_ROLE, "scope")
+
+
+scope.net_examples = [
+    "lager scope scope1 enable --box JUL-12",
+    "lager scope scope1 scale 0.5 --box JUL-12",
+    "lager scope scope1 timebase 1e-3 --box JUL-12",
+    "lager scope scope1 start --box JUL-12",
+    "lager scope --box JUL-12                (list scope nets)",
+]
 
 
 @scope.command()
@@ -1210,7 +1220,7 @@ def stream_start(ctx, box, channel, volts_per_div, time_per_div, trigger_level, 
     if not _is_picoscope(instrument):
         click.secho(f"Error: '{netname}' is not a PicoScope (instrument: {instrument})", fg="red", err=True)
         click.secho("Streaming is only supported for PicoScope devices.", err=True)
-        click.secho("For Rigol scopes, use: lager scope <net> start --single", err=True)
+        click.secho("For Rigol scopes, use: lager scope [NET_NAME] start --single", err=True)
         ctx.exit(1)
 
     data = {
@@ -1330,7 +1340,7 @@ def stream_web(ctx, box, port):
     url = f"http://{box_ip}:{port}/web_oscilloscope.html"
 
     click.secho(f"Opening oscilloscope visualization at {url}", fg="green")
-    click.secho("Note: Make sure streaming is started with 'lager scope <net> stream start'", fg="yellow")
+    click.secho("Note: Make sure streaming is started with 'lager scope [NET_NAME] stream start'", fg="yellow")
 
     try:
         webbrowser.open(url)

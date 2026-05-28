@@ -17,6 +17,7 @@ from texttable import Texttable
 from ...context import get_default_box, get_impl_path, get_default_net
 from ..development.python import run_python_internal
 from ...box_storage import get_box_ip
+from ...core.net_group import NetGroupHelpMixin
 
 WEBCAM_ROLE = "camera"
 
@@ -214,7 +215,7 @@ def _run_webcam_command(ctx: click.Context, box_ip: str, action: str, net_name: 
     return result
 
 
-class WebcamGroup(click.Group):
+class WebcamGroup(NetGroupHelpMixin, click.Group):
     """Custom Group that handles optional NETNAME before subcommand"""
 
     def parse_args(self, ctx, args):
@@ -264,6 +265,14 @@ def webcam(ctx, box):
             click.echo(ctx.get_help())
 
 
+webcam.net_examples = [
+    "lager webcam cam1 start --box JUL-12",
+    "lager webcam cam1 stop --box JUL-12",
+    "lager webcam url --box JUL-12           (URLs of active streams)",
+    "lager webcam start-all --box JUL-12     (no NET_NAME needed)",
+]
+
+
 @click.command(name="start")
 @click.option("--box", help="Lagerbox name or IP")
 @click.pass_context
@@ -275,8 +284,8 @@ def webcam_start(ctx, box):
     net_name = getattr(ctx.obj, "netname", None)
     if not net_name:
         raise click.UsageError(
-            "NETNAME required.\n\n"
-            "Usage: lager webcam <NETNAME> start --box <BOX>\n"
+            "NET_NAME required.\n\n"
+            "Usage: lager webcam [NET_NAME] start --box [BOX_NAME]\n"
             "Example: lager webcam webcam1 start --box my-box"
         )
 
@@ -337,8 +346,8 @@ def webcam_stop(ctx, box):
     net_name = getattr(ctx.obj, "netname", None)
     if not net_name:
         raise click.UsageError(
-            "NETNAME required.\n\n"
-            "Usage: lager webcam <NETNAME> stop --box <BOX>\n"
+            "NET_NAME required.\n\n"
+            "Usage: lager webcam [NET_NAME] stop --box [BOX_NAME]\n"
             "Example: lager webcam webcam1 stop --box my-box"
         )
 

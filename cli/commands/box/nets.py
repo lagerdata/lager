@@ -471,7 +471,7 @@ def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
 
             click.echo("", err=True)
             click.echo("To add a new box, use:", err=True)
-            click.echo(f"  lager boxes add --name {target_box} --ip <IP_ADDRESS>", err=True)
+            click.echo(f"  lager boxes add --name {target_box} --ip [IP_ADDRESS]", err=True)
             ctx.exit(1)
 
     # get_default_box already handles local box resolution
@@ -632,7 +632,7 @@ def _save_nets_batch(ctx: click.Context, box: str, nets_data: List[dict]) -> Non
 @click.group(
     name="nets",
     invoke_without_command=True,
-    help="List all saved nets.",
+    help="List and manage saved nets",
 )
 @click.option("--box", help="Lagerbox name or IP")
 @click.pass_context
@@ -648,7 +648,7 @@ def nets(ctx: click.Context, box: str | None) -> None:  # noqa: D401
 # Sub-commands                                                                #
 # --------------------------------------------------------------------------- #
 
-@nets.command("delete", help="Delete one saved net by name and type.")
+@nets.command("delete", help="Delete one saved net by name and type")
 @click.argument("name")
 @click.argument("net_type")
 @click.option("--box", help="Lagerbox name or IP")
@@ -684,7 +684,7 @@ def delete_cmd(
     click.secho(f"Deleted '{name}' ({net_type}) on box {resolved_box}.", fg="green")
 
 
-@nets.command("delete-all", help="Dangerous – delete every saved net.")
+@nets.command("delete-all", help="Dangerous – delete every saved net")
 @click.option("--box", help="Lagerbox name or IP")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt")
 @click.pass_context
@@ -701,14 +701,14 @@ def delete_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
     click.secho(f"Deleted all nets on box {resolved_box}.", fg="green")
 
 
-@nets.command("tui", help="Launch the interactive Net-Manager TUI.")
+@nets.command("tui", help="Launch the interactive Net-Manager TUI")
 @click.option("--box", help="Lagerbox name or IP")
 @click.pass_context
 def tui_cmd(ctx: click.Context, box: str | None) -> None:
     launch_tui(ctx, _resolve_box(ctx, box))
 
 
-@nets.command("rename", help="Rename a saved net.")
+@nets.command("rename", help="Rename a saved net")
 @click.argument("name")
 @click.argument("new_name")
 @click.option("--box", help="Lagerbox name or IP")
@@ -767,7 +767,7 @@ def rename_cmd(
 @click.pass_context
 def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config):
     """
-    Add a net using inferred instrument from VISA address.
+    Add a net using inferred instrument from VISA address
     """
     from ...box_storage import resolve_and_validate_box
 
@@ -1038,7 +1038,7 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
     click.secho(f"Saved new net '{name}' on {resolved_box}.", fg="green")
 
 
-@nets.command("add-all", help="Add all possible nets that can be created on the box.")
+@nets.command("add-all", help="Add all possible nets that can be created on the box")
 @click.option("--box", help="Lagerbox name or IP")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt")
 @click.pass_context
@@ -1340,7 +1340,7 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
     _save_nets_batch(ctx, resolved_box, nets_to_save)
 
 
-@nets.command("add-batch", help="Add multiple nets from a JSON file.")
+@nets.command("add-batch", help="Add multiple nets from a JSON file")
 @click.argument("json_file", type=click.File("r"))
 @click.option("--box", help="Lagerbox name or IP")
 @click.pass_context
@@ -1637,6 +1637,7 @@ _BACKEND_CLICK_CHOICE = click.Choice([_BACKEND_JLINK, _BACKEND_OPENOCD])
 
 @nets.command(
     "set-script",
+    short_help="Attach a J-Link/OpenOCD script to a debug net",
     help="Attach a J-Link script or OpenOCD .cfg/.tcl to a debug net. "
     "Backend is auto-detected from the probe VID and the file extension; "
     "use SCRIPT_PATH='-' to read from stdin.",
@@ -1670,6 +1671,7 @@ def set_script_cmd(
 
 @nets.command(
     "remove-script",
+    short_help="Remove a debug net's J-Link/OpenOCD script",
     help="Remove the J-Link script or OpenOCD config attached to a debug net.",
 )
 @click.argument("name")
@@ -1687,6 +1689,7 @@ def remove_script_cmd(
 
 @nets.command(
     "show-script",
+    short_help="Show a debug net's J-Link/OpenOCD script",
     help="Display the J-Link script or OpenOCD config attached to a debug net.",
 )
 @click.argument("name")
@@ -1708,7 +1711,8 @@ def show_script_cmd(
     _show_debug_script_impl(ctx, name, box, backend)
 
 
-@nets.command("describe", help="Set metadata on a saved net (description, DUT connection, hints, tags).")
+@nets.command("describe", short_help="Set metadata on a saved net",
+              help="Set metadata on a saved net (description, DUT connection, hints, tags).")
 @click.argument("name")
 @click.option("--description", "-d", default=None, help="Human-readable description of the net")
 @click.option("--dut-connection", default=None, help="How the net connects to the DUT (e.g., 'MCU SPI1 peripheral')")
@@ -1770,7 +1774,7 @@ def describe_cmd(
     click.secho(f"Updated metadata for net '{name}' on box {resolved_box}.", fg="green")
 
 
-@nets.command("show", help="Show full details of a saved net, including metadata.")
+@nets.command("show", help="Show full details of a saved net, including metadata")
 @click.argument("name")
 @click.option("--box", help="Lagerbox name or IP")
 @click.option("--json", "as_json", is_flag=True, help="Output as raw JSON")

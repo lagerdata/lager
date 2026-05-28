@@ -451,7 +451,7 @@ def stream_capture(params: dict):
             print("No data captured.")
             print("Note: The oscilloscope daemon may not be providing data in the expected format.")
             print("Try using the web visualization interface instead:")
-            print("  lager scope <net> stream web --box <box>")
+            print("  lager scope [NET_NAME] stream web --box [BOX_NAME]")
 
 
 def main():

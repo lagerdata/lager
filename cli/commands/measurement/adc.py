@@ -14,6 +14,7 @@ import json
 import click
 
 from ...context import get_default_net
+from ...core.net_group import NetCommand
 from ...core.net_helpers import (
     resolve_box,
     list_nets_by_role,
@@ -26,10 +27,10 @@ from ...core.net_helpers import (
 ADC_ROLE = "adc"
 
 
-@click.command(name="adc", help="Read voltage from ADC net")
+@click.command(name="adc", cls=NetCommand, help="Read voltage from ADC net")
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
-@click.argument("netname", required=False)
+@click.argument("netname", required=False, metavar="[NET_NAME]")
 def adc(ctx, box, netname):
     """Read voltage from an ADC (analog-to-digital converter) net.
 
@@ -60,3 +61,9 @@ def adc(ctx, box, netname):
         args=(payload,),
         timeout=None,
     )
+
+
+adc.net_examples = [
+    "lager adc adc1 --box JUL-12",
+    "lager adc --box JUL-12          (list ADC nets)",
+]

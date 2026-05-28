@@ -164,7 +164,7 @@ def _list_field(
             click.echo(formatter(item))
 
 
-@click.group(name="config", invoke_without_command=True, help="Manage declarative box provisioning.")
+@click.group(name="config", invoke_without_command=True, help="Manage declarative box provisioning")
 @click.option("--box", help="Lagerbox name or IP")
 @click.pass_context
 def box_config(ctx: click.Context, box: Optional[str]) -> None:

@@ -84,7 +84,7 @@ def get_script_path(script_name: str, subdir: str = "scripts") -> Path:
 @click.option("--yes", is_flag=True, help="Skip confirmation prompts")
 def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify, corporate_vpn, yes):
     """
-    Install lager box code onto a new box.
+    Install lager box code onto a new box
     """
     # 1. Resolve box name to IP and username if --box is provided
     if box and ip:
@@ -553,5 +553,5 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     click.secho("Installation complete!", fg='green', bold=True)
     click.echo()
     click.secho("Next steps:", fg='cyan')
-    click.echo("  - Verify the box is working: lager hello --box <box-name>")
-    click.echo("  - Please run 'lager update --box <box-name>' to update the box to the latest version")
+    click.echo("  - Verify the box is working: lager hello --box [BOX_NAME]")
+    click.echo("  - Please run 'lager update --box [BOX_NAME]' to update the box to the latest version")

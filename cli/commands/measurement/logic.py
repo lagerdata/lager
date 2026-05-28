@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import click
 from ...context import get_default_net
+from ...core.net_group import NetGroup
 from ...core.net_helpers import (
     require_netname,
     resolve_box,
@@ -33,14 +34,14 @@ def _validate_logic_net(ctx, box_ip: str, netname: str) -> bool:
     """Validate net exists and is a logic net, exit with error if not."""
     if not validate_net(ctx, box_ip, netname, LOGIC_ROLE):
         click.secho(f"Error: '{netname}' is not a logic net", fg="red", err=True)
-        click.secho("Use 'lager logic --box <box>' to list available logic nets.", err=True)
+        click.secho("Use 'lager logic --box [BOX_NAME]' to list available logic nets.", err=True)
         ctx.exit(1)
     return True
 
 # ---------- CLI ----------
 
-@click.group(invoke_without_command=True)
-@click.argument("NETNAME", required=False)
+@click.group(cls=NetGroup, invoke_without_command=True)
+@click.argument("NETNAME", required=False, metavar="[NET_NAME]")
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def logic(ctx, box, netname):
@@ -55,6 +56,14 @@ def logic(ctx, box, netname):
     if ctx.invoked_subcommand is None:
         box_ip = _resolve_box(ctx, box)
         display_nets(ctx, box_ip, None, LOGIC_ROLE, "logic")
+
+
+logic.net_examples = [
+    "lager logic logic1 enable --box JUL-12",
+    "lager logic logic1 start --box JUL-12",
+    "lager logic logic1 trigger --box JUL-12",
+    "lager logic --box JUL-12                (list logic nets)",
+]
 
 
 def _run_backend(ctx, dut, action: str, **params):

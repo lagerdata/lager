@@ -6,11 +6,11 @@ Battery simulator CLI commands.
 
 Usage:
     lager battery                     -> lists battery nets
-    lager battery <NETNAME> soc 80    -> set state of charge to 80%
-    lager battery <NETNAME> voc 4.2   -> set open circuit voltage
-    lager battery <NETNAME> enable
-    lager battery <NETNAME> disable
-    lager battery <NETNAME> state
+    lager battery [NET_NAME] soc 80    -> set state of charge to 80%
+    lager battery [NET_NAME] voc 4.2   -> set open circuit voltage
+    lager battery [NET_NAME] enable
+    lager battery [NET_NAME] disable
+    lager battery [NET_NAME] state
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ import asyncio
 
 import click
 
+from ...core.net_group import NetGroup
 # Import consolidated helpers from cli.core.net_helpers
 from ...core.net_helpers import (
     require_netname,
@@ -117,8 +118,8 @@ def _run_backend(ctx, box, action: str, **params):
 
 # ---------- CLI ----------
 
-@click.group(invoke_without_command=True)
-@click.argument('NETNAME', required=False)
+@click.group(cls=NetGroup, invoke_without_command=True)
+@click.argument('NETNAME', required=False, metavar="[NET_NAME]")
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def battery(ctx, box, netname):
@@ -134,6 +135,15 @@ def battery(ctx, box, netname):
     if ctx.invoked_subcommand is None:
         resolved_box = resolve_box(ctx, box)
         display_nets(ctx, resolved_box, None, BATTERY_ROLE, "battery")
+
+
+battery.net_examples = [
+    "lager battery batt1 soc 80 --box JUL-12",
+    "lager battery batt1 voc 3.7 --box JUL-12",
+    "lager battery batt1 enable --box JUL-12",
+    "lager battery batt1 state --box JUL-12",
+    "lager battery --box JUL-12              (list battery nets)",
+]
 
 
 @battery.command()
