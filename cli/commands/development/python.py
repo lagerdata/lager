@@ -627,8 +627,9 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
 @click.option('--reattach', default=None, help='Reattach to detached process by process ID')
 @click.option('--continue', 'continue_', default=None, help='Resume a script paused at a breakpoint, by process ID')
 @click.option('--console', default=None, help='Connect to the interactive console of a paused script, by process ID')
+@click.option('--breakpoint-timeout', type=click.IntRange(min=0), default=None, help='Auto-resume timeout in seconds for lager.pause() breakpoints (0 = wait indefinitely). Overrides the 300s default.')
 @click.argument('args', nargs=-1)
-def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_overwrite, signum, timeout, detach, port, org, add_file, reattach, continue_, console, args):
+def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_overwrite, signum, timeout, detach, port, org, add_file, reattach, continue_, console, breakpoint_timeout, args):
     """Run Python script on box"""
     from ...box_storage import resolve_and_validate_box
 
@@ -691,5 +692,7 @@ def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_ove
     env = list(env) if env else []
     if box_name:
         env.append(f'LAGER_BOX={box_name}')
+    if breakpoint_timeout is not None:
+        env.append(f'LAGER_BREAKPOINT_TIMEOUT={breakpoint_timeout}')
 
     run_python_internal(ctx, runnable, box_ip, env, passenv, False, download, allow_overwrite, signum, timeout, detach, port, org, args, add_file, dut_name=box_name)
