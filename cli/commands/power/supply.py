@@ -6,14 +6,14 @@
 
     Usage:
       lager supply                    -> lists only supply nets
-      lager supply <NETNAME> voltage  -> set/read voltage on that net
-      lager supply <NETNAME> current  -> set/read current on that net
-      lager supply <NETNAME> enable
-      lager supply <NETNAME> disable
-      lager supply <NETNAME> state
-      lager supply <NETNAME> clear-ocp
-      lager supply <NETNAME> clear-ovp
-      lager supply <NETNAME> set
+      lager supply [NET_NAME] voltage  -> set/read voltage on that net
+      lager supply [NET_NAME] current  -> set/read current on that net
+      lager supply [NET_NAME] enable
+      lager supply [NET_NAME] disable
+      lager supply [NET_NAME] state
+      lager supply [NET_NAME] clear-ocp
+      lager supply [NET_NAME] clear-ovp
+      lager supply [NET_NAME] set
 """
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ import asyncio
 
 import click
 
+from ...core.net_group import NetGroup
 # Import consolidated helpers from cli.core.net_helpers
 from ...core.net_helpers import (
     require_netname,
@@ -210,8 +211,8 @@ def _run_backend(ctx, box, action: str, **params):
 
 # ---------- CLI ----------
 
-@click.group(invoke_without_command=True)
-@click.argument("NETNAME", required=False)
+@click.group(cls=NetGroup, invoke_without_command=True)
+@click.argument("NETNAME", required=False, metavar="[NET_NAME]")
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def supply(ctx, box, netname):
@@ -226,6 +227,15 @@ def supply(ctx, box, netname):
     if ctx.invoked_subcommand is None:
         resolved_box = resolve_box(ctx, box)
         display_nets(ctx, resolved_box, None, SUPPLY_ROLE, "power supply")
+
+
+supply.net_examples = [
+    "lager supply supply1 voltage 3.3 --box JUL-12",
+    "lager supply supply1 current 0.5 --box JUL-12",
+    "lager supply supply1 enable --box JUL-12",
+    "lager supply supply1 state --box JUL-12",
+    "lager supply --box JUL-12               (list supply nets)",
+]
 
 
 @supply.command()

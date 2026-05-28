@@ -24,6 +24,7 @@ import click
 import requests
 from texttable import Texttable
 
+from ...core.net_group import NetGroupHelpMixin
 from ...core.net_helpers import resolve_box
 from ...context import get_impl_path, get_default_net
 from ..development.python import run_python_internal
@@ -32,7 +33,7 @@ I2C_ROLE = "i2c"
 
 
 # Custom group class to handle --box after netname
-class I2CGroup(click.Group):
+class I2CGroup(NetGroupHelpMixin, click.Group):
     """
     Custom Click Group that allows --box option after NETNAME argument
     when no subcommand is invoked.
@@ -308,7 +309,7 @@ def _run_i2c_backend(ctx, box_ip, action: str, **params):
 # ---------- CLI ----------
 
 @click.group(name="i2c", cls=I2CGroup, invoke_without_command=True)
-@click.argument("NETNAME", required=False)
+@click.argument("NETNAME", required=False, metavar="[NET_NAME]")
 @click.pass_context
 @click.option('--box', required=False, help="Lagerbox name or IP")
 def i2c(ctx, netname, box):
@@ -331,6 +332,14 @@ def i2c(ctx, netname, box):
             display_nets(ctx, target_box, netname)
 
 
+i2c.net_examples = [
+    "lager i2c i2c1 scan --box JUL-12",
+    "lager i2c i2c1 read 4 --address 0x48 --box JUL-12",
+    "lager i2c i2c1 write 0x0A03 --address 0x48 --box JUL-12",
+    "lager i2c i2c1 --box JUL-12             (show net config)",
+]
+
+
 @i2c.command()
 @click.pass_context
 @click.option('--box', required=False, help="Lagerbox name or IP")
@@ -340,7 +349,7 @@ def i2c(ctx, netname, box):
               help='Enable/disable internal pull-ups (Aardvark only)')
 def config(ctx, box, frequency, pull_ups):
     """
-    Configure I2C bus parameters.
+    Configure I2C bus parameters
 
     Example:
       lager i2c MY_I2C config --frequency 400k --pull-ups on
@@ -373,7 +382,7 @@ def config(ctx, box, frequency, pull_ups):
               help='End address in hex (default: 0x77)')
 def scan(ctx, box, start, end):
     """
-    Scan I2C bus for connected devices.
+    Scan I2C bus for connected devices
 
     Probes addresses and reports those that ACK.
 
@@ -411,7 +420,7 @@ def scan(ctx, box, start, end):
               help='Output format')
 def read(ctx, num_bytes, box, address, frequency, output_format):
     """
-    Read bytes from an I2C device.
+    Read bytes from an I2C device
 
     Example:
       lager i2c MY_I2C read 4 --address 0x48
@@ -454,7 +463,7 @@ def read(ctx, num_bytes, box, address, frequency, output_format):
               help='Output format')
 def write(ctx, data, box, address, data_file, frequency, output_format):
     """
-    Write bytes to an I2C device.
+    Write bytes to an I2C device
 
     Example:
       lager i2c MY_I2C write 0x0A03 --address 0x48
@@ -509,7 +518,7 @@ def write(ctx, data, box, address, data_file, frequency, output_format):
               help='Output format')
 def transfer(ctx, num_bytes, box, address, data_str, data_file, frequency, output_format):
     """
-    Write then read in a single I2C transaction (repeated start).
+    Write then read in a single I2C transaction (repeated start)
 
     Common pattern: write register address, read register value.
 

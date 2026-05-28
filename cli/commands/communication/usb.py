@@ -9,16 +9,18 @@
 
     Usage:
       lager usb                          -> lists USB nets
-      lager usb <NETNAME> enable         -> enable USB port
-      lager usb <NETNAME> disable        -> disable USB port
-      lager usb <NETNAME> toggle         -> toggle USB port
+      lager usb [NET_NAME] enable         -> enable USB port
+      lager usb [NET_NAME] disable        -> disable USB port
+      lager usb [NET_NAME] toggle         -> toggle USB port
 """
 from __future__ import annotations
 
 import click
 
 # Import consolidated helpers from cli.core.net_helpers
+from ...core.net_group import NetGroup
 from ...core.net_helpers import (
+    require_netname,
     resolve_box,
     list_nets_by_role,
     display_nets_table,
@@ -157,48 +159,63 @@ def _invoke_remote(
         ctx.exit(1)
 
 
-@click.command(
-    "usb",
-    help="Control programmable USB hub ports",
-)
-@click.argument("net_name", metavar="NET_NAME", required=False)
-@click.argument(
-    "command",
-    metavar="COMMAND",
-    type=click.Choice(["enable", "disable", "toggle"], case_sensitive=False),
-    required=False,
-)
+@click.group(name="usb", cls=NetGroup, invoke_without_command=True)
+@click.argument("NETNAME", required=False, metavar="[NET_NAME]")
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.pass_context
-def usb(
-    ctx: click.Context,
-    net_name: str | None,
-    command: str | None,
-    box: str | None,
-) -> None:  # pragma: no cover
-    # Use provided net_name, or fall back to default if not provided
-    if net_name is None:
-        net_name = get_default_net(ctx, 'usb')
+def usb(ctx, netname, box):
+    """Control programmable USB hub ports"""
+    # Use provided netname, or fall back to the configured default
+    if netname is None:
+        netname = get_default_net(ctx, 'usb')
 
-    # If still no net_name, list available USB nets
-    if net_name is None:
+    if netname is not None:
+        ctx.obj.netname = netname
+
+    # No subcommand → list available USB nets
+    if ctx.invoked_subcommand is None:
         resolved_box = resolve_box(ctx, box)
         _display_usb_nets(ctx, resolved_box)
-        return
 
-    # If we have a net but no command, show error
-    if command is None:
-        raise click.UsageError(
-            "COMMAND required.\n\n"
-            "Usage: lager usb <NET_NAME> <COMMAND>\n"
-            "Example: lager usb usb1 enable --box mybox"
-        )
 
+def _run_usb_action(ctx, box, action: str) -> None:
+    """Shared body for the enable/disable/toggle subcommands."""
+    netname = require_netname(ctx, "usb")
     resolved_box = resolve_box(ctx, box)
 
     # Validate net exists before invoking remote command
-    net = _validate_usb_net(ctx, resolved_box, net_name)
-    if net is None:
+    if _validate_usb_net(ctx, resolved_box, netname) is None:
         return  # Error already displayed
 
-    _invoke_remote(ctx, net_name, resolved_box, command.lower())
+    _invoke_remote(ctx, netname, resolved_box, action)
+
+
+@usb.command()
+@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.pass_context
+def enable(ctx, box):
+    """Enable USB port (power on)"""
+    _run_usb_action(ctx, box, "enable")
+
+
+@usb.command()
+@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.pass_context
+def disable(ctx, box):
+    """Disable USB port (power off)"""
+    _run_usb_action(ctx, box, "disable")
+
+
+@usb.command()
+@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.pass_context
+def toggle(ctx, box):
+    """Toggle USB port power on/off"""
+    _run_usb_action(ctx, box, "toggle")
+
+
+usb.net_examples = [
+    "lager usb usb1 enable --box JUL-12",
+    "lager usb usb1 toggle --box JUL-12",
+    "lager usb --box JUL-12          (list USB nets)",
+]

@@ -11,6 +11,7 @@ import json
 import click
 from ...context import get_default_net, get_impl_path
 from ..development.python import run_python_internal
+from ...core.net_group import NetGroup
 from ...core.net_helpers import (
     resolve_box,
     display_nets,
@@ -73,13 +74,14 @@ def _run_energy(ctx, box, duration, netname, mode):
 
 @click.group(
     name="energy",
+    cls=NetGroup,
     invoke_without_command=True,
     help="Read energy/charge from an energy-analyzer net",
 )
-@click.argument("netname", required=False)
+@click.argument("netname", required=False, metavar="[NET_NAME]")
 @click.pass_context
 def energy(ctx, netname):
-    """Energy analyzer group.  Usage: lager energy <NETNAME> [read|stats] [OPTIONS]"""
+    """Energy analyzer group.  Usage: lager energy [NET_NAME] [COMMAND] --box [BOX_NAME]"""
     if netname is None:
         netname = get_default_net(ctx, 'energy')
     if netname is not None:
@@ -89,6 +91,13 @@ def energy(ctx, netname):
         # No subcommand → list nets
         box_ip = resolve_box(ctx, None)
         display_nets(ctx, box_ip, None, ENERGY_ROLE, "energy analyzer")
+
+
+energy.net_examples = [
+    "lager energy energy1 read --duration 10 --box JUL-12",
+    "lager energy energy1 stats --duration 5 --box JUL-12",
+    "lager energy --box JUL-12               (list energy analyzer nets)",
+]
 
 
 @energy.command(

@@ -6,16 +6,17 @@ Electronic load CLI commands.
 
 Usage:
     lager eload                     -> lists electronic load nets
-    lager eload <NETNAME> cc 0.5    -> set constant current to 0.5A
-    lager eload <NETNAME> cv 12.0   -> set constant voltage to 12V
-    lager eload <NETNAME> cr 100    -> set constant resistance to 100 ohms
-    lager eload <NETNAME> cp 10     -> set constant power to 10W
-    lager eload <NETNAME> state     -> display electronic load state
+    lager eload [NET_NAME] cc 0.5    -> set constant current to 0.5A
+    lager eload [NET_NAME] cv 12.0   -> set constant voltage to 12V
+    lager eload [NET_NAME] cr 100    -> set constant resistance to 100 ohms
+    lager eload [NET_NAME] cp 10     -> set constant power to 10W
+    lager eload [NET_NAME] state     -> display electronic load state
 """
 from __future__ import annotations
 
 import click
 
+from ...core.net_group import NetGroup
 # Import consolidated helpers from cli.core.net_helpers
 from ...core.net_helpers import (
     require_netname,
@@ -68,8 +69,8 @@ def _validate_eload_value(ctx, mode, value):
 
 # ---------- CLI ----------
 
-@click.group(invoke_without_command=True)
-@click.argument('netname', required=False)
+@click.group(cls=NetGroup, invoke_without_command=True)
+@click.argument('netname', required=False, metavar="[NET_NAME]")
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.pass_context
 def eload(ctx, netname, box):
@@ -85,6 +86,14 @@ def eload(ctx, netname, box):
     if ctx.invoked_subcommand is None:
         resolved_box = resolve_box(ctx, box)
         display_nets(ctx, resolved_box, None, ELOAD_ROLE, "electronic load")
+
+
+eload.net_examples = [
+    "lager eload eload1 cc 0.5 --box JUL-12",
+    "lager eload eload1 cv 3.3 --box JUL-12",
+    "lager eload eload1 state --box JUL-12",
+    "lager eload --box JUL-12                (list electronic load nets)",
+]
 
 
 @eload.command()

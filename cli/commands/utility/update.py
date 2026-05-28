@@ -872,7 +872,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             click.secho("The box could not authenticate with GitHub.", err=True)
             click.secho("The remote URL may still be using SSH (git@github.com:...).", err=True)
             click.secho("Fix by switching to HTTPS:", err=True)
-            click.secho("  ssh lagerdata@<box> 'cd ~/box && git remote set-url origin https://github.com/lagerdata/lager.git'", err=True)
+            click.secho("  ssh lagerdata@[BOX_NAME] 'cd ~/box && git remote set-url origin https://github.com/lagerdata/lager.git'", err=True)
         elif "not found" in stderr.lower() or f"couldn't find remote ref {target_version}" in stderr.lower():
             log_error(f"Error: Branch '{target_version}' not found on remote")
             click.secho(f"The branch '{target_version}' does not exist on GitHub.", err=True)
@@ -1550,7 +1550,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             # Detect common Docker build errors
             full_output = "\n".join(build_output_lines)
             if "No space left on device" in full_output:
-                click.secho("Hint: Disk space is full on the box. Run: ssh lagerdata@<box> 'docker system prune -af'", fg='yellow', err=True)
+                click.secho("Hint: Disk space is full on the box. Run: ssh lagerdata@[BOX_NAME] 'docker system prune -af'", fg='yellow', err=True)
             elif "network" in full_output.lower() and ("timeout" in full_output.lower() or "error" in full_output.lower()):
                 click.secho("Hint: Network issue during build. Check box internet connectivity.", fg='yellow', err=True)
             elif "permission denied" in full_output.lower():
@@ -1889,7 +1889,7 @@ fi
                     click.echo(f'    Error: {install_result.stderr.strip()}', err=True)
                 click.echo()
                 click.echo('    J-Link download failed. You can either:')
-                click.echo(f'      1. Copy from another box: deployment/copy_jlink_from_box.sh <source-box> {box_name}')
+                click.echo(f'      1. Copy from another box: deployment/copy_jlink_from_box.sh [SOURCE_BOX] {box_name}')
                 click.echo('      2. Manually download from https://www.segger.com/downloads/jlink/')
                 click.echo('      3. Use pyOCD (already installed, works with most debug probes)')
                 click.echo()
@@ -1943,7 +1943,7 @@ def _update_options(fn):
 @click.pass_context
 @_update_options
 def update(ctx, box, yes, version, verbose, check, force):
-    """Update box code from GitHub repository."""
+    """Update box code from GitHub repository"""
     _update_logic(
         ctx,
         box=box, yes=yes, version=version, verbose=verbose, check=check, force=force,

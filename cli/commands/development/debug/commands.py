@@ -19,6 +19,7 @@ from ....context import get_default_box, get_impl_path, get_default_net
 from ..python import run_python_internal
 from ....core.param_types import MemoryAddressType, HexArrayType, BinfileType
 from ....box_storage import get_box_ip, get_box_name_by_ip, get_box_user
+from ....core.net_group import NetGroupHelpMixin, NetSubCommand
 from .service_client import DebugServiceClient
 from .net_cache import get_net_cache
 
@@ -215,7 +216,7 @@ def _get_debug_net(ctx, box, net_name=None):
         else:
             # Find first available debug net
             if not debug_nets:
-                click.secho("No debug nets found. Create one with: lager nets create <name> debug <device_type> <address>", fg='red', err=True)
+                click.secho("No debug nets found. Create one with: lager nets create [NAME] debug [DEVICE_TYPE] [ADDRESS]", fg='red', err=True)
                 ctx.exit(1)
             target_net = debug_nets[0]
 
@@ -496,8 +497,15 @@ def _display_debug_nets(ctx, box):
     click.echo(table.draw())
 
 
-class NetDebugGroup(click.MultiCommand):
+class NetDebugGroup(NetGroupHelpMixin, click.MultiCommand):
     """Custom multi-command that treats first argument as net name"""
+
+    net_examples = [
+        "lager debug SWD reset --box JUL-12",
+        "lager debug SWD flash --elf firmware.elf --box JUL-12",
+        "lager debug SWD memrd 0x20000000 256 --box JUL-12",
+        "lager debug status --box JUL-12        (uses default debug net)",
+    ]
 
     def list_commands(self, ctx):
         """List all available debug subcommands"""
@@ -579,7 +587,7 @@ def _debug(ctx, box):
     pass
 
 
-@click.command()
+@click.command(cls=NetSubCommand)
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.option('--force/--no-force', is_flag=True, default=False,
@@ -876,7 +884,7 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
     else:
         client.close()
 
-@click.command()
+@click.command(cls=NetSubCommand)
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.option('--keep-server', is_flag=True, default=False,
@@ -909,7 +917,7 @@ def disconnect(ctx, box, keep_server):
 
     client.close()
 
-@click.command()
+@click.command(cls=NetSubCommand)
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.option('--hex', type=click.Path(exists=True))
@@ -1071,7 +1079,7 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
     # Keep debugger connected (no auto-disconnect)
     client.close()
 
-@click.command()
+@click.command(cls=NetSubCommand)
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.option('--speed', type=str, default='4000', callback=validate_speed_param,
@@ -1182,7 +1190,7 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
     # Keep debugger connected (no auto-disconnect)
     client.close()
 
-@click.command()
+@click.command(cls=NetSubCommand)
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.option('--halt/--no-halt', is_flag=True, default=False,
@@ -1243,7 +1251,7 @@ def reset(ctx, box, halt, force_reconnect):
     except Exception as e:
         error_msg = str(e)
         if "400" in error_msg or "No debugger connection" in error_msg:
-            click.secho("Error: No debugger connection found. Start GDB server first with: lager debug <net> gdbserver --box <box>", fg='red', err=True)
+            click.secho("Error: No debugger connection found. Start GDB server first with: lager debug [NET_NAME] gdbserver --box [BOX_NAME]", fg='red', err=True)
         else:
             click.secho(f"Error: {e}", fg='red', err=True)
         client.close()
@@ -1252,7 +1260,7 @@ def reset(ctx, box, halt, force_reconnect):
     # Keep debugger connected (no auto-disconnect)
     client.close()
 
-@click.command()
+@click.command(cls=NetSubCommand, short_help="Read memory from target")
 @click.pass_context
 @click.argument('start_addr', type=MemoryAddressType())
 @click.argument('length', type=MemoryAddressType())
@@ -1354,7 +1362,7 @@ def memrd(ctx, start_addr, length, box, json_output, halt, no_halt):
     except Exception as e:
         error_msg = str(e)
         if "400" in error_msg or "No debugger connection" in error_msg:
-            click.secho("Error: No debugger connection found. Start GDB server first with: lager debug <net> gdbserver --box <box> --halt", fg='red', err=True)
+            click.secho("Error: No debugger connection found. Start GDB server first with: lager debug [NET_NAME] gdbserver --box [BOX_NAME] --halt", fg='red', err=True)
             click.secho("Note: Device must be halted for memory reads to work reliably", fg='yellow', err=True)
         else:
             click.secho(f"Error reading memory: {e}", fg='red', err=True)
@@ -1400,7 +1408,7 @@ def memrd(ctx, start_addr, length, box, json_output, halt, no_halt):
 # For direct debugging, users should use gdb directly with the J-Link GDB server
 # running on the box, which can be accessed via SSH port forwarding if needed
 
-@click.command()
+@click.command(cls=NetSubCommand)
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def status(ctx, box):
@@ -1432,7 +1440,7 @@ def status(ctx, box):
     client.close()
 
 
-@click.command()
+@click.command(cls=NetSubCommand)
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.option('--verbose', is_flag=True, default=False,

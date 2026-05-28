@@ -17,7 +17,7 @@ from ...box_storage import resolve_and_validate_box_with_name, get_lager_user, f
 @click.option('--user', 'lock_user', default=None, help='Username to lock as (useful when running inside Docker where user would otherwise be root)')
 @click.pass_context
 def lock(ctx, box, lock_user):
-    """Lock a box to prevent others from using it."""
+    """Lock a box to prevent others from using it"""
     ip, box_name = resolve_and_validate_box_with_name(ctx, box, _skip_lock_check=True)
     display_name = box_name or box
 
@@ -25,8 +25,8 @@ def lock(ctx, box, lock_user):
 
     if user == 'root':
         click.secho('Warning: locking as root (likely running inside a Docker container).', fg='yellow', err=True)
-        click.secho('To lock as yourself, use: lager boxes lock --box ' + display_name + ' --user <username>', fg='yellow', err=True)
-        click.secho('Or set permanently: lager defaults add --user <username>', fg='yellow', err=True)
+        click.secho('To lock as yourself, use: lager boxes lock --box ' + display_name + ' --user [USERNAME]', fg='yellow', err=True)
+        click.secho('Or set permanently: lager defaults add --user [USERNAME]', fg='yellow', err=True)
         click.echo()
 
     try:
@@ -58,7 +58,7 @@ def lock(ctx, box, lock_user):
 @click.option('--force', is_flag=True, help='Force unlock even if locked by another user')
 @click.pass_context
 def unlock(ctx, box, force):
-    """Unlock a box so others can use it."""
+    """Unlock a box so others can use it"""
     ip, box_name = resolve_and_validate_box_with_name(ctx, box, _skip_lock_check=True)
     display_name = box_name or box
 

@@ -77,17 +77,17 @@ def get_default_box(ctx):
                 click.echo(f'  - {box_name}')
             click.echo()
             click.echo('You can either:')
-            click.echo('  1. Specify a box with: --box <name>')
-            click.echo('  2. Set a default box with: lager defaults add --box <name>')
+            click.echo('  1. Specify a box with: --box [BOX_NAME]')
+            click.echo('  2. Set a default box with: lager defaults add --box [BOX_NAME]')
         else:
             click.echo('No boxes found in .lager file.')
             click.echo()
             click.echo('To add a box, run:')
-            click.echo('  lager boxes add --name <name> --ip <ip-address>')
+            click.echo('  lager boxes add --name [NAME] --ip [IP_ADDRESS]')
             click.echo()
             click.echo('Then you can either:')
-            click.echo('  1. Specify a box with: --box <name>')
-            click.echo('  2. Set a default box with: lager defaults add --box <name>')
+            click.echo('  1. Specify a box with: --box [BOX_NAME]')
+            click.echo('  2. Set a default box with: lager defaults add --box [BOX_NAME]')
 
         ctx.exit(1)
 
@@ -120,7 +120,7 @@ def get_default_box(ctx):
 
         click.echo("", err=True)
         click.echo("To add a new box, use:", err=True)
-        click.echo(f"  lager boxes add --name {name} --ip <IP_ADDRESS>", err=True)
+        click.echo(f"  lager boxes add --name {name} --ip [IP_ADDRESS]", err=True)
         ctx.exit(1)
 
 

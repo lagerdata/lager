@@ -14,6 +14,7 @@ import json
 import click
 
 from ...context import get_default_net
+from ...core.net_group import NetCommand
 from ...core.net_helpers import (
     resolve_box,
     list_nets_by_role,
@@ -26,10 +27,10 @@ from ...core.net_helpers import (
 DAC_ROLE = "dac"
 
 
-@click.command(name="dac", help="Set or read DAC output voltage")
+@click.command(name="dac", cls=NetCommand, help="Set or read DAC output voltage")
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
-@click.argument("netname", required=False)
+@click.argument("netname", required=False, metavar="[NET_NAME]")
 @click.argument("voltage", required=False)
 def dac(ctx, box, netname, voltage):
     """Set or read voltage from a DAC (digital-to-analog converter) net.
@@ -57,7 +58,7 @@ def dac(ctx, box, netname, voltage):
     if voltage is not None:
         if voltage.strip() == "":
             click.secho("Error: Voltage argument cannot be empty", fg='red', err=True)
-            click.secho("Usage: lager dac <netname> [voltage]", err=True)
+            click.secho("Usage: lager dac [NET_NAME] [VOLTAGE]", err=True)
             ctx.exit(1)
 
         # Try to parse as float
@@ -86,3 +87,10 @@ def dac(ctx, box, netname, voltage):
         args=(payload_json,),
         timeout=None,
     )
+
+
+dac.net_examples = [
+    "lager dac dac1 3.3 --box JUL-12      (set 3.3 V)",
+    "lager dac dac1 --box JUL-12          (read current value)",
+    "lager dac --box JUL-12               (list DAC nets)",
+]

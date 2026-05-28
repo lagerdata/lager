@@ -105,8 +105,8 @@ def require_netname(ctx: click.Context, command_name: str) -> str:
     netname = getattr(ctx.obj, "netname", None)
     if not netname:
         raise click.UsageError(
-            f"NETNAME required.\n\n"
-            f"Usage: lager {command_name} <NETNAME> <COMMAND>\n"
+            f"NET_NAME required.\n\n"
+            f"Usage: lager {command_name} [NET_NAME] [COMMAND] --box [BOX_NAME]\n"
             f"Example: lager {command_name} {command_name}1 disable"
         )
     return netname
@@ -762,7 +762,7 @@ def validate_net_exists(
             click.secho(f"Available {role} nets: {', '.join(available)}", err=True)
         else:
             click.secho(f"No {role} nets configured. Create one with:", err=True)
-            click.secho(f"  lager nets create <name> {role} <device> <address>", err=True)
+            click.secho(f"  lager nets create [NAME] {role} [DEVICE] [ADDRESS]", err=True)
         if exit_on_error:
             ctx.exit(1)
         return None

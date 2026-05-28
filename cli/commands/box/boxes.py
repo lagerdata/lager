@@ -26,7 +26,7 @@ def _list_boxes_live(port=5000, timeout=5):
     saved_boxes = list_boxes()
 
     if not saved_boxes:
-        click.echo("No boxes found. Add boxes with: lager boxes add --name <NAME> --ip <IP>")
+        click.echo("No boxes found. Add boxes with: lager boxes add --name [NAME] --ip [IP_ADDRESS]")
         return
 
     box_word = 'box' if len(saved_boxes) == 1 else 'boxes'
@@ -200,7 +200,7 @@ def _list_boxes_live(port=5000, timeout=5):
     if root_locked:
         box_word = 'box is' if len(root_locked) == 1 else 'boxes are'
         click.secho(f'\nWarning: {len(root_locked)} {box_word} locked as root (likely locked from inside a Docker container).', fg='yellow')
-        click.secho('Use --user to specify your username next time: lager boxes lock --box <box> --user <username>', fg='yellow')
+        click.secho('Use --user to specify your username next time: lager boxes lock --box [BOX_NAME] --user [USERNAME]', fg='yellow')
 
 
 @click.group(invoke_without_command=True)
@@ -419,7 +419,7 @@ def delete(ctx, name, yes):
         if available:
             click.echo(f"Available boxes: {', '.join(available)}", err=True)
         else:
-            click.echo("No boxes configured. Add one with: lager boxes add --name <name> --ip <ip>", err=True)
+            click.echo("No boxes configured. Add one with: lager boxes add --name [NAME] --ip [IP_ADDRESS]", err=True)
         ctx.exit(1)
 
     box_info = existing_boxes[name]

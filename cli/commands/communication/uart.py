@@ -18,6 +18,7 @@ import requests
 from texttable import Texttable
 
 # Import consolidated helpers from cli.core.net_helpers
+from ...core.net_group import NetCommand
 from ...core.net_helpers import resolve_box, run_backend
 from ...context import get_impl_path, get_default_net
 from ..development.python import run_python_internal
@@ -302,8 +303,8 @@ def _connect_uart_http(ctx, box_ip, netname, overrides, interactive):
 
 # ---------- CLI ----------
 
-@click.command()
-@click.argument("NETNAME", required=False)
+@click.command(cls=NetCommand)
+@click.argument("NETNAME", required=False, metavar="[NET_NAME]")
 @click.argument("ACTION", required=False)
 @click.pass_context
 # Target options
@@ -338,7 +339,7 @@ def uart(ctx, netname, action, box, baudrate, bytesize, parity, stopbits, xonxof
 
         if not netname:
             click.secho("No UART net specified and no default configured.", fg="yellow", err=True)
-            click.echo("Provide a net name or set a default with 'lager defaults set --uart-net <name>'.", err=True)
+            click.echo("Provide a net name or set a default with 'lager defaults set --uart-net [NET_NAME]'.", err=True)
             ctx.exit(1)
 
         net_config = _get_uart_net(ctx, target_box, netname)
@@ -388,8 +389,8 @@ def uart(ctx, netname, action, box, baudrate, bytesize, parity, stopbits, xonxof
         click.echo(f"\nRun 'lager uart' to see available UART nets on {target_box}", err=True)
         click.echo(f"\nTo create a new UART net:", err=True)
         click.echo(f"  1. Find available UART devices: lager instruments --box {target_box}", err=True)
-        click.echo(f"  2a. Standard: lager nets create {netname} uart <device-serial> <address>", err=True)
-        click.echo(f"  2b. No serial on adapter: lager nets create {netname} uart /dev/ttyUSB0 <label>", err=True)
+        click.echo(f"  2a. Standard: lager nets create {netname} uart [DEVICE_SERIAL] [ADDRESS]", err=True)
+        click.echo(f"  2b. No serial on adapter: lager nets create {netname} uart /dev/ttyUSB0 [LABEL]", err=True)
         ctx.exit(1)
 
     # Validate TTY for interactive mode
@@ -443,3 +444,11 @@ def uart(ctx, netname, action, box, baudrate, bytesize, parity, stopbits, xonxof
     _connect_uart_http(
         ctx, target_box, netname, overrides, interactive
     )
+
+
+uart.net_examples = [
+    "lager uart uart1 --box JUL-12",
+    "lager uart uart1 --baudrate 115200 --box JUL-12",
+    "lager uart uart1 --interactive --box JUL-12",
+    "lager uart --box JUL-12         (list UART nets)",
+]
