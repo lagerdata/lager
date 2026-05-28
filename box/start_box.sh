@@ -74,10 +74,23 @@ fi
 echo ""
 
 # 1. Build Lager box container
-echo "[1/1] Building Lager Box container..."
-cd "${SCRIPT_DIR}/lager"
-docker build -f docker/box.Dockerfile -t lager .
-echo "Lager Box container built successfully!"
+# LAGER_SKIP_BUILD lets a caller that already built the image (e.g. `lager
+# update`, which builds it in its own step with full error reporting) skip the
+# redundant rebuild here and go straight to starting the container. Standalone
+# and deployment runs leave it unset, so they still build.
+if [ -n "${LAGER_SKIP_BUILD:-}" ]; then
+    echo "[1/1] Skipping build (LAGER_SKIP_BUILD set; image already built by caller)"
+    if ! docker image inspect lager >/dev/null 2>&1; then
+        echo "ERROR: LAGER_SKIP_BUILD is set but no 'lager' image exists to start."
+        echo "       Re-run without LAGER_SKIP_BUILD to build it."
+        exit 1
+    fi
+else
+    echo "[1/1] Building Lager Box container..."
+    cd "${SCRIPT_DIR}/lager"
+    docker build -f docker/box.Dockerfile -t lager .
+    echo "Lager Box container built successfully!"
+fi
 echo ""
 
 echo "========================================"

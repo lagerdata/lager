@@ -70,9 +70,10 @@ from .commands.measurement.energy import energy
 
 # Box commands (from commands.box package)
 from .commands.box import hello, boxes, instruments, nets, ssh, box
+from .commands.box.diagnose import diagnose
 
 # Utility commands (from commands.utility package)
-from .commands.utility import defaults, binaries, update, update_cmd, exec_, logs, webcam, install, uninstall, install_wheel
+from .commands.utility import defaults, binaries, update, exec_, logs, webcam, install, uninstall, install_wheel
 
 def _check_venv_shadowing():
     """Warn if a system-installed lager is shadowing the venv version."""
@@ -157,6 +158,7 @@ cli.add_command(spi)
 cli.add_command(i2c)
 cli.add_command(router)
 cli.add_command(hello)
+cli.add_command(diagnose)
 cli.add_command(arm)
 cli.add_command(thermocouple)
 cli.add_command(watt)
@@ -168,11 +170,9 @@ cli.add_command(boxes)
 cli.add_command(box)
 cli.add_command(instruments)
 cli.add_command(ssh)
-# `lager box` group hosts the canonical `update` subcommand alongside
-# `lager box config`. The top-level `lager update` is registered as a
-# hidden deprecation alias so existing scripts and CI invocations keep
-# working but the help surface points at the new name.
-box.add_command(update_cmd)
+# `lager update` is the canonical box-update command. It previously also
+# existed as `lager box update`; that form was removed in favor of the
+# shorter top-level spelling.
 cli.add_command(update)
 cli.add_command(logs)
 cli.add_command(binaries)

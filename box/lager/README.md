@@ -85,6 +85,33 @@ The modular dispatcher pattern (`dispatchers/`) allows dynamic hardware selectio
 Box configuration is stored in:
 - `/etc/lager/` - System-wide settings and saved net parameters
 
+## TUIs are laptop-only
+
+`lager battery <net> tui` and `lager supply <net> tui` are CLI commands
+that run on the developer's laptop and connect to the box over a SocketIO
+WebSocket on port 9000. They do NOT open USB instruments directly — the
+WebSocket handler reuses hw_service's shared session pool so the TUI can
+run concurrently with other CLI commands without competing for the USB
+device.
+
+Running TUIs **on the box itself** (e.g. by SSH'ing in and launching a
+local textual app that opens pyvisa) is not supported and will likely
+re-trigger the JUL-7 2026-05-26 incident: a second pyvisa-py client
+racing the hw_service for libusb's interface-0 claim, producing the
+[Errno 16] Resource busy symptom. The 0.20.0 OS-level device_lock
+helps detect this, but the right answer is: always launch TUIs from
+the laptop CLI.
+
+## Cross-process device locks
+
+USB-TMC instrument drivers (Keithley, Rigol, Keysight) use an fcntl-based
+`DeviceLockManager` (see `lager/util/device_lock.py`) to serialize the
+`open_resource()` call across box-side processes. Lockfiles live under
+`/tmp/lager_device_locks/` keyed by VISA address. The lock is held only
+across the open itself — subsequent SCPI calls serialize via
+hw_service's in-process per-address lock. EA solar/supply drivers
+preserve their pre-0.20 lockdir at `/tmp/lager_ea_locks/`.
+
 ## Related Components
 
 - **CLI** (`cli/`) - Command-line interface that communicates with this box

@@ -1,0 +1,70 @@
+---
+title: "Version 0.20.0"
+description: "May 27, 2026"
+---
+
+This release is a direct response to the JUL-7 2026-05-26 "battery net not responding" incident on a Keithley 2281S, where root-causing one EBUSY took ~2 hours across `lsof`, `dmesg`, bare `pyvisa` probes, and hardware-service introspection. The biggest items below — `lager diagnose`, the `usbtmc` blacklist, automatic ENODEV recovery, and cross-process device locks — collectively eliminate the most common failure modes that drove that session, and surface the rest (e.g. wedged instrument firmware that only mains-power-cycling can fix) with a single one-line diagnosis.
+
+## <u>Features</u>
+
+- **`lager diagnose <net> --box <box> [--type <role>]` — single-shot net diagnosis.** Polls three box-side endpoints in parallel (USB enumeration + USB-TMC interface-class detection + holder detection + `dmesg` + `lsmod` for usbtmc, bare `pyvisa` `*IDN?` probe, hardware-service in-process session cache) and classifies the net into one actionable bucket with the next step the user should take: `HOST-SIDE: usbtmc kernel module loaded` (→ `lager box update`), `HOST-SIDE: USB device claimed by multiple processes` (→ names the PIDs), `HOST-SIDE: USB device busy`, `TRANSIENT: device disappeared from USB`, `TRANSIENT: device enumerated as USB-TMC but pyvisa probe couldn't reach it` (→ stale libusb context recovery hint), `INSTRUMENT WEDGED` (→ mains-side power-cycle), `NOT ENUMERATED`, `NOT USB-TMC` (LabJack/Picoscope/Acroname use vendor SDKs), or `HEALTHY` (with the IDN string). `--type` is auto-detected from the box's saved nets if omitted. Backwards-compatible against pre-0.20 boxes (per-endpoint 404 fallbacks).
+
+- **`usbtmc` kernel-module blacklist shipped with the box image** at `/etc/modprobe.d/blacklist-usbtmc.conf`. Without this, the kernel auto-binds the `usbtmc` driver to USB-TMC-class instruments (Keithley 2281S, Keysight, Rigol scopes) and claims interface 0; pyvisa-py's libusb backend then can't `set_configuration()` and returns `[Errno 16] Resource busy`. The blacklist is the only durable fix. Deployed by `setup_and_deploy_box.sh` (new boxes) and refreshed by `lager box update` (existing boxes).
+
+- **Cross-process device locks for USB-TMC drivers** via the new `lager.util.device_lock` module. Generalizes the long-standing EA-solar/supply `DeviceLockManager` pattern (`fcntl.flock` on a lockfile keyed by VISA address) and adopts it in the Keithley battery + supply, Rigol DP800, Rigol DL3021 eload, Keysight E36000, and Rigol MSO5000 scope drivers. Guards against a second box-side `pyvisa` client racing the hardware service for the libusb interface-0 claim. Fails open if the locking infrastructure itself errors, so a transient filesystem hiccup can't take legitimate work offline.
+
+- **Version-skew warning** prints once per CLI session to stderr when the CLI's minor version is ahead of the box's by one or more. The JUL-7 session started with a 0.19.2 CLI talking to a 0.18.3 box and the first error was opaque — this single line would have cut diagnosis time by hours. Cached per-process by box IP; fails open on any error so a flaky network can never break a working command.
+
+- **Actionable error messages for `[Errno 16/19/110]`** in `lager battery` and `lager supply` commands. Errno 16 EBUSY → "USB device busy — another process holds the libusb interface" with a `Try: lager diagnose <net>` hint. Errno 19 ENODEV → "Instrument disappeared from USB (re-enumeration)" with a `Hw service should auto-recover; if not: sudo docker restart lager` hint. Errno 110 ETIMEDOUT → "Instrument did not respond to SCPI — firmware may be wedged" with a "mains-side power-cycle required" hint. Raw error remains available via `LAGER_DEBUG=1`.
+
+- **`lager update` verbose status block now includes `modprobe.d:`** alongside the existing `udev rules:` line.
+
+- **`lager diagnose` command-specific docs** at `docs/diagnose.md` covering the three endpoints, the classification decision tree, sample sessions for each bucket, and the `--type` semantics.
+
+## <u>Bug Fixes</u>
+
+- **`lager battery <net>` and `lager supply <net>` no longer return `[Errno 19] No such device` until `docker restart lager`** after a USB re-enumeration of the instrument (mains power-cycle, accidental unplug, USB hub port toggle). The hardware-service retry path was gated on a keyword tuple that did not match libusb's ENODEV signature — the existing retry never fired. The tuple is extended, a dedicated `_is_enodev_error()` helper is added, and on ENODEV the `/invoke` retry now evicts every sibling `device_cache` entry on the same VISA address and force-closes the shared `pyvisa` session pool entry. Live-verified on a Keithley 2281S via a USB driver unbind/bind sequence.
+
+- **`lager diagnose` host-side holder detection now works on the actual box image.** The original `/diagnose/usb` endpoint shelled out to `sudo lsof /dev/bus/usb/<device>` to find competing libusb claims, but neither `sudo` nor `lsof` ship in the lager container; the subprocess silently exited 127 and the endpoint always returned `lsof: []`. As a result the `HOST-SIDE: USB device claimed by multiple processes` and `HOST-SIDE: USB device busy` classifications could never fire in production. Replaced with a `/proc/*/fd/*` walk that reads `/proc/<pid>/comm` for the process name. No external tools, no permission gymnastics.
+
+- **`lager diagnose` classifier no longer misclassifies a healthy USB-TMC instrument as `NOT USB-TMC`** when pyvisa's fresh-probe path can't reach it (most common cause: a stale libusb context inside `box_http_server` after a USB re-enumeration; hw_service runs in a separate process and recovers transparently). `/diagnose/usb` now reads the device's sysfs interface descriptors and surfaces `is_usbtmc` for USB-TMC class 0xFE / subclass 0x03 devices. The classifier disambiguates: enumerated USB-TMC + fresh-probe failure → new `TRANSIENT` bucket with a concrete recovery hint; enumerated non-USB-TMC → existing `NOT USB-TMC` hint preserved.
+
+- **`lager diagnose` VISA-side error mapping catches all three libusb "device not reachable" message variants.** pyvisa-py emits `[Errno 19] No such device` (libusb's standard ENODEV after a re-enumeration), `[Errno 2] Entity not found` (authorized=0 or denied open), and `No device found.` (generic vendor-not-matched-or-stale path). All three now map to `error_class: nodev` so the classifier consistently returns `TRANSIENT` instead of falling through to `UNCLEAR`.
+
+- **`lager diagnose` VISA section renders all five fields on endpoint-returned errors.** The pre-fix renderer short-circuited on any `error` key in the dict, collapsing the section to a single `error:` line and dropping the `error_class` and `elapsed_ms` context the user needs to interpret the failure.
+
+- **`lager diagnose` prints an actionable message when the box is unreachable** instead of wrapping the raw urllib3 traceback. Now reads `Box 'PRD-1' unreachable at <ip>:5000 (connection refused). The lager container may be stopped. Check with: lager ssh --box PRD-1 -- "sudo docker ps"`. Connection-refused and timeout cases are tailored separately.
+
+- **`/diagnose/visa` correctly consults hw_service's session pool across processes.** `box_http_server` (port 9000) and `hardware_service` (port 8080) are separate processes; the original implementation imported `_visa_resources` from `lager.hardware_service` and saw its own empty copy of the dict rather than hw_service's live state. The fresh probe then always ran and hit EBUSY on healthy boxes with a cached session. Now consulted via HTTP at `localhost:8080/diagnose/dispatcher`.
+
+- **`device_lock` no longer truncates the lock file before acquiring.** The pre-fix `open(path, 'w')` erased the existing holder's PID at open time, leaving the file empty under contention even when our own acquire later timed out. Now opens via `os.open(O_RDWR|O_CREAT)` and only truncates + writes the PID after a successful flock acquisition.
+
+- **`_dmesg_usb_tail` is robust against missing passwordless sudo.** The pre-fix shell pipeline used `sudo dmesg` (could hang on password prompt), `2>&1 | grep` (merged stderr into stdout where grep filtered it), and a final `tail` (whose rc masked upstream failures). Now uses `sudo -n dmesg` (fails fast on password prompt), does the filtering in Python, and the rc reflects what actually happened.
+
+- **`lager update` Step 5b (new) re-detects the `modprobe_d/` source dir post-pull.** The update probe runs before the `git pull`; on the very first deploy that introduces the directory, the pre-pull probe correctly reports the source path empty and the install step would short-circuit. Re-detects via a fresh SSH round-trip if the pre-pull probe came up empty.
+
+## <u>Improvements</u>
+
+- **TUI WebSocket-failure messages call out the specific next step** instead of `WebSocket connection failed: Failed to connect to WebSocket server`. `lager battery <net> tui` and `lager supply <net> tui` now probe `http://<box>:9000/health` on connect failure and emit one of four actionable messages depending on the response (box reachable but pre-0.20, services partially up, connect-timeout via Tailscale, container not running). Original WS error preserved in parentheses.
+
+- **Documented "TUIs are laptop-only"** in `box/lager/README.md`. Running TUIs directly on the box was the suspected JUL-7 culprit (a second `pyvisa-py` client competing with hardware-service for interface 0). The OS-level `device_lock` makes this case detect-and-fail-clean instead of silent EBUSY, but the right answer is still to launch TUIs from the laptop CLI.
+
+- **`lager diagnose` output labels clarified.** The header line reads `NetType: <role>` instead of `resolved role: <role>` to align with terminology elsewhere in the CLI. The USB section prints `usb-tmc class: yes/no` (newly surfaced from `/diagnose/usb`) so the user can see whether the classifier is treating the device as USB-TMC. The existing kernel-module-status line is renamed from the ambiguous `usbtmc:` to `usbtmc kmod:` so the two related fields are visually distinct.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.20.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.20.0/)

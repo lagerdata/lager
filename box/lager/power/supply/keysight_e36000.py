@@ -204,8 +204,14 @@ class KeysightE36000(SupplyNet):
                     # Detach kernel driver first to prevent "Resource busy" errors
                     _detach_kernel_driver_from_usb(addr)
 
+                    # Cross-process advisory lock — defends against an
+                    # ad-hoc box-side pyvisa client racing for the same
+                    # USB-TMC interface on this Keysight E36000. See
+                    # power/battery/keithley.py for the longer rationale.
+                    from lager.util.device_lock import device_lock
                     rm = pyvisa.ResourceManager()
-                    raw = rm.open_resource(addr)
+                    with device_lock(addr, timeout=2.0):
+                        raw = rm.open_resource(addr)
                     try:
                         raw.read_termination = "\n"
                         raw.write_termination = "\n"

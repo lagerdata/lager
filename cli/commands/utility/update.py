@@ -151,6 +151,30 @@ else
   echo "LAGER_PROBE_UDEV_SRC_RULES=0"
   echo "LAGER_PROBE_UDEV_IN_SYNC=0"
 fi
+# modprobe.d blacklist files (0.20.0+: usbtmc blacklist). Same shape as the
+# udev probe above — find the source dir, check whether the specific file
+# exists in /etc/modprobe.d/ and matches the source contents.
+if [ -d ~/box/modprobe_d ]; then _mp=~/box/modprobe_d
+elif [ -d ~/box/box/modprobe_d ]; then _mp=~/box/box/modprobe_d
+else _mp=""
+fi
+echo "LAGER_PROBE_MODPROBE_SRC_PATH=$_mp"
+if [ -n "$_mp" ] && [ -f "$_mp/blacklist-usbtmc.conf" ]; then
+  echo "LAGER_PROBE_MODPROBE_SRC_CONFS=1"
+  if diff -q "$_mp/blacklist-usbtmc.conf" /etc/modprobe.d/blacklist-usbtmc.conf >/dev/null 2>&1; then
+    echo "LAGER_PROBE_MODPROBE_IN_SYNC=1"
+  else
+    echo "LAGER_PROBE_MODPROBE_IN_SYNC=0"
+  fi
+else
+  echo "LAGER_PROBE_MODPROBE_SRC_CONFS=0"
+  echo "LAGER_PROBE_MODPROBE_IN_SYNC=0"
+fi
+if lsmod 2>/dev/null | grep -q '^usbtmc'; then
+  echo "LAGER_PROBE_USBTMC_LOADED=1"
+else
+  echo "LAGER_PROBE_USBTMC_LOADED=0"
+fi
 if [ -f /etc/sudoers.d/lagerdata-udev ]; then
   echo "LAGER_PROBE_SUDOERS_OWNER=$(stat -c '%u' /etc/sudoers.d/lagerdata-udev 2>/dev/null || stat -f '%u' /etc/sudoers.d/lagerdata-udev 2>/dev/null || echo UNKNOWN)"
 else
@@ -370,11 +394,16 @@ class ProgressBar:
             self._start_periodic_thread()
 
 
-def _update_logic(ctx, *, box, yes, version, verbose, check):
-    """Core update logic shared by `lager box update` and the legacy `lager update`.
+def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
+    """Core update logic behind `lager update`.
 
-    Not a Click command itself — the two thin Click wrappers at the bottom of
-    this module add option decorators and dispatch here.
+    Not a Click command itself — the thin Click wrapper at the bottom of this
+    module adds option decorators and dispatches here.
+
+    `force` does two things: it skips the "already up to date" early-exit so a
+    box left in a half-updated state by a prior failed run can be re-updated,
+    and it forces a clean rebuild (wiping the cached image and the cargo/npm
+    persistence volumes) so no stale layer or toolchain survives the retry.
     """
     from ...box_storage import update_box_version
     from ... import __version__ as cli_version
@@ -725,6 +754,17 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
         else:
             _udev_state = 'update needed'
         click.echo(f'  udev rules:    {_udev_state}')
+        _mp_path = facts.get('MODPROBE_SRC_PATH', '')
+        if not _mp_path:
+            _mp_state = 'source dir missing (older box code)'
+        elif facts.get('MODPROBE_SRC_CONFS') != '1':
+            _mp_state = 'blacklist file missing'
+        elif facts.get('MODPROBE_IN_SYNC') == '1':
+            _mp_state = 'in sync'
+        else:
+            _mp_state = 'update needed'
+        _usbtmc = 'loaded (will try to unload)' if facts.get('USBTMC_LOADED') == '1' else 'not loaded'
+        click.echo(f'  modprobe.d:    {_mp_state} (usbtmc {_usbtmc})')
         _owner = facts.get('SUDOERS_OWNER', '')
         if _owner in ('NOTFOUND', 'UNKNOWN', ''):
             _sudoers_state = 'not present'
@@ -755,28 +795,64 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
         'echo "LAGER_FETCH_RC=$?"; '
         f'git rev-list --left-right --count HEAD...{git_ref} 2>/dev/null'
     )
-    result = run_ssh_command_with_output(fetch_script)
+    # Retry the fetch on *transient* failures only. Boxes on flaky links (e.g.
+    # WiFi with a slow/intermittent resolver) hit sporadic DNS-resolution or
+    # connection timeouts on `git fetch` that clear on a retry seconds later;
+    # without this a single blip aborts the whole update. Auth failures and
+    # "branch not found" are NOT transient, so we don't retry those — retrying
+    # can't fix them and would just delay the real error.
+    _FETCH_MAX_ATTEMPTS = 3          # 1 initial try + 2 retries
+    _FETCH_BACKOFF_SECS = (3, 6)     # waited before retry 1 and retry 2
+    _TRANSIENT_FETCH_SIGNS = (
+        'could not resolve host',
+        'name or service not known',
+        'connection timed out',
+        'timed out',
+        'temporary failure in name resolution',
+    )
 
-    fetch_lines = []
+    def _parse_fetch_result(result):
+        """Pull (rc, stderr, revlist) out of one fetch round-trip's output."""
+        lines = []
+        rc = None
+        revlist = ''
+        for line in result.stdout.splitlines():
+            if rc is None:
+                if line.startswith('LAGER_FETCH_RC='):
+                    try:
+                        rc = int(line.split('=', 1)[1])
+                    except ValueError:
+                        rc = -1
+                else:
+                    lines.append(line)
+            elif line.strip():
+                revlist = line.strip()
+        stderr = '\n'.join(lines).strip()
+        # `rc is None` means the marker never arrived — SSH transport itself
+        # failed (or died mid-command), not git. Fold the SSH stderr in so the
+        # classifier can still reason about it.
+        if rc is None:
+            stderr = (stderr + '\n' + (result.stderr or '')).strip()
+        return rc, stderr, revlist
+
     fetch_rc = None
+    fetch_stderr = ''
     revlist_count_str = ''
-    for line in result.stdout.splitlines():
-        if fetch_rc is None:
-            if line.startswith('LAGER_FETCH_RC='):
-                try:
-                    fetch_rc = int(line.split('=', 1)[1])
-                except ValueError:
-                    fetch_rc = -1
-            else:
-                fetch_lines.append(line)
-        elif line.strip():
-            revlist_count_str = line.strip()
-    # `fetch_rc is None` means the marker never arrived — SSH transport itself
-    # failed (or died mid-command), not git. Fold the SSH stderr in so the
-    # classifier below can still reason about it.
-    fetch_stderr = '\n'.join(fetch_lines).strip()
-    if fetch_rc is None:
-        fetch_stderr = (fetch_stderr + '\n' + (result.stderr or '')).strip()
+    for _attempt in range(_FETCH_MAX_ATTEMPTS):
+        result = run_ssh_command_with_output(fetch_script)
+        fetch_rc, fetch_stderr, revlist_count_str = _parse_fetch_result(result)
+        if fetch_rc == 0:
+            break
+        # Only retry when the failure looks transient and attempts remain.
+        _is_transient = any(s in fetch_stderr.lower() for s in _TRANSIENT_FETCH_SIGNS)
+        if not _is_transient or _attempt == _FETCH_MAX_ATTEMPTS - 1:
+            break
+        _delay = _FETCH_BACKOFF_SECS[_attempt]
+        if verbose:
+            click.secho(f' transient network error, retrying in {_delay}s...', fg='yellow')
+        elif progress:
+            progress.update(f"Fetch retry in {_delay}s...")
+        time.sleep(_delay)
 
     if fetch_rc != 0:
         if progress:
@@ -906,7 +982,9 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
                 f'will switch ({commits_ahead} ahead / {commits_behind} behind {git_ref})'
             )
 
-        if deps_will_change:
+        if force:
+            deps_status = 'forced clean rebuild (--force: image + cargo/npm volumes wiped)'
+        elif deps_will_change:
             deps_status = 'will trigger fresh build (Dockerfile or requirements changed)'
         elif is_rollback or commits_ahead > 0:
             # Probe measured the *current* (pre-pull) Dockerfile/requirements,
@@ -916,7 +994,10 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
         else:
             deps_status = 'cache valid (no rebuild)'
 
-        if commits_behind == 0 and commits_ahead == 0 and not deps_will_change:
+        if force:
+            container_status = 'will restart (forced clean rebuild)'
+            est = '~6 min (fresh build)'
+        elif commits_behind == 0 and commits_ahead == 0 and not deps_will_change:
             container_status = 'no restart needed'
             est = '~5s'
         elif deps_will_change or is_rollback or commits_ahead > 0:
@@ -938,7 +1019,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
         click.echo(f'  Estimated:  {est}')
         click.echo()
 
-        will_change = commits_behind != 0 or commits_ahead != 0 or deps_will_change
+        will_change = force or commits_behind != 0 or commits_ahead != 0 or deps_will_change
         if will_change:
             click.echo('Run without --check to apply.')
             ctx.exit(1)
@@ -971,6 +1052,8 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
             'cd ~/box && '
             '{ git sparse-checkout list | grep -q "^udev_rules$" || '
             'git sparse-checkout add udev_rules; } && '
+            '{ git sparse-checkout list | grep -q "^modprobe_d$" || '
+            'git sparse-checkout add modprobe_d 2>/dev/null || true; } && '
             '{ git sparse-checkout list | grep -q "^cli/__init__.py$" || '
             'git sparse-checkout add cli/__init__.py 2>/dev/null || true; } && '
             f'git checkout -f {target_version} && '
@@ -1043,7 +1126,10 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
         bool(new_build_hash) and bool(stored_build_hash)
         and new_build_hash != stored_build_hash
     )
-    must_wipe_image = hash_mismatch
+    # `--force` requests a clean rebuild: wipe the cached image and the
+    # cargo/npm volumes so a prior failed/partial run can't leave a stale layer
+    # or half-installed toolchain behind on the retry.
+    must_wipe_image = hash_mismatch or force
 
     # Step 5: udev rules. The probe already located the source dir and diffed
     # its 99-instrument.rules against the installed copy, so we only touch the
@@ -1102,6 +1188,102 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
                 click.echo(f'  Manual fix: ssh {ssh_host}, then:', err=True)
                 click.echo(f'    sudo cp {udev_src_path}/99-instrument.rules /etc/udev/rules.d/', err=True)
                 click.echo('    sudo udevadm control --reload-rules && sudo udevadm trigger', err=True)
+
+    # Step 5b: modprobe.d blacklists (0.20.0+: usbtmc blacklist for USB-TMC
+    # instrument drivers). Same shape as the udev step above — probe diffed
+    # the source vs installed; only touch the box when an install is needed.
+    # After install, try `modprobe -r usbtmc`; if a USB-TMC instrument is in
+    # use the unload fails with EBUSY and we note that a reboot is required.
+    if progress:
+        progress.update("Checking modprobe.d blacklists...")
+    log('Checking modprobe.d blacklists...', nl=False)
+
+    mp_src_path = facts.get('MODPROBE_SRC_PATH', '')
+    # The probe runs BEFORE the git pull. When modprobe_d first lands on a
+    # box (i.e. this very update), the pre-pull probe correctly reports it
+    # missing — but now it exists post-pull/flatten. Re-detect by checking
+    # the canonical post-flatten path and the pre-flatten fallback.
+    if not mp_src_path:
+        recheck = run_ssh_command_with_output(
+            'if [ -d ~/box/modprobe_d ]; then echo ~/box/modprobe_d; '
+            'elif [ -d ~/box/box/modprobe_d ]; then echo ~/box/box/modprobe_d; fi'
+        )
+        mp_src_path = (recheck.stdout or '').strip()
+        # Re-check whether the file is in sync against the rediscovered path.
+        if mp_src_path:
+            conf_file = f'{mp_src_path}/blacklist-usbtmc.conf'
+            confs_check = run_ssh_command_with_output(
+                f'test -f {conf_file} && echo 1 || echo 0'
+            )
+            facts['MODPROBE_SRC_CONFS'] = (confs_check.stdout or '').strip()
+            sync_check = run_ssh_command_with_output(
+                f'diff -q {conf_file} /etc/modprobe.d/blacklist-usbtmc.conf '
+                '>/dev/null 2>&1 && echo 1 || echo 0'
+            )
+            facts['MODPROBE_IN_SYNC'] = (sync_check.stdout or '').strip()
+            usbtmc_check = run_ssh_command_with_output(
+                'lsmod 2>/dev/null | grep -q "^usbtmc" && echo 1 || echo 0'
+            )
+            facts['USBTMC_LOADED'] = (usbtmc_check.stdout or '').strip()
+    if not mp_src_path:
+        log_status('SKIPPED (source dir missing)', 'yellow')
+        if verbose:
+            click.echo('  The modprobe_d directory is not in the sparse checkout.', err=True)
+    elif facts.get('MODPROBE_SRC_CONFS') != '1':
+        log_status('SKIPPED (blacklist file missing)', 'yellow')
+        if verbose:
+            click.echo(f'  {mp_src_path}/blacklist-usbtmc.conf not found.', err=True)
+    elif facts.get('MODPROBE_IN_SYNC') == '1':
+        log_status('OK (already current)', 'green')
+        # Even if the file is in sync, the kernel module may still be loaded
+        # from before the blacklist was installed. Try to unload silently.
+        if facts.get('USBTMC_LOADED') == '1':
+            run_ssh_command_with_output('sudo /sbin/modprobe -r usbtmc 2>/dev/null || true')
+    else:
+        log_status('update needed', 'yellow')
+
+        install_cmd = (
+            f'cp {mp_src_path}/blacklist-usbtmc.conf /tmp/ && '
+            'sudo /bin/cp /tmp/blacklist-usbtmc.conf /etc/modprobe.d/ && '
+            'sudo /bin/chmod 644 /etc/modprobe.d/blacklist-usbtmc.conf && '
+            'sudo /bin/rm -f /tmp/blacklist-usbtmc.conf; '
+            # Try to unload immediately so the change takes effect without a
+            # reboot. Fails with EBUSY if a USB-TMC instrument is in use; we
+            # tolerate that and note a reboot is needed.
+            'if lsmod | grep -q "^usbtmc"; then '
+            '  sudo /sbin/modprobe -r usbtmc 2>/dev/null && '
+            '  echo "LAGER_MP_UNLOAD=OK" || echo "LAGER_MP_UNLOAD=BUSY"; '
+            'else echo "LAGER_MP_UNLOAD=NOT_LOADED"; fi'
+        )
+
+        if not verbose and progress:
+            progress.pause()
+            click.echo('Installing modprobe.d blacklists (may require sudo password)...')
+        elif verbose:
+            click.echo()
+
+        result = run_ssh_command_interactive(install_cmd, allow_sudo_prompt=True)
+
+        if not verbose and progress:
+            progress.resume()
+        elif verbose:
+            click.echo()
+
+        log('Installing modprobe.d blacklists...', nl=False)
+        if result.returncode == 0:
+            log_status('OK', 'green')
+            if verbose:
+                if 'LAGER_MP_UNLOAD=BUSY' in (result.stdout or ''):
+                    click.echo('  Note: usbtmc still loaded (instrument in use); reboot the box to fully apply.', err=True)
+                elif 'LAGER_MP_UNLOAD=OK' in (result.stdout or ''):
+                    click.echo('  usbtmc kernel module unloaded; blacklist now in effect.')
+        else:
+            log_status('FAILED', 'red')
+            if verbose:
+                click.echo('  Could not install modprobe.d blacklist — likely a sudoers permission issue.', err=True)
+                click.echo(f'  Manual fix: ssh {ssh_host}, then:', err=True)
+                click.echo(f'    sudo cp {mp_src_path}/blacklist-usbtmc.conf /etc/modprobe.d/', err=True)
+                click.echo('    sudo modprobe -r usbtmc  # optional: takes effect immediately', err=True)
 
     # Step 6: sudoers ownership. /etc/sudoers.d/lagerdata-udev must be
     # root-owned or sudo refuses it; the probe gave us the owner uid.
@@ -1224,11 +1406,17 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
     # feature also fires on a deps-only change (Dockerfile/requirements moved
     # but code is in sync); previously this branch ignored the hash and the
     # rebuild silently never happened.
+    #
+    # `--force` deliberately skips this early-exit: a box whose previous update
+    # failed can read as "in sync" here (git fetched fine, hash matches) even
+    # though its container never came up, so the user needs a way to push the
+    # rebuild through regardless.
     if (
         git_sync_confirmed
         and not needs_pull
         and not needs_flatten
         and not hash_mismatch
+        and not force
     ):
         import re as _re
 
@@ -1290,9 +1478,12 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
     # the first-run case (volumes don't exist yet) and the "in use" case
     # non-fatal; the prior `docker rm` already detached this container.
     if must_wipe_image:
+        # `force` short-circuits the wipe independently of the build-hash, so
+        # report the actual reason rather than always claiming a hash change.
+        _wipe_reason = '--force' if force and not hash_mismatch else 'build inputs changed'
         if progress:
             progress.update("Removing cached image...")
-        log('Removing cached image (build inputs changed)...', nl=False)
+        log(f'Removing cached image ({_wipe_reason})...', nl=False)
 
         run_ssh_command_with_output(
             'docker rmi lager 2>/dev/null || true; '
@@ -1377,12 +1568,23 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
             timeout_secs=15,
         )
 
-    # Clean up old images to save disk space (after a successful build).
+    # Reclaim disk from *superseded* images while preserving the build cache.
+    #
+    # `prune -f` removes only DANGLING images — the now-untagged orphans left
+    # behind when this build retagged `lager`. The layers backing the current
+    # `lager` image are NOT dangling, so they survive and serve as cache for
+    # the next update. Because box.Dockerfile copies source code only after the
+    # heavy apt/pip/rust/nrfutil layers, a code-only update then reuses all of
+    # that work and finishes in ~1-2 min instead of rebuilding from scratch.
+    #
+    # The previous `prune -af --filter "until=24h"` deleted *all* unused images
+    # (the `-a`), which wiped exactly those cache layers and forced a full
+    # from-scratch rebuild (40+ pip packages, rust toolchain) on every run.
     if progress:
         progress.update("Cleaning up images...")
     log('Cleaning up old images...', nl=False)
     run_ssh_command_with_output(
-        'docker image prune -af --filter "until=24h"',
+        'docker image prune -f',
         timeout_secs=30
     )
     log_status('OK', 'green')
@@ -1467,9 +1669,15 @@ def _update_logic(ctx, *, box, yes, version, verbose, check):
     log('Starting lager container...', nl=False)
 
     try:
+        # LAGER_SKIP_BUILD=1: Step 9 already built the `lager` image (with full
+        # build-error reporting), so tell start_box.sh to skip its own
+        # redundant `docker build` and go straight to `docker run`. Without
+        # this the image was built twice per update. The remaining timeout
+        # budget now covers `docker run` + any user pip/cargo/npm installs
+        # (box_config), not a from-scratch build.
         result = run_ssh_command_with_output(
-            'cd ~/box && chmod +x start_box.sh && ./start_box.sh',
-            timeout_secs=600  # 10 minutes - covers docker build + cargo install on slow boxes
+            'cd ~/box && chmod +x start_box.sh && LAGER_SKIP_BUILD=1 ./start_box.sh',
+            timeout_secs=600
         )
 
         if result.returncode != 0:
@@ -1706,27 +1914,26 @@ fi
 
 
 # ---------------------------------------------------------------------------
-# Click wrappers
+# Click wrapper
 #
-# `lager box update`  (canonical)  — update_cmd
-# `lager update`      (deprecated alias, hidden in --help)  — update
+# `lager update`  (canonical)  — update
 #
-# Both delegate to _update_logic above. The deprecated entry prints a one-line
-# notice on every invocation so existing scripts keep working but users are
-# nudged toward the new name.
+# Registered as a top-level command in cli/main.py. There used to be a second
+# `lager box update` surface delegating to the same logic; it was removed in
+# favor of the shorter top-level spelling.
 # ---------------------------------------------------------------------------
 
 
 def _update_options(fn):
-    """Shared option decorators for both `lager box update` and the
-    deprecated top-level `lager update` alias. Keeping them in one place
-    so the two surfaces can't drift apart."""
+    """Shared option decorators for `lager update`. Kept in one place so the
+    command signature and the decorator list can't drift apart."""
     for opt in reversed([
         click.option('--box', required=False, help='Lagerbox name or IP'),
         click.option('--yes', is_flag=True, help='Skip confirmation prompt'),
         click.option('--version', required=False, help='Box version/branch to update to (e.g., staging, main)'),
         click.option('--verbose', '-v', is_flag=True, help='Show detailed output (default shows progress bar only)'),
         click.option('--check', is_flag=True, help='Dry run: report what would change without modifying the box'),
+        click.option('--force', is_flag=True, help='Update even if the box reports it is already up to date, and force a clean rebuild (wipes the cached image and cargo/npm volumes)'),
     ]):
         fn = opt(fn)
     return fn
@@ -1735,21 +1942,9 @@ def _update_options(fn):
 @click.command(name='update')
 @click.pass_context
 @_update_options
-def update_cmd(ctx, box, yes, version, verbose, check):
+def update(ctx, box, yes, version, verbose, check, force):
     """Update box code from GitHub repository."""
     _update_logic(
         ctx,
-        box=box, yes=yes, version=version, verbose=verbose, check=check,
-    )
-
-
-@click.command(name='update', hidden=True)
-@click.pass_context
-@_update_options
-def update(ctx, box, yes, version, verbose, check):
-    """[DEPRECATED] Use `lager box update` instead."""
-    click.secho('Note: `lager update` is deprecated; use `lager box update` instead.', fg='yellow', err=True)
-    _update_logic(
-        ctx,
-        box=box, yes=yes, version=version, verbose=verbose, check=check,
+        box=box, yes=yes, version=version, verbose=verbose, check=check, force=force,
     )
