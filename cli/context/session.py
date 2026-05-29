@@ -594,22 +594,17 @@ class DirectHTTPSession:
                     import time
                     time.sleep(0.5)
                     continue
-                # Last attempt failed - exit cleanly without traceback
-                click.secho(f'Could not connect to box at {self.box_ip}', fg='red', err=True)
-                click.secho('Ensure the box is online and reachable via your network', fg='yellow', err=True)
-                click.secho('(Tailscale, VPN, or local network connection required)', fg='yellow', err=True)
-                import sys
-                sys.exit(1)
-            except requests.exceptions.Timeout:
-                click.secho(f'Connection to box at {self.box_ip} timed out', fg='red', err=True)
-                import sys
-                sys.exit(1)
+                # Last attempt failed - surface an actionable error.
+                from ..errors import connection_error
+                raise connection_error(e, host=self.box_ip)
+            except requests.exceptions.Timeout as e:
+                from ..errors import connection_error
+                raise connection_error(e, host=self.box_ip)
 
         # Should not reach here, but just in case
         if last_error:
-            click.secho(f'Could not connect to box at {self.box_ip}', fg='red', err=True)
-            import sys
-            sys.exit(1)
+            from ..errors import connection_error
+            raise connection_error(last_error, host=self.box_ip)
 
     def kill_python(self, box, lager_process_id, sig=signal.SIGTERM):
         """
