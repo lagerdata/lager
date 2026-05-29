@@ -21,6 +21,9 @@ from .arm import arm
 # Python commands (migrated from cli/python/)
 from .python import python, run_python_internal, run_python_internal_get_output
 
+# Rust (pre-compiled binary) execution command
+from .rust import rust
+
 # Development environment commands (migrated from cli/devenv/)
 from .devenv import devenv
 
@@ -33,6 +36,7 @@ __all__ = [
     "_debug",
     "arm",
     "python",
+    "rust",
     "devenv",
     # Internal functions for backward compatibility
     "run_python_internal",

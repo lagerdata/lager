@@ -101,6 +101,7 @@
             "pages": [
               "source/reference/cli/debug",
               "source/reference/cli/python",
+              "source/reference/cli/rust",
               "source/reference/cli/exec",
               "source/reference/cli/binaries",
               "source/reference/cli/docker-helper"

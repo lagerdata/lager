@@ -20,6 +20,7 @@ Now runs in: box/python container (port 5000)
 
 import json
 import logging
+import os
 import signal
 import threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -154,6 +155,26 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         fields = {}
         for key in form.keys():
             item = form[key]
+            if key == 'add_file':
+                # Companion data files for `lager rust --add-file`. Unlike other
+                # fields we must preserve each file's basename so the executor can
+                # stage it next to the binary, so return (filename, BytesIO) tuples.
+                sub_items = item if isinstance(item, list) else [item]
+                staged = []
+                for i in sub_items:
+                    if hasattr(i, 'file') and i.file:
+                        content = i.file.read()
+                    elif hasattr(i, 'value'):
+                        content = i.value
+                    else:
+                        content = b''
+                    if isinstance(content, str):
+                        content = content.encode()
+                    fname = getattr(i, 'filename', None) or 'datafile'
+                    staged.append((os.path.basename(fname), io.BytesIO(content)))
+                fields[key] = staged
+                logger.info(f"  Field 'add_file': {len(staged)} companion file(s)")
+                continue
             if isinstance(item, list):
                 # For lists (multiple values), read content immediately
                 vals = []
@@ -170,8 +191,11 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                 # For single values, read content immediately to avoid closed file issues
                 # Check if this is a "real" file upload (script.py, module.zip) or a form field
                 # by looking at the filename - if it ends with .py or .zip, it's a file
+                # The 'binary' field (uploaded executable, e.g. a Rust ELF) is a
+                # real file but has no .py/.zip extension, so match it by name.
                 is_real_file = (hasattr(item, 'filename') and item.filename and
-                               (item.filename.endswith('.py') or item.filename.endswith('.zip')))
+                               (item.filename.endswith('.py') or item.filename.endswith('.zip')
+                                or key == 'binary'))
 
                 if is_real_file:
                     # This is a real file upload (script, module) - wrap in BytesIO
@@ -471,6 +495,8 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         try:
             if self.path == '/python':
                 self._handle_python_execute()
+            elif self.path == '/exec':
+                self._handle_exec()
             elif self.path == '/python/kill':
                 self._handle_python_kill()
             elif self.path == '/python/attach':
@@ -601,43 +627,25 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
 
     # --- End lock endpoints ---
 
-    def _handle_python_execute(self):
-        """Handle POST /python - Execute Python script"""
-        logger.info(f"Handling POST /python from {self.client_address}")
+    @staticmethod
+    def _parse_common_exec_fields(fields):
+        """Parse the multipart fields shared by /python and /exec.
 
-        try:
-            fields = self.parse_multipart()
-            logger.info(f"Parsed multipart fields: {list(fields.keys())}")
-        except Exception as e:
-            logger.exception("Failed to parse multipart form data", exc_info=e)
-            self.send_error_response(400, f"Failed to parse request: {e}")
-            return
-
-        # Helper function to get string value from field (handles BytesIO)
+        Returns (stdout_is_stderr, detach, timeout, args, env_vars). Keeping this
+        in one place means `lager python` and `lager rust` decode args/env/timeout
+        identically.
+        """
         def get_field_value(field):
             if hasattr(field, 'read'):
                 return field.read()
             return field
 
-        # Parse request parameters
         detach = is_truthy_string(fields.get('detach', b'false'))
         stdout_is_stderr = is_truthy_string(fields.get('stdout_is_stderr', b'true'))
         timeout_val = get_field_value(fields.get('timeout', b'300'))
         if isinstance(timeout_val, bytes):
             timeout_val = timeout_val.decode()
         timeout = int(timeout_val)
-
-        # Get script/module files
-        script_file = fields.get('script')
-        module_zip = fields.get('module')
-
-        # Ensure script_file and module_zip are file-like objects (BytesIO)
-        # This handles edge cases where the file detection logic in parse_multipart
-        # doesn't properly identify the upload as a "real file"
-        if script_file and isinstance(script_file, bytes):
-            script_file = io.BytesIO(script_file)
-        if module_zip and isinstance(module_zip, bytes):
-            module_zip = io.BytesIO(module_zip)
 
         # Get arguments - need to handle BytesIO objects
         args = fields.get('args', [])
@@ -658,6 +666,35 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                 val = val.decode()
             env_vars_processed.append(val)
         env_vars = env_vars_processed
+
+        return stdout_is_stderr, detach, timeout, args, env_vars
+
+    def _handle_python_execute(self):
+        """Handle POST /python - Execute Python script"""
+        logger.info(f"Handling POST /python from {self.client_address}")
+
+        try:
+            fields = self.parse_multipart()
+            logger.info(f"Parsed multipart fields: {list(fields.keys())}")
+        except Exception as e:
+            logger.exception("Failed to parse multipart form data", exc_info=e)
+            self.send_error_response(400, f"Failed to parse request: {e}")
+            return
+
+        # Parse request parameters shared with /exec
+        stdout_is_stderr, detach, timeout, args, env_vars = self._parse_common_exec_fields(fields)
+
+        # Get script/module files
+        script_file = fields.get('script')
+        module_zip = fields.get('module')
+
+        # Ensure script_file and module_zip are file-like objects (BytesIO)
+        # This handles edge cases where the file detection logic in parse_multipart
+        # doesn't properly identify the upload as a "real file"
+        if script_file and isinstance(script_file, bytes):
+            script_file = io.BytesIO(script_file)
+        if module_zip and isinstance(module_zip, bytes):
+            module_zip = io.BytesIO(module_zip)
 
         # Get optional configuration
         muxes = fields.get('muxes')
@@ -692,6 +729,59 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
             muxes=muxes,
             usb_mapping=usb_mapping,
             dut_commands=dut_commands,
+        )
+
+        if detach:
+            self.send_json_response(200, output_generator or {'status': 'detached'})
+        else:
+            self.send_streaming_response(output_generator)
+
+    def _handle_exec(self):
+        """Handle POST /exec - Execute a pre-compiled binary (e.g. `lager rust`).
+
+        Mirrors /python but runs an uploaded executable directly instead of a
+        Python script. Output framing, env injection, timeout and streaming are
+        all shared with the Python path via PythonExecutor.execute().
+        """
+        logger.info(f"Handling POST /exec from {self.client_address}")
+
+        try:
+            fields = self.parse_multipart()
+            logger.info(f"Parsed multipart fields: {list(fields.keys())}")
+        except Exception as e:
+            logger.exception("Failed to parse multipart form data", exc_info=e)
+            self.send_error_response(400, f"Failed to parse request: {e}")
+            return
+
+        # Parse request parameters shared with /python
+        stdout_is_stderr, detach, timeout, args, env_vars = self._parse_common_exec_fields(fields)
+
+        # Get the uploaded executable
+        binary_file = fields.get('binary')
+        if binary_file is None:
+            self.send_error_response(400, "Missing 'binary' field")
+            return
+        # Ensure it's a file-like object even if file detection misfired
+        if isinstance(binary_file, bytes):
+            binary_file = io.BytesIO(binary_file)
+
+        # Companion data files (`--add-file`) to stage next to the binary.
+        # parse_multipart returns these as (filename, BytesIO) tuples; hand the
+        # executor (filename, bytes) so it can write them into the binary's cwd.
+        add_files = []
+        for fname, fobj in fields.get('add_file', []) or []:
+            add_files.append((fname, fobj.read()))
+
+        executor = PythonExecutor()
+        output_generator = executor.execute(
+            binary_file=binary_file,
+            add_files=add_files,
+            args=args,
+            env_vars=env_vars,
+            detach=detach,
+            timeout=timeout,
+            stdout_is_stderr=stdout_is_stderr,
+            client_ip=self.client_address[0],
         )
 
         if detach:

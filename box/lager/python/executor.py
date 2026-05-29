@@ -145,6 +145,8 @@ class PythonExecutor:
         self,
         script_file=None,
         module_zip=None,
+        binary_file=None,
+        add_files=None,
         args=None,
         env_vars=None,
         detach=False,
@@ -156,11 +158,16 @@ class PythonExecutor:
         dut_commands=None,
     ):
         """
-        Execute a Python script in the container.
+        Execute a Python script (or a pre-compiled binary) in the container.
 
         Args:
             script_file: File object containing the script to execute
             module_zip: Zip file object containing a Python module
+            binary_file: File object containing a pre-compiled executable (e.g. a
+                Rust ELF). When set, it is run directly instead of via the Python
+                interpreter. Mutually exclusive with script_file/module_zip.
+            add_files: List of (filename, bytes) companion data files to stage in
+                the binary's working directory (the `lager rust --add-file` flag).
             args: List of command-line arguments (bytes)
             env_vars: List of environment variable strings ("KEY=value")
             detach: Run in detached mode (don't wait for completion)
@@ -209,6 +216,27 @@ class PythonExecutor:
                     module_folder = os.path.dirname(script.name)
                 add_cleanup_fn(self.cleanup_fns, safe_unlink, script.name)
 
+            # Handle pre-compiled binary upload (e.g. `lager rust`). The binary is
+            # written into a dedicated temp dir, made executable, and run directly
+            # with that dir as its cwd so any --add-file companions sit alongside it
+            # and are reachable by relative path.
+            binary_path = None
+            if binary_file:
+                binary_dir = tempfile.mkdtemp()
+                # Detached binaries keep running after this request returns, so we
+                # must not tear their dir down here (mirrors the module_zip path).
+                if not detach:
+                    add_cleanup_fn(self.cleanup_fns, shutil.rmtree, binary_dir)
+                binary_path = os.path.join(binary_dir, 'program')
+                with open(binary_path, 'wb') as fh:
+                    fh.write(binary_file.read())
+                os.chmod(binary_path, 0o755)
+                for fname, content in (add_files or []):
+                    dest = os.path.join(binary_dir, os.path.basename(fname))
+                    with open(dest, 'wb') as fh:
+                        fh.write(content)
+                module_folder = binary_dir
+
             if module_folder is None:
                 raise MissingModuleFolderError()
 
@@ -229,16 +257,20 @@ class PythonExecutor:
                 dut_commands=dut_commands,
             )
 
-            # Build command - direct Python execution (no docker exec)
-            # '-u' forces unbuffered stdout/stderr at the interpreter level.
-            # PYTHONUNBUFFERED=1 is also set in the Dockerfile, but '-u' is the
-            # belt-and-suspenders guarantee that block-buffering can't insert
-            # latency in scripts that print() between time-critical I/O steps.
-            command = ['/usr/local/bin/python3', '-u']
-            if script_file:
-                command.append(os.path.join(module_folder, os.path.basename(script.name)))
+            # Build command - direct execution (no docker exec)
+            if binary_file:
+                # Run the uploaded executable directly — no interpreter.
+                command = [binary_path]
             else:
-                command.append(os.path.join(module_folder, 'main.py'))
+                # '-u' forces unbuffered stdout/stderr at the interpreter level.
+                # PYTHONUNBUFFERED=1 is also set in the Dockerfile, but '-u' is the
+                # belt-and-suspenders guarantee that block-buffering can't insert
+                # latency in scripts that print() between time-critical I/O steps.
+                command = ['/usr/local/bin/python3', '-u']
+                if script_file:
+                    command.append(os.path.join(module_folder, os.path.basename(script.name)))
+                else:
+                    command.append(os.path.join(module_folder, 'main.py'))
 
             # Add arguments
             if args:

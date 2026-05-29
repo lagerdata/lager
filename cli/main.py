@@ -49,7 +49,7 @@ def terminal_cmd():
 from .commands.communication import uart, ble, blufi, _wifi, usb, spi, i2c, router
 
 # Development commands (from cli.commands.development)
-from .commands.development import _debug, arm, python, devenv
+from .commands.development import _debug, arm, python, rust, devenv
 
 # Power commands (from commands/power/)
 from .commands.power.supply import supply
@@ -144,6 +144,7 @@ cli.add_command(devenv)
 cli.add_command(exec_)
 cli.add_command(uart)
 cli.add_command(python)
+cli.add_command(rust)
 cli.add_command(_wifi)
 cli.add_command(webcam)
 cli.add_command(scope)

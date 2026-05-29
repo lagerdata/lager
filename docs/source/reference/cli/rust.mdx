@@ -1,0 +1,158 @@
+---
+title: Rust
+description: Run a pre-compiled binary on box
+---
+
+Run a pre-compiled native binary (e.g. a Rust, C, Go, or Zig executable) inside the container on the specified box. `lager rust` is the binary analog of [`lager python`](./python): it uploads an already-compiled Linux executable, runs it directly, and streams stdout/stderr/exit code back to your terminal. It shares the same execution engine as `lager python`, so environment variables, detach/reattach, kill, downloads, companion files, port forwarding and Ctrl+C handling all behave identically.
+
+## Syntax
+
+```bash
+lager rust [OPTIONS] [RUNNABLE] [ARGS]...
+```
+
+## Global Options
+
+| Option | Short | Type | Default | Description |
+|--------|-------|------|---------|-------------|
+| `--box TEXT` | | String | | Lagerbox name or IP address |
+| `--env FOO=BAR` | | Multiple | | Set environment variables for the binary |
+| `--passenv VAR` | | Multiple | | Pass environment variables from current shell |
+| `--kill PID` | | String | | Terminate a running process by ID |
+| `--kill-all` | | Flag | | Terminate all running processes |
+| `--signal SIGNAL` | | Choice | `SIGTERM` | Signal to use with `--kill`/`--kill-all` |
+| `--download FILE` | | Multiple | | Download files from box after the binary completes |
+| `--allow-overwrite` | | Flag | | Allow overwriting existing local files with `--download` |
+| `--timeout SECONDS` | | Integer | 0 (none) | Maximum runtime in seconds |
+| `--detach` | `-d` | Flag | | Run in detached mode (background) |
+| `--port PORT` | `-p` | Multiple | | Forward ports to the process |
+| `--add-file FILE` | | Multiple | | Companion data file to stage alongside the binary |
+| `--reattach PID` | | String | | Reattach to a detached process by ID |
+| `--help` | | Flag | | Show help message and exit |
+
+**Arguments:**
+- `RUNNABLE` - Path to the compiled binary to execute (required unless a management option such as `--kill`/`--reattach` is used)
+- `ARGS` - Additional arguments passed to the binary
+
+**Signal choices:** SIGINT, SIGQUIT, SIGABRT, SIGKILL, SIGUSR1, SIGUSR2, SIGTERM, SIGSTOP
+
+## Cross-compiling for the box
+
+The binary must be a Linux executable for the box's CPU architecture (boxes run aarch64 or x86_64 Linux in a container). Statically linked binaries are recommended so they don't depend on libraries inside the container. For Rust, use a musl target:
+
+```bash
+# aarch64 box
+cargo build --release --target aarch64-unknown-linux-musl
+
+# x86_64 box
+cargo build --release --target x86_64-unknown-linux-musl
+```
+
+`lager rust` checks the ELF magic bytes before uploading and warns if the file is not a Linux ELF (e.g. a macOS Mach-O or Windows PE build), which would upload fine but fail to execute on the box.
+
+## Basic Usage
+
+```bash
+# Run a compiled binary on the box
+lager rust ./target/aarch64-unknown-linux-musl/release/my_tool --box my-box
+
+# Run with arguments
+lager rust ./my_tool --box my-box -- --verbose --target DUT1
+```
+
+## Controlling hardware from a binary
+
+A native binary cannot `import lager`, so it talks to the box's in-container services over plain HTTP on localhost:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST http://localhost:8080/invoke` | Low-level device calls (any method on any hardware module) |
+| `POST http://localhost:9000/supply/command` | High-level supply/battery commands |
+| `GET  http://localhost:9000/nets/list` | Net discovery |
+
+## Environment Variables
+
+```bash
+# Set explicit environment variables
+lager rust ./my_tool --box my-box --env LOG_LEVEL=debug
+
+# Pass variables from your current shell
+export SECRET_TOKEN=xyz
+lager rust ./my_tool --box my-box --passenv SECRET_TOKEN
+```
+
+The following are auto-injected into the binary's environment:
+
+| Variable | Description |
+|----------|-------------|
+| `LAGER_PROCESS_ID` | Unique UUID for this execution (used by `--kill`/`--reattach`) |
+| `LAGER_RUNNABLE` | Path to the binary being executed |
+| `LAGER_BOX` | Box name (if `--box` was provided) |
+
+## Companion Files
+
+Stage extra data files alongside the binary with `--add-file`. Each file is placed in the binary's working directory, so it is reachable by its basename via a relative path:
+
+```bash
+lager rust ./my_tool --box my-box --add-file config.toml --add-file calibration.csv
+```
+
+```rust
+// Inside the binary — companions are in the current working directory
+let cfg = std::fs::read_to_string("config.toml")?;
+```
+
+## File Downloads
+
+Download files the binary produced after it completes:
+
+```bash
+lager rust ./my_tool --box my-box --download results.csv
+lager rust ./my_tool --box my-box --download report.json --allow-overwrite
+```
+
+Files are written to the current working directory using the basename of the remote path. If a local file with that name already exists, the command fails unless `--allow-overwrite` is set.
+
+## Detached Mode, Reattach, and Kill
+
+```bash
+# Start a long-running binary in the background
+lager rust ./soak_test --box my-box --detach
+# → Process detached (Process ID: <uuid>)
+
+# Reattach to stream its output (Ctrl+C kills it, Ctrl+D detaches again)
+lager rust --reattach <uuid> --box my-box
+
+# Kill a specific process, or everything
+lager rust --kill <uuid> --box my-box
+lager rust --kill-all --box my-box --signal SIGKILL
+```
+
+## Timeouts
+
+```bash
+# Stop the binary after 60 seconds (SIGTERM, then SIGKILL)
+lager rust ./my_tool --box my-box --timeout 60
+```
+
+## Exit Codes
+
+| Exit Code | Meaning |
+|-----------|---------|
+| 0 | Success |
+| 124 | Terminated due to timeout (SIGTERM) |
+| 137 | Forcibly killed due to timeout (SIGKILL) |
+| Other | The binary's own exit code |
+
+## Differences from `lager python`
+
+`lager rust` supports the same options as `lager python` except the Python-interpreter-only features, which have no binary equivalent and are omitted:
+
+- `--continue` / `--console` and `lager.pause()` interactive breakpoints
+- Running a directory as a module (use `--add-file` to ship companion data instead)
+
+## Notes
+
+- The binary runs with its own temporary directory as the working directory; `--add-file` companions and any files the binary creates live there.
+- Use `--env` for run-specific values and `--passenv` for secrets already in your shell.
+- See [`lager binaries`](./binaries) for installing long-lived helper binaries that persist on the box, and [`lager python`](./python) for the script-based workflow.

@@ -558,8 +558,23 @@ class DirectHTTPSession:
         Returns:
             requests.Response object with streaming content
         """
-        url = f'{self.base_url}/python'
+        return self._post_multipart_stream(f'{self.base_url}/python', files)
 
+    def run_exec(self, box, files):
+        """
+        Run a pre-compiled binary on box via direct HTTP (used by `lager rust`).
+
+        Args:
+            box: Box IP (ignored, uses self.box_ip)
+            files: List of (name, content) tuples for multipart upload
+
+        Returns:
+            requests.Response object with streaming content
+        """
+        return self._post_multipart_stream(f'{self.base_url}/exec', files)
+
+    def _post_multipart_stream(self, url, files):
+        """POST a multipart upload and return a streaming response, with retries."""
         # Retry logic for multipart upload connection issues
         max_retries = 3
         last_error = None
