@@ -71,9 +71,6 @@ def discover_bench(net_name: str | None = None) -> str:
         }
         if n.purpose:
             entry["purpose"] = n.purpose
-        elif n.description:
-            # Legacy nets that haven't been migrated yet.
-            entry["purpose"] = n.description
         if n.tags:
             entry["tags"] = n.tags
         nets_out.append(entry)

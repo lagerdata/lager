@@ -39,9 +39,6 @@ def _net_text(net) -> str:
     parts = [
         net.purpose or "",
         net.notes or "",
-        net.description or "",
-        net.dut_connection or "",
-        " ".join(net.test_hints or []),
     ]
     return " ".join(p for p in parts if p)
 
@@ -111,16 +108,6 @@ def _score_net(net, goal_words: set[str]) -> int:
         for word in net.notes.lower().split():
             if word in goal_words:
                 score += 1
-    # Keep scoring the legacy fields so partially-migrated benches still
-    # surface relevant nets.
-    for hint in net.test_hints:
-        for word in hint.lower().split():
-            if word in goal_words:
-                score += 1
-    if net.description:
-        for word in net.description.lower().split():
-            if word in goal_words:
-                score += 2
     net_type_lower = net.net_type.lower().replace("-", "")
     for w in goal_words:
         if w in net_type_lower or net_type_lower in w:
@@ -165,7 +152,7 @@ def plan_firmware_test(firmware_description: str, test_goals: str) -> str:
         phase_idx = _infer_phase(net)
         ref = get_reference_for_type(net.net_type)
 
-        purpose = net.purpose or net.description or f"{net.net_type} net"
+        purpose = net.purpose or f"{net.net_type} net"
         step: dict = {
             "net": net.name,
             "net_type": net.net_type,
@@ -184,8 +171,6 @@ def plan_firmware_test(firmware_description: str, test_goals: str) -> str:
                         d.model_dump(exclude_none=True) for d in sub.doc_refs
                     ]
                 break
-        if net.test_hints:
-            step["suggested_tests"] = net.test_hints
 
         if ref:
             # Replace the first double-quoted placeholder net name in the
