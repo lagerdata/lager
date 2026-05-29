@@ -2,6 +2,19 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.21.1] - 2026-05-29
+
+This release reworks the CLI's help and error output for newcomers: every command now shows the real `lager <type> [NET_NAME] [COMMAND] --box [BOX_NAME]` usage pattern with copy-pasteable examples, and the most common failures now print a clear problem-and-fix message instead of a raw Python traceback.
+
+### Added
+- **Actionable error messages.** Introduced a structured `LagerError` (problem + cause + suggested fixes) in `cli/errors.py`, with classifiers for connection failures, SSH/auth errors, USB-TMC system errnos (16/19/110), box-not-found, and net-not-specified. A top-level funnel in `main()` replaces raw Python tracebacks with friendly guidance; the full traceback is still available via `--debug` / `LAGER_DEBUG=1`. Wired into the highest-impact new-user paths: box selection, connection failures, bad `.lager` config, SSH/auth errors in `logs`/`install`, and net-not-specified in `i2c`/`spi`/`uart`. Adds `test/test_errors.py` (43 tests).
+
+### Changed
+- **Help is accurate, consistent, and scannable.** Replaced Click's misleading `[OPTIONS] COMMAND [ARGS]...` usage line with the real net pattern (`lager <type> [NET_NAME] [COMMAND] --box [BOX_NAME]`) via a shared `NetGroup`/`NetSubCommand`/`NetCommand` in `cli/core/net_group.py`, added a copy-pasteable Examples section to every net command, and now show `[NET_NAME]` consistently in every subcommand usage line. `lager --help` groups commands into categories (`SectionedGroup`) instead of a flat 40-item alphabetical list. Bracket placeholders (`[NET_NAME]`, `[COMMAND]`, `[BOX_NAME]`, `[IP_ADDRESS]`, ...) are now `[UPPER_SNAKE]` everywhere, short-helps are tidied, and `usb` is now a proper net group with `enable`/`disable`/`toggle` subcommands.
+
+### Fixed
+- **Fixed a broken `__main__` import and a wrong "defaults set" hint** surfaced while migrating the error paths.
+
 ## [0.21.0] - 2026-05-28
 
 Interactive breakpoints for `lager python` scripts. A long-running test can now pause itself mid-run so the operator can inspect the bench with ad-hoc `lager` commands (or a live Python prompt) and then continue — the workflow customers asked for when debugging tests against a device in an unknown state. Before this, `lager python` scripts ran start-to-finish with `stdin` set to `DEVNULL` and there was no way to hold execution at a chosen point.

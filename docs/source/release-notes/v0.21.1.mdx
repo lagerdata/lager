@@ -1,0 +1,31 @@
+---
+title: "Version 0.21.1"
+description: "May 29, 2026"
+---
+
+## <u>Improvements</u>
+
+- **Help that actually shows you what to type.** Every net command now displays the real `lager <type> [NET_NAME] [COMMAND] --box [BOX_NAME]` usage pattern instead of a generic placeholder, and each one comes with copy-pasteable examples. `lager --help` is now grouped into sections instead of one long alphabetical list, so it's far easier to find the command you want.
+- **Clearer errors that tell you the fix.** When something goes wrong — a Box you can't reach, a bad config, an SSH or login failure, an instrument that's busy or unplugged, or a command missing its net name — Lager now prints a short message describing the problem and what to do about it, instead of a raw Python traceback. (Need the full technical detail? Re-run with `--debug`.)
+
+## <u>Bug Fixes</u>
+
+- **Fixed a couple of rough edges** in the command-line tooling: a broken internal entry point and an incorrect "defaults set" hint.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.21.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.21.1/)
