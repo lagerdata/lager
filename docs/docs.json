@@ -60,6 +60,7 @@
               "source/reference/cli/lager-file",
               "source/reference/cli/instruments",
               "source/reference/cli/nets",
+              "source/reference/cli/box-dut",
               "source/reference/cli/defaults"
             ]
           },
@@ -174,6 +175,18 @@
             "pages": [
               "source/reference/python/arm",
               "source/reference/python/webcam"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "AI Agents (MCP)",
+        "groups": [
+          {
+            "group": "Model Context Protocol",
+            "pages": [
+              "source/reference/mcp/overview",
+              "source/reference/mcp/dut-context"
             ]
           }
         ]

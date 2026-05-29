@@ -9,6 +9,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from .dut import DocRef, DUTContext, SubSystem
+
 
 class VoltageRange(BaseModel):
     """Voltage range for a net or voltage domain."""
@@ -18,14 +20,10 @@ class VoltageRange(BaseModel):
     nominal_v: float | None = None
 
 
-class DUTSlot(BaseModel):
-    """A DUT (Device Under Test) slot on the bench."""
-
-    name: str
-    description: str | None = None
-    active: bool = True
-    board_profile: str | None = None
-    firmware: str | None = None
+# Backward-compatible alias. ``DUTSlot`` was the v1 name; ``DUTContext`` is
+# the richer v2 schema. Both names resolve to the same model so existing
+# imports keep working.
+DUTSlot = DUTContext
 
 
 class InstrumentDescriptor(BaseModel):
@@ -78,7 +76,7 @@ class BenchDefinition(BaseModel):
     box_id: str = ""
     hostname: str = ""
     version: str = ""
-    dut_slots: list[DUTSlot] = Field(default_factory=list)
+    dut_slots: list[DUTContext] = Field(default_factory=list)
     instruments: list[InstrumentDescriptor] = Field(default_factory=list)
     nets: list["NetDescriptor"] = Field(default_factory=list)  # forward ref
     interfaces: list["InterfaceDescriptor"] = Field(default_factory=list)  # forward ref
@@ -88,6 +86,13 @@ class BenchDefinition(BaseModel):
 
     # Populated by the capability graph engine after loading
     capability_bindings: list[dict[str, Any]] = Field(default_factory=list)
+
+    def primary_dut(self) -> DUTContext | None:
+        """Return the first active DUTContext, or the first one if none active."""
+        for d in self.dut_slots:
+            if d.active:
+                return d
+        return self.dut_slots[0] if self.dut_slots else None
 
 
 # Deferred imports resolved after all schemas are defined
@@ -99,3 +104,17 @@ def _rebuild_refs() -> None:
 
 
 _rebuild_refs()
+
+
+__all__ = [
+    "BenchDefinition",
+    "CalibrationStatus",
+    "DocRef",
+    "DUTContext",
+    "DUTSlot",
+    "InstrumentDescriptor",
+    "InstrumentHealth",
+    "RoutingEntry",
+    "SubSystem",
+    "VoltageRange",
+]

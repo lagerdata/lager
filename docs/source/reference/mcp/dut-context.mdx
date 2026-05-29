@@ -1,0 +1,175 @@
+---
+title: Authoring DUT Context
+description: Give AI agents system-level understanding of your device under test and its schematics
+---
+
+An AI agent can read a netlist, but a netlist alone doesn't tell it *what the
+box is for* or *what each wire means*. Knowing `uart1` is a UART is not the same
+as knowing it's the DUT's debug CLI. **DUT context** is the narrative you author
+once so agents reason about your bench at the level of *systems*, not loose
+wires.
+
+DUT context lives in `/etc/lager/bench.json` and is surfaced to agents through
+the MCP resources `lager://dut/overview.md` and `lager://dut/context`, and the
+`discover_dut()` and `cite_schematic()` tools.
+
+## The two things to author
+
+### 1. Per-net purpose
+
+Each net carries a single-sentence **purpose** plus optional **notes**. Set them
+in the Net Manager TUI:
+
+```bash
+lager nets tui --box my-box
+```
+
+Select a net, open its details, and fill in:
+
+- **Purpose** — *"DUT debug CLI over UART; primary command/response channel."*
+- **Notes** (optional) — gotchas, jumper positions, scope probe points.
+- **Tags** (optional) — for filtering, e.g. `flash`, `boot-critical`.
+
+<Note>
+This replaces the older four-field form (`description`, `dut_connection`,
+`test_hints`, `tags`). Existing nets are migrated automatically: their old text
+is folded into `purpose` and `notes` on load, so nothing is lost and no manual
+migration is needed.
+</Note>
+
+### 2. DUT-wide context
+
+The DUT context describes the board as a whole: its purpose, MCU, key
+peripherals, subsystems, and references to documents. Author it with the
+[`lager box dut`](/source/reference/cli/box-dut) command group.
+
+```bash
+# View current context
+lager box dut show --box my-box
+
+# Edit the whole DUT block in $EDITOR
+lager box dut edit --box my-box
+```
+
+A fully authored DUT context looks like this in `bench.json`:
+
+```json
+{
+  "dut_context": {
+    "name": "main",
+    "purpose": "Power-regression rig for FeatureA boards",
+    "mcu": "STM32H7",
+    "key_peripherals": ["QSPI flash", "PMIC"],
+    "summary": "STM32H7-based DUT used to validate the power tree under fault injection.",
+    "schematic_refs": [
+      {"title": "Main schematic", "kind": "schematic", "repo_path": "docs/sch.pdf"}
+    ],
+    "datasheet_refs": [
+      {"title": "STM32H7 RM", "kind": "datasheet", "url": "https://...", "pages": "150-200"}
+    ],
+    "subsystems": [
+      {
+        "name": "Flash subsystem",
+        "summary": "QSPI flash",
+        "nets": ["flash_cs", "flash_clk"],
+        "doc_refs": [
+          {"title": "Flash sheet", "kind": "schematic", "repo_path": "docs/sch.pdf", "pages": "3"}
+        ]
+      },
+      {"name": "Power tree", "summary": "PMIC + LDOs", "nets": ["psu1"]}
+    ]
+  }
+}
+```
+
+**Subsystems** group related nets (Power tree, Flash subsystem, Debug, ...) so
+the agent reasons about functional blocks. The agent can ask for one net and
+learn which subsystem it belongs to and which schematic sheet covers it.
+
+## Attaching schematics and datasheets
+
+The Lager Box is **not** a document store. It records *pointers* to your
+documents; the agent fetches and analyses them with its own (vision-capable)
+tools. This keeps the box lean and lets the agent use the best tool for reading
+a PDF or board image.
+
+Attach a pointer without hand-editing JSON:
+
+```bash
+lager box dut add-doc --kind schematic \
+  --title "Main board" --repo-path docs/sch.pdf --pages 3-5 --box my-box
+
+lager box dut add-doc --kind datasheet \
+  --title "STM32H7 reference manual" --url "https://..." --pages 150-200 --box my-box
+```
+
+A document reference (`DocRef`) has:
+
+| Field | Meaning |
+|-------|---------|
+| `title` | Human label. |
+| `kind` | `schematic`, `layout`, `datasheet`, `firmware`, `manual`, `errata`, or `other`. |
+| `url` | External URL (any URL the agent can fetch). |
+| `repo_path` | Path relative to your test project (synced to the box on `lager python`). |
+| `pages` | Optional page/sheet hint, e.g. `"3-5"` or `"POWER sheet"`. |
+| `notes` | Optional free-form note. |
+
+You must supply at least one of `--url` or `--repo-path`.
+
+### URL vs. repo-path: which to use
+
+| Situation | Recommended | Why |
+|-----------|-------------|-----|
+| Automated / CI / headless agent | `--repo-path` | The file is synced with your project; no network, no auth, fully deterministic. |
+| Publicly fetchable doc | `--url` | Any agent with a web-fetch tool can pull it. |
+| Private doc (Google Doc, Confluence, SSO) | `--repo-path` **or** a Drive connector | The box never authenticates; a login-walled URL returns an auth page, not content. |
+
+<Tip>
+For Google Docs, prefer an **export** URL over the editor URL — the `/edit` URL
+returns the JS app, not the content:
+
+```
+https://docs.google.com/document/d/<DOC_ID>/export?format=pdf
+```
+
+Either share it "anyone with the link," give your agent a Google Drive
+connector/MCP server that holds the credentials, or export it into your repo and
+use `--repo-path`.
+</Tip>
+
+## How the agent uses it
+
+Once authored, the context drives the whole agent loop:
+
+1. The agent reads `lager://dut/overview.md` and learns: *"power-regression rig,
+   STM32H7, flash + power-tree subsystems, schematic at `docs/sch.pdf`."*
+2. `plan_firmware_test("flash driver", "exercise QSPI")` returns a plan already
+   scoped to the flash subsystem, with a pointer to schematic page 3.
+3. `cite_schematic("flash_cs")` returns just the refs for that net:
+
+   ```json
+   {
+     "net": "flash_cs",
+     "net_purpose": "SPI flash chip-select",
+     "subsystem": "Flash subsystem",
+     "subsystem_doc_refs": [
+       {"title": "Flash sheet", "repo_path": "docs/sch.pdf", "pages": "3"}
+     ]
+   }
+   ```
+
+   The agent opens `docs/sch.pdf` at page 3 with its own file tools — no scanning
+   the whole PDF.
+
+## Applying changes
+
+The MCP server reads the bench config when it starts. After editing DUT context
+or attaching a doc, it needs to re-read `/etc/lager/bench.json` before agents see
+the change. Either:
+
+- have a connected agent call the `box_manage` tool with `action="reload"`, which
+  re-reads the config from disk and rebuilds the capability graph, **or**
+- restart the box service so it reloads on startup.
+
+Agents then see the new context on their next `discover_dut()` or
+`lager://dut/overview.md` read.

@@ -307,6 +307,43 @@ def is_single_channel_taken(all_nets: list["Net"], inst: str, addr: str, role: s
         return False
     return any(n.saved and n.instrument == inst and n.addr == addr for n in all_nets)
 
+def _fold_legacy_net_text(
+    *,
+    purpose: str,
+    notes: str,
+    description: str,
+    dut_connection: str,
+    test_hints: list[str],
+) -> tuple[str, str]:
+    """Fold legacy net metadata into the canonical ``purpose`` / ``notes``.
+
+    Mirrors the on-box loader's migration so the TUI surfaces the same
+    text the MCP server will. Idempotent: if ``purpose`` / ``notes`` are
+    already populated, the legacy fields are appended without disturbing
+    them.
+    """
+    if not purpose:
+        for candidate in (description, dut_connection):
+            if candidate:
+                purpose = candidate
+                break
+
+    extra: list[str] = []
+    if description and description != purpose:
+        extra.append(description)
+    if dut_connection and dut_connection != purpose:
+        extra.append(f"**DUT connection:** {dut_connection}")
+    if test_hints:
+        bullets = "\n".join(f"- {h}" for h in test_hints if h)
+        if bullets:
+            extra.append(f"**Test hints:**\n{bullets}")
+
+    if extra:
+        notes = "\n\n".join([notes] + extra) if notes else "\n\n".join(extra)
+
+    return purpose, notes
+
+
 @dataclass
 class Net:
     instrument: str
@@ -316,14 +353,32 @@ class Net:
     addr: str
     saved: bool = False
     has_script: bool = False
+    # Canonical agent-facing metadata.
+    purpose: str = ""
+    notes: str = ""
+    tags: list[str] = field(default_factory=list)
+    # Legacy fields retained for backward compatibility with older
+    # saved_nets.json entries. The TUI no longer exposes them as
+    # individual inputs; the load path folds them into ``purpose``/
+    # ``notes`` and we keep the originals around so callers that
+    # haven't migrated yet still see their data.
     description: str = ""
     dut_connection: str = ""
     test_hints: list[str] = field(default_factory=list)
-    tags: list[str] = field(default_factory=list)
     _uid: str = field(init=False)
 
     def __post_init__(self) -> None:
         self._uid = _uid(self.instrument, self.chan, self.type, self.net)
+        # Auto-migrate legacy fields so newly-loaded nets always present
+        # ``purpose`` / ``notes`` consistently to the TUI, even when the
+        # saved_nets.json on disk only has the old keys.
+        self.purpose, self.notes = _fold_legacy_net_text(
+            purpose=self.purpose,
+            notes=self.notes,
+            description=self.description,
+            dut_connection=self.dut_connection,
+            test_hints=self.test_hints,
+        )
 
     # ───── table rows
     def as_row_main(self) -> list[str]:
@@ -1006,7 +1061,22 @@ class NetActionDialog(Screen):
 
 
 class EditDetailsDialog(Screen):
-    """Dialog for editing net metadata (description, DUT connection, hints, tags)."""
+    """Dialog for editing net metadata.
+
+    Collapsed from the original four-field form (description, DUT
+    connection, test hints, tags) down to three:
+
+    - **Purpose** -- one sentence describing what this wire does on the
+      DUT.  This is the single most important field for an AI agent.
+    - **Notes** -- optional markdown for gotchas, jumper positions,
+      scope probe points, etc.
+    - **Tags** -- optional comma-separated filter tags.
+
+    Legacy values from the four old fields are folded into
+    ``purpose`` / ``notes`` on load (see ``_fold_legacy_net_text``) and
+    saved back out using the new canonical keys; the on-box loader will
+    re-migrate anything that still uses the old shape.
+    """
 
     def __init__(self, net: Net) -> None:
         super().__init__()
@@ -1019,31 +1089,23 @@ class EditDetailsDialog(Screen):
                 f"Net: {self.net.net}  ({self.net.type.upper()})",
                 classes="dialog-content",
             )
-            yield Label("Description:")
-            self.desc_input = Input(
-                placeholder="e.g., SPI flash (W25Q128) on DUT main board",
-                id="desc_input",
-                value=self.net.description,
+            yield Label("Purpose (one sentence — what this wire does on the DUT):")
+            self.purpose_input = Input(
+                placeholder="e.g., DUT debug CLI over UART; primary command/response channel",
+                id="purpose_input",
+                value=self.net.purpose,
             )
-            yield self.desc_input
+            yield self.purpose_input
 
-            yield Label("DUT Connection:")
-            self.dut_input = Input(
-                placeholder="e.g., MCU SPI1 peripheral (PA5-PA7, CS on PA4)",
-                id="dut_input",
-                value=self.net.dut_connection,
+            yield Label("Notes (optional — gotchas, jumper positions, scope probe points):")
+            self.notes_input = Input(
+                placeholder="e.g., Requires JP3 closed; idle level is high.",
+                id="notes_input",
+                value=self.net.notes,
             )
-            yield self.dut_input
+            yield self.notes_input
 
-            yield Label("Test Hints (one per line, comma-separated):")
-            self.hints_input = Input(
-                placeholder="e.g., Read JEDEC ID, Write/readback pattern",
-                id="hints_input",
-                value=", ".join(self.net.test_hints),
-            )
-            yield self.hints_input
-
-            yield Label("Tags (comma-separated):")
+            yield Label("Tags (comma-separated, optional):")
             self.tags_input = Input(
                 placeholder="e.g., flash, storage, boot-critical",
                 id="tags_input",
@@ -1056,7 +1118,7 @@ class EditDetailsDialog(Screen):
                 yield Button("Save", id="save_details", variant="success")
 
     def on_mount(self) -> None:
-        self.desc_input.focus()
+        self.purpose_input.focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         app: NetApp = self.app  # type: ignore[attr-defined]
@@ -1065,18 +1127,19 @@ class EditDetailsDialog(Screen):
             app.pop_screen()
             return
 
-        description = self.desc_input.value.strip()
-        dut_connection = self.dut_input.value.strip()
-        hints_raw = self.hints_input.value.strip()
+        purpose = self.purpose_input.value.strip()
+        notes = self.notes_input.value.strip()
         tags_raw = self.tags_input.value.strip()
-
-        test_hints = [h.strip() for h in hints_raw.split(",") if h.strip()] if hints_raw else []
         tags = [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else []
 
-        self.net.description = description
-        self.net.dut_connection = dut_connection
-        self.net.test_hints = test_hints
+        self.net.purpose = purpose
+        self.net.notes = notes
         self.net.tags = tags
+        # Clear the legacy fields so they don't get re-merged on the next
+        # load -- the new fields are now the source of truth.
+        self.net.description = ""
+        self.net.dut_connection = ""
+        self.net.test_hints = []
 
         net_data = {
             "name": self.net.net,
@@ -1084,10 +1147,14 @@ class EditDetailsDialog(Screen):
             "address": self.net.addr,
             "instrument": self.net.instrument,
             "pin": self.net.chan,
-            "description": description,
-            "dut_connection": dut_connection,
-            "test_hints": test_hints,
+            "purpose": purpose,
+            "notes": notes,
             "tags": tags,
+            # Explicitly null out the legacy keys in the persisted record
+            # so partial migrations don't leave stale text around.
+            "description": "",
+            "dut_connection": "",
+            "test_hints": [],
         }
 
         try:
@@ -2199,10 +2266,12 @@ class NetApp(App):
                 addr=rec.get("address", "NA"),
                 saved=True,
                 has_script=bool(rec.get("jlink_script") or rec.get("openocd_config")),
+                purpose=rec.get("purpose", ""),
+                notes=rec.get("notes", ""),
+                tags=rec.get("tags", []),
                 description=rec.get("description", ""),
                 dut_connection=rec.get("dut_connection", ""),
                 test_hints=rec.get("test_hints", []),
-                tags=rec.get("tags", []),
             ) for rec in saved_from_disk
         ]
         self._ensure_autogen_unsaved()
@@ -2405,10 +2474,12 @@ def launch_tui(ctx: click.Context, dut: str) -> None:
             addr=rec.get("address", "NA"),
             saved=True,
             has_script=bool(rec.get("jlink_script") or rec.get("openocd_config")),
+            purpose=rec.get("purpose", ""),
+            notes=rec.get("notes", ""),
+            tags=rec.get("tags", []),
             description=rec.get("description", ""),
             dut_connection=rec.get("dut_connection", ""),
             test_hints=rec.get("test_hints", []),
-            tags=rec.get("tags", []),
         ))
 
     # Now generate auto-names for new devices, continuing from highest saved number

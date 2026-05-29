@@ -6,9 +6,12 @@
 from .bench import (
     BenchDefinition,
     CalibrationStatus,
+    DocRef,
+    DUTContext,
     DUTSlot,
     InstrumentDescriptor,
     RoutingEntry,
+    SubSystem,
     VoltageRange,
 )
 from .capability import (
@@ -40,6 +43,8 @@ __all__ = [
     "CapabilityMatch",
     "CapabilityNode",
     "CapabilityRole",
+    "DocRef",
+    "DUTContext",
     "DUTSlot",
     "InstrumentDescriptor",
     "InterfaceDescriptor",
@@ -49,6 +54,7 @@ __all__ = [
     "RoutingEntry",
     "SafetyConstraints",
     "SafetyLimits",
+    "SubSystem",
     "Substitution",
     "SuitabilityReport",
     "TestRequirement",

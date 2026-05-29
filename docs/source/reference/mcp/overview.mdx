@@ -1,0 +1,113 @@
+---
+title: MCP Server Overview
+description: How AI agents discover hardware and plan tests on a Lager Box via the Model Context Protocol
+---
+
+Every Lager Box runs an **MCP (Model Context Protocol) server** that lets an AI
+agent understand the bench, understand the device under test (DUT), and plan
+hardware-in-the-loop tests. It runs on-box and is reachable over the box's local
+IP.
+
+```
+MCP-compatible AI agent
+    |  MCP (streamable-http via box IP)
+    v
+Lager MCP Server (on-box, port 8100)
+    |  direct lager.Net API
+    v
+Hardware (power supplies, debug probes, GPIO, protocols, ...)
+```
+
+## Connecting an agent
+
+Point any MCP-compatible client at the box:
+
+```json
+{
+  "mcpServers": {
+    "lager": {
+      "url": "http://<box-ip>:8100/mcp"
+    }
+  }
+}
+```
+
+<Note>
+The MCP server is for **discovery and planning**. To **execute** a test, the
+agent writes a Python file locally and runs it with
+`lager python --serial <BOX> path/to/test.py`, which syncs the project to the
+box and runs it with full project context.
+</Note>
+
+## What the agent sees
+
+The server exposes two kinds of things: **resources** (read-only context the
+agent reads) and **tools** (callable functions).
+
+### Resources
+
+| Resource | What it gives the agent |
+|----------|-------------------------|
+| `lager://dut/overview.md` | **Read this first.** A narrative briefing: what the box tests, the DUT MCU/peripherals, subsystems, and which documents to fetch. |
+| `lager://dut/context` | The full DUT context as structured JSON. |
+| `lager://bench/identity` | Box ID, hostname, version, and a per-DUT summary (purpose, MCU). |
+| `lager://bench/netlist` | Every net with type, roles, instrument, and metadata. |
+| `lager://bench/interfaces` | Protocol interfaces (SPI, I2C, UART) and their nets. |
+| `lager://guide/overview` | What Lager is and what a "net" is. |
+| `lager://guide/workflow` | The recommended orient → discover → plan → write → run loop. |
+| `lager://guide/api-quick-reference` | Compact `lager.Net` API cheat sheet by net type. |
+
+### Tools
+
+| Tool | Purpose |
+|------|---------|
+| `discover_dut()` | One call for orientation: DUT purpose, MCU, peripherals, subsystems, and document references. |
+| `discover_bench(net_name?)` | Enumerate hardware; with a net name, return that net's full metadata, capabilities, parent subsystem, and relevant document references. |
+| `cite_schematic(net_name)` | Return just the schematic/datasheet references and page hints relevant to one net. |
+| `plan_firmware_test(firmware_description, test_goals)` | Generate a phased test plan, scoped to relevant nets, with DUT context and document references attached. |
+| `assess_suitability(test_type)` | Check whether the bench can run a given test type. |
+| `get_test_example(query)` | Find runnable example scripts by net type, pattern, or keyword. |
+| `quick_io(net_name, action, value?)` | Spot-check read/write of a single net. |
+| `box_manage(action)` | `health` check or `reload` the bench config from disk. |
+| `install_dependency(package_name)` | `pip install` a package on the box. |
+
+## The recommended agent workflow
+
+<Steps>
+  <Step title="Orient">
+    Read `lager://dut/overview.md` (or call `discover_dut()`) to learn what the
+    box tests, the MCU and peripherals, the subsystems, and which documents to
+    fetch.
+  </Step>
+  <Step title="Discover">
+    Call `discover_bench()` to enumerate nets, instruments, and capabilities.
+    Call `discover_bench(net_name)` for detail on a specific net, including its
+    subsystem and the schematic sheet it lives on.
+  </Step>
+  <Step title="Plan">
+    Call `plan_firmware_test(...)` to get a phased plan with API references and
+    document pointers per step.
+  </Step>
+  <Step title="Write & Run">
+    Author a Python test file and run it with
+    `lager python --serial <BOX> path/to/test.py`.
+  </Step>
+  <Step title="Analyse & iterate">
+    Review output, adjust, re-run. Use `quick_io()` for spot-checks between
+    runs.
+  </Step>
+</Steps>
+
+## Where context comes from
+
+The quality of everything above depends on the metadata you author once, at
+bench setup:
+
+- **Per-net `purpose`** — set in the Net Manager TUI (`lager nets tui`). One
+  sentence describing what each wire does on the DUT.
+- **DUT context** — set with [`lager box dut`](/source/reference/cli/box-dut):
+  the box's purpose, MCU, subsystems, and references to schematics and
+  datasheets.
+
+See [Authoring DUT Context](/source/reference/mcp/dut-context) for the full
+guide.

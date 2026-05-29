@@ -120,12 +120,14 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 
 from .resources import bench_identity  # noqa: E402
+from .resources import dut as dut_resource  # noqa: E402
 from .resources import netlist  # noqa: E402
 from .resources import interfaces  # noqa: E402
 from .resources import guide  # noqa: E402
 from .resources import api_reference as api_reference_resource  # noqa: E402
 
 bench_identity.register(mcp)
+dut_resource.register(mcp)
 netlist.register(mcp)
 interfaces.register(mcp)
 guide.register(mcp)
@@ -137,6 +139,9 @@ api_reference_resource.register(mcp)
 
 # Discovery — understand what's on this bench
 from .tools import discover  # noqa: E402, F401
+
+# DUT-level orientation — what is this box / DUT?
+from .tools import dut as dut_tools  # noqa: E402, F401
 
 # Test authoring guidance — API docs, examples, test planning
 from .tools import authoring  # noqa: E402, F401
