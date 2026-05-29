@@ -254,6 +254,41 @@ class TestLoaderDUTContextBlock:
         assert [d.name for d in bench.dut_slots] == ["good"]
 
 
+class TestDanglingNetReferences:
+    def test_warns_on_unknown_subsystem_net(self, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING, logger="lager.mcp.engine.bench_loader"):
+            load_from_dicts(
+                raw_nets=[{"name": "flash_cs", "role": "gpio"}],
+                bench_cfg={
+                    "dut_context": {
+                        "name": "main",
+                        "subsystems": [
+                            {"name": "Flash", "nets": ["flash_cs", "typo_net"]},
+                        ],
+                    },
+                },
+            )
+        assert any(
+            "typo_net" in r.message and "unknown net" in r.message
+            for r in caplog.records
+        )
+
+    def test_no_warning_when_all_nets_resolve(self, caplog):
+        import logging
+        with caplog.at_level(logging.WARNING, logger="lager.mcp.engine.bench_loader"):
+            load_from_dicts(
+                raw_nets=[{"name": "flash_cs", "role": "gpio"}],
+                bench_cfg={
+                    "dut_context": {
+                        "name": "main",
+                        "subsystems": [{"name": "Flash", "nets": ["flash_cs"]}],
+                    },
+                },
+            )
+        assert not any("unknown net" in r.message for r in caplog.records)
+
+
 # ---------------------------------------------------------------------------
 # Resources
 # ---------------------------------------------------------------------------
