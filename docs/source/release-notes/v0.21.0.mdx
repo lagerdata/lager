@@ -1,0 +1,35 @@
+---
+title: "Version 0.21.0"
+description: "May 28, 2026"
+---
+
+## <u>Features</u>
+
+- **Pause a running script with `lager.pause()`.** Drop `lager.pause("why")` anywhere in a `lager python` script and it stops at that line mid-run, so you can check the bench from another terminal before it continues — useful for a long test that reaches a known trouble spot. A paused script doesn't lock the box, so your other `lager` commands (read a supply, toggle a GPIO, check a net) keep working while it waits.
+- **Resume however suits you.** Press **Enter** in the script's terminal, run **`lager python --continue <id> --box <box>`** from anywhere, or just walk away — it auto-resumes after 5 minutes by default so an unattended run never hangs. The pause prints the `id` and the exact resume commands.
+- **Inspect the paused script with a live Python console.** Add `pause(interactive=True)` and connect with **`lager python --console <id> --box <box>`** to get a Python prompt running inside the paused script — read any of its variables, evaluate expressions, or call its functions. This is also how you read a device the script is holding open (e.g. a LabJack), since the console runs in the same process.
+
+## <u>Improvements</u>
+
+- **The built-in `breakpoint()` now works in `lager python` scripts.** It previously errored out; calling `breakpoint()` now triggers the same interactive pause as `lager.pause()`.
+- **Tune or disable the auto-resume.** Set a longer (or shorter) wait with `pause("...", timeout=1800)` or `lager python ... --env LAGER_BREAKPOINT_TIMEOUT=1800`; use `timeout=0` to wait indefinitely; set `LAGER_BREAKPOINTS=off` to turn every breakpoint into a no-op for a clean run.
+
+See the [Breakpoints guide](/source/reference/python/breakpoints) for the full reference and a worked example.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.21.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.21.0/)

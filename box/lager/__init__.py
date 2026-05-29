@@ -57,6 +57,11 @@ from .core import (
 )
 
 # =============================================================================
+# Interactive breakpoints
+# =============================================================================
+from .breakpoint import pause
+
+# =============================================================================
 # Net Abstraction (test points/signals)
 # =============================================================================
 from .nets.net import Net, NetType, InvalidNetError, SetupFunctionRequiredError
@@ -91,6 +96,8 @@ __all__ = [
     "get_saved_nets",
     # Core constants
     "LAGER_HOST",
+    # Interactive breakpoints
+    "pause",
     # PCB Net abstraction
     "Net",
     "NetType",
