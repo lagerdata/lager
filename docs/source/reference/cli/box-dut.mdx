@@ -1,0 +1,99 @@
+---
+title: Box DUT Context
+description: Author the device-under-test context that the MCP server hands to AI agents
+---
+
+`lager box dut` manages the **DUT context** stored in `/etc/lager/bench.json` on
+a Lager Box. This context tells AI agents (via the [MCP
+server](/source/reference/mcp/overview)) what the box tests: purpose, MCU, key
+peripherals, subsystem groupings, and references to schematics and datasheets.
+
+See [Authoring DUT Context](/source/reference/mcp/dut-context) for the concepts
+and workflow.
+
+## Syntax
+
+```bash
+lager box dut [COMMAND] [OPTIONS]
+```
+
+## Global Options
+
+| Option | Description |
+|--------|-------------|
+| `--box TEXT` | Lagerbox name or IP address |
+| `--help` | Show help message and exit |
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `show` | Print the current DUT context as JSON |
+| `edit` | Open the DUT context in `$EDITOR` for live editing |
+| `add-doc` | Attach a schematic / datasheet / firmware reference to the DUT |
+
+## Command Reference
+
+### Show
+
+Print the current DUT context as JSON.
+
+```bash
+lager box dut show --box my-box
+```
+
+### Edit
+
+Round-trip the DUT context through `$EDITOR` (falls back to `nano`, then `vi`).
+On save, the new JSON is validated and written back to `/etc/lager/bench.json`.
+
+```bash
+lager box dut edit --box my-box
+```
+
+The editable block accepts these fields:
+
+| Field | Meaning |
+|-------|---------|
+| `name` | DUT slot name (e.g. `main`). |
+| `active` | Whether this slot is the active DUT. |
+| `purpose` | One-line description of what the box tests. |
+| `summary` | Markdown paragraph: what the DUT is, known quirks. |
+| `mcu` | The DUT's microcontroller (e.g. `STM32H7`). |
+| `key_peripherals` | List of notable peripherals. |
+| `schematic_refs` / `datasheet_refs` / `firmware_refs` / `extra_docs` | Lists of document references. |
+| `subsystems` | Functional blocks, each with `name`, `summary`, `nets`, and `doc_refs`. |
+
+### Add Doc
+
+Attach a single document reference to the active DUT without hand-editing JSON.
+The box records only a pointer — it does **not** store the file. The agent
+fetches and analyses it with its own tools.
+
+```bash
+lager box dut add-doc --kind schematic \
+  --title "Main board" --repo-path docs/sch.pdf --pages 3-5 --box my-box
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--kind` | `schematic`, `layout`, `datasheet`, `firmware`, `manual`, `errata`, or `other` (default `schematic`). |
+| `--title TEXT` | Human label for the document (required). |
+| `--url TEXT` | External URL. |
+| `--repo-path TEXT` | Path relative to your test project (synced to the box on `lager python`). |
+| `--pages TEXT` | Optional page/sheet hint, e.g. `"3-5"` or `"POWER sheet"`. |
+| `--notes TEXT` | Optional free-form note. |
+
+You must supply at least one of `--url` or `--repo-path`. The reference is
+appended to the list matching `--kind` (`schematic` → `schematic_refs`,
+`datasheet` → `datasheet_refs`, `firmware` → `firmware_refs`; everything else →
+`extra_docs`).
+
+## After editing
+
+The MCP server reads the bench config at startup. So agents see your changes,
+either have a connected agent call the `box_manage` tool with `action="reload"`
+(re-reads `/etc/lager/bench.json` and rebuilds the capability graph), or restart
+the box service.

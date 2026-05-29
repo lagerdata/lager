@@ -31,10 +31,12 @@ import requests
 from ..schemas.bench import (
     BenchDefinition,
     CalibrationStatus,
-    DUTSlot,
+    DocRef,
+    DUTContext,
     InstrumentDescriptor,
     InstrumentHealth,
     RoutingEntry,
+    SubSystem,
     VoltageRange,
 )
 from ..schemas.net import InterfaceDescriptor, NetDescriptor, SafetyLimits
@@ -166,12 +168,71 @@ def _directionality_for(net_type: str) -> str:
 # Build NetDescriptor from a raw saved_nets entry
 # ---------------------------------------------------------------------------
 
+def _migrate_legacy_net_fields(
+    *,
+    purpose: str,
+    notes: str,
+    description: str,
+    dut_connection: str,
+    test_hints: list[str],
+) -> tuple[str, str]:
+    """Fold legacy ``description`` / ``dut_connection`` / ``test_hints`` into
+    the new ``purpose`` / ``notes`` pair.
+
+    - ``purpose`` takes the first non-empty of (purpose, description, dut_connection).
+    - ``notes`` is built from the remaining legacy text, joined with blank
+      lines so existing markdown stays readable.
+
+    Idempotent: callers that already provide ``purpose``/``notes`` keep them.
+    """
+    if not purpose:
+        for candidate in (description, dut_connection):
+            if candidate:
+                purpose = candidate
+                break
+
+    extra_chunks: list[str] = []
+    if description and description != purpose:
+        extra_chunks.append(description)
+    if dut_connection and dut_connection != purpose:
+        extra_chunks.append(f"**DUT connection:** {dut_connection}")
+    if test_hints:
+        bullets = "\n".join(f"- {h}" for h in test_hints if h)
+        if bullets:
+            extra_chunks.append(f"**Test hints:**\n{bullets}")
+
+    if extra_chunks:
+        combined = "\n\n".join([notes] + extra_chunks) if notes else "\n\n".join(extra_chunks)
+        notes = combined
+
+    return purpose, notes
+
+
 def _net_from_raw(raw: dict[str, Any]) -> NetDescriptor:
-    """Convert a single entry from saved_nets.json to a NetDescriptor."""
+    """Convert a single entry from saved_nets.json to a NetDescriptor.
+
+    Performs legacy field migration: older entries with ``description`` /
+    ``dut_connection`` / ``test_hints`` are folded into ``purpose`` /
+    ``notes`` so the agent-facing schema stays small.
+    """
     role = raw.get("role", "")
     instrument = raw.get("instrument", "")
     address = raw.get("address", "")
     channel = str(raw.get("channel", raw.get("pin", "")))
+
+    description = raw.get("description") or ""
+    dut_connection = raw.get("dut_connection") or ""
+    test_hints = raw.get("test_hints") or []
+    purpose = raw.get("purpose") or ""
+    notes = raw.get("notes") or ""
+
+    purpose, notes = _migrate_legacy_net_fields(
+        purpose=purpose,
+        notes=notes,
+        description=description,
+        dut_connection=dut_connection,
+        test_hints=test_hints,
+    )
 
     return NetDescriptor(
         name=raw.get("name") or "",
@@ -188,10 +249,100 @@ def _net_from_raw(raw: dict[str, Any]) -> NetDescriptor:
         instrument=instrument,
         channel=channel,
         params=raw.get("params") or {},
-        description=raw.get("description") or "",
-        dut_connection=raw.get("dut_connection") or "",
-        test_hints=raw.get("test_hints") or [],
+        purpose=purpose,
+        notes=notes,
         tags=raw.get("tags") or [],
+        # Preserve legacy values on the model so round-tripping doesn't
+        # silently drop them for downstream consumers that still read them.
+        description=description,
+        dut_connection=dut_connection,
+        test_hints=test_hints,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Build DUTContext / SubSystem / DocRef from bench.json
+# ---------------------------------------------------------------------------
+
+def _doc_ref_from_raw(raw: dict[str, Any]) -> DocRef | None:
+    """Build a DocRef from a raw dict. Returns None when malformed."""
+    if not isinstance(raw, dict):
+        return None
+    title = raw.get("title") or raw.get("name") or ""
+    if not title:
+        return None
+    kind = raw.get("kind") or "other"
+    try:
+        return DocRef(
+            title=str(title),
+            kind=kind,
+            url=raw.get("url"),
+            repo_path=raw.get("repo_path") or raw.get("path"),
+            pages=raw.get("pages"),
+            notes=raw.get("notes"),
+        )
+    except (TypeError, ValueError) as e:
+        logger.warning("doc_ref: skipping malformed entry %r (%s)", raw, e)
+        return None
+
+
+def _doc_refs_from_raw(raw_list: Any) -> list[DocRef]:
+    if not isinstance(raw_list, list):
+        return []
+    out: list[DocRef] = []
+    for entry in raw_list:
+        ref = _doc_ref_from_raw(entry) if isinstance(entry, dict) else None
+        if ref is not None:
+            out.append(ref)
+    return out
+
+
+def _subsystem_from_raw(raw: dict[str, Any]) -> SubSystem | None:
+    if not isinstance(raw, dict):
+        return None
+    name = raw.get("name") or ""
+    if not name:
+        return None
+    return SubSystem(
+        name=str(name),
+        summary=raw.get("summary") or "",
+        nets=list(raw.get("nets") or []),
+        doc_refs=_doc_refs_from_raw(raw.get("doc_refs")),
+    )
+
+
+def _dut_context_from_raw(raw: dict[str, Any]) -> DUTContext:
+    """Build a DUTContext from a bench.json ``dut_slots`` entry.
+
+    Accepts both the legacy minimal shape (just ``name`` / ``active`` /
+    ``board_profile`` / ``firmware``) and the new richer shape with
+    ``purpose``, ``summary``, ``mcu``, ``key_peripherals``, schematic
+    refs and subsystems.
+    """
+    name = raw.get("name") or ""
+    if not name:
+        raise ValueError("dut slot entry missing 'name'")
+
+    subsystems: list[SubSystem] = []
+    for sub_raw in (raw.get("subsystems") or []):
+        sub = _subsystem_from_raw(sub_raw)
+        if sub is not None:
+            subsystems.append(sub)
+
+    return DUTContext(
+        name=str(name),
+        active=bool(raw.get("active", True)),
+        board_profile=raw.get("board_profile"),
+        firmware=raw.get("firmware"),
+        purpose=raw.get("purpose") or "",
+        summary=raw.get("summary") or raw.get("description") or "",
+        mcu=raw.get("mcu"),
+        key_peripherals=list(raw.get("key_peripherals") or []),
+        schematic_refs=_doc_refs_from_raw(raw.get("schematic_refs")),
+        datasheet_refs=_doc_refs_from_raw(raw.get("datasheet_refs")),
+        firmware_refs=_doc_refs_from_raw(raw.get("firmware_refs")),
+        extra_docs=_doc_refs_from_raw(raw.get("extra_docs") or raw.get("docs")),
+        subsystems=subsystems,
     )
 
 
@@ -387,14 +538,31 @@ def _assemble(
                 nd.safety_limits = SafetyLimits(**ovr["safety_limits"])
             except TypeError as e:
                 logger.warning("net %s: bad safety_limits override (%s)", nd.name, e)
-        if "description" in ovr:
-            nd.description = ovr["description"]
-        if "dut_connection" in ovr:
-            nd.dut_connection = ovr["dut_connection"]
-        if "test_hints" in ovr:
-            nd.test_hints = ovr["test_hints"]
+        # Legacy override keys -- fold them through the migration helper so
+        # ``purpose`` / ``notes`` stay populated even when only the old
+        # keys are present in bench.json.
+        legacy_present = any(
+            k in ovr for k in ("description", "dut_connection", "test_hints")
+        )
+        if legacy_present:
+            nd.description = ovr.get("description", nd.description)
+            nd.dut_connection = ovr.get("dut_connection", nd.dut_connection)
+            nd.test_hints = ovr.get("test_hints", nd.test_hints)
+            nd.purpose, nd.notes = _migrate_legacy_net_fields(
+                purpose=nd.purpose,
+                notes=nd.notes,
+                description=nd.description,
+                dut_connection=nd.dut_connection,
+                test_hints=nd.test_hints,
+            )
+        # New canonical override keys take precedence and overwrite the
+        # merged values from the legacy keys.
+        if "purpose" in ovr:
+            nd.purpose = ovr["purpose"] or ""
+        if "notes" in ovr:
+            nd.notes = ovr["notes"] or ""
         if "tags" in ovr:
-            nd.tags = ovr["tags"]
+            nd.tags = ovr["tags"] or []
 
     # Instruments
     instruments = [
@@ -409,15 +577,19 @@ def _assemble(
     ]
 
     # DUT slots — skip individual malformed entries instead of failing the
-    # whole bench load.
-    dut_slots: list[DUTSlot] = []
-    for ds in (bench_cfg.get("dut_slots") or []):
+    # whole bench load. ``dut_slots`` is the legacy key; ``dut_context`` is
+    # the newer single-DUT alternative for boxes with one slot.
+    dut_slots: list[DUTContext] = []
+    raw_slots = bench_cfg.get("dut_slots") or []
+    if not raw_slots and isinstance(bench_cfg.get("dut_context"), dict):
+        raw_slots = [bench_cfg["dut_context"]]
+    for ds in raw_slots:
         if not isinstance(ds, dict):
             logger.warning("dut_slots: skipping non-dict entry %r", ds)
             continue
         try:
-            dut_slots.append(DUTSlot(**ds))
-        except TypeError as e:
+            dut_slots.append(_dut_context_from_raw(ds))
+        except (TypeError, ValueError) as e:
             logger.warning("dut_slots: skipping malformed entry %r (%s)", ds, e)
 
     # Interfaces — same per-entry tolerance.

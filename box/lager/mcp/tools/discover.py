@@ -31,13 +31,30 @@ def discover_bench(net_name: str | None = None) -> str:
         for net in bench.nets:
             if net.name == net_name:
                 caps = graph.by_target(net_name)
-                return json.dumps(
-                    {
-                        **net.model_dump(exclude_none=True),
-                        "capabilities": [c.model_dump() for c in caps],
-                    },
-                    indent=2,
-                )
+                payload: dict = {
+                    **net.model_dump(exclude_none=True),
+                    "capabilities": [c.model_dump() for c in caps],
+                }
+                # Attach DUT subsystem + relevant doc refs so the agent
+                # can ask one question and learn *which schematic page*
+                # this net lives on, not just what it is electrically.
+                for dut in bench.dut_slots:
+                    sub = dut.subsystem_for_net(net_name)
+                    if sub is not None:
+                        payload["dut"] = dut.name
+                        payload["subsystem"] = {
+                            "name": sub.name,
+                            "summary": sub.summary,
+                            "doc_refs": [
+                                d.model_dump(exclude_none=True) for d in sub.doc_refs
+                            ],
+                        }
+                        if dut.schematic_refs:
+                            payload["dut_schematic_refs"] = [
+                                d.model_dump(exclude_none=True) for d in dut.schematic_refs
+                            ]
+                        break
+                return json.dumps(payload, indent=2)
         return json.dumps({"error": f"Net '{net_name}' not found."})
 
     role_counts: dict[str, int] = {}
@@ -52,8 +69,11 @@ def discover_bench(net_name: str | None = None) -> str:
             "instrument": n.instrument,
             "roles": n.roles,
         }
-        if n.description:
-            entry["description"] = n.description
+        if n.purpose:
+            entry["purpose"] = n.purpose
+        elif n.description:
+            # Legacy nets that haven't been migrated yet.
+            entry["purpose"] = n.description
         if n.tags:
             entry["tags"] = n.tags
         nets_out.append(entry)
@@ -63,7 +83,13 @@ def discover_bench(net_name: str | None = None) -> str:
         "hostname": bench.hostname,
         "version": bench.version,
         "dut_slots": [
-            {"name": d.name, "active": d.active, "board_profile": d.board_profile}
+            {
+                "name": d.name,
+                "active": d.active,
+                "board_profile": d.board_profile,
+                "purpose": d.purpose,
+                "mcu": d.mcu,
+            }
             for d in bench.dut_slots
         ],
         "instruments": [

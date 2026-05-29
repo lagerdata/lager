@@ -27,6 +27,14 @@ class NetDescriptor(BaseModel):
 
     Enriched beyond the raw saved_nets.json entry with electrical metadata,
     roles, safety limits, and aliases for agent reasoning.
+
+    User-authored metadata is intentionally minimal: a single ``purpose``
+    sentence (what this wire does on the DUT) plus optional ``notes`` for
+    gotchas, jumper positions, scope probe points, etc. The legacy
+    ``description`` / ``dut_connection`` / ``test_hints`` fields are
+    preserved on the model so old ``saved_nets.json`` files keep loading,
+    but the bench loader folds them into ``purpose`` / ``notes`` and the
+    TUI no longer exposes them as separate inputs.
     """
 
     name: str
@@ -44,11 +52,25 @@ class NetDescriptor(BaseModel):
     channel: str = ""
     params: dict[str, Any] = Field(default_factory=dict)
 
-    # User-provided metadata (from saved_nets.json or bench.json overrides)
+    # Canonical user-authored metadata.
+    purpose: str = ""
+    """One-sentence description of what this net does on the DUT.
+
+    Example: *"DUT debug CLI over UART; primary command/response channel"*.
+    """
+
+    notes: str = ""
+    """Optional markdown for gotchas, jumper positions, scope probe points."""
+
+    tags: list[str] = Field(default_factory=list)
+
+    # ---- Legacy fields ---------------------------------------------------
+    # Kept for backward compatibility with older saved_nets.json / bench.json
+    # files. The bench loader merges these into ``purpose``/``notes`` at
+    # load time, and the TUI no longer renders them as standalone inputs.
     description: str = ""
     dut_connection: str = ""
     test_hints: list[str] = Field(default_factory=list)
-    tags: list[str] = Field(default_factory=list)
 
 
 class InterfaceDescriptor(BaseModel):
