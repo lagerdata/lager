@@ -508,6 +508,22 @@ def _assemble(
         except (TypeError, ValueError) as e:
             logger.warning("dut_slots: skipping malformed entry %r (%s)", ds, e)
 
+    # Warn about subsystem net references that don't match any known net.
+    # Dangling references silently break ``subsystem_for_net`` lookups (and
+    # therefore the schematic-citation chain), so surface them at load time.
+    if dut_slots:
+        net_names = {n.name for n in nets}
+        for dut in dut_slots:
+            for sub in dut.subsystems:
+                dangling = [ref for ref in sub.nets if ref not in net_names]
+                if dangling:
+                    logger.warning(
+                        "DUT %r subsystem %r references unknown net(s) %s; "
+                        "they will not resolve to any hardware. Check for typos "
+                        "or stale entries in bench.json.",
+                        dut.name, sub.name, dangling,
+                    )
+
     # Interfaces — same per-entry tolerance.
     static_ifaces: list[InterfaceDescriptor] = []
     for iface in (bench_cfg.get("interfaces") or []):

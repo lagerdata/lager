@@ -188,9 +188,8 @@ def edit_cmd(ctx: click.Context, box: Optional[str]) -> None:
             if _write_bench_json(resolved, payload):
                 click.secho(f"Saved DUT context on {resolved}.", fg="green")
                 click.echo(
-                    "To pick up the new context, ask a connected agent to call "
-                    "the `box_manage` MCP tool with action='reload' (or restart "
-                    "the box service)."
+                    "The MCP server auto-reloads on its next request, so a "
+                    "connected agent will see the change without a restart."
                 )
                 return
             # Write failure path — give the user a chance to retry
@@ -288,6 +287,6 @@ def add_doc_cmd(
         fg="green",
     )
     click.echo(
-        "To pick up the new doc ref, ask a connected agent to call the "
-        "`box_manage` MCP tool with action='reload' (or restart the box service)."
+        "The MCP server auto-reloads on its next request, so a connected "
+        "agent will see the new doc ref without a restart."
     )
