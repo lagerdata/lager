@@ -30,11 +30,8 @@ class NetDescriptor(BaseModel):
 
     User-authored metadata is intentionally minimal: a single ``purpose``
     sentence (what this wire does on the DUT) plus optional ``notes`` for
-    gotchas, jumper positions, scope probe points, etc. The legacy
-    ``description`` / ``dut_connection`` / ``test_hints`` fields are
-    preserved on the model so old ``saved_nets.json`` files keep loading,
-    but the bench loader folds them into ``purpose`` / ``notes`` and the
-    TUI no longer exposes them as separate inputs.
+    gotchas, jumper positions, scope probe points, etc. ``tags`` are short
+    keywords the planning tools match on.
     """
 
     name: str
@@ -63,14 +60,6 @@ class NetDescriptor(BaseModel):
     """Optional markdown for gotchas, jumper positions, scope probe points."""
 
     tags: list[str] = Field(default_factory=list)
-
-    # ---- Legacy fields ---------------------------------------------------
-    # Kept for backward compatibility with older saved_nets.json / bench.json
-    # files. The bench loader merges these into ``purpose``/``notes`` at
-    # load time, and the TUI no longer renders them as standalone inputs.
-    description: str = ""
-    dut_connection: str = ""
-    test_hints: list[str] = Field(default_factory=list)
 
 
 class InterfaceDescriptor(BaseModel):

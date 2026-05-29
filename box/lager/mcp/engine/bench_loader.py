@@ -168,71 +168,11 @@ def _directionality_for(net_type: str) -> str:
 # Build NetDescriptor from a raw saved_nets entry
 # ---------------------------------------------------------------------------
 
-def _migrate_legacy_net_fields(
-    *,
-    purpose: str,
-    notes: str,
-    description: str,
-    dut_connection: str,
-    test_hints: list[str],
-) -> tuple[str, str]:
-    """Fold legacy ``description`` / ``dut_connection`` / ``test_hints`` into
-    the new ``purpose`` / ``notes`` pair.
-
-    - ``purpose`` takes the first non-empty of (purpose, description, dut_connection).
-    - ``notes`` is built from the remaining legacy text, joined with blank
-      lines so existing markdown stays readable.
-
-    Idempotent: callers that already provide ``purpose``/``notes`` keep them.
-    """
-    if not purpose:
-        for candidate in (description, dut_connection):
-            if candidate:
-                purpose = candidate
-                break
-
-    extra_chunks: list[str] = []
-    if description and description != purpose:
-        extra_chunks.append(description)
-    if dut_connection and dut_connection != purpose:
-        extra_chunks.append(f"**DUT connection:** {dut_connection}")
-    if test_hints:
-        bullets = "\n".join(f"- {h}" for h in test_hints if h)
-        if bullets:
-            extra_chunks.append(f"**Test hints:**\n{bullets}")
-
-    if extra_chunks:
-        combined = "\n\n".join([notes] + extra_chunks) if notes else "\n\n".join(extra_chunks)
-        notes = combined
-
-    return purpose, notes
-
-
 def _net_from_raw(raw: dict[str, Any]) -> NetDescriptor:
-    """Convert a single entry from saved_nets.json to a NetDescriptor.
-
-    Performs legacy field migration: older entries with ``description`` /
-    ``dut_connection`` / ``test_hints`` are folded into ``purpose`` /
-    ``notes`` so the agent-facing schema stays small.
-    """
+    """Convert a single entry from saved_nets.json to a NetDescriptor."""
     role = raw.get("role", "")
     instrument = raw.get("instrument", "")
-    address = raw.get("address", "")
     channel = str(raw.get("channel", raw.get("pin", "")))
-
-    description = raw.get("description") or ""
-    dut_connection = raw.get("dut_connection") or ""
-    test_hints = raw.get("test_hints") or []
-    purpose = raw.get("purpose") or ""
-    notes = raw.get("notes") or ""
-
-    purpose, notes = _migrate_legacy_net_fields(
-        purpose=purpose,
-        notes=notes,
-        description=description,
-        dut_connection=dut_connection,
-        test_hints=test_hints,
-    )
 
     return NetDescriptor(
         name=raw.get("name") or "",
@@ -249,14 +189,9 @@ def _net_from_raw(raw: dict[str, Any]) -> NetDescriptor:
         instrument=instrument,
         channel=channel,
         params=raw.get("params") or {},
-        purpose=purpose,
-        notes=notes,
+        purpose=raw.get("purpose") or "",
+        notes=raw.get("notes") or "",
         tags=raw.get("tags") or [],
-        # Preserve legacy values on the model so round-tripping doesn't
-        # silently drop them for downstream consumers that still read them.
-        description=description,
-        dut_connection=dut_connection,
-        test_hints=test_hints,
     )
 
 
@@ -538,25 +473,6 @@ def _assemble(
                 nd.safety_limits = SafetyLimits(**ovr["safety_limits"])
             except TypeError as e:
                 logger.warning("net %s: bad safety_limits override (%s)", nd.name, e)
-        # Legacy override keys -- fold them through the migration helper so
-        # ``purpose`` / ``notes`` stay populated even when only the old
-        # keys are present in bench.json.
-        legacy_present = any(
-            k in ovr for k in ("description", "dut_connection", "test_hints")
-        )
-        if legacy_present:
-            nd.description = ovr.get("description", nd.description)
-            nd.dut_connection = ovr.get("dut_connection", nd.dut_connection)
-            nd.test_hints = ovr.get("test_hints", nd.test_hints)
-            nd.purpose, nd.notes = _migrate_legacy_net_fields(
-                purpose=nd.purpose,
-                notes=nd.notes,
-                description=nd.description,
-                dut_connection=nd.dut_connection,
-                test_hints=nd.test_hints,
-            )
-        # New canonical override keys take precedence and overwrite the
-        # merged values from the legacy keys.
         if "purpose" in ovr:
             nd.purpose = ovr["purpose"] or ""
         if "notes" in ovr:

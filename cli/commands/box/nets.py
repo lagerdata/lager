@@ -1712,32 +1712,28 @@ def show_script_cmd(
 
 
 @nets.command("describe", short_help="Set metadata on a saved net",
-              help="Set metadata on a saved net (description, DUT connection, hints, tags).")
+              help="Set metadata on a saved net (purpose, notes, tags).")
 @click.argument("name")
-@click.option("--description", "-d", default=None, help="Human-readable description of the net")
-@click.option("--dut-connection", default=None, help="How the net connects to the DUT (e.g., 'MCU SPI1 peripheral')")
-@click.option("--hint", "-h", "hints", multiple=True, help="Test hint (repeatable)")
-@click.option("--tag", "-t", "tags", multiple=True, help="Tag for categorisation (repeatable)")
-@click.option("--clear-hints", is_flag=True, help="Remove all existing test hints before adding new ones")
+@click.option("--purpose", "-p", default=None, help="One sentence: what this net does on the DUT")
+@click.option("--notes", "-n", default=None, help="Optional notes (gotchas, jumper positions, scope probe points)")
+@click.option("--tag", "-t", "tags", multiple=True, help="Tag for categorisation/matching (repeatable)")
 @click.option("--clear-tags", is_flag=True, help="Remove all existing tags before adding new ones")
 @click.option("--box", help="Lagerbox name or IP")
 @click.pass_context
 def describe_cmd(
     ctx: click.Context,
     name: str,
-    description: str | None,
-    dut_connection: str | None,
-    hints: tuple[str, ...],
+    purpose: str | None,
+    notes: str | None,
     tags: tuple[str, ...],
-    clear_hints: bool,
     clear_tags: bool,
     box: str | None,
 ) -> None:
     """Set metadata fields on a saved net for agent-assisted testing."""
     resolved_box = _resolve_box(ctx, box)
 
-    if description is None and dut_connection is None and not hints and not tags and not clear_hints and not clear_tags:
-        click.secho("Nothing to update. Provide at least one of --description, --dut-connection, --hint, or --tag.", fg="yellow")
+    if purpose is None and notes is None and not tags and not clear_tags:
+        click.secho("Nothing to update. Provide at least one of --purpose, --notes, or --tag.", fg="yellow")
         return
 
     raw = _run_net_py(ctx, resolved_box, "list")
@@ -1752,16 +1748,10 @@ def describe_cmd(
         click.secho(f"Net '{name}' not found on {resolved_box}.", fg="yellow")
         ctx.exit(1)
 
-    if description is not None:
-        target["description"] = description
-    if dut_connection is not None:
-        target["dut_connection"] = dut_connection
-
-    if clear_hints:
-        target["test_hints"] = []
-    if hints:
-        existing = target.get("test_hints", [])
-        target["test_hints"] = existing + list(hints)
+    if purpose is not None:
+        target["purpose"] = purpose
+    if notes is not None:
+        target["notes"] = notes
 
     if clear_tags:
         target["tags"] = []
@@ -1821,21 +1811,16 @@ def show_cmd(
     if target.get("openocd_config"):
         click.echo("  OpenOCD:    (OpenOCD config attached)")
 
-    desc = target.get("description", "")
-    dut_conn = target.get("dut_connection", "")
-    test_hints = target.get("test_hints", [])
+    purpose = target.get("purpose", "")
+    notes = target.get("notes", "")
     net_tags = target.get("tags", [])
 
-    if desc or dut_conn or test_hints or net_tags:
+    if purpose or notes or net_tags:
         click.echo()
         click.secho("  Metadata:", bold=True)
-        if desc:
-            click.echo(f"    Description:    {desc}")
-        if dut_conn:
-            click.echo(f"    DUT Connection: {dut_conn}")
-        if test_hints:
-            click.echo("    Test Hints:")
-            for h in test_hints:
-                click.echo(f"      - {h}")
+        if purpose:
+            click.echo(f"    Purpose: {purpose}")
+        if notes:
+            click.echo(f"    Notes:   {notes}")
         if net_tags:
-            click.echo(f"    Tags:           {', '.join(net_tags)}")
+            click.echo(f"    Tags:    {', '.join(net_tags)}")

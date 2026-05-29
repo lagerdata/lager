@@ -5,7 +5,7 @@
 
 Covers:
 - New schema types (DocRef, SubSystem, DUTContext).
-- Legacy net-field migration in the bench loader.
+- Net metadata (purpose/notes/tags) loading in the bench loader.
 - DUT-context parsing from bench.json (both ``dut_slots`` and the
   single-DUT ``dut_context`` short-form).
 - ``discover_dut`` / ``cite_schematic`` tools.
@@ -22,7 +22,6 @@ from lager.mcp.schemas.bench import BenchDefinition, DocRef, DUTContext, SubSyst
 from lager.mcp.schemas.net import NetDescriptor
 from lager.mcp.engine.bench_loader import (
     _dut_context_from_raw,
-    _migrate_legacy_net_fields,
     _net_from_raw,
     load_from_dicts,
 )
@@ -129,72 +128,11 @@ class TestBenchDUTSlots:
 
 
 # ---------------------------------------------------------------------------
-# Legacy migration
+# Net metadata loading
 # ---------------------------------------------------------------------------
 
-class TestMigrateLegacyNetFields:
-    def test_purpose_already_set_keeps_it(self):
-        purpose, notes = _migrate_legacy_net_fields(
-            purpose="explicit purpose", notes="",
-            description="old desc", dut_connection="", test_hints=[],
-        )
-        assert purpose == "explicit purpose"
-        assert "old desc" in notes
-
-    def test_picks_description_as_purpose(self):
-        purpose, notes = _migrate_legacy_net_fields(
-            purpose="", notes="",
-            description="DUT debug CLI", dut_connection="", test_hints=[],
-        )
-        assert purpose == "DUT debug CLI"
-        # description was promoted to purpose -- shouldn't be duplicated in notes
-        assert notes == ""
-
-    def test_dut_connection_fallback(self):
-        purpose, notes = _migrate_legacy_net_fields(
-            purpose="", notes="",
-            description="", dut_connection="MCU SPI1", test_hints=[],
-        )
-        assert purpose == "MCU SPI1"
-        assert notes == ""
-
-    def test_test_hints_become_notes_bullets(self):
-        purpose, notes = _migrate_legacy_net_fields(
-            purpose="purpose", notes="",
-            description="", dut_connection="", test_hints=["a", "b"],
-        )
-        assert "**Test hints:**" in notes
-        assert "- a" in notes and "- b" in notes
-
-    def test_all_legacy_fields(self):
-        purpose, notes = _migrate_legacy_net_fields(
-            purpose="", notes="",
-            description="Top-level desc",
-            dut_connection="PA9/PA10",
-            test_hints=["boot banner"],
-        )
-        assert purpose == "Top-level desc"
-        assert "**DUT connection:** PA9/PA10" in notes
-        assert "**Test hints:**" in notes
-        assert "- boot banner" in notes
-
-
-class TestNetFromRawMigration:
-    def test_legacy_net_migrated(self):
-        nd = _net_from_raw({
-            "name": "uart1", "role": "uart",
-            "description": "DUT debug CLI",
-            "dut_connection": "PA9/PA10",
-            "test_hints": ["boot banner", "prompt =>"],
-        })
-        assert nd.purpose == "DUT debug CLI"
-        assert "**DUT connection:** PA9/PA10" in nd.notes
-        assert "- boot banner" in nd.notes
-        # Legacy fields preserved on the model
-        assert nd.description == "DUT debug CLI"
-        assert nd.test_hints == ["boot banner", "prompt =>"]
-
-    def test_new_net_passes_through(self):
+class TestNetFromRaw:
+    def test_purpose_and_notes_pass_through(self):
         nd = _net_from_raw({
             "name": "spi1", "role": "spi",
             "purpose": "flash bus",
@@ -203,38 +141,30 @@ class TestNetFromRawMigration:
         assert nd.purpose == "flash bus"
         assert nd.notes == "idle high"
 
-    def test_purpose_wins_over_description(self):
-        """When both old and new keys are present, the new ones are canonical."""
+    def test_legacy_fields_are_ignored(self):
+        """Old description/dut_connection/test_hints keys no longer exist."""
         nd = _net_from_raw({
-            "name": "x", "role": "gpio",
-            "purpose": "new way",
-            "description": "old way",
+            "name": "uart1", "role": "uart",
+            "description": "DUT debug CLI",
+            "dut_connection": "PA9/PA10",
+            "test_hints": ["boot banner"],
         })
-        assert nd.purpose == "new way"
-        # legacy text still ends up in notes for completeness
-        assert "old way" in nd.notes
+        assert nd.purpose == ""
+        assert nd.notes == ""
+        assert not hasattr(nd, "description")
+        assert not hasattr(nd, "dut_connection")
+        assert not hasattr(nd, "test_hints")
+
+    def test_tags_pass_through(self):
+        nd = _net_from_raw({
+            "name": "psu1", "role": "power-supply",
+            "tags": ["power", "rail"],
+        })
+        assert nd.tags == ["power", "rail"]
 
 
-class TestNetOverridesMigration:
-    def test_legacy_override_migrates(self):
-        bench = load_from_dicts(
-            raw_nets=[{"name": "psu1", "role": "power-supply"}],
-            bench_cfg={
-                "net_overrides": [
-                    {
-                        "name": "psu1",
-                        "description": "Main 3V3 rail",
-                        "dut_connection": "VCC pin",
-                        "test_hints": ["sweep voltage"],
-                    },
-                ],
-            },
-        )
-        n = bench.nets[0]
-        assert n.purpose == "Main 3V3 rail"
-        assert "VCC pin" in n.notes
-
-    def test_new_override_wins(self):
+class TestNetOverrides:
+    def test_override_sets_purpose_and_notes(self):
         bench = load_from_dicts(
             raw_nets=[{"name": "psu1", "role": "power-supply"}],
             bench_cfg={
@@ -333,7 +263,7 @@ def populated_bench():
     return load_from_dicts(
         raw_nets=[
             {"name": "uart1", "role": "uart",
-             "description": "DUT debug CLI", "dut_connection": "PA9/PA10"},
+             "purpose": "DUT debug CLI", "notes": "PA9/PA10"},
             {"name": "flash_cs", "role": "gpio",
              "purpose": "SPI flash chip-select"},
             {"name": "psu1", "role": "power-supply",
@@ -515,8 +445,7 @@ class TestDiscoverBenchEnrichment:
         slot = payload["dut_slots"][0]
         assert slot["purpose"].startswith("Power-regression")
         assert slot["mcu"] == "STM32H7"
-        # Per-net entries should show ``purpose`` (migrated from description for
-        # the uart1 net).
+        # Per-net entries should show ``purpose``.
         names = {n["name"]: n for n in payload["nets"]}
         assert names["uart1"]["purpose"] == "DUT debug CLI"
         assert names["flash_cs"]["purpose"] == "SPI flash chip-select"

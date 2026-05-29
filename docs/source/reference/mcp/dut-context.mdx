@@ -28,13 +28,21 @@ Select a net, open its details, and fill in:
 
 - **Purpose** — *"DUT debug CLI over UART; primary command/response channel."*
 - **Notes** (optional) — gotchas, jumper positions, scope probe points.
-- **Tags** (optional) — for filtering, e.g. `flash`, `boot-critical`.
+- **Tags** (optional) — short keywords the planning tools match on, e.g.
+  `flash`, `boot-critical`.
 
 <Note>
-This replaces the older four-field form (`description`, `dut_connection`,
-`test_hints`, `tags`). Existing nets are migrated automatically: their old text
-is folded into `purpose` and `notes` on load, so nothing is lost and no manual
-migration is needed.
+`purpose` and `notes` are prose for the agent to read; `tags` are keywords the
+planning tools score against (a tag matching a test goal is the strongest
+relevance signal). You can also set these without the TUI:
+
+```bash
+lager nets describe uart1 \
+  --purpose "DUT debug CLI over UART" \
+  --notes "PA9/PA10; 115200 8N1" \
+  --tag cli --tag boot-critical \
+  --box my-box
+```
 </Note>
 
 ### 2. DUT-wide context

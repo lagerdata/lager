@@ -307,43 +307,6 @@ def is_single_channel_taken(all_nets: list["Net"], inst: str, addr: str, role: s
         return False
     return any(n.saved and n.instrument == inst and n.addr == addr for n in all_nets)
 
-def _fold_legacy_net_text(
-    *,
-    purpose: str,
-    notes: str,
-    description: str,
-    dut_connection: str,
-    test_hints: list[str],
-) -> tuple[str, str]:
-    """Fold legacy net metadata into the canonical ``purpose`` / ``notes``.
-
-    Mirrors the on-box loader's migration so the TUI surfaces the same
-    text the MCP server will. Idempotent: if ``purpose`` / ``notes`` are
-    already populated, the legacy fields are appended without disturbing
-    them.
-    """
-    if not purpose:
-        for candidate in (description, dut_connection):
-            if candidate:
-                purpose = candidate
-                break
-
-    extra: list[str] = []
-    if description and description != purpose:
-        extra.append(description)
-    if dut_connection and dut_connection != purpose:
-        extra.append(f"**DUT connection:** {dut_connection}")
-    if test_hints:
-        bullets = "\n".join(f"- {h}" for h in test_hints if h)
-        if bullets:
-            extra.append(f"**Test hints:**\n{bullets}")
-
-    if extra:
-        notes = "\n\n".join([notes] + extra) if notes else "\n\n".join(extra)
-
-    return purpose, notes
-
-
 @dataclass
 class Net:
     instrument: str
@@ -353,32 +316,14 @@ class Net:
     addr: str
     saved: bool = False
     has_script: bool = False
-    # Canonical agent-facing metadata.
+    # Agent-facing metadata.
     purpose: str = ""
     notes: str = ""
     tags: list[str] = field(default_factory=list)
-    # Legacy fields retained for backward compatibility with older
-    # saved_nets.json entries. The TUI no longer exposes them as
-    # individual inputs; the load path folds them into ``purpose``/
-    # ``notes`` and we keep the originals around so callers that
-    # haven't migrated yet still see their data.
-    description: str = ""
-    dut_connection: str = ""
-    test_hints: list[str] = field(default_factory=list)
     _uid: str = field(init=False)
 
     def __post_init__(self) -> None:
         self._uid = _uid(self.instrument, self.chan, self.type, self.net)
-        # Auto-migrate legacy fields so newly-loaded nets always present
-        # ``purpose`` / ``notes`` consistently to the TUI, even when the
-        # saved_nets.json on disk only has the old keys.
-        self.purpose, self.notes = _fold_legacy_net_text(
-            purpose=self.purpose,
-            notes=self.notes,
-            description=self.description,
-            dut_connection=self.dut_connection,
-            test_hints=self.test_hints,
-        )
 
     # ───── table rows
     def as_row_main(self) -> list[str]:
@@ -1063,19 +1008,14 @@ class NetActionDialog(Screen):
 class EditDetailsDialog(Screen):
     """Dialog for editing net metadata.
 
-    Collapsed from the original four-field form (description, DUT
-    connection, test hints, tags) down to three:
+    Three fields:
 
     - **Purpose** -- one sentence describing what this wire does on the
       DUT.  This is the single most important field for an AI agent.
     - **Notes** -- optional markdown for gotchas, jumper positions,
       scope probe points, etc.
-    - **Tags** -- optional comma-separated filter tags.
-
-    Legacy values from the four old fields are folded into
-    ``purpose`` / ``notes`` on load (see ``_fold_legacy_net_text``) and
-    saved back out using the new canonical keys; the on-box loader will
-    re-migrate anything that still uses the old shape.
+    - **Tags** -- optional comma-separated keywords the planning tools
+      match on.
     """
 
     def __init__(self, net: Net) -> None:
@@ -1135,11 +1075,6 @@ class EditDetailsDialog(Screen):
         self.net.purpose = purpose
         self.net.notes = notes
         self.net.tags = tags
-        # Clear the legacy fields so they don't get re-merged on the next
-        # load -- the new fields are now the source of truth.
-        self.net.description = ""
-        self.net.dut_connection = ""
-        self.net.test_hints = []
 
         net_data = {
             "name": self.net.net,
@@ -1150,11 +1085,6 @@ class EditDetailsDialog(Screen):
             "purpose": purpose,
             "notes": notes,
             "tags": tags,
-            # Explicitly null out the legacy keys in the persisted record
-            # so partial migrations don't leave stale text around.
-            "description": "",
-            "dut_connection": "",
-            "test_hints": [],
         }
 
         try:
@@ -2269,9 +2199,6 @@ class NetApp(App):
                 purpose=rec.get("purpose", ""),
                 notes=rec.get("notes", ""),
                 tags=rec.get("tags", []),
-                description=rec.get("description", ""),
-                dut_connection=rec.get("dut_connection", ""),
-                test_hints=rec.get("test_hints", []),
             ) for rec in saved_from_disk
         ]
         self._ensure_autogen_unsaved()
@@ -2477,9 +2404,6 @@ def launch_tui(ctx: click.Context, dut: str) -> None:
             purpose=rec.get("purpose", ""),
             notes=rec.get("notes", ""),
             tags=rec.get("tags", []),
-            description=rec.get("description", ""),
-            dut_connection=rec.get("dut_connection", ""),
-            test_hints=rec.get("test_hints", []),
         ))
 
     # Now generate auto-names for new devices, continuing from highest saved number

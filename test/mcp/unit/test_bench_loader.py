@@ -153,7 +153,7 @@ class TestNullTolerance:
 
     JSON allows a key to exist with value null, which is distinct from the key
     being absent. `dict.get(key, default)` only returns `default` for the
-    absent case, so user data like `{"test_hints": null}` used to return None
+    absent case, so user data like `{"tags": null}` used to return None
     and crash downstream iteration.
     """
 
@@ -164,18 +164,16 @@ class TestNullTolerance:
             "instrument": "rigol_dp800",
             "channel": "1",
             "aliases": None,
-            "test_hints": None,
             "tags": None,
             "params": None,
-            "description": None,
-            "dut_connection": None,
+            "purpose": None,
+            "notes": None,
         })
         assert nd.aliases == []
-        assert nd.test_hints == []
         assert nd.tags == []
         assert nd.params == {}
-        assert nd.description == ""
-        assert nd.dut_connection == ""
+        assert nd.purpose == ""
+        assert nd.notes == ""
 
     def test_bench_cfg_with_null_collections(self):
         bench = load_from_dicts(
