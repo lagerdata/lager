@@ -662,6 +662,43 @@ class DirectHTTPSession:
         )
         return response
 
+    def continue_python(self, box, lager_process_id):
+        """
+        Resume a script paused at a lager.pause() breakpoint.
+
+        Args:
+            box: Box IP (ignored, uses self.box_ip)
+            lager_process_id: Process ID of the paused script
+
+        Returns:
+            requests.Response object; JSON body has {'resumed': bool}
+        """
+        url = f'{self.base_url}/python/continue'
+        return self.session.post(
+            url,
+            json={'lager_process_id': lager_process_id},
+            timeout=(7, 10),
+        )
+
+    def breakpoint_status(self, box, lager_process_id):
+        """
+        Query whether a script is currently paused at a breakpoint.
+
+        Args:
+            box: Box IP (ignored, uses self.box_ip)
+            lager_process_id: Process ID to query
+
+        Returns:
+            requests.Response object; JSON body has {'paused': bool, ...} and,
+            when paused, label/file/line/console_port/since/timeout.
+        """
+        url = f'{self.base_url}/python/breakpoint'
+        return self.session.post(
+            url,
+            json={'lager_process_id': lager_process_id},
+            timeout=(7, 10),
+        )
+
     def download_file(self, box, filename):
         """
         Download a file from box via direct HTTP.

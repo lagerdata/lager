@@ -9,6 +9,7 @@ This module provides CLI commands for running Python scripts on Lager boxes.
 import os
 import shutil
 import gzip
+import codecs
 import json
 import uuid
 import sys
@@ -17,6 +18,8 @@ import pathlib
 import itertools
 import functools
 import signal
+import select
+import socket
 import tempfile
 import requests
 import click
@@ -387,6 +390,16 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
     handler = functools.partial(sigint_handler, kill_python, box_ip)
     signal.signal(signal.SIGINT, handler)
 
+    # Let the user resume a lager.pause() breakpoint by pressing Enter. The box
+    # prints the breakpoint banner to the streamed stderr; this just turns a
+    # local keypress into a resume request. Interactive (human) runs only.
+    if callback is None and sys.stdin.isatty():
+        threading.Thread(
+            target=_watch_stdin_for_resume,
+            args=(session, box_ip, lager_process_id),
+            daemon=True,
+        ).start()
+
     try:
         done = False
         context = None
@@ -414,6 +427,98 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
     except OutputFormatNotSupported:
         click.secho('Response format not supported. Please upgrade lager-cli', fg='red', err=True)
         sys.exit(1)
+
+
+def _watch_stdin_for_resume(session, box_ip, process_id):
+    """
+    Daemon thread: each line typed on stdin (Enter) asks the box to resume a
+    script paused at a lager.pause() breakpoint. Harmless no-op when the script
+    is not currently paused (the box returns resumed=False).
+    """
+    try:
+        while True:
+            line = sys.stdin.readline()
+            if not line:  # EOF (Ctrl+D)
+                return
+            try:
+                session.continue_python(box_ip, process_id)
+            except Exception:  # pylint: disable=broad-except
+                pass
+    except (ValueError, OSError):
+        return
+
+
+def _handle_continue(ctx, box_ip, process_id, session, dut_name):
+    """Resume a script paused at a breakpoint, by process ID."""
+    try:
+        resp = session.continue_python(box_ip, process_id)
+    except requests.exceptions.ConnectionError:
+        click.secho(f'Could not connect to box at {box_ip}', fg='red', err=True)
+        ctx.exit(1)
+    if resp.status_code >= 400:
+        click.secho(f'Error: Box returned HTTP {resp.status_code}', fg='red', err=True)
+        ctx.exit(1)
+    if resp.json().get('resumed'):
+        click.echo(f'Resumed {process_id}')
+    else:
+        box_label = dut_name or box_ip
+        click.secho(f'No paused breakpoint found for {process_id} on {box_label}', fg='yellow', err=True)
+
+
+def _handle_console(ctx, box_ip, process_id, session):
+    """Connect to the interactive Python console of a paused script."""
+    try:
+        resp = session.breakpoint_status(box_ip, process_id)
+    except requests.exceptions.ConnectionError:
+        click.secho(f'Could not connect to box at {box_ip}', fg='red', err=True)
+        ctx.exit(1)
+    if resp.status_code >= 400:
+        click.secho(f'Error: Box returned HTTP {resp.status_code}', fg='red', err=True)
+        ctx.exit(1)
+
+    state = resp.json()
+    if not state.get('paused'):
+        click.secho(f'No script is paused at a breakpoint for {process_id}', fg='yellow', err=True)
+        ctx.exit(1)
+    port = state.get('console_port')
+    if not port:
+        click.secho('This breakpoint has no interactive console.', fg='yellow', err=True)
+        click.secho('Call pause(..., interactive=True) to enable it.', err=True)
+        ctx.exit(1)
+
+    _proxy_console(ctx, box_ip, port)
+
+
+def _proxy_console(ctx, host, port):
+    """Bridge the local terminal to the box's interactive console socket."""
+    try:
+        sock = socket.create_connection((host, port), timeout=10)
+    except OSError as exc:
+        click.secho(f'Could not connect to console at {host}:{port} ({exc})', fg='red', err=True)
+        ctx.exit(1)
+
+    click.echo('Connected to interactive console (Ctrl+D to disconnect)')
+    # Incremental decoder buffers partial multibyte chars split across recv chunks.
+    decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+    try:
+        while True:
+            rlist, _w, _x = select.select([sock, sys.stdin], [], [])
+            if sock in rlist:
+                data = sock.recv(4096)
+                if not data:
+                    break
+                sys.stdout.write(decoder.decode(data))
+                sys.stdout.flush()
+            if sys.stdin in rlist:
+                line = sys.stdin.readline()
+                if not line:  # Ctrl+D
+                    break
+                sock.sendall(line.encode('utf-8'))
+    except (OSError, KeyboardInterrupt):
+        pass
+    finally:
+        sock.close()
+        click.echo('\nDisconnected from console')
 
 
 def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
@@ -455,12 +560,17 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
         nonlocal detached_by_user
         try:
             while True:
-                ch = sys.stdin.read(1)
-                if not ch:  # EOF (Ctrl+D)
+                line = sys.stdin.readline()
+                if not line:  # EOF (Ctrl+D)
                     detached_by_user = True
                     click.echo('\nDetaching...')
                     resp.close()
                     return
+                # Enter resumes a script paused at a breakpoint (no-op otherwise)
+                try:
+                    session.continue_python(box_ip, process_id)
+                except Exception:  # pylint: disable=broad-except
+                    pass
         except (ValueError, OSError):
             return
 
@@ -515,20 +625,22 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
 @click.option('--org', default=None, hidden=True)
 @click.option('--add-file', type=click.Path(exists=True, dir_okay=False), multiple=True, help='File to upload with script')
 @click.option('--reattach', default=None, help='Reattach to detached process by process ID')
+@click.option('--continue', 'continue_', default=None, help='Resume a script paused at a breakpoint, by process ID')
+@click.option('--console', default=None, help='Connect to the interactive console of a paused script, by process ID')
 @click.argument('args', nargs=-1)
-def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_overwrite, signum, timeout, detach, port, org, add_file, reattach, args):
+def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_overwrite, signum, timeout, detach, port, org, add_file, reattach, continue_, console, args):
     """Run Python script on box"""
     from ...box_storage import resolve_and_validate_box
 
-    # --kill, --kill-all, --reattach are management ops: skip lock check
-    skip_lock = bool(kill or kill_all or reattach)
+    # --kill, --kill-all, --reattach, --continue, --console are management ops: skip lock check
+    skip_lock = bool(kill or kill_all or reattach or continue_ or console)
 
     # Resolve and validate the box name
     box_name = box
     box_ip = resolve_and_validate_box(ctx, box_name, _skip_lock_check=skip_lock)
 
-    if not runnable and not kill and not kill_all and not reattach:
-        raise click.UsageError('Please supply a RUNNABLE, --kill, --kill-all, or --reattach option')
+    if not runnable and not kill and not kill_all and not reattach and not continue_ and not console:
+        raise click.UsageError('Please supply a RUNNABLE, --kill, --kill-all, --reattach, --continue, or --console option')
 
     if kill:
         session = ctx.obj.get_session_for_box(box_ip, box_name=box_name)
@@ -556,6 +668,16 @@ def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_ove
     if reattach:
         session = ctx.obj.get_session_for_box(box_ip, box_name=box_name)
         _handle_reattach(ctx, box_ip, reattach, session, box_name)
+        return
+
+    if continue_:
+        session = ctx.obj.get_session_for_box(box_ip, box_name=box_name)
+        _handle_continue(ctx, box_ip, continue_, session, box_name)
+        return
+
+    if console:
+        session = ctx.obj.get_session_for_box(box_ip, box_name=box_name)
+        _handle_console(ctx, box_ip, console, session)
         return
 
     if not allow_overwrite:

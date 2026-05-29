@@ -130,7 +130,8 @@
           {
             "group": "Development",
             "pages": [
-              "source/reference/python/debug"
+              "source/reference/python/debug",
+              "source/reference/python/breakpoints"
             ]
           },
           {
@@ -193,6 +194,7 @@
           {
             "group": "Version History",
             "pages": [
+              "source/release-notes/v0.21.0",
               "source/release-notes/v0.20.1",
               "source/release-notes/v0.20.0",
               "source/release-notes/v0.19.2",

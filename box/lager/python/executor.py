@@ -404,10 +404,11 @@ class PythonExecutor:
             'LAGER_HOST_MODULE_FOLDER': module_folder,
             'LAGER_STDOUT_IS_STDERR': str(stdout_is_stderr),
             'LAGER_OUTPUT_CHANNEL': output_channel.name,
-            'PYTHONBREAKPOINT': 'remote_pdb.set_trace',
+            # Route the builtin breakpoint() to lager's interactive pause so a
+            # script's `breakpoint()` works like `lager.pause()` instead of
+            # crashing on the never-installed remote_pdb.
+            'PYTHONBREAKPOINT': 'lager.breakpoint.pause',
             'LOCAL_ADDRESS': LAGER_PYTHON_IP_ADDR,
-            'REMOTE_PDB_HOST': '0.0.0.0',
-            'REMOTE_PDB_PORT': '5555',
         })
 
         # Box metadata
