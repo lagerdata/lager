@@ -182,10 +182,16 @@ def read_config_file(path=None):
     except FileNotFoundError:
         pass
     except json.JSONDecodeError as e:
-        click.secho(f'Invalid JSON in {path}:', fg='red', err=True)
-        click.echo(f'  {e}', err=True)
-        click.echo('Note: .lager files must be in JSON format.', err=True)
-        raise SystemExit(1)
+        from .errors import LagerError
+        raise LagerError(
+            f'The config file {path} is not valid JSON.',
+            cause=f'{e} (.lager files must be JSON, not INI/key=value).',
+            fixes=[
+                f'Open {path} and fix the syntax at the position above.',
+                'Compare against a known-good .lager, or delete it to start fresh.',
+            ],
+            raw=e,
+        )
 
     if 'LAGER' not in config:
         config.add_section('LAGER')
@@ -265,22 +271,36 @@ def get_devenv_json():
         Return a path and JSON data for devenv.
         Exits with error if no config file is found or JSON is invalid.
     """
+    from .errors import LagerError
+
     config_path = find_devenv_config_path()
     if config_path is None:
-        click.echo(f'Could not find {LAGER_CONFIG_FILE_NAME} in {os.getcwd()} or any parent directories', err=True)
-        click.get_current_context().exit(1)
+        raise LagerError(
+            f'No {LAGER_CONFIG_FILE_NAME} config file found.',
+            cause=f'Searched {os.getcwd()} and every parent directory.',
+            fixes=[
+                f'Run this command from inside your project (where {LAGER_CONFIG_FILE_NAME} lives), or',
+                f'Create one: add a {LAGER_CONFIG_FILE_NAME} JSON file in your project root.',
+            ],
+        )
 
     try:
         with open(config_path, 'r') as f:
             data = json.load(f)
     except json.JSONDecodeError as e:
-        click.secho(f'Invalid JSON in {config_path}:', fg='red', err=True)
-        click.echo(f'  {e}', err=True)
-        click.get_current_context().exit(1)
+        raise LagerError(
+            f'The config file {config_path} is not valid JSON.',
+            cause=f'{e} (.lager files must be JSON).',
+            fixes=[f'Open {config_path} and fix the syntax at the position above.'],
+            raw=e,
+        )
     except IOError as e:
-        click.secho(f'Error reading {config_path}:', fg='red', err=True)
-        click.echo(f'  {e}', err=True)
-        click.get_current_context().exit(1)
+        raise LagerError(
+            f'Could not read the config file {config_path}.',
+            cause=str(e),
+            fixes=['Check the file exists and you have permission to read it.'],
+            raw=e,
+        )
 
     return config_path, data
 

@@ -60,36 +60,37 @@ def get_default_box(ctx):
     import ipaddress
     from ..box_storage import get_box_ip, list_boxes
 
+    from ..errors import LagerError
+
     name = os.getenv('LAGER_BOX')
     if name is None:
         name = ctx.obj.default_box
 
     if name is None:
-        # No box specified - provide helpful error
+        # No box specified - provide helpful, box-aware guidance.
         local_boxes = list_boxes()
 
-        click.secho('No box specified and no default box configured.', fg='red', err=True)
-        click.echo()
-
         if local_boxes:
-            click.echo('Available boxes:')
-            for box_name in sorted(local_boxes.keys(), key=natural_sort_key):
-                click.echo(f'  - {box_name}')
-            click.echo()
-            click.echo('You can either:')
-            click.echo('  1. Specify a box with: --box [BOX_NAME]')
-            click.echo('  2. Set a default box with: lager defaults add --box [BOX_NAME]')
-        else:
-            click.echo('No boxes found in .lager file.')
-            click.echo()
-            click.echo('To add a box, run:')
-            click.echo('  lager boxes add --name [NAME] --ip [IP_ADDRESS]')
-            click.echo()
-            click.echo('Then you can either:')
-            click.echo('  1. Specify a box with: --box [BOX_NAME]')
-            click.echo('  2. Set a default box with: lager defaults add --box [BOX_NAME]')
-
-        ctx.exit(1)
+            box_lines = '\n'.join(
+                f'      - {box_name}'
+                for box_name in sorted(local_boxes.keys(), key=natural_sort_key)
+            )
+            raise LagerError(
+                'No box specified, and no default box is configured.',
+                cause='Your saved boxes:\n' + box_lines,
+                fixes=[
+                    'Pick one for this command: --box [BOX_NAME]',
+                    'Or set a default once: lager defaults add --box [BOX_NAME]',
+                ],
+            )
+        raise LagerError(
+            'No box specified, and you have no saved boxes yet.',
+            cause='Lager needs to know which box to talk to.',
+            fixes=[
+                'Add a box: lager boxes add --name [BOX_NAME] --ip [IP_ADDRESS]',
+                'Then use --box [BOX_NAME], or set a default: lager defaults add --box [BOX_NAME]',
+            ],
+        )
 
     # Check if the box name is a local box that should be resolved to an IP
     local_ip = get_box_ip(name)
@@ -102,26 +103,9 @@ def get_default_box(ctx):
         # It's a valid IP address, use it directly
         return name
     except ValueError:
-        # Not a valid IP and not in local boxes - Show helpful error
-        click.secho(f"Error: Box '{name}' not found.", fg='red', err=True)
-        click.echo("", err=True)
-
-        saved_boxes = list_boxes()
-        if saved_boxes:
-            click.echo("Available boxes:", err=True)
-            for box_name, box_info in sorted(saved_boxes.items(), key=lambda x: natural_sort_key(x[0])):
-                if isinstance(box_info, dict):
-                    box_ip = box_info.get('ip', 'unknown')
-                else:
-                    box_ip = box_info
-                click.echo(f"  - {box_name} ({box_ip})", err=True)
-        else:
-            click.echo("No boxes are currently saved.", err=True)
-
-        click.echo("", err=True)
-        click.echo("To add a new box, use:", err=True)
-        click.echo(f"  lager boxes add --name {name} --ip [IP_ADDRESS]", err=True)
-        ctx.exit(1)
+        # Not a valid IP and not in local boxes - show an actionable error.
+        from ..box_storage import box_not_found_error
+        raise box_not_found_error(name)
 
 
 def get_impl_path(filename):

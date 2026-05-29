@@ -355,6 +355,35 @@ def acquire_command_lock_with_cleanup(ctx, ip, box_name, command_name, force=Fal
     _check_box_lock(ip, box_name)
 
 
+def box_not_found_error(box_name):
+    """Build an actionable LagerError for an unrecognized ``--box`` value.
+
+    Lists the user's saved boxes (so they can spot a typo) and shows how to
+    add the new one. Shared by every box-resolution path so the message is
+    identical no matter which command hit it.
+    """
+    from .errors import LagerError
+
+    saved_boxes = list_boxes()
+    if saved_boxes:
+        lines = []
+        for name, box_info in sorted(saved_boxes.items(), key=lambda x: natural_sort_key(x[0])):
+            box_ip = box_info.get('ip', 'unknown') if isinstance(box_info, dict) else box_info
+            lines.append(f'      - {name} ({box_ip})')
+        cause = 'Your saved boxes:\n' + '\n'.join(lines)
+    else:
+        cause = 'You have no saved boxes yet.'
+
+    return LagerError(
+        f"No box named '{box_name}'.",
+        cause=cause,
+        fixes=[
+            f'Add it: lager boxes add --name {box_name} --ip [IP_ADDRESS]',
+            'Or use an existing name / an IP address with --box.',
+        ],
+    )
+
+
 def resolve_and_validate_box_with_name(ctx, box_name: Optional[str] = None, _skip_lock_check=False, _force=False) -> tuple:
     """
     Resolve and validate a box name, returning both IP and name.
@@ -412,26 +441,8 @@ def resolve_and_validate_box_with_name(ctx, box_name: Optional[str] = None, _ski
         _do_version_check(box_name, None)
         return (box_name, None)  # Direct IP, no box name
     except ValueError:
-        # Not a valid IP and not in local boxes - Show helpful error
-        click.secho(f"Error: Box '{box_name}' not found.", fg='red', err=True)
-        click.echo("", err=True)
-
-        saved_boxes = list_boxes()
-        if saved_boxes:
-            click.echo("Available boxes:", err=True)
-            for name, box_info in sorted(saved_boxes.items(), key=lambda x: natural_sort_key(x[0])):
-                if isinstance(box_info, dict):
-                    box_ip = box_info.get('ip', 'unknown')
-                else:
-                    box_ip = box_info
-                click.echo(f"  - {name} ({box_ip})", err=True)
-        else:
-            click.echo("No boxes are currently saved.", err=True)
-
-        click.echo("", err=True)
-        click.echo("To add a new box, use:", err=True)
-        click.echo(f"  lager boxes add --name {box_name} --ip [IP_ADDRESS]", err=True)
-        ctx.exit(1)
+        # Not a valid IP and not in local boxes - show an actionable error.
+        raise box_not_found_error(box_name)
 
 
 def resolve_and_validate_box(ctx, box_name: Optional[str] = None, _skip_lock_check=False, _force=False) -> str:
@@ -475,23 +486,5 @@ def resolve_and_validate_box(ctx, box_name: Optional[str] = None, _skip_lock_che
         _do_lock_check(box_name, None)
         return box_name
     except ValueError:
-        # Not a valid IP and not in local boxes - Show helpful error
-        click.secho(f"Error: Box '{box_name}' not found.", fg='red', err=True)
-        click.echo("", err=True)
-
-        saved_boxes = list_boxes()
-        if saved_boxes:
-            click.echo("Available boxes:", err=True)
-            for name, box_info in sorted(saved_boxes.items(), key=lambda x: natural_sort_key(x[0])):
-                if isinstance(box_info, dict):
-                    box_ip = box_info.get('ip', 'unknown')
-                else:
-                    box_ip = box_info
-                click.echo(f"  - {name} ({box_ip})", err=True)
-        else:
-            click.echo("No boxes are currently saved.", err=True)
-
-        click.echo("", err=True)
-        click.echo("To add a new box, use:", err=True)
-        click.echo(f"  lager boxes add --name {box_name} --ip [IP_ADDRESS]", err=True)
-        ctx.exit(1)
+        # Not a valid IP and not in local boxes - show an actionable error.
+        raise box_not_found_error(box_name)

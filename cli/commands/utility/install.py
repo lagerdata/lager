@@ -15,6 +15,7 @@ from importlib import resources
 from ...address_utils import validate_ip_or_hostname, VALID_FORMATS_CHEATSHEET
 from ...box_storage import add_box, get_box_ip, get_box_user
 from ...core.ssh_utils import host_in_known_hosts
+from ...errors import ssh_error, LagerError
 
 
 def get_script_path(script_name: str, subdir: str = "scripts") -> Path:
@@ -169,48 +170,27 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                         timeout=60
                     )
                     if test_result.returncode != 0:
-                        click.secho("Error: Password authentication failed", fg='red', err=True)
-                        click.echo("Please verify your password and try again.", err=True)
-                        ctx.exit(1)
+                        LagerError(
+                            'Password authentication failed.',
+                            cause='The box did not accept that password.',
+                            fixes=[
+                                'Double-check the password and try again.',
+                                'The default box login is the user "lagerdata".',
+                            ],
+                        ).die()
                     click.secho("Password authentication successful!", fg='green')
                     click.echo()
                     click.secho("Note: You may be prompted for your password multiple times during installation.", fg='yellow')
                 else:
                     click.secho("Installation cancelled.", fg='yellow')
                     ctx.exit(0)
-            elif "connection refused" in stderr:
-                click.secho("Error: SSH connection refused", fg='red', err=True)
-                click.echo(err=True)
-                click.echo("The box is reachable but SSH service is not running on port 22.", err=True)
-                click.echo(err=True)
-                click.echo("Possible causes:", err=True)
-                click.echo("  - SSH server is not installed or running", err=True)
-                click.echo("  - SSH is running on a non-standard port", err=True)
-                click.echo("  - Firewall is blocking port 22", err=True)
-                ctx.exit(1)
-            elif "no route to host" in stderr:
-                click.secho("Error: No route to host", fg='red', err=True)
-                click.echo(err=True)
-                click.echo(f"Cannot reach {ip} - network path does not exist.", err=True)
-                click.echo(err=True)
-                click.echo("Possible causes:", err=True)
-                click.echo("  - Box is on a different network", err=True)
-                click.echo("  - VPN is not connected", err=True)
-                click.echo("  - IP address is incorrect", err=True)
-                ctx.exit(1)
+            elif "connection refused" in stderr or "no route to host" in stderr:
+                ssh_error(result.stderr, ip).die()
             elif "host key verification failed" in stderr:
                 # Distinguish between new host (not in known_hosts) vs changed key
                 if host_in_known_hosts(ip):
-                    # Changed key - security concern, require manual intervention
-                    click.secho("Error: Host key verification failed", fg='red', err=True)
-                    click.echo(err=True)
-                    click.echo("The SSH host key has changed, which could indicate:", err=True)
-                    click.echo("  - The box was reinstalled or reimaged", err=True)
-                    click.echo("  - A different device is using this IP address", err=True)
-                    click.echo(err=True)
-                    click.echo("If you trust this device, remove the old key with:", err=True)
-                    click.echo(f"  ssh-keygen -R {ip}", err=True)
-                    ctx.exit(1)
+                    # Changed key - security concern, require manual intervention.
+                    ssh_error("host key verification failed", ip).die()
                 else:
                     # New host - offer to accept the key
                     click.secho("New SSH host detected", fg='yellow')
@@ -255,9 +235,14 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                                         timeout=60
                                     )
                                     if test_result.returncode != 0:
-                                        click.secho("Error: Password authentication failed", fg='red', err=True)
-                                        click.echo("Please verify your password and try again.", err=True)
-                                        ctx.exit(1)
+                                        LagerError(
+                                            'Password authentication failed.',
+                                            cause='The box did not accept that password.',
+                                            fixes=[
+                                                'Double-check the password and try again.',
+                                                'The default box login is the user "lagerdata".',
+                                            ],
+                                        ).die()
                                     click.secho("Password authentication successful!", fg='green')
                                     click.echo()
                                     click.secho("Note: You may be prompted for your password multiple times during installation.", fg='yellow')
@@ -273,11 +258,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                         click.secho("Installation cancelled.", fg='yellow')
                         ctx.exit(0)
             elif "could not resolve hostname" in stderr or "name or service not known" in stderr:
-                click.secho("Error: Could not resolve hostname", fg='red', err=True)
-                click.echo(err=True)
-                click.echo(f"DNS lookup failed for {ip}.", err=True)
-                click.echo("Check that the hostname or IP address is correct.", err=True)
-                ctx.exit(1)
+                ssh_error(result.stderr, ip).die()
             else:
                 # Generic SSH failure - still offer password auth as fallback
                 click.secho("SSH key authentication failed", fg='yellow')
@@ -299,9 +280,14 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                         timeout=60
                     )
                     if test_result.returncode != 0:
-                        click.secho("Error: Password authentication failed", fg='red', err=True)
-                        click.echo("Please verify your password and try again.", err=True)
-                        ctx.exit(1)
+                        LagerError(
+                            'Password authentication failed.',
+                            cause='The box did not accept that password.',
+                            fixes=[
+                                'Double-check the password and try again.',
+                                'The default box login is the user "lagerdata".',
+                            ],
+                        ).die()
                     click.secho("Password authentication successful!", fg='green')
                     click.echo()
                     click.secho("Note: You may be prompted for your password multiple times during installation.", fg='yellow')
@@ -311,29 +297,30 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
         else:
             click.secho("SSH connection OK", fg='green')
     except subprocess.TimeoutExpired:
-        click.secho("Error: SSH connection timed out", fg='red', err=True)
-        click.echo(err=True)
-        click.echo(f"Could not connect to {ssh_host} within 15 seconds.", err=True)
-        click.echo(err=True)
-        click.echo("Possible causes:", err=True)
-        click.echo("  - Box is offline or powered down", err=True)
-        click.echo("  - Network connectivity issue", err=True)
-        click.echo("  - Firewall is dropping packets (not rejecting)", err=True)
-        click.echo(err=True)
-        click.echo("Verify the box is online and try: ping " + ip, err=True)
-        ctx.exit(1)
+        LagerError(
+            f'SSH connection to {ssh_host} timed out after 15 seconds.',
+            cause='The box did not respond — it may be offline, or packets are being dropped.',
+            fixes=[
+                f'Confirm the box is online: ping {ip}',
+                'Check your network / VPN connection, then retry.',
+            ],
+        ).die()
     except FileNotFoundError:
-        click.secho("Error: SSH client not found", fg='red', err=True)
-        click.echo(err=True)
-        click.echo("The 'ssh' command is not installed or not in PATH.", err=True)
-        click.echo(err=True)
-        click.echo("Install SSH client:", err=True)
-        click.echo("  macOS/Linux: Usually pre-installed, try 'which ssh'", err=True)
-        click.echo("  Windows: Install OpenSSH or use Git Bash", err=True)
-        ctx.exit(1)
+        LagerError(
+            "The 'ssh' command was not found on this machine.",
+            cause='An SSH client is required to install onto a box.',
+            fixes=[
+                'macOS/Linux: ssh is usually preinstalled — check with: which ssh',
+                'Windows: install OpenSSH, or run this from Git Bash.',
+            ],
+        ).die()
     except Exception as e:
-        click.secho(f"Error: {e}", fg='red', err=True)
-        ctx.exit(1)
+        LagerError(
+            'SSH connectivity check failed.',
+            cause=str(e),
+            fixes=[f'Verify the box is online and reachable: lager hello --box {ip}'],
+            raw=e,
+        ).die()
 
     click.echo()
 

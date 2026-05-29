@@ -248,8 +248,13 @@ class UARTWebSocketClient:
                     wait_timeout=10
                 )
             except Exception as e:
-                click.secho(f"Error: Could not connect to box at {self.box_url}", fg='red', err=True)
-                click.secho(f"  {str(e)}", fg='red', err=True)
+                # Preserve the return-code contract (don't sys.exit / .die here):
+                # the caller relies on the return value and the finally-block
+                # terminal restore below.
+                from ...errors import connection_error
+                from urllib.parse import urlparse
+                host = urlparse(self.box_url).hostname or self.box_url
+                connection_error(e, host=host).show()
                 return 1
 
             # Start UART session
