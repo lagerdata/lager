@@ -27,6 +27,7 @@ from texttable import Texttable
 from ...core.net_group import NetGroupHelpMixin
 from ...core.net_helpers import resolve_box
 from ...context import get_impl_path, get_default_net
+from ...errors import net_not_specified_error
 from ..development.python import run_python_internal
 
 I2C_ROLE = "i2c"
@@ -359,8 +360,7 @@ def config(ctx, box, frequency, pull_ups):
 
     netname = getattr(ctx.obj, 'netname', None)
     if not netname:
-        click.secho("No I2C net specified and no default configured.", fg="red", err=True)
-        ctx.exit(1)
+        net_not_specified_error('I2C', 'i2c').die()
 
     params = {
         "netname": netname,
@@ -394,8 +394,7 @@ def scan(ctx, box, start, end):
 
     netname = getattr(ctx.obj, 'netname', None)
     if not netname:
-        click.secho("No I2C net specified and no default configured.", fg="red", err=True)
-        ctx.exit(1)
+        net_not_specified_error('I2C', 'i2c').die()
 
     start_addr = _parse_address(start)
     end_addr = _parse_address(end)
@@ -430,8 +429,7 @@ def read(ctx, num_bytes, box, address, frequency, output_format):
 
     netname = getattr(ctx.obj, 'netname', None)
     if not netname:
-        click.secho("No I2C net specified and no default configured.", fg="red", err=True)
-        ctx.exit(1)
+        net_not_specified_error('I2C', 'i2c').die()
 
     addr = _parse_address(address)
 
@@ -473,8 +471,7 @@ def write(ctx, data, box, address, data_file, frequency, output_format):
 
     netname = getattr(ctx.obj, 'netname', None)
     if not netname:
-        click.secho("No I2C net specified and no default configured.", fg="red", err=True)
-        ctx.exit(1)
+        net_not_specified_error('I2C', 'i2c').die()
 
     addr = _parse_address(address)
 
@@ -530,8 +527,7 @@ def transfer(ctx, num_bytes, box, address, data_str, data_file, frequency, outpu
 
     netname = getattr(ctx.obj, 'netname', None)
     if not netname:
-        click.secho("No I2C net specified and no default configured.", fg="red", err=True)
-        ctx.exit(1)
+        net_not_specified_error('I2C', 'i2c').die()
 
     addr = _parse_address(address)
 

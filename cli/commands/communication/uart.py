@@ -21,6 +21,7 @@ from texttable import Texttable
 from ...core.net_group import NetCommand
 from ...core.net_helpers import resolve_box, run_backend
 from ...context import get_impl_path, get_default_net
+from ...errors import net_not_specified_error
 from ..development.python import run_python_internal
 
 UART_ROLE = "uart"
@@ -338,9 +339,7 @@ def uart(ctx, netname, action, box, baudrate, bytesize, parity, stopbits, xonxof
             raise click.UsageError(f"Unknown UART action '{action}'. Supported: serial-port")
 
         if not netname:
-            click.secho("No UART net specified and no default configured.", fg="yellow", err=True)
-            click.echo("Provide a net name or set a default with 'lager defaults set --uart-net [NET_NAME]'.", err=True)
-            ctx.exit(1)
+            net_not_specified_error('UART', 'uart', default_flag='uart-net').die()
 
         net_config = _get_uart_net(ctx, target_box, netname)
         if not net_config:

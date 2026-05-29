@@ -29,6 +29,7 @@ from texttable import Texttable
 from ...core.net_group import NetGroupHelpMixin
 from ...core.net_helpers import resolve_box
 from ...context import get_impl_path, get_default_net
+from ...errors import net_not_specified_error
 from ..development.python import run_python_internal
 
 SPI_ROLE = "spi"
@@ -496,9 +497,7 @@ def transfer(ctx, num_words, box, mode, bit_order, frequency, cs_active, keep_cs
 
     netname = getattr(ctx.obj, 'netname', None)
     if not netname:
-        click.secho("No SPI net specified and no default configured.", fg="red", err=True)
-        click.echo("Provide a net name or set a default.", err=True)
-        ctx.exit(1)
+        net_not_specified_error('SPI', 'spi').die()
 
     # Determine word size for parsing (None if not explicitly specified)
     ws = int(word_size) if word_size else None
@@ -573,8 +572,7 @@ def read(ctx, num_words, box, mode, bit_order, frequency, cs_active, keep_cs,
 
     netname = getattr(ctx.obj, 'netname', None)
     if not netname:
-        click.secho("No SPI net specified and no default configured.", fg="red", err=True)
-        ctx.exit(1)
+        net_not_specified_error('SPI', 'spi').die()
 
     fill_value = _parse_fill_byte(fill)
 
@@ -636,8 +634,7 @@ def config(ctx, box, mode, bit_order, frequency, cs_active, word_size, cs_mode):
 
     netname = getattr(ctx.obj, 'netname', None)
     if not netname:
-        click.secho("No SPI net specified and no default configured.", fg="red", err=True)
-        ctx.exit(1)
+        net_not_specified_error('SPI', 'spi').die()
 
     params = {"netname": netname}
     if mode is not None:
@@ -689,8 +686,7 @@ def write(ctx, data, box, mode, bit_order, frequency, cs_active, keep_cs,
 
     netname = getattr(ctx.obj, 'netname', None)
     if not netname:
-        click.secho("No SPI net specified and no default configured.", fg="red", err=True)
-        ctx.exit(1)
+        net_not_specified_error('SPI', 'spi').die()
 
     # Determine word size for parsing (None if not explicitly specified)
     ws = int(word_size) if word_size else None

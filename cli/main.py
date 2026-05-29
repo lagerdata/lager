@@ -274,8 +274,63 @@ def setup_context(ctx, debug, colorize, interpreter):
 
 
 def main():
-    """Console script entry point: run the Click CLI."""
-    cli()
+    """Console script entry point: run the Click CLI behind a friendly
+    top-level error funnel.
+
+    Click already renders usage errors and ``LagerError`` nicely on its own.
+    This wrapper is the safety net for everything else — a box connection
+    that drops deep inside a request, a known USB/instrument errno, or a
+    genuinely unexpected exception. Instead of a raw Python traceback, the
+    user gets a "problem + how to fix" message. The full traceback is never
+    lost: ``--debug`` (or ``LAGER_DEBUG=1``) re-raises it verbatim.
+    """
+    try:
+        cli()
+    except SystemExit:
+        # Normal exit path (incl. ctx.exit / Click's handling of
+        # LagerError and usage errors). Pass it straight through.
+        raise
+    except KeyboardInterrupt:
+        click.secho('Aborted.', fg='red', err=True)
+        sys.exit(130)
+    except Exception as exc:  # noqa: BLE001 - last-resort user-facing handler
+        from .errors import (
+            connection_error, system_error, render_error,
+            is_connection_error, _debug_enabled,
+        )
+
+        # A LagerError (or other Click error) that escaped Click's own
+        # handling, e.g. raised outside command invocation. Render it
+        # with its own styled output rather than the generic fallback.
+        if isinstance(exc, click.ClickException):
+            exc.show()
+            sys.exit(exc.exit_code)
+
+        # A connection/timeout that no closer handler caught.
+        if is_connection_error(exc):
+            err = connection_error(exc)
+            err.show()
+            sys.exit(err.exit_code)
+
+        # A known instrument/USB errno (EBUSY / ENODEV / ETIMEDOUT).
+        mapped = system_error(exc)
+        if mapped is not None:
+            mapped.show()
+            sys.exit(mapped.exit_code)
+
+        # Truly unexpected. Show the real traceback if the user asked for it;
+        # otherwise summarize and point them at --debug.
+        if _debug_enabled():
+            raise
+        click.echo(render_error(
+            'Something went wrong.',
+            cause=f'{type(exc).__name__}: {exc}',
+            fixes=[
+                'Re-run with --debug (or LAGER_DEBUG=1) to see the full traceback.',
+                'If this keeps happening, share that output with Lager support.',
+            ],
+        ), err=True)
+        sys.exit(1)
 
 
 if __name__ == '__main__':

@@ -84,16 +84,8 @@ def clean(ctx, box, older_than, yes):
             click.secho('Warning: Could not retrieve current logs size', fg='yellow', err=True)
     else:
         click.secho(' FAILED', fg='red', err=True)
-        stderr = result.stderr.lower() if result.stderr else ""
-        if 'permission denied' in stderr or 'publickey' in stderr:
-            click.echo(f'SSH key authentication failed. Run: ssh-copy-id lagerdata@{ip}', err=True)
-        elif 'connection refused' in stderr:
-            click.echo('SSH connection refused (port 22 not responding)', err=True)
-        elif 'no route to host' in stderr:
-            click.echo('No route to host (box unreachable)', err=True)
-        elif result.stderr:
-            click.echo(result.stderr, err=True)
-        ctx.exit(1)
+        from ...errors import ssh_error
+        ssh_error(result.stderr, ip).die()
 
 
 @logs.command('size')
@@ -178,18 +170,11 @@ def size(ctx, box, verbose):
                 except subprocess.TimeoutExpired:
                     click.secho('  Warning: Could not retrieve individual file list (timed out)', fg='yellow', err=True)
         else:
-            stderr = result.stderr.lower() if result.stderr else ""
-            if 'permission denied' in stderr or 'publickey' in stderr:
-                click.secho('  SSH key authentication failed', fg='red', err=True)
-                click.echo(f'  Run: ssh-copy-id lagerdata@{ip}', err=True)
-            elif 'connection refused' in stderr:
-                click.secho('  SSH connection refused (port 22 not responding)', fg='red', err=True)
-            elif 'no route to host' in stderr:
-                click.secho('  No route to host (box unreachable)', fg='red', err=True)
-            else:
-                click.secho('  Connection failed', fg='red', err=True)
-                if result.stderr:
-                    click.echo(f'  {result.stderr.strip()}', err=True)
+            # In a per-box loop: show the actionable message but keep going
+            # to the next box rather than exiting. Indent to fit the listing.
+            from ...errors import ssh_error
+            message = ssh_error(result.stderr, ip).format_message()
+            click.echo('\n'.join('  ' + line for line in message.splitlines()), err=True)
 
 
 @logs.command('docker')
