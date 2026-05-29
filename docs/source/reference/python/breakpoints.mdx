@@ -65,18 +65,12 @@ pause("inspect", timeout=0)      # wait forever — never auto-resume
 ```
 
 ```bash
-# whole run, via the dedicated flag (applies to pause() calls with no explicit timeout=)
-lager python test.py --box mybox --breakpoint-timeout 1800
-lager python test.py --box mybox --breakpoint-timeout 0      # wait indefinitely
-
-# equivalently, via the env var:
+# whole run, via the existing --env flag (applies to pause() calls with no explicit timeout=)
 lager python test.py --box mybox --env LAGER_BREAKPOINT_TIMEOUT=1800
 ```
 
-Resolution order is **`timeout=` argument → `--breakpoint-timeout` / `LAGER_BREAKPOINT_TIMEOUT` →
-300 s default**, so an explicit `timeout=` in the script wins over the flag/env. (`--breakpoint-timeout`
-is just a friendlier spelling of the env var — note `--timeout` is a different setting, the script's
-total runtime limit.)
+Resolution order is **`timeout=` argument → `LAGER_BREAKPOINT_TIMEOUT` env → 300 s default**, so an
+explicit `timeout=` in the script wins over the env var.
 
 <Note>
 `lager python --timeout` is a different setting — the script's total runtime limit, capped at

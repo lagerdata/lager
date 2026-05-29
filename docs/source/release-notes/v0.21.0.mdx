@@ -12,7 +12,7 @@ description: "May 28, 2026"
 ## <u>Improvements</u>
 
 - **The built-in `breakpoint()` now works in `lager python` scripts.** It previously errored out; calling `breakpoint()` now triggers the same interactive pause as `lager.pause()`.
-- **Tune or disable the auto-resume.** Set a longer (or shorter) wait with `pause("...", timeout=1800)` or `lager python ... --breakpoint-timeout 1800`; use `timeout=0` (or `--breakpoint-timeout 0`) to wait indefinitely; set `LAGER_BREAKPOINTS=off` to turn every breakpoint into a no-op for a clean run.
+- **Tune or disable the auto-resume.** Set a longer (or shorter) wait with `pause("...", timeout=1800)` or `lager python ... --env LAGER_BREAKPOINT_TIMEOUT=1800`; use `timeout=0` to wait indefinitely; set `LAGER_BREAKPOINTS=off` to turn every breakpoint into a no-op for a clean run.
 
 See the [Breakpoints guide](/source/reference/python/breakpoints) for the full reference and a worked example.
 
