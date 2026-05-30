@@ -175,6 +175,11 @@ def run_net_py(ctx: click.Context, box: str, *args: str) -> list[dict]:
                 port=(),
                 org=None,
                 args=args or ("list",),
+                # Capture call: stdout is redirected and there's no foreground
+                # consumer for an Enter-to-resume keypress. Opt out of the
+                # lager.pause() stdin watcher so it can't leak a daemon reader
+                # that races a later TUI or click.confirm for keystrokes.
+                watch_stdin_resume=False,
             )
     except SystemExit:
         pass

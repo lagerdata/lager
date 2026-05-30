@@ -392,11 +392,8 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
 
     # Let the user resume a lager.pause() breakpoint by pressing Enter. The box
     # prints the breakpoint banner to the streamed stderr; this just turns a
-    # local keypress into a resume request. Interactive (human) runs only.
-    # Callers that own the terminal themselves (e.g. the Textual `lager nets
-    # tui`) pass watch_stdin_resume=False so this daemon thread doesn't steal
-    # their keystrokes off stdin.
-    if watch_stdin_resume and callback is None and sys.stdin.isatty():
+    # local keypress into a resume request.
+    if _should_watch_stdin_for_resume(watch_stdin_resume, callback):
         threading.Thread(
             target=_watch_stdin_for_resume,
             args=(session, box_ip, lager_process_id),
@@ -430,6 +427,35 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
     except OutputFormatNotSupported:
         click.secho('Response format not supported. Please upgrade lager-cli', fg='red', err=True)
         sys.exit(1)
+
+
+def _should_watch_stdin_for_resume(watch_stdin_resume, callback):
+    """Whether to spawn the Enter-to-resume stdin watcher for this run.
+
+    The watcher is a daemon thread that blocks on ``sys.stdin.readline()`` with
+    no shutdown path, so it must only start for a genuine interactive foreground
+    run; otherwise it lingers and races whoever reads stdin next (a Textual TUI,
+    a ``click.confirm`` prompt) for keystrokes.
+
+    Gates:
+      - ``watch_stdin_resume``: explicit caller opt-out (e.g. the Textual TUIs).
+      - ``callback is None``:   streaming runs only; capture runs set a callback.
+      - stdin is a tty:         a human is actually at the keyboard.
+      - stdout not swapped out:  capture call sites wrap the run in
+        ``redirect_stdout(StringIO())``, which reassigns ``sys.stdout``.
+        Suppressing the watcher whenever stdout has been redirected stops those
+        callers (``lager supply/battery/arm`` net validation, the power TUIs,
+        webcam/debug net listing) from leaking a reader that steals input from a
+        later TUI or confirm prompt. Piping stdout to another process does *not*
+        reassign ``sys.stdout``, so Enter-to-resume still works for e.g.
+        ``lager python script.py | tee``.
+    """
+    return (
+        watch_stdin_resume
+        and callback is None
+        and sys.stdin.isatty()
+        and sys.stdout is sys.__stdout__
+    )
 
 
 def _watch_stdin_for_resume(session, box_ip, process_id):
