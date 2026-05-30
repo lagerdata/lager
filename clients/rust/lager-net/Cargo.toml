@@ -1,0 +1,17 @@
+[package]
+name = "lager-net"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Instrument-agnostic, net-name-based client for the Lager box, for binaries run via `lager rust`."
+repository = "https://github.com/lagerdata/lager"
+readme = "README.md"
+keywords = ["lager", "hardware", "test-automation", "embedded"]
+categories = ["api-bindings", "hardware-support"]
+
+[dependencies]
+# Minimal, musl-friendly: ureq without TLS/async, plus serde_json. Static-links
+# cleanly for x86_64/aarch64-unknown-linux-musl so the binary runs on the box.
+ureq = { version = "2", default-features = false, features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

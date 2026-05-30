@@ -99,6 +99,9 @@ from lager.http_handlers.battery import (
 # Import USB handler (fast-path mirror of supply/battery; no SocketIO).
 from lager.http_handlers.usb import register_usb_routes
 
+# Import uniform role-based net command handler (POST /net/command).
+from lager.http_handlers.net_command import register_net_command_routes
+
 # Import nets handler
 try:
     from lager.http_handlers.nets_handler import register_nets_routes
@@ -228,6 +231,9 @@ register_battery_socketio(socketio)
 
 # Register USB HTTP handler (fast-path /usb/command; no WebSocket namespace)
 register_usb_routes(app)
+
+# Register uniform role-based net command handler (POST /net/command)
+register_net_command_routes(app)
 
 # Register nets REST handlers (if available)
 if _has_nets:
