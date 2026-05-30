@@ -2,6 +2,13 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.21.2] - 2026-05-29
+
+This patch fixes a regression introduced in 0.21.0: the interactive `lager nets tui` would drop and mishandle keystrokes.
+
+### Fixed
+- **`lager nets tui` no longer fights the breakpoint watcher for your keystrokes.** The 0.21.0 `lager.pause()` feature starts a daemon thread inside `run_python_internal` that reads `stdin` to let you press Enter to resume a paused script. But `lager nets tui` is a Textual app that calls `run_python_internal` in-process for every backend action (scan, load, save, delete), so each call leaked a stdin-reading thread that raced the TUI's own input loop — producing dropped/erratic keypresses and unresponsive rename/edit dialogs. `run_python_internal` gains a `watch_stdin_resume` flag (default `True`, so `lager python` breakpoint resume is unchanged) and the TUI now passes `watch_stdin_resume=False`. `net_tui.py` is the only Textual caller, so no other command is affected.
+
 ## [0.21.1] - 2026-05-29
 
 This release reworks the CLI's help and error output for newcomers: every command now shows the real `lager <type> [NET_NAME] [COMMAND] --box [BOX_NAME]` usage pattern with copy-pasteable examples, and the most common failures now print a clear problem-and-fix message instead of a raw Python traceback.

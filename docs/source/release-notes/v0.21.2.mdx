@@ -1,0 +1,26 @@
+---
+title: "Version 0.21.2"
+description: "May 29, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **Fixed erratic input in `lager nets tui`.** Since 0.21.0, the interactive Net-Manager TUI could drop keystrokes and feel unresponsive — navigation and the rename/edit dialogs would lag or miss input. The TUI now correctly opts out of the `lager.pause()` stdin watcher that 0.21.0 added, so it no longer competes with the terminal for your keypresses. Breakpoint resume in `lager python` is unchanged.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.21.2
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.21.2/)
