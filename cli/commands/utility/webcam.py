@@ -67,6 +67,9 @@ def _run_net_py(ctx: click.Context, box_ip: str, *args: str) -> list[dict]:
                 port=(),
                 org=None,
                 args=args or ("list",),
+                # Capture call: opt out of the lager.pause() stdin watcher so it
+                # can't leak a daemon reader that races stdin (see net_helpers).
+                watch_stdin_resume=False,
             )
     except SystemExit:
         pass
