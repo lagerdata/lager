@@ -2,6 +2,14 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.21.3] - 2026-05-29
+
+This patch completes the 0.21.2 fix. That release stopped `lager nets tui` from fighting the `lager.pause()` stdin watcher, but the same root cause still degraded every other in-process caller that captures script output — most visibly `lager supply tui` and `lager battery tui`.
+
+### Fixed
+- **`lager supply tui`, `lager battery tui`, and net confirm prompts no longer drop keystrokes.** The 0.21.0 `lager.pause()` feature starts a daemon thread in `run_python_internal` that reads `stdin` (so Enter resumes a paused script). It only skipped that thread when the caller passed `watch_stdin_resume=False`, which 0.21.2 wired into `net_tui.py` only. Every other in-process caller that captures output via `redirect_stdout` — `cli/core/net_helpers.py:run_net_py` (behind `lager supply/battery/arm` and the measurement commands' net validation), plus the `_run_net_py` helpers in `webcam.py` and `debug/commands.py` — still leaked a daemon `stdin` reader on each call. For the power TUIs the leak came from the one pre-launch `validate_net` call, whose reader then raced Textual for the whole session; for `lager supply`/`battery`/`arm` it raced the immediately-following `click.confirm`, intermittently swallowing the first `y`/Enter.
+- **The watcher is now gated structurally, not just by an opt-out flag.** `run_python_internal` only starts the stdin watcher when `sys.stdout is sys.__stdout__` — i.e. stdout has not been swapped out by `redirect_stdout`. Output-capture call sites (which all redirect stdout) can therefore never leak the reader again, even if a future one forgets the flag, while genuine foreground runs — including `lager python script.py | tee`, where stdout is piped but not reassigned — keep Enter-to-resume. The three capture helpers also pass `watch_stdin_resume=False` explicitly. Covered by new gating tests in `test/unit/cli/test_python_breakpoint_session.py`.
+
 ## [0.21.2] - 2026-05-29
 
 This patch fixes a regression introduced in 0.21.0: the interactive `lager nets tui` would drop and mishandle keystrokes.
