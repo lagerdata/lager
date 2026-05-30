@@ -1,0 +1,27 @@
+---
+title: "Version 0.21.3"
+description: "May 29, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **Fixed erratic input in `lager supply tui` and `lager battery tui`.** This completes the 0.21.2 fix. Since 0.21.0, the `lager.pause()` breakpoint feature added a background thread that watches `stdin` so you can press Enter to resume a paused `lager python` script. 0.21.2 stopped `lager nets tui` from competing with that thread, but the power TUIs (and the `lager supply`/`lager battery`/`lager arm` confirmation prompts) hit the same problem through a different path — validating the net before launch left a stray `stdin` reader that then stole keypresses. Both TUIs now feel responsive again, and `y`/Enter confirmations are no longer intermittently swallowed.
+- **Hardened the breakpoint watcher against future regressions.** The stdin watcher now only starts for a genuine interactive foreground run, so any command that captures script output internally can no longer leak a competing reader. Breakpoint resume in `lager python` is unchanged, including when piping output (e.g. `lager python script.py | tee log.txt`).
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.21.3
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.21.3/)
