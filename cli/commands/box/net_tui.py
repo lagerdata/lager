@@ -163,6 +163,10 @@ _RUN_PYTHON_KWARGS = {
     "detach": False,
     "port": (),
     "org": None,
+    # The TUI owns the terminal (Textual reads stdin for its own event loop), so
+    # opt out of the lager.pause() stdin-resume watcher thread — otherwise it
+    # races Textual for keystrokes and the TUI "behaves weird" / drops input.
+    "watch_stdin_resume": False,
 }
 
 def _run_script(ctx: click.Context, script: str, dut: str, *args) -> str:

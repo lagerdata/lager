@@ -173,7 +173,7 @@ def run_python_internal_get_output(ctx, runnable, box, env, passenv, kill, downl
     return run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_overwrite, signum, timeout, detach, port, org, args, extra_files=None, callback=collect_output_callback)
 
 
-def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_overwrite, signum, timeout, detach, port, org, args, extra_files=None, callback=None, dut_name=None):
+def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_overwrite, signum, timeout, detach, port, org, args, extra_files=None, callback=None, dut_name=None, watch_stdin_resume=True):
     if extra_files is None:
         extra_files = []
 
@@ -393,7 +393,10 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
     # Let the user resume a lager.pause() breakpoint by pressing Enter. The box
     # prints the breakpoint banner to the streamed stderr; this just turns a
     # local keypress into a resume request. Interactive (human) runs only.
-    if callback is None and sys.stdin.isatty():
+    # Callers that own the terminal themselves (e.g. the Textual `lager nets
+    # tui`) pass watch_stdin_resume=False so this daemon thread doesn't steal
+    # their keystrokes off stdin.
+    if watch_stdin_resume and callback is None and sys.stdin.isatty():
         threading.Thread(
             target=_watch_stdin_for_resume,
             args=(session, box_ip, lager_process_id),
