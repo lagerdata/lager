@@ -117,6 +117,9 @@ def _primary_slot(payload: dict) -> tuple[dict, Optional[int]]:
     key, value = _extract_dut_block(payload)
     if key == "dut_slots":
         slots: list = value
+        # _extract_dut_block may synthesize a default list that isn't yet
+        # attached to payload; ensure the write-back path can find it.
+        payload["dut_slots"] = slots
         for i, slot in enumerate(slots):
             if isinstance(slot, dict) and slot.get("active", True):
                 return slot, i
@@ -124,7 +127,6 @@ def _primary_slot(payload: dict) -> tuple[dict, Optional[int]]:
             return slots[0], 0
         new_slot: dict = {"name": "main", "active": True}
         slots.append(new_slot)
-        payload["dut_slots"] = slots
         return new_slot, len(slots) - 1
     # dut_context short-form
     return value, None
