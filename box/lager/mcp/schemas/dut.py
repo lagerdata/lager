@@ -31,7 +31,7 @@ class DocRef(BaseModel):
 
     Either ``url`` or ``repo_path`` must be set (or both). ``repo_path`` is
     interpreted relative to the user's test project (the directory synced
-    to the box when running ``lager python --serial <BOX> path/to/test.py``),
+    to the box when running ``lager python path/to/test.py --box <box-ip>``),
     so the agent can open it with its local file tools without any blob
     transfer over MCP.
     """

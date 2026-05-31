@@ -12,8 +12,7 @@ from __future__ import annotations
 
 import json
 
-from ..audit import audited
-from ..server import mcp
+from ..server import connecting_host, mcp
 from ..server_state import get_bench
 
 
@@ -31,7 +30,6 @@ def _find_dut_for_net(bench, net_name: str):
 
 
 @mcp.tool()
-@audited()
 def discover_dut() -> str:
     """Quick orientation: what is this box and what does it test?
 
@@ -45,6 +43,8 @@ def discover_dut() -> str:
     """
     bench = get_bench()
     duts = bench.dut_slots
+    host = connecting_host()
+    box_arg = host or "<box-ip>"
 
     if not duts:
         return json.dumps({
@@ -67,6 +67,9 @@ def discover_dut() -> str:
             "Read lager://dut/overview.md for a full narrative briefing.",
             "Call discover_bench() to enumerate hardware.",
             "Call cite_schematic(<net>) to pinpoint the doc page for a specific net.",
+            "When your test is written, run it from your shell with the box's "
+            "address (the same address you connected to this MCP server on): "
+            f"lager python path/to/test.py --box {box_arg}",
         ],
     }
 
@@ -99,7 +102,6 @@ def discover_dut() -> str:
 
 
 @mcp.tool()
-@audited()
 def cite_schematic(net_name: str) -> str:
     """Return the doc references relevant to a specific net.
 

@@ -25,8 +25,6 @@ from .net import (
     SafetyLimits,
 )
 from .safety_types import (
-    PreflightResult,
-    RateLimit,
     SafetyConstraints,
 )
 from .heuristic import (
@@ -49,8 +47,6 @@ __all__ = [
     "InstrumentDescriptor",
     "InterfaceDescriptor",
     "NetDescriptor",
-    "PreflightResult",
-    "RateLimit",
     "RoutingEntry",
     "SafetyConstraints",
     "SafetyLimits",

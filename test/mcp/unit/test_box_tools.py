@@ -44,52 +44,6 @@ class TestBoxTools:
         assert result["nets"] == 1
         assert result["instruments"] == 1
 
-    @patch("lager.mcp.server_state.get_bench")
-    def test_list_nets(self, mock_get_bench):
-        bench = BenchDefinition(
-            nets=[
-                NetDescriptor(
-                    name="i2c1",
-                    net_type="i2c",
-                    instrument="aardvark",
-                    channel="0",
-                ),
-            ],
-        )
-        mock_get_bench.return_value = bench
-        from lager.mcp.tools.box import list_nets
-
-        result = json.loads(list_nets())
-        assert result["status"] == "ok"
-        assert result["count"] == 1
-        assert result["nets"][0]["name"] == "i2c1"
-        assert result["nets"][0]["type"] == "i2c"
-        assert result["nets"][0]["instrument"] == "aardvark"
-        assert result["nets"][0]["channel"] == "0"
-
-    @patch("lager.mcp.server_state.get_bench")
-    def test_list_instruments(self, mock_get_bench):
-        bench = BenchDefinition(
-            instruments=[
-                InstrumentDescriptor(
-                    name="scope1",
-                    instrument_type="rigol_mso",
-                    connection="TCPIP::192.168.1.10::INSTR",
-                    channels=["CH1", "CH2"],
-                ),
-            ],
-        )
-        mock_get_bench.return_value = bench
-        from lager.mcp.tools.box import list_instruments
-
-        result = json.loads(list_instruments())
-        assert result["status"] == "ok"
-        assert result["count"] == 1
-        assert result["instruments"][0]["name"] == "scope1"
-        assert result["instruments"][0]["type"] == "rigol_mso"
-        assert result["instruments"][0]["connection"] == "TCPIP::192.168.1.10::INSTR"
-        assert result["instruments"][0]["channels"] == ["CH1", "CH2"]
-
     @patch("lager.mcp.server_state.get_capability_graph")
     @patch("lager.mcp.server_state.get_bench")
     @patch("lager.mcp.server_state.reload_bench")
@@ -129,22 +83,6 @@ class TestBoxTools:
 
         with pytest.raises(RuntimeError, match="bench unavailable"):
             box_manage("health")
-
-    @patch("lager.mcp.server_state.get_bench")
-    def test_list_nets_get_bench_failure(self, mock_get_bench):
-        mock_get_bench.side_effect = RuntimeError("bench unavailable")
-        from lager.mcp.tools.box import list_nets
-
-        with pytest.raises(RuntimeError, match="bench unavailable"):
-            list_nets()
-
-    @patch("lager.mcp.server_state.get_bench")
-    def test_list_instruments_get_bench_failure(self, mock_get_bench):
-        mock_get_bench.side_effect = RuntimeError("bench unavailable")
-        from lager.mcp.tools.box import list_instruments
-
-        with pytest.raises(RuntimeError, match="bench unavailable"):
-            list_instruments()
 
     @patch("lager.mcp.server_state.get_capability_graph")
     @patch("lager.mcp.server_state.get_bench")

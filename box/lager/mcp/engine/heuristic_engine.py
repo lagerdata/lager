@@ -5,7 +5,9 @@
 Heuristic engine -- maps test descriptions to bench capability requirements
 and produces suitability reports.
 
-v0: ~5 core test types covering the essential HIL patterns.
+Ships a small library of common HIL test types (GPIO, firmware flash, power,
+SPI/I2C/UART, battery discharge, ADC, waveform capture); anything else falls
+back to a generic ``custom`` requirement.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from ..schemas.heuristic import (
 )
 
 # ---------------------------------------------------------------------------
-# Built-in test requirement library (~5 core types)
+# Built-in test requirement library — common HIL patterns
 # ---------------------------------------------------------------------------
 
 BUILTIN_REQUIREMENTS: list[TestRequirement] = [
@@ -108,6 +110,60 @@ BUILTIN_REQUIREMENTS: list[TestRequirement] = [
         required_protocols=["uart"],
         required_net_types=["uart", "power-supply"],
     ),
+    TestRequirement(
+        test_type="i2c_validation",
+        description="Bench acts as I2C controller, exercises DUT I2C device/registers.",
+        required_capabilities=[
+            CapabilityRole.PROTOCOL_MASTER,
+            CapabilityRole.SOURCE_POWER,
+        ],
+        recommended_capabilities=[
+            CapabilityRole.CONTROL_STATE,
+        ],
+        required_protocols=["i2c"],
+        required_net_types=["i2c", "power-supply"],
+        notes="Requires a bench I2C controller (e.g., Aardvark, LabJack).",
+    ),
+    TestRequirement(
+        test_type="battery_discharge",
+        description="Discharge the DUT/battery through an electronic load and log the curve.",
+        required_capabilities=[
+            CapabilityRole.SINK_POWER,
+            CapabilityRole.MEASURE,
+        ],
+        recommended_capabilities=[
+            CapabilityRole.OBSERVE,
+        ],
+        required_protocols=[],
+        required_net_types=["eload"],
+        notes="Requires an electronic load (eload) to sink current.",
+    ),
+    TestRequirement(
+        test_type="adc_measurement",
+        description="Source/sweep an analog input and read it back via ADC.",
+        required_capabilities=[
+            CapabilityRole.MEASURE,
+            CapabilityRole.SOURCE_POWER,
+        ],
+        recommended_capabilities=[
+            CapabilityRole.SWEEP_ANALOG,
+        ],
+        required_protocols=[],
+        required_net_types=["adc", "power-supply"],
+    ),
+    TestRequirement(
+        test_type="waveform_capture",
+        description="Capture and analyze an analog waveform on a DUT signal with a scope.",
+        required_capabilities=[
+            CapabilityRole.CAPTURE_WAVEFORM,
+        ],
+        recommended_capabilities=[
+            CapabilityRole.SOURCE_POWER,
+        ],
+        required_protocols=[],
+        required_net_types=["scope"],
+        notes="Requires an oscilloscope channel.",
+    ),
 ]
 
 _REQUIREMENT_INDEX: dict[str, TestRequirement] = {r.test_type: r for r in BUILTIN_REQUIREMENTS}
@@ -118,7 +174,11 @@ _REQUIREMENT_INDEX: dict[str, TestRequirement] = {r.test_type: r for r in BUILTI
 
 _KEYWORD_MAP: list[tuple[list[str], str]] = [
     (["spi slave", "spi target", "spi master", "spi flash", "spi driver", "qspi"], "spi_slave_validation"),
+    (["i2c", "i²c", "two-wire", "twi", "smbus"], "i2c_validation"),
     (["uart", "serial", "loopback"], "uart_loopback"),
+    (["battery discharge", "discharge curve", "electronic load", "eload", "state of charge"], "battery_discharge"),
+    (["waveform", "oscilloscope", "scope capture", "analog capture"], "waveform_capture"),
+    (["adc", "analog read", "analog input", "analog measurement"], "adc_measurement"),
     (["power consumption", "power measure", "current draw", "energy"], "power_consumption"),
     (["gpio button", "button press", "button release", "button validation"], "gpio_button_validation"),
     (["gpio", "digital io"], "gpio_validation"),
