@@ -769,6 +769,7 @@ def edit_cmd(ctx: click.Context, box: Optional[str]) -> None:
     retry on errors) leaves the on-disk config unchanged.
     """
     import os
+    import shlex
     import shutil
     import subprocess
     import tempfile
@@ -783,6 +784,9 @@ def edit_cmd(ctx: click.Context, box: Optional[str]) -> None:
         or os.environ.get("VISUAL")
         or ("nano" if shutil.which("nano") else "vi")
     )
+    # $EDITOR commonly carries flags (e.g. "subl -w", "code -w", "vim -p").
+    # Split into argv so the flags aren't treated as part of the program name.
+    editor_argv = shlex.split(editor)
 
     body = json.dumps(payload, indent=2) + "\n"
     fd, tmp_path = tempfile.mkstemp(suffix=".json", prefix="lager-box-config-")
@@ -791,7 +795,7 @@ def edit_cmd(ctx: click.Context, box: Optional[str]) -> None:
             f.write(body)
         original_body = body
         while True:
-            rc = subprocess.call([editor, tmp_path])
+            rc = subprocess.call([*editor_argv, tmp_path])
             with open(tmp_path, "r", encoding="utf-8") as f:
                 new_body = f.read()
             # Don't trust the editor's exit code — vim plugins, swap-file
