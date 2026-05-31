@@ -62,15 +62,30 @@ def _read_bench_json(box_ip: str) -> dict:
 def _write_bench_json(box_ip: str, payload: dict) -> bool:
     """Replace /etc/lager/bench.json with ``payload`` atomically.
 
-    Uses ``sudo tee`` via SSH stdin so the body never goes through the
-    shell. Returns True on success.
+    The body is piped over SSH stdin so it never goes through the shell.
+    We stage it in a temp file (``cat`` only writes our own file, no
+    metacharacter expansion) and then ``mv`` it into place.
+
+    ``/etc/lager`` is owned by the login user on the box (start_box.sh
+    chowns it and writes saved_nets.json without sudo), and renaming a
+    file into a directory only needs write permission on that directory
+    — not on the file being replaced. So the unprivileged ``mv`` works
+    even when an existing bench.json was created by the www-data
+    container. ``sudo -n`` is only a fallback for boxes with unusual
+    ownership; it is intentionally *not* required, because no box
+    installs a passwordless rule for ``tee``/``mv`` of bench.json.
+
+    Returns True on success.
     """
     body = json.dumps(payload, indent=2) + "\n"
-    rc, _stdout, stderr = default_ssh_runner(
-        box_ip,
-        f"sudo -n tee {_BENCH_JSON_PATH} > /dev/null",
-        stdin=body,
+    tmp = f"{_BENCH_JSON_PATH}.tmp.$$"
+    cmd = (
+        f"cat > {tmp} && chmod 644 {tmp} && "
+        f"{{ mv -f {tmp} {_BENCH_JSON_PATH} 2>/dev/null "
+        f"|| sudo -n mv -f {tmp} {_BENCH_JSON_PATH}; }} || "
+        f"{{ rm -f {tmp}; exit 1; }}"
     )
+    rc, _stdout, stderr = default_ssh_runner(box_ip, cmd, stdin=body)
     if rc != 0:
         click.secho(
             f"Failed to write {_BENCH_JSON_PATH}: {(stderr or '').strip()}",
