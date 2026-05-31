@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import re
 
-from ..audit import audited
 from ..server import mcp
 
 # ── Ordered phases for structuring a test plan ────────────────────────────
@@ -64,18 +63,27 @@ def _infer_phase(net) -> int:
 
 
 @mcp.tool()
-@audited()
 def get_test_example(query: str) -> str:
     """Find runnable test script examples by net type, pattern name, or keyword.
 
     Args:
         query: Net type ("SPI"), pattern ("spi_flash_readback"), or keyword ("power").
     """
-    from ..data.test_patterns import find_pattern, get_script_content
+    from ..data.test_patterns import find_pattern, get_script_content, list_patterns
 
     matches = find_pattern(query)
     if not matches:
-        return json.dumps({"error": f"No test examples matching '{query}'."})
+        return json.dumps(
+            {
+                "error": f"No test examples matching '{query}'.",
+                "hint": (
+                    "Retry with one of the pattern keys or net types below "
+                    "(e.g. 'spi', 'power_supply', 'gpio')."
+                ),
+                "available_patterns": list_patterns(),
+            },
+            indent=2,
+        )
 
     results = []
     for m in matches[:3]:
@@ -92,6 +100,32 @@ def get_test_example(query: str) -> str:
         results.append(entry)
 
     return json.dumps(results, indent=2)
+
+
+def _dut_block(dut) -> dict | None:
+    """Render the authored bits of a DUT for a test plan.
+
+    Returns None when the DUT has no narrative context or doc refs worth
+    surfacing, so callers can skip empty entries.
+    """
+    if not (dut.purpose or dut.summary or dut.schematic_refs or dut.datasheet_refs):
+        return None
+    block: dict = {"name": dut.name}
+    if dut.purpose:
+        block["purpose"] = dut.purpose
+    if dut.mcu:
+        block["mcu"] = dut.mcu
+    if dut.summary:
+        block["summary"] = dut.summary
+    if dut.schematic_refs:
+        block["schematic_refs"] = [
+            d.model_dump(exclude_none=True) for d in dut.schematic_refs
+        ]
+    if dut.datasheet_refs:
+        block["datasheet_refs"] = [
+            d.model_dump(exclude_none=True) for d in dut.datasheet_refs
+        ]
+    return block
 
 
 def _score_net(net, goal_words: set[str]) -> int:
@@ -116,7 +150,6 @@ def _score_net(net, goal_words: set[str]) -> int:
 
 
 @mcp.tool()
-@audited()
 def plan_firmware_test(firmware_description: str, test_goals: str) -> str:
     """Generate a phased test plan with full API references for each net.
 
@@ -219,27 +252,25 @@ def plan_firmware_test(firmware_description: str, test_goals: str) -> str:
     }
 
     # Thread DUT-level context into the plan so the agent starts every
-    # phase with a sense of *what it is testing*. Only attach the bits
-    # that are actually authored — empty fields are noise.
+    # phase with a sense of *what it is testing*. The primary DUT stays at
+    # plan["dut"]; any additional authored DUTs (multi-DUT benches) land in
+    # plan["additional_duts"] so their schematics/datasheets aren't dropped.
     primary = bench.primary_dut() if hasattr(bench, "primary_dut") else None
-    if primary is not None and (primary.purpose or primary.summary or primary.schematic_refs):
-        dut_block: dict = {"name": primary.name}
-        if primary.purpose:
-            dut_block["purpose"] = primary.purpose
-        if primary.mcu:
-            dut_block["mcu"] = primary.mcu
-        if primary.summary:
-            dut_block["summary"] = primary.summary
-        if primary.schematic_refs:
-            dut_block["schematic_refs"] = [
-                d.model_dump(exclude_none=True) for d in primary.schematic_refs
-            ]
-        if primary.datasheet_refs:
-            dut_block["datasheet_refs"] = [
-                d.model_dump(exclude_none=True) for d in primary.datasheet_refs
-            ]
-        plan["dut"] = dut_block
-        plan["dut_overview_resource"] = "lager://dut/overview.md"
+    if primary is not None:
+        primary_block = _dut_block(primary)
+        if primary_block is not None:
+            plan["dut"] = primary_block
+            plan["dut_overview_resource"] = "lager://dut/overview.md"
+
+        extra = [
+            block
+            for dut in bench.dut_slots
+            if dut is not primary
+            for block in (_dut_block(dut),)
+            if block is not None
+        ]
+        if extra:
+            plan["additional_duts"] = extra
 
     if missing:
         plan["missing_coverage"] = missing

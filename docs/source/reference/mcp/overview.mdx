@@ -8,14 +8,21 @@ agent understand the bench, understand the device under test (DUT), and plan
 hardware-in-the-loop tests. It runs on-box and is reachable over the box's local
 IP.
 
+The MCP server is **read-only**: it describes the bench and DUT but never drives
+hardware or runs code. The agent executes tests over a separate channel — the
+`lager` CLI.
+
 ```
 MCP-compatible AI agent
-    |  MCP (streamable-http via box IP)
+    |  MCP (streamable-http via box IP)     ← discovery + planning (read-only)
     v
 Lager MCP Server (on-box, port 8100)
-    |  direct lager.Net API
+    |  reads /etc/lager bench config (nets, DUT context, instruments)
     v
-Hardware (power supplies, debug probes, GPIO, protocols, ...)
+Bench / DUT metadata
+
+AI agent  ──  lager python path/to/test.py --box <box-ip>  ──▶  Hardware
+              (execution happens over the CLI, not MCP)
 ```
 
 ## Connecting an agent
@@ -33,10 +40,15 @@ Point any MCP-compatible client at the box:
 ```
 
 <Note>
-The MCP server is for **discovery and planning**. To **execute** a test, the
-agent writes a Python file locally and runs it with
-`lager python --serial <BOX> path/to/test.py`, which syncs the project to the
-box and runs it with full project context.
+The MCP server is for **discovery and planning** only — it does not run code or
+drive hardware. To **execute** a test, the agent writes a Python file locally and
+runs it with `lager python path/to/test.py --box <box-ip>`, which syncs the
+project to the box and runs it with full project context. Pass the box's **IP
+address** to `--box` — the same IP you connected to the MCP server on. Local box
+names are just client-side aliases, so the IP is the only identifier both sides
+can rely on. To make this concrete, `discover_bench()` echoes the address you
+actually connected on as `box_address` and hands back a ready-to-run
+`lager python … --box <that-address>` command.
 </Note>
 
 ## What the agent sees
@@ -56,20 +68,39 @@ agent reads) and **tools** (callable functions).
 | `lager://guide/overview` | What Lager is and what a "net" is. |
 | `lager://guide/workflow` | The recommended orient → discover → plan → write → run loop. |
 | `lager://guide/api-quick-reference` | Compact `lager.Net` API cheat sheet by net type. |
+| `lager://guide/docs` | Links to the full hosted docs (`docs.lagerdata.com`) and the `llms.txt` page index for anything not covered on-box. |
 
 ### Tools
 
 | Tool | Purpose |
 |------|---------|
 | `discover_dut()` | One call for orientation: DUT purpose, MCU, peripherals, subsystems, and document references. |
-| `discover_bench(net_name?)` | Enumerate hardware; with a net name, return that net's full metadata, capabilities, parent subsystem, and relevant document references. |
+| `discover_bench(net_name?)` | Enumerate hardware — nets, plus instruments with their channels, capabilities, and authored specs/ranges. With a net name, return that net's full metadata, capabilities, parent subsystem, and relevant document references (and, if the net is unknown, the list of available net names). |
 | `cite_schematic(net_name)` | Return just the schematic/datasheet references and page hints relevant to one net. |
 | `plan_firmware_test(firmware_description, test_goals)` | Generate a phased test plan, scoped to relevant nets, with DUT context and document references attached. |
 | `assess_suitability(test_type)` | Check whether the bench can run a given test type. |
 | `get_test_example(query)` | Find runnable example scripts by net type, pattern, or keyword. |
-| `quick_io(net_name, action, value?)` | Spot-check read/write of a single net. |
 | `box_manage(action)` | `health` check or `reload` the bench config from disk. |
-| `install_dependency(package_name)` | `pip install` a package on the box. |
+
+<Note>
+The tool surface is intentionally read-only. There are no tools that drive
+hardware (set a voltage, toggle a GPIO, flash firmware) or mutate the box. All
+of that lives in the test script the agent writes and runs with `lager python`,
+or in dedicated [CLI commands](/source/reference/cli).
+</Note>
+
+### Prompts
+
+The server also registers a few **prompts** — slash-command-style entry points
+that steer a client (e.g. Cursor) through the discover → plan → write → run
+workflow. They don't do work themselves; each returns an instruction the agent
+follows using the tools above.
+
+| Prompt | What it does |
+|--------|--------------|
+| `write_lager_test(what_to_test)` | Walks the agent through discovering the bench/DUT, planning, writing a test, and running it over the CLI. |
+| `explore_bench()` | Orients on what the box is, what it tests, and what it can run. |
+| `assess_test_feasibility(test_description)` | Checks whether the bench has the capabilities for a described test. |
 
 ## The recommended agent workflow
 
@@ -89,12 +120,17 @@ agent reads) and **tools** (callable functions).
     document pointers per step.
   </Step>
   <Step title="Write & Run">
-    Author a Python test file and run it with
-    `lager python --serial <BOX> path/to/test.py`.
+    Author a Python test file using `from lager import Net, NetType`. Identify
+    the box by the IP address you connected to the MCP server on — local box
+    names are arbitrary client-side aliases. `--box` accepts a raw IP, so no
+    registration is needed: run `lager python path/to/test.py --box <box-ip>`.
+    The runnable can also be a **folder** (entrypoint `main.py`), which syncs
+    and imports everything in it — handy for shipping reusable helper modules:
+    `lager python path/to/test_dir --box <box-ip>`. (Optionally,
+    `lager boxes add --name <name> --ip <box-ip>` registers a friendly alias.)
   </Step>
   <Step title="Analyse & iterate">
-    Review output, adjust, re-run. Use `quick_io()` for spot-checks between
-    runs.
+    Review the CLI output, adjust the script, and re-run it with `lager python`.
   </Step>
 </Steps>
 

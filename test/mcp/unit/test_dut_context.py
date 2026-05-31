@@ -18,7 +18,13 @@ import json
 
 import pytest
 
-from lager.mcp.schemas.bench import BenchDefinition, DocRef, DUTContext, SubSystem
+from lager.mcp.schemas.bench import (
+    BenchDefinition,
+    DocRef,
+    DUTContext,
+    InstrumentDescriptor,
+    SubSystem,
+)
 from lager.mcp.schemas.net import NetDescriptor
 from lager.mcp.engine.bench_loader import (
     _dut_context_from_raw,
@@ -536,3 +542,88 @@ class TestBenchIdentityResource:
         assert slot["purpose"].startswith("Power-regression")
         assert slot["mcu"] == "STM32H7"
         assert payload["more"]["dut_overview"] == "lager://dut/overview.md"
+
+
+# ---------------------------------------------------------------------------
+# discover_bench / get_test_example self-sufficiency affordances
+# ---------------------------------------------------------------------------
+
+def _discover_fn():
+    import lager.mcp.tools.discover as discover_tool
+    fn = discover_tool.discover_bench
+    return discover_tool, getattr(fn, "fn", fn)
+
+
+class TestDiscoverBenchInstrumentDetail:
+    def test_instruments_surface_channels_capabilities_and_specs(self, monkeypatch):
+        from lager.mcp.engine.capability_graph import build_capability_graph
+
+        bench = BenchDefinition(
+            box_id="HW-7",
+            instruments=[
+                InstrumentDescriptor(
+                    name="psu",
+                    instrument_type="rigol_dp800",
+                    connection="TCPIP::1.2.3.4",
+                    channels=["CH1", "CH2"],
+                    capabilities=["source_power", "measure"],
+                    firmware_version="1.2",
+                    metadata={"max_voltage": 30.0, "max_current": 3.0},
+                ),
+            ],
+            nets=[NetDescriptor(name="supply1", net_type="power-supply", instrument="psu", channel="CH1")],
+        )
+        discover_tool, fn = _discover_fn()
+        monkeypatch.setattr(discover_tool, "get_bench", lambda: bench)
+        monkeypatch.setattr(discover_tool, "get_capability_graph", lambda: build_capability_graph(bench))
+
+        inst = json.loads(fn())["instruments"][0]
+        assert inst["channels"] == ["CH1", "CH2"]
+        assert inst["capabilities"] == ["source_power", "measure"]
+        assert inst["firmware_version"] == "1.2"
+        assert inst["metadata"]["max_voltage"] == 30.0
+
+    def test_instrument_empty_fields_omitted(self, monkeypatch):
+        from lager.mcp.engine.capability_graph import build_capability_graph
+
+        bench = BenchDefinition(
+            instruments=[InstrumentDescriptor(name="lj", instrument_type="labjack_t7", connection="usb")],
+        )
+        discover_tool, fn = _discover_fn()
+        monkeypatch.setattr(discover_tool, "get_bench", lambda: bench)
+        monkeypatch.setattr(discover_tool, "get_capability_graph", lambda: build_capability_graph(bench))
+
+        inst = json.loads(fn())["instruments"][0]
+        assert set(inst) == {"name", "type", "connection"}
+
+
+class TestDiscoverBenchNotFound:
+    def test_unknown_net_lists_available(self, monkeypatch):
+        from lager.mcp.engine.capability_graph import build_capability_graph
+
+        bench = BenchDefinition(
+            nets=[
+                NetDescriptor(name="supply1", net_type="power-supply"),
+                NetDescriptor(name="uart1", net_type="uart"),
+            ],
+        )
+        discover_tool, fn = _discover_fn()
+        monkeypatch.setattr(discover_tool, "get_bench", lambda: bench)
+        monkeypatch.setattr(discover_tool, "get_capability_graph", lambda: build_capability_graph(bench))
+
+        payload = json.loads(fn("does_not_exist"))
+        assert "not found" in payload["error"]
+        assert payload["available_nets"] == ["supply1", "uart1"]
+
+
+class TestGetTestExampleNoMatch:
+    def test_no_match_returns_catalog(self):
+        import lager.mcp.tools.authoring as authoring
+        fn = authoring.get_test_example
+        fn = getattr(fn, "fn", fn)
+
+        payload = json.loads(fn("zzz_no_such_pattern"))
+        assert "No test examples" in payload["error"]
+        assert len(payload["available_patterns"]) > 0
+        sample = payload["available_patterns"][0]
+        assert {"pattern", "description", "net_types"} <= set(sample)

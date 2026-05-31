@@ -1,39 +1,27 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
-"""Safety constraint and preflight result schemas."""
+"""Advisory safety-limit schema.
+
+These limits are **advisory only**. The MCP server is read-only and does
+not drive hardware, so it cannot enforce anything — it surfaces these
+limits to the agent (via ``discover_bench``) so the test script the agent
+writes can respect them. Actual enforcement, if any, belongs in the test
+code or the instrument configuration.
+"""
 
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
 
-class RateLimit(BaseModel):
-    """Rate-limiting config for a tool or action."""
-
-    max_calls: int = 60
-    window_seconds: int = 60
-
-
 class SafetyConstraints(BaseModel):
-    """
-    Per-bench safety configuration.
+    """Per-bench advisory electrical limits, keyed by net name.
 
-    Loaded from bench.json or provided as defaults. Applied by the
-    preflight engine before every tool invocation and scenario step.
+    Loaded from the ``constraints`` block of bench.json and surfaced to the
+    agent as guidance. Unknown keys are ignored, so older bench.json files
+    that carried enforcement-era fields still load cleanly.
     """
 
     max_voltage: dict[str, float] = Field(default_factory=dict)
     max_current: dict[str, float] = Field(default_factory=dict)
-    dangerous_actions: list[str] = Field(default_factory=list)
-    rate_limits: dict[str, RateLimit] = Field(default_factory=dict)
-    destructive_mode: bool = False
-
-
-class PreflightResult(BaseModel):
-    """Outcome of a safety preflight check."""
-
-    allowed: bool = True
-    warnings: list[str] = Field(default_factory=list)
-    blocked_reason: str | None = None
-    mitigations: list[str] = Field(default_factory=list)
