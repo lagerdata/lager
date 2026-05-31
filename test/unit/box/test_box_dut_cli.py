@@ -23,7 +23,8 @@ class FakeSsh:
     """Stand-in for default_ssh_runner.
 
     Returns ``read_body`` for the bench.json read (the ``cat`` command) and
-    captures the body piped to ``sudo tee`` on write. Every call records
+    captures the body piped in on write. The write path is the only one
+    that pipes a stdin body, so that's the discriminator. Every call records
     (cmd, stdin) so tests can assert on the transport.
     """
 
@@ -34,7 +35,7 @@ class FakeSsh:
 
     def __call__(self, box_ip, cmd, *, stdin=None, timeout=60):
         self.calls.append((cmd, stdin))
-        if "tee" in cmd:
+        if stdin is not None:
             self.written = stdin
             return 0, "", ""
         # read path (cat ... || true)
