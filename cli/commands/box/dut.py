@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -160,6 +161,9 @@ def edit_cmd(ctx: click.Context, box: Optional[str]) -> None:
         or os.environ.get("VISUAL")
         or ("nano" if shutil.which("nano") else "vi")
     )
+    # $EDITOR commonly carries flags (e.g. "subl -w", "code -w", "vim -p").
+    # Split into argv so the flags aren't treated as part of the program name.
+    editor_argv = shlex.split(editor)
 
     body = json.dumps(value, indent=2) + "\n"
     fd, tmp_path = tempfile.mkstemp(suffix=".json", prefix="lager-dut-context-")
@@ -168,7 +172,7 @@ def edit_cmd(ctx: click.Context, box: Optional[str]) -> None:
             f.write(body)
         original = body
         while True:
-            rc = subprocess.call([editor, tmp_path])
+            rc = subprocess.call([*editor_argv, tmp_path])
             with open(tmp_path, "r", encoding="utf-8") as f:
                 new_body = f.read()
             if new_body == original:
