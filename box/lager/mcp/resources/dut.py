@@ -92,7 +92,8 @@ def _render_overview(bench) -> str:
                 "_The box does not host these files. Use your own file "
                 "tools to open `repo_path` entries, or fetch `url` entries "
                 "directly. Vision models analyse per-sheet PNGs faster "
-                "than full PDFs._\n"
+                "than full PDFs. See `lager://guide/workflow` section 0b for "
+                "the exact page-render recipe._\n"
             )
             for title, refs in doc_sections:
                 if not refs:
