@@ -25,15 +25,17 @@ def resolve_version_ref(target_version):
     """Resolve a ``--version`` value to the git refs used to update a box.
 
     A semver version — with or without a leading ``v`` (e.g. ``0.18.5`` or
-    ``v0.18.5``) — resolves to the release **tag** ``vX.Y.Z``. Version branches
-    (the bare ``X.Y.Z`` refs) are deprecated in favour of tags; see
-    RELEASE_PROCESS.md. Any other value (``main``, ``staging``, a feature
-    branch) is treated as a branch and resolves to ``origin/<name>``.
+    ``v0.18.5``), including common pre-release suffixes (``-rc1``, ``-beta2``,
+    ``-alpha``, ``-preview``) — resolves to the release **tag** ``vX.Y.Z``.
+    Version branches (the bare ``X.Y.Z`` refs) are deprecated in favour of tags;
+    see RELEASE_PROCESS.md. Any other value (``main``, ``staging``, a feature
+    branch, or a custom suffix like ``-notes``) is treated as a branch and
+    resolves to ``origin/<name>``.
 
     Returns ``(checkout, reset)`` where ``checkout`` is what ``git fetch origin``
     / ``git checkout -f`` use and ``reset`` is the ref for ``git reset --hard``.
     """
-    m = re.match(r'^v?(\d+\.\d+\.\d+)$', target_version)
+    m = re.match(r'^v?(\d+\.\d+\.\d+(?:-(?:rc|alpha|beta|preview)\d*)?)$', target_version)
     if m:
         tag = f'v{m.group(1)}'
         return tag, tag

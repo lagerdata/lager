@@ -177,7 +177,7 @@ fi
 # to the release TAG vX.Y.Z; version branches are deprecated in favour of tags.
 # Named branches (main, staging, ...) use origin/<name>.
 # This mirrors resolve_version_ref() in cli/commands/utility/update.py.
-if [[ "$GIT_VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+if [[ "$GIT_VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|preview)[0-9]*)?$ ]]; then
     GIT_VERSION="v${GIT_VERSION#v}"
     GIT_REF="$GIT_VERSION"
 else
