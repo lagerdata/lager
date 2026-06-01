@@ -228,30 +228,45 @@ API_REFERENCE: dict[str, dict] = {
             {"name": "reset", "sig": "reset(halt=False)", "desc": "Reset the DUT. halt=True stops at first instruction."},
             {"name": "erase", "sig": "erase()", "desc": "Mass-erase DUT flash memory"},
             {"name": "read_memory", "sig": "read_memory(address: int, length: int) -> bytes", "desc": "Read raw memory from DUT"},
-            {"name": "rtt", "sig": "rtt(channel=0) -> context_manager", "desc": "Open an RTT channel (use as context manager). Returns object with .write() and .read_some()."},
+            {"name": "rtt", "sig": "rtt(channel=0) -> context_manager", "desc": "Open a RAW RTT channel (context manager). Returns object with .write() and .read_some() — bytes are NOT defmt-decoded."},
+            {"name": "rtt_defmt", "sig": "rtt_defmt(elf, channel=0) -> context_manager", "desc": "Open an RTT channel and decode defmt via defmt-print. Yields decoded log lines via read_line(timeout) / iteration. `elf` must match the flashed firmware."},
             {"name": "status", "sig": "status() -> dict", "desc": "Get probe/target status"},
         ],
         "gotchas": [
             "Flash paths must be absolute or relative to the script's working directory on the box.",
-            "Use rtt() as a context manager: `with dbg.rtt(channel=0) as rtt: rtt.write(b'cmd\\n')`",
-            "RTT read_some() may return empty bytes — loop with timeout for reliable reads.",
+            "Most embedded firmware (esp. Rust) logs via defmt, a compressed BINARY format. rtt().read_some() returns raw, still-encoded bytes — `.decode()` on defmt bytes yields garbage.",
+            "For defmt firmware in a lager python script, use rtt_defmt(elf=...) — it pipes RTT through defmt-print (installed on the box) and gives you decoded text lines via read_line(timeout) or iteration. The elf must EXACTLY match the flashed firmware.",
+            "Use plain rtt() only for human-readable (non-defmt) RTT, or when you want the raw byte stream.",
+            "Alternative for interactive use: the CLI pipe from YOUR shell — `timeout 15 lager debug <NET> gdbserver --box <box-ip> --rtt 2>/dev/null | defmt-print -e build/app.elf` (RTT on stdout, status on stderr; the stream never ends so bound it with `timeout`). Read lager://guide/rtt-defmt for the full workflow.",
+            "rtt_defmt streams until you stop reading — use a time budget / line count, or break out of the loop. Reset the DUT first (dbg.reset()) to catch boot logs.",
             "connect() is often implicit on first operation, but explicit connect gives clearer errors.",
         ],
         "example_snippet": (
             'from lager import Net, NetType\n'
+            'import time\n'
             '\n'
             'dbg = Net.get("debug1", type=NetType.Debug)\n'
+            'dbg.connect()\n'
+            'dbg.flash("build/app.elf")  # the SAME elf you decode with below\n'
+            'dbg.reset()                 # restart so we catch boot logs\n'
             '\n'
-            '# Flash and reset\n'
-            'dbg.flash("/path/to/firmware.hex")\n'
-            'dbg.reset()\n'
+            '# defmt firmware: rtt_defmt() decodes via defmt-print and yields\n'
+            '# human-readable lines. Capture a ~10s window, then move on.\n'
+            'lines = []\n'
+            'with dbg.rtt_defmt(elf="build/app.elf", channel=0) as logs:\n'
+            '    deadline = time.time() + 10\n'
+            '    while time.time() < deadline:\n'
+            '        line = logs.read_line(timeout=1.0)\n'
+            '        if line:\n'
+            '            print(line)\n'
+            '            lines.append(line)\n'
             '\n'
-            '# Read RTT output\n'
-            'import time\n'
-            'with dbg.rtt(channel=0) as rtt:\n'
-            '    time.sleep(1)  # Let firmware boot\n'
-            '    data = rtt.read_some(timeout=2)\n'
-            '    print(f"RTT output: {data.decode()}")\n'
+            'assert any("boot" in ln.lower() for ln in lines), "no boot log seen"\n'
+            '\n'
+            '# Plain-text (non-defmt) RTT instead? Use raw rtt():\n'
+            '# with dbg.rtt(channel=0) as rtt:\n'
+            '#     data = rtt.read_some(timeout=2)\n'
+            '#     print(data.decode("utf-8", "replace"))\n'
         ),
     },
     "Battery": {

@@ -125,6 +125,18 @@ RUN mkdir -p /opt/rust \
     && chown -R www-data:www-data /opt/rust \
     && chmod -R 755 /opt/rust
 
+# Bake in defmt-print as a guaranteed box capability. RTT + defmt is the core
+# embedded debug workflow, and the on-box Python API (DebugNet.rtt_defmt) and
+# the `lager debug ... --rtt | defmt-print` pipe both rely on it being present.
+# Installed into the image (not user box_config cargo_packages) so it's always
+# available regardless of operator config. We intentionally track the latest
+# published release rather than hard-pinning: the defmt wire format evolves
+# across minor versions, and a stale decoder can't read newer firmware. Operators
+# who need a specific version can still add `defmt-print@X.Y.Z` to cargo_packages.
+RUN cargo install defmt-print --locked \
+    && chown -R www-data:www-data /opt/rust \
+    && chmod -R 755 /opt/rust
+
 # Install nrfutil for Nordic DFU/OTA updates
 # nrfutil v7+ is a standalone binary, not a pip package
 # NRFUTIL_HOME must be set so subcommands are installed to a shared location
