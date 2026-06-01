@@ -1,0 +1,34 @@
+---
+title: "Version 0.22.0"
+description: "June 1, 2026"
+---
+
+## <u>Changes</u>
+
+- **Pin to a release with its tag.** `lager update --version X.Y.Z` and `lager install --version X.Y.Z` now resolve a release number to the matching `vX.Y.Z` tag instead of a same-named git branch. You can pass the bare number (`0.21.3`) or the tag form (`v0.21.3`) — both resolve to the tag, including pre-releases like `v0.22.0-rc1`. Branch targets such as `main`, `staging`, or a feature branch are unchanged and still pin to that branch. Existing `--version X.Y.Z` pins keep working unchanged.
+
+## <u>Bug Fixes</u>
+
+- **Tag pins fetch reliably on every box.** Updating to a tag now fetches it with an explicit refspec so the tag is created as a local ref on the box. Previously, on a box that didn't already have the tag, `lager update --check` could report "update state unknown" and the checkout could fail.
+
+## <u>Deprecations</u>
+
+- **Per-release version branches are deprecated.** Releases no longer publish a `X.Y.Z` branch alongside the `vX.Y.Z` tag — the tag is the single source of truth for pinning. Pin with the tag going forward.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.22.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.22.0/)
