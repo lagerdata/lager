@@ -357,8 +357,8 @@ from lager import Net, NetType
 import time
 
 dbg = Net.get('debug1', type=NetType.Debug)
-dbg.connect()
-dbg.flash('build/app.elf')   # the same ELF you decode against
+dbg.connect(ignore_if_connected=True)  # reuse a running gdbserver if one is up
+dbg.flash('build/app.elf')   # skip if already flashed; same ELF you decode against
 dbg.reset()                  # restart to capture boot logs
 
 # Capture a bounded ~10s window of decoded logs

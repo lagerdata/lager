@@ -222,7 +222,7 @@ API_REFERENCE: dict[str, dict] = {
         "net_type_enum": "NetType.Debug",
         "get_pattern": 'dbg = Net.get("debug1", type=NetType.Debug)',
         "methods": [
-            {"name": "connect", "sig": "connect(speed=None, transport=None)", "desc": "Connect debug probe to DUT"},
+            {"name": "connect", "sig": "connect(speed=None, transport=None, *, force=False, ignore_if_connected=False)", "desc": "Start the gdbserver for the probe. Pass ignore_if_connected=True to reuse an already-running server, or force=True to restart it."},
             {"name": "disconnect", "sig": "disconnect()", "desc": "Disconnect debug probe"},
             {"name": "flash", "sig": "flash(firmware_path: str)", "desc": "Flash firmware binary (.hex/.elf/.bin) to DUT"},
             {"name": "reset", "sig": "reset(halt=False)", "desc": "Reset the DUT. halt=True stops at first instruction."},
@@ -239,15 +239,17 @@ API_REFERENCE: dict[str, dict] = {
             "Use plain rtt() only for human-readable (non-defmt) RTT, or when you want the raw byte stream.",
             "Alternative for interactive use: the CLI pipe from YOUR shell — `timeout 15 lager debug <NET> gdbserver --box <box-ip> --rtt 2>/dev/null | defmt-print -e build/app.elf` (RTT on stdout, status on stderr; the stream never ends so bound it with `timeout`). Read lager://guide/rtt-defmt for the full workflow.",
             "rtt_defmt streams until you stop reading — use a time budget / line count, or break out of the loop. Reset the DUT first (dbg.reset()) to catch boot logs.",
-            "connect() is often implicit on first operation, but explicit connect gives clearer errors.",
+            "A bare connect() raises JLinkAlreadyRunningError (or a RuntimeError on OpenOCD) if a gdbserver is already up for the probe. Use connect(ignore_if_connected=True) to reuse it, or connect(force=True) to restart it. ignore_if_connected=True is the safe default for a streaming/read script.",
+            "If the firmware is already flashed, skip flash() — just connect(ignore_if_connected=True), reset(), then stream.",
         ],
         "example_snippet": (
             'from lager import Net, NetType\n'
             'import time\n'
             '\n'
             'dbg = Net.get("debug1", type=NetType.Debug)\n'
-            'dbg.connect()\n'
-            'dbg.flash("build/app.elf")  # the SAME elf you decode with below\n'
+            '# Reuse a running gdbserver instead of erroring if one is already up.\n'
+            'dbg.connect(ignore_if_connected=True)\n'
+            'dbg.flash("build/app.elf")  # skip if already flashed; same elf as below\n'
             'dbg.reset()                 # restart so we catch boot logs\n'
             '\n'
             '# defmt firmware: rtt_defmt() decodes via defmt-print and yields\n'

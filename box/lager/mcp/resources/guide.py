@@ -276,8 +276,8 @@ def register(mcp):
             "import time\n"
             "\n"
             'dbg = Net.get("SWD", type=NetType.Debug)\n'
-            "dbg.connect()\n"
-            'dbg.flash("build/app.elf")\n'
+            "dbg.connect(ignore_if_connected=True)  # reuse a running gdbserver\n"
+            'dbg.flash("build/app.elf")  # skip if already flashed\n'
             "dbg.reset()  # restart to catch boot logs\n"
             "\n"
             'with dbg.rtt_defmt(elf="build/app.elf", channel=0) as logs:\n'
