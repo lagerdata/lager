@@ -224,17 +224,7 @@ Alternatively, go to [Releases](https://github.com/lagerdata/lager/releases) and
 - **Title**: `vX.Y.Z`
 - **Description**: Copy the relevant section from `CHANGELOG.md`
 
-### 10. Create Version Branch
-
-Create a branch from the release tag so boxes can be pinned to specific versions via `lager update --version vX.Y.Z`:
-
-```bash
-git checkout -b X.Y.Z
-git push upstream X.Y.Z
-git checkout main
-```
-
-> **Note:** The branch is named `X.Y.Z` (without the `v` prefix) to distinguish it from the tag `vX.Y.Z`.
+> **Pinning:** Boxes pin to a release via its **tag** — `lager update --version vX.Y.Z`. The CLI also accepts the bare form `X.Y.Z` and resolves it to the `vX.Y.Z` tag. Do **not** create a per-version branch; tags are the single source of truth for pinned versions.
 
 ## Post-release
 
@@ -249,7 +239,6 @@ git checkout main
    git checkout main
    git reset --hard upstream/main
    git push origin main
-   git push origin X.Y.Z
    ```
 
 ## Versioning Policy
@@ -260,7 +249,7 @@ This project follows [Semantic Versioning](https://semver.org/):
 - **MINOR** (`Y`): New features, new device/instrument support
 - **PATCH** (`Z`): Bug fixes, documentation, minor improvements
 
-> **Note:** Releases before v0.3.25 used version branches (e.g., `v0.2.18`) instead of tags. These branches are preserved as historical markers and should not be modified.
+> **Note:** Releases are identified by **tags** (`vX.Y.Z`). Older releases also had a matching `X.Y.Z` *branch* used for box pinning; these are deprecated — `lager update`/`lager install` now resolve a `X.Y.Z` pin to the `vX.Y.Z` tag, so version branches are no longer created. Any remaining `X.Y.Z` branches can be recreated from the tag if ever needed (`git push origin vX.Y.Z^{}:refs/heads/X.Y.Z`).
 
 ## Troubleshooting
 
