@@ -16,6 +16,7 @@ from lager.dispatchers.base import BaseDispatcher
 from lager.dispatchers import helpers
 from lager.exceptions import SupplyBackendError, LibraryMissingError, DeviceNotFoundError
 from lager.power.supply.rigol_dp800 import RigolDP800
+from lager.power.supply.rigol_dp700 import RigolDP700
 from lager.power.supply.keithley import Keithley2281S
 from lager.power.supply.ea import EA
 from lager.power.supply.keysight_e36000 import KeysightE36000
@@ -39,6 +40,11 @@ class SupplyDispatcher(BaseDispatcher):
         Return the driver class based on the instrument string stored in the local net.
         """
         inst = (instrument_name or "").strip()
+
+        # Rigol DP7xx (DP711/DP712) — single-channel, RS-232 over a USB-serial
+        # cable. Manually associated via the custom-device catalog.
+        if re.search(r"rigol[_\-\s]*dp7", inst, re.IGNORECASE):
+            return RigolDP700
 
         # Rigol DP8xx
         if re.search(r"rigol[_\-\s]*dp8", inst, re.IGNORECASE):
@@ -84,7 +90,12 @@ class SupplyDispatcher(BaseDispatcher):
         Driver = self._choose_driver(instrument)
 
         try:
-            if Driver is RigolDP800:
+            if Driver is RigolDP700:
+                # Single-channel serial supply; opens an ASRL resource from the
+                # address. serial line settings come from the device catalog.
+                driver = Driver(address=address, channel=channel)
+
+            elif Driver is RigolDP800:
                 # Multi-channel; pass (address, channel)
                 driver = Driver(address=address, channel=channel)
 
