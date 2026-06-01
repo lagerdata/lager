@@ -26,6 +26,7 @@ The Net-based API provides methods for embedded debugging operations.
 | `status()` | Get connection status |
 | `rtt(channel, search_addr, search_size, chunk_size)` | Create RTT session for bidirectional communication (raw bytes) |
 | `rtt_defmt(elf, channel)`                            | RTT session decoded through `defmt-print` (yields log lines)    |
+| `session(...)` | Scoped session: connect on entry, guaranteed teardown on exit |
 
 ## Method Reference
 
@@ -106,6 +107,10 @@ print(output)
 
 **Returns:** `str` - Combined output from reset operation
 
+**Self-heal (both backends):** Right after a `flash()` there is a short window where the debug server isn't reachable yet — for J-Link the restarted GDB server's PID isn't observable, for OpenOCD a transient daemon/RPC fault — and a bare call would raise. `reset()` now retries with bounded backoff on both the J-Link and OpenOCD backends, and only (re)starts a server when one is genuinely down. It never tears down a server that is already running, so an attached RTT session is left intact, and callers no longer need their own retry wrappers.
+
+**DA1469x exception:** On DA1469x, `flash()` deliberately leaves the server down (it ends in a software reset rather than a server restart) and the documented flow is an explicit, halt-aware reconnect. So on DA1469x the self-heal retries but never auto-starts a server — a genuinely-down server still surfaces the original error, exactly as before, instead of silently coming up unhalted (which can yield garbage QSPI-XIP reads).
+
 ### `flash(firmware_path)`
 
 Flash firmware to the device.
@@ -166,6 +171,8 @@ print(data.hex())
 
 **Returns:** `bytes` - Memory data
 
+**Self-heal:** like `reset()`, `read_memory()` retries with bounded backoff across the brief post-`flash()` settling window on both backends and only reconnects when no server is running, never disturbing a live session. `erase()` behaves the same way. The same DA1469x exception applies — no server is auto-started, so a post-flash DA1469x read raises clearly rather than returning unhalted-XIP garbage.
+
 ### `status()`
 
 Get the current connection status.
@@ -176,6 +183,35 @@ print(f"Connected: {status.get('connected', False)}")
 ```
 
 **Returns:** `dict` - Status dictionary with connection information
+
+### `session(speed=None, transport=None, connect=True, ignore_if_connected=True, disconnect_on_exit=True)`
+
+Scoped debug session. Connects on entry and guarantees teardown on exit, so the safe flash → attach-RTT → reset ordering is encoded once instead of being rediscovered in every script. The `with` target is the net itself, so the full surface (`flash`, `rtt_defmt`, `reset`, `read_memory`, …) is available inside the block.
+
+```python
+with dbg.session() as s:
+    s.flash('build/app.hex')                 # built-in stop->flash->restart handoff
+    with s.rtt_defmt(elf='build/app.elf') as logs:
+        s.reset(halt=False)                  # reader re-attaches across the reset blip
+        for line in logs:
+            if 'boot ok' in line:
+                break
+# GDB server is torn down here (disconnect_on_exit=True)
+```
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `speed` | `str` or `None` | `None` | Forwarded to `connect()` |
+| `transport` | `str` or `None` | `None` | Forwarded to `connect()` |
+| `connect` | `bool` | `True` | Connect on entry. Set `False` to attach to a server you manage yourself |
+| `ignore_if_connected` | `bool` | `True` | Reuse a running server instead of raising (regression-safe: never restarts a live server) |
+| `disconnect_on_exit` | `bool` | `True` | Stop the GDB server on exit. Set `False` to leave it running for later commands |
+
+**Returns:** a context manager yielding the debug net.
+
+**Why it pairs with RTT:** the in-process RTT reader is reconnect-aware (see below), so a `flash()` or `reset()` inside the session that bounces the GDB server doesn't kill a log stream opened in the same block.
 
 ### `rtt(channel=0, search_addr=None, search_size=None, chunk_size=None)`
 
@@ -215,6 +251,8 @@ with dbg.rtt(search_addr=0x20000000, search_size=0x10000) as rtt:
 - `write(data)` - Write data to target (accepts bytes or str)
 
 **Note:** Debug connection must be active before using RTT. Call `connect()` first.
+
+**Reconnect-aware (both backends):** a J-Link `flash()` (and `reset()` via its Commander grab) briefly frees the probe's USB and restarts the GDB server on the *same* ports, dropping the RTT socket. The reader transparently re-attaches to the same RTT telnet port instead of going silent, so a long-lived `read_some()` / `rtt_defmt()` loop keeps producing across a flash. The OpenOCD reader is reconnect-aware too — OpenOCD keeps its daemon up across an ordinary flash so the socket rarely drops, but if it does (daemon force-restart or rtt-server bounce) the reader re-runs the `rtt setup` / `rtt server start` and re-attaches. In both cases reconnection is bounded (default 30 s) and only re-attaches once the server/daemon is actually back up — it never *starts* one — so a flash that deliberately leaves the server down (e.g. DA1469x) won't spin forever, and the reader can't disturb a DA1469x left intentionally down. Pass `reconnect=False` for the legacy one-shot behavior.
 
 ## Examples
 

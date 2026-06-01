@@ -8,6 +8,8 @@ _NullDebug class when the debug module is not available.
 """
 from __future__ import annotations
 
+import contextlib
+
 from .constants import NetType
 
 
@@ -402,6 +404,8 @@ try:
         get_jlink_gdbserver_status,
         read_memory as debug_read_memory,
         RTT,
+        DebugError,
+        JLinkNotRunning,
         start_openocd_gdbserver,
         stop_openocd,
         get_openocd_status,
@@ -432,7 +436,8 @@ try:
         """
 
         def __init__(self, *, channel, rtt_telnet_port, tcl_port,
-                     search_addr=None, search_size=None):
+                     search_addr=None, search_size=None,
+                     reconnect=True, reconnect_timeout=30.0):
             """Construct an OpenOCD RTT session.
 
             Note: the J-Link ``RTT`` class accepts a ``chunk_size`` knob
@@ -441,6 +446,17 @@ try:
             ``socket.recv(4096)`` returns, so ``chunk_size`` has no
             equivalent here. ``DebugNet.rtt()`` silently drops the
             argument when dispatching to this backend.
+
+            ``reconnect`` mirrors the J-Link ``RTT`` reader: if the rtt
+            ``server`` socket drops (the OpenOCD daemon is force-restarted, or
+            the rtt server is bounced), the reader transparently re-runs the
+            ``rtt setup`` / ``rtt server start`` RPCs and re-attaches, bounded
+            by ``reconnect_timeout``. OpenOCD keeps its daemon up across an
+            ordinary ``flash()``/``reset()`` (unlike J-Link, which frees USB by
+            restarting the gdbserver), so this path rarely fires — it exists for
+            parity and robustness. The re-attach only succeeds while the daemon
+            answers RPC; it never *starts* a daemon, so it can't disturb a
+            DA1469x left intentionally down by its flash.
             """
             self.channel = channel
             self._port = rtt_telnet_port + channel
@@ -448,13 +464,20 @@ try:
             self._search_addr = search_addr if search_addr is not None else 0x20000000
             self._search_size = search_size if search_size is not None else 0x10000
             self._socket = None
+            self._reconnect = reconnect
+            self._reconnect_timeout = reconnect_timeout
 
-        def __enter__(self):
+        def _setup_and_connect(self, *, attempts=10, raise_on_fail=False):
+            """Run the rtt setup RPCs and connect the TCP socket.
+
+            Returns True on success. On failure either raises (initial enter)
+            or returns False (reconnect path), so the caller can back off.
+            """
             import socket
             import time as _time
 
-            rpc = OpenOcdRpc(port=self._tcl_port)
             try:
+                rpc = OpenOcdRpc(port=self._tcl_port)
                 rpc.rtt_setup(search_addr=self._search_addr, search_size=self._search_size)
                 rpc.rtt_start()
                 try:
@@ -462,46 +485,83 @@ try:
                 except OpenOcdRpcError:
                     pass  # Server wasn't running yet — fine.
                 rpc.rtt_server_start(self._port, channel=self.channel)
-            except OpenOcdRpcError as exc:
-                raise RuntimeError(f'OpenOCD RTT setup failed: {exc}') from exc
+            except (OpenOcdRpcError, OSError) as exc:
+                if raise_on_fail:
+                    raise RuntimeError(f'OpenOCD RTT setup failed: {exc}') from exc
+                return False
 
-            # Wait a little for the listener to come up before connecting.
             last_err = None
-            for _ in range(10):
+            for _ in range(attempts):
                 try:
                     self._socket = socket.create_connection(('127.0.0.1', self._port), timeout=2.0)
-                    return self
+                    return True
                 except OSError as exc:
                     last_err = exc
                     _time.sleep(0.2)
-            raise RuntimeError(
-                f'Failed to connect to OpenOCD RTT port {self._port}: {last_err}'
-            )
+            if raise_on_fail:
+                raise RuntimeError(
+                    f'Failed to connect to OpenOCD RTT port {self._port}: {last_err}'
+                )
+            return False
+
+        def __enter__(self):
+            self._setup_and_connect(raise_on_fail=True)
+            return self
 
         def __exit__(self, exc_type, exc_val, exc_tb):
+            self._close_socket()
+            return False
+
+        def _close_socket(self):
             if self._socket:
                 try:
                     self._socket.close()
                 except OSError:
                     pass
                 self._socket = None
+
+        def _try_reconnect(self):
+            """Bounded re-attach after the rtt server socket drops.
+
+            Re-runs the setup RPCs and reconnects, retrying with backoff until
+            ``reconnect_timeout`` elapses. Returns True once re-attached. The
+            setup RPC fails fast while the daemon is down, so a genuinely-dead
+            daemon just burns the deadline rather than hanging.
+            """
+            import time as _time
+            if not self._reconnect:
+                return False
+            deadline = _time.time() + self._reconnect_timeout
+            while _time.time() < deadline:
+                if self._setup_and_connect(attempts=2):
+                    return True
+                _time.sleep(0.5)
             return False
 
         def read_some(self, timeout=1.0):
             import select
+            import time as _time
             if not self._socket:
-                raise RuntimeError('RTT not connected')
+                if not self._try_reconnect():
+                    if self._reconnect:
+                        _time.sleep(min(timeout, 0.2))
+                    return None
             ready = select.select([self._socket], [], [], timeout)
             if not ready[0]:
                 return None
             try:
                 data = self._socket.recv(4096)
-                return data if data else None
             except OSError:
+                self._close_socket()
                 return None
+            if not data:
+                # EOF: the rtt server socket dropped. Re-attach on the next call.
+                self._close_socket()
+                return None
+            return data
 
         def write(self, data):
-            if not self._socket:
+            if not self._socket and not self._try_reconnect():
                 raise RuntimeError('RTT not connected')
             if isinstance(data, str):
                 data = data.encode('utf-8')
@@ -589,6 +649,65 @@ try:
                 raise RuntimeError(
                     f"OpenOCD is not running for debug net '{self.name}'. Call connect() first."
                 )
+
+        def _self_heal(self, op, *, retries=2, backoff=0.5):
+            """Run a debug op with bounded self-heal. Backend-agnostic.
+
+            ``reset`` / ``erase`` / ``read_memory`` fail the instant no server is
+            reachable — for J-Link the instant neither PID regime reports one
+            (the brief settling window right after ``flash()`` restarts the
+            gdbserver, or a flaky link); for OpenOCD when the daemon isn't up. A
+            human running discrete CLI commands never hits this (they *are* the
+            retry layer); a script firing ``reset()`` microseconds after
+            ``flash()`` does. So the resilience lives in the API for both
+            backends.
+
+            Regression guards (critical):
+
+            * We NEVER restart a server that is already running — that would tear
+              down a live RTT session (Issue 1). We only call
+              ``connect(ignore_if_connected=True)`` when ``status()`` shows
+              nothing running, and that path is a no-op when a server is up (both
+              ``connect_jlink`` and the OpenOCD branch return early), so an
+              attached RTT reader is left untouched across the retry.
+
+            * For **DA1469x** we retry but do NOT auto-(re)start a server. Its
+              ``flash()`` deliberately leaves the server down (a Commander/loader
+              software-reset, not a restart) and the documented flow is an
+              explicit, *halt-aware* reconnect — auto-starting an unhalted server
+              here risks silent QSPI-XIP garbage reads (see CLI ``memrd``
+              auto-halt) or a frozen attach. So on DA1469x a genuinely-down
+              server still surfaces the original error, exactly as before.
+            """
+            import time
+
+            if self.backend == BACKEND_OPENOCD:
+                # OpenOCD signals "not connected" as RuntimeError
+                # (_ensure_openocd_running) and RPC faults as OpenOcdRpcError.
+                transient = (RuntimeError, OpenOcdRpcError)
+            else:
+                # JLinkNotRunning is a subclass of DebugError; read_memory also
+                # wraps genuine failures as DebugError (safe to retry, bounded).
+                transient = (DebugError,)
+
+            is_da1469 = 'DA1469' in (self.device or '').upper()
+
+            last_exc = None
+            for attempt in range(retries + 1):
+                try:
+                    return op()
+                except transient as exc:
+                    last_exc = exc
+                    if attempt == retries:
+                        break
+                    if not is_da1469:
+                        try:
+                            if not self.status().get('running'):
+                                self.connect(ignore_if_connected=True)
+                        except Exception:  # noqa: BLE001 — surface the original op error
+                            pass
+                    time.sleep(backoff * (attempt + 1))
+            raise last_exc
 
         # ---- Public API -----------------------------------------------------
 
@@ -690,14 +809,22 @@ try:
             return disconnect(serial=self.serial, gdb_port=self.gdb_port)
 
         def reset(self, halt=False):
-            """Reset the device — same return shape (newline-joined output) for both backends."""
-            if self.backend == BACKEND_OPENOCD:
-                self._ensure_openocd_running()
-                return self._openocd_rpc().reset(halt=halt) or ''
-            results = []
-            for line in reset_device(halt=halt, serial=self.serial, gdb_port=self.gdb_port):
-                results.append(line)
-            return '\n'.join(results)
+            """Reset the device — same return shape (newline-joined output) for both backends.
+
+            Wrapped in :meth:`_self_heal` so a reset fired in the settling
+            window right after ``flash()`` (or against a momentarily-dropped
+            link/daemon) recovers instead of throwing. The retry never disturbs
+            a running server (so a live RTT reader is safe) and never
+            auto-restarts a DA1469x — see :meth:`_self_heal`.
+            """
+            def _reset():
+                if self.backend == BACKEND_OPENOCD:
+                    self._ensure_openocd_running()
+                    return self._openocd_rpc().reset(halt=halt) or ''
+                return '\n'.join(
+                    reset_device(halt=halt, serial=self.serial, gdb_port=self.gdb_port)
+                )
+            return self._self_heal(_reset)
 
         def flash(self, firmware_path, flash_address=None):
             """Flash firmware to device. Returns combined output as a string.
@@ -747,26 +874,27 @@ try:
 
         def erase(self):
             """Erase flash (whole chip on most targets)."""
-            if self.backend == BACKEND_OPENOCD:
-                self._ensure_openocd_running()
-                return self._openocd_rpc(timeout=120).flash_erase_all() or ''
-            results = []
-            for line in chip_erase(
-                device=self.device, speed=self.speed, transport=self.transport,
-                serial=self.serial, script_file=self._jlink_script_path,
-            ):
-                results.append(line)
-            return '\n'.join(results)
+            def _erase():
+                if self.backend == BACKEND_OPENOCD:
+                    self._ensure_openocd_running()
+                    return self._openocd_rpc(timeout=120).flash_erase_all() or ''
+                return '\n'.join(chip_erase(
+                    device=self.device, speed=self.speed, transport=self.transport,
+                    serial=self.serial, script_file=self._jlink_script_path,
+                ))
+            return self._self_heal(_erase)
 
         def read_memory(self, address, length):
             """Read memory from target device."""
-            if self.backend == BACKEND_OPENOCD:
-                self._ensure_openocd_running()
-                return self._openocd_rpc(timeout=30).read_memory(address, length)
-            return debug_read_memory(
-                address, length, mcu=self.device,
-                serial=self.serial, gdb_port=self.gdb_port,
-            )
+            def _read():
+                if self.backend == BACKEND_OPENOCD:
+                    self._ensure_openocd_running()
+                    return self._openocd_rpc(timeout=30).read_memory(address, length)
+                return debug_read_memory(
+                    address, length, mcu=self.device,
+                    serial=self.serial, gdb_port=self.gdb_port,
+                )
+            return self._self_heal(_read)
 
         def status(self):
             """Get connection status as a backend-agnostic dict.
@@ -877,6 +1005,53 @@ try:
                 defmt_print_bin=defmt_print_bin,
                 read_timeout=read_timeout,
             )
+
+        @contextlib.contextmanager
+        def session(self, *, speed=None, transport=None, connect=True,
+                    ignore_if_connected=True, disconnect_on_exit=True):
+            """Scoped debug session: owns the probe for the ``with`` block.
+
+            Encodes the safe ordering so each script doesn't rediscover it. The
+            yielded object is the net itself, so the full surface
+            (``flash`` / ``rtt`` / ``rtt_defmt`` / ``reset`` / ``read_memory`` …)
+            is available::
+
+                with dbg.session() as s:
+                    s.flash("app.hex")              # built-in stop->flash->restart
+                    with s.rtt_defmt(elf="app.elf") as logs:
+                        s.reset(halt=False)         # reader re-attaches after the blip
+                        for line in logs:
+                            ...
+
+            The reader survives the flash/reset probe-grab because
+            :class:`lager.debug.RTT` is reconnect-aware (Issue 1) — ``session``
+            just guarantees connect-up-front and teardown-on-exit.
+
+            Args:
+                speed / transport: forwarded to :meth:`connect`.
+                connect: connect on entry (default True). Set False to attach to
+                    an already-running server you manage yourself.
+                ignore_if_connected: when connecting, reuse an existing server
+                    instead of raising if one is already up (default True). This
+                    reuses the regression-safe ``connect`` path that never
+                    restarts a live server.
+                disconnect_on_exit: stop the gdbserver on exit (default True) for
+                    guaranteed teardown. Set False to leave the server running for
+                    later commands.
+            """
+            if connect:
+                self.connect(
+                    speed=speed, transport=transport,
+                    ignore_if_connected=ignore_if_connected,
+                )
+            try:
+                yield self
+            finally:
+                if disconnect_on_exit:
+                    try:
+                        self.disconnect()
+                    except Exception:  # noqa: BLE001 — teardown must not mask errors
+                        pass
 
     def make_debug(name, net_info=None):  # type: ignore
         """Factory function to create a DebugNet instance."""
