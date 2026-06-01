@@ -32,14 +32,20 @@ def resolve_version_ref(target_version):
     branch, or a custom suffix like ``-notes``) is treated as a branch and
     resolves to ``origin/<name>``.
 
-    Returns ``(checkout, reset)`` where ``checkout`` is what ``git fetch origin``
-    / ``git checkout -f`` use and ``reset`` is the ref for ``git reset --hard``.
+    Returns ``(checkout, reset, fetch)``:
+    - ``checkout`` — ref for ``git checkout -f`` (and display): the tag, or the branch name.
+    - ``reset``    — ref for ``git reset --hard`` / ``git rev-list``: the tag, or ``origin/<branch>``.
+    - ``fetch``    — argument for ``git fetch origin``. For tags this is an explicit
+      refspec (``refs/tags/<tag>:refs/tags/<tag>``) so the tag is created as a local
+      ref; ``git fetch origin <tag>`` alone only sets FETCH_HEAD, leaving
+      ``git rev-list``/``git checkout <tag>`` unable to resolve it. For branches it
+      is just the branch name (``origin/<branch>`` is updated via the default refspec).
     """
     m = re.match(r'^v?(\d+\.\d+\.\d+(?:-(?:rc|alpha|beta|preview)\d*)?)$', target_version)
     if m:
         tag = f'v{m.group(1)}'
-        return tag, tag
-    return target_version, f'origin/{target_version}'
+        return tag, tag, f'refs/tags/{tag}:refs/tags/{tag}'
+    return target_version, f'origin/{target_version}', target_version
 
 
 def wait_for_box_ready(box_ip, *, timeout_s=60, initial_delay_s=2):
@@ -455,8 +461,9 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     # 'v') maps to the release TAG 'vX.Y.Z'; version branches are deprecated in
     # favour of tags (see RELEASE_PROCESS.md). Named branches use origin/<name>.
     # `target_version` is normalised (e.g. '0.18.5' -> 'v0.18.5') so the fetch,
-    # checkout and user-facing messages all agree.
-    target_version, git_ref = resolve_version_ref(target_version)
+    # checkout and user-facing messages all agree. `fetch_ref` is what we hand to
+    # `git fetch origin` (an explicit tag refspec for tags; see resolve_version_ref).
+    target_version, git_ref, fetch_ref = resolve_version_ref(target_version)
 
     # Use default box if none specified
     if not box:
@@ -813,7 +820,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     # rev-list did: that variant only counted commits the box was *behind*
     # and treated any "ahead" state as in-sync, making downgrade impossible.
     fetch_script = (
-        f'cd ~/box && git fetch origin {target_version} 2>&1; '
+        f'cd ~/box && git fetch origin {fetch_ref} 2>&1; '
         'echo "LAGER_FETCH_RC=$?"; '
         f'git rev-list --left-right --count HEAD...{git_ref} 2>/dev/null'
     )
@@ -895,7 +902,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             click.secho("The remote URL may still be using SSH (git@github.com:...).", err=True)
             click.secho("Fix by switching to HTTPS:", err=True)
             click.secho("  ssh lagerdata@[BOX_NAME] 'cd ~/box && git remote set-url origin https://github.com/lagerdata/lager.git'", err=True)
-        elif "not found" in stderr.lower() or f"couldn't find remote ref {target_version}" in stderr.lower():
+        elif "not found" in stderr.lower() or "couldn't find remote ref" in stderr.lower():
             log_error(f"Error: Version '{target_version}' not found on remote")
             click.secho(f"'{target_version}' does not exist on GitHub as a tag or branch.", err=True)
             click.secho("Release versions are tags (e.g. v0.21.3): https://github.com/lagerdata/lager/tags", err=True)
