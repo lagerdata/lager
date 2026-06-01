@@ -77,7 +77,7 @@ def get_script_path(script_name: str, subdir: str = "scripts") -> Path:
 @click.option("--box", default=None, help="Box name (uses stored IP and username)")
 @click.option("--ip", default=None, help="Target box IP address or DNS hostname")
 @click.option("--user", default=None, help="SSH username (default: lagerdata, or stored username if using --box)")
-@click.option("--version", "version", default="main", help="Box version to deploy: a release tag (e.g. v0.15.0) or a git branch (default: main)")
+@click.option("--version", "version", default="main", help="Version to deploy: a release tag (e.g. v0.21.3) or a branch (main, staging; default: main)")
 @click.option("--skip-jlink", is_flag=True, help="Skip J-Link installation")
 @click.option("--skip-firewall", is_flag=True, help="Skip UFW firewall configuration")
 @click.option("--skip-verify", is_flag=True, help="Skip post-deployment verification")

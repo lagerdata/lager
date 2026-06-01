@@ -10,6 +10,7 @@
 """
 import click
 import requests
+import re
 import shutil
 import subprocess
 import threading
@@ -18,6 +19,25 @@ import sys
 from ...box_storage import resolve_and_validate_box, get_box_user
 from ...context import get_default_box
 from ...core.ssh_utils import get_ssh_connection_pool
+
+
+def resolve_version_ref(target_version):
+    """Resolve a ``--version`` value to the git refs used to update a box.
+
+    A semver version — with or without a leading ``v`` (e.g. ``0.18.5`` or
+    ``v0.18.5``) — resolves to the release **tag** ``vX.Y.Z``. Version branches
+    (the bare ``X.Y.Z`` refs) are deprecated in favour of tags; see
+    RELEASE_PROCESS.md. Any other value (``main``, ``staging``, a feature
+    branch) is treated as a branch and resolves to ``origin/<name>``.
+
+    Returns ``(checkout, reset)`` where ``checkout`` is what ``git fetch origin``
+    / ``git checkout -f`` use and ``reset`` is the ref for ``git reset --hard``.
+    """
+    m = re.match(r'^v?(\d+\.\d+\.\d+)$', target_version)
+    if m:
+        tag = f'v{m.group(1)}'
+        return tag, tag
+    return target_version, f'origin/{target_version}'
 
 
 def wait_for_box_ready(box_ip, *, timeout_s=60, initial_delay_s=2):
@@ -429,12 +449,12 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     # Default to 'main' version if not specified
     target_version = version or 'main'
 
-    # Determine the correct git ref for reset/rev-list operations.
-    # Tags (e.g. v0.14.0) start with 'v' and must be referenced directly;
-    # version branches (e.g. 0.14.0) and named branches use origin/<name>.
-    import re as _re_version
-    _is_tag = bool(_re_version.match(r'^v\d+\.\d+\.\d+', target_version))
-    git_ref = target_version if _is_tag else f'origin/{target_version}'
+    # Resolve the version to git refs. A semver pin (with or without a leading
+    # 'v') maps to the release TAG 'vX.Y.Z'; version branches are deprecated in
+    # favour of tags (see RELEASE_PROCESS.md). Named branches use origin/<name>.
+    # `target_version` is normalised (e.g. '0.18.5' -> 'v0.18.5') so the fetch,
+    # checkout and user-facing messages all agree.
+    target_version, git_ref = resolve_version_ref(target_version)
 
     # Use default box if none specified
     if not box:
@@ -874,10 +894,10 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             click.secho("Fix by switching to HTTPS:", err=True)
             click.secho("  ssh lagerdata@[BOX_NAME] 'cd ~/box && git remote set-url origin https://github.com/lagerdata/lager.git'", err=True)
         elif "not found" in stderr.lower() or f"couldn't find remote ref {target_version}" in stderr.lower():
-            log_error(f"Error: Branch '{target_version}' not found on remote")
-            click.secho(f"The branch '{target_version}' does not exist on GitHub.", err=True)
-            click.secho("Available branches can be found at: https://github.com/lagerdata/lager/branches", err=True)
-            click.secho("Common branches: main, staging", err=True)
+            log_error(f"Error: Version '{target_version}' not found on remote")
+            click.secho(f"'{target_version}' does not exist on GitHub as a tag or branch.", err=True)
+            click.secho("Release versions are tags (e.g. v0.21.3): https://github.com/lagerdata/lager/tags", err=True)
+            click.secho("Branches (main, staging, ...): https://github.com/lagerdata/lager/branches", err=True)
         elif "Connection refused" in stderr:
             log_error('Error: Connection to GitHub refused')
             click.secho("GitHub is not accepting connections.", err=True)
@@ -1930,7 +1950,7 @@ def _update_options(fn):
     for opt in reversed([
         click.option('--box', required=False, help='Lagerbox name or IP'),
         click.option('--yes', is_flag=True, help='Skip confirmation prompt'),
-        click.option('--version', required=False, help='Box version/branch to update to (e.g., staging, main)'),
+        click.option('--version', required=False, help='Version to update to: a release tag (e.g. v0.21.3) or a branch (main, staging)'),
         click.option('--verbose', '-v', is_flag=True, help='Show detailed output (default shows progress bar only)'),
         click.option('--check', is_flag=True, help='Dry run: report what would change without modifying the box'),
         click.option('--force', is_flag=True, help='Update even if the box reports it is already up to date, and force a clean rebuild (wipes the cached image and cargo/npm volumes)'),

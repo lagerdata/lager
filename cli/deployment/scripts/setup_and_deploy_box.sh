@@ -172,10 +172,13 @@ if [ -z "$BOX_IP" ]; then
     exit 1
 fi
 
-# Determine the git ref for `git reset --hard`.
-# Release tags (e.g. v0.15.0) must be referenced directly; branches use origin/<name>.
-# This mirrors the tag detection in cli/commands/utility/update.py.
-if [[ "$GIT_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+# Determine the git ref for checkout / `git reset --hard`.
+# A semver pin (with or without a leading 'v', e.g. 0.18.5 or v0.18.5) resolves
+# to the release TAG vX.Y.Z; version branches are deprecated in favour of tags.
+# Named branches (main, staging, ...) use origin/<name>.
+# This mirrors resolve_version_ref() in cli/commands/utility/update.py.
+if [[ "$GIT_VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    GIT_VERSION="v${GIT_VERSION#v}"
     GIT_REF="$GIT_VERSION"
 else
     GIT_REF="origin/$GIT_VERSION"
