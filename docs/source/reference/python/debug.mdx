@@ -24,7 +24,8 @@ The Net-based API provides methods for embedded debugging operations.
 | `erase()` | Perform full chip erase |
 | `read_memory(address, length)` | Read memory from device |
 | `status()` | Get connection status |
-| `rtt(channel, search_addr, search_size, chunk_size)` | Create RTT session for bidirectional communication |
+| `rtt(channel, search_addr, search_size, chunk_size)` | Create RTT session for bidirectional communication (raw bytes) |
+| `rtt_defmt(elf, channel)`                            | RTT session decoded through `defmt-print` (yields log lines)    |
 
 ## Method Reference
 
@@ -343,7 +344,52 @@ with debug.rtt() as rtt:
 | `read_some(timeout)` | Read available data with timeout (returns bytes or None) |
 | `write(data)` | Write data to RTT (accepts bytes or str) |
 
-**CLI Alternative:** Use `lager debug <net> gdbserver --rtt-reset` to stream RTT logs directly.
+<Warning>
+`rtt().read_some()` returns **raw, still-encoded** bytes. Firmware that logs with [defmt](https://defmt.ferrous-systems.com/) (the de-facto standard for embedded Rust) emits a compressed binary format — calling `.decode('utf-8')` on it yields garbage. For defmt firmware, use `rtt_defmt()` below or the CLI pipe, both of which decode through `defmt-print`.
+</Warning>
+
+### Decoding defmt logs with `rtt_defmt()`
+
+`rtt_defmt(elf, channel=0)` opens an RTT session and pipes it through `defmt-print` (preinstalled on the Lager Box), yielding **decoded log lines** instead of raw bytes. The `elf` must be the exact firmware flashed on the target — defmt needs its symbol metadata to decode.
+
+```python
+from lager import Net, NetType
+import time
+
+dbg = Net.get('debug1', type=NetType.Debug)
+dbg.connect()
+dbg.flash('build/app.elf')   # the same ELF you decode against
+dbg.reset()                  # restart to capture boot logs
+
+# Capture a bounded ~10s window of decoded logs
+with dbg.rtt_defmt(elf='build/app.elf', channel=0) as logs:
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        line = logs.read_line(timeout=1.0)   # decoded str, or None
+        if line:
+            print(line)
+            assert 'panic' not in line.lower(), f"firmware panicked: {line}"
+```
+
+`rtt_defmt()` returns a context manager exposing:
+
+| Method | Description |
+|--------|-------------|
+| `read_line(timeout=None)` | Next decoded log line as `str`, or `None` on timeout / stream end |
+| iteration (`for line in logs:`) | Yield decoded lines until the stream ends |
+
+Like the CLI pipe, the RTT stream never ends on its own — bound your read loop with a time budget or line count, then exit the `with` block.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+| --------- | ---- | ------- | ----------- |
+| `elf` | `str` | required | Path to the firmware ELF flashed on the DUT (relative paths resolve against the script's working dir on the box) |
+| `channel` | `int` | `0` | RTT channel number |
+| `defmt_print_bin` | `str` or `None` | `None` | Override the `defmt-print` binary (path or name on PATH) |
+| `read_timeout` | `float` | `0.5` | Poll interval (seconds) for the internal RTT read loop |
+
+**CLI Alternative:** For interactive tailing, pipe the CLI directly: `lager debug <net> gdbserver --box <box> --rtt 2>/dev/null | defmt-print -e build/app.elf`. See the [CLI Debug Reference](/source/reference/cli/debug#decoding-defmt-logs). Use `rtt_defmt()` when you need to assert on log content inside a test script; use the pipe when you just want to watch logs.
 
 ## Supported Devices
 

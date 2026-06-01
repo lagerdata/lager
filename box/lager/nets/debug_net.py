@@ -164,6 +164,210 @@ def allocate_probe_slot(serial, get_nets_cache_fn=None, parse_probe_serial_fn=No
         return 0
 
 
+#: Where ``cargo install`` drops binaries inside the box container. Kept in
+#: sync with CARGO_HOME in box/lager/docker/box.Dockerfile so we can find
+#: ``defmt-print`` even when PATH wasn't exported into the calling shell.
+_CARGO_BIN_DIR = '/opt/rust/cargo/bin'
+
+
+def _resolve_defmt_print(explicit=None):
+    """Locate the ``defmt-print`` binary on the box.
+
+    Resolution order: an explicit path/name the caller passed, then ``PATH``
+    (``shutil.which``), then the well-known cargo bin dir the box image
+    installs into. Returns the resolved path, or ``None`` when it can't be
+    found so callers can raise a single actionable error.
+    """
+    import os
+    import shutil
+
+    if explicit:
+        if os.path.isabs(explicit):
+            return explicit if os.path.exists(explicit) else None
+        return shutil.which(explicit)
+
+    found = shutil.which('defmt-print')
+    if found:
+        return found
+
+    candidate = os.path.join(_CARGO_BIN_DIR, 'defmt-print')
+    return candidate if os.path.exists(candidate) else None
+
+
+class _DefmtRtt:
+    """Decode a raw RTT stream through ``defmt-print`` and surface log lines.
+
+    Wraps any backend RTT session (the J-Link ``RTT`` or the OpenOCD
+    ``_OpenOcdRtt`` — both expose ``read_some(timeout)`` and context-manager
+    semantics) and pipes its raw bytes through ``defmt-print -e <elf>``. The
+    matching firmware ELF is required: defmt frames are a compressed binary
+    format and cannot be decoded without the symbol metadata in the ELF.
+
+    Two daemon threads do the work while you call :meth:`read_line`:
+
+    * a *pump* thread copies raw RTT bytes into ``defmt-print``'s stdin, and
+    * a *reader* thread reads decoded text lines from its stdout into a queue.
+
+    Usage mirrors :meth:`DebugNet.rtt` but yields decoded ``str`` lines::
+
+        with dbg.rtt_defmt(elf="build/app.elf") as logs:
+            line = logs.read_line(timeout=1.0)   # decoded str, or None
+            for line in logs:                     # stream until the session ends
+                ...
+    """
+
+    _SENTINEL = object()
+
+    def __init__(self, rtt_session, elf, *, defmt_print_bin=None,
+                 read_timeout=0.5):
+        self._rtt = rtt_session
+        self._elf = elf
+        self._defmt_print_bin = defmt_print_bin
+        self._read_timeout = read_timeout
+
+        self._session = None
+        self._proc = None
+        self._pump_thread = None
+        self._reader_thread = None
+        self._stop = None
+        self._lines = None
+        self._closed = False
+
+    def __enter__(self):
+        import os
+        import queue
+        import subprocess
+        import threading
+
+        if not self._elf or not os.path.exists(self._elf):
+            raise FileNotFoundError(
+                f"defmt ELF not found: {self._elf!r}. Pass the path to the "
+                f"exact firmware ELF flashed on the DUT (defmt frames can't be "
+                f"decoded without it)."
+            )
+
+        bin_path = _resolve_defmt_print(self._defmt_print_bin)
+        if not bin_path:
+            raise RuntimeError(
+                "defmt-print not found on this box. It ships in the Lager box "
+                "image; if it's missing, install it with "
+                "`cargo install defmt-print` or add `defmt-print` to "
+                "cargo_packages in your box config."
+            )
+
+        self._stop = threading.Event()
+        self._lines = queue.Queue()
+
+        # Open the underlying RTT session first — if the probe isn't connected
+        # this raises before we spawn anything to clean up.
+        self._session = self._rtt.__enter__()
+
+        try:
+            self._proc = subprocess.Popen(
+                [bin_path, '-e', self._elf],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            self._rtt.__exit__(None, None, None)
+            raise
+
+        self._pump_thread = threading.Thread(
+            target=self._pump, name='defmt-rtt-pump', daemon=True,
+        )
+        self._reader_thread = threading.Thread(
+            target=self._reader, name='defmt-rtt-reader', daemon=True,
+        )
+        self._pump_thread.start()
+        self._reader_thread.start()
+        return self
+
+    def _pump(self):
+        """Copy raw RTT bytes into defmt-print's stdin until stopped."""
+        stdin = self._proc.stdin
+        try:
+            while not self._stop.is_set():
+                data = self._session.read_some(timeout=self._read_timeout)
+                if not data:
+                    continue
+                try:
+                    stdin.write(data)
+                    stdin.flush()
+                except (BrokenPipeError, ValueError, OSError):
+                    break  # defmt-print exited / stdin closed
+        finally:
+            try:
+                stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+
+    def _reader(self):
+        """Read decoded lines from defmt-print's stdout into the queue."""
+        stdout = self._proc.stdout
+        try:
+            for raw in iter(stdout.readline, b''):
+                self._lines.put(raw.decode('utf-8', errors='replace').rstrip('\n'))
+        finally:
+            self._lines.put(self._SENTINEL)
+
+    def read_line(self, timeout=None):
+        """Return the next decoded log line (str), or None on timeout/EOF.
+
+        ``timeout`` is in seconds; ``None`` blocks until a line is available
+        or the stream ends. Returns ``None`` once ``defmt-print`` has exited
+        and all buffered lines have been drained.
+        """
+        import queue
+        if self._lines is None:
+            return None
+        try:
+            item = self._lines.get(timeout=timeout)
+        except queue.Empty:
+            return None
+        if item is self._SENTINEL:
+            self._closed = True
+            return None
+        return item
+
+    def __iter__(self):
+        """Yield decoded lines until the defmt-print stream ends."""
+        while True:
+            line = self.read_line(timeout=None)
+            if line is None and self._closed:
+                return
+            if line is not None:
+                yield line
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._stop is not None:
+            self._stop.set()
+        proc = self._proc
+        if proc is not None:
+            try:
+                if proc.stdin and not proc.stdin.closed:
+                    proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+            try:
+                proc.terminate()
+                proc.wait(timeout=3)
+            except Exception:  # noqa: BLE001 — never let teardown raise
+                try:
+                    proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+        for t in (self._pump_thread, self._reader_thread):
+            if t is not None:
+                t.join(timeout=2)
+        # Tear down the underlying RTT session last so the pump thread has
+        # already stopped reading from it.
+        try:
+            return self._rtt.__exit__(exc_type, exc_val, exc_tb)
+        finally:
+            self._proc = None
+
+
 # -------- _NullDebug fallback (always defined for imports) --------
 class _NullDebug:
     """Fallback debug class when debug module is not available."""
@@ -182,6 +386,7 @@ class _NullDebug:
     def status(self, *a, **k): raise RuntimeError("Debug module not available")
     def read_memory(self, *a, **k): raise RuntimeError("Debug module not available")
     def rtt(self, *a, **k): raise RuntimeError("Debug module not available")
+    def rtt_defmt(self, *a, **k): raise RuntimeError("Debug module not available")
 
 
 # -------- optional debug import (never crash if lager.debug is missing) --------
@@ -624,6 +829,55 @@ try:
                 gdb_port=self.gdb_port,
             )
 
+        def rtt_defmt(self, elf, channel=0, search_addr=None, search_size=None,
+                      chunk_size=None, *, defmt_print_bin=None, read_timeout=0.5):
+            """Open an RTT session and decode defmt frames via ``defmt-print``.
+
+            Same as :meth:`rtt`, but instead of raw bytes you get **decoded**
+            log lines through ``read_line(timeout=...)`` / iteration. Use this
+            for firmware that logs with the ``defmt`` framework (very common in
+            embedded Rust) — raw RTT bytes from such firmware are a compressed
+            binary format and are not human-readable on their own.
+
+            Args:
+                elf: Path to the firmware ELF currently flashed on the DUT.
+                    Must match exactly — defmt needs its symbol metadata to
+                    decode. Relative paths resolve against the script's working
+                    directory on the box (your synced project).
+                channel: RTT channel number (default 0).
+                search_addr / search_size / chunk_size: forwarded to
+                    :meth:`rtt` for RTT control-block discovery.
+                defmt_print_bin: Override the ``defmt-print`` binary (path or
+                    name on PATH). Defaults to the box's installed copy.
+                read_timeout: Poll interval (seconds) for the internal RTT
+                    read loop.
+
+            Returns:
+                A context manager exposing ``read_line(timeout=None) -> str |
+                None`` and iteration over decoded lines. ``defmt-print`` is
+                spawned on enter and torn down on exit.
+
+            Example::
+
+                dbg.connect()
+                with dbg.rtt_defmt(elf="build/app.elf") as logs:
+                    import time
+                    deadline = time.time() + 10
+                    while time.time() < deadline:
+                        line = logs.read_line(timeout=1.0)
+                        if line:
+                            print(line)
+            """
+            raw = self.rtt(
+                channel=channel, search_addr=search_addr,
+                search_size=search_size, chunk_size=chunk_size,
+            )
+            return _DefmtRtt(
+                raw, elf,
+                defmt_print_bin=defmt_print_bin,
+                read_timeout=read_timeout,
+            )
+
     def make_debug(name, net_info=None):  # type: ignore
         """Factory function to create a DebugNet instance."""
         return DebugNet(name, net_info or {})
@@ -646,5 +900,5 @@ if not _debug_available:
 __all__ = [
     'DebugNet', '_NullDebug', 'make_debug', '_debug_available',
     'materialise_user_script', 'allocate_probe_slot',
-    'openocd_speed_ladder',
+    'openocd_speed_ladder', '_DefmtRtt', '_resolve_defmt_print',
 ]

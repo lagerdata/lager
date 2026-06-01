@@ -76,6 +76,11 @@ mcp = FastMCP(
         "raw IP directly, so no registration is needed. The runnable can be a "
         "single .py file or a folder whose entrypoint is main.py (lets you ship "
         "reusable modules). "
+        "For firmware logs, RTT + defmt-print is the core debug workflow: stream "
+        "from your shell with "
+        "`lager debug <NET> gdbserver --box <box-ip> --rtt | defmt-print -e app.elf` "
+        "(raw RTT bytes are NOT printable for defmt firmware) — read "
+        "lager://guide/rtt-defmt first. "
         "Full docs beyond this server: read lager://guide/docs "
         "(https://docs.lagerdata.com)."
     ),
