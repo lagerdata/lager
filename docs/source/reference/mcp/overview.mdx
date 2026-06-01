@@ -67,6 +67,8 @@ agent reads) and **tools** (callable functions).
 | `lager://bench/interfaces` | Protocol interfaces (SPI, I2C, UART) and their nets. |
 | `lager://guide/overview` | What Lager is and what a "net" is. |
 | `lager://guide/workflow` | The recommended orient → discover → plan → write → run loop. |
+| `lager://guide/rtt-defmt` | The core firmware-log workflow: streaming RTT and decoding `defmt`. Covers the `dbg.session()` scope, the reconnect-aware RTT reader and self-healing `reset()`/`read_memory()` (so you don't write flash/reset workarounds), and the DA1469x post-flash reconnect exception. |
+| `lager://reference/{net_type}` | The full API reference for one net type as JSON (e.g. `lager://reference/Debug`) — methods, gotchas, and a runnable example snippet. |
 | `lager://guide/api-quick-reference` | Compact `lager.Net` API cheat sheet by net type. |
 | `lager://guide/docs` | Links to the full hosted docs (`docs.lagerdata.com`) and the `llms.txt` page index for anything not covered on-box. |
 
