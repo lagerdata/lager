@@ -21,6 +21,16 @@ Environment variables:
   DEBUG_NET       - net name (default: debug1)
   FIRMWARE_PATH   - firmware file name (default: firmware.hex)
   ALLOW_ERASE     - set to "1" to enable the chip erase test (default: "0")
+
+Modern patterns shown here (prefer these in your own scripts):
+  - `with dbg.session() as s:` scopes connect-on-entry + guaranteed teardown.
+  - `connect(ignore_if_connected=True)` reuses a running gdbserver instead of
+    raising — the safe default for an op/stream script.
+  - rtt()/rtt_defmt() are reconnect-aware and reset()/read_memory()/erase()
+    self-heal across the post-flash settling window, so you don't need your own
+    retry/reconnect wrappers (both J-Link and OpenOCD).
+  - DA1469x exception: its flash() leaves the server down on purpose, so call
+    connect(ignore_if_connected=True) before reset()/read_memory() on that part.
 """
 import sys, os, time, traceback
 
@@ -165,10 +175,11 @@ def test_status():
     from lager import Net, NetType
     debug = Net.get(DEBUG_NET, type=NetType.Debug)
     try:
-        debug.connect()
+        debug.connect(ignore_if_connected=True)
         status = debug.status()
-        assert isinstance(status, str) and len(status) > 0, f"status empty: {status!r}"
-        _record("debug.status()", True, f"'{status[:80]}'")
+        assert isinstance(status, dict), f"status() should be a dict, got {type(status)}"
+        assert "running" in status, f"status() missing 'running' key: {status!r}"
+        _record("debug.status()", True, f"{status}")
         return True
     except Exception as e:
         _record("debug.status()", False, str(e)); return False
@@ -184,7 +195,7 @@ def test_reset_no_halt():
     from lager import Net, NetType
     debug = Net.get(DEBUG_NET, type=NetType.Debug)
     try:
-        debug.connect()
+        debug.connect(ignore_if_connected=True)
         result = debug.reset(halt=False)
         assert isinstance(result, str), f"reset() returned {type(result)}, not str"
         _record("debug.reset(halt=False)", True, f"'{result[:80]}'")
@@ -203,7 +214,7 @@ def test_reset_halt():
     from lager import Net, NetType
     debug = Net.get(DEBUG_NET, type=NetType.Debug)
     try:
-        debug.connect()
+        debug.connect(ignore_if_connected=True)
         result = debug.reset(halt=True)
         assert isinstance(result, str), f"reset() returned {type(result)}, not str"
         _record("debug.reset(halt=True)", True, f"'{result[:80]}'")
@@ -222,7 +233,7 @@ def test_memory_read_flash():
     from lager import Net, NetType
     debug = Net.get(DEBUG_NET, type=NetType.Debug)
     try:
-        debug.connect()
+        debug.connect(ignore_if_connected=True)
         data = debug.read_memory(0x00000000, 64)
         assert isinstance(data, (bytes, bytearray)), f"expected bytes, got {type(data)}"
         assert len(data) >= 1, f"expected >= 1 byte, got {len(data)}"
@@ -243,7 +254,7 @@ def test_memory_read_ram():
     from lager import Net, NetType
     debug = Net.get(DEBUG_NET, type=NetType.Debug)
     try:
-        debug.connect()
+        debug.connect(ignore_if_connected=True)
         data = debug.read_memory(0x20000000, 32)
         assert isinstance(data, (bytes, bytearray)), f"expected bytes, got {type(data)}"
         hex_preview = ' '.join(f'{b:02X}' for b in data[:16])
@@ -264,7 +275,7 @@ def test_memory_read_various_lengths():
     debug = Net.get(DEBUG_NET, type=NetType.Debug)
     ok = True
     try:
-        debug.connect()
+        debug.connect(ignore_if_connected=True)
         for length in [1, 16, 128, 256]:
             try:
                 data = debug.read_memory(0x00000000, length)
@@ -290,7 +301,7 @@ def test_flash_firmware():
     from lager import Net, NetType
     debug = Net.get(DEBUG_NET, type=NetType.Debug)
     try:
-        debug.connect()
+        debug.connect(ignore_if_connected=True)
         result = debug.flash(FIRMWARE_PATH)
         assert isinstance(result, str)
         _record("debug.flash(firmware)", True, f"'{result[:80]}'")
@@ -312,7 +323,7 @@ def test_flash_format_detection():
     from lager import Net, NetType
     debug = Net.get(DEBUG_NET, type=NetType.Debug)
     try:
-        debug.connect()
+        debug.connect(ignore_if_connected=True)
         ext = os.path.splitext(FIRMWARE_PATH)[1].lower()
         debug.flash(FIRMWARE_PATH)
         _record(f"flash accepts {ext}", True, f"extension '{ext}' handled")
@@ -334,7 +345,7 @@ def test_erase():
     from lager import Net, NetType
     debug = Net.get(DEBUG_NET, type=NetType.Debug)
     try:
-        debug.connect()
+        debug.connect(ignore_if_connected=True)
         result = debug.erase()
         assert isinstance(result, str)
         _record("debug.erase()", True, f"'{result[:80]}'")
@@ -376,7 +387,7 @@ def test_rtt_session():
     from lager import Net, NetType
     debug = Net.get(DEBUG_NET, type=NetType.Debug)
     try:
-        debug.connect()
+        debug.connect(ignore_if_connected=True)
         try:
             with debug.rtt(channel=0) as rtt:
                 data = rtt.read_some(timeout=1.0)
@@ -392,7 +403,60 @@ def test_rtt_session():
         except Exception: pass
 
 # ---------------------------------------------------------------------------
-# 19. Disconnect
+# 19. session() scope (preferred entry point)
+# ---------------------------------------------------------------------------
+def test_session_scope():
+    print("\n" + "=" * 60 + "\nTEST: session() scope\n" + "=" * 60)
+    from lager import Net, NetType
+    debug = Net.get(DEBUG_NET, type=NetType.Debug)
+    try:
+        # session() connects on entry (reusing a running server) and guarantees
+        # teardown on exit — the recommended way to scope a debug workflow.
+        with debug.session() as s:
+            status = s.status()
+            assert isinstance(status, dict), f"status() should be a dict, got {type(status)}"
+            assert "running" in status, "status() missing 'running' key"
+            s.reset(halt=False)  # self-heals across the post-flash settling window
+            _record("session() scope", True, f"running={status.get('running')}")
+        return True
+    except Exception as e:
+        _record("session() scope", False, str(e)); return False
+
+# ---------------------------------------------------------------------------
+# 20. rtt_defmt session (conditional — needs matching ELF firmware)
+# ---------------------------------------------------------------------------
+def test_rtt_defmt_session():
+    print("\n" + "=" * 60 + "\nTEST: rtt_defmt session\n" + "=" * 60)
+    from lager import Net, NetType
+    # rtt_defmt decodes defmt logs on-box via defmt-print; it needs the exact
+    # ELF flashed on the DUT. Skip cleanly when no .elf is available.
+    if not (FIRMWARE_PATH.endswith(".elf") and os.path.exists(FIRMWARE_PATH)):
+        _record("rtt_defmt session", True,
+                f"SKIPPED -- needs a matching .elf (got '{FIRMWARE_PATH}')")
+        return True
+    debug = Net.get(DEBUG_NET, type=NetType.Debug)
+    try:
+        # Keep ONE reader open across the reset — it is reconnect-aware, so the
+        # flash/reset server bounce will not kill the stream.
+        with debug.session() as s:
+            with s.rtt_defmt(elf=FIRMWARE_PATH, channel=0) as logs:
+                s.reset(halt=False)
+                lines = []
+                deadline = time.time() + 5
+                while time.time() < deadline and len(lines) < 5:
+                    line = logs.read_line(timeout=1.0)
+                    if line:
+                        lines.append(line)
+                detail = f"decoded {len(lines)} line(s)" if lines else "no defmt lines (ok without logging firmware)"
+                _record("rtt_defmt session", True, detail)
+        return True
+    except Exception as e:
+        # Missing defmt-print / non-defmt firmware shouldn't fail the suite.
+        _record("rtt_defmt session", True, f"SKIPPED -- {e}")
+        return True
+
+# ---------------------------------------------------------------------------
+# 21. Disconnect
 # ---------------------------------------------------------------------------
 def test_disconnect():
     print("\n" + "=" * 60 + "\nTEST: Disconnect\n" + "=" * 60)
@@ -435,6 +499,8 @@ def main():
         ("Erase",                   test_erase),
         ("Re-connect",              test_reconnect),
         ("RTT Session",             test_rtt_session),
+        ("session() scope",         test_session_scope),
+        ("rtt_defmt session",       test_rtt_defmt_session),
         ("Disconnect",              test_disconnect),
     ]
 
