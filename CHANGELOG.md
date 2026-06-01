@@ -2,6 +2,19 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.22.0] - 2026-06-01
+
+This release makes release **tags** the single source of truth for pinning a box to a version. `lager update`/`lager install` now resolve a release-number pin to the matching `vX.Y.Z` tag instead of a same-named git branch, so the per-release version branches are no longer needed.
+
+### Changed
+- **`lager update --version X.Y.Z` / `lager install --version X.Y.Z` now resolve to the release tag `vX.Y.Z`.** Previously a bare release number was fetched as a git *branch* (`origin/X.Y.Z`), which required publishing a per-release branch next to every tag. A semver pin — with or without a leading `v`, including common pre-release suffixes (`-rc1`, `-beta2`, `-alpha`, `-preview`) — now resolves to the tag. Branch targets (`main`, `staging`, feature branches) are unchanged and still resolve to `origin/<name>`. This is backward compatible: existing `--version X.Y.Z` pins keep working, now via the tag. (`resolve_version_ref` in `cli/commands/utility/update.py`, mirrored in `cli/deployment/scripts/setup_and_deploy_box.sh`.)
+
+### Fixed
+- **Tag pins now fetch reliably on boxes that don't already have the tag.** A tag is fetched with an explicit refspec (`refs/tags/<tag>:refs/tags/<tag>`) so it becomes a local ref; `git fetch origin <tag>` alone only sets `FETCH_HEAD`, which previously left `lager update --check` reporting "update state unknown" and could block the checkout.
+
+### Deprecated
+- **Per-release version branches (`X.Y.Z`) are deprecated.** Releases no longer create them (removed from `RELEASE_PROCESS.md`); use the `vX.Y.Z` tag to pin. Existing version branches are recreatable from their tag if ever needed.
+
 ## [0.21.3] - 2026-05-29
 
 This patch completes the 0.21.2 fix. That release stopped `lager nets tui` from fighting the `lager.pause()` stdin watcher, but the same root cause still degraded every other in-process caller that captures script output — most visibly `lager supply tui` and `lager battery tui`.
