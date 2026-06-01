@@ -148,6 +148,8 @@ def resolve_address(
 # (box/lager/power/{supply,battery}/dispatcher.py). Keep both in sync.
 def _supply_module_for_instrument(inst: str) -> Optional[str]:
     inst = (inst or "").strip()
+    if re.search(r"rigol[_\-\s]*dp7", inst, re.IGNORECASE):
+        return "rigol_dp700"
     if re.search(r"rigol[_\-\s]*dp8", inst, re.IGNORECASE):
         return "rigol_dp800"
     if re.search(r"keithley.*2281s", inst, re.IGNORECASE) or inst.lower() == "keithley_2281s":
