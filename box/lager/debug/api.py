@@ -904,7 +904,8 @@ class RTT:
     """
 
     def __init__(self, device=None, channel=0, search_addr=None, search_size=None, chunk_size=None,
-                 serial=None, rtt_telnet_port=9090, gdb_port=2331):
+                 serial=None, rtt_telnet_port=9090, gdb_port=2331,
+                 reconnect=True, reconnect_timeout=30.0):
         """
         Initialize RTT session.
 
@@ -918,6 +919,18 @@ class RTT:
             rtt_telnet_port: Base RTT telnet port that the server is listening on
                 (default: 9090). Channel offset is added on top.
             gdb_port: GDB server port (default: 2331).
+            reconnect: When True (default), the reader transparently re-attaches
+                to the same RTT telnet port if the gdbserver is bounced underneath
+                it. A J-Link ``flash()`` (and ``reset()`` via a Commander grab)
+                briefly frees the probe's USB and restarts the gdbserver on the
+                *same* ports; without reconnect the reader's socket would EOF and
+                go silent. Set False to restore the legacy one-shot behaviour.
+            reconnect_timeout: Upper bound, in seconds, on how long the reader
+                keeps trying to re-attach after the socket drops before giving up
+                (returns ``None`` forever). Bounded on purpose: a DA1469x
+                ``flash()`` deliberately leaves the gdbserver *down* (it does a
+                Commander software-reset instead of a restart), so an unbounded
+                poll would spin forever there.
         """
         self.device = device
         self.channel = channel
@@ -928,19 +941,28 @@ class RTT:
         self.gdb_port = gdb_port
         self._socket = None
         self._port = rtt_telnet_port + channel
+        # Reconnect bookkeeping (see __init__ docstring). ``_reconnect_deadline``
+        # is set lazily the first time the socket drops and cleared on a
+        # successful re-attach so each independent drop gets a fresh budget.
+        self._reconnect = reconnect
+        self._reconnect_timeout = reconnect_timeout
+        self._reconnect_deadline = None
+        self._next_reconnect_at = 0.0
 
-    def __enter__(self):
-        """Enter RTT context - establish connection"""
-        import socket
-        import time
-
-        # Check if debugger is connected (check both PID file paths)
+    def _server_running(self):
+        """True if a J-Link gdbserver is up for this probe (either PID regime)."""
         status = get_jlink_status(serial=self.serial, gdb_port=self.gdb_port)
         gdbserver_status = get_jlink_gdbserver_status(serial=self.serial)
-        if not status['running'] and not gdbserver_status['running']:
-            raise JLinkNotRunning("J-Link must be connected before using RTT")
+        return bool(status['running'] or gdbserver_status['running'])
 
-        # Auto-detect and configure RTT control block
+    def _detect_rtt(self):
+        """Re-run RTT control-block auto-detection (best effort, never raises).
+
+        Must run on every (re)attach: a restarted gdbserver has no idea where
+        the RTT control block lives until ``monitor exec SetRTTAddr`` is issued
+        again, so skipping this after a flash would give a connected-but-silent
+        socket.
+        """
         rtt_kwargs = {
             'device_type': self.device,
             'serial': self.serial,
@@ -952,86 +974,141 @@ class RTT:
             rtt_kwargs['search_size'] = self.search_size
         if self.chunk_size is not None:
             rtt_kwargs['chunk_size'] = self.chunk_size
-        rtt_result = detect_and_configure_rtt(**rtt_kwargs)
+        try:
+            rtt_result = detect_and_configure_rtt(**rtt_kwargs)
+        except Exception as exc:  # noqa: BLE001 — detection is advisory
+            logger.warning(f"RTT auto-detection error: {exc}")
+            return
         if rtt_result['found']:
             logger.info(f"RTT control block found at {rtt_result['address']}")
         elif rtt_result['error']:
             logger.warning(f"RTT auto-detection warning: {rtt_result['error']}")
 
+    def _open_socket(self, max_retries, retry_delay):
+        """Connect to the RTT telnet port. Returns True on success, else False.
+
+        Tries IPv6 (``::1``) then IPv4 (``127.0.0.1``) — J-Link may bind either
+        depending on host config. Assigns ``self._socket`` only on success so a
+        failed attempt never leaves a half-open handle behind.
+        """
+        import socket
+        import time
+
+        delay = retry_delay
+        for attempt in range(max_retries):
+            for family, addr in [(socket.AF_INET6, '::1'), (socket.AF_INET, '127.0.0.1')]:
+                sock = None
+                try:
+                    sock = socket.socket(family, socket.SOCK_STREAM)
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    sock.settimeout(2.0)
+                    sock.connect((addr, self._port))
+                    self._socket = sock
+                    logger.info(f"RTT connected using {addr}:{self._port}")
+                    return True
+                except (ConnectionRefusedError, socket.timeout, OSError):
+                    if sock is not None:
+                        try:
+                            sock.close()
+                        except OSError:
+                            pass
+            if attempt < max_retries - 1:
+                time.sleep(delay)
+                delay *= 1.5
+        return False
+
+    def __enter__(self):
+        """Enter RTT context - establish connection"""
+        # Check if debugger is connected (check both PID file paths)
+        if not self._server_running():
+            raise JLinkNotRunning("J-Link must be connected before using RTT")
+
+        # Auto-detect and configure RTT control block
+        self._detect_rtt()
+
         # Connect to J-Link RTT telnet server with retry logic
         max_retries = 5 if self.channel == 0 else 1
-        retry_delay = 0.5
+        if self._open_socket(max_retries=max_retries, retry_delay=0.5):
+            return self
 
-        for attempt in range(max_retries):
-            try:
-                # Try IPv6 first (::1), then fall back to IPv4 (127.0.0.1)
-                last_error = None
-
-                for family, addr in [(socket.AF_INET6, '::1'), (socket.AF_INET, '127.0.0.1')]:
-                    try:
-                        self._socket = socket.socket(family, socket.SOCK_STREAM)
-                        self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                        self._socket.settimeout(2.0)
-                        self._socket.connect((addr, self._port))
-                        logger.info(f"RTT connected on attempt {attempt + 1} using {addr}:{self._port}")
-                        return self
-                    except (ConnectionRefusedError, socket.timeout, OSError) as e:
-                        last_error = e
-                        if self._socket:
-                            try:
-                                self._socket.close()
-                            except OSError:
-                                pass
-                            self._socket = None
-
-                if last_error:
-                    raise last_error
-
-            except (ConnectionRefusedError, socket.timeout, OSError) as conn_err:
-                if self._socket:
-                    try:
-                        self._socket.close()
-                    except OSError:
-                        pass
-                    self._socket = None
-
-                if attempt < max_retries - 1:
-                    logger.warning(f"RTT connection attempt {attempt + 1}/{max_retries} failed. Retrying...")
-                    time.sleep(retry_delay)
-                    retry_delay *= 1.5
-                else:
-                    if self.channel == 0:
-                        error_msg = f'Cannot connect to RTT (port {self._port}). Device may not have RTT initialized.'
-                    else:
-                        error_msg = f'RTT channel {self.channel} not available. Try channel 0.'
-                    raise DebugError(error_msg)
-
-        raise DebugError('Failed to establish RTT connection')
+        if self.channel == 0:
+            raise DebugError(
+                f'Cannot connect to RTT (port {self._port}). Device may not have RTT initialized.'
+            )
+        raise DebugError(f'RTT channel {self.channel} not available. Try channel 0.')
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Exit RTT context - close connection"""
-        if self._socket:
+        self._close_socket()
+        return False
+
+    def _close_socket(self):
+        """Drop the current socket without disturbing reconnect bookkeeping."""
+        if self._socket is not None:
             try:
                 self._socket.close()
             except OSError:
                 pass
             self._socket = None
+
+    def _try_reconnect(self):
+        """Best-effort re-attach to the RTT telnet port after a drop.
+
+        Returns True only when a fresh socket is established. Honours a backoff
+        (so we don't hammer the port) and an overall deadline (so a flash that
+        leaves the server down doesn't make the reader spin forever). Only
+        attempts a connect when a gdbserver is actually back up — it never
+        starts or restarts one itself, so it can't disturb a live session.
+        """
+        import time
+
+        if not self._reconnect:
+            return False
+
+        now = time.monotonic()
+        if self._reconnect_deadline is None:
+            self._reconnect_deadline = now + self._reconnect_timeout
+        if now > self._reconnect_deadline:
+            return False
+        if now < self._next_reconnect_at:
+            return False
+        self._next_reconnect_at = now + 0.5
+
+        if not self._server_running():
+            return False
+
+        # Restarted server has lost the RTT address; re-detect before attaching.
+        self._detect_rtt()
+        if self._open_socket(max_retries=1, retry_delay=0.0):
+            logger.info("RTT reader re-attached to port %s after gdbserver restart", self._port)
+            self._reconnect_deadline = None
+            return True
         return False
 
     def read_some(self, timeout=1.0):
         """
         Read available data from RTT with timeout.
 
+        Transparently re-attaches to the RTT telnet port if the gdbserver was
+        bounced underneath the reader (e.g. by ``flash()`` / ``reset()``), so a
+        long-lived consumer keeps producing across a flash instead of silently
+        dying. Returns ``None`` on an idle interval *or* while a reconnect is
+        pending — callers already treat ``None`` as "nothing yet, try again".
+
         Args:
             timeout: Read timeout in seconds (default: 1.0)
 
         Returns:
-            bytes: Data read from RTT, or None if timeout
+            bytes: Data read from RTT, or None if no data / reconnecting
         """
-        if not self._socket:
-            raise DebugError("RTT not connected")
-
         import select
+        import time
+
+        if self._socket is None:
+            if not self._try_reconnect():
+                # Avoid a hot loop while we wait for the server to come back.
+                time.sleep(min(timeout, 0.25))
+                return None
 
         # Wait for data with timeout
         ready = select.select([self._socket], [], [], timeout)
@@ -1040,10 +1117,18 @@ class RTT:
 
         try:
             data = self._socket.recv(4096)
-            return data if data else None
         except Exception as e:
             logger.error(f"RTT read error: {e}")
-            return None
+            data = b''
+
+        if data:
+            return data
+
+        # Empty read after select-ready == peer closed the socket. This is the
+        # flash/reset gdbserver bounce: drop the dead handle and let the next
+        # call re-attach to the same stable port (bounded by reconnect_timeout).
+        self._close_socket()
+        return None
 
     def write(self, data):
         """
@@ -1055,7 +1140,7 @@ class RTT:
         Returns:
             int: Number of bytes written
         """
-        if not self._socket:
+        if self._socket is None and not self._try_reconnect():
             raise DebugError("RTT not connected")
 
         if isinstance(data, str):
@@ -1065,4 +1150,5 @@ class RTT:
             return self._socket.send(data)
         except Exception as e:
             logger.error(f"RTT write error: {e}")
+            self._close_socket()
             raise DebugError(f"Failed to write to RTT: {e}")
