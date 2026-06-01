@@ -387,9 +387,22 @@ def get_controller(device=None, host='127.0.0.1', port=2331, max_retries=3):
             # Controller died, remove from cache
             cleanup_controller(cache_key)
 
-    # Retry connection to handle J-Link startup timing
+    # Retry connection to handle J-Link startup timing.
+    #
+    # Non-stop async mode is requested by default (it lets memory reads and
+    # monitor commands run against a running target without halting it), but
+    # JLinkGDBServer does not support it and rejects `target` with
+    # "Non-stop mode requested, but remote does not support non-stop". When we
+    # see that specific rejection we transparently fall back to all-stop and
+    # retry once with a fresh controller — all-stop is fine for J-Link's
+    # monitor-based reads. This is gated strictly on the error string so servers
+    # that DO support non-stop (e.g. OpenOCD) keep using it, and any other
+    # `target` error still fails loudly. The fallback retry is free: it neither
+    # consumes a startup-timing attempt nor sleeps.
     last_error = None
-    for attempt in range(max_retries):
+    use_non_stop = True
+    attempt = 0
+    while attempt < max_retries:
         gdbmi = None
         try:
             gdbmi = GdbController(["gdb-multiarch", "--interpreter=mi3"])
@@ -402,16 +415,18 @@ def get_controller(device=None, host='127.0.0.1', port=2331, max_retries=3):
             # GDB expects.
             gdbmi.write('set mem inaccessible-by-default off', timeout_sec=GDB_TIMEOUT)
 
-            # Non-stop async mode: lets memory reads and monitor commands run against
-            # a running target without GDB issuing an interrupt on every command.
-            # MUST be set before `target` connects — once attached the flag is locked.
+            # Non-stop must be set BEFORE `target` connects — once attached the
+            # flag is locked. Skip it after a remote has told us it isn't
+            # supported (see the fallback below).
             gdbmi.write('set pagination off', timeout_sec=GDB_TIMEOUT)
             gdbmi.write('set target-async on', timeout_sec=GDB_TIMEOUT)
-            gdbmi.write('set non-stop on', timeout_sec=GDB_TIMEOUT)
+            if use_non_stop:
+                gdbmi.write('set non-stop on', timeout_sec=GDB_TIMEOUT)
 
             resp = gdbmi.write(f'tar ext {host}:{port}', timeout_sec=GDB_TIMEOUT)
 
             # Check for connection errors (but allow non-fatal warnings to pass)
+            non_stop_rejected = False
             for item in resp:
                 if item.get('type') == 'result' and item.get('message') == 'error':
                     error_msg = item.get('payload', {}).get('msg', '')
@@ -422,7 +437,23 @@ def get_controller(device=None, host='127.0.0.1', port=2331, max_retries=3):
                     if 'Truncated register' in error_msg:
                         logger.warning(f"GDB warning (non-fatal): {error_msg}")
                         continue
+                    # Remote (e.g. JLinkGDBServer) doesn't support non-stop:
+                    # downgrade to all-stop and retry once with a fresh
+                    # controller rather than failing the connect. Match the
+                    # specific rejection so other errors still fail loudly.
+                    if use_non_stop and 'does not support non-stop' in error_msg.lower():
+                        non_stop_rejected = True
+                        break
                     raise DebuggerNotConnectedError(item)
+
+            if non_stop_rejected:
+                logger.debug(
+                    "Remote does not support non-stop mode; falling back to "
+                    "all-stop and reconnecting."
+                )
+                use_non_stop = False
+                _discard_failed_controller(gdbmi)
+                continue  # free retry: does not consume `attempt`, no sleep
 
             # Cache the successful connection
             _gdb_controller_cache[cache_key] = gdbmi
@@ -434,7 +465,8 @@ def get_controller(device=None, host='127.0.0.1', port=2331, max_retries=3):
             # its pipe fds leak (see _discard_failed_controller).
             _discard_failed_controller(gdbmi)
             last_error = e
-            if attempt < max_retries - 1:
+            attempt += 1
+            if attempt < max_retries:
                 time.sleep(1.0)  # Wait before retry
                 continue
             # Last attempt failed, raise the error
