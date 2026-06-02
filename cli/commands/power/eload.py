@@ -89,10 +89,10 @@ def eload(ctx, netname, box):
 
 
 eload.net_examples = [
-    "lager eload eload1 cc 0.5 --box JUL-12",
-    "lager eload eload1 cv 3.3 --box JUL-12",
-    "lager eload eload1 state --box JUL-12",
-    "lager eload --box JUL-12                (list electronic load nets)",
+    "lager eload eload1 cc 0.5 --box <BOX>",
+    "lager eload eload1 cv 3.3 --box <BOX>",
+    "lager eload eload1 state --box <BOX>",
+    "lager eload --box <BOX>                (list electronic load nets)",
 ]
 
 

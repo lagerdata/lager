@@ -59,10 +59,10 @@ def logic(ctx, box, netname):
 
 
 logic.net_examples = [
-    "lager logic logic1 enable --box JUL-12",
-    "lager logic logic1 start --box JUL-12",
-    "lager logic logic1 trigger --box JUL-12",
-    "lager logic --box JUL-12                (list logic nets)",
+    "lager logic logic1 enable --box <BOX>",
+    "lager logic logic1 start --box <BOX>",
+    "lager logic logic1 trigger --box <BOX>",
+    "lager logic --box <BOX>                (list logic nets)",
 ]
 
 

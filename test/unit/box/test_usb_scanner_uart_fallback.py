@@ -3,7 +3,7 @@
 """Unit tests for ``box/lager/http_handlers/usb_scanner.py`` UART
 enumeration with and without a USB serial.
 
-Regression coverage for the JUL-5 / FT4232H bug: when the chip has no
+Regression coverage for the FT4232H bug: when the chip has no
 programmed EEPROM serial, the scanner used to advertise UART channels
 as bare interface indices ``"0"/"1"/"2"/"3"`` from the static
 ``CHANNEL_MAPS`` fallback. Those values landed in the saved net's

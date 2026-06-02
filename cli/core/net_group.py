@@ -17,9 +17,9 @@ where:
 
 Click's stock usage line for a group is ``[OPTIONS] COMMAND [ARGS]...``. That
 is actively misleading here: it implies ``--box`` is a *group* option that
-precedes the command (``lager debug --box JUL-12 reset``), when in fact
+precedes the command (``lager debug --box <BOX> reset``), when in fact
 ``--box`` is defined on each subcommand and must follow it
-(``lager debug reset --box JUL-12``). New users hit this constantly.
+(``lager debug reset --box <BOX>``). New users hit this constantly.
 
 This module supplies three building blocks:
 

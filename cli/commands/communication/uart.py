@@ -446,8 +446,8 @@ def uart(ctx, netname, action, box, baudrate, bytesize, parity, stopbits, xonxof
 
 
 uart.net_examples = [
-    "lager uart uart1 --box JUL-12",
-    "lager uart uart1 --baudrate 115200 --box JUL-12",
-    "lager uart uart1 --interactive --box JUL-12",
-    "lager uart --box JUL-12         (list UART nets)",
+    "lager uart uart1 --box <BOX>",
+    "lager uart uart1 --baudrate 115200 --box <BOX>",
+    "lager uart uart1 --interactive --box <BOX>",
+    "lager uart --box <BOX>         (list UART nets)",
 ]

@@ -215,7 +215,7 @@ def toggle(ctx, box):
 
 
 usb.net_examples = [
-    "lager usb usb1 enable --box JUL-12",
-    "lager usb usb1 toggle --box JUL-12",
-    "lager usb --box JUL-12          (list USB nets)",
+    "lager usb usb1 enable --box <BOX>",
+    "lager usb usb1 toggle --box <BOX>",
+    "lager usb --box <BOX>          (list USB nets)",
 ]

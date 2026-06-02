@@ -1064,7 +1064,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
 
         # `git checkout -f` so a prior flatten artifact (a root-level tracked
         # file overwritten by box/<same-name>) doesn't block the switch.
-        # Observed on STG-C: flatten of a branch that had both root README.md
+        # Observed on one box: flatten of a branch that had both root README.md
         # and box/README.md left the root copy looking modified, and
         # `git checkout main` failed with "local changes would be
         # overwritten". Editing the on-box git tree by hand is not a
@@ -1075,7 +1075,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         # version of this code happened to run in a separate SSH call whose
         # exit was never checked, so the failure was silently swallowed; the
         # `|| true` here preserves that behavior so a newer-git box (e.g.
-        # PRD-1 at 2.43) doesn't abort the whole pull. udev_rules is a
+        # one box at 2.43) doesn't abort the whole pull. udev_rules is a
         # directory and never hits this, so it stays strict.
         pull_script = (
             'cd ~/box && '

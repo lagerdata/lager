@@ -1644,7 +1644,7 @@ echo ""
 if [ -z "$DEBUG_NET_2" ]; then
     echo "Skipping: DEBUG_NET_2 not set."
     echo "  To run: re-export DEBUG_NET_2=<second debug net name>"
-    echo "  Requires a box with two J-Link probes (e.g. PRD-2: debug1 + debug2)."
+    echo "  Requires a box with two J-Link probes (e.g. a box with debug1 + debug2)."
 else
     NET2="$DEBUG_NET_2"
     echo "First probe : $NET (already exercised above)"

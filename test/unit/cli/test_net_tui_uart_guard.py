@@ -129,7 +129,7 @@ class TestSaveNetsBatchGuardrail:
 
         with patch.object(tui, '_run_script') as run_script:
             with pytest.raises(tui.UARTNetSaveValidationError) as exc:
-                tui._save_nets_batch(ctx=None, dut='JUL-5', nets=[bad, good])
+                tui._save_nets_batch(ctx=None, dut='test-box', nets=[bad, good])
 
         assert "'2'" in str(exc.value)
         # The whole point of the guard is to fail fast — the box must
@@ -141,12 +141,12 @@ class TestSaveNetsBatchGuardrail:
 
         # Pretend the box returned a success envelope.
         with patch.object(tui, '_run_script', return_value='{"ok": true}'):
-            ok = tui._save_nets_batch(ctx=None, dut='JUL-5', nets=[clean])
+            ok = tui._save_nets_batch(ctx=None, dut='test-box', nets=[clean])
 
         assert ok is True
 
     def test_empty_batch_short_circuits(self):
         # No nets to save, no validation needed, no box call.
         with patch.object(tui, '_run_script') as run_script:
-            assert tui._save_nets_batch(ctx=None, dut='JUL-5', nets=[]) is True
+            assert tui._save_nets_batch(ctx=None, dut='test-box', nets=[]) is True
         run_script.assert_not_called()

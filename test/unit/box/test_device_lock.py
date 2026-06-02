@@ -4,7 +4,7 @@
 """
 Unit tests for lager.util.device_lock — the cross-process advisory lock that
 prevents two box-side pyvisa clients from racing on `open_resource()` for the
-same USB-TMC instrument (the JUL-7 / Keithley 2281S EBUSY scenario).
+same USB-TMC instrument (the Keithley 2281S EBUSY scenario).
 
 These tests use real fcntl flocks against real lock files under a temp
 directory — the lock semantics are fundamentally OS-level and can't be
