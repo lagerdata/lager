@@ -120,10 +120,10 @@ def solar(ctx, netname, box):
 
 
 solar.net_examples = [
-    "lager solar solar1 set --box JUL-12",
-    "lager solar solar1 irradiance 1000 --box JUL-12",
-    "lager solar solar1 voc --box JUL-12",
-    "lager solar --box JUL-12                (list solar nets)",
+    "lager solar solar1 set --box <BOX>",
+    "lager solar solar1 irradiance 1000 --box <BOX>",
+    "lager solar solar1 voc --box <BOX>",
+    "lager solar --box <BOX>                (list solar nets)",
 ]
 
 

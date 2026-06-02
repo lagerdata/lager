@@ -206,7 +206,7 @@ def show_cmd(
             click.echo(json.dumps(payload, indent=2))
             continue
         # Resolve a display label: prefer the box's stored name; fall back
-        # to the resolved IP. The original --box arg might be "STG-C,HYP-3";
+        # to the resolved IP. The original --box arg might be "<BOX>,<BOX>";
         # we already split + resolved per-box.
         name = get_box_name_by_ip(resolved)
         label = name or resolved
@@ -633,7 +633,7 @@ def diff_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
 def status_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
     """Quick health check: clean vs. drifted, field counts, last audit entry.
 
-    Designed for `lager box config status --box hyp-3,hyp-4,hyp-5` —
+    Designed for `lager box config status --box <BOX>,<BOX>,<BOX>` —
     one line of signal per box without needing to read full `show` output.
     """
     targets = _resolve_boxes(ctx, box)

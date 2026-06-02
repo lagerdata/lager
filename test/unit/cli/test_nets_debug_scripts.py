@@ -255,7 +255,7 @@ def jlink_file():
 class TestSetScriptAutoDetect:
     def test_cfg_on_ftdi_net_routes_to_openocd_config(self, fake_box, cfg_file):
         runner = CliRunner()
-        res = runner.invoke(nets_group, ['set-script', 'SWD', cfg_file, '--box', 'JUL-5'])
+        res = runner.invoke(nets_group, ['set-script', 'SWD', cfg_file, '--box', 'test-box'])
         assert res.exit_code == 0, res.output
         assert 'OpenOCD config' in res.output
         saved = fake_box['saves'][-1]
@@ -265,7 +265,7 @@ class TestSetScriptAutoDetect:
     def test_jlinkscript_on_jlink_net_routes_to_jlink_script(self, fake_box, jlink_file):
         runner = CliRunner()
         res = runner.invoke(
-            nets_group, ['set-script', 'JLINK1', jlink_file, '--box', 'JUL-5'],
+            nets_group, ['set-script', 'JLINK1', jlink_file, '--box', 'test-box'],
         )
         assert res.exit_code == 0, res.output
         saved = fake_box['saves'][-1]
@@ -276,7 +276,7 @@ class TestSetScriptMismatchHandling:
     def test_cfg_on_jlink_probe_refused_without_override(self, fake_box, cfg_file):
         runner = CliRunner()
         res = runner.invoke(
-            nets_group, ['set-script', 'JLINK1', cfg_file, '--box', 'JUL-5'],
+            nets_group, ['set-script', 'JLINK1', cfg_file, '--box', 'test-box'],
         )
         assert res.exit_code != 0
         assert "probe says 'jlink'" in res.output
@@ -288,7 +288,7 @@ class TestSetScriptMismatchHandling:
         runner = CliRunner()
         res = runner.invoke(nets_group, [
             'set-script', 'JLINK1', cfg_file,
-            '--backend', 'openocd', '--box', 'JUL-5',
+            '--backend', 'openocd', '--box', 'test-box',
         ])
         assert res.exit_code == 0, res.output
         assert 'OpenOCD config' in res.output
@@ -298,7 +298,7 @@ class TestSetScriptMismatchHandling:
         # the only supported override (no --force on purpose).
         runner = CliRunner()
         res = runner.invoke(nets_group, [
-            'set-script', 'JLINK1', cfg_file, '--box', 'JUL-5',
+            'set-script', 'JLINK1', cfg_file, '--box', 'test-box',
         ])
         assert res.exit_code != 0
         assert '--backend' in res.output
@@ -308,7 +308,7 @@ class TestSetScriptStdin:
     def test_dash_reads_from_stdin(self, fake_box):
         runner = CliRunner()
         res = runner.invoke(
-            nets_group, ['set-script', 'SWD', '-', '--box', 'JUL-5'],
+            nets_group, ['set-script', 'SWD', '-', '--box', 'test-box'],
             input='adapter driver ftdi\n',
         )
         assert res.exit_code == 0, res.output
@@ -320,7 +320,7 @@ class TestSetScriptStdin:
         # openocd (FTDI), so the chooser picks openocd from the probe alone.
         runner = CliRunner()
         res = runner.invoke(
-            nets_group, ['set-script', 'SWD', '-', '--box', 'JUL-5'], input='',
+            nets_group, ['set-script', 'SWD', '-', '--box', 'test-box'], input='',
         )
         assert res.exit_code == 0, res.output
         assert 'matched probe' in res.output
@@ -331,7 +331,7 @@ class TestSetScriptInputErrors:
         runner = CliRunner()
         res = runner.invoke(
             nets_group,
-            ['set-script', 'SWD', '/no/such/file.cfg', '--box', 'JUL-5'],
+            ['set-script', 'SWD', '/no/such/file.cfg', '--box', 'test-box'],
         )
         assert res.exit_code != 0
         assert 'not found' in res.output.lower()
@@ -341,7 +341,7 @@ class TestSetScriptInputErrors:
         fake_box['db'][0]['address'] = 'USB0::0xDEAD::0xBEEF::xxx::INSTR'
         runner = CliRunner()
         res = runner.invoke(
-            nets_group, ['set-script', 'SWD', '-', '--box', 'JUL-5'],
+            nets_group, ['set-script', 'SWD', '-', '--box', 'test-box'],
             input='# nothing here\n',
         )
         assert res.exit_code != 0
@@ -354,7 +354,7 @@ class TestSetScriptExclusivity:
         # Pre-populate jlink_script (a legacy / broken record).
         fake_box['db'][0]['jlink_script'] = base64.b64encode(b'old jlink').decode('ascii')
         runner = CliRunner()
-        res = runner.invoke(nets_group, ['set-script', 'SWD', cfg_file, '--box', 'JUL-5'])
+        res = runner.invoke(nets_group, ['set-script', 'SWD', cfg_file, '--box', 'test-box'])
         assert res.exit_code == 0, res.output
         assert 'Cleared existing jlink_script' in res.output
         saved = fake_box['saves'][-1]
@@ -366,7 +366,7 @@ class TestShowScript:
     def test_shows_whichever_field_is_set(self, fake_box):
         fake_box['db'][0]['openocd_config'] = base64.b64encode(b'adapter driver ftdi\n').decode('ascii')
         runner = CliRunner()
-        res = runner.invoke(nets_group, ['show-script', 'SWD', '--box', 'JUL-5'])
+        res = runner.invoke(nets_group, ['show-script', 'SWD', '--box', 'test-box'])
         assert res.exit_code == 0, res.output
         assert 'adapter driver ftdi' in res.stdout
 
@@ -374,7 +374,7 @@ class TestShowScript:
         fake_box['db'][0]['jlink_script'] = base64.b64encode(b'a').decode('ascii')
         fake_box['db'][0]['openocd_config'] = base64.b64encode(b'b').decode('ascii')
         runner = CliRunner()
-        res = runner.invoke(nets_group, ['show-script', 'SWD', '--box', 'JUL-5'])
+        res = runner.invoke(nets_group, ['show-script', 'SWD', '--box', 'test-box'])
         assert res.exit_code != 0
         assert 'both' in res.output.lower()
         assert '--backend' in res.output
@@ -384,7 +384,7 @@ class TestShowScript:
         fake_box['db'][0]['openocd_config'] = base64.b64encode(b'x').decode('ascii')
         runner = CliRunner()
         res = runner.invoke(nets_group, [
-            'show-script', 'SWD', '--backend', 'jlink', '--box', 'JUL-5',
+            'show-script', 'SWD', '--backend', 'jlink', '--box', 'test-box',
         ])
         assert res.exit_code != 0
         assert 'J-Link script' in res.output
@@ -394,7 +394,7 @@ class TestRemoveScript:
     def test_removes_openocd_config_when_only_one_present(self, fake_box):
         fake_box['db'][0]['openocd_config'] = base64.b64encode(b'x').decode('ascii')
         runner = CliRunner()
-        res = runner.invoke(nets_group, ['remove-script', 'SWD', '--box', 'JUL-5'])
+        res = runner.invoke(nets_group, ['remove-script', 'SWD', '--box', 'test-box'])
         assert res.exit_code == 0, res.output
         assert 'Removed openocd_config' in res.output
         saved = fake_box['saves'][-1]
@@ -404,7 +404,7 @@ class TestRemoveScript:
         fake_box['db'][0]['jlink_script'] = base64.b64encode(b'a').decode('ascii')
         fake_box['db'][0]['openocd_config'] = base64.b64encode(b'b').decode('ascii')
         runner = CliRunner()
-        res = runner.invoke(nets_group, ['remove-script', 'SWD', '--box', 'JUL-5'])
+        res = runner.invoke(nets_group, ['remove-script', 'SWD', '--box', 'test-box'])
         assert res.exit_code == 0, res.output
         saved = fake_box['saves'][-1]
         assert 'jlink_script' not in saved
@@ -412,7 +412,7 @@ class TestRemoveScript:
 
     def test_noop_when_nothing_attached(self, fake_box):
         runner = CliRunner()
-        res = runner.invoke(nets_group, ['remove-script', 'SWD', '--box', 'JUL-5'])
+        res = runner.invoke(nets_group, ['remove-script', 'SWD', '--box', 'test-box'])
         assert res.exit_code == 0
         assert 'does not have' in res.output.lower()
         assert not fake_box['saves']
@@ -429,7 +429,7 @@ class TestExplicitBackendFlag:
         runner = CliRunner()
         res = runner.invoke(nets_group, [
             'set-script', 'JLINK1', cfg_file,
-            '--backend', 'openocd', '--box', 'JUL-5',
+            '--backend', 'openocd', '--box', 'test-box',
         ])
         assert res.exit_code == 0, res.output
         saved = fake_box['saves'][-1]
@@ -442,7 +442,7 @@ class TestExplicitBackendFlag:
         fake_box['db'][0]['openocd_config'] = base64.b64encode(b'adapter driver ftdi\n').decode('ascii')
         runner = CliRunner()
         res = runner.invoke(nets_group, [
-            'show-script', 'SWD', '--backend', 'openocd', '--box', 'JUL-5',
+            'show-script', 'SWD', '--backend', 'openocd', '--box', 'test-box',
         ])
         assert res.exit_code == 0, res.output
         assert 'adapter driver ftdi' in res.stdout
@@ -452,7 +452,7 @@ class TestExplicitBackendFlag:
         fake_box['db'][0]['openocd_config'] = base64.b64encode(b'oc').decode('ascii')
         runner = CliRunner()
         res = runner.invoke(nets_group, [
-            'remove-script', 'SWD', '--backend', 'openocd', '--box', 'JUL-5',
+            'remove-script', 'SWD', '--backend', 'openocd', '--box', 'test-box',
         ])
         assert res.exit_code == 0, res.output
         saved = fake_box['saves'][-1]

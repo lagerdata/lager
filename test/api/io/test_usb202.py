@@ -3,7 +3,7 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 # test_usb202.py
-# Run with: lager python test/api/io/test_usb202.py --box TEST-3
+# Run with: lager python test/api/io/test_usb202.py --box <BOX>
 #
 # Tests all nets for a MCC USB-202 DAQ device:
 #   ADC  -- 8 single-ended channels (CH0-CH7), ±10V range
@@ -17,7 +17,7 @@ import traceback
 from lager import Net, NetType
 
 # ---------------------------------------------------------------------------
-# Configuration -- update net names to match your TEST-3 setup
+# Configuration -- update net names to match your box setup
 # ---------------------------------------------------------------------------
 ADC_NETS  = ['adc15', 'adc16', 'adc17', 'adc18', 'adc19', 'adc20', 'adc21', 'adc22']
 DAC_NETS  = ['dac3', 'dac4']

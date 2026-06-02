@@ -1664,7 +1664,7 @@ def set_script_cmd(
 
     Pass ``SCRIPT_PATH='-'`` to read from stdin, e.g.::
 
-        cat custom.cfg | lager nets set-script SWD - --box JUL-5
+        cat custom.cfg | lager nets set-script SWD - --box <BOX>
     """
     _set_debug_script_impl(ctx, name, script_path, box, backend)
 

@@ -609,7 +609,7 @@ class FlashImageTests(unittest.TestCase):
         self.assertIn('program', str(ctx.exception))
 
     def test_program_does_not_read_rc_mid_loop(self):
-        # Regression: on real DA1469x hardware (JUL-5) the loader can leave
+        # Regression: on real DA1469x hardware the loader can leave
         # ``fl_cmd_rc`` holding a transient address-shaped value at the
         # moment ``fl_cmd`` returns to 0, e.g. ``0x66A4E0``. The upstream
         # macro side-steps that race by only reading rc once, after the
@@ -684,7 +684,7 @@ class FlashImageTests(unittest.TestCase):
         )
 
     def test_program_load_image_uses_dereferenced_fl_cmd_data(self):
-        # Regression for the JUL-5 hang at chunk@0x10000: ``fl_cmd_data``
+        # Regression for the hang at chunk@0x10000: ``fl_cmd_data``
         # is a *pointer variable* in the upstream loader
         # (``apache/mynewt-core apps/flash_loader/src/fl.c``) that the
         # loader's ``fl_rotate_databuf()`` toggles between two halves of
@@ -727,7 +727,7 @@ class FlashImageTests(unittest.TestCase):
             _DEFAULT_SYM_ADDRS['fl_cmd_data'], load_dests,
             msg='load_image was called at the fl_cmd_data symbol address; '
                 'the driver is treating the pointer var as if it were a '
-                'buffer. This is the JUL-5 chunk@0x10000 hang regression.',
+                'buffer. This is the chunk@0x10000 hang regression.',
         )
 
     def test_program_rereads_fl_cmd_data_each_chunk(self):
@@ -776,7 +776,7 @@ class FlashImageTests(unittest.TestCase):
                 f'chunk 1 load_image destination was {hex(load_dests[1])}; '
                 f'expected sentinel {hex(sentinel)}. The driver appears to '
                 f'have cached fl_cmd_data instead of re-reading it per '
-                f'chunk — the same bug class that produced the JUL-5 hang.'
+                f'chunk — the same bug class that produced the hang.'
             ),
         )
 

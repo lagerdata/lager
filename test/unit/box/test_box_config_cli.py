@@ -86,7 +86,7 @@ class MountAddPrepThenPersist(unittest.TestCase):
                    )):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["mount", "add", "/Hyphen", "/Hyphen", "--box", "HYP-3"],
+                ["mount", "add", "/Hyphen", "/Hyphen", "--box", "test-box"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("Mount NOT added", result.output)
@@ -105,7 +105,7 @@ class MountAddPrepThenPersist(unittest.TestCase):
                    )):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["mount", "add", "/Hyphen", "/Hyphen", "--box", "HYP-3"],
+                ["mount", "add", "/Hyphen", "/Hyphen", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("Added mount /Hyphen -> /Hyphen", result.output)
@@ -118,7 +118,7 @@ class MountAddPrepThenPersist(unittest.TestCase):
              patch("cli.commands.box.config.ensure_host_path_owned") as prep_call:
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["mount", "add", "/Hyphen", "/Hyphen", "--no-auto-prep", "--box", "HYP-3"],
+                ["mount", "add", "/Hyphen", "/Hyphen", "--no-auto-prep", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         prep_call.assert_not_called()
@@ -154,7 +154,7 @@ class ApplyReadinessPolling(unittest.TestCase):
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True) as wait_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["apply", "--box", "HYP-3", "--yes"],
+                ["apply", "--box", "test-box", "--yes"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("Applied box config", result.output)
@@ -170,7 +170,7 @@ class ApplyReadinessPolling(unittest.TestCase):
              patch.object(box_config_cli, "_wait_for_box_api", return_value=False):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["apply", "--box", "HYP-3", "--yes"],
+                ["apply", "--box", "test-box", "--yes"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("didn't come up", result.output)
@@ -261,7 +261,7 @@ class ApplyRollback(unittest.TestCase):
                           side_effect=[False, True]) as bounce_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["apply", "--box", "HYP-3", "--yes"],
+                ["apply", "--box", "test-box", "--yes"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("Rolled back", result.output)
@@ -281,7 +281,7 @@ class ApplyRollback(unittest.TestCase):
              patch.object(box_config_cli, "_bounce_container", return_value=False) as bounce_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["apply", "--box", "HYP-3", "--yes"],
+                ["apply", "--box", "test-box", "--yes"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("rollback was not possible", result.output)
@@ -300,7 +300,7 @@ class ApplyRollback(unittest.TestCase):
              patch.object(box_config_cli, "_bounce_container", return_value=False) as bounce_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["apply", "--box", "HYP-3", "--yes"],
+                ["apply", "--box", "test-box", "--yes"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("rollback was not possible", result.output)
@@ -326,7 +326,7 @@ class AptCli(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["apt", "add", "Bad Name", "--box", "HYP-3"],
+                ["apt", "add", "Bad Name", "--box", "test-box"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("Failed to add apt packages", result.output)
@@ -339,7 +339,7 @@ class AptCli(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["apt", "add", "tcpdump", "--box", "HYP-3"],
+                ["apt", "add", "tcpdump", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("Added 1 apt package", result.output)
@@ -351,7 +351,7 @@ class AptCli(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["apt", "remove", "tcpdump", "--box", "HYP-3"],
+                ["apt", "remove", "tcpdump", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("Removed 1 apt package", result.output)
@@ -364,7 +364,7 @@ class AptCli(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["apt", "list", "--box", "HYP-3"],
+                ["apt", "list", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("tcpdump", result.output)
@@ -381,7 +381,7 @@ class SysctlCli(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["sysctl", "set", "no_equals_here", "--box", "HYP-3"],
+                ["sysctl", "set", "no_equals_here", "--box", "test-box"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("expected key=value", result.output)
@@ -398,7 +398,7 @@ class SysctlCli(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["sysctl", "set", "bad-key=1", "--box", "HYP-3"],
+                ["sysctl", "set", "bad-key=1", "--box", "test-box"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("Failed to set sysctl values", result.output)
@@ -413,7 +413,7 @@ class SysctlCli(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["sysctl", "set", "net.ipv4.ip_forward=1", "--box", "HYP-3"],
+                ["sysctl", "set", "net.ipv4.ip_forward=1", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("Set 1 sysctl key", result.output)
@@ -431,7 +431,7 @@ class SysctlCli(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["sysctl", "unset", "net.ipv4.ip_forward", "--box", "HYP-3"],
+                ["sysctl", "unset", "net.ipv4.ip_forward", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("Removed 1 sysctl key", result.output)
@@ -447,7 +447,7 @@ class EnvCli(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["env", "set", "no_equals_here", "--box", "HYP-3"],
+                ["env", "set", "no_equals_here", "--box", "test-box"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("expected KEY=VALUE", result.output)
@@ -461,7 +461,7 @@ class EnvCli(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["env", "set", "LAGER_DEBUG=1", "LOG_LEVEL=info", "--box", "HYP-3"],
+                ["env", "set", "LAGER_DEBUG=1", "LOG_LEVEL=info", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("Set 2 env var", result.output)
@@ -479,7 +479,7 @@ class EnvCli(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["env", "set", "DB_URL=postgres://u:p@h/db?ssl=true", "--box", "HYP-3"],
+                ["env", "set", "DB_URL=postgres://u:p@h/db?ssl=true", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         sent = json.loads(backend.calls[-1][1][0])
@@ -495,7 +495,7 @@ class EnvCli(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["env", "set", "PATH=/usr/bin", "--box", "HYP-3"],
+                ["env", "set", "PATH=/usr/bin", "--box", "test-box"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("Failed to set env vars", result.output)
@@ -509,7 +509,7 @@ class EnvCli(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["env", "unset", "LAGER_DEBUG", "--box", "HYP-3"],
+                ["env", "unset", "LAGER_DEBUG", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("Removed 1 env var", result.output)
@@ -522,7 +522,7 @@ class EnvCli(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["env", "list", "--box", "HYP-3"],
+                ["env", "list", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("LAGER_DEBUG=1", result.output)
@@ -542,7 +542,7 @@ class CargoCli(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["cargo", "add", "Bad-Crate", "--box", "HYP-3"],
+                ["cargo", "add", "Bad-Crate", "--box", "test-box"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("Failed to add cargo crates", result.output)
@@ -557,7 +557,7 @@ class CargoCli(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["cargo", "add", "defmt-print@0.3.13", "--box", "HYP-3"],
+                ["cargo", "add", "defmt-print@0.3.13", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("Added 1 cargo crate", result.output)
@@ -576,7 +576,7 @@ class NpmCli(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["npm", "add", "Express", "--box", "HYP-3"],
+                ["npm", "add", "Express", "--box", "test-box"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("Failed to add npm packages", result.output)
@@ -591,7 +591,7 @@ class NpmCli(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["npm", "add", "@types/node@20.0.0", "--box", "HYP-3"],
+                ["npm", "add", "@types/node@20.0.0", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("Added 1 npm package", result.output)
@@ -608,7 +608,7 @@ class NpmCli(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["npm", "remove", "lodash", "--box", "HYP-3"],
+                ["npm", "remove", "lodash", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("Removed 1 npm package", result.output)
@@ -621,7 +621,7 @@ class NpmCli(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["npm", "list", "--box", "HYP-3"],
+                ["npm", "list", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("express", result.output)
@@ -660,7 +660,7 @@ class ApplyHostSideOrdering(unittest.TestCase):
              patch("cli.commands.box.config.sysctl_apply") as sysctl_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["apply", "--box", "HYP-3", "--yes"],
+                ["apply", "--box", "test-box", "--yes"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         apt_mock.assert_not_called()
@@ -686,7 +686,7 @@ class ApplyHostSideOrdering(unittest.TestCase):
              patch("cli.commands.box.config.sysctl_apply") as sysctl_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["apply", "--box", "HYP-3", "--yes"],
+                ["apply", "--box", "test-box", "--yes"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         apt_mock.assert_called_once()
@@ -705,7 +705,7 @@ class ApplyHostSideOrdering(unittest.TestCase):
              patch("cli.commands.box.config.apt_install", return_value=apt_result):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["apply", "--box", "HYP-3", "--yes"],
+                ["apply", "--box", "test-box", "--yes"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("apt install failed", result.output)
@@ -731,7 +731,7 @@ class ApplyHostSideOrdering(unittest.TestCase):
              patch("cli.commands.box.config.sysctl_apply", return_value=sysctl_result) as sysctl_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["apply", "--box", "HYP-3", "--yes"],
+                ["apply", "--box", "test-box", "--yes"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         sysctl_mock.assert_called_once()
@@ -781,7 +781,7 @@ class PostApplyConsistency(unittest.TestCase):
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["apply", "--box", "HYP-3", "--yes"],
+                ["apply", "--box", "test-box", "--yes"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("set-applied-hash", [c[0] for c in backend.calls])
@@ -802,7 +802,7 @@ class PostApplyConsistency(unittest.TestCase):
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["apply", "--box", "HYP-3", "--yes"],
+                ["apply", "--box", "test-box", "--yes"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("no longer validates", result.output)
@@ -827,7 +827,7 @@ class PostApplyConsistency(unittest.TestCase):
                        ok=True, action="installed", message="ok")):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["apply", "--box", "HYP-3", "--yes"],
+                ["apply", "--box", "test-box", "--yes"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("was modified during apply", result.output)
@@ -863,7 +863,7 @@ class AuditFilters(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["audit", "--box", "HYP-3", "--since", "1h"],
+                ["audit", "--box", "test-box", "--since", "1h"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         # Only the 5-min-ago apt-add should pass the 1h cutoff.
@@ -879,7 +879,7 @@ class AuditFilters(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["audit", "--box", "HYP-3", "--verb", "apt-add"],
+                ["audit", "--box", "test-box", "--verb", "apt-add"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         # Both apt-add entries appear; pip-add and set-applied-hash filtered out.
@@ -895,7 +895,7 @@ class AuditFilters(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["audit", "--box", "HYP-3", "--since", "1h", "--verb", "apt-add"],
+                ["audit", "--box", "test-box", "--since", "1h", "--verb", "apt-add"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         # Intersection: only entries that are BOTH recent AND apt-add → just jq.
@@ -909,7 +909,7 @@ class AuditFilters(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["audit", "--box", "HYP-3", "--verb", "never-existed"],
+                ["audit", "--box", "test-box", "--verb", "never-existed"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("No matching audit entries", result.output)
@@ -920,7 +920,7 @@ class AuditFilters(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["audit", "--box", "HYP-3", "--since", "1 fortnight"],
+                ["audit", "--box", "test-box", "--since", "1 fortnight"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("unsupported --since format", result.output)
@@ -952,7 +952,7 @@ class ApplyPreConfirmDiff(unittest.TestCase):
              patch.object(box_config_cli, "_bounce_container") as bounce_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["apply", "--box", "HYP-3"],
+                ["apply", "--box", "test-box"],
                 input="n\n",
             )
         # Exit non-zero because we declined.
@@ -1035,7 +1035,7 @@ class DiffCommand(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["diff", "--box", "HYP-3"],
+                ["diff", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("No pending changes", result.output)
@@ -1048,7 +1048,7 @@ class DiffCommand(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["diff", "--box", "HYP-3"],
+                ["diff", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("Apt packages", result.output)
@@ -1063,7 +1063,7 @@ class DiffCommand(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["diff", "--box", "HYP-3", "--json"],
+                ["diff", "--box", "test-box", "--json"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         payload = json.loads(result.output)
@@ -1076,7 +1076,7 @@ class DiffCommand(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["diff", "--box", "HYP-3"],
+                ["diff", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("No applied snapshot", result.output)
@@ -1112,7 +1112,7 @@ class ApplyDryRun(unittest.TestCase):
              patch("cli.commands.box.config.sysctl_apply") as sysctl_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["apply", "--box", "HYP-3", "--yes", "--dry-run"],
+                ["apply", "--box", "test-box", "--yes", "--dry-run"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("Dry run", result.output)
@@ -1133,7 +1133,7 @@ class ApplyDryRun(unittest.TestCase):
              patch.object(box_config_cli, "_bounce_container") as bounce_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["apply", "--box", "HYP-3", "--yes", "--dry-run"],
+                ["apply", "--box", "test-box", "--yes", "--dry-run"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("would be a no-op", result.output)
@@ -1159,7 +1159,7 @@ class AuditCommand(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["audit", "--box", "HYP-3"],
+                ["audit", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         # Order preserved, both verbs visible.
@@ -1173,7 +1173,7 @@ class AuditCommand(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["audit", "--box", "HYP-3"],
+                ["audit", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("No audit entries", result.output)
@@ -1184,7 +1184,7 @@ class AuditCommand(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             self.runner.invoke(
                 box_config_cli.box_config,
-                ["audit", "--tail", "5", "--box", "HYP-3"],
+                ["audit", "--tail", "5", "--box", "test-box"],
             )
         # The shim got "audit-tail" + "5"
         self.assertEqual(backend.calls, [("audit-tail", ("5",))])
@@ -1196,7 +1196,7 @@ class AuditCommand(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["audit", "--box", "HYP-3", "--json"],
+                ["audit", "--box", "test-box", "--json"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         payload = json.loads(result.output)
@@ -1221,7 +1221,7 @@ class StatusCommand(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["status", "--box", "HYP-3"],
+                ["status", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("clean", result.output)
@@ -1239,7 +1239,7 @@ class StatusCommand(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["status", "--box", "HYP-3"],
+                ["status", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("DRIFT", result.output)
@@ -1251,7 +1251,7 @@ class StatusCommand(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["status", "--box", "HYP-3"],
+                ["status", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("no box_config.json", result.output)
@@ -1267,7 +1267,7 @@ class StatusCommand(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["status", "--box", "HYP-3", "--json"],
+                ["status", "--box", "test-box", "--json"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         payload = json.loads(result.output)
@@ -1290,7 +1290,7 @@ class ExportImportCommands(unittest.TestCase):
                  patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
                 result = self.runner.invoke(
                     box_config_cli.box_config,
-                    ["export", out, "--box", "HYP-3"],
+                    ["export", out, "--box", "test-box"],
                 )
             self.assertEqual(result.exit_code, 0, msg=result.output)
             with open(out) as f:
@@ -1306,7 +1306,7 @@ class ExportImportCommands(unittest.TestCase):
                  patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
                 result = self.runner.invoke(
                     box_config_cli.box_config,
-                    ["export", out, "--box", "HYP-3"],
+                    ["export", out, "--box", "test-box"],
                 )
             self.assertNotEqual(result.exit_code, 0)
             self.assertIn("No box_config.json", result.output)
@@ -1324,7 +1324,7 @@ class ExportImportCommands(unittest.TestCase):
                  patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
                 result = self.runner.invoke(
                     box_config_cli.box_config,
-                    ["import", src, "--box", "HYP-3", "--yes"],
+                    ["import", src, "--box", "test-box", "--yes"],
                 )
             self.assertEqual(result.exit_code, 0, msg=result.output)
             self.assertIn("Imported", result.output)
@@ -1342,7 +1342,7 @@ class ExportImportCommands(unittest.TestCase):
                  patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
                 result = self.runner.invoke(
                     box_config_cli.box_config,
-                    ["import", src, "--box", "HYP-3", "--yes"],
+                    ["import", src, "--box", "test-box", "--yes"],
                 )
             self.assertNotEqual(result.exit_code, 0)
             self.assertIn("Invalid JSON", result.output)
@@ -1361,7 +1361,7 @@ class ExportImportCommands(unittest.TestCase):
                  patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
                 result = self.runner.invoke(
                     box_config_cli.box_config,
-                    ["import", src, "--box", "HYP-3", "--yes"],
+                    ["import", src, "--box", "test-box", "--yes"],
                 )
             self.assertNotEqual(result.exit_code, 0)
             self.assertIn("missing required key 'container'", result.output)
@@ -1382,7 +1382,7 @@ class CopyCommand(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["copy", "--from", "HYP-3", "--to", "HYP-4", "--yes"],
+                ["copy", "--from", "test-box", "--to", "test-box-2", "--yes"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("Copied config", result.output)
@@ -1396,7 +1396,7 @@ class CopyCommand(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["copy", "--from", "HYP-3", "--to", "HYP-3-alias", "--yes"],
+                ["copy", "--from", "test-box", "--to", "test-box-alias", "--yes"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("same box", result.output)
@@ -1429,7 +1429,7 @@ class EditCommand(unittest.TestCase):
              patch.dict(os.environ, {"EDITOR": "fake-editor"}):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["edit", "--box", "HYP-3"],
+                ["edit", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("Saved on", result.output)
@@ -1467,7 +1467,7 @@ class EditCommand(unittest.TestCase):
             # Auto-answer "yes" to "Re-open editor?" prompt
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["edit", "--box", "HYP-3"],
+                ["edit", "--box", "test-box"],
                 input="y\n",
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
@@ -1501,7 +1501,7 @@ class ShowTreeFormat(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["show", "--box", "HYP-3"],
+                ["show", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         lines = result.output.splitlines()
@@ -1534,7 +1534,7 @@ class ShowTreeFormat(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["show", "--box", "HYP-3"],
+                ["show", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         out = result.output
@@ -1570,7 +1570,7 @@ class ShowTreeFormat(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["show", "--box", "HYP-3"],
+                ["show", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         out = result.output
@@ -1598,7 +1598,7 @@ class ShowTreeFormat(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["show", "--box", "HYP-3"],
+                ["show", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("[Up To Date]", result.output)
@@ -1614,7 +1614,7 @@ class ShowTreeFormat(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["show", "--box", "HYP-3"],
+                ["show", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("[Unapplied Changes!]", result.output)
@@ -1643,7 +1643,7 @@ class MultiBoxFanout(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["show", "--box", "HYP-3,HYP-4"],
+                ["show", "--box", "test-box,test-box-2"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         # Each box gets its own "Box config: ..." header line.
@@ -1664,7 +1664,7 @@ class MultiBoxFanout(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["show", "--box", "HYP-3,HYP-4", "--json"],
+                ["show", "--box", "test-box,test-box-2", "--json"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         payload = json.loads(result.output)
@@ -1690,7 +1690,7 @@ class MultiBoxFanout(unittest.TestCase):
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["apply", "--box", "HYP-3,HYP-4", "--yes"],
+                ["apply", "--box", "test-box,test-box-2", "--yes"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("Refusing to apply", result.output)
@@ -1723,7 +1723,7 @@ class RepairCommand(unittest.TestCase):
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["repair", "--box", "HYP-3", "--yes"],
+                ["repair", "--box", "test-box", "--yes"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("Snapshot restored", result.output)
@@ -1735,7 +1735,7 @@ class RepairCommand(unittest.TestCase):
                           side_effect=self._ssh_runner(snapshot_exists=False)):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["repair", "--box", "HYP-3", "--yes"],
+                ["repair", "--box", "test-box", "--yes"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("No applied snapshot", result.output)
@@ -1749,7 +1749,7 @@ class RepairCommand(unittest.TestCase):
                               cp_stderr="sudo: a password is required")):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["repair", "--box", "HYP-3", "--yes"],
+                ["repair", "--box", "test-box", "--yes"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("Failed to restore snapshot", result.output)
@@ -1763,7 +1763,7 @@ class RepairCommand(unittest.TestCase):
              patch.object(box_config_cli, "_bounce_container", return_value=False):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["repair", "--box", "HYP-3", "--yes"],
+                ["repair", "--box", "test-box", "--yes"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("container failed to start", result.output)

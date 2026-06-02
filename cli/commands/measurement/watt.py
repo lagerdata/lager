@@ -92,6 +92,6 @@ def watt(ctx, box, netname):
 
 
 watt.net_examples = [
-    "lager watt watt1 --box JUL-12",
-    "lager watt --box JUL-12         (list watt meter nets)",
+    "lager watt watt1 --box <BOX>",
+    "lager watt --box <BOX>         (list watt meter nets)",
 ]
