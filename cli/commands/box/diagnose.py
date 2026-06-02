@@ -227,8 +227,8 @@ def diagnose(ctx, net, box, net_type):
 
     Example:
 
-        lager diagnose battery1 --box PRD-1
-        lager diagnose supply1 --box PRD-1 --type power-supply
+        lager diagnose battery1 --box <BOX>
+        lager diagnose supply1 --box <BOX> --type power-supply
     """
     resolved_box, box_name = resolve_and_validate_box_with_name(ctx, box)
     display_name = box_name or resolved_box

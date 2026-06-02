@@ -64,6 +64,6 @@ def adc(ctx, box, netname):
 
 
 adc.net_examples = [
-    "lager adc adc1 --box JUL-12",
-    "lager adc --box JUL-12          (list ADC nets)",
+    "lager adc adc1 --box <BOX>",
+    "lager adc --box <BOX>          (list ADC nets)",
 ]

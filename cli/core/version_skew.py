@@ -4,7 +4,7 @@
 """
 Version-skew warning between CLI and box.
 
-The JUL-7 2026-05-26 incident started with CLI 0.19.2 talking to box
+The 2026-05-26 incident started with CLI 0.19.2 talking to box
 0.18.3 and the first error was opaque. A simple one-line warning at the
 start of the session would have cut diagnosis time by hours. This module
 implements that:

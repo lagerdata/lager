@@ -504,10 +504,10 @@ class NetDebugGroup(NetGroupHelpMixin, click.MultiCommand):
     """Custom multi-command that treats first argument as net name"""
 
     net_examples = [
-        "lager debug SWD reset --box JUL-12",
-        "lager debug SWD flash --elf firmware.elf --box JUL-12",
-        "lager debug SWD memrd 0x20000000 256 --box JUL-12",
-        "lager debug status --box JUL-12        (uses default debug net)",
+        "lager debug SWD reset --box <BOX>",
+        "lager debug SWD flash --elf firmware.elf --box <BOX>",
+        "lager debug SWD memrd 0x20000000 256 --box <BOX>",
+        "lager debug status --box <BOX>        (uses default debug net)",
     ]
 
     def list_commands(self, ctx):

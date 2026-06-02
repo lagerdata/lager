@@ -44,30 +44,30 @@ class VersionSkewTests(unittest.TestCase):
     def test_warns_when_cli_minor_ahead(self):
         with patch('cli.core.version_skew.requests.get', side_effect=self._mock_box('0.18.5')), \
              patch('cli.__version__', '0.20.0'):
-            version_skew.check_and_warn('10.0.0.1', 'PRD-1')
+            version_skew.check_and_warn('10.0.0.1', 'test-box')
         out = self.stderr_buf.getvalue()
-        self.assertIn('Box PRD-1 is on lager 0.18.5', out)
+        self.assertIn('Box test-box is on lager 0.18.5', out)
         self.assertIn('CLI is on 0.20.0', out)
-        self.assertIn('lager box update --box PRD-1', out)
+        self.assertIn('lager box update --box test-box', out)
 
     def test_no_warning_when_versions_match(self):
         with patch('cli.core.version_skew.requests.get', side_effect=self._mock_box('0.20.0')), \
              patch('cli.__version__', '0.20.0'):
-            version_skew.check_and_warn('10.0.0.2', 'PRD-2')
+            version_skew.check_and_warn('10.0.0.2', 'test-box')
         self.assertEqual(self.stderr_buf.getvalue(), '')
 
     def test_no_warning_when_box_is_ahead(self):
         with patch('cli.core.version_skew.requests.get', side_effect=self._mock_box('0.21.0')), \
              patch('cli.__version__', '0.20.0'):
-            version_skew.check_and_warn('10.0.0.3', 'PRD-3')
+            version_skew.check_and_warn('10.0.0.3', 'test-box')
         self.assertEqual(self.stderr_buf.getvalue(), '')
 
     def test_second_call_is_cached(self):
         with patch('cli.core.version_skew.requests.get', side_effect=self._mock_box('0.18.5')) as mock_get, \
              patch('cli.__version__', '0.20.0'):
-            version_skew.check_and_warn('10.0.0.4', 'PRD-4')
-            version_skew.check_and_warn('10.0.0.4', 'PRD-4')
-            version_skew.check_and_warn('10.0.0.4', 'PRD-4')
+            version_skew.check_and_warn('10.0.0.4', 'test-box')
+            version_skew.check_and_warn('10.0.0.4', 'test-box')
+            version_skew.check_and_warn('10.0.0.4', 'test-box')
         # Only one HTTP call regardless of how many CLI commands hit it.
         self.assertEqual(mock_get.call_count, 1)
 
@@ -84,14 +84,14 @@ class VersionSkewTests(unittest.TestCase):
                    side_effect=requests.exceptions.ConnectTimeout()), \
              patch('cli.__version__', '0.20.0'):
             # Must not raise.
-            version_skew.check_and_warn('10.0.0.7', 'PRD-7')
+            version_skew.check_and_warn('10.0.0.7', 'test-box')
         self.assertEqual(self.stderr_buf.getvalue(), '')
 
     def test_fails_open_on_unparseable_box_version(self):
         with patch('cli.core.version_skew.requests.get',
                    side_effect=self._mock_box('not-a-version')), \
              patch('cli.__version__', '0.20.0'):
-            version_skew.check_and_warn('10.0.0.8', 'PRD-8')
+            version_skew.check_and_warn('10.0.0.8', 'test-box')
         self.assertEqual(self.stderr_buf.getvalue(), '')
 
     def test_uses_ip_in_message_when_name_missing(self):

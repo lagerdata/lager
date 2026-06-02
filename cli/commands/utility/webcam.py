@@ -269,10 +269,10 @@ def webcam(ctx, box):
 
 
 webcam.net_examples = [
-    "lager webcam cam1 start --box JUL-12",
-    "lager webcam cam1 stop --box JUL-12",
-    "lager webcam url --box JUL-12           (URLs of active streams)",
-    "lager webcam start-all --box JUL-12     (no NET_NAME needed)",
+    "lager webcam cam1 start --box <BOX>",
+    "lager webcam cam1 stop --box <BOX>",
+    "lager webcam url --box <BOX>           (URLs of active streams)",
+    "lager webcam start-all --box <BOX>     (no NET_NAME needed)",
 ]
 
 

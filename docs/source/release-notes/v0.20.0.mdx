@@ -3,7 +3,7 @@ title: "Version 0.20.0"
 description: "May 27, 2026"
 ---
 
-This release is a direct response to the JUL-7 2026-05-26 "battery net not responding" incident on a Keithley 2281S, where root-causing one EBUSY took ~2 hours across `lsof`, `dmesg`, bare `pyvisa` probes, and hardware-service introspection. The biggest items below — `lager diagnose`, the `usbtmc` blacklist, automatic ENODEV recovery, and cross-process device locks — collectively eliminate the most common failure modes that drove that session, and surface the rest (e.g. wedged instrument firmware that only mains-power-cycling can fix) with a single one-line diagnosis.
+This release is a direct response to the 2026-05-26 "battery net not responding" incident on a Keithley 2281S, where root-causing one EBUSY took ~2 hours across `lsof`, `dmesg`, bare `pyvisa` probes, and hardware-service introspection. The biggest items below — `lager diagnose`, the `usbtmc` blacklist, automatic ENODEV recovery, and cross-process device locks — collectively eliminate the most common failure modes that drove that session, and surface the rest (e.g. wedged instrument firmware that only mains-power-cycling can fix) with a single one-line diagnosis.
 
 ## <u>Features</u>
 
@@ -13,7 +13,7 @@ This release is a direct response to the JUL-7 2026-05-26 "battery net not respo
 
 - **Cross-process device locks for USB-TMC drivers** via the new `lager.util.device_lock` module. Generalizes the long-standing EA-solar/supply `DeviceLockManager` pattern (`fcntl.flock` on a lockfile keyed by VISA address) and adopts it in the Keithley battery + supply, Rigol DP800, Rigol DL3021 eload, Keysight E36000, and Rigol MSO5000 scope drivers. Guards against a second box-side `pyvisa` client racing the hardware service for the libusb interface-0 claim. Fails open if the locking infrastructure itself errors, so a transient filesystem hiccup can't take legitimate work offline.
 
-- **Version-skew warning** prints once per CLI session to stderr when the CLI's minor version is ahead of the box's by one or more. The JUL-7 session started with a 0.19.2 CLI talking to a 0.18.3 box and the first error was opaque — this single line would have cut diagnosis time by hours. Cached per-process by box IP; fails open on any error so a flaky network can never break a working command.
+- **Version-skew warning** prints once per CLI session to stderr when the CLI's minor version is ahead of the box's by one or more. The 2026-05-26 session started with a 0.19.2 CLI talking to a 0.18.3 box and the first error was opaque — this single line would have cut diagnosis time by hours. Cached per-process by box IP; fails open on any error so a flaky network can never break a working command.
 
 - **Actionable error messages for `[Errno 16/19/110]`** in `lager battery` and `lager supply` commands. Errno 16 EBUSY → "USB device busy — another process holds the libusb interface" with a `Try: lager diagnose <net>` hint. Errno 19 ENODEV → "Instrument disappeared from USB (re-enumeration)" with a `Hw service should auto-recover; if not: sudo docker restart lager` hint. Errno 110 ETIMEDOUT → "Instrument did not respond to SCPI — firmware may be wedged" with a "mains-side power-cycle required" hint. Raw error remains available via `LAGER_DEBUG=1`.
 
@@ -33,7 +33,7 @@ This release is a direct response to the JUL-7 2026-05-26 "battery net not respo
 
 - **`lager diagnose` VISA section renders all five fields on endpoint-returned errors.** The pre-fix renderer short-circuited on any `error` key in the dict, collapsing the section to a single `error:` line and dropping the `error_class` and `elapsed_ms` context the user needs to interpret the failure.
 
-- **`lager diagnose` prints an actionable message when the box is unreachable** instead of wrapping the raw urllib3 traceback. Now reads `Box 'PRD-1' unreachable at <ip>:5000 (connection refused). The lager container may be stopped. Check with: lager ssh --box PRD-1 -- "sudo docker ps"`. Connection-refused and timeout cases are tailored separately.
+- **`lager diagnose` prints an actionable message when the box is unreachable** instead of wrapping the raw urllib3 traceback. Now reads `Box '<BOX>' unreachable at <ip>:5000 (connection refused). The lager container may be stopped. Check with: lager ssh --box <BOX> -- "sudo docker ps"`. Connection-refused and timeout cases are tailored separately.
 
 - **`/diagnose/visa` correctly consults hw_service's session pool across processes.** `box_http_server` (port 9000) and `hardware_service` (port 8080) are separate processes; the original implementation imported `_visa_resources` from `lager.hardware_service` and saw its own empty copy of the dict rather than hw_service's live state. The fresh probe then always ran and hit EBUSY on healthy boxes with a cached session. Now consulted via HTTP at `localhost:8080/diagnose/dispatcher`.
 
@@ -47,7 +47,7 @@ This release is a direct response to the JUL-7 2026-05-26 "battery net not respo
 
 - **TUI WebSocket-failure messages call out the specific next step** instead of `WebSocket connection failed: Failed to connect to WebSocket server`. `lager battery <net> tui` and `lager supply <net> tui` now probe `http://<box>:9000/health` on connect failure and emit one of four actionable messages depending on the response (box reachable but pre-0.20, services partially up, connect-timeout via Tailscale, container not running). Original WS error preserved in parentheses.
 
-- **Documented "TUIs are laptop-only"** in `box/lager/README.md`. Running TUIs directly on the box was the suspected JUL-7 culprit (a second `pyvisa-py` client competing with hardware-service for interface 0). The OS-level `device_lock` makes this case detect-and-fail-clean instead of silent EBUSY, but the right answer is still to launch TUIs from the laptop CLI.
+- **Documented "TUIs are laptop-only"** in `box/lager/README.md`. Running TUIs directly on the box was the suspected culprit of that incident (a second `pyvisa-py` client competing with hardware-service for interface 0). The OS-level `device_lock` makes this case detect-and-fail-clean instead of silent EBUSY, but the right answer is still to launch TUIs from the laptop CLI.
 
 - **`lager diagnose` output labels clarified.** The header line reads `NetType: <role>` instead of `resolved role: <role>` to align with terminology elsewhere in the CLI. The USB section prints `usb-tmc class: yes/no` (newly surfaced from `/diagnose/usb`) so the user can see whether the classifier is treating the device as USB-TMC. The existing kernel-module-status line is renamed from the ambiguous `usbtmc:` to `usbtmc kmod:` so the two related fields are visually distinct.
 

@@ -129,11 +129,11 @@ def scope(ctx, box, netname):
 
 
 scope.net_examples = [
-    "lager scope scope1 enable --box JUL-12",
-    "lager scope scope1 scale 0.5 --box JUL-12",
-    "lager scope scope1 timebase 1e-3 --box JUL-12",
-    "lager scope scope1 start --box JUL-12",
-    "lager scope --box JUL-12                (list scope nets)",
+    "lager scope scope1 enable --box <BOX>",
+    "lager scope scope1 scale 0.5 --box <BOX>",
+    "lager scope scope1 timebase 1e-3 --box <BOX>",
+    "lager scope scope1 start --box <BOX>",
+    "lager scope --box <BOX>                (list scope nets)",
 ]
 
 
