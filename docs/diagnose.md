@@ -2,7 +2,7 @@
 
 `lager diagnose <net> --box <box> [--type <role>]` is a single-shot
 diagnosis for a misbehaving instrument net. It collapses the manual
-debug workflow used on the JUL-7 2026-05-26 incident (`lsof`, `dmesg`,
+debug workflow used on the 2026-05-26 incident (`lsof`, `dmesg`,
 bare `pyvisa` probes, hardware-service introspection) into one CLI call
 that returns an actionable classification.
 
@@ -78,8 +78,8 @@ The decision tree, in order (first match wins):
 
 ### Healthy Keithley
 ```
-$ lager diagnose battery1 --box PRD-1
-lager diagnose — PRD-1 → battery1
+$ lager diagnose battery1 --box <BOX>
+lager diagnose — <BOX> → battery1
   NetType: battery    address: USB0::0x05E6::0x2281::4518305::INSTR
 
 == USB (host-side) ==
@@ -132,5 +132,5 @@ against an older box, just less informative.
 
 - `lager box hello` — basic box-side connectivity + version.
 - `lager nets` — list saved nets and their VISA addresses.
-- The 0.20.0 [CHANGELOG entry](../CHANGELOG.md) explains the JUL-7
+- The 0.20.0 [CHANGELOG entry](../CHANGELOG.md) explains the
   incident that drove this command.

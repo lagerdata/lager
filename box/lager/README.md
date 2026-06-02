@@ -96,7 +96,7 @@ device.
 
 Running TUIs **on the box itself** (e.g. by SSH'ing in and launching a
 local textual app that opens pyvisa) is not supported and will likely
-re-trigger the JUL-7 2026-05-26 incident: a second pyvisa-py client
+re-trigger the 2026-05-26 incident: a second pyvisa-py client
 racing the hw_service for libusb's interface-0 claim, producing the
 [Errno 16] Resource busy symptom. The 0.20.0 OS-level device_lock
 helps detect this, but the right answer is: always launch TUIs from

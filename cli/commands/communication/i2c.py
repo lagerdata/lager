@@ -334,10 +334,10 @@ def i2c(ctx, netname, box):
 
 
 i2c.net_examples = [
-    "lager i2c i2c1 scan --box JUL-12",
-    "lager i2c i2c1 read 4 --address 0x48 --box JUL-12",
-    "lager i2c i2c1 write 0x0A03 --address 0x48 --box JUL-12",
-    "lager i2c i2c1 --box JUL-12             (show net config)",
+    "lager i2c i2c1 scan --box <BOX>",
+    "lager i2c i2c1 read 4 --address 0x48 --box <BOX>",
+    "lager i2c i2c1 write 0x0A03 --address 0x48 --box <BOX>",
+    "lager i2c i2c1 --box <BOX>             (show net config)",
 ]
 
 

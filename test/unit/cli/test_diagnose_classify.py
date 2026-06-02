@@ -69,7 +69,7 @@ class ClassifyTests(unittest.TestCase):
         self.assertIn('auto-recover', msg)
 
     def test_timeout_classifies_as_instrument_wedged(self):
-        """The post-JUL-7 flagship case: device enumerates fine, opens fine,
+        """The flagship case: device enumerates fine, opens fine,
         but *IDN? times out — wedged firmware, needs mains power-cycle."""
         color, msg = _classify(
             usb_info={'enumerated': True, 'usbtmc_loaded': False, 'lsof': []},

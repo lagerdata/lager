@@ -138,11 +138,11 @@ def battery(ctx, box, netname):
 
 
 battery.net_examples = [
-    "lager battery batt1 soc 80 --box JUL-12",
-    "lager battery batt1 voc 3.7 --box JUL-12",
-    "lager battery batt1 enable --box JUL-12",
-    "lager battery batt1 state --box JUL-12",
-    "lager battery --box JUL-12              (list battery nets)",
+    "lager battery batt1 soc 80 --box <BOX>",
+    "lager battery batt1 voc 3.7 --box <BOX>",
+    "lager battery batt1 enable --box <BOX>",
+    "lager battery batt1 state --box <BOX>",
+    "lager battery --box <BOX>              (list battery nets)",
 ]
 
 

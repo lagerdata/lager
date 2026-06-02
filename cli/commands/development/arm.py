@@ -144,10 +144,10 @@ def arm(ctx, box, netname):
 
 
 arm.net_examples = [
-    "lager arm arm1 position --box JUL-12",
-    "lager arm arm1 move --x 100 --y 200 --z 50 --box JUL-12",
-    "lager arm arm1 go-home --box JUL-12",
-    "lager arm --box JUL-12                  (list arm nets)",
+    "lager arm arm1 position --box <BOX>",
+    "lager arm arm1 move --x 100 --y 200 --z 50 --box <BOX>",
+    "lager arm arm1 go-home --box <BOX>",
+    "lager arm --box <BOX>                  (list arm nets)",
 ]
 
 

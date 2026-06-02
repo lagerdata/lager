@@ -94,9 +94,9 @@ def energy(ctx, netname):
 
 
 energy.net_examples = [
-    "lager energy energy1 read --duration 10 --box JUL-12",
-    "lager energy energy1 stats --duration 5 --box JUL-12",
-    "lager energy --box JUL-12               (list energy analyzer nets)",
+    "lager energy energy1 read --duration 10 --box <BOX>",
+    "lager energy energy1 stats --duration 5 --box <BOX>",
+    "lager energy --box <BOX>               (list energy analyzer nets)",
 ]
 
 
