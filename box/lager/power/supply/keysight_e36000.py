@@ -747,6 +747,22 @@ class KeysightE36000(SupplyNet):
         """Select the output channel by numeric ID (1-3)."""
         self._write(f"INSTrument:NSELect {channel.to_numeric()}")
 
+    def set_active_channel(self, channel) -> None:
+        """Re-point this driver instance at output `channel` (1-3).
+
+        hardware_service.py caches one driver instance per address and shares it
+        across all channels of the supply so they share a single USB/pyvisa
+        session. The dispatcher calls this hook before each request to re-point
+        the shared instance at the requesting net's channel, so the channel-less
+        net-level methods (voltage/current/enable/disable/state, which act on
+        self.chan) target the correct output instead of whichever channel
+        happened to create the instance first. SCPI is not sent here — the
+        per-channel commands already address the channel explicitly (e.g.
+        "SOURce:VOLTage v, (@2)"); this only updates the Python-side binding.
+        """
+        self.channel = int(channel)
+        self.chan = InstrumentChannel.from_numeric(self.channel)
+
     # -------------------- Helper Methods --------------------
 
     def _chanlist_to_str(self, chanlist) -> str:

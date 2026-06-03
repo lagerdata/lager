@@ -95,6 +95,22 @@ class RigolDP800(SupplyNet):
     
     # ---- SupplyNet interface (channel-scoped) ----
 
+    def set_active_channel(self, channel) -> None:
+        """Re-point this driver instance at output `channel`.
+
+        hardware_service.py caches one driver instance per address and shares it
+        across all channels of this multi-output supply (so they share a single
+        USB/pyvisa session). The dispatcher calls this hook before each request
+        to re-point the shared instance at the requesting net's channel, so the
+        channel-less net-level methods (voltage/current/enable/disable/state,
+        which read self.channel) target the correct output instead of whichever
+        channel happened to create the instance first. No SCPI is sent — the
+        channel-scoped commands address the channel explicitly; this only
+        updates the Python-side binding. (Distinct from set_channel(), which
+        sets voltage+current for a channel.)
+        """
+        self.channel = int(channel)
+
     def voltage(self, value: float | None = None,
                 ocp: float | None = None,
                 ovp: float | None = None) -> None:
