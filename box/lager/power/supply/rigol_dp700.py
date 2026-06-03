@@ -36,6 +36,7 @@ except (ImportError, ModuleNotFoundError):  # pragma: no cover - box always has 
     pyvisa = None
 
 from lager.devices.catalog import get_device, serial_params, limits_for
+from lager.devices.serial_id import is_serial_address, resolve_address_to_tty
 from lager.instrument_wrappers.instrument_wrap import InstrumentWrap
 from lager.util.device_lock import device_lock
 from .supply_net import (
@@ -58,17 +59,19 @@ CATALOG_NAME = "Rigol_DP711"
 def _asrl_address(address: Optional[str]) -> Optional[str]:
     """Coerce a saved-net address into an ASRL VISA resource string.
 
-    Phase 1 supports the forms a hand-written net can carry:
+    Accepted forms:
+      - ``serial://<vid>:<pid>/serial/<s>`` or ``.../port/<p>`` — durable
+        identity resolved to the live ``/dev/ttyUSB*`` at open time (survives
+        renumber/replug). Returns None if the cable isn't currently plugged in.
       - ``ASRL/dev/ttyUSB0::INSTR``    (used as-is)
       - ``/dev/ttyUSB0``               (wrapped as ASRL...::INSTR)
-
-    The durable ``serial://vid:pid/<serial-or-port>`` form is resolved to a
-    live tty by the scanner/association store in a later phase; it is not
-    handled here.
     """
     addr = (address or "").strip()
     if not addr:
         return None
+    if is_serial_address(addr):
+        tty = resolve_address_to_tty(addr)
+        return f"ASRL{tty}::INSTR" if tty else None
     if addr.upper().startswith("ASRL"):
         return addr
     if addr.startswith("/dev/"):
@@ -123,9 +126,15 @@ def _open_serial(address: str, cfg: dict) -> Any:
 
     asrl = _asrl_address(address)
     if not asrl:
+        if is_serial_address(address):
+            raise DeviceNotFoundError(
+                f"DP700 cable for '{address}' is not currently connected "
+                f"(no matching /dev/ttyUSB* found). Check the USB-serial adapter."
+            )
         raise DeviceNotFoundError(
             f"DP700 net address '{address}' is not a serial/ASRL resource. "
-            f"Expected 'ASRL/dev/ttyUSB0::INSTR' or '/dev/ttyUSB0'."
+            f"Expected 'serial://<vid>:<pid>/serial/<s>', 'ASRL/dev/ttyUSB0::INSTR', "
+            f"or '/dev/ttyUSB0'."
         )
 
     last_exc: Optional[Exception] = None
