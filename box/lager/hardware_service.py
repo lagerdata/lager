@@ -301,6 +301,33 @@ def _create_device_with_retry(module, device_name, net_info):
         raise
 
 
+def _sync_device_channel(device, net_info):
+    """Re-point a shared, cached multi-channel driver at the channel for THIS request.
+
+    Multi-output instruments are cached once per address (cache_key omits the
+    channel) so every channel shares a single USB/pyvisa session and avoids
+    "[Errno 16] Resource busy". The trade-off: the cached instance carries a
+    bound channel (e.g. self.chan) fixed to whichever net first created it.
+    Net-level methods that act on that bound channel rather than an explicit
+    argument — voltage()/current()/enable()/disable()/state() on the supply
+    drivers — would otherwise be misrouted to the first channel (e.g. a CH2
+    voltage command applied to CH1, which then rejects anything above CH1's
+    limit). Drivers that can be re-pointed expose set_active_channel(); we call
+    it under the per-address lock so the set-then-call is atomic against other
+    channels' requests. Drivers without set_active_channel are unaffected.
+    """
+    if not net_info:
+        return
+    channel = net_info.get('channel')
+    setter = getattr(device, 'set_active_channel', None)
+    if channel is None or not callable(setter):
+        return
+    try:
+        setter(channel)
+    except Exception as e:
+        logger.warning(f"Could not sync device channel to {channel!r}: {e}")
+
+
 @app.route('/invoke', methods=['POST'])
 def invoke():
     """
@@ -468,6 +495,7 @@ def invoke():
         device_lock = _get_address_lock(address) if address else _get_device_lock(cache_key)
         try:
             with device_lock:
+                _sync_device_channel(device, net_info)
                 result = func(*args, **kwargs)
 
             # Return the result
@@ -549,6 +577,7 @@ def invoke():
                     device_cache[cache_key] = device
                     func = getattr(device, function_name)
                     with device_lock:
+                        _sync_device_channel(device, net_info)
                         result = func(*args, **kwargs)
                     return jsonify(result)
                 except Exception as retry_e:
