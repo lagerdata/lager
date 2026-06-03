@@ -26,6 +26,7 @@ SCPI NOTES (verify against the DP700 Programming Guide on first bench bring-up):
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from typing import Any, Optional
@@ -286,6 +287,10 @@ class RigolDP700(SupplyNet):
         try:
             resp = self._query(cmd)
             return resp.strip() if isinstance(resp, str) else str(resp)
+        except (NameError, AttributeError, TypeError, ImportError):
+            # Programming errors (bad import/attr) must surface, not be silently
+            # collapsed into a default that looks like a dead instrument.
+            raise
         except Exception:
             return default
 
