@@ -119,23 +119,35 @@ def _apply_serial_settings(inst: Any, cfg: dict) -> None:
         pass
 
 
-def _open_serial(address: str, cfg: dict) -> Any:
-    """Open the DP700 as an ASRL resource, preferring the pyvisa-py backend."""
+def _tty_from_asrl(asrl: Optional[str]) -> Optional[str]:
+    """Extract the ``/dev/tty*`` path from an ``ASRL/dev/tty*::INSTR`` string."""
+    if not asrl:
+        return None
+    m = re.match(r"ASRL(/dev/[^:]+)(?:::INSTR)?$", asrl.strip(), re.IGNORECASE)
+    return m.group(1) if m else None
+
+
+def _resolve_or_raise(address: str) -> str:
+    """Resolve a saved address to a live ASRL resource string, or raise."""
+    asrl = _asrl_address(address)
+    if asrl:
+        return asrl
+    if is_serial_address(address):
+        raise DeviceNotFoundError(
+            f"DP700 cable for '{address}' is not currently connected "
+            f"(no matching /dev/ttyUSB* found). Check the USB-serial adapter."
+        )
+    raise DeviceNotFoundError(
+        f"DP700 net address '{address}' is not a serial/ASRL resource. "
+        f"Expected 'serial://<vid>:<pid>/serial/<s>', 'ASRL/dev/ttyUSB0::INSTR', "
+        f"or '/dev/ttyUSB0'."
+    )
+
+
+def _open_asrl(asrl: str, cfg: dict) -> Any:
+    """Open a known ASRL resource string, preferring the pyvisa-py backend."""
     if pyvisa is None:
         raise LibraryMissingError("PyVISA is not installed on this box.")
-
-    asrl = _asrl_address(address)
-    if not asrl:
-        if is_serial_address(address):
-            raise DeviceNotFoundError(
-                f"DP700 cable for '{address}' is not currently connected "
-                f"(no matching /dev/ttyUSB* found). Check the USB-serial adapter."
-            )
-        raise DeviceNotFoundError(
-            f"DP700 net address '{address}' is not a serial/ASRL resource. "
-            f"Expected 'serial://<vid>:<pid>/serial/<s>', 'ASRL/dev/ttyUSB0::INSTR', "
-            f"or '/dev/ttyUSB0'."
-        )
 
     last_exc: Optional[Exception] = None
     # ASRL is served by pyvisa-py; try it first, then the default backend.
@@ -166,35 +178,109 @@ class RigolDP700(SupplyNet):
         if not addr:
             raise SupplyBackendError("DP700 requires a serial address or device path.")
 
-        cfg = serial_cfg if serial_cfg is not None else (serial_params(CATALOG_NAME) or {})
+        # Saved-net address as stored. When it's a durable serial:// identity we
+        # re-resolve it to the live tty on demand (the cable can move ports and
+        # the cached driver would otherwise hold a stale /dev/ttyUSB* session).
+        self._raw_address = addr
+        self._durable = is_serial_address(addr)
+        self._cfg = serial_cfg if serial_cfg is not None else (serial_params(CATALOG_NAME) or {})
+        self._rm = None
+        self.instr = None
+        self._opened_tty: Optional[str] = None
+        # DP700 is single-channel; channel is fixed at 1 regardless of input.
+        self.channel = 1
 
-        raw = _open_serial(addr, cfg)
+        self._connect()
+        self.check_instrument()
+
+    # --------------------------- connection lifecycle ---------------------------
+
+    def _connect(self) -> None:
+        """Resolve the address to a live ASRL resource and open it."""
+        asrl = _resolve_or_raise(self._raw_address)
+        raw = _open_asrl(asrl, self._cfg)
         self._rm = getattr(raw, "_lager_rm", None)
         try:
             self.instr = InstrumentWrap(raw)
         except Exception:
             self.instr = raw
-        # DP700 is single-channel; channel is fixed at 1 regardless of input.
-        self.channel = 1
+        self._opened_tty = _tty_from_asrl(asrl)
 
-        self.check_instrument()
+    def _close(self) -> None:
+        """Best-effort teardown of the current pyvisa session."""
+        inst = self.instr
+        raw = inst.instr if isinstance(inst, InstrumentWrap) else inst
+        for obj in (raw, self._rm):
+            try:
+                if obj is not None:
+                    obj.close()
+            except Exception:
+                pass
+        self.instr = None
+        self._rm = None
+
+    def _reopen(self) -> bool:
+        """Close and re-resolve/re-open the serial session. True on success."""
+        self._close()
+        try:
+            self._connect()
+            return True
+        except Exception:
+            return False
+
+    def _ensure_open(self) -> None:
+        """Cheap pre-op check: if a durable cable's tty vanished, reopen."""
+        if self._durable and self._opened_tty and not os.path.exists(self._opened_tty):
+            self._reopen()
+
+    def _is_connection_alive(self) -> bool:
+        """Liveness hook for the dispatcher driver cache.
+
+        For durable serial nets the underlying tty can renumber when the cable
+        moves; report dead so the cache reconstructs (and re-resolves) instead
+        of reusing a session bound to a gone tty.
+        """
+        if self._durable and self._opened_tty:
+            return os.path.exists(self._opened_tty)
+        return True
 
     # ------------------------------ IO shims ------------------------------
 
-    def _write(self, cmd: str) -> None:
-        # check_errors=False: the DP700 ``:SYST:ERR?`` round-trip that
-        # InstrumentWrap performs adds a serial round-trip per write and isn't
-        # needed for the simple command set we use.
+    def _raw_write(self, cmd: str) -> None:
         try:
             self.instr.write(cmd, check_errors=False)
         except TypeError:
             self.instr.write(cmd)
 
-    def _query(self, cmd: str) -> str:
+    def _raw_query(self, cmd: str) -> str:
         try:
             return self.instr.query(cmd, check_errors=False)
         except TypeError:
             return str(self.instr.query(cmd))
+
+    def _write(self, cmd: str) -> None:
+        # check_errors=False: the DP700 ``:SYST:ERR?`` round-trip that
+        # InstrumentWrap performs adds a serial round-trip per write and isn't
+        # needed for the simple command set we use.
+        self._ensure_open()
+        try:
+            self._raw_write(cmd)
+        except Exception:
+            # Stale session (e.g. cable replugged to the same tty number):
+            # reopen once and retry before giving up.
+            if self._durable and self._reopen():
+                self._raw_write(cmd)
+            else:
+                raise
+
+    def _query(self, cmd: str) -> str:
+        self._ensure_open()
+        try:
+            return self._raw_query(cmd)
+        except Exception:
+            if self._durable and self._reopen():
+                return self._raw_query(cmd)
+            raise
 
     def _safe_query(self, cmd: str, default: str = "n/a") -> str:
         try:
