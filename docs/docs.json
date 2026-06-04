@@ -56,6 +56,7 @@
           {
             "group": "Configuration",
             "pages": [
+              "source/reference/cli/box-config",
               "source/reference/cli/lager-file",
               "source/reference/cli/instruments",
               "source/reference/cli/nets",
