@@ -7,6 +7,7 @@ Pure stdlib — no hardware deps to stub. Covers every validation rule
 enumerated in the box_config v1 schema, plus the idempotency hash.
 """
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -789,6 +790,61 @@ class InitDefault(unittest.TestCase):
 
     def test_default_validates(self):
         self.assertEqual(cfg.validate(cfg.init_default().to_dict()), [])
+
+
+class UpgradeCompat(unittest.TestCase):
+    """A config written by a pre-0.23.0 box has no `udev_rules` key. New code
+    must read it without error, default the field to empty, and round-trip it.
+    The hash necessarily differs (udev_rules is now part of to_dict), which is
+    the intended 'one extra container bounce on first apply after upgrade'."""
+
+    def _old_config(self):
+        # Exactly what an older box wrote — note: NO 'udev_rules' key.
+        return {
+            "version": 1,
+            "mounts": [{"host": "/srv/x", "container": "/x", "readonly": True}],
+            "volumes": [{"name": "box-tools", "container": "/opt/box-tools"}],
+            "env": {"FOO": "1"},
+            "pip_packages": ["rich"],
+            "apt_packages": ["tcpdump"],
+            "sysctl": {"net.ipv4.ip_forward": "1"},
+            "cargo_packages": [],
+            "npm_packages": [],
+        }
+
+    def test_old_config_has_no_udev_key(self):
+        self.assertNotIn("udev_rules", self._old_config())
+
+    def test_old_config_validates(self):
+        self.assertEqual(cfg.validate(self._old_config()), [])
+
+    def test_from_dict_defaults_empty_udev(self):
+        c = cfg.BoxConfig.from_dict(self._old_config())
+        self.assertEqual(c.udev_rules, [])
+
+    def test_to_dict_emits_empty_udev(self):
+        c = cfg.BoxConfig.from_dict(self._old_config())
+        self.assertEqual(c.to_dict()["udev_rules"], [])
+
+    def test_hash_changes_after_upgrade_then_stabilizes(self):
+        old = self._old_config()
+        # The old box's stored applied_hash was computed from the old dict
+        # (no udev_rules), via the same json.dumps(sort_keys, compact) formula.
+        old_hash = hashlib.sha256(
+            json.dumps(old, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        new_hash = cfg.BoxConfig.from_dict(old).compute_hash()
+        self.assertNotEqual(old_hash, new_hash, "hash should change once on upgrade")
+        # Stable thereafter: re-loading the upgraded config yields the same hash.
+        upgraded = cfg.BoxConfig.from_dict(old).to_dict()
+        self.assertEqual(cfg.BoxConfig.from_dict(upgraded).compute_hash(), new_hash)
+
+    def test_old_config_round_trips_through_from_dict(self):
+        # Mirrors the set-raw/import path: load -> dump -> reload, no data loss.
+        c1 = cfg.BoxConfig.from_dict(self._old_config())
+        c2 = cfg.BoxConfig.from_dict(c1.to_dict())
+        self.assertEqual(c1.to_dict(), c2.to_dict())
+        self.assertEqual(c1.compute_hash(), c2.compute_hash())
 
 
 if __name__ == "__main__":

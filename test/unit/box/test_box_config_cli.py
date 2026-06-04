@@ -1836,5 +1836,32 @@ class ResetCommand(unittest.TestCase):
         self.assertTrue(apply_one.call_args.kwargs.get("force"))
 
 
+class FieldRegistrySync(unittest.TestCase):
+    """The box-side first-class field set (box/lager/box_config/config.py) and
+    the CLI-side set (derived from _FIRST_CLASS_FIELDS_GROUPED in
+    cli/commands/box/config.py) ship in separate trees and must stay in sync.
+    A field added on one side only would silently break diff/show or extras
+    round-tripping. This guard fails loudly on drift."""
+
+    def test_box_and_cli_first_class_keys_match(self):
+        import importlib.util
+        import os
+        box_cfg_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), '..', '..', '..',
+            'box', 'lager', 'box_config', 'config.py',
+        ))
+        import sys
+        spec = importlib.util.spec_from_file_location("box_cfg_sync_check", box_cfg_path)
+        box_cfg = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = box_cfg  # dataclass annotation resolution needs this
+        spec.loader.exec_module(box_cfg)
+        self.assertEqual(
+            set(box_cfg._FIRST_CLASS_KEYS),
+            set(box_config_cli._FIRST_CLASS_KEYS),
+            "box-side and CLI-side first-class field registries drifted; "
+            "add the new field to both config.py files.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
