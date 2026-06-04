@@ -367,12 +367,13 @@ class BoxConfig:
         npm_packages = list(raw.get("npm_packages", []))
         udev_rules = [
             UdevRule(
-                vid=normalize_udev_id(u["vid"]),
-                pid=normalize_udev_id(u["pid"]),
+                vid=normalize_udev_id(u.get("vid", "")),
+                pid=normalize_udev_id(u.get("pid", "")),
                 mode=u.get("mode", "0666"),
                 usbtmc=bool(u.get("usbtmc", False)),
             )
             for u in raw.get("udev_rules", [])
+            if isinstance(u, dict)
         ]
         extras = {k: v for k, v in raw.items() if k not in _FIRST_CLASS_KEYS}
         return cls(

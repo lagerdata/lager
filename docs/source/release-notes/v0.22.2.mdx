@@ -1,0 +1,26 @@
+---
+title: "Version 0.22.2"
+description: "June 3, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **Multi-output power supplies now apply every command to the selected channel.** On Keysight E363xx and Rigol DP800 series supplies, the channels of a single instrument share one USB session, and the shared driver stayed bound to whichever channel was opened first. Commands that don't name a channel — setting voltage or current, enabling/disabling the output, and reading state — were applied to that first channel instead of the one you selected. On the Keysight E36312A this looked like a limits problem: a voltage setpoint above 6V on CH2 or CH3 (25V channels) was rejected, because the write was actually reaching CH1 (6V max). Each command now targets the correct channel.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.22.2
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.22.2/)

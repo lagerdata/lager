@@ -11,6 +11,13 @@ Self-service box provisioning: users can now grant USB device access by adding t
 - **`lager box config reset` — erase the box config to empty.** A single command that clears the config to an empty state (unlike `init`, which seeds the default `box-tools` volume). Pass `--apply` to also restart the container, so you get an erased config *and* a fresh container in one command — handy as a clean slate before a test run.
 - **`lager box config restart` — restart the container without changing config.** A fresh container with the same config, useful for per-test isolation when you want a clean container between test runs.
 
+## [0.22.2] - 2026-06-03
+
+A multi-channel power-supply fix: commands now always act on the channel the net selects.
+
+### Fixed
+- **Multi-output power supplies (Keysight E363xx, Rigol DP800 series) now route every command to the selected channel.** `hardware_service` caches one driver instance per device address (so all of a supply's channels share a single USB/pyvisa session), but that shared instance stayed bound to whichever channel first opened it. Channel-less net operations — `voltage`/`current`/`enable`/`disable`/`state` — were therefore applied to that first channel instead of the one the command targeted. Most visibly on the **Keysight E36312A**, a voltage setpoint above 6V on CH2/CH3 (25V channels) was rejected because the write actually landed on CH1 (6V max), even though the limit check passed. The dispatcher now re-points the shared instance at the requesting net's channel before each call, under the per-address lock, via a new `set_active_channel()` hook on the affected drivers.
+
 ## [0.22.1] - 2026-06-02
 
 Documentation and metadata cleanup: the open-source tree no longer carries internal Lager Box hostnames or a real device IP address.
