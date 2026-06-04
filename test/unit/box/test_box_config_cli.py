@@ -1769,5 +1769,72 @@ class RepairCommand(unittest.TestCase):
         self.assertIn("container failed to start", result.output)
 
 
+class UdevAddCommand(unittest.TestCase):
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def test_add_sends_normalized_rule_payload(self):
+        backend = FakeBoxBackend({"udev-add": [{"ok": True, "added": ["1209:0001"]}]})
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["udev", "add", "0x1209:0001", "--usbtmc", "--box", "test-box"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("Added 1 udev rule", result.output)
+        verb, args = next(c for c in backend.calls if c[0] == "udev-add")
+        payload = json.loads(args[0])
+        # 0x prefix stripped, lowercased; usbtmc flag carried through.
+        self.assertEqual(
+            payload["rules"],
+            [{"vid": "1209", "pid": "0001", "mode": "0666", "usbtmc": True}],
+        )
+
+    def test_malformed_token_rejected_before_box_call(self):
+        backend = FakeBoxBackend()  # udev-add intentionally NOT registered
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["udev", "add", "1209-0001", "--box", "test-box"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("expected VID:PID", result.output)
+        self.assertEqual(backend.calls, [])
+
+
+class ResetCommand(unittest.TestCase):
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def test_reset_calls_reset_verb(self):
+        backend = FakeBoxBackend({"reset": [{"ok": True}]})
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["reset", "--box", "test-box", "--yes"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("Erased box config", result.output)
+        self.assertIn("reset", [c[0] for c in backend.calls])
+
+    def test_reset_apply_invokes_apply(self):
+        backend = FakeBoxBackend({"reset": [{"ok": True}]})
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_apply_one", return_value=True) as apply_one:
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["reset", "--box", "test-box", "--yes", "--apply"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("reset", [c[0] for c in backend.calls])
+        # --apply forces a bounce into the fresh empty config.
+        apply_one.assert_called_once()
+        self.assertTrue(apply_one.call_args.kwargs.get("force"))
+
+
 if __name__ == "__main__":
     unittest.main()

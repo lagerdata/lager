@@ -468,6 +468,82 @@ class ValidateAptPackages(unittest.TestCase):
         self.assertIn("invalid Debian package name", reason)
 
 
+class ValidateUdevRules(unittest.TestCase):
+    def test_missing_key_is_valid(self):
+        self.assertEqual(cfg.validate(_v()), [])
+
+    def test_empty_list_is_valid(self):
+        self.assertEqual(cfg.validate(_v({"udev_rules": []})), [])
+
+    def test_must_be_list(self):
+        errors = cfg.validate(_v({"udev_rules": {"vid": "1209"}}))
+        self.assertTrue(any("'udev_rules' must be an array" in e for e in errors))
+
+    def test_accepts_minimal_rule(self):
+        self.assertEqual(
+            cfg.validate(_v({"udev_rules": [{"vid": "1209", "pid": "0001"}]})), []
+        )
+
+    def test_rejects_short_vid(self):
+        errors = cfg.validate(_v({"udev_rules": [{"vid": "12", "pid": "0001"}]}))
+        self.assertTrue(any("vendor id must be 4 hex digits" in e for e in errors))
+
+    def test_rejects_non_hex_pid(self):
+        errors = cfg.validate(_v({"udev_rules": [{"vid": "1209", "pid": "zzzz"}]}))
+        self.assertTrue(any("product id must be 4 hex digits" in e for e in errors))
+
+    def test_rejects_bad_mode(self):
+        errors = cfg.validate(_v({"udev_rules": [{"vid": "1209", "pid": "0001", "mode": "999"}]}))
+        self.assertTrue(any("mode must be an octal" in e for e in errors))
+
+    def test_rejects_non_bool_usbtmc(self):
+        errors = cfg.validate(_v({"udev_rules": [{"vid": "1209", "pid": "0001", "usbtmc": "yes"}]}))
+        self.assertTrue(any("usbtmc must be a boolean" in e for e in errors))
+
+    def test_rejects_duplicate_vid_pid(self):
+        errors = cfg.validate(_v({"udev_rules": [
+            {"vid": "1209", "pid": "0001"},
+            {"vid": "1209", "pid": "0001", "usbtmc": True},
+        ]}))
+        self.assertTrue(any("duplicates udev_rules[0]" in e for e in errors))
+
+    def test_from_dict_normalizes_vid_pid(self):
+        # 0x prefix stripped, uppercase lowered.
+        c = cfg.BoxConfig.from_dict(_v({"udev_rules": [{"vid": "0x1AB1", "pid": "0E11"}]}))
+        self.assertEqual(c.udev_rules[0].vid, "1ab1")
+        self.assertEqual(c.udev_rules[0].pid, "0e11")
+
+    def test_roundtrip_preserves_fields(self):
+        raw = _v({"udev_rules": [{"vid": "1209", "pid": "0001", "mode": "0660", "usbtmc": True}]})
+        c = cfg.BoxConfig.from_dict(raw)
+        self.assertEqual(
+            c.to_dict()["udev_rules"],
+            [{"vid": "1209", "pid": "0001", "mode": "0660", "usbtmc": True}],
+        )
+
+    def test_to_rule_lines_permission_only(self):
+        rule = cfg.UdevRule(vid="1209", pid="0001")
+        lines = rule.to_rule_lines()
+        self.assertEqual(len(lines), 2)  # comment + permission line
+        self.assertIn('ATTRS{idVendor}=="1209"', lines[1])
+        self.assertIn('ATTRS{idProduct}=="0001"', lines[1])
+        self.assertIn('MODE="0666"', lines[1])
+
+    def test_to_rule_lines_usbtmc_adds_unbind(self):
+        rule = cfg.UdevRule(vid="1ab1", pid="0e11", usbtmc=True)
+        lines = rule.to_rule_lines()
+        self.assertEqual(len(lines), 3)  # comment + permission + unbind
+        self.assertIn("usbtmc/unbind", lines[2])
+        self.assertIn('DRIVER=="usbtmc"', lines[2])
+
+    def test_validate_udev_format_helper(self):
+        ok, _ = cfg.validate_udev_format("1209", "0001")
+        self.assertTrue(ok)
+        ok, reason = cfg.validate_udev_format("xyz", "0001")
+        self.assertFalse(ok)
+        self.assertIn("vendor id", reason)
+
+
 class ValidateSysctl(unittest.TestCase):
     def test_missing_key_is_valid(self):
         self.assertEqual(cfg.validate(_v()), [])

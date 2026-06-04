@@ -28,6 +28,7 @@ AUDIT_TAIL = "audit-tail"
 
 # Lifecycle verbs (mutate /etc/lager/box_config.json or applied state).
 INIT = "init"
+RESET = "reset"
 SET_APPLIED_HASH = "set-applied-hash"
 RESTORE_APPLIED = "restore-applied"
 SET_RAW = "set-raw"
@@ -52,3 +53,5 @@ CARGO_ADD = "cargo-add"
 CARGO_REMOVE = "cargo-remove"
 NPM_ADD = "npm-add"
 NPM_REMOVE = "npm-remove"
+UDEV_ADD = "udev-add"
+UDEV_REMOVE = "udev-remove"
