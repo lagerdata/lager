@@ -91,6 +91,13 @@ _NPM_NAME_RE = re.compile(
     r'^((?:@[a-z0-9][a-z0-9._\-]*\/)?[a-z0-9][a-z0-9._\-]*)'
 )
 
+# USB vendor/product IDs: exactly 4 lowercase hex digits, matching the
+# ATTRS{idVendor}/ATTRS{idProduct} form udev expects (e.g. "1209", "0001").
+_UDEV_HEXID_RE = re.compile(r'^[0-9a-f]{4}$')
+# Octal file mode for the device node, e.g. "0666". Three octal digits with a
+# leading zero is the only form we emit into MODE="...".
+_UDEV_MODE_RE = re.compile(r'^0[0-7]{3}$')
+
 
 def normalize_pip_name(pkg: str) -> str:
     """Canonical key for dedupe / removal: lowercase, underscores→dashes,
@@ -182,6 +189,29 @@ def normalize_npm_name(pkg: str) -> str:
     return base.lower()
 
 
+def normalize_udev_id(value: str) -> str:
+    """Canonical form of a USB vid/pid: lowercase, with an optional 0x prefix
+    stripped. `lsusb` prints lowercase already, but accept "0x1209" / "1209"
+    interchangeably so users can paste either."""
+    if isinstance(value, str) and value.lower().startswith("0x"):
+        value = value[2:]
+    return value.lower() if isinstance(value, str) else value
+
+
+def validate_udev_format(
+    vid: str, pid: str, mode: str = "0666"
+) -> tuple[bool, Optional[str]]:
+    """Format check for a single udev rule. vid/pid must be 4 hex digits
+    (after normalization); mode must be a 4-char octal like 0666."""
+    if not isinstance(vid, str) or not _UDEV_HEXID_RE.match(normalize_udev_id(vid)):
+        return False, "vendor id must be 4 hex digits (e.g. 1209)"
+    if not isinstance(pid, str) or not _UDEV_HEXID_RE.match(normalize_udev_id(pid)):
+        return False, "product id must be 4 hex digits (e.g. 0001)"
+    if not isinstance(mode, str) or not _UDEV_MODE_RE.match(mode):
+        return False, "mode must be an octal like 0666"
+    return True, None
+
+
 class ValidationError(Exception):
     """Raised by from_dict when the config document fails validation."""
 
@@ -215,9 +245,47 @@ class Volume:
         return {"name": self.name, "container": self.container}
 
 
+@dataclass(frozen=True)
+class UdevRule:
+    """A user-declared udev rule granting access to a USB device by vid:pid.
+
+    udev runs on the box *host*; setting MODE on the device node is what lets
+    tools inside the container (which sees /dev and /sys/bus/usb via bind
+    mounts) open the device — fixing e.g. `dfu-util`'s "No DFU capable USB
+    device available". Applied host-side during `lager box config apply`.
+    """
+    vid: str
+    pid: str
+    mode: str = "0666"
+    usbtmc: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"vid": self.vid, "pid": self.pid, "mode": self.mode, "usbtmc": self.usbtmc}
+
+    def to_rule_lines(self) -> List[str]:
+        """Render the udev rule file lines for this device. The permission line
+        is always emitted; USBTMC instruments also need the driver-unbind line
+        so libusb/PyVISA can claim the interface (see box/udev_rules/README.md).
+        """
+        lines = [
+            f"# vid:pid {self.vid}:{self.pid} (added via `lager box config udev`)",
+            f'SUBSYSTEM=="usb", ATTRS{{idVendor}}=="{self.vid}", '
+            f'ATTRS{{idProduct}}=="{self.pid}", MODE="{self.mode}"',
+        ]
+        if self.usbtmc:
+            lines.append(
+                f'ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="usbtmc", '
+                f'ATTRS{{idVendor}}=="{self.vid}", ATTRS{{idProduct}}=="{self.pid}", '
+                f"RUN+=\"/bin/sh -c 'echo %k > /sys/bus/usb/drivers/usbtmc/unbind "
+                f"2>/dev/null || true'\""
+            )
+        return lines
+
+
 _FIRST_CLASS_KEYS = frozenset({
     "version", "mounts", "volumes", "env",
     "pip_packages", "apt_packages", "sysctl", "cargo_packages", "npm_packages",
+    "udev_rules",
 })
 
 
@@ -269,6 +337,7 @@ class BoxConfig:
     sysctl: Dict[str, str] = field(default_factory=dict)
     cargo_packages: List[str] = field(default_factory=list)
     npm_packages: List[str] = field(default_factory=list)
+    udev_rules: List[UdevRule] = field(default_factory=list)
     extras: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -296,6 +365,16 @@ class BoxConfig:
         sysctl = dict(raw.get("sysctl", {}))
         cargo_packages = list(raw.get("cargo_packages", []))
         npm_packages = list(raw.get("npm_packages", []))
+        udev_rules = [
+            UdevRule(
+                vid=normalize_udev_id(u.get("vid", "")),
+                pid=normalize_udev_id(u.get("pid", "")),
+                mode=u.get("mode", "0666"),
+                usbtmc=bool(u.get("usbtmc", False)),
+            )
+            for u in raw.get("udev_rules", [])
+            if isinstance(u, dict)
+        ]
         extras = {k: v for k, v in raw.items() if k not in _FIRST_CLASS_KEYS}
         return cls(
             version=int(raw["version"]),
@@ -307,6 +386,7 @@ class BoxConfig:
             sysctl=sysctl,
             cargo_packages=cargo_packages,
             npm_packages=npm_packages,
+            udev_rules=udev_rules,
             extras=extras,
         )
 
@@ -320,6 +400,7 @@ class BoxConfig:
         out["sysctl"] = dict(self.sysctl)
         out["cargo_packages"] = list(self.cargo_packages)
         out["npm_packages"] = list(self.npm_packages)
+        out["udev_rules"] = [u.to_dict() for u in self.udev_rules]
         for k, v in self.extras.items():
             out[k] = v
         return out
@@ -426,6 +507,7 @@ def validate(raw: Any) -> List[str]:
     errors.extend(_validate_sysctl(raw))
     errors.extend(_validate_cargo_packages(raw))
     errors.extend(_validate_npm_packages(raw))
+    errors.extend(_validate_udev_rules(raw))
 
     return errors
 
@@ -720,6 +802,44 @@ def _validate_npm_packages(raw: Dict[str, Any]) -> List[str]:
             )
         else:
             seen[canonical] = i
+    return errors
+
+
+def _validate_udev_rules(raw: Dict[str, Any]) -> List[str]:
+    errors: List[str] = []
+    rules = raw.get("udev_rules")
+    if rules is None:
+        return errors
+    if not isinstance(rules, list):
+        return [f"'udev_rules' must be an array, got {_typename(rules)}."]
+
+    seen: Dict[tuple, int] = {}
+    for i, r in enumerate(rules):
+        if not isinstance(r, dict):
+            errors.append(f"udev_rules[{i}] must be an object, got {_typename(r)}.")
+            continue
+        vid = r.get("vid")
+        pid = r.get("pid")
+        mode = r.get("mode", "0666")
+        if vid is None:
+            errors.append(f"udev_rules[{i}]: missing required key 'vid'.")
+        if pid is None:
+            errors.append(f"udev_rules[{i}]: missing required key 'pid'.")
+        if "usbtmc" in r and not isinstance(r["usbtmc"], bool):
+            errors.append(f"udev_rules[{i}].usbtmc must be a boolean, got {_typename(r['usbtmc'])}.")
+        if vid is None or pid is None:
+            continue
+        ok, reason = validate_udev_format(vid, pid, mode)
+        if not ok:
+            errors.append(f"udev_rules[{i}] {vid}:{pid}: {reason}.")
+            continue
+        key = (normalize_udev_id(vid), normalize_udev_id(pid))
+        if key in seen:
+            errors.append(
+                f"udev_rules[{i}] {vid}:{pid} duplicates udev_rules[{seen[key]}]."
+            )
+        else:
+            seen[key] = i
     return errors
 
 

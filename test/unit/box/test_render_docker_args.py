@@ -204,6 +204,32 @@ class QuotingSafety(unittest.TestCase):
         self.assertEqual(paths, ["/path with space"])
 
 
+class UdevRulesIgnored(unittest.TestCase):
+    """Regression guard for the 0.23.0 udev_rules field: it's host-side only
+    and must never leak into docker run args. Rendering a config with udev
+    rules must produce byte-identical output to the same config without them."""
+
+    def test_udev_rules_do_not_change_docker_args(self):
+        base = {
+            "version": 1,
+            "mounts": [{"host": "/a", "container": "/b", "readonly": False}],
+            "volumes": [{"name": "box-tools", "container": "/opt/box-tools"}],
+            "env": {"FOO": "1"},
+        }
+        with_udev = dict(base, udev_rules=[
+            {"vid": "1209", "pid": "0001", "mode": "0666", "usbtmc": False},
+            {"vid": "1ab1", "pid": "0e11", "mode": "0660", "usbtmc": True},
+        ])
+        rc_a, _, body_a, _ = _render(base)
+        rc_b, _, body_b, _ = _render(with_udev)
+        self.assertEqual(rc_a, 0)
+        self.assertEqual(rc_b, 0)
+        self.assertEqual(body_a, body_b)
+        # And nothing udev-shaped leaked into the rendered bash.
+        self.assertNotIn("1209", body_b)
+        self.assertNotIn("udev", body_b.lower())
+
+
 class SoftFailBehavior(unittest.TestCase):
     """Validation/parse failures must still write a file with empty arrays
     so start_box.sh sources a known-good no-op rather than holding stale

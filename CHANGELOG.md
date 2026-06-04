@@ -2,6 +2,15 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.23.0] - 2026-06-04
+
+Self-service box provisioning: users can now grant USB device access by adding their own udev rules through `lager box config`, and there are first-class commands for erasing the config and getting a fresh container — no engineer-cut release required for a new device.
+
+### Added
+- **`lager box config udev add/list/remove` — user-editable host udev rules.** Grant a USB device read/write access from inside the container by vid:pid, e.g. `lager box config udev add 1209:0001 --box <BOX>`, then `lager box config apply`. This fixes the common case where a device node is owned by root so tools like `dfu-util` fail with "No DFU capable USB device available" (exit 74). Pass `--usbtmc` for SCPI/USBTMC instruments to also emit the driver-unbind rule (needed for PyVISA/libusb). Rules are stored in `box_config.json` (`udev_rules`) and installed host-side on `apply` to `/etc/udev/rules.d/99-lager-user.rules` with a `udevadm` reload+trigger, reusing the box's existing passwordless-sudo udev grant. Previously every new device required a Lager engineer to edit `box/udev_rules/99-instrument.rules` and cut a release.
+- **`lager box config reset` — erase the box config to empty.** A single command that clears the config to an empty state (unlike `init`, which seeds the default `box-tools` volume). Pass `--apply` to also restart the container, so you get an erased config *and* a fresh container in one command — handy as a clean slate before a test run.
+- **`lager box config restart` — restart the container without changing config.** A fresh container with the same config, useful for per-test isolation when you want a clean container between test runs.
+
 ## [0.22.2] - 2026-06-03
 
 A multi-channel power-supply fix: commands now always act on the channel the net selects.

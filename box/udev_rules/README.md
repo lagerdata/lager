@@ -1,6 +1,21 @@
 # Box udev Rules
 
-This directory contains udev rules for USB devices used by the box.
+This directory contains the **shipped** udev rules for USB instruments the box
+supports out of the box (`99-instrument.rules`). They are deployed to every box
+during setup/update and pair with the `SUPPORTED_USB` instrument tables.
+
+> **Just need a device to be openable from inside the container?** (e.g.
+> `dfu-util` failing with "No DFU capable USB device available".) You don't
+> need to edit this file or cut a release — add a user rule directly:
+>
+> ```bash
+> lager box config udev add 1209:0001 --box <BOX>   # add --usbtmc for SCPI
+> lager box config apply --box <BOX>
+> ```
+>
+> That installs `/etc/udev/rules.d/99-lager-user.rules` on the box host and
+> reloads udev. The rules below remain the home for first-class supported
+> instruments.
 
 ## Current Rules
 

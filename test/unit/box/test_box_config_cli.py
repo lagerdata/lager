@@ -1769,5 +1769,99 @@ class RepairCommand(unittest.TestCase):
         self.assertIn("container failed to start", result.output)
 
 
+class UdevAddCommand(unittest.TestCase):
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def test_add_sends_normalized_rule_payload(self):
+        backend = FakeBoxBackend({"udev-add": [{"ok": True, "added": ["1209:0001"]}]})
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["udev", "add", "0x1209:0001", "--usbtmc", "--box", "test-box"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("Added 1 udev rule", result.output)
+        verb, args = next(c for c in backend.calls if c[0] == "udev-add")
+        payload = json.loads(args[0])
+        # 0x prefix stripped, lowercased; usbtmc flag carried through.
+        self.assertEqual(
+            payload["rules"],
+            [{"vid": "1209", "pid": "0001", "mode": "0666", "usbtmc": True}],
+        )
+
+    def test_malformed_token_rejected_before_box_call(self):
+        backend = FakeBoxBackend()  # udev-add intentionally NOT registered
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["udev", "add", "1209-0001", "--box", "test-box"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("expected VID:PID", result.output)
+        self.assertEqual(backend.calls, [])
+
+
+class ResetCommand(unittest.TestCase):
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def test_reset_calls_reset_verb(self):
+        backend = FakeBoxBackend({"reset": [{"ok": True}]})
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["reset", "--box", "test-box", "--yes"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("Erased box config", result.output)
+        self.assertIn("reset", [c[0] for c in backend.calls])
+
+    def test_reset_apply_invokes_apply(self):
+        backend = FakeBoxBackend({"reset": [{"ok": True}]})
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_apply_one", return_value=True) as apply_one:
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["reset", "--box", "test-box", "--yes", "--apply"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("reset", [c[0] for c in backend.calls])
+        # --apply forces a bounce into the fresh empty config.
+        apply_one.assert_called_once()
+        self.assertTrue(apply_one.call_args.kwargs.get("force"))
+
+
+class FieldRegistrySync(unittest.TestCase):
+    """The box-side first-class field set (box/lager/box_config/config.py) and
+    the CLI-side set (derived from _FIRST_CLASS_FIELDS_GROUPED in
+    cli/commands/box/config.py) ship in separate trees and must stay in sync.
+    A field added on one side only would silently break diff/show or extras
+    round-tripping. This guard fails loudly on drift."""
+
+    def test_box_and_cli_first_class_keys_match(self):
+        import importlib.util
+        import os
+        box_cfg_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), '..', '..', '..',
+            'box', 'lager', 'box_config', 'config.py',
+        ))
+        import sys
+        spec = importlib.util.spec_from_file_location("box_cfg_sync_check", box_cfg_path)
+        box_cfg = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = box_cfg  # dataclass annotation resolution needs this
+        spec.loader.exec_module(box_cfg)
+        self.assertEqual(
+            set(box_cfg._FIRST_CLASS_KEYS),
+            set(box_config_cli._FIRST_CLASS_KEYS),
+            "box-side and CLI-side first-class field registries drifted; "
+            "add the new field to both config.py files.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

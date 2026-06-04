@@ -106,6 +106,19 @@ def _cmd_init(force: bool) -> None:
     _stdout_json({"ok": True, "created": True, "imported": imported, "skipped": skipped})
 
 
+def _cmd_reset() -> None:
+    """Erase box_config.json to an empty config (version only, every list/dict
+    empty). Distinct from `init`, which seeds the default `box-tools` volume —
+    `reset` is "erase it to be empty" so the next bounce yields a clean,
+    fresh container. Applied state/snapshot are left untouched so a later
+    `apply` still diffs against the previously-applied config.
+    """
+    empty = cfg.BoxConfig(version=cfg.SCHEMA_VERSION)
+    cfg.save(empty)
+    _audit("reset", {})
+    _stdout_json({"ok": True})
+
+
 def _cmd_hash() -> None:
     raw = _load_raw()
     if raw is None:
@@ -567,6 +580,68 @@ def _cmd_npm_remove(names: list) -> None:
     _stdout_json({"ok": True, "removed": removed, "removed_count": before - len(current.npm_packages)})
 
 
+def _cmd_udev_add(payload: str) -> None:
+    data = json.loads(payload)
+    new_rules = data.get("rules", [])
+    if not isinstance(new_rules, list):
+        _stdout_json({"ok": False, "errors": ["payload.rules must be an array"]})
+        return
+    current = _load_or_init()
+    # index existing rules by (vid, pid) so a repeat add upserts (e.g. flips
+    # --usbtmc or changes --mode) instead of duplicating.
+    seen = {
+        (r.vid, r.pid): i for i, r in enumerate(current.udev_rules)
+    }
+    added = []
+    for r in new_rules:
+        if not isinstance(r, dict):
+            _stdout_json({"ok": False, "errors": [f"non-object rule: {r!r}"]})
+            return
+        vid = cfg.normalize_udev_id(r.get("vid", ""))
+        pid = cfg.normalize_udev_id(r.get("pid", ""))
+        mode = r.get("mode", "0666")
+        ok, reason = cfg.validate_udev_format(vid, pid, mode)
+        if not ok:
+            _stdout_json({"ok": False, "errors": [f"{r.get('vid')}:{r.get('pid')}: {reason}"]})
+            return
+        rule = cfg.UdevRule(vid=vid, pid=pid, mode=mode, usbtmc=bool(r.get("usbtmc", False)))
+        key = (vid, pid)
+        if key in seen:
+            current.udev_rules[seen[key]] = rule
+        else:
+            current.udev_rules.append(rule)
+            seen[key] = len(current.udev_rules) - 1
+        added.append(f"{vid}:{pid}")
+    raw = current.to_dict()
+    errors = cfg.validate(raw)
+    if errors:
+        _stdout_json({"ok": False, "errors": errors})
+        return
+    cfg.save(cfg.BoxConfig.from_dict(raw))
+    _audit("udev-add", {"added": added})
+    _stdout_json({"ok": True, "added": added})
+
+
+def _cmd_udev_remove(tokens: list) -> None:
+    """Remove udev rules matching the given "vid:pid" tokens."""
+    targets = set()
+    for t in tokens:
+        if ":" in t:
+            vid, pid = t.split(":", 1)
+            targets.add((cfg.normalize_udev_id(vid), cfg.normalize_udev_id(pid)))
+    current = _load_or_init()
+    removed = [
+        f"{r.vid}:{r.pid}" for r in current.udev_rules if (r.vid, r.pid) in targets
+    ]
+    current.udev_rules = [
+        r for r in current.udev_rules if (r.vid, r.pid) not in targets
+    ]
+    cfg.save(current)
+    if removed:
+        _audit("udev-remove", {"removed": removed})
+    _stdout_json({"ok": True, "removed": removed})
+
+
 def _cmd_applied_show() -> None:
     """Return the last-applied snapshot (or None) so the host CLI can do
     per-field diffing — `apt_packages` unchanged since last apply means
@@ -634,6 +709,7 @@ _DISPATCH = {
     "show":              lambda args: _cmd_show(),
     "validate":          lambda args: _cmd_validate(),
     "init":              lambda args: _cmd_init("--force" in args[1:]),
+    "reset":             lambda args: _cmd_reset(),
     "hash":              lambda args: _cmd_hash(),
     "applied-hash":      lambda args: _cmd_applied_hash(),
     "applied-show":      lambda args: _cmd_applied_show(),
@@ -656,6 +732,8 @@ _DISPATCH = {
     "cargo-remove":      lambda args: _cmd_cargo_remove(_require_rest(args)),
     "npm-add":           lambda args: _cmd_npm_add(_require(args, 1)),
     "npm-remove":        lambda args: _cmd_npm_remove(_require_rest(args)),
+    "udev-add":          lambda args: _cmd_udev_add(_require(args, 1)),
+    "udev-remove":       lambda args: _cmd_udev_remove(_require_rest(args)),
     "set-raw":           lambda args: _cmd_set_raw(_require(args, 1)),
     "audit-tail":        lambda args: _cmd_audit_tail(args[1] if len(args) >= 2 else "20"),
 }
