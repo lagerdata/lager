@@ -8,7 +8,7 @@ Read power consumption measurements from watt meter Nets through the Lager CLI. 
 ## Syntax
 
 ```bash
-lager watt [OPTIONS] NET_NAME
+lager watt [OPTIONS] [NET_NAME]
 ```
 
 ## Options
@@ -78,7 +78,7 @@ The backend driver is selected based on the instrument name in the net configura
 To avoid specifying the net name each time:
 
 ```bash
-lager defaults add --watt-net POWER_METER
+lager defaults add --watt-meter-net POWER_METER
 ```
 
 Then:

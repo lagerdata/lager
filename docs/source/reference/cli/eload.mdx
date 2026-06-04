@@ -39,7 +39,7 @@ lager eload NET_NAME cc [VALUE] [--box BOX]
 ```
 
 **Arguments:**
-- `VALUE` - Current value in amps. If omitted, reads current setting.
+- `VALUE` - Current value in amps (0–40 A). If omitted, reads current setting. Values outside the range are rejected.
 
 In CC mode, the electronic load maintains a constant current draw regardless of voltage changes.
 
@@ -61,7 +61,7 @@ lager eload NET_NAME cv [VALUE] [--box BOX]
 ```
 
 **Arguments:**
-- `VALUE` - Voltage value in volts. If omitted, reads current setting.
+- `VALUE` - Voltage value in volts (0–150 V). If omitted, reads current setting. Values outside the range are rejected.
 
 In CV mode, the electronic load adjusts current to maintain a constant voltage at its terminals.
 
@@ -74,7 +74,7 @@ lager eload NET_NAME cr [VALUE] [--box BOX]
 ```
 
 **Arguments:**
-- `VALUE` - Resistance value in ohms. If omitted, reads current setting.
+- `VALUE` - Resistance value in ohms (0.03–10000 Ω). If omitted, reads current setting. Values outside the range are rejected.
 
 In CR mode, the electronic load behaves as a fixed resistance, with current varying according to Ohm's law (I = V/R).
 
@@ -87,7 +87,7 @@ lager eload NET_NAME cp [VALUE] [--box BOX]
 ```
 
 **Arguments:**
-- `VALUE` - Power value in watts. If omitted, reads current setting.
+- `VALUE` - Power value in watts (0–200 W). If omitted, reads current setting. Values outside the range are rejected.
 
 In CP mode, the electronic load adjusts voltage and current to maintain constant power dissipation.
 

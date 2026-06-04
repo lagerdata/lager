@@ -52,11 +52,10 @@ lager defaults add [OPTIONS]
 - `--thermocouple-net NAME` - Default thermocouple net
 - `--uart-net NAME` - Default UART net
 - `--arm-net NAME` - Default robotic arm net
-- `--i2c-net NAME` - Default I2C bus net
-- `--spi-net NAME` - Default SPI bus net
 
 **Other Options:**
 - `--serial-port PATH` - Default serial port path
+- `--user TEXT` - Default username for box locking
 
 **Examples:**
 ```bash
@@ -69,8 +68,8 @@ lager defaults add --supply-net VDD_MAIN
 # Set multiple defaults at once
 lager defaults add --box lab-lager-box --supply-net POWER --debug-net DEBUG_SWD
 
-# Set defaults for I2C and SPI buses
-lager defaults add --i2c-net I2C_SENSORS --spi-net SPI_FLASH
+# Set the default username used for box locking
+lager defaults add --user alice
 ```
 
 ### `list`
@@ -118,8 +117,7 @@ lager defaults delete SUBCOMMAND [OPTIONS]
 - `thermocouple-net` - Delete default thermocouple net
 - `uart-net` - Delete default UART net
 - `arm-net` - Delete default robotic arm net
-- `i2c-net` - Delete default I2C net
-- `spi-net` - Delete default SPI net
+- `user` - Delete default user
 
 **Options (for all subcommands):**
 - `--yes` - Skip confirmation prompt
@@ -181,8 +179,6 @@ default_lager_box = lab-lager-box
 default_supply_net = VDD_MAIN
 default_battery_net = VBAT
 default_serial_port = /dev/ttyUSB0
-net_i2c = I2C_SENSORS
-net_spi = SPI_FLASH
 ```
 
 ---
@@ -195,15 +191,11 @@ lager defaults add --box my-bench
 lager defaults add --supply-net POWER
 lager defaults add --debug-net SWD
 lager defaults add --uart-net SERIAL
-lager defaults add --i2c-net I2C_BUS
-lager defaults add --spi-net SPI_BUS
 
 # Now commands are simpler
 lager supply voltage 3.3          # Uses POWER net on my-bench
 lager debug flash fw.hex          # Uses SWD net on my-bench
 lager uart --interactive          # Uses SERIAL net on my-bench
-lager i2c scan                    # Uses I2C_BUS net on my-bench
-lager spi transfer 0xDE 0xAD     # Uses SPI_BUS net on my-bench
 
 # Override defaults when needed
 lager supply OTHER_SUPPLY voltage 5.0
