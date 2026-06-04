@@ -18,21 +18,25 @@ lager python [OPTIONS] [RUNNABLE] [ARGS]...
 | `--box TEXT` | | String | | Lagerbox name or IP address |
 | `--env FOO=BAR` | | Multiple | | Set environment variables for the script |
 | `--passenv VAR` | | Multiple | | Pass environment variables from current shell |
-| `--kill` | | Flag | | Terminate a running Python script |
-| `--signal SIGNAL` | | Choice | `SIGTERM` | Signal to use with `--kill` |
+| `--kill TEXT` | | String | | Kill a specific running process by its process ID |
+| `--kill-all` | | Flag | | Kill all running scripts |
+| `--signal SIGNAL` | | Choice | `SIGTERM` | Signal to use with `--kill`/`--kill-all` |
 | `--download FILE` | | Multiple | | Download files from box after script completes |
 | `--allow-overwrite` | | Flag | | Allow overwriting existing local files with `--download` |
 | `--timeout SECONDS` | | Integer | 0 (none) | Maximum runtime in seconds |
 | `--detach` | `-d` | Flag | | Run in detached mode (background) |
 | `--port PORT` | `-p` | Multiple | | Forward ports to the Python process |
 | `--add-file FILE` | | Multiple | | Add extra files to upload with script |
+| `--reattach TEXT` | | String | | Reattach to a detached process by its process ID |
+| `--continue TEXT` | | String | | Resume a script paused at a breakpoint, by its process ID |
+| `--console TEXT` | | String | | Connect to the interactive console of a paused script, by its process ID |
 | `--help` | | Flag | | Show help message and exit |
 
 **Arguments:**
-- `RUNNABLE` - Python script file or directory to execute (required unless `--kill` is used)
+- `RUNNABLE` - Python script file or directory to execute (required unless a process-management flag such as `--kill`, `--kill-all`, `--reattach`, `--continue`, or `--console` is used)
 - `ARGS` - Additional arguments passed to the script
 
-**Signal choices for `--kill`:** SIGINT, SIGQUIT, SIGABRT, SIGKILL, SIGUSR1, SIGUSR2, SIGTERM, SIGSTOP
+**Signal choices for `--kill`/`--kill-all`:** SIGINT, SIGQUIT, SIGABRT, SIGKILL, SIGUSR1, SIGUSR2, SIGTERM, SIGSTOP
 
 ## Basic Usage
 

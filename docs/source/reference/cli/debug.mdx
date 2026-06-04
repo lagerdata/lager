@@ -51,7 +51,10 @@ lager debug [NET_NAME] gdbserver [OPTIONS]
 - `--rtt` - Automatically stream RTT logs after starting GDB server
 - `--rtt-reset` - Reset device then stream RTT (captures boot sequence)
 - `--reset` - Reset device after starting GDB server
-- `--gdb-port PORT` - GDB server port (default: 2331)
+- `--gdb-port PORT` - Override the auto-allocated GDB server port. By default the box picks a port based on the probe's slot (2331 for the first probe, 2334 for the second, etc.); pass this only if you need a specific port, and avoid it on multi-probe boxes.
+- `--rtt-search-addr HEX` - RAM start address for the RTT control block search (hex, e.g., `0x20020000`)
+- `--rtt-search-size HEX` - Size of the RAM region to search for the RTT control block (hex, e.g., `0x4000`)
+- `--rtt-chunk-size HEX` - Read chunk size for the RTT search (hex, e.g., `0x1000`)
 
 **Examples:**
 

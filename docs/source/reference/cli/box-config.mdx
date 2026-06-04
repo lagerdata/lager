@@ -135,6 +135,8 @@ lager box config apply [OPTIONS] --box my-lager-box
 | `--force` | Restart even if the config is unchanged |
 | `--dry-run` | Show what would change, but make no changes |
 | `--skip-restart` | Validate and record the config without restarting |
+| `--no-auto-prep` | Skip host-path re-verification before restart |
+| `--recursive-chown` | For any configured mount whose host path is wrong-owned and populated, recursively chown it to uid 33 (www-data) |
 
 `--box` accepts a comma-separated list to apply across multiple boxes.
 
@@ -157,6 +159,14 @@ lager box config mount add HOST_PATH CONTAINER_PATH [--readonly] --box my-lager-
 lager box config mount list [--json]
 lager box config mount remove HOST_PATH CONTAINER_PATH [--yes]
 ```
+
+`mount add` options:
+
+| Option | Description |
+|--------|-------------|
+| `--readonly` | Mount as read-only |
+| `--no-auto-prep` | Skip the auto mkdir/chown of the host path (use when the directory is provisioned externally) |
+| `--recursive-chown` | If the host path already exists with the wrong owner and contains files, recursively chown it to uid 33 (www-data) |
 
 ### `env`
 
