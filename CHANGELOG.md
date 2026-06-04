@@ -2,7 +2,7 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
-## [0.23.0] - 2026-06-03
+## [0.23.0] - 2026-06-04
 
 Self-service box provisioning: users can now grant USB device access by adding their own udev rules through `lager box config`, and there are first-class commands for erasing the config and getting a fresh container — no engineer-cut release required for a new device.
 
