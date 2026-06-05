@@ -1,0 +1,46 @@
+---
+title: "Version 0.24.0"
+description: "June 5, 2026"
+---
+
+## <u>Features</u>
+
+- **DUT context for AI agents — the MCP server now understands the board, not just the bench.** New `DUTContext`, `SubSystem`, and `DocRef` models capture a device-under-test's purpose, summary, MCU, key peripherals, and schematic/datasheet references (by URL or synced `repo_path`). New `discover_dut()` and `cite_schematic()` tools and `lager://dut/overview.md` resources surface it, and `discover_bench(net)` now returns the parent subsystem and relevant doc refs. Schematics are referenced, never stored — the agent fetches and analyzes them with its own tools.
+- **`lager box dut show | edit | add-doc`** — author and inspect DUT context (subsystems, documentation references) stored in the Lager Box's `bench.json`.
+- **`DebugNet.session()` and `DebugNet.rtt_defmt(elf=...)`.** `session()` is a context manager that scopes connect-on-entry and guaranteed teardown so the safe connect/disconnect ordering is encoded once. `rtt_defmt()` opens an RTT session and pipes it through `defmt-print`, yielding decoded log lines instead of raw bytes — so on-box `lager python` tests can assert directly on defmt-encoded firmware logs. `defmt-print` is now bundled in the Lager Box image.
+- **MCP slash-command prompts** (`write_lager_test`, `explore_bench`, `assess_test_feasibility`) and a new "AI Agents (MCP)" documentation tab with a server overview and DUT-context guide.
+
+## <u>Improvements</u>
+
+- **The MCP server is now a read-only discovery & planning surface.** Its purpose is to let an agent learn the bench and DUT well enough to write and run a test; execution happens in the test script via `lager python … --box <box-ip>`. `discover_bench`/`discover_dut` echo the real address the client connected on and return a ready-to-run command, and `discover_bench` now reports instrument channels, capabilities, firmware, and authored specs/ranges.
+- **Reconnect-aware RTT and self-healing reset/read_memory on both J-Link and OpenOCD backends.** The RTT reader transparently re-attaches to the same port after a socket drop (it only re-attaches to an already-running server, never starts one), and `reset`/`erase`/`read_memory` reconnect automatically when no server is running — so scripted flash → attach → reset loops no longer thrash. A DA1469x guard avoids auto-starting an unhalted server.
+- **Simplified agent-facing net metadata to `purpose` / `notes` / `tags`**, replacing the overlapping `description` / `dut_connection` / `test_hints` fields. `lager nets describe` now takes `--purpose` / `--notes` / `--tag`, and the Net Manager TUI edit dialog matches.
+- **The MCP server auto-reloads bench config on change** (it watches the mtimes of `bench.json`, `saved_nets.json`, and `box_id`), so DUT/net edits are picked up on an agent's next request without a reload call or service restart. It also warns when a subsystem references a net that doesn't exist.
+
+## <u>Bug Fixes</u>
+
+- **Debug connect no longer burns its retries when the GDB remote rejects non-stop mode.** JLinkGDBServer rejects `set non-stop on`, which previously exhausted all connect retries and skipped target verification and RTT control-block auto-detection. The connect now detects that specific rejection and retries once with an all-stop controller; OpenOCD keeps non-stop, and any other target error still fails loudly.
+- **`lager box dut add-doc` / `edit` now save `bench.json` without requiring passwordless sudo**, and no longer raise a `KeyError` on a Lager Box whose `bench.json` has no DUT block.
+- **`lager box dut edit` and `lager box config edit` now honor `$EDITOR`/`$VISUAL` flags** (e.g. `subl -w`, `code -w`, `vim -p`) by parsing the editor string with `shlex.split()` instead of treating it as a single program name.
+
+## <u>Breaking Changes</u>
+
+- **The MCP server no longer exposes hardware I/O or mutation tools.** The `quick_io`, `install_dependency`, `run_python`, `pip`, `logs`, `defaults`, and `binaries` tools, the safety/preflight engine, the `run_lager` CLI passthrough, and the audit subsystem have been removed. Agents now execute tests via `lager python path/to/test.py --box <box-ip>` rather than over MCP. Per-bench safety constraints are now advisory metadata surfaced in `discover_bench`, not enforced.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.24.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.24.0/)
