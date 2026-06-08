@@ -180,7 +180,7 @@ lager battery NETNAME current-limit [VALUE] [OPTIONS]
 
 **Arguments:**
 - `NETNAME` - Name of the battery Net
-- `VALUE` - Maximum current limit (amps), omit to read
+- `VALUE` - Maximum current limit (amps), omit to read. Must be between 0 and 6.0 A (Keithley 2281S limit); values outside this range are rejected.
 
 **Options:**
 - `--box TEXT` - Lagerbox name or IP

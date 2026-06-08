@@ -11,6 +11,7 @@ later.
 import click
 
 from .config import box_config
+from .dut import box_dut
 
 
 @click.group(name="box")
@@ -19,3 +20,4 @@ def box() -> None:
 
 
 box.add_command(box_config, name="config")
+box.add_command(box_dut, name="dut")

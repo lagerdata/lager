@@ -192,6 +192,22 @@ def find_pattern(query: str) -> list[dict[str, Any]]:
     return results
 
 
+def list_patterns() -> list[dict[str, Any]]:
+    """Return a compact catalog of every available pattern.
+
+    Used to give the agent something actionable when a query doesn't match,
+    so it can pick a real pattern key instead of guessing again.
+    """
+    return [
+        {
+            "pattern": key,
+            "description": p["description"],
+            "net_types": p.get("net_types", []),
+        }
+        for key, p in sorted(TEST_PATTERNS.items())
+    ]
+
+
 def get_script_content(script_path: str) -> str | None:
     """Read the content of a test script from the test/api/ directory."""
     full_path = os.path.join(_TEST_DIR, script_path)

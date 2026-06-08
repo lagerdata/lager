@@ -56,9 +56,11 @@
           {
             "group": "Configuration",
             "pages": [
+              "source/reference/cli/box-config",
               "source/reference/cli/lager-file",
               "source/reference/cli/instruments",
               "source/reference/cli/nets",
+              "source/reference/cli/box-dut",
               "source/reference/cli/defaults"
             ]
           },
@@ -178,6 +180,18 @@
         ]
       },
       {
+        "tab": "AI Agents (MCP)",
+        "groups": [
+          {
+            "group": "Model Context Protocol",
+            "pages": [
+              "source/reference/mcp/overview",
+              "source/reference/mcp/dut-context"
+            ]
+          }
+        ]
+      },
+      {
         "tab": "Supported Instruments",
         "groups": [
           {
@@ -194,6 +208,7 @@
           {
             "group": "Version History",
             "pages": [
+              "source/release-notes/v0.24.0",
               "source/release-notes/v0.23.0",
               "source/release-notes/v0.22.2",
               "source/release-notes/v0.22.1",

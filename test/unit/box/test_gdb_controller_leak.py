@@ -103,6 +103,81 @@ class GetControllerLeakTests(unittest.TestCase):
         self.assertIn(('NRF52840_XXAA', '127.0.0.1', 2331),
                       gdb._gdb_controller_cache)
 
+    @staticmethod
+    def _ctor_factory(created, error_item_for, *, only_first=False):
+        """Build a GdbController constructor stub.
+
+        ``error_item_for`` is the error dict a controller's ``tar ext`` returns;
+        when ``only_first`` is set only the first controller returns it (the
+        rest connect cleanly), modelling a successful fallback.
+        """
+        def fake_ctor(*_args, **_kwargs):
+            idx = len(created)
+            ctrl = mock.MagicMock(name=f'GdbController{idx}')
+            ctrl.get_gdb_response.return_value = []
+
+            def write(cmd, *_a, **_k):
+                if cmd.startswith('tar ext') and (not only_first or idx == 0):
+                    return [error_item_for]
+                return []
+
+            ctrl.write.side_effect = write
+            created.append(ctrl)
+            return ctrl
+        return fake_ctor
+
+    @staticmethod
+    def _written(ctrl):
+        return [c.args[0] for c in ctrl.write.call_args_list]
+
+    def test_non_stop_rejection_falls_back_to_all_stop(self):
+        """JLinkGDBServer rejecting non-stop must transparently downgrade to
+        all-stop and reconnect once — no error raised, no attempt/sleep burned."""
+        nonstop_err = {
+            'type': 'result', 'message': 'error',
+            'payload': {'msg': 'Non-stop mode requested, but remote does not support non-stop'},
+        }
+        created = []
+        with mock.patch.object(gdb, 'GdbController',
+                               side_effect=self._ctor_factory(created, nonstop_err, only_first=True)), \
+             mock.patch.object(gdb, 'reap_gdb_zombies'), \
+             mock.patch.object(gdb.time, 'sleep') as sleep_mock:
+            result = gdb.get_controller(device='NRF52840_XXAA', max_retries=3)
+
+        # Exactly one fallback: first controller discarded, second cached/returned.
+        self.assertEqual(len(created), 2, 'expected one all-stop fallback reconnect')
+        self.assertIs(result, created[1])
+        created[0].exit.assert_called_once()
+        created[1].exit.assert_not_called()
+        # The fallback is free — no inter-attempt sleep.
+        sleep_mock.assert_not_called()
+        # First tried non-stop; the fallback controller must NOT request it.
+        self.assertIn('set non-stop on', self._written(created[0]))
+        self.assertNotIn('set non-stop on', self._written(created[1]))
+        self.assertTrue(any(c.startswith('tar ext') for c in self._written(created[1])))
+        self.assertIn(('NRF52840_XXAA', '127.0.0.1', 2331), gdb._gdb_controller_cache)
+
+    def test_genuine_target_error_still_raises_and_retries(self):
+        """A non-(non-stop) `target` error is NOT swallowed: it retries the full
+        ladder and ultimately raises (loud failure preserved)."""
+        genuine_err = {
+            'type': 'result', 'message': 'error',
+            'payload': {'msg': 'Remote communication error: Connection refused'},
+        }
+        created = []
+        with mock.patch.object(gdb, 'GdbController',
+                               side_effect=self._ctor_factory(created, genuine_err)), \
+             mock.patch.object(gdb, 'reap_gdb_zombies'), \
+             mock.patch.object(gdb.time, 'sleep'):
+            with self.assertRaises(gdb.DebuggerNotConnectedError):
+                gdb.get_controller(device='NRF52840_XXAA', max_retries=3)
+
+        # Genuine errors consume every attempt (no free fallback).
+        self.assertEqual(len(created), 3)
+        for ctrl in created:
+            ctrl.exit.assert_called_once()
+        self.assertEqual(gdb._gdb_controller_cache, {})
+
 
 if __name__ == '__main__':
     unittest.main()

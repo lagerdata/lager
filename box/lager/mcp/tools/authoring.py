@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import re
 
-from ..audit import audited
 from ..server import mcp
 
 # ── Ordered phases for structuring a test plan ────────────────────────────
@@ -34,6 +33,15 @@ _PHASE_LABELS = {
 _POWER_SIGNALS = {"power", "power-cycle", "powercycle", "vbus", "vcc", "vdd", "source_power"}
 
 
+def _net_text(net) -> str:
+    """Concatenate every freeform field on a net for keyword scoring."""
+    parts = [
+        net.purpose or "",
+        net.notes or "",
+    ]
+    return " ".join(p for p in parts if p)
+
+
 def _infer_phase(net) -> int:
     """Determine the test phase for a net based on type and metadata.
 
@@ -46,8 +54,7 @@ def _infer_phase(net) -> int:
         metadata_words.add(tag.lower())
     for role in getattr(net, "roles", []):
         metadata_words.add(role.lower())
-    if net.description:
-        metadata_words.update(net.description.lower().split())
+    metadata_words.update(_net_text(net).lower().split())
 
     if metadata_words & _POWER_SIGNALS:
         return 0  # setup_power
@@ -56,18 +63,27 @@ def _infer_phase(net) -> int:
 
 
 @mcp.tool()
-@audited()
 def get_test_example(query: str) -> str:
     """Find runnable test script examples by net type, pattern name, or keyword.
 
     Args:
         query: Net type ("SPI"), pattern ("spi_flash_readback"), or keyword ("power").
     """
-    from ..data.test_patterns import find_pattern, get_script_content
+    from ..data.test_patterns import find_pattern, get_script_content, list_patterns
 
     matches = find_pattern(query)
     if not matches:
-        return json.dumps({"error": f"No test examples matching '{query}'."})
+        return json.dumps(
+            {
+                "error": f"No test examples matching '{query}'.",
+                "hint": (
+                    "Retry with one of the pattern keys or net types below "
+                    "(e.g. 'spi', 'power_supply', 'gpio')."
+                ),
+                "available_patterns": list_patterns(),
+            },
+            indent=2,
+        )
 
     results = []
     for m in matches[:3]:
@@ -86,20 +102,46 @@ def get_test_example(query: str) -> str:
     return json.dumps(results, indent=2)
 
 
+def _dut_block(dut) -> dict | None:
+    """Render the authored bits of a DUT for a test plan.
+
+    Returns None when the DUT has no narrative context or doc refs worth
+    surfacing, so callers can skip empty entries.
+    """
+    if not (dut.purpose or dut.summary or dut.schematic_refs or dut.datasheet_refs):
+        return None
+    block: dict = {"name": dut.name}
+    if dut.purpose:
+        block["purpose"] = dut.purpose
+    if dut.mcu:
+        block["mcu"] = dut.mcu
+    if dut.summary:
+        block["summary"] = dut.summary
+    if dut.schematic_refs:
+        block["schematic_refs"] = [
+            d.model_dump(exclude_none=True) for d in dut.schematic_refs
+        ]
+    if dut.datasheet_refs:
+        block["datasheet_refs"] = [
+            d.model_dump(exclude_none=True) for d in dut.datasheet_refs
+        ]
+    return block
+
+
 def _score_net(net, goal_words: set[str]) -> int:
     """Score a net's relevance to the goal using word overlap."""
     score = 0
     for tag in net.tags:
         if tag.lower() in goal_words:
             score += 5
-    for hint in net.test_hints:
-        for word in hint.lower().split():
+    if net.purpose:
+        for word in net.purpose.lower().split():
+            if word in goal_words:
+                score += 3
+    if net.notes:
+        for word in net.notes.lower().split():
             if word in goal_words:
                 score += 1
-    if net.description:
-        for word in net.description.lower().split():
-            if word in goal_words:
-                score += 2
     net_type_lower = net.net_type.lower().replace("-", "")
     for w in goal_words:
         if w in net_type_lower or net_type_lower in w:
@@ -108,7 +150,6 @@ def _score_net(net, goal_words: set[str]) -> int:
 
 
 @mcp.tool()
-@audited()
 def plan_firmware_test(firmware_description: str, test_goals: str) -> str:
     """Generate a phased test plan with full API references for each net.
 
@@ -144,14 +185,25 @@ def plan_firmware_test(firmware_description: str, test_goals: str) -> str:
         phase_idx = _infer_phase(net)
         ref = get_reference_for_type(net.net_type)
 
+        purpose = net.purpose or f"{net.net_type} net"
         step: dict = {
             "net": net.name,
             "net_type": net.net_type,
-            "description": net.description or f"{net.net_type} net",
-            "dut_connection": net.dut_connection,
+            "purpose": purpose,
         }
-        if net.test_hints:
-            step["suggested_tests"] = net.test_hints
+        if net.notes:
+            step["notes"] = net.notes
+        # Surface the parent subsystem + any doc refs so the agent knows
+        # exactly which schematic sheet to open for this step.
+        for dut in bench.dut_slots:
+            sub = dut.subsystem_for_net(net.name)
+            if sub is not None:
+                step["subsystem"] = sub.name
+                if sub.doc_refs:
+                    step["doc_refs"] = [
+                        d.model_dump(exclude_none=True) for d in sub.doc_refs
+                    ]
+                break
 
         if ref:
             # Replace the first double-quoted placeholder net name in the
@@ -198,6 +250,28 @@ def plan_firmware_test(firmware_description: str, test_goals: str) -> str:
             {"name": n.name, "net_type": n.net_type} for n in other
         ],
     }
+
+    # Thread DUT-level context into the plan so the agent starts every
+    # phase with a sense of *what it is testing*. The primary DUT stays at
+    # plan["dut"]; any additional authored DUTs (multi-DUT benches) land in
+    # plan["additional_duts"] so their schematics/datasheets aren't dropped.
+    primary = bench.primary_dut() if hasattr(bench, "primary_dut") else None
+    if primary is not None:
+        primary_block = _dut_block(primary)
+        if primary_block is not None:
+            plan["dut"] = primary_block
+            plan["dut_overview_resource"] = "lager://dut/overview.md"
+
+        extra = [
+            block
+            for dut in bench.dut_slots
+            if dut is not primary
+            for block in (_dut_block(dut),)
+            if block is not None
+        ]
+        if extra:
+            plan["additional_duts"] = extra
+
     if missing:
         plan["missing_coverage"] = missing
 

@@ -8,6 +8,8 @@ _NullDebug class when the debug module is not available.
 """
 from __future__ import annotations
 
+import contextlib
+
 from .constants import NetType
 
 
@@ -164,6 +166,210 @@ def allocate_probe_slot(serial, get_nets_cache_fn=None, parse_probe_serial_fn=No
         return 0
 
 
+#: Where ``cargo install`` drops binaries inside the box container. Kept in
+#: sync with CARGO_HOME in box/lager/docker/box.Dockerfile so we can find
+#: ``defmt-print`` even when PATH wasn't exported into the calling shell.
+_CARGO_BIN_DIR = '/opt/rust/cargo/bin'
+
+
+def _resolve_defmt_print(explicit=None):
+    """Locate the ``defmt-print`` binary on the box.
+
+    Resolution order: an explicit path/name the caller passed, then ``PATH``
+    (``shutil.which``), then the well-known cargo bin dir the box image
+    installs into. Returns the resolved path, or ``None`` when it can't be
+    found so callers can raise a single actionable error.
+    """
+    import os
+    import shutil
+
+    if explicit:
+        if os.path.isabs(explicit):
+            return explicit if os.path.exists(explicit) else None
+        return shutil.which(explicit)
+
+    found = shutil.which('defmt-print')
+    if found:
+        return found
+
+    candidate = os.path.join(_CARGO_BIN_DIR, 'defmt-print')
+    return candidate if os.path.exists(candidate) else None
+
+
+class _DefmtRtt:
+    """Decode a raw RTT stream through ``defmt-print`` and surface log lines.
+
+    Wraps any backend RTT session (the J-Link ``RTT`` or the OpenOCD
+    ``_OpenOcdRtt`` — both expose ``read_some(timeout)`` and context-manager
+    semantics) and pipes its raw bytes through ``defmt-print -e <elf>``. The
+    matching firmware ELF is required: defmt frames are a compressed binary
+    format and cannot be decoded without the symbol metadata in the ELF.
+
+    Two daemon threads do the work while you call :meth:`read_line`:
+
+    * a *pump* thread copies raw RTT bytes into ``defmt-print``'s stdin, and
+    * a *reader* thread reads decoded text lines from its stdout into a queue.
+
+    Usage mirrors :meth:`DebugNet.rtt` but yields decoded ``str`` lines::
+
+        with dbg.rtt_defmt(elf="build/app.elf") as logs:
+            line = logs.read_line(timeout=1.0)   # decoded str, or None
+            for line in logs:                     # stream until the session ends
+                ...
+    """
+
+    _SENTINEL = object()
+
+    def __init__(self, rtt_session, elf, *, defmt_print_bin=None,
+                 read_timeout=0.5):
+        self._rtt = rtt_session
+        self._elf = elf
+        self._defmt_print_bin = defmt_print_bin
+        self._read_timeout = read_timeout
+
+        self._session = None
+        self._proc = None
+        self._pump_thread = None
+        self._reader_thread = None
+        self._stop = None
+        self._lines = None
+        self._closed = False
+
+    def __enter__(self):
+        import os
+        import queue
+        import subprocess
+        import threading
+
+        if not self._elf or not os.path.exists(self._elf):
+            raise FileNotFoundError(
+                f"defmt ELF not found: {self._elf!r}. Pass the path to the "
+                f"exact firmware ELF flashed on the DUT (defmt frames can't be "
+                f"decoded without it)."
+            )
+
+        bin_path = _resolve_defmt_print(self._defmt_print_bin)
+        if not bin_path:
+            raise RuntimeError(
+                "defmt-print not found on this box. It ships in the Lager box "
+                "image; if it's missing, install it with "
+                "`cargo install defmt-print` or add `defmt-print` to "
+                "cargo_packages in your box config."
+            )
+
+        self._stop = threading.Event()
+        self._lines = queue.Queue()
+
+        # Open the underlying RTT session first — if the probe isn't connected
+        # this raises before we spawn anything to clean up.
+        self._session = self._rtt.__enter__()
+
+        try:
+            self._proc = subprocess.Popen(
+                [bin_path, '-e', self._elf],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            self._rtt.__exit__(None, None, None)
+            raise
+
+        self._pump_thread = threading.Thread(
+            target=self._pump, name='defmt-rtt-pump', daemon=True,
+        )
+        self._reader_thread = threading.Thread(
+            target=self._reader, name='defmt-rtt-reader', daemon=True,
+        )
+        self._pump_thread.start()
+        self._reader_thread.start()
+        return self
+
+    def _pump(self):
+        """Copy raw RTT bytes into defmt-print's stdin until stopped."""
+        stdin = self._proc.stdin
+        try:
+            while not self._stop.is_set():
+                data = self._session.read_some(timeout=self._read_timeout)
+                if not data:
+                    continue
+                try:
+                    stdin.write(data)
+                    stdin.flush()
+                except (BrokenPipeError, ValueError, OSError):
+                    break  # defmt-print exited / stdin closed
+        finally:
+            try:
+                stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+
+    def _reader(self):
+        """Read decoded lines from defmt-print's stdout into the queue."""
+        stdout = self._proc.stdout
+        try:
+            for raw in iter(stdout.readline, b''):
+                self._lines.put(raw.decode('utf-8', errors='replace').rstrip('\n'))
+        finally:
+            self._lines.put(self._SENTINEL)
+
+    def read_line(self, timeout=None):
+        """Return the next decoded log line (str), or None on timeout/EOF.
+
+        ``timeout`` is in seconds; ``None`` blocks until a line is available
+        or the stream ends. Returns ``None`` once ``defmt-print`` has exited
+        and all buffered lines have been drained.
+        """
+        import queue
+        if self._lines is None:
+            return None
+        try:
+            item = self._lines.get(timeout=timeout)
+        except queue.Empty:
+            return None
+        if item is self._SENTINEL:
+            self._closed = True
+            return None
+        return item
+
+    def __iter__(self):
+        """Yield decoded lines until the defmt-print stream ends."""
+        while True:
+            line = self.read_line(timeout=None)
+            if line is None and self._closed:
+                return
+            if line is not None:
+                yield line
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._stop is not None:
+            self._stop.set()
+        proc = self._proc
+        if proc is not None:
+            try:
+                if proc.stdin and not proc.stdin.closed:
+                    proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+            try:
+                proc.terminate()
+                proc.wait(timeout=3)
+            except Exception:  # noqa: BLE001 — never let teardown raise
+                try:
+                    proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+        for t in (self._pump_thread, self._reader_thread):
+            if t is not None:
+                t.join(timeout=2)
+        # Tear down the underlying RTT session last so the pump thread has
+        # already stopped reading from it.
+        try:
+            return self._rtt.__exit__(exc_type, exc_val, exc_tb)
+        finally:
+            self._proc = None
+
+
 # -------- _NullDebug fallback (always defined for imports) --------
 class _NullDebug:
     """Fallback debug class when debug module is not available."""
@@ -182,6 +388,7 @@ class _NullDebug:
     def status(self, *a, **k): raise RuntimeError("Debug module not available")
     def read_memory(self, *a, **k): raise RuntimeError("Debug module not available")
     def rtt(self, *a, **k): raise RuntimeError("Debug module not available")
+    def rtt_defmt(self, *a, **k): raise RuntimeError("Debug module not available")
 
 
 # -------- optional debug import (never crash if lager.debug is missing) --------
@@ -197,6 +404,8 @@ try:
         get_jlink_gdbserver_status,
         read_memory as debug_read_memory,
         RTT,
+        DebugError,
+        JLinkNotRunning,
         start_openocd_gdbserver,
         stop_openocd,
         get_openocd_status,
@@ -227,7 +436,8 @@ try:
         """
 
         def __init__(self, *, channel, rtt_telnet_port, tcl_port,
-                     search_addr=None, search_size=None):
+                     search_addr=None, search_size=None,
+                     reconnect=True, reconnect_timeout=30.0):
             """Construct an OpenOCD RTT session.
 
             Note: the J-Link ``RTT`` class accepts a ``chunk_size`` knob
@@ -236,6 +446,17 @@ try:
             ``socket.recv(4096)`` returns, so ``chunk_size`` has no
             equivalent here. ``DebugNet.rtt()`` silently drops the
             argument when dispatching to this backend.
+
+            ``reconnect`` mirrors the J-Link ``RTT`` reader: if the rtt
+            ``server`` socket drops (the OpenOCD daemon is force-restarted, or
+            the rtt server is bounced), the reader transparently re-runs the
+            ``rtt setup`` / ``rtt server start`` RPCs and re-attaches, bounded
+            by ``reconnect_timeout``. OpenOCD keeps its daemon up across an
+            ordinary ``flash()``/``reset()`` (unlike J-Link, which frees USB by
+            restarting the gdbserver), so this path rarely fires — it exists for
+            parity and robustness. The re-attach only succeeds while the daemon
+            answers RPC; it never *starts* a daemon, so it can't disturb a
+            DA1469x left intentionally down by its flash.
             """
             self.channel = channel
             self._port = rtt_telnet_port + channel
@@ -243,13 +464,20 @@ try:
             self._search_addr = search_addr if search_addr is not None else 0x20000000
             self._search_size = search_size if search_size is not None else 0x10000
             self._socket = None
+            self._reconnect = reconnect
+            self._reconnect_timeout = reconnect_timeout
 
-        def __enter__(self):
+        def _setup_and_connect(self, *, attempts=10, raise_on_fail=False):
+            """Run the rtt setup RPCs and connect the TCP socket.
+
+            Returns True on success. On failure either raises (initial enter)
+            or returns False (reconnect path), so the caller can back off.
+            """
             import socket
             import time as _time
 
-            rpc = OpenOcdRpc(port=self._tcl_port)
             try:
+                rpc = OpenOcdRpc(port=self._tcl_port)
                 rpc.rtt_setup(search_addr=self._search_addr, search_size=self._search_size)
                 rpc.rtt_start()
                 try:
@@ -257,46 +485,83 @@ try:
                 except OpenOcdRpcError:
                     pass  # Server wasn't running yet — fine.
                 rpc.rtt_server_start(self._port, channel=self.channel)
-            except OpenOcdRpcError as exc:
-                raise RuntimeError(f'OpenOCD RTT setup failed: {exc}') from exc
+            except (OpenOcdRpcError, OSError) as exc:
+                if raise_on_fail:
+                    raise RuntimeError(f'OpenOCD RTT setup failed: {exc}') from exc
+                return False
 
-            # Wait a little for the listener to come up before connecting.
             last_err = None
-            for _ in range(10):
+            for _ in range(attempts):
                 try:
                     self._socket = socket.create_connection(('127.0.0.1', self._port), timeout=2.0)
-                    return self
+                    return True
                 except OSError as exc:
                     last_err = exc
                     _time.sleep(0.2)
-            raise RuntimeError(
-                f'Failed to connect to OpenOCD RTT port {self._port}: {last_err}'
-            )
+            if raise_on_fail:
+                raise RuntimeError(
+                    f'Failed to connect to OpenOCD RTT port {self._port}: {last_err}'
+                )
+            return False
+
+        def __enter__(self):
+            self._setup_and_connect(raise_on_fail=True)
+            return self
 
         def __exit__(self, exc_type, exc_val, exc_tb):
+            self._close_socket()
+            return False
+
+        def _close_socket(self):
             if self._socket:
                 try:
                     self._socket.close()
                 except OSError:
                     pass
                 self._socket = None
+
+        def _try_reconnect(self):
+            """Bounded re-attach after the rtt server socket drops.
+
+            Re-runs the setup RPCs and reconnects, retrying with backoff until
+            ``reconnect_timeout`` elapses. Returns True once re-attached. The
+            setup RPC fails fast while the daemon is down, so a genuinely-dead
+            daemon just burns the deadline rather than hanging.
+            """
+            import time as _time
+            if not self._reconnect:
+                return False
+            deadline = _time.time() + self._reconnect_timeout
+            while _time.time() < deadline:
+                if self._setup_and_connect(attempts=2):
+                    return True
+                _time.sleep(0.5)
             return False
 
         def read_some(self, timeout=1.0):
             import select
+            import time as _time
             if not self._socket:
-                raise RuntimeError('RTT not connected')
+                if not self._try_reconnect():
+                    if self._reconnect:
+                        _time.sleep(min(timeout, 0.2))
+                    return None
             ready = select.select([self._socket], [], [], timeout)
             if not ready[0]:
                 return None
             try:
                 data = self._socket.recv(4096)
-                return data if data else None
             except OSError:
+                self._close_socket()
                 return None
+            if not data:
+                # EOF: the rtt server socket dropped. Re-attach on the next call.
+                self._close_socket()
+                return None
+            return data
 
         def write(self, data):
-            if not self._socket:
+            if not self._socket and not self._try_reconnect():
                 raise RuntimeError('RTT not connected')
             if isinstance(data, str):
                 data = data.encode('utf-8')
@@ -384,6 +649,65 @@ try:
                 raise RuntimeError(
                     f"OpenOCD is not running for debug net '{self.name}'. Call connect() first."
                 )
+
+        def _self_heal(self, op, *, retries=2, backoff=0.5):
+            """Run a debug op with bounded self-heal. Backend-agnostic.
+
+            ``reset`` / ``erase`` / ``read_memory`` fail the instant no server is
+            reachable — for J-Link the instant neither PID regime reports one
+            (the brief settling window right after ``flash()`` restarts the
+            gdbserver, or a flaky link); for OpenOCD when the daemon isn't up. A
+            human running discrete CLI commands never hits this (they *are* the
+            retry layer); a script firing ``reset()`` microseconds after
+            ``flash()`` does. So the resilience lives in the API for both
+            backends.
+
+            Regression guards (critical):
+
+            * We NEVER restart a server that is already running — that would tear
+              down a live RTT session (Issue 1). We only call
+              ``connect(ignore_if_connected=True)`` when ``status()`` shows
+              nothing running, and that path is a no-op when a server is up (both
+              ``connect_jlink`` and the OpenOCD branch return early), so an
+              attached RTT reader is left untouched across the retry.
+
+            * For **DA1469x** we retry but do NOT auto-(re)start a server. Its
+              ``flash()`` deliberately leaves the server down (a Commander/loader
+              software-reset, not a restart) and the documented flow is an
+              explicit, *halt-aware* reconnect — auto-starting an unhalted server
+              here risks silent QSPI-XIP garbage reads (see CLI ``memrd``
+              auto-halt) or a frozen attach. So on DA1469x a genuinely-down
+              server still surfaces the original error, exactly as before.
+            """
+            import time
+
+            if self.backend == BACKEND_OPENOCD:
+                # OpenOCD signals "not connected" as RuntimeError
+                # (_ensure_openocd_running) and RPC faults as OpenOcdRpcError.
+                transient = (RuntimeError, OpenOcdRpcError)
+            else:
+                # JLinkNotRunning is a subclass of DebugError; read_memory also
+                # wraps genuine failures as DebugError (safe to retry, bounded).
+                transient = (DebugError,)
+
+            is_da1469 = 'DA1469' in (self.device or '').upper()
+
+            last_exc = None
+            for attempt in range(retries + 1):
+                try:
+                    return op()
+                except transient as exc:
+                    last_exc = exc
+                    if attempt == retries:
+                        break
+                    if not is_da1469:
+                        try:
+                            if not self.status().get('running'):
+                                self.connect(ignore_if_connected=True)
+                        except Exception:  # noqa: BLE001 — surface the original op error
+                            pass
+                    time.sleep(backoff * (attempt + 1))
+            raise last_exc
 
         # ---- Public API -----------------------------------------------------
 
@@ -485,14 +809,22 @@ try:
             return disconnect(serial=self.serial, gdb_port=self.gdb_port)
 
         def reset(self, halt=False):
-            """Reset the device — same return shape (newline-joined output) for both backends."""
-            if self.backend == BACKEND_OPENOCD:
-                self._ensure_openocd_running()
-                return self._openocd_rpc().reset(halt=halt) or ''
-            results = []
-            for line in reset_device(halt=halt, serial=self.serial, gdb_port=self.gdb_port):
-                results.append(line)
-            return '\n'.join(results)
+            """Reset the device — same return shape (newline-joined output) for both backends.
+
+            Wrapped in :meth:`_self_heal` so a reset fired in the settling
+            window right after ``flash()`` (or against a momentarily-dropped
+            link/daemon) recovers instead of throwing. The retry never disturbs
+            a running server (so a live RTT reader is safe) and never
+            auto-restarts a DA1469x — see :meth:`_self_heal`.
+            """
+            def _reset():
+                if self.backend == BACKEND_OPENOCD:
+                    self._ensure_openocd_running()
+                    return self._openocd_rpc().reset(halt=halt) or ''
+                return '\n'.join(
+                    reset_device(halt=halt, serial=self.serial, gdb_port=self.gdb_port)
+                )
+            return self._self_heal(_reset)
 
         def flash(self, firmware_path, flash_address=None):
             """Flash firmware to device. Returns combined output as a string.
@@ -542,26 +874,27 @@ try:
 
         def erase(self):
             """Erase flash (whole chip on most targets)."""
-            if self.backend == BACKEND_OPENOCD:
-                self._ensure_openocd_running()
-                return self._openocd_rpc(timeout=120).flash_erase_all() or ''
-            results = []
-            for line in chip_erase(
-                device=self.device, speed=self.speed, transport=self.transport,
-                serial=self.serial, script_file=self._jlink_script_path,
-            ):
-                results.append(line)
-            return '\n'.join(results)
+            def _erase():
+                if self.backend == BACKEND_OPENOCD:
+                    self._ensure_openocd_running()
+                    return self._openocd_rpc(timeout=120).flash_erase_all() or ''
+                return '\n'.join(chip_erase(
+                    device=self.device, speed=self.speed, transport=self.transport,
+                    serial=self.serial, script_file=self._jlink_script_path,
+                ))
+            return self._self_heal(_erase)
 
         def read_memory(self, address, length):
             """Read memory from target device."""
-            if self.backend == BACKEND_OPENOCD:
-                self._ensure_openocd_running()
-                return self._openocd_rpc(timeout=30).read_memory(address, length)
-            return debug_read_memory(
-                address, length, mcu=self.device,
-                serial=self.serial, gdb_port=self.gdb_port,
-            )
+            def _read():
+                if self.backend == BACKEND_OPENOCD:
+                    self._ensure_openocd_running()
+                    return self._openocd_rpc(timeout=30).read_memory(address, length)
+                return debug_read_memory(
+                    address, length, mcu=self.device,
+                    serial=self.serial, gdb_port=self.gdb_port,
+                )
+            return self._self_heal(_read)
 
         def status(self):
             """Get connection status as a backend-agnostic dict.
@@ -624,6 +957,102 @@ try:
                 gdb_port=self.gdb_port,
             )
 
+        def rtt_defmt(self, elf, channel=0, search_addr=None, search_size=None,
+                      chunk_size=None, *, defmt_print_bin=None, read_timeout=0.5):
+            """Open an RTT session and decode defmt frames via ``defmt-print``.
+
+            Same as :meth:`rtt`, but instead of raw bytes you get **decoded**
+            log lines through ``read_line(timeout=...)`` / iteration. Use this
+            for firmware that logs with the ``defmt`` framework (very common in
+            embedded Rust) — raw RTT bytes from such firmware are a compressed
+            binary format and are not human-readable on their own.
+
+            Args:
+                elf: Path to the firmware ELF currently flashed on the DUT.
+                    Must match exactly — defmt needs its symbol metadata to
+                    decode. Relative paths resolve against the script's working
+                    directory on the box (your synced project).
+                channel: RTT channel number (default 0).
+                search_addr / search_size / chunk_size: forwarded to
+                    :meth:`rtt` for RTT control-block discovery.
+                defmt_print_bin: Override the ``defmt-print`` binary (path or
+                    name on PATH). Defaults to the box's installed copy.
+                read_timeout: Poll interval (seconds) for the internal RTT
+                    read loop.
+
+            Returns:
+                A context manager exposing ``read_line(timeout=None) -> str |
+                None`` and iteration over decoded lines. ``defmt-print`` is
+                spawned on enter and torn down on exit.
+
+            Example::
+
+                dbg.connect()
+                with dbg.rtt_defmt(elf="build/app.elf") as logs:
+                    import time
+                    deadline = time.time() + 10
+                    while time.time() < deadline:
+                        line = logs.read_line(timeout=1.0)
+                        if line:
+                            print(line)
+            """
+            raw = self.rtt(
+                channel=channel, search_addr=search_addr,
+                search_size=search_size, chunk_size=chunk_size,
+            )
+            return _DefmtRtt(
+                raw, elf,
+                defmt_print_bin=defmt_print_bin,
+                read_timeout=read_timeout,
+            )
+
+        @contextlib.contextmanager
+        def session(self, *, speed=None, transport=None, connect=True,
+                    ignore_if_connected=True, disconnect_on_exit=True):
+            """Scoped debug session: owns the probe for the ``with`` block.
+
+            Encodes the safe ordering so each script doesn't rediscover it. The
+            yielded object is the net itself, so the full surface
+            (``flash`` / ``rtt`` / ``rtt_defmt`` / ``reset`` / ``read_memory`` …)
+            is available::
+
+                with dbg.session() as s:
+                    s.flash("app.hex")              # built-in stop->flash->restart
+                    with s.rtt_defmt(elf="app.elf") as logs:
+                        s.reset(halt=False)         # reader re-attaches after the blip
+                        for line in logs:
+                            ...
+
+            The reader survives the flash/reset probe-grab because
+            :class:`lager.debug.RTT` is reconnect-aware (Issue 1) — ``session``
+            just guarantees connect-up-front and teardown-on-exit.
+
+            Args:
+                speed / transport: forwarded to :meth:`connect`.
+                connect: connect on entry (default True). Set False to attach to
+                    an already-running server you manage yourself.
+                ignore_if_connected: when connecting, reuse an existing server
+                    instead of raising if one is already up (default True). This
+                    reuses the regression-safe ``connect`` path that never
+                    restarts a live server.
+                disconnect_on_exit: stop the gdbserver on exit (default True) for
+                    guaranteed teardown. Set False to leave the server running for
+                    later commands.
+            """
+            if connect:
+                self.connect(
+                    speed=speed, transport=transport,
+                    ignore_if_connected=ignore_if_connected,
+                )
+            try:
+                yield self
+            finally:
+                if disconnect_on_exit:
+                    try:
+                        self.disconnect()
+                    except Exception:  # noqa: BLE001 — teardown must not mask errors
+                        pass
+
     def make_debug(name, net_info=None):  # type: ignore
         """Factory function to create a DebugNet instance."""
         return DebugNet(name, net_info or {})
@@ -646,5 +1075,5 @@ if not _debug_available:
 __all__ = [
     'DebugNet', '_NullDebug', 'make_debug', '_debug_available',
     'materialise_user_script', 'allocate_probe_slot',
-    'openocd_speed_ladder',
+    'openocd_speed_ladder', '_DefmtRtt', '_resolve_defmt_print',
 ]

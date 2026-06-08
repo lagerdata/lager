@@ -222,36 +222,66 @@ API_REFERENCE: dict[str, dict] = {
         "net_type_enum": "NetType.Debug",
         "get_pattern": 'dbg = Net.get("debug1", type=NetType.Debug)',
         "methods": [
-            {"name": "connect", "sig": "connect(speed=None, transport=None)", "desc": "Connect debug probe to DUT"},
+            {"name": "connect", "sig": "connect(speed=None, transport=None, *, force=False, ignore_if_connected=False)", "desc": "Start the gdbserver for the probe. Pass ignore_if_connected=True to reuse an already-running server, or force=True to restart it."},
             {"name": "disconnect", "sig": "disconnect()", "desc": "Disconnect debug probe"},
+            {"name": "session", "sig": "session(*, connect=True, ignore_if_connected=True, disconnect_on_exit=True) -> context_manager", "desc": "Scoped session: connects on entry (reusing a running server) and tears down on exit. Yields the net itself, so flash/rtt_defmt/reset all work inside the `with`. Preferred entry point — encodes the safe connect->flash->attach->reset ordering once."},
             {"name": "flash", "sig": "flash(firmware_path: str)", "desc": "Flash firmware binary (.hex/.elf/.bin) to DUT"},
-            {"name": "reset", "sig": "reset(halt=False)", "desc": "Reset the DUT. halt=True stops at first instruction."},
-            {"name": "erase", "sig": "erase()", "desc": "Mass-erase DUT flash memory"},
-            {"name": "read_memory", "sig": "read_memory(address: int, length: int) -> bytes", "desc": "Read raw memory from DUT"},
-            {"name": "rtt", "sig": "rtt(channel=0) -> context_manager", "desc": "Open an RTT channel (use as context manager). Returns object with .write() and .read_some()."},
+            {"name": "reset", "sig": "reset(halt=False)", "desc": "Reset the DUT. halt=True stops at first instruction. Self-heals: retries with bounded backoff across the post-flash settling window (both J-Link and OpenOCD), so no manual retry wrapper is needed."},
+            {"name": "erase", "sig": "erase()", "desc": "Mass-erase DUT flash memory (self-heals like reset)."},
+            {"name": "read_memory", "sig": "read_memory(address: int, length: int) -> bytes", "desc": "Read raw memory from DUT (self-heals like reset)."},
+            {"name": "rtt", "sig": "rtt(channel=0) -> context_manager", "desc": "Open a RAW RTT channel (context manager). Returns object with .write() and .read_some() — bytes are NOT defmt-decoded. Reconnect-aware: transparently re-attaches if a flash/reset bounces the server."},
+            {"name": "rtt_defmt", "sig": "rtt_defmt(elf, channel=0) -> context_manager", "desc": "Open an RTT channel and decode defmt via defmt-print. Yields decoded log lines via read_line(timeout) / iteration. `elf` must match the flashed firmware. Reconnect-aware across flash/reset."},
             {"name": "status", "sig": "status() -> dict", "desc": "Get probe/target status"},
         ],
         "gotchas": [
             "Flash paths must be absolute or relative to the script's working directory on the box.",
-            "Use rtt() as a context manager: `with dbg.rtt(channel=0) as rtt: rtt.write(b'cmd\\n')`",
-            "RTT read_some() may return empty bytes — loop with timeout for reliable reads.",
-            "connect() is often implicit on first operation, but explicit connect gives clearer errors.",
+            "Most embedded firmware (esp. Rust) logs via defmt, a compressed BINARY format. rtt().read_some() returns raw, still-encoded bytes — `.decode()` on defmt bytes yields garbage.",
+            "For defmt firmware in a lager python script, use rtt_defmt(elf=...) — it pipes RTT through defmt-print (installed on the box) and gives you decoded text lines via read_line(timeout) or iteration. The elf must EXACTLY match the flashed firmware.",
+            "Use plain rtt() only for human-readable (non-defmt) RTT, or when you want the raw byte stream.",
+            "Alternative for interactive use: the CLI pipe from YOUR shell — `timeout 15 lager debug <NET> gdbserver --box <box-ip> --rtt 2>/dev/null | defmt-print -e build/app.elf` (RTT on stdout, status on stderr; the stream never ends so bound it with `timeout`). Read lager://guide/rtt-defmt for the full workflow.",
+            "rtt_defmt streams until you stop reading — use a time budget / line count, or break out of the loop. Reset the DUT first (dbg.reset()) to catch boot logs.",
+            "Prefer `with dbg.session() as s:` over manual connect()/disconnect() — it reuses a running server, guarantees teardown, and you call flash/rtt_defmt/reset on `s` inside the block.",
+            "You do NOT need workarounds for flash/reset thrash: the in-process RTT reader is reconnect-aware (it re-attaches when flash/reset bounce the gdbserver instead of going silent), and reset/erase/read_memory self-heal with bounded retry. Keep one rtt_defmt loop open across a flash+reset; don't tear it down and re-open.",
+            "A bare connect() raises JLinkAlreadyRunningError (or a RuntimeError on OpenOCD) if a gdbserver is already up for the probe. Use connect(ignore_if_connected=True) to reuse it, or connect(force=True) to restart it. ignore_if_connected=True is the safe default for a streaming/read script.",
+            "If the firmware is already flashed, skip flash() — just connect(ignore_if_connected=True), reset(), then stream.",
+            "DA1469x is the one special case: its flash() deliberately leaves the gdbserver DOWN (a software reset, not a server restart), and the self-heal will NOT auto-start it (auto-starting unhalted risks garbage QSPI-XIP reads). After flashing a DA1469x you MUST call connect() (or open a fresh session()) before reset()/read_memory(). RTT re-attach is still safe — it only resumes once you bring the server back up.",
         ],
         "example_snippet": (
             'from lager import Net, NetType\n'
+            'import time\n'
             '\n'
             'dbg = Net.get("debug1", type=NetType.Debug)\n'
             '\n'
-            '# Flash and reset\n'
-            'dbg.flash("/path/to/firmware.hex")\n'
-            'dbg.reset()\n'
+            '# session() connects on entry (reusing a running server) and tears\n'
+            '# down on exit. Work on `s` inside the block.\n'
+            'lines = []\n'
+            'with dbg.session() as s:\n'
+            '    s.flash("build/app.elf")   # skip if already flashed; same elf as below\n'
             '\n'
-            '# Read RTT output\n'
-            'import time\n'
-            'with dbg.rtt(channel=0) as rtt:\n'
-            '    time.sleep(1)  # Let firmware boot\n'
-            '    data = rtt.read_some(timeout=2)\n'
-            '    print(f"RTT output: {data.decode()}")\n'
+            '    # Open the defmt reader ONCE and keep it across the reset — it is\n'
+            '    # reconnect-aware, so the flash/reset server bounce will not kill it.\n'
+            '    with s.rtt_defmt(elf="build/app.elf", channel=0) as logs:\n'
+            '        s.reset()              # restart so we catch boot logs\n'
+            '        deadline = time.time() + 10\n'
+            '        while time.time() < deadline:\n'
+            '            line = logs.read_line(timeout=1.0)\n'
+            '            if line:\n'
+            '                print(line)\n'
+            '                lines.append(line)\n'
+            '\n'
+            'assert any("boot" in ln.lower() for ln in lines), "no boot log seen"\n'
+            '\n'
+            '# NOTE: DA1469x only — flash() leaves the server down on purpose, so\n'
+            '# reconnect before reset/read_memory:\n'
+            '#     with dbg.session() as s:\n'
+            '#         s.flash("build/app.elf")\n'
+            '#         s.connect(ignore_if_connected=True)  # required on DA1469x\n'
+            '#         s.reset()\n'
+            '\n'
+            '# Plain-text (non-defmt) RTT instead? Use raw rtt():\n'
+            '# with dbg.rtt(channel=0) as rtt:\n'
+            '#     data = rtt.read_some(timeout=2)\n'
+            '#     print(data.decode("utf-8", "replace"))\n'
         ),
     },
     "Battery": {

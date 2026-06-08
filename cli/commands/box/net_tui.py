@@ -316,9 +316,9 @@ class Net:
     addr: str
     saved: bool = False
     has_script: bool = False
-    description: str = ""
-    dut_connection: str = ""
-    test_hints: list[str] = field(default_factory=list)
+    # Agent-facing metadata.
+    purpose: str = ""
+    notes: str = ""
     tags: list[str] = field(default_factory=list)
     _uid: str = field(init=False)
 
@@ -1006,7 +1006,17 @@ class NetActionDialog(Screen):
 
 
 class EditDetailsDialog(Screen):
-    """Dialog for editing net metadata (description, DUT connection, hints, tags)."""
+    """Dialog for editing net metadata.
+
+    Three fields:
+
+    - **Purpose** -- one sentence describing what this wire does on the
+      DUT.  This is the single most important field for an AI agent.
+    - **Notes** -- optional markdown for gotchas, jumper positions,
+      scope probe points, etc.
+    - **Tags** -- optional comma-separated keywords the planning tools
+      match on.
+    """
 
     def __init__(self, net: Net) -> None:
         super().__init__()
@@ -1019,31 +1029,23 @@ class EditDetailsDialog(Screen):
                 f"Net: {self.net.net}  ({self.net.type.upper()})",
                 classes="dialog-content",
             )
-            yield Label("Description:")
-            self.desc_input = Input(
-                placeholder="e.g., SPI flash (W25Q128) on DUT main board",
-                id="desc_input",
-                value=self.net.description,
+            yield Label("Purpose (one sentence — what this wire does on the DUT):")
+            self.purpose_input = Input(
+                placeholder="e.g., DUT debug CLI over UART; primary command/response channel",
+                id="purpose_input",
+                value=self.net.purpose,
             )
-            yield self.desc_input
+            yield self.purpose_input
 
-            yield Label("DUT Connection:")
-            self.dut_input = Input(
-                placeholder="e.g., MCU SPI1 peripheral (PA5-PA7, CS on PA4)",
-                id="dut_input",
-                value=self.net.dut_connection,
+            yield Label("Notes (optional — gotchas, jumper positions, scope probe points):")
+            self.notes_input = Input(
+                placeholder="e.g., Requires JP3 closed; idle level is high.",
+                id="notes_input",
+                value=self.net.notes,
             )
-            yield self.dut_input
+            yield self.notes_input
 
-            yield Label("Test Hints (one per line, comma-separated):")
-            self.hints_input = Input(
-                placeholder="e.g., Read JEDEC ID, Write/readback pattern",
-                id="hints_input",
-                value=", ".join(self.net.test_hints),
-            )
-            yield self.hints_input
-
-            yield Label("Tags (comma-separated):")
+            yield Label("Tags (comma-separated, optional):")
             self.tags_input = Input(
                 placeholder="e.g., flash, storage, boot-critical",
                 id="tags_input",
@@ -1056,7 +1058,7 @@ class EditDetailsDialog(Screen):
                 yield Button("Save", id="save_details", variant="success")
 
     def on_mount(self) -> None:
-        self.desc_input.focus()
+        self.purpose_input.focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         app: NetApp = self.app  # type: ignore[attr-defined]
@@ -1065,17 +1067,13 @@ class EditDetailsDialog(Screen):
             app.pop_screen()
             return
 
-        description = self.desc_input.value.strip()
-        dut_connection = self.dut_input.value.strip()
-        hints_raw = self.hints_input.value.strip()
+        purpose = self.purpose_input.value.strip()
+        notes = self.notes_input.value.strip()
         tags_raw = self.tags_input.value.strip()
-
-        test_hints = [h.strip() for h in hints_raw.split(",") if h.strip()] if hints_raw else []
         tags = [t.strip() for t in tags_raw.split(",") if t.strip()] if tags_raw else []
 
-        self.net.description = description
-        self.net.dut_connection = dut_connection
-        self.net.test_hints = test_hints
+        self.net.purpose = purpose
+        self.net.notes = notes
         self.net.tags = tags
 
         net_data = {
@@ -1084,9 +1082,8 @@ class EditDetailsDialog(Screen):
             "address": self.net.addr,
             "instrument": self.net.instrument,
             "pin": self.net.chan,
-            "description": description,
-            "dut_connection": dut_connection,
-            "test_hints": test_hints,
+            "purpose": purpose,
+            "notes": notes,
             "tags": tags,
         }
 
@@ -2199,9 +2196,8 @@ class NetApp(App):
                 addr=rec.get("address", "NA"),
                 saved=True,
                 has_script=bool(rec.get("jlink_script") or rec.get("openocd_config")),
-                description=rec.get("description", ""),
-                dut_connection=rec.get("dut_connection", ""),
-                test_hints=rec.get("test_hints", []),
+                purpose=rec.get("purpose", ""),
+                notes=rec.get("notes", ""),
                 tags=rec.get("tags", []),
             ) for rec in saved_from_disk
         ]
@@ -2405,9 +2401,8 @@ def launch_tui(ctx: click.Context, dut: str) -> None:
             addr=rec.get("address", "NA"),
             saved=True,
             has_script=bool(rec.get("jlink_script") or rec.get("openocd_config")),
-            description=rec.get("description", ""),
-            dut_connection=rec.get("dut_connection", ""),
-            test_hints=rec.get("test_hints", []),
+            purpose=rec.get("purpose", ""),
+            notes=rec.get("notes", ""),
             tags=rec.get("tags", []),
         ))
 

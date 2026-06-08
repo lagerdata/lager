@@ -51,7 +51,10 @@ lager debug [NET_NAME] gdbserver [OPTIONS]
 - `--rtt` - Automatically stream RTT logs after starting GDB server
 - `--rtt-reset` - Reset device then stream RTT (captures boot sequence)
 - `--reset` - Reset device after starting GDB server
-- `--gdb-port PORT` - GDB server port (default: 2331)
+- `--gdb-port PORT` - Override the auto-allocated GDB server port. By default the box picks a port based on the probe's slot (2331 for the first probe, 2334 for the second, etc.); pass this only if you need a specific port, and avoid it on multi-probe boxes.
+- `--rtt-search-addr HEX` - RAM start address for the RTT control block search (hex, e.g., `0x20020000`)
+- `--rtt-search-size HEX` - Size of the RAM region to search for the RTT control block (hex, e.g., `0x4000`)
+- `--rtt-chunk-size HEX` - Read chunk size for the RTT search (hex, e.g., `0x1000`)
 
 **Examples:**
 
@@ -325,8 +328,26 @@ lager debug gdbserver --box my-lager-box --rtt
 lager debug gdbserver --box my-lager-box --rtt-reset
 
 # Pipe to defmt-print for formatted output
-lager debug gdbserver --box my-lager-box --rtt | defmt-print -e firmware.elf
+lager debug gdbserver --box my-lager-box --rtt 2>/dev/null | defmt-print -e firmware.elf
 ```
+
+### Decoding defmt logs
+
+Most Rust (and much C) firmware logs via [defmt](https://defmt.ferrous-systems.com/), a compressed binary format. **Raw RTT bytes from defmt firmware are not human-readable** — they must be decoded by `defmt-print` using the *exact* ELF that is flashed on the target.
+
+```bash
+# Flash the build under test, then stream + decode a bounded window
+lager debug SWD flash --elf build/app.elf --box my-lager-box
+timeout 15 lager debug SWD gdbserver --box my-lager-box --rtt-reset 2>/dev/null \
+  | defmt-print -e build/app.elf
+```
+
+Two things to watch:
+
+- **Redirect stderr.** The RTT payload is written to **stdout**; status messages (`JLinkGDBServer started!`, etc.) go to **stderr**. Pipe stdout only — append `2>/dev/null` (or `2>debug.log`) so status lines never corrupt `defmt-print`'s input.
+- **The stream never ends.** `--rtt` runs until the process is killed. In scripts or non-interactive sessions, wrap it in `timeout <seconds>` to capture a fixed window; when the `lager` process is killed the pipe closes and `defmt-print` exits on EOF.
+
+Install `defmt-print` with `cargo install defmt-print` on the machine where you run the pipe (the same machine that holds the `.elf`).
 
 ## Typical Workflows
 

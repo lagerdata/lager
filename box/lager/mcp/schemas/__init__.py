@@ -6,9 +6,12 @@
 from .bench import (
     BenchDefinition,
     CalibrationStatus,
+    DocRef,
+    DUTContext,
     DUTSlot,
     InstrumentDescriptor,
     RoutingEntry,
+    SubSystem,
     VoltageRange,
 )
 from .capability import (
@@ -22,8 +25,6 @@ from .net import (
     SafetyLimits,
 )
 from .safety_types import (
-    PreflightResult,
-    RateLimit,
     SafetyConstraints,
 )
 from .heuristic import (
@@ -40,15 +41,16 @@ __all__ = [
     "CapabilityMatch",
     "CapabilityNode",
     "CapabilityRole",
+    "DocRef",
+    "DUTContext",
     "DUTSlot",
     "InstrumentDescriptor",
     "InterfaceDescriptor",
     "NetDescriptor",
-    "PreflightResult",
-    "RateLimit",
     "RoutingEntry",
     "SafetyConstraints",
     "SafetyLimits",
+    "SubSystem",
     "Substitution",
     "SuitabilityReport",
     "TestRequirement",

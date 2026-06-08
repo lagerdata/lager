@@ -2,6 +2,33 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.24.0] - 2026-06-05
+
+Two themes: the MCP server becomes a focused, read-only surface for *learning* a bench and its device-under-test (so an agent can author a correct `lager python` test), and the debug/RTT path becomes resilient enough to survive scripted flash → attach → reset loops without human babysitting.
+
+### Added
+- **DUT context for the MCP server — agents now understand the board, not just the bench.** New `DUTContext`, `SubSystem`, and `DocRef` schemas (`box/lager/mcp/schemas/dut.py`) capture a DUT's purpose, summary, MCU, key peripherals, and document references (schematics/datasheets by URL or synced `repo_path`). New `discover_dut()` and `cite_schematic()` tools and `lager://dut/overview.md` / `lager://dut/context` resources surface it; `discover_bench(net)` now returns the parent subsystem and relevant doc refs, and `plan_firmware_test` threads DUT context into every plan. Schematics are *referenced*, never stored — the agent fetches and analyzes them with its own tools.
+- **`lager box dut show | edit | add-doc`** — author and inspect DUT context (subsystems, doc refs) stored in `/etc/lager/bench.json`. Includes a new CLI reference page (`docs/source/reference/cli/box-dut.mdx`).
+- **`DebugNet.session()`** — a context manager that scopes connect-on-entry / guaranteed teardown so the safe connect/disconnect ordering is encoded once.
+- **`DebugNet.rtt_defmt(elf=...)`** — opens an RTT session and pipes it through `defmt-print`, yielding decoded log lines instead of raw bytes, so on-box `lager python` tests can assert directly on defmt-encoded firmware logs. `defmt-print` is now baked into the box image.
+- **MCP prompts** (`write_lager_test`, `explore_bench`, `assess_test_feasibility`) as client slash-command entry points, plus a new "AI Agents (MCP)" docs tab (server overview + DUT-context guide).
+- **`tools/pdf_pages.py`** — a pymupdf-based helper that extracts text or renders PNGs for a specific 1-indexed page range, so agents render only the relevant schematic/datasheet pages rather than whole PDFs (guidance added to `lager://guide/workflow`; the box gains no PDF dependency).
+
+### Changed
+- **The MCP server is now a read-only discovery & planning surface.** Its job is to let an agent learn the bench and DUT well enough to write and run a test — execution lives in the test script run via `lager python … --box <box-ip>`. `discover_bench`/`discover_dut` echo the real address the client connected on and hand back a literal `lager python … --box <addr>` command; `discover_bench` now reports instrument channels, capabilities, firmware, and authored specs/ranges. Self-correcting affordances: an unknown net returns the available net names, and a no-match `get_test_example` returns the pattern catalog.
+- **Reconnect-aware RTT + self-healing reset/read_memory on both backends.** The RTT reader (J-Link and OpenOCD) transparently re-attaches to the same RTT port after the socket drops (bounded by `reconnect_timeout`); it only ever re-attaches to an already-running server and never starts one. `DebugNet.reset`/`erase`/`read_memory` run through a backend-agnostic self-heal that reconnects only when no server is running, leaving a live server (and any attached RTT) untouched. A DA1469x guard never auto-starts an unhalted server (which would yield garbage QSPI-XIP reads).
+- **Simplified agent-facing net metadata to `purpose` / `notes` / `tags`.** Replaces the overlapping `description` / `dut_connection` / `test_hints` fields; `lager nets describe` swaps `--description`/`--dut-connection`/`--hint` for `--purpose`/`--notes`/`--tag`, and the Net Manager TUI edit dialog is a clean Purpose / Notes / Tags form.
+- **The MCP server auto-reloads bench config on change.** It snapshots the mtimes of `bench.json` / `saved_nets.json` / `box_id` and re-checks them per request, so edits via `lager box dut edit`/`add-doc` or `lager nets describe` are picked up on an agent's next request — no reload call or service restart needed. The loader now also warns on `subsystems[].nets` references that don't match a known net.
+
+### Fixed
+- **Debug connect no longer burns retries when the GDB remote rejects non-stop mode.** JLinkGDBServer rejects `set non-stop on`, which previously exhausted all connect retries and skipped target verification and RTT control-block auto-detection (with scary non-fatal warnings). The connect now detects the specific "does not support non-stop" rejection and retries once with a fresh all-stop controller; OpenOCD keeps non-stop, and any other target error still fails loudly.
+- **`lager box dut add-doc` / `edit` now save `bench.json` without passwordless sudo.** Writes stage a temp file and `mv` it into the user-owned `/etc/lager` directory (chmod 644 for the www-data MCP container), falling back to `sudo -n mv` only for unusual ownership — fixing "sudo: a password is required" failures.
+- **`lager box dut add-doc` no longer raises `KeyError` on a box whose `bench.json` has no DUT block.** The synthesized default `dut_slots` list is now attached to the payload before write-back so every return path leaves it writable.
+- **`lager box dut edit` / `lager box config edit` now honor `$EDITOR`/`$VISUAL` flags.** The editor string is parsed with `shlex.split()` so configured flags (e.g. `subl -w`, `code -w`, `vim -p`) no longer resolve to a program named literally `"subl -w"` and fail with `FileNotFoundError`.
+
+### Removed
+- **The MCP server no longer exposes hardware I/O or mutation tools.** **BREAKING:** removed `quick_io`, `install_dependency`, `run_python`, and the `pip`/`logs`/`defaults`/`binaries` tools, the safety/preflight engine, the `run_lager` CLI passthrough, the audit subsystem, and the unused session stub. Per-bench safety constraints become advisory metadata (surfaced in `discover_bench`, not enforced). Agents now execute tests via `lager python path/to/test.py --box <box-ip>`, not over MCP.
+
 ## [0.23.0] - 2026-06-04
 
 Self-service box provisioning: users can now grant USB device access by adding their own udev rules through `lager box config`, and there are first-class commands for erasing the config and getting a fresh container — no engineer-cut release required for a new device.

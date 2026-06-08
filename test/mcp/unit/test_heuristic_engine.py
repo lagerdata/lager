@@ -26,7 +26,7 @@ def _make_graph(*net_specs):
 
 class TestBuiltinLibrary:
     def test_library_size(self):
-        assert len(BUILTIN_REQUIREMENTS) == 6
+        assert len(BUILTIN_REQUIREMENTS) == 10
 
     def test_all_builtin_requirements_valid(self):
         for req in BUILTIN_REQUIREMENTS:
@@ -42,6 +42,10 @@ class TestBuiltinLibrary:
             "power_consumption",
             "spi_slave_validation",
             "uart_loopback",
+            "i2c_validation",
+            "battery_discharge",
+            "adc_measurement",
+            "waveform_capture",
         }
         assert types == expected
 
@@ -78,6 +82,22 @@ class TestInferRequirements:
     def test_firmware_keyword(self):
         req = infer_requirements("Flash firmware and verify boot")
         assert req.test_type == "firmware_flash_and_boot"
+
+    def test_i2c_keyword(self):
+        req = infer_requirements("Exercise the DUT I2C temperature sensor")
+        assert req.test_type == "i2c_validation"
+
+    def test_battery_keyword(self):
+        req = infer_requirements("Run a battery discharge curve via the electronic load")
+        assert req.test_type == "battery_discharge"
+
+    def test_adc_keyword(self):
+        req = infer_requirements("Sweep the analog input and read it back via ADC")
+        assert req.test_type == "adc_measurement"
+
+    def test_waveform_keyword(self):
+        req = infer_requirements("Capture the PWM waveform on the oscilloscope")
+        assert req.test_type == "waveform_capture"
 
     def test_exact_key_match(self):
         req = infer_requirements("gpio_validation")

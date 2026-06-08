@@ -3,20 +3,26 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Lager MCP Server — runs ON the box with direct hardware access.
+Lager MCP Server — runs ON the box as a discovery and planning surface.
 
 Architecture:
     MCP-compatible AI agent
-        |  MCP (streamable-http via box IP)
+        |  MCP (streamable-http via box IP)        ← discovery + planning only
         v
     Lager MCP Server (this process, on-box)
-        |  direct lager.Net API
+        |  reads /etc/lager bench config (nets, DUT context, instruments)
         v
-    Hardware (power supplies, debug probes, GPIO, protocols, etc.)
+    Bench / DUT metadata
+
+    The agent EXECUTES tests over a separate channel — the lager CLI:
+        lager python path/to/test.py --box <box-ip>
+
+This server is read-only: it tells the agent what hardware exists and what
+the DUT is, but it never drives hardware itself. All I/O happens in the test
+script the agent writes and runs via ``lager python``.
 
 The server runs as a service on the Lager box and is reachable from any
-MCP-compatible client via the box's local IP address.  All hardware
-operations execute directly on-box with no round trips back to the agent.
+MCP-compatible client via the box's local IP address.
 
 MCP client configuration:
     {
@@ -28,104 +34,111 @@ MCP client configuration:
     }
 
 Primary workflow:
-    1. Agent calls discover_bench() to see available hardware
-    2. Agent calls plan_firmware_test() with firmware description + goals
-    3. Agent reads lager://reference/{net_type} / get_test_example() to learn the API
-    4. Agent writes a Python test file locally using ``from lager import Net, NetType``
-    5. Agent runs via shell: lager python --serial <BOX> path/to/test.py
-    6. Agent analyzes results, iterates
+    1. Agent calls discover_bench() to see available hardware (and the box id
+       to pass to ``--box``)
+    2. Agent calls discover_dut() to learn what the DUT is and which docs to read
+    3. Agent calls plan_firmware_test() with firmware description + goals
+    4. Agent reads lager://guide/api-quick-reference / get_test_example() to learn the API
+    5. Agent writes a Python test file locally using ``from lager import Net, NetType``
+    6. Agent runs it via the lager CLI: lager python path/to/test.py --box <box-ip>
+       (use the box's IP — the same address the MCP client connected on; the
+       runnable may also be a folder whose entrypoint is main.py)
+    7. Agent analyzes the CLI output, iterates
+
+Full documentation (beyond the on-box guide/reference resources) lives at
+https://docs.lagerdata.com — see the lager://guide/docs resource.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import subprocess
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 logger = logging.getLogger(__name__)
 
-# Generic CLI passthrough is OFF by default in shared/multi-tenant environments.
-# Set LAGER_MCP_ALLOW_RUN_LAGER=1 on the box to enable. Stout and other control
-# planes should keep this disabled and use their own dispatch path with audit
-# and per-org RBAC.
-LAGER_MCP_ALLOW_RUN_LAGER = os.environ.get("LAGER_MCP_ALLOW_RUN_LAGER", "0") == "1"
-
-
-def run_lager(*args: str, timeout: int = 60) -> str:
-    """Run a lager CLI command and return output.
-
-    DANGER: generic shell into the lager CLI. Disabled by default; set
-    LAGER_MCP_ALLOW_RUN_LAGER=1 to enable. For test execution, write a
-    Python file and run it via: lager python --serial <BOX> path/to/test.py
-
-    Still used by tool modules that shell out to the lager CLI
-    (python_run, pip_tools, logs, defaults, binaries) when enabled.
-    Converted tools use the direct lager.Net API instead.
-    """
-    if not LAGER_MCP_ALLOW_RUN_LAGER:
-        return (
-            "Error: run_lager is disabled. Set LAGER_MCP_ALLOW_RUN_LAGER=1 "
-            "on the box to enable. For test execution, write a Python file "
-            "and run it via: lager python --serial <BOX> path/to/test.py"
-        )
-    try:
-        result = subprocess.run(
-            ["lager"] + list(args),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except FileNotFoundError:
-        return (
-            "Error: 'lager' CLI not found. "
-            "Install with: cd cli && pip install -e ."
-        )
-    except subprocess.TimeoutExpired:
-        return f"Error: Command timed out after {timeout}s"
-
-    output = result.stdout.strip()
-    errors = result.stderr.strip()
-
-    if result.returncode != 0:
-        parts = []
-        if output:
-            parts.append(output)
-        if errors:
-            parts.append(errors)
-        return f"Error (exit {result.returncode}): {' | '.join(parts) or 'unknown error'}"
-
-    if errors and output:
-        return f"{output}\n\n[warnings] {errors}"
-    return output or "(no output)"
-
 
 mcp = FastMCP(
     "lager",
     instructions=(
         "Lager hardware-in-the-loop test bench. "
-        "Use this server to DISCOVER hardware and PLAN tests. "
-        "To EXECUTE tests, write a Python file locally and run it via shell: "
-        "lager python --serial <BOX> path/to/test.py "
-        "(this syncs your project to the box and runs with full project context, "
-        "dtest, and all local modules). "
-        "Use quick_io() only for simple spot-checks on a single net."
+        "This server is READ-ONLY: use it to DISCOVER hardware and the DUT and "
+        "to PLAN tests. It does not drive hardware or run code. "
+        "To EXECUTE a test, write a Python file locally using "
+        "`from lager import Net, NetType`, then run it from your shell with the "
+        "lager CLI: `lager python path/to/test.py --box <box-ip>` (this syncs "
+        "your project to the box and runs with full project context, dtest, and "
+        "all local modules). "
+        "Identify the box by the IP address you connected to this MCP server on "
+        "— local box names are arbitrary client-side aliases. --box accepts a "
+        "raw IP directly, so no registration is needed. The runnable can be a "
+        "single .py file or a folder whose entrypoint is main.py (lets you ship "
+        "reusable modules). "
+        "For firmware logs, RTT + defmt-print is the core debug workflow: stream "
+        "from your shell with "
+        "`lager debug <NET> gdbserver --box <box-ip> --rtt | defmt-print -e app.elf` "
+        "(raw RTT bytes are NOT printable for defmt firmware) — read "
+        "lager://guide/rtt-defmt first. "
+        "Full docs beyond this server: read lager://guide/docs "
+        "(https://docs.lagerdata.com)."
     ),
 )
+
+
+def connecting_host() -> str | None:
+    """Best-effort: the host the MCP client connected on, minus any port.
+
+    The agent reaches this server at ``http://<host>:8100/mcp`` and that same
+    ``<host>`` is the right value to pass to ``lager python ... --box``. We read
+    it from the request ``Host`` header (falling back to the socket peer) so the
+    discovery tools can hand back a *literal* runnable command instead of a
+    ``<box-ip>`` placeholder.
+
+    Returns None when there is no HTTP request in scope (e.g. stdio transport
+    or unit tests), in which case callers should keep the placeholder.
+    """
+    try:
+        request = mcp.get_context().request_context.request
+    except Exception:
+        return None
+    if request is None:
+        return None
+
+    host: str | None = None
+    try:
+        host = request.headers.get("host")
+    except Exception:
+        host = None
+    if not host:
+        client = getattr(request, "client", None)
+        host = getattr(client, "host", None)
+    if not host:
+        return None
+
+    host = host.strip()
+    # Strip the port. Handle IPv6 literals: "[::1]:8100" -> "::1".
+    if host.startswith("["):
+        return host[1:].split("]", 1)[0]
+    if host.count(":") == 1:
+        return host.rsplit(":", 1)[0]
+    return host
+
 
 # ---------------------------------------------------------------------------
 # Register resources
 # ---------------------------------------------------------------------------
 
 from .resources import bench_identity  # noqa: E402
+from .resources import dut as dut_resource  # noqa: E402
 from .resources import netlist  # noqa: E402
 from .resources import interfaces  # noqa: E402
 from .resources import guide  # noqa: E402
 from .resources import api_reference as api_reference_resource  # noqa: E402
 
 bench_identity.register(mcp)
+dut_resource.register(mcp)
 netlist.register(mcp)
 interfaces.register(mcp)
 guide.register(mcp)
@@ -138,17 +151,22 @@ api_reference_resource.register(mcp)
 # Discovery — understand what's on this bench
 from .tools import discover  # noqa: E402, F401
 
+# DUT-level orientation — what is this box / DUT?
+from .tools import dut as dut_tools  # noqa: E402, F401
+
 # Test authoring guidance — API docs, examples, test planning
 from .tools import authoring  # noqa: E402, F401
 
-# Package management
-from .tools import scenario  # noqa: E402, F401
-
-# Quick debug tools — interactive spot-checks
-from .tools import quick  # noqa: E402, F401
-
-# Box health
+# Box health / identity
 from .tools import box  # noqa: E402, F401
+
+# ---------------------------------------------------------------------------
+# Register prompts (slash-command entry points for MCP clients)
+# ---------------------------------------------------------------------------
+
+from . import prompts  # noqa: E402
+
+prompts.register(mcp)
 
 # ---------------------------------------------------------------------------
 # Entry point

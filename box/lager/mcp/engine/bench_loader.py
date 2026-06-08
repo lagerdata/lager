@@ -31,10 +31,12 @@ import requests
 from ..schemas.bench import (
     BenchDefinition,
     CalibrationStatus,
-    DUTSlot,
+    DocRef,
+    DUTContext,
     InstrumentDescriptor,
     InstrumentHealth,
     RoutingEntry,
+    SubSystem,
     VoltageRange,
 )
 from ..schemas.net import InterfaceDescriptor, NetDescriptor, SafetyLimits
@@ -170,7 +172,6 @@ def _net_from_raw(raw: dict[str, Any]) -> NetDescriptor:
     """Convert a single entry from saved_nets.json to a NetDescriptor."""
     role = raw.get("role", "")
     instrument = raw.get("instrument", "")
-    address = raw.get("address", "")
     channel = str(raw.get("channel", raw.get("pin", "")))
 
     return NetDescriptor(
@@ -188,10 +189,95 @@ def _net_from_raw(raw: dict[str, Any]) -> NetDescriptor:
         instrument=instrument,
         channel=channel,
         params=raw.get("params") or {},
-        description=raw.get("description") or "",
-        dut_connection=raw.get("dut_connection") or "",
-        test_hints=raw.get("test_hints") or [],
+        purpose=raw.get("purpose") or "",
+        notes=raw.get("notes") or "",
         tags=raw.get("tags") or [],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Build DUTContext / SubSystem / DocRef from bench.json
+# ---------------------------------------------------------------------------
+
+def _doc_ref_from_raw(raw: dict[str, Any]) -> DocRef | None:
+    """Build a DocRef from a raw dict. Returns None when malformed."""
+    if not isinstance(raw, dict):
+        return None
+    title = raw.get("title") or raw.get("name") or ""
+    if not title:
+        return None
+    kind = raw.get("kind") or "other"
+    try:
+        return DocRef(
+            title=str(title),
+            kind=kind,
+            url=raw.get("url"),
+            repo_path=raw.get("repo_path") or raw.get("path"),
+            pages=raw.get("pages"),
+            notes=raw.get("notes"),
+        )
+    except (TypeError, ValueError) as e:
+        logger.warning("doc_ref: skipping malformed entry %r (%s)", raw, e)
+        return None
+
+
+def _doc_refs_from_raw(raw_list: Any) -> list[DocRef]:
+    if not isinstance(raw_list, list):
+        return []
+    out: list[DocRef] = []
+    for entry in raw_list:
+        ref = _doc_ref_from_raw(entry) if isinstance(entry, dict) else None
+        if ref is not None:
+            out.append(ref)
+    return out
+
+
+def _subsystem_from_raw(raw: dict[str, Any]) -> SubSystem | None:
+    if not isinstance(raw, dict):
+        return None
+    name = raw.get("name") or ""
+    if not name:
+        return None
+    return SubSystem(
+        name=str(name),
+        summary=raw.get("summary") or "",
+        nets=list(raw.get("nets") or []),
+        doc_refs=_doc_refs_from_raw(raw.get("doc_refs")),
+    )
+
+
+def _dut_context_from_raw(raw: dict[str, Any]) -> DUTContext:
+    """Build a DUTContext from a bench.json ``dut_slots`` entry.
+
+    Accepts both the legacy minimal shape (just ``name`` / ``active`` /
+    ``board_profile`` / ``firmware``) and the new richer shape with
+    ``purpose``, ``summary``, ``mcu``, ``key_peripherals``, schematic
+    refs and subsystems.
+    """
+    name = raw.get("name") or ""
+    if not name:
+        raise ValueError("dut slot entry missing 'name'")
+
+    subsystems: list[SubSystem] = []
+    for sub_raw in (raw.get("subsystems") or []):
+        sub = _subsystem_from_raw(sub_raw)
+        if sub is not None:
+            subsystems.append(sub)
+
+    return DUTContext(
+        name=str(name),
+        active=bool(raw.get("active", True)),
+        board_profile=raw.get("board_profile"),
+        firmware=raw.get("firmware"),
+        purpose=raw.get("purpose") or "",
+        summary=raw.get("summary") or raw.get("description") or "",
+        mcu=raw.get("mcu"),
+        key_peripherals=list(raw.get("key_peripherals") or []),
+        schematic_refs=_doc_refs_from_raw(raw.get("schematic_refs")),
+        datasheet_refs=_doc_refs_from_raw(raw.get("datasheet_refs")),
+        firmware_refs=_doc_refs_from_raw(raw.get("firmware_refs")),
+        extra_docs=_doc_refs_from_raw(raw.get("extra_docs") or raw.get("docs")),
+        subsystems=subsystems,
     )
 
 
@@ -387,14 +473,12 @@ def _assemble(
                 nd.safety_limits = SafetyLimits(**ovr["safety_limits"])
             except TypeError as e:
                 logger.warning("net %s: bad safety_limits override (%s)", nd.name, e)
-        if "description" in ovr:
-            nd.description = ovr["description"]
-        if "dut_connection" in ovr:
-            nd.dut_connection = ovr["dut_connection"]
-        if "test_hints" in ovr:
-            nd.test_hints = ovr["test_hints"]
+        if "purpose" in ovr:
+            nd.purpose = ovr["purpose"] or ""
+        if "notes" in ovr:
+            nd.notes = ovr["notes"] or ""
         if "tags" in ovr:
-            nd.tags = ovr["tags"]
+            nd.tags = ovr["tags"] or []
 
     # Instruments
     instruments = [
@@ -409,16 +493,36 @@ def _assemble(
     ]
 
     # DUT slots — skip individual malformed entries instead of failing the
-    # whole bench load.
-    dut_slots: list[DUTSlot] = []
-    for ds in (bench_cfg.get("dut_slots") or []):
+    # whole bench load. ``dut_slots`` is the legacy key; ``dut_context`` is
+    # the newer single-DUT alternative for boxes with one slot.
+    dut_slots: list[DUTContext] = []
+    raw_slots = bench_cfg.get("dut_slots") or []
+    if not raw_slots and isinstance(bench_cfg.get("dut_context"), dict):
+        raw_slots = [bench_cfg["dut_context"]]
+    for ds in raw_slots:
         if not isinstance(ds, dict):
             logger.warning("dut_slots: skipping non-dict entry %r", ds)
             continue
         try:
-            dut_slots.append(DUTSlot(**ds))
-        except TypeError as e:
+            dut_slots.append(_dut_context_from_raw(ds))
+        except (TypeError, ValueError) as e:
             logger.warning("dut_slots: skipping malformed entry %r (%s)", ds, e)
+
+    # Warn about subsystem net references that don't match any known net.
+    # Dangling references silently break ``subsystem_for_net`` lookups (and
+    # therefore the schematic-citation chain), so surface them at load time.
+    if dut_slots:
+        net_names = {n.name for n in nets}
+        for dut in dut_slots:
+            for sub in dut.subsystems:
+                dangling = [ref for ref in sub.nets if ref not in net_names]
+                if dangling:
+                    logger.warning(
+                        "DUT %r subsystem %r references unknown net(s) %s; "
+                        "they will not resolve to any hardware. Check for typos "
+                        "or stale entries in bench.json.",
+                        dut.name, sub.name, dangling,
+                    )
 
     # Interfaces — same per-entry tolerance.
     static_ifaces: list[InterfaceDescriptor] = []

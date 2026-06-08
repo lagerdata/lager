@@ -15,7 +15,7 @@ from lager.mcp.schemas.bench import (
 )
 from lager.mcp.schemas.net import InterfaceDescriptor, NetDescriptor, SafetyLimits
 from lager.mcp.schemas.capability import CapabilityGraph, CapabilityNode, CapabilityRole
-from lager.mcp.schemas.safety_types import PreflightResult, RateLimit, SafetyConstraints
+from lager.mcp.schemas.safety_types import SafetyConstraints
 from lager.mcp.schemas.heuristic import (
     CapabilityMatch,
     Substitution,
@@ -129,29 +129,24 @@ class TestCapabilitySchemas:
 
 
 class TestSafetySchemas:
-    def test_safety_constraints(self):
+    def test_safety_constraints_advisory(self):
         sc = SafetyConstraints(
             max_voltage={"psu1": 5.0},
             max_current={"psu1": 1.0},
-            dangerous_actions=["flash_firmware"],
         )
         assert sc.max_voltage["psu1"] == 5.0
-        assert "flash_firmware" in sc.dangerous_actions
-        assert sc.destructive_mode is False
+        assert sc.max_current["psu1"] == 1.0
 
-    def test_preflight_result_allowed(self):
-        pr = PreflightResult(allowed=True)
-        assert pr.allowed
-        assert pr.blocked_reason is None
-
-    def test_preflight_result_blocked(self):
-        pr = PreflightResult(
-            allowed=False,
-            blocked_reason="Voltage too high",
-            mitigations=["Reduce voltage"],
+    def test_safety_constraints_ignores_enforcement_era_fields(self):
+        # Older bench.json files may still carry enforcement-era keys; those
+        # must be ignored rather than raise, so the bench still loads.
+        sc = SafetyConstraints(
+            max_voltage={"psu1": 5.0},
+            dangerous_actions=["flash_firmware"],
+            destructive_mode=True,
         )
-        assert not pr.allowed
-        assert pr.blocked_reason == "Voltage too high"
+        assert sc.max_voltage["psu1"] == 5.0
+        assert not hasattr(sc, "dangerous_actions")
 
 
 class TestHeuristicSchemas:
