@@ -242,6 +242,17 @@ def detect_and_configure_rtt(device_type=None, search_addr=0x20000000, search_si
             logger.info('No RTT control block found in RAM (firmware may not use RTT or not initialized yet)')
             result['error'] = 'RTT control block not found in RAM'
 
+        # If we connected in the all-stop fallback (JLinkGDBServer rejects
+        # non-stop), the GDB memory reads above implicitly halt the core and
+        # nothing resumes it -- which leaves the device halted after
+        # `gdbserver --rtt` (a regression vs the non-stop path, which never
+        # halts). Resume the core so RTT actually streams. No-op on the
+        # non-stop path: that controller's core was never halted, so we skip
+        # the resume there and leave a running target untouched.
+        if not getattr(gdbmi, 'lager_non_stop', True):
+            logger.info('RTT detect ran in all-stop; resuming core after RAM scan')
+            gdbmi.write('monitor go', timeout_sec=2.0, raise_error_on_timeout=False)
+
     except Exception as e:
         logger.warning(f'RTT auto-detection failed: {e}')
         result['error'] = str(e)

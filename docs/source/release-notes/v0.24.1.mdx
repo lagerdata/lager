@@ -1,0 +1,26 @@
+---
+title: "Version 0.24.1"
+description: "June 8, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **`lager debug ... gdbserver --rtt` no longer leaves the target halted on probes that don't support GDB non-stop mode.** In 0.24.0, when a J-Link GDB server rejects non-stop mode, the connection falls back to all-stop and then runs RTT control-block auto-detection. That detection scans RAM with GDB memory reads, which implicitly halt the core in all-stop — and nothing resumed it, so the device was left halted after connect. The connect now records the effective stop mode and resumes the core (`monitor go`) after the RAM scan whenever — and only when — it ran in the all-stop fallback. The non-stop and OpenOCD paths never halt the core and are unchanged. The halt was intermittent because whether a probe rejects non-stop depends on its J-Link GDB server version.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.24.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.24.1/)

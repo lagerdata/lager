@@ -2,6 +2,13 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.24.1] - 2026-06-08
+
+A debug/RTT hotfix: `gdbserver --rtt` no longer halts the target on probes that don't support GDB non-stop mode.
+
+### Fixed
+- **`lager debug ... gdbserver --rtt` no longer leaves the target halted when JLinkGDBServer rejects non-stop mode.** 0.24.0's all-stop fallback (added so a non-stop rejection no longer burns the connect retries) meant RTT control-block auto-detection ran in all-stop, where GDB's `-data-read-memory-bytes` RAM scan implicitly halts the core — and nothing resumed it, so the device was left halted after connect. This re-exposed the v0.18.1 halt on the rejection path (pre-0.24.0 a rejection skipped auto-detection entirely, so the halting reads never ran). It was intermittent because whether a probe rejects non-stop depends on its JLinkGDBServer version and the GDB controller is cached per probe. `get_controller` (`box/lager/debug/gdb.py`) now records the effective stop mode on the controller (`lager_non_stop`), and `detect_and_configure_rtt` (`box/lager/debug/api.py`) issues `monitor go` to resume the core after the RAM scan when — and only when — it ran in the all-stop fallback. The non-stop and OpenOCD paths never halt the core and are untouched.
+
 ## [0.24.0] - 2026-06-05
 
 Two themes: the MCP server becomes a focused, read-only surface for *learning* a bench and its device-under-test (so an agent can author a correct `lager python` test), and the debug/RTT path becomes resilient enough to survive scripted flash → attach → reset loops without human babysitting.
