@@ -95,7 +95,7 @@ def gpi(ctx, box, wait_for, timeout, scan_rate, scans_per_read, poll_interval, n
 
 
 gpi.net_examples = [
-    "lager gpi gpi1 --box JUL-12",
-    "lager gpi gpi1 --wait-for high --timeout 5 --box JUL-12",
-    "lager gpi --box JUL-12          (list GPIO nets)",
+    "lager gpi gpi1 --box <BOX>",
+    "lager gpi gpi1 --wait-for high --timeout 5 --box <BOX>",
+    "lager gpi --box <BOX>          (list GPIO nets)",
 ]

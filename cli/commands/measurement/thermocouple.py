@@ -78,6 +78,6 @@ def thermocouple(ctx, box, netname):
 
 
 thermocouple.net_examples = [
-    "lager thermocouple tc1 --box JUL-12",
-    "lager thermocouple --box JUL-12     (list thermocouple nets)",
+    "lager thermocouple tc1 --box <BOX>",
+    "lager thermocouple --box <BOX>     (list thermocouple nets)",
 ]

@@ -1,0 +1,28 @@
+---
+title: "Version 0.23.0"
+description: "June 4, 2026"
+---
+
+## <u>Features</u>
+
+- **`lager box config udev add/list/remove` — add your own USB device rules.** Grant a USB device read/write access from inside the Lager Box container by vid:pid, e.g. `lager box config udev add 1209:0001 --box <BOX>` followed by `lager box config apply`. This fixes the common case where a freshly-plugged device is owned by root, so tools like `dfu-util` fail to open it ("No DFU capable USB device available"). Pass `--usbtmc` for SCPI/USBTMC instruments to also unbind the kernel `usbtmc` driver (needed for PyVISA/libusb access). Rules persist in the box config and are installed on the host on every `apply` — no more waiting for a new release to support a device.
+- **`lager box config reset` — erase the box config to empty.** A single command that clears the config to a clean slate (unlike `init`, which seeds the default `box-tools` volume). Pass `--apply` to erase **and** restart the container in one step — handy before a test run.
+- **`lager box config restart` — restart the container without changing config.** Brings up a fresh container with the same configuration, useful for per-test isolation.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.23.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.23.0/)

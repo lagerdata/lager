@@ -81,7 +81,7 @@ def gpo(ctx, box, netname, level, hold):
 
 
 gpo.net_examples = [
-    "lager gpo gpo1 high --box JUL-12",
-    "lager gpo gpo1 toggle --box JUL-12",
-    "lager gpo --box JUL-12          (list GPIO nets)",
+    "lager gpo gpo1 high --box <BOX>",
+    "lager gpo gpo1 toggle --box <BOX>",
+    "lager gpo --box <BOX>          (list GPIO nets)",
 ]

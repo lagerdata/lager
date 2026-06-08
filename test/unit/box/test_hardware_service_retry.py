@@ -457,5 +457,96 @@ class EnodevRetryTests(unittest.TestCase):
         self.assertFalse(supply_device.closed)
 
 
+class ChannelSyncTests(unittest.TestCase):
+    """Regression: multi-channel supplies are cached once per address (cache_key
+    omits the channel), so a single driver instance is shared across all
+    channels. Net-level methods that act on the instance's bound channel
+    (voltage/current/enable/disable/state) must be re-pointed at the requesting
+    net's channel before each /invoke — otherwise a CH2/CH3 command is misrouted
+    to whichever channel first created the instance (CH1), which then rejects
+    e.g. any voltage above CH1's lower limit.
+
+    Bug report: Keysight E36312A — setpoints above 6V on CH2/CH3 (25V channels)
+    failed because the shared instance was still bound to CH1 (6V max)."""
+
+    def setUp(self):
+        hw.device_cache.clear()
+        hw.module_cache.clear()
+        with hw.device_locks_meta_lock:
+            hw.device_locks.clear()
+        self.client = hw.app.test_client()
+
+    def test_sync_helper_repoints_via_set_active_channel(self):
+        """_sync_device_channel calls set_active_channel(channel) when present."""
+        class Dev:
+            bound = None
+            def set_active_channel(self, channel):
+                self.bound = int(channel)
+        dev = Dev()
+        hw._sync_device_channel(dev, {'address': 'x', 'channel': 3})
+        self.assertEqual(dev.bound, 3)
+
+    def test_sync_helper_noop_without_hook_or_channel(self):
+        """Drivers without set_active_channel, or calls without a channel, are
+        left untouched (preserves behavior for single-channel devices)."""
+        class NoHook:
+            pass
+        hw._sync_device_channel(NoHook(), {'address': 'x', 'channel': 2})  # no raise
+
+        class Dev:
+            calls = 0
+            def set_active_channel(self, channel):
+                self.calls += 1
+        dev = Dev()
+        hw._sync_device_channel(dev, {'address': 'x'})   # no channel key
+        hw._sync_device_channel(dev, None)               # no net_info
+        self.assertEqual(dev.calls, 0)
+
+    def test_shared_instance_routes_each_invoke_to_requested_channel(self):
+        """End-to-end through /invoke: one cached instance shared across CH1 and
+        CH3 must apply each channel-less voltage() call to the channel named in
+        that request's net_info, not the channel that created the instance."""
+        applied = []
+
+        class FakeSupply:
+            """Mimics a shared multi-channel supply driver: voltage() acts on the
+            currently-bound channel (self.channel), like the real net-level
+            methods on KeysightE36000 / RigolDP800."""
+            def __init__(self):
+                self.channel = 1
+            def set_active_channel(self, channel):
+                self.channel = int(channel)
+            def voltage(self, value=None):
+                applied.append((self.channel, value))
+                return {'ok': True}
+
+        address = 'USB0::0x2A8D::0x1102::FAKE::INSTR'
+        cache_key = ('keysight_e36000', address)
+        # Instance was first created for CH1 (the bug's precondition).
+        hw.device_cache[cache_key] = FakeSupply()
+
+        # A command for CH3 must be applied to CH3, not CH1.
+        resp = self.client.post('/invoke', json={
+            'device': 'keysight_e36000',
+            'function': 'voltage',
+            'args': [],
+            'kwargs': {'value': 20.0},
+            'net_info': {'address': address, 'channel': 3},
+        })
+        self.assertEqual(resp.status_code, 200, resp.get_json())
+
+        # A subsequent CH1 command on the same shared instance routes to CH1.
+        resp = self.client.post('/invoke', json={
+            'device': 'keysight_e36000',
+            'function': 'voltage',
+            'args': [],
+            'kwargs': {'value': 5.0},
+            'net_info': {'address': address, 'channel': 1},
+        })
+        self.assertEqual(resp.status_code, 200, resp.get_json())
+
+        self.assertEqual(applied, [(3, 20.0), (1, 5.0)])
+
+
 if __name__ == '__main__':
     unittest.main()

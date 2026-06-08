@@ -230,11 +230,11 @@ def supply(ctx, box, netname):
 
 
 supply.net_examples = [
-    "lager supply supply1 voltage 3.3 --box JUL-12",
-    "lager supply supply1 current 0.5 --box JUL-12",
-    "lager supply supply1 enable --box JUL-12",
-    "lager supply supply1 state --box JUL-12",
-    "lager supply --box JUL-12               (list supply nets)",
+    "lager supply supply1 voltage 3.3 --box <BOX>",
+    "lager supply supply1 current 0.5 --box <BOX>",
+    "lager supply supply1 enable --box <BOX>",
+    "lager supply supply1 state --box <BOX>",
+    "lager supply --box <BOX>               (list supply nets)",
 ]
 
 

@@ -7,6 +7,7 @@ Pure stdlib — no hardware deps to stub. Covers every validation rule
 enumerated in the box_config v1 schema, plus the idempotency hash.
 """
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -468,6 +469,82 @@ class ValidateAptPackages(unittest.TestCase):
         self.assertIn("invalid Debian package name", reason)
 
 
+class ValidateUdevRules(unittest.TestCase):
+    def test_missing_key_is_valid(self):
+        self.assertEqual(cfg.validate(_v()), [])
+
+    def test_empty_list_is_valid(self):
+        self.assertEqual(cfg.validate(_v({"udev_rules": []})), [])
+
+    def test_must_be_list(self):
+        errors = cfg.validate(_v({"udev_rules": {"vid": "1209"}}))
+        self.assertTrue(any("'udev_rules' must be an array" in e for e in errors))
+
+    def test_accepts_minimal_rule(self):
+        self.assertEqual(
+            cfg.validate(_v({"udev_rules": [{"vid": "1209", "pid": "0001"}]})), []
+        )
+
+    def test_rejects_short_vid(self):
+        errors = cfg.validate(_v({"udev_rules": [{"vid": "12", "pid": "0001"}]}))
+        self.assertTrue(any("vendor id must be 4 hex digits" in e for e in errors))
+
+    def test_rejects_non_hex_pid(self):
+        errors = cfg.validate(_v({"udev_rules": [{"vid": "1209", "pid": "zzzz"}]}))
+        self.assertTrue(any("product id must be 4 hex digits" in e for e in errors))
+
+    def test_rejects_bad_mode(self):
+        errors = cfg.validate(_v({"udev_rules": [{"vid": "1209", "pid": "0001", "mode": "999"}]}))
+        self.assertTrue(any("mode must be an octal" in e for e in errors))
+
+    def test_rejects_non_bool_usbtmc(self):
+        errors = cfg.validate(_v({"udev_rules": [{"vid": "1209", "pid": "0001", "usbtmc": "yes"}]}))
+        self.assertTrue(any("usbtmc must be a boolean" in e for e in errors))
+
+    def test_rejects_duplicate_vid_pid(self):
+        errors = cfg.validate(_v({"udev_rules": [
+            {"vid": "1209", "pid": "0001"},
+            {"vid": "1209", "pid": "0001", "usbtmc": True},
+        ]}))
+        self.assertTrue(any("duplicates udev_rules[0]" in e for e in errors))
+
+    def test_from_dict_normalizes_vid_pid(self):
+        # 0x prefix stripped, uppercase lowered.
+        c = cfg.BoxConfig.from_dict(_v({"udev_rules": [{"vid": "0x1AB1", "pid": "0E11"}]}))
+        self.assertEqual(c.udev_rules[0].vid, "1ab1")
+        self.assertEqual(c.udev_rules[0].pid, "0e11")
+
+    def test_roundtrip_preserves_fields(self):
+        raw = _v({"udev_rules": [{"vid": "1209", "pid": "0001", "mode": "0660", "usbtmc": True}]})
+        c = cfg.BoxConfig.from_dict(raw)
+        self.assertEqual(
+            c.to_dict()["udev_rules"],
+            [{"vid": "1209", "pid": "0001", "mode": "0660", "usbtmc": True}],
+        )
+
+    def test_to_rule_lines_permission_only(self):
+        rule = cfg.UdevRule(vid="1209", pid="0001")
+        lines = rule.to_rule_lines()
+        self.assertEqual(len(lines), 2)  # comment + permission line
+        self.assertIn('ATTRS{idVendor}=="1209"', lines[1])
+        self.assertIn('ATTRS{idProduct}=="0001"', lines[1])
+        self.assertIn('MODE="0666"', lines[1])
+
+    def test_to_rule_lines_usbtmc_adds_unbind(self):
+        rule = cfg.UdevRule(vid="1ab1", pid="0e11", usbtmc=True)
+        lines = rule.to_rule_lines()
+        self.assertEqual(len(lines), 3)  # comment + permission + unbind
+        self.assertIn("usbtmc/unbind", lines[2])
+        self.assertIn('DRIVER=="usbtmc"', lines[2])
+
+    def test_validate_udev_format_helper(self):
+        ok, _ = cfg.validate_udev_format("1209", "0001")
+        self.assertTrue(ok)
+        ok, reason = cfg.validate_udev_format("xyz", "0001")
+        self.assertFalse(ok)
+        self.assertIn("vendor id", reason)
+
+
 class ValidateSysctl(unittest.TestCase):
     def test_missing_key_is_valid(self):
         self.assertEqual(cfg.validate(_v()), [])
@@ -713,6 +790,61 @@ class InitDefault(unittest.TestCase):
 
     def test_default_validates(self):
         self.assertEqual(cfg.validate(cfg.init_default().to_dict()), [])
+
+
+class UpgradeCompat(unittest.TestCase):
+    """A config written by a pre-0.23.0 box has no `udev_rules` key. New code
+    must read it without error, default the field to empty, and round-trip it.
+    The hash necessarily differs (udev_rules is now part of to_dict), which is
+    the intended 'one extra container bounce on first apply after upgrade'."""
+
+    def _old_config(self):
+        # Exactly what an older box wrote — note: NO 'udev_rules' key.
+        return {
+            "version": 1,
+            "mounts": [{"host": "/srv/x", "container": "/x", "readonly": True}],
+            "volumes": [{"name": "box-tools", "container": "/opt/box-tools"}],
+            "env": {"FOO": "1"},
+            "pip_packages": ["rich"],
+            "apt_packages": ["tcpdump"],
+            "sysctl": {"net.ipv4.ip_forward": "1"},
+            "cargo_packages": [],
+            "npm_packages": [],
+        }
+
+    def test_old_config_has_no_udev_key(self):
+        self.assertNotIn("udev_rules", self._old_config())
+
+    def test_old_config_validates(self):
+        self.assertEqual(cfg.validate(self._old_config()), [])
+
+    def test_from_dict_defaults_empty_udev(self):
+        c = cfg.BoxConfig.from_dict(self._old_config())
+        self.assertEqual(c.udev_rules, [])
+
+    def test_to_dict_emits_empty_udev(self):
+        c = cfg.BoxConfig.from_dict(self._old_config())
+        self.assertEqual(c.to_dict()["udev_rules"], [])
+
+    def test_hash_changes_after_upgrade_then_stabilizes(self):
+        old = self._old_config()
+        # The old box's stored applied_hash was computed from the old dict
+        # (no udev_rules), via the same json.dumps(sort_keys, compact) formula.
+        old_hash = hashlib.sha256(
+            json.dumps(old, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        new_hash = cfg.BoxConfig.from_dict(old).compute_hash()
+        self.assertNotEqual(old_hash, new_hash, "hash should change once on upgrade")
+        # Stable thereafter: re-loading the upgraded config yields the same hash.
+        upgraded = cfg.BoxConfig.from_dict(old).to_dict()
+        self.assertEqual(cfg.BoxConfig.from_dict(upgraded).compute_hash(), new_hash)
+
+    def test_old_config_round_trips_through_from_dict(self):
+        # Mirrors the set-raw/import path: load -> dump -> reload, no data loss.
+        c1 = cfg.BoxConfig.from_dict(self._old_config())
+        c2 = cfg.BoxConfig.from_dict(c1.to_dict())
+        self.assertEqual(c1.to_dict(), c2.to_dict())
+        self.assertEqual(c1.compute_hash(), c2.compute_hash())
 
 
 if __name__ == "__main__":

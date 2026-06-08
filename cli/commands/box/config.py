@@ -26,7 +26,7 @@ from ...box_storage import get_box_ip, list_boxes
 from ...context import get_default_box, get_impl_path
 from ..development.python import run_python_internal_get_output
 from . import _shim_verbs as verbs
-from ._host_ops import apt_install, sysctl_apply
+from ._host_ops import apt_install, sysctl_apply, udev_apply
 from ._mount_prep import ensure_host_path_owned, manual_fix_command
 from ._pip_validation import is_direct_ref, validate_on_pypi
 from ._ssh import default_ssh_runner
@@ -206,7 +206,7 @@ def show_cmd(
             click.echo(json.dumps(payload, indent=2))
             continue
         # Resolve a display label: prefer the box's stored name; fall back
-        # to the resolved IP. The original --box arg might be "STG-C,HYP-3";
+        # to the resolved IP. The original --box arg might be "<BOX>,<BOX>";
         # we already split + resolved per-box.
         name = get_box_name_by_ip(resolved)
         label = name or resolved
@@ -236,6 +236,11 @@ def _fmt_volume(v: dict) -> str:
     return f"{v.get('name', '?')} -> {v.get('container', '?')}"
 
 
+def _fmt_udev(u: dict) -> str:
+    tmc = " (usbtmc)" if u.get("usbtmc") else ""
+    return f"{u.get('vid', '?')}:{u.get('pid', '?')} mode={u.get('mode', '0666')}{tmc}"
+
+
 # Fields grouped by where they take effect — host OS vs in-container.
 # `show`'s human renderer iterates this for the two-section layout; the
 # flat `_FIRST_CLASS_FIELDS` is derived for the diff renderer (which is
@@ -245,6 +250,7 @@ _FIRST_CLASS_FIELDS_GROUPED = [
     ("Host", [
         ("apt_packages",   "Apt packages",          str),
         ("sysctl",         "Sysctl settings",       lambda kv: f"{kv[0]} = {kv[1]}"),
+        ("udev_rules",     "Udev rules",            _fmt_udev),
         ("mounts",         "Mounts",                _fmt_mount),
     ]),
     ("Container", [
@@ -309,7 +315,19 @@ def _compute_diff(current: dict, applied: Optional[dict]) -> dict:
         "apt_packages":   _diff_list     (current.get("apt_packages") or [],    prev.get("apt_packages") or []),
         "cargo_packages": _diff_list     (current.get("cargo_packages") or [],  prev.get("cargo_packages") or []),
         "npm_packages":   _diff_list     (current.get("npm_packages") or [],    prev.get("npm_packages") or []),
+        "udev_rules":     _diff_keyed_list(_udev_keyed(current),                _udev_keyed(prev),                key="_k"),
     }
+
+
+def _udev_keyed(cfg: dict) -> list:
+    """udev rules are keyed by (vid, pid) for diffing — inject a synthetic
+    `_k` so the keyed-list differ (and _fmt_udev, which ignores it) can show
+    an upsert as a single `changed` entry."""
+    return [
+        {**u, "_k": f"{u.get('vid')}:{u.get('pid')}"}
+        for u in (cfg.get("udev_rules") or [])
+        if isinstance(u, dict)
+    ]
 
 
 def _diff_is_empty(diff: dict) -> bool:
@@ -633,7 +651,7 @@ def diff_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
 def status_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
     """Quick health check: clean vs. drifted, field counts, last audit entry.
 
-    Designed for `lager box config status --box hyp-3,hyp-4,hyp-5` —
+    Designed for `lager box config status --box <BOX>,<BOX>,<BOX>` —
     one line of signal per box without needing to read full `show` output.
     """
     targets = _resolve_boxes(ctx, box)
@@ -1022,6 +1040,77 @@ def apply_cmd(
         ctx.exit(1)
 
 
+@box_config.command(
+    "reset",
+    help=(
+        "Erase the box config to empty. Unlike `init`, this seeds nothing — "
+        "use it to get a clean slate before a test run. Pass --apply to also "
+        "restart the container so you get a fresh one in one command."
+    ),
+)
+@click.option("--box", help="Lagerbox name or IP")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt")
+@click.option("--apply", "do_apply", is_flag=True, help="Restart the container after erasing (fresh container).")
+@click.pass_context
+def reset_cmd(ctx: click.Context, box: Optional[str], yes: bool, do_apply: bool) -> None:
+    resolved = _resolve_box(ctx, box)
+    if not yes:
+        suffix = " and restart the container" if do_apply else ""
+        if not click.confirm(
+            f"Erase the box config on {resolved} to empty{suffix}?",
+            default=False,
+        ):
+            click.secho("Aborted.", fg="yellow")
+            return
+    raw = _run_box_config_py(ctx, resolved, verbs.RESET)
+    payload = _parse_response(raw, ctx)
+    if not payload.get("ok"):
+        click.secho("Failed to reset box config:", fg="red", err=True)
+        _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
+        ctx.exit(1)
+    click.secho(f"Erased box config on {resolved} to empty.", fg="green")
+    if do_apply:
+        # force=True so the container always bounces into the fresh empty
+        # config, even if it happened to already be empty.
+        ctx.invoke(apply_cmd, box=box, yes=True, force=True)
+    else:
+        click.echo("Run `lager box config apply` to restart the container on the empty config.")
+
+
+@box_config.command(
+    "restart",
+    help=(
+        "Restart the lager container without changing the config — a fresh "
+        "container with the same config (useful for per-test isolation)."
+    ),
+)
+@click.option("--box", help="Lagerbox name or IP")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt")
+@click.pass_context
+def restart_cmd(ctx: click.Context, box: Optional[str], yes: bool) -> None:
+    resolved = _resolve_box(ctx, box)
+    if not yes and not click.confirm(
+        f"Restart the lager container on {resolved}?", default=True
+    ):
+        click.secho("Aborted.", fg="yellow")
+        return
+    if not _bounce_container(ctx, resolved):
+        click.secho(
+            "Container restart failed. SSH into the box and run "
+            "`~/box/start_box.sh` manually to inspect.",
+            fg="red", err=True,
+        )
+        ctx.exit(1)
+    if not _wait_for_box_api(resolved):
+        click.secho(
+            f"Container restarted but the box API didn't come up within "
+            f"{_API_READY_DEADLINE_SECONDS}s. Check `lager hello` and the logs.",
+            fg="yellow", err=True,
+        )
+        ctx.exit(1)
+    click.secho(f"Restarted the lager container on {resolved}.", fg="green")
+
+
 def _apply_one(
     ctx: click.Context,
     resolved: str,
@@ -1119,6 +1208,8 @@ def _apply_one(
     if not _ensure_apt_packages(resolved, current_show, applied_snapshot):
         return False
     if not _ensure_sysctl(resolved, current_show, applied_snapshot):
+        return False
+    if not _ensure_udev_rules(resolved, current_show, applied_snapshot):
         return False
 
     if not _bounce_container(ctx, resolved):
@@ -1281,6 +1372,34 @@ def _ensure_sysctl(
     result = sysctl_apply(resolved_box, dict(sysctl))
     if not result.ok:
         click.secho(f"sysctl apply failed: {result.message}", fg="red", err=True)
+        if result.manual_fix:
+            click.echo(f"  Manual fix on the box: {result.manual_fix}", err=True)
+        return False
+    click.secho(result.message, fg="green")
+    return True
+
+
+def _ensure_udev_rules(
+    resolved_box: str,
+    current: dict,
+    applied: Optional[dict],
+) -> bool:
+    """Install user udev rules on the box host and reload udev. No-op when the
+    field is unchanged since the last applied snapshot — udevadm reload/trigger
+    is cheap but the SSH round-trip isn't free."""
+    rules = current.get("udev_rules") or []
+    prev = (applied or {}).get("udev_rules") or []
+    if list(rules) == list(prev):
+        if rules:
+            click.secho(f"Udev rules unchanged ({len(rules)}); skipping reload.", fg="blue")
+        return True
+    if rules:
+        click.echo(f"Installing {len(rules)} udev rule(s) on {resolved_box}...")
+    else:
+        click.echo(f"Clearing user udev rules on {resolved_box}...")
+    result = udev_apply(resolved_box, list(rules))
+    if not result.ok:
+        click.secho(f"udev apply failed: {result.message}", fg="red", err=True)
         if result.manual_fix:
             click.echo(f"  Manual fix on the box: {result.manual_fix}", err=True)
         return False
@@ -1843,6 +1962,94 @@ def apt_remove_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> N
         )
     else:
         click.secho("No matching apt packages were configured.", fg="yellow")
+
+
+# ---------------------------------------------------------------------------
+# udev: host-side USB device-permission rules (e.g. so dfu-util can open a
+# device from inside the container). Applied to /etc/udev/rules.d on apply.
+# ---------------------------------------------------------------------------
+
+@box_config.group("udev", help="Manage host udev rules granting USB device access.")
+def udev_group() -> None:
+    pass
+
+
+def _parse_vid_pid(ctx: click.Context, token: str) -> tuple:
+    """Split a `VID:PID` token into normalized (vid, pid). Exits with a clear
+    message on a malformed token rather than letting the box reject it."""
+    if token.count(":") != 1:
+        click.secho(
+            f"Invalid device id {token!r}: expected VID:PID, e.g. 1209:0001.",
+            fg="red", err=True,
+        )
+        ctx.exit(1)
+    vid, pid = token.split(":", 1)
+    norm = lambda s: s[2:].lower() if s.lower().startswith("0x") else s.lower()
+    return norm(vid), norm(pid)
+
+
+@udev_group.command("list", help="List configured udev rules.")
+@click.option("--box", help="Lagerbox name or IP")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+@click.pass_context
+def udev_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
+    _list_field(
+        ctx, box, key="udev_rules", empty_msg="No udev rules configured.",
+        formatter=_fmt_udev, as_json=as_json,
+    )
+
+
+@udev_group.command(
+    "add",
+    help=(
+        "Grant USB device access by VID:PID (4 hex digits each), e.g. "
+        "`udev add 1209:0001`. Pass --usbtmc for SCPI/USBTMC instruments."
+    ),
+)
+@click.argument("devices", nargs=-1, required=True)
+@click.option("--mode", default="0666", show_default=True, help="Octal device-node permission mode.")
+@click.option("--usbtmc", is_flag=True, help="Also emit the usbtmc driver-unbind rule (for PyVISA/SCPI).")
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def udev_add_cmd(
+    ctx: click.Context, devices: tuple, mode: str, usbtmc: bool, box: Optional[str]
+) -> None:
+    resolved = _resolve_box(ctx, box)
+    rules = []
+    for token in devices:
+        vid, pid = _parse_vid_pid(ctx, token)
+        rules.append({"vid": vid, "pid": pid, "mode": mode, "usbtmc": usbtmc})
+    payload_json = json.dumps({"rules": rules})
+    raw = _run_box_config_py(ctx, resolved, verbs.UDEV_ADD, payload_json)
+    payload = _parse_response(raw, ctx)
+    if not payload.get("ok"):
+        click.secho("Failed to add udev rules:", fg="red", err=True)
+        _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
+        ctx.exit(1)
+    added = payload.get("added") or [f"{r['vid']}:{r['pid']}" for r in rules]
+    click.secho(f"Added {len(added)} udev rule(s) on {resolved}: " + ", ".join(added), fg="green")
+    click.echo("Run `lager box config apply` to install them on the box host.")
+
+
+@udev_group.command("remove", help="Remove udev rules by VID:PID.")
+@click.argument("devices", nargs=-1, required=True)
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def udev_remove_cmd(ctx: click.Context, devices: tuple, box: Optional[str]) -> None:
+    resolved = _resolve_box(ctx, box)
+    tokens = [f"{vid}:{pid}" for vid, pid in (_parse_vid_pid(ctx, d) for d in devices)]
+    raw = _run_box_config_py(ctx, resolved, verbs.UDEV_REMOVE, *tokens)
+    payload = _parse_response(raw, ctx)
+    if not payload.get("ok"):
+        click.secho("Failed to remove udev rules:", fg="red", err=True)
+        _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
+        ctx.exit(1)
+    removed = payload.get("removed") or []
+    if removed:
+        click.secho(f"Removed {len(removed)} udev rule(s): " + ", ".join(removed), fg="green")
+        click.echo("Run `lager box config apply` to update udev on the box host.")
+    else:
+        click.secho("No matching udev rules were configured.", fg="yellow")
 
 
 # ---------------------------------------------------------------------------

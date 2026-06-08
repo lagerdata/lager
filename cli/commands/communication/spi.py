@@ -437,10 +437,10 @@ def spi(ctx, netname, box):
 
 
 spi.net_examples = [
-    "lager spi spi1 transfer --data 0x9f 4 --box JUL-12",
-    "lager spi spi1 read 4 --fill 0xFF --box JUL-12",
-    "lager spi spi1 config --mode 0 --frequency 1M --box JUL-12",
-    "lager spi spi1 --box JUL-12             (show net config)",
+    "lager spi spi1 transfer --data 0x9f 4 --box <BOX>",
+    "lager spi spi1 read 4 --fill 0xFF --box <BOX>",
+    "lager spi spi1 config --mode 0 --frequency 1M --box <BOX>",
+    "lager spi spi1 --box <BOX>             (show net config)",
 ]
 
 

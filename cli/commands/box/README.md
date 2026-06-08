@@ -153,6 +153,15 @@ serial and emits one channel per interface.
    - `box/udev_rules/99-instrument.rules` — grant USB permissions inside
      the container.
 
+   > For a one-off "let a tool open this device" permission fix (e.g.
+   > `dfu-util` on a generic bootloader vid:pid), a user doesn't need a
+   > release: `lager box config udev add <vid>:<pid> [--usbtmc]` followed by
+   > `lager box config apply` installs a host udev rule to
+   > `/etc/udev/rules.d/99-lager-user.rules`. The shipped
+   > `99-instrument.rules` remains the place for first-class supported
+   > instruments (it pairs with the `SUPPORTED_USB`/`CHANNEL_MAPS` tables
+   > above); per-user device permissions live in the box config instead.
+
 6. If it's a multi-channel FTDI debug adapter, make sure `CHANNEL_MAPS`
    advertises the right placeholders (`["DEVICE_TYPE@A", "DEVICE_TYPE@B"]`)
    so the user gets one prompt per usable interface.

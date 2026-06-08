@@ -90,7 +90,7 @@ def dac(ctx, box, netname, voltage):
 
 
 dac.net_examples = [
-    "lager dac dac1 3.3 --box JUL-12      (set 3.3 V)",
-    "lager dac dac1 --box JUL-12          (read current value)",
-    "lager dac --box JUL-12               (list DAC nets)",
+    "lager dac dac1 3.3 --box <BOX>      (set 3.3 V)",
+    "lager dac dac1 --box <BOX>          (read current value)",
+    "lager dac --box <BOX>               (list DAC nets)",
 ]
