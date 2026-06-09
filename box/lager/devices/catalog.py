@@ -84,6 +84,23 @@ def is_custom_device(name: Optional[str]) -> bool:
     return get_device(name) is not None
 
 
+def canonical_name(name: Optional[str]) -> Optional[str]:
+    """Return the exact catalog key for ``name`` (case-insensitive), or None.
+
+    Use this to normalize user-supplied instrument names to the canonical
+    spelling (e.g. ``rigol_dp711`` -> ``Rigol_DP711``) before persisting.
+    """
+    if not name:
+        return None
+    if name in DEVICE_CATALOG:
+        return name
+    lowered = name.strip().lower()
+    for key in DEVICE_CATALOG:
+        if key.lower() == lowered:
+            return key
+    return None
+
+
 def is_serial_transport(name: Optional[str]) -> bool:
     """True if ``name`` is a catalog instrument reached over a serial line."""
     entry = get_device(name)
