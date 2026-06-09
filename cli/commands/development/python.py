@@ -13,6 +13,8 @@ import codecs
 import json
 import uuid
 import sys
+import atexit
+import time
 import threading
 import pathlib
 import itertools
@@ -48,11 +50,99 @@ if hasattr(signal, 'SIGPIPE'):
 _ORIGINAL_SIGINT_HANDLER = signal.getsignal(signal.SIGINT)
 
 
+# ---------------------------------------------------------------------------
+# Auto-lock plumbing for `lager python`
+# ---------------------------------------------------------------------------
+# The CLI registers (box_ip, holder) in this dict for the duration of the
+# run. Signal handlers, atexit, and the regular finally path all read from it
+# so the lock is released no matter how the process dies.
+#
+# We use a module-level dict (rather than passing state around) because the
+# release paths sit far apart (signal handler installed by sigint_handler,
+# `_do_exit` for streamed exit, atexit for "everything else").
+_AUTO_LOCK_STATE = {
+    'active': False,        # True between acquire and the first release attempt
+    'released': False,      # True once any path has released the lock
+    'box_ip': None,
+    'holder': None,
+    'box_label': None,      # human-readable name for messages
+    'detach': False,        # if True we never release at CLI exit
+}
+
+
+def _auto_lock_release(reason=''):
+    """Release the auto-lock if we hold one and haven't released it yet.
+
+    Idempotent. Safe to call from signal handlers, atexit, and finally
+    blocks. Skipped entirely for ``--detach`` runs (the lock is intentionally
+    retained for the detached process).
+    """
+    if not _AUTO_LOCK_STATE['active'] or _AUTO_LOCK_STATE['released']:
+        return
+    if _AUTO_LOCK_STATE['detach']:
+        return
+    from ...box_storage import release_box_lock
+    _AUTO_LOCK_STATE['released'] = True
+    try:
+        release_box_lock(_AUTO_LOCK_STATE['box_ip'], _AUTO_LOCK_STATE['holder'])
+    except Exception:  # pylint: disable=broad-except
+        pass
+
+
+# atexit fires for "normal" interpreter exits and for sys.exit(); it does NOT
+# fire for os._exit or for fatal signals that aren't caught. Those paths are
+# covered by the explicit signal handler in sigint_handler and the box-side
+# TTL/heartbeat reap.
+atexit.register(_auto_lock_release, 'atexit')
+
+
+class _HeartbeatThread(threading.Thread):
+    """Refreshes the box lock periodically while a test is running.
+
+    Daemon thread so it dies with the CLI process. Stop by calling .stop();
+    that also wakes the sleep so shutdown is prompt.
+
+    Heartbeat failures are logged once (to stderr, lowercase warning) and
+    then retried silently. We do NOT abort the test on heartbeat failure —
+    the server-side TTL is the authoritative reaper, and treating a flaky
+    network as a test failure would generate more flake than it prevents.
+    """
+
+    def __init__(self, ip, holder, interval):
+        super().__init__(daemon=True, name='lager-lock-heartbeat')
+        self._ip = ip
+        self._holder = holder
+        self._interval = max(1, int(interval))
+        self._stop = threading.Event()
+        self._warned = False
+
+    def stop(self):
+        self._stop.set()
+
+    def run(self):
+        from ...box_storage import heartbeat_box_lock
+        while not self._stop.wait(self._interval):
+            try:
+                ok = heartbeat_box_lock(self._ip, self._holder)
+            except Exception:  # pylint: disable=broad-except
+                ok = False
+            if not ok and not self._warned:
+                self._warned = True
+                try:
+                    click.secho(
+                        'Warning: lock heartbeat failed; relying on server TTL.',
+                        fg='yellow', err=True,
+                    )
+                except Exception:  # pylint: disable=broad-except
+                    pass
+
+
 def sigint_handler(kill_python, box_ip, _sig, _frame):
     """
     Handle Ctrl+C by restoring the old signal handler (so that subsequent
     Ctrl+C will actually stop python) and sending SIGTERM to the running
-    docker container.
+    docker container. Also releases the auto-acquired box lock so other
+    callers don't have to wait for the TTL to reap it.
 
     Note: prior versions also POSTed /cache/clear to hardware_service here
     (the v0.16.5 band-aid). v0.16.8 routes all hardware access through a
@@ -63,7 +153,10 @@ def sigint_handler(kill_python, box_ip, _sig, _frame):
     """
     click.echo(' Attempting to stop Lager Python job')
     signal.signal(signal.SIGINT, _ORIGINAL_SIGINT_HANDLER)
-    kill_python(signal.SIGTERM)
+    try:
+        kill_python(signal.SIGTERM)
+    finally:
+        _auto_lock_release('sigint')
 
 
 def _do_exit(exit_code, box, session, downloads):
@@ -73,6 +166,10 @@ def _do_exit(exit_code, box, session, downloads):
         click.secho('Script terminated due to timeout.', fg='red', err=True)
     elif exit_code == SIGKILL_EXIT_CODE:
         click.secho('Script forcibly killed due to timeout.', fg='red', err=True)
+
+    # Release the auto-lock before sys.exit, so the lock is freed
+    # synchronously rather than relying on atexit running on the way out.
+    _auto_lock_release('do_exit')
 
     # Note: prior versions POSTed /cache/clear to hardware_service here.
     # v0.16.8 owns one persistent pyvisa session per VISA address inside
@@ -665,14 +762,30 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
 @click.argument('args', nargs=-1)
 def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_overwrite, signum, timeout, detach, port, org, add_file, reattach, continue_, console, args):
     """Run Python script on box"""
-    from ...box_storage import resolve_and_validate_box
+    from ...box_storage import (
+        resolve_and_validate_box,
+        acquire_box_lock,
+        get_lock_holder,
+        default_lock_wait_seconds,
+        default_lock_ttl_seconds,
+        default_heartbeat_interval,
+    )
 
     # --kill, --kill-all, --reattach, --continue, --console are management ops: skip lock check
     skip_lock = bool(kill or kill_all or reattach or continue_ or console)
 
-    # Resolve and validate the box name
+    # Resolve and validate the box name. We skip the legacy `_check_box_lock`
+    # in `resolve_and_validate_box` when auto-locking is going to run anyway,
+    # because acquire_box_lock does a richer collision dance (waits in CI).
+    auto_lock_enabled = (
+        not skip_lock
+        and runnable is not None
+        and not os.getenv('LAGER_AUTO_LOCK_DISABLE')
+    )
     box_name = box
-    box_ip = resolve_and_validate_box(ctx, box_name, _skip_lock_check=skip_lock)
+    box_ip = resolve_and_validate_box(
+        ctx, box_name, _skip_lock_check=skip_lock or auto_lock_enabled,
+    )
 
     if not runnable and not kill and not kill_all and not reattach and not continue_ and not console:
         raise click.UsageError('Please supply a RUNNABLE, --kill, --kill-all, --reattach, --continue, or --console option')
@@ -727,4 +840,59 @@ def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_ove
     if box_name:
         env.append(f'LAGER_BOX={box_name}')
 
-    run_python_internal(ctx, runnable, box_ip, env, passenv, False, download, allow_overwrite, signum, timeout, detach, port, org, args, add_file, dut_name=box_name)
+    box_label = box_name or box_ip
+    should_release = False
+    heartbeat = None
+    holder = None
+
+    if auto_lock_enabled:
+        holder = get_lock_holder()
+        # --detach acquires with ttl_seconds=None because the heartbeat thread
+        # dies with the CLI process; the detached test outlives us and must
+        # be unlocked manually via `lager boxes unlock`.
+        ttl = None if detach else default_lock_ttl_seconds()
+        wait_seconds = default_lock_wait_seconds()
+        state, _data = acquire_box_lock(
+            box_ip,
+            box_name,
+            holder,
+            holder_type='ephemeral' if detach else 'ci',
+            ttl_seconds=ttl,
+            wait_seconds=wait_seconds,
+        )
+        if state == 'acquired':
+            _AUTO_LOCK_STATE.update({
+                'active': True,
+                'released': False,
+                'box_ip': box_ip,
+                'holder': holder,
+                'box_label': box_label,
+                'detach': bool(detach),
+            })
+            should_release = not detach
+            if detach:
+                click.secho(
+                    f"Box '{box_label}' locked for detached run; "
+                    f"release with: lager boxes unlock --box {box_label}",
+                    fg='yellow', err=True,
+                )
+            elif ttl is not None:
+                heartbeat = _HeartbeatThread(box_ip, holder, default_heartbeat_interval())
+                heartbeat.start()
+        elif state == 'already_ours':
+            # Pre-existing lock from `lager boxes lock` (same holder). Do NOT
+            # release on exit so the user's persistent lock survives.
+            pass
+        # state == 'unreachable' -> no lock taken; the real command will
+        # surface the connection failure when it tries to POST the script.
+
+    try:
+        run_python_internal(
+            ctx, runnable, box_ip, env, passenv, False, download, allow_overwrite,
+            signum, timeout, detach, port, org, args, add_file, dut_name=box_name,
+        )
+    finally:
+        if heartbeat is not None:
+            heartbeat.stop()
+        if should_release:
+            _auto_lock_release('python.finally')

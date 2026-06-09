@@ -294,14 +294,139 @@ def get_lager_user():
 def format_lock_user(user):
     """Format a lock user string for display.
 
-    Stout dashboard locks use format 'stout:<uuid>:<email>'.
-    Returns just the email for stout locks, or the string as-is otherwise.
+    Recognized formats:
+    - ``stout:<uuid>:<email>``                    -> just the email
+    - ``ci:github:<repo>#<run>-<attempt>/<job>@<runner>:<pid>``
+                                                  -> ``github <repo> run <run> job <job> on <runner>``
+    - ``ci:drone:<repo>#<build>:<pid>@<host>``    -> ``drone <repo> build <build>``
+    - ``ci:gitlab:<project>#<pipeline>/<job>:<pid>@<host>``
+                                                  -> ``gitlab <project> pipeline <pipeline> job <job>``
+    - ``ci:bitbucket:<repo>#<build>:<pid>@<host>``
+                                                  -> ``bitbucket <repo> build <build>``
+    - ``ci:jenkins:<tag>:<pid>@<host>``           -> ``jenkins <tag>``
+    - ``ci:generic:<host>:<pid>``                 -> ``ci on <host>``
+
+    Falls back to returning the raw string unchanged for anything we don't
+    recognise so we never hide unexpected holders.
     """
-    if user and user.startswith('stout:'):
+    if not user:
+        return user
+
+    if user.startswith('stout:'):
         parts = user.split(':', 2)
         if len(parts) == 3:
             return parts[2]
+        return user
+
+    if user.startswith('ci:'):
+        parts = user.split(':', 2)
+        if len(parts) < 3:
+            return user
+        provider = parts[1]
+        rest = parts[2]
+        try:
+            if provider == 'github':
+                # <repo>#<run>-<attempt>/<job>@<runner>:<pid>
+                run_part, _, _pid = rest.rpartition(':')
+                repo_run, _, job_runner = run_part.partition('/')
+                repo, _, run_attempt = repo_run.partition('#')
+                run_id, _, _attempt = run_attempt.partition('-')
+                job, _, runner = job_runner.partition('@')
+                bits = ['github', repo.strip(), f'run {run_id.strip()}']
+                if job:
+                    bits.append(f'job {job.strip()}')
+                if runner:
+                    bits.append(f'on {runner.strip()}')
+                return ' '.join(b for b in bits if b)
+            if provider == 'drone':
+                # <repo>#<build>:<pid>@<host>
+                build_part, _, _suffix = rest.partition(':')
+                repo, _, build = build_part.partition('#')
+                return f'drone {repo} build {build}' if build else f'drone {repo}'
+            if provider == 'gitlab':
+                # <project>#<pipeline>/<job>:<pid>@<host>
+                pipeline_part, _, _suffix = rest.partition(':')
+                project_pipeline, _, job = pipeline_part.partition('/')
+                project, _, pipeline = project_pipeline.partition('#')
+                bits = ['gitlab', project, f'pipeline {pipeline}' if pipeline else '']
+                if job:
+                    bits.append(f'job {job}')
+                return ' '.join(b for b in bits if b)
+            if provider == 'bitbucket':
+                build_part, _, _suffix = rest.partition(':')
+                repo, _, build = build_part.partition('#')
+                return f'bitbucket {repo} build {build}' if build else f'bitbucket {repo}'
+            if provider == 'jenkins':
+                tag, _, _suffix = rest.partition(':')
+                return f'jenkins {tag}' if tag else 'jenkins'
+            if provider == 'generic':
+                host, _, _pid = rest.partition(':')
+                return f'ci on {host}' if host else 'ci'
+        except Exception:  # pylint: disable=broad-except
+            return user
+
     return user
+
+
+def get_lock_holder():
+    """Get a unique-per-process lock holder identity.
+
+    Resolution order:
+    1. ``LAGER_LOCK_HOLDER`` env var (explicit override, e.g. for tests that
+       intentionally share an identity across matrix items).
+    2. CI-aware identity derived from the detected CI environment. The string
+       always ends with ``:<pid>`` (and ``@<host>`` outside GitHub, which has
+       ``RUNNER_NAME``) so concurrent matrix items can never accidentally
+       collide on the same holder.
+    3. Dev fallback: ``get_lager_user()``.
+    """
+    import socket
+
+    override = os.getenv('LAGER_LOCK_HOLDER')
+    if override:
+        return override
+
+    try:
+        from .context.ci_detection import get_ci_environment, CIEnvironment
+    except Exception:  # pylint: disable=broad-except
+        return get_lager_user()
+
+    env = get_ci_environment()
+    if env == CIEnvironment.HOST:
+        return get_lager_user()
+
+    pid = os.getpid()
+    host = socket.gethostname()
+
+    if env == CIEnvironment.GITHUB:
+        repo = os.getenv('GITHUB_REPOSITORY', 'unknown')
+        run_id = os.getenv('GITHUB_RUN_ID', '0')
+        attempt = os.getenv('GITHUB_RUN_ATTEMPT', '1')
+        job = os.getenv('GITHUB_JOB', 'job')
+        runner = os.getenv('RUNNER_NAME', host)
+        return f'ci:github:{repo}#{run_id}-{attempt}/{job}@{runner}:{pid}'
+
+    if env == CIEnvironment.DRONE:
+        repo = os.getenv('DRONE_REPO', 'unknown')
+        build = os.getenv('DRONE_BUILD_NUMBER', '0')
+        return f'ci:drone:{repo}#{build}:{pid}@{host}'
+
+    if env == CIEnvironment.GITLAB:
+        project = os.getenv('CI_PROJECT_PATH', os.getenv('CI_PROJECT_NAME', 'unknown'))
+        pipeline = os.getenv('CI_PIPELINE_ID', '0')
+        job = os.getenv('CI_JOB_NAME', 'job')
+        return f'ci:gitlab:{project}#{pipeline}/{job}:{pid}@{host}'
+
+    if env == CIEnvironment.BITBUCKET:
+        repo = os.getenv('BITBUCKET_REPO_FULL_NAME', os.getenv('BITBUCKET_REPO_SLUG', 'unknown'))
+        build = os.getenv('BITBUCKET_BUILD_NUMBER', '0')
+        return f'ci:bitbucket:{repo}#{build}:{pid}@{host}'
+
+    if env == CIEnvironment.JENKINS:
+        tag = os.getenv('BUILD_TAG', os.getenv('BUILD_NUMBER', '0'))
+        return f'ci:jenkins:{tag}:{pid}@{host}'
+
+    return f'ci:generic:{host}:{pid}'
 
 
 def _check_box_lock(ip, box_name):
@@ -353,6 +478,257 @@ def acquire_command_lock_with_cleanup(ctx, ip, box_name, command_name, force=Fal
         force: Unused, kept for call-site compatibility
     """
     _check_box_lock(ip, box_name)
+
+
+# ---------------------------------------------------------------------------
+# Box-lock acquire/release used by `lager python` auto-locking
+# ---------------------------------------------------------------------------
+
+
+# Default wait-on-collision values:
+#   - dev (HOST): 0 -> fail fast on collision
+#   - CI:        1800 (30 min) -> queue/wait for the other CI run to finish
+_DEFAULT_LOCK_WAIT_DEV = 0
+_DEFAULT_LOCK_WAIT_CI = 1800
+_DEFAULT_LOCK_TTL_SECONDS = 1800
+_DEFAULT_HEARTBEAT_INTERVAL = 60
+
+
+def default_lock_wait_seconds():
+    """Default ``wait_seconds`` for :func:`acquire_box_lock`.
+
+    ``LAGER_LOCK_WAIT`` env var wins. Otherwise CI gets a long wait so matrix
+    jobs queue, and dev gets fail-fast so a typo doesn't silently block.
+    """
+    env = os.getenv('LAGER_LOCK_WAIT')
+    if env is not None:
+        try:
+            return max(0, int(env))
+        except ValueError:
+            return _DEFAULT_LOCK_WAIT_DEV
+    try:
+        from .context.ci_detection import get_ci_environment, CIEnvironment
+        if get_ci_environment() != CIEnvironment.HOST:
+            return _DEFAULT_LOCK_WAIT_CI
+    except Exception:  # pylint: disable=broad-except
+        pass
+    return _DEFAULT_LOCK_WAIT_DEV
+
+
+def default_lock_ttl_seconds():
+    """Default ``ttl_seconds`` for ephemeral test locks.
+
+    ``LAGER_LOCK_TTL`` env var wins. ``None`` is encoded as the literal string
+    ``"none"``/``"null"`` for callers that want eternal locks.
+    """
+    env = os.getenv('LAGER_LOCK_TTL')
+    if env is None:
+        return _DEFAULT_LOCK_TTL_SECONDS
+    if env.lower() in ('none', 'null', ''):
+        return None
+    try:
+        return max(1, int(env))
+    except ValueError:
+        return _DEFAULT_LOCK_TTL_SECONDS
+
+
+def default_heartbeat_interval():
+    """Default heartbeat interval in seconds."""
+    env = os.getenv('LAGER_LOCK_HEARTBEAT')
+    if env is None:
+        return _DEFAULT_HEARTBEAT_INTERVAL
+    try:
+        return max(1, int(env))
+    except ValueError:
+        return _DEFAULT_HEARTBEAT_INTERVAL
+
+
+def _lock_url(ip, suffix=''):
+    return f'http://{ip}:5000/lock{suffix}'
+
+
+def acquire_box_lock(
+    ip,
+    box_name,
+    holder,
+    *,
+    holder_type='ephemeral',
+    ttl_seconds=_DEFAULT_LOCK_TTL_SECONDS,
+    wait_seconds=0,
+    poll=2.0,
+    quiet=False,
+):
+    """Acquire the box lock for ``holder``.
+
+    Returns ``(state, lock_data)`` where ``state`` is one of:
+        - ``"acquired"``    -> we took the lock just now (caller owns it,
+                               should release on exit).
+        - ``"already_ours"`` -> the lock was already held by ``holder``
+                               (e.g. a pre-existing ``lager boxes lock``).
+                               Caller MUST NOT release on exit so the user's
+                               persistent lock survives.
+
+    On collision with a different holder:
+        - if ``wait_seconds <= 0``: print an error and ``sys.exit(1)``.
+        - otherwise: poll ``GET /lock`` every ``poll`` seconds until the lock
+          is released, then retry. Fail (and exit) after ``wait_seconds``.
+
+    ``holder_type`` and ``ttl_seconds`` are forwarded to the server. Older
+    box versions that don't understand these fields will just ignore them.
+    """
+    import time
+    import click
+    import requests
+
+    payload = {'user': holder, 'holder_type': holder_type}
+    if ttl_seconds is None:
+        payload['ttl_seconds'] = None
+    else:
+        payload['ttl_seconds'] = int(ttl_seconds)
+
+    display = box_name or ip
+    deadline = time.monotonic() + max(0, wait_seconds)
+    waited_message_printed = False
+
+    while True:
+        try:
+            resp = requests.post(_lock_url(ip), json=payload, timeout=5)
+        except requests.exceptions.RequestException as exc:
+            if not quiet:
+                click.secho(
+                    f"Warning: Could not reach box '{display}' to acquire lock: {exc}",
+                    fg='yellow', err=True,
+                )
+            # Unreachable - fall through with no lock held; the actual command
+            # will fail on its own with a clearer error.
+            return ('unreachable', None)
+
+        if resp.status_code == 200:
+            try:
+                data = resp.json()
+            except ValueError:
+                data = {}
+            previous_holder = data.get('previous_user')
+            if previous_holder is None:
+                # Box doesn't echo previous_user (older server). Fall back to
+                # locked_at: if locked_at is recent (<= 2s) assume we acquired.
+                state = 'acquired'
+            elif previous_holder == holder:
+                state = 'already_ours'
+            else:
+                state = 'acquired'
+            return (state, data)
+
+        if resp.status_code == 409:
+            try:
+                data = resp.json()
+            except ValueError:
+                data = {}
+            lock_info = data.get('lock', {}) or {}
+            other = lock_info.get('user', 'unknown')
+
+            now = time.monotonic()
+            if now >= deadline:
+                if not quiet:
+                    display_other = format_lock_user(other)
+                    click.secho(
+                        f"Error: Box '{display}' is locked by {display_other}",
+                        fg='red', err=True,
+                    )
+                    if wait_seconds > 0:
+                        click.echo(
+                            f"Gave up after waiting {wait_seconds}s.", err=True,
+                        )
+                    click.echo(
+                        f"To force unlock: lager boxes unlock --box {display} --force",
+                        err=True,
+                    )
+                raise SystemExit(1)
+
+            if not waited_message_printed and not quiet:
+                remaining = int(deadline - now)
+                display_other = format_lock_user(other)
+                click.secho(
+                    f"Box '{display}' is locked by {display_other}; waiting up to {remaining}s for release...",
+                    fg='yellow', err=True,
+                )
+                waited_message_printed = True
+
+            time.sleep(min(poll, max(0.1, deadline - time.monotonic())))
+            continue
+
+        # Any other status: bail out.
+        if not quiet:
+            click.secho(
+                f"Error: Unexpected response acquiring lock on '{display}' (HTTP {resp.status_code})",
+                fg='red', err=True,
+            )
+        raise SystemExit(1)
+
+
+def release_box_lock(ip, holder, *, quiet=True):
+    """Release the box lock held by ``holder``. Best-effort, never raises.
+
+    Returns ``True`` if the server confirmed release, ``False`` otherwise.
+    """
+    import click
+    import requests
+
+    try:
+        resp = requests.post(
+            f'http://{ip}:5000/unlock',
+            json={'user': holder},
+            timeout=5,
+        )
+    except requests.exceptions.RequestException as exc:
+        if not quiet:
+            click.secho(
+                f"Warning: Could not reach box at {ip} to release lock: {exc}",
+                fg='yellow', err=True,
+            )
+        return False
+
+    if resp.status_code == 200:
+        return True
+    if not quiet:
+        try:
+            data = resp.json()
+            detail = data.get('error') or data
+        except ValueError:
+            detail = resp.text
+        click.secho(
+            f"Warning: Failed to release lock on {ip} (HTTP {resp.status_code}): {detail}",
+            fg='yellow', err=True,
+        )
+    return False
+
+
+def heartbeat_box_lock(ip, holder, *, quiet=True):
+    """Refresh the lock's ``last_heartbeat`` on the box.
+
+    Returns ``True`` on success, ``False`` on transport error or a server that
+    doesn't know about heartbeats yet (404). Callers should treat ``False`` as
+    "carry on" rather than "abort the test" — the box-side TTL is the
+    authoritative reaper, and a heartbeat-less server simply means TTL/heartbeat
+    isn't enforced server-side yet.
+    """
+    import click
+    import requests
+
+    try:
+        resp = requests.post(
+            _lock_url(ip, '/heartbeat'),
+            json={'user': holder},
+            timeout=5,
+        )
+    except requests.exceptions.RequestException as exc:
+        if not quiet:
+            click.secho(
+                f"Warning: heartbeat to {ip} failed: {exc}",
+                fg='yellow', err=True,
+            )
+        return False
+    return resp.status_code == 200
 
 
 def box_not_found_error(box_name):
