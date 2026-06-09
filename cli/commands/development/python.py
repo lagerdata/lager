@@ -113,15 +113,19 @@ class _HeartbeatThread(threading.Thread):
         self._ip = ip
         self._holder = holder
         self._interval = max(1, int(interval))
-        self._stop = threading.Event()
+        # NOTE: must NOT be named ``_stop`` — ``threading.Thread`` itself
+        # uses ``self._stop`` as a method during teardown, and assigning an
+        # Event there raises ``TypeError: 'Event' object is not callable``
+        # when the thread finishes normally.
+        self._stop_event = threading.Event()
         self._warned = False
 
     def stop(self):
-        self._stop.set()
+        self._stop_event.set()
 
     def run(self):
         from ...box_storage import heartbeat_box_lock
-        while not self._stop.wait(self._interval):
+        while not self._stop_event.wait(self._interval):
             try:
                 ok = heartbeat_box_lock(self._ip, self._holder)
             except Exception:  # pylint: disable=broad-except

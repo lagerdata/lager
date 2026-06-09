@@ -327,9 +327,12 @@ def format_lock_user(user):
         try:
             if provider == 'github':
                 # <repo>#<run>-<attempt>/<job>@<runner>:<pid>
+                # NOTE: <repo> can contain `/` (e.g. "lager/lager"), so we
+                # split on `#` *first* to lift the repo out, then `/` on the
+                # remainder to separate run/attempt from job@runner.
                 run_part, _, _pid = rest.rpartition(':')
-                repo_run, _, job_runner = run_part.partition('/')
-                repo, _, run_attempt = repo_run.partition('#')
+                repo, _, after_hash = run_part.partition('#')
+                run_attempt, _, job_runner = after_hash.partition('/')
                 run_id, _, _attempt = run_attempt.partition('-')
                 job, _, runner = job_runner.partition('@')
                 bits = ['github', repo.strip(), f'run {run_id.strip()}']

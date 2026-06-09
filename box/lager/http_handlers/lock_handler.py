@@ -71,16 +71,21 @@ class _FileGuard:
 
     We can't flock the lock JSON itself because we replace it via tempfile
     rename. The sidecar exists solely to serialize critical sections.
+
+    The guard path is resolved from the module-level ``LOCK_FILE_GUARD`` at
+    enter time, not at class-definition time, so tests can monkeypatch
+    ``LOCK_FILE_GUARD`` to redirect into a tmpdir.
     """
 
-    def __init__(self, path=LOCK_FILE_GUARD):
-        self._path = path
+    def __init__(self, path=None):
+        self._path = path  # if None, resolved from module global on enter
         self._fd = None
 
     def __enter__(self):
-        os.makedirs(os.path.dirname(self._path), exist_ok=True)
+        path = self._path or LOCK_FILE_GUARD
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         # O_CREAT|O_RDWR is enough; we never read/write contents.
-        self._fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o644)
+        self._fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
         fcntl.flock(self._fd, fcntl.LOCK_EX)
         return self
 
