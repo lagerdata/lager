@@ -30,7 +30,19 @@ def lock(ctx, box, lock_user):
         click.echo()
 
     try:
-        resp = requests.post(f'http://{ip}:5000/lock', json={'user': user}, timeout=5)
+        # `lager boxes lock` is an explicit, persistent reservation: no TTL,
+        # no heartbeat. The server's `holder_type: "user"` branch keeps the
+        # lock immune to the new heartbeat-driven auto-reap that ephemeral
+        # `lager python` locks participate in.
+        resp = requests.post(
+            f'http://{ip}:5000/lock',
+            json={
+                'user': user,
+                'holder_type': 'user',
+                'ttl_seconds': None,
+            },
+            timeout=5,
+        )
     except requests.exceptions.RequestException as e:
         click.secho(f"Error: Could not reach box '{display_name}': {e}", fg='red', err=True)
         ctx.exit(1)
