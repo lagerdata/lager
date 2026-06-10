@@ -29,6 +29,7 @@ lager nets [OPTIONS] [COMMAND]
 | `create` | Create a new net |
 | `create-all` | Auto-create all available nets from connected instruments |
 | `create-batch` | Create multiple nets from a JSON file |
+| `assign` | Assign a USB-serial cable to an RS-232 instrument the box can't auto-detect |
 | `tui` | Launch interactive Net Manager TUI |
 | `set-script` | Attach a J-Link script *or* OpenOCD `.cfg`/`.tcl` to a debug net (backend auto-detected) |
 | `remove-script` | Remove the debug script (J-Link or OpenOCD) attached to a debug net |
@@ -300,6 +301,90 @@ lager nets create-batch JSON_FILE [OPTIONS]
 lager nets create-batch nets.json --box my-lager-box
 ```
 
+### `assign`
+
+Assign a USB-serial cable to a known instrument the box cannot auto-detect.
+
+Some instruments have no USB control port and are reached over RS-232 through
+a generic USB-serial adapter — for example, a **Rigol DP711** power supply
+behind a Prolific cable. The box sees only the adapter (a `uart` device), not
+the instrument behind it. `assign` records "this cable is the DP711's serial
+line" on the box. From then on, the scanner reports the instrument itself:
+it appears in `lager instruments`, in the TUI, and you can create nets for it
+with `lager nets add` like any auto-detected device.
+
+Assign **once per cable**; the assignment is stored on the box and survives
+reboots and replugs. Creating nets stays the normal, repeatable step.
+
+```bash
+lager nets assign --list [OPTIONS]                       # discover
+lager nets assign DEVICE --serial|--port [OPTIONS]       # assign
+lager nets assign --remove --serial|--port [OPTIONS]     # unassign
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--list` | List assignable devices, current assignments, and unassigned USB-serial cables |
+| `--serial TEXT` | USB serial number of the cable (durable; the assignment follows the cable across ports) |
+| `--port TEXT` | USB port path (sysfs name, e.g. `1-1.2`); pins the assignment to a physical box port — for cables without a usable serial number |
+| `--baud INTEGER` | Baud-rate override; must match the instrument's front-panel setting (DP711 factory default: 9600) |
+| `--remove` | Remove the assignment matching `--serial`/`--port` |
+| `--as-net [NAME]` | Also create a net for the instrument right away (name defaults to the device name) |
+| `--box TEXT` | Lagerbox name or IP |
+
+**End-to-end example (Rigol DP711):**
+
+```bash
+# 1. Plug the instrument's USB-serial cable into the box, then find it:
+lager nets assign --list --box my-lager-box
+#   Unassigned USB-serial cables:
+#     serial 00000006  port 1-1.2  [067b:23a3]  /dev/ttyUSB0
+
+# 2. Assign the cable — and create a supply net in the same step:
+lager nets assign Rigol_DP711 --serial 00000006 --as-net main_supply --box my-lager-box
+
+# 3. Drive it like any other supply net:
+lager supply main_supply --voltage 3.3 --box my-lager-box
+```
+
+Without `--as-net`, the command prints the exact `lager nets add` invocation
+for the new instrument:
+
+```bash
+lager nets add <name> supply 1 'serial://067b:23a3/serial/00000006'
+```
+
+**How it works:**
+
+- The cable **must be plugged in** to assign it — its USB identity (vendor/product
+  ID) is captured from the live device.
+- Nets for assigned instruments use a durable `serial://<vid>:<pid>/serial/<s>`
+  (or `.../port/<p>`) address instead of a `/dev/ttyUSB*` path, so they survive
+  tty renumbering, reboots, and port moves.
+- While a cable is assigned, it is **no longer offered as a generic UART
+  device** — the serial line belongs to the instrument.
+
+<Note>
+Some cheap USB-serial clones share one serial number (or have none). If
+`assign` reports multiple matching cables, pin the assignment to a physical
+box port with `--port` instead — the trade-off is that moving the cable to a
+different port breaks the assignment.
+</Note>
+
+**Removing an assignment:**
+
+```bash
+lager nets assign --remove --serial 00000006 --box my-lager-box
+```
+
+The cable is offered as a generic UART device again. Saved nets still pointing
+at the old `serial://` address stop working — delete them with `lager nets delete`.
+
+**Currently assignable devices:** Rigol DP711 (single-channel RS-232 power
+supply). Run `lager nets assign --list` to see the catalog your box supports.
+
 ### `delete`
 
 Delete a specific net by its name and type.
@@ -491,7 +576,7 @@ lager nets show-script debug1 --box my-lager-box > script.txt
 
 | Net Type | Description | Typical Instruments |
 |----------|-------------|---------------------|
-| `supply` | Power supply output | Rigol DP800, Keithley 2200/2280, Keysight E36200 |
+| `supply` | Power supply output | Rigol DP800, Rigol DP711 (via [`assign`](#assign)), Keithley 2200/2280, Keysight E36200 |
 | `batt` | Battery simulator | Keithley 2281S |
 | `solar` | Solar simulator | EA PSI/EL series |
 | `eload` | Electronic load | Rigol DL3021 |
