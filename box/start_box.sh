@@ -132,9 +132,14 @@ fi
 
 # Secrets must not be group/world-readable. The executor also enforces this on
 # load (box/lager/python/executor.py); doing it at boot covers files dropped
-# while the container was down.
+# while the container was down. Best-effort: these files may be owned by the
+# container user (www-data), which this script's user cannot chmod — that must
+# never block container startup.
 for secret_file in /etc/lager/org_secrets.json /etc/lager/secret_key; do
-    [ -f "$secret_file" ] && chmod 600 "$secret_file"
+    if [ -f "$secret_file" ] && ! chmod 600 "$secret_file" 2>/dev/null; then
+        echo "[WARNING] Could not chmod 600 $secret_file (not owner)."
+        echo "          The container enforces this on load; or run: sudo chmod 600 $secret_file"
+    fi
 done
 
 # /tmp/lager-authorized-keys.d is created on demand by the container process (www-data).
