@@ -28,6 +28,7 @@ validation.
 
 | Manufacturer | Model | Channels | Control Command |
 |---|---|---|---|
+| Rigol | DP711 \* | 1 | `lager supply` |
 | Rigol | DP811 | 1 | `lager supply` |
 | Rigol | DP821 | 2 | `lager supply` |
 | Rigol | DP831 | 3 | `lager supply` |
@@ -37,6 +38,10 @@ validation.
 | Keysight | E36313A | 3 | `lager supply` |
 | EA Elektro-Automatik | PSB 10060/60 | 1 supply + 1 solar | `lager supply`, `lager solar` |
 | EA Elektro-Automatik | PSB 10080/60 | 1 supply + 1 solar | `lager supply`, `lager solar` |
+
+\* RS-232 only — connects through a USB-serial adapter and requires a one-time
+manual assignment with
+[`lager nets assign`](/source/reference/cli/nets#assign).
 
 **Enables:**
 - Automated voltage/current control
