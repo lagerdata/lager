@@ -217,20 +217,47 @@ EOF
 
     wait_for_http
 
-    # 4. Sanity check: the new heartbeat endpoint must be there.
-    local rc
-    rc=$(curl -s -o /dev/null -w '%{http_code}' \
-        -X POST "http://${BOX_IP}:5000/lock/heartbeat" \
+    # 4. Sanity check: actually probe behavior. The new server echoes
+    #    `holder_type` and `ttl_seconds` back in the POST /lock response;
+    #    the old server ignores both fields. Route-existence checks lie
+    #    (Flask returns 404 either way) — only the response body proves
+    #    the new code is loaded.
+    local probe
+    probe=$(curl -s --max-time 5 \
+        -X POST "http://${BOX_IP}:5000/lock" \
         -H 'Content-Type: application/json' \
-        -d '{"user":"deploy-probe"}')
-    case "$rc" in
-        200|400|404|409)
-            echo "  /lock/heartbeat reachable (HTTP $rc) — new code is live."
-            ;;
-        *)
-            echo "  WARNING: /lock/heartbeat returned HTTP $rc; new code may not be live." >&2
-            ;;
-    esac
+        -d '{"user":"deploy-probe","holder_type":"ci","ttl_seconds":5}')
+    # Best-effort cleanup whichever code is running.
+    curl -s --max-time 5 \
+        -X POST "http://${BOX_IP}:5000/unlock" \
+        -H 'Content-Type: application/json' \
+        -d '{"user":"deploy-probe","force":true}' >/dev/null
+    if echo "$probe" | grep -q '"holder_type"' && echo "$probe" | grep -q '"ttl_seconds"'; then
+        echo "  Sanity probe: new code is live (response includes holder_type + ttl_seconds)."
+    else
+        cat >&2 <<EOF
+
+  ERROR: Sanity probe says the OLD lock_handler is still serving requests.
+         Response was: $probe
+
+         Things to check on the box:
+           sudo docker exec lager grep -c lock_heartbeat \\
+               /app/lager/lager/http_handlers/lock_handler.py
+             # must be > 0; if 0, the docker cp didn't take
+
+           sudo docker logs lager --tail 50
+             # look for Flask startup or import errors
+
+           sudo docker exec lager find /app/lager/lager/http_handlers \\
+               -name '*.pyc' -newer /tmp/lock_handler.py.new
+             # stale .pyc would override the .py — extremely unlikely
+
+         If the file is present and looks new, try forcing a fresh
+         container restart:
+           sudo docker stop lager && sudo docker start lager
+EOF
+        exit 1
+    fi
 }
 
 restore() {
