@@ -68,15 +68,31 @@ done
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
-LOCAL_HANDLER="$REPO_ROOT/box/lager/http_handlers/lock_handler.py"
-# In-container path comes from box/lager/docker/box.Dockerfile:
-#   COPY http_handlers /app/lager/lager/http_handlers
-# The lager container does NOT bind-mount the source tree; it COPYs at
-# build time, which is why this script uses `docker cp` instead of
-# editing a host file.
-CONTAINER_HANDLER="/app/lager/lager/http_handlers/lock_handler.py"
-BOX_STAGED="/tmp/lock_handler.py.new"
-BOX_BACKUP="/tmp/lock_handler.py.orig"
+
+# Files to deploy. Each entry is "<local-path-relative-to-repo>:<container-path>".
+# The lager container does NOT bind-mount the source tree (see
+# box/start_box.sh — only /tmp, /dev, /etc/lager, etc. are mounted; the
+# Python code is baked in via COPY in box/lager/docker/box.Dockerfile).
+# Hence the docker cp approach below.
+#
+# IMPORTANT: keep this list in sync with the files actually changed on
+# the branch. Stale entries are harmless (no-ops if the source file
+# isn't different), but a missing entry will produce a half-deployed
+# box that runs OLD code on some endpoints. The previous version of
+# this script only deployed lock_handler.py and silently left the
+# port-5000 server (python/service.py) running stale code, which
+# wasted hours.
+FILES_TO_DEPLOY=(
+    "box/lager/lock_state.py:/app/lager/lager/lock_state.py"
+    "box/lager/http_handlers/lock_handler.py:/app/lager/lager/http_handlers/lock_handler.py"
+    "box/lager/python/service.py:/app/lager/lager/python/service.py"
+)
+
+# Files we keep a per-file snapshot of on the box for --restore.
+# Named by the basename of the file so concurrent deploys to the same
+# box don't clobber each other's backups.
+BOX_STAGE_DIR="/tmp/lager_branch_deploy"
+BOX_BACKUP_DIR="/tmp/lager_branch_deploy.orig"
 
 # Resolve box -> IP via the lager CLI, and pick up the stored SSH user
 # if the caller didn't override it. Matches the resolution policy used
@@ -180,37 +196,72 @@ wait_for_http() {
 }
 
 deploy() {
-    if [ ! -f "$LOCAL_HANDLER" ]; then
-        echo "ERROR: $LOCAL_HANDLER not found" >&2
-        exit 1
-    fi
+    # 1. Verify all local files exist before touching the box.
+    local local_path container_path entry missing=0
+    for entry in "${FILES_TO_DEPLOY[@]}"; do
+        local_path="${entry%%:*}"
+        container_path="${entry##*:}"
+        if [ ! -f "$REPO_ROOT/$local_path" ]; then
+            echo "ERROR: $REPO_ROOT/$local_path not found" >&2
+            missing=1
+        fi
+    done
+    [ "$missing" = "0" ] || exit 1
 
-    echo "Deploying $LOCAL_HANDLER"
-    echo "         -> ${BOX_SSH}:${CONTAINER_HANDLER}"
+    echo "Deploying ${#FILES_TO_DEPLOY[@]} file(s) to ${BOX_SSH}:"
+    for entry in "${FILES_TO_DEPLOY[@]}"; do
+        echo "  $(basename "${entry%%:*}") -> ${entry##*:}"
+    done
     check_ssh
 
-    # 1. Stage the file on the box (no sudo needed for scp to /tmp).
-    scp_to_box "$LOCAL_HANDLER" "$BOX_STAGED"
+    # 2. Stage all files under one tmpdir on the box. scp can't write
+    #    into a missing dir, so create it first via the non-sudo
+    #    ssh channel.
+    ssh_box "mkdir -p '$BOX_STAGE_DIR'" \
+        || { echo "ERROR: could not create $BOX_STAGE_DIR on box" >&2; exit 1; }
 
-    # 2. Snapshot + docker cp + docker restart in ONE ssh-with-tty
-    #    session so sudo's credential cache means at most one password
-    #    prompt for this script. The remote script is sent as a single
-    #    argument so heredoc/stdin doesn't fight sudo for the TTY.
+    for entry in "${FILES_TO_DEPLOY[@]}"; do
+        local_path="${entry%%:*}"
+        scp_to_box "$REPO_ROOT/$local_path" "$BOX_STAGE_DIR/$(basename "$local_path")"
+    done
+
+    # 3. Snapshot + docker cp + docker restart in ONE ssh-with-tty
+    #    session so sudo's credential cache gives at most one prompt.
+    #    The remote script is a single argument so heredoc/stdin
+    #    doesn't fight sudo for the TTY.
     local remote_script
-    remote_script=$(cat <<EOF
-set -e
-if [ -f "$BOX_BACKUP" ]; then
-    echo "  Existing snapshot preserved at $BOX_BACKUP"
+    remote_script="set -e
+mkdir -p '$BOX_BACKUP_DIR'
+"
+    for entry in "${FILES_TO_DEPLOY[@]}"; do
+        local_path="${entry%%:*}"
+        container_path="${entry##*:}"
+        local fname
+        fname="$(basename "$local_path")"
+        # Snapshot the in-container file ONLY on the first deploy.
+        # `docker cp` from container -> host may fail if the path
+        # doesn't exist in the container yet (e.g. lock_state.py on a
+        # box that hasn't been rebuilt yet). Treat that as "no snapshot
+        # needed" rather than fatal — restore can simply rm the file.
+        remote_script+="
+if [ -f '$BOX_BACKUP_DIR/$fname' ]; then
+    echo '  preserving existing snapshot of $fname'
 else
-    echo "  Snapshotting current $CONTAINER_HANDLER -> $BOX_BACKUP"
-    sudo docker cp lager:$CONTAINER_HANDLER $BOX_BACKUP
+    if sudo docker cp 'lager:$container_path' '$BOX_BACKUP_DIR/$fname' 2>/dev/null; then
+        echo '  snapshot lager:$container_path -> $BOX_BACKUP_DIR/$fname'
+    else
+        echo 'MISSING' | sudo tee '$BOX_BACKUP_DIR/$fname.absent' >/dev/null
+        echo '  $container_path absent in container (first deploy of a new file)'
+    fi
 fi
-echo "  docker cp $BOX_STAGED -> lager:$CONTAINER_HANDLER"
-sudo docker cp $BOX_STAGED lager:$CONTAINER_HANDLER
-echo "  docker restart lager"
+echo '  docker cp $BOX_STAGE_DIR/$fname -> lager:$container_path'
+sudo docker cp '$BOX_STAGE_DIR/$fname' 'lager:$container_path'
+"
+    done
+    remote_script+="
+echo '  docker restart lager'
 sudo docker restart lager
-EOF
-)
+"
     echo "  (you may be prompted for the sudo password on the box)"
     ssh_box_sudo "$remote_script" \
         || { echo "ERROR: remote docker cp / restart failed" >&2; exit 1; }
@@ -262,30 +313,43 @@ EOF
 
 restore() {
     check_ssh
-    if ! ssh_box "test -f '$BOX_BACKUP'"; then
-        echo "ERROR: no snapshot at $BOX_BACKUP on the box; nothing to restore." >&2
+    if ! ssh_box "test -d '$BOX_BACKUP_DIR'"; then
+        echo "ERROR: no snapshot dir at $BOX_BACKUP_DIR on the box; nothing to restore." >&2
         echo "       (Did you run --restore before deploying?)" >&2
         exit 1
     fi
 
-    echo "Restoring $BOX_BACKUP -> ${BOX_SSH}:${CONTAINER_HANDLER}"
-    # The snapshot was created by `sudo docker cp` so it's root-owned;
-    # use sudo for the rm too. Single ssh-tty session to keep it to one
-    # sudo prompt.
-    local remote_script
-    remote_script=$(cat <<EOF
-set -e
-echo "  docker cp $BOX_BACKUP -> lager:$CONTAINER_HANDLER"
-sudo docker cp $BOX_BACKUP lager:$CONTAINER_HANDLER
-echo "  docker restart lager"
+    echo "Restoring files snapshotted under $BOX_BACKUP_DIR"
+    local entry container_path fname
+    local remote_script="set -e
+"
+    for entry in "${FILES_TO_DEPLOY[@]}"; do
+        container_path="${entry##*:}"
+        fname="$(basename "${entry%%:*}")"
+        # If the file was absent in the container at first deploy
+        # (lock_state.py before any image build), restore = remove it
+        # from the container.
+        remote_script+="
+if sudo test -f '$BOX_BACKUP_DIR/$fname.absent'; then
+    echo '  removing $container_path (was absent before deploy)'
+    sudo docker exec lager rm -f '$container_path' || true
+elif sudo test -f '$BOX_BACKUP_DIR/$fname'; then
+    echo '  docker cp $BOX_BACKUP_DIR/$fname -> lager:$container_path'
+    sudo docker cp '$BOX_BACKUP_DIR/$fname' 'lager:$container_path'
+else
+    echo '  no snapshot for $fname (skipping)'
+fi
+"
+    done
+    remote_script+="
+echo '  docker restart lager'
 sudo docker restart lager
-echo "  removing $BOX_BACKUP and $BOX_STAGED"
-sudo rm -f $BOX_BACKUP $BOX_STAGED
-EOF
-)
+echo '  clearing snapshot + stage dirs'
+sudo rm -rf '$BOX_BACKUP_DIR' '$BOX_STAGE_DIR'
+"
     echo "  (you may be prompted for the sudo password on the box)"
     ssh_box_sudo "$remote_script" \
-        || { echo "ERROR: remote docker cp / restart failed" >&2; exit 1; }
+        || { echo "ERROR: remote restore failed" >&2; exit 1; }
     wait_for_http
     echo "  Snapshot cleared; deploy again to re-test."
 }

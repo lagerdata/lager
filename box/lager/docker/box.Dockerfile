@@ -157,7 +157,7 @@ RUN pip3 install -r /tmp/user_requirements.txt
 # Copy Python lager package modules (grouped structure)
 # Copy Python files at root level
 COPY __init__.py actuate.py box_http_server.py breakpoint.py cache.py constants.py core.py \
-     exceptions.py hardware_service.py log.py rotation.py \
+     exceptions.py hardware_service.py lock_state.py log.py rotation.py \
      /app/lager/lager/
 
 # Copy core subpackages
