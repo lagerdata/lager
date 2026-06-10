@@ -317,6 +317,9 @@ _SINGLE_CHANNEL_INST = {
     "Keithley_2281S": ("batt", "supply"),
     "EA_PSB_10060_60": ("solar", "supply"),
     "EA_PSB_10080_60": ("solar", "supply"),
+    # Custom serial instrument (DEVICE_CATALOG single_channel=True): only one
+    # net may reference the instrument at its serial:// address.
+    "Rigol_DP711": ("supply",),
 }
 # Chips that can run in exactly one mode at a time, across ALL roles. The
 # canonical case is the FT232H: one physical channel, hardware-multiplexed
@@ -330,6 +333,11 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     "Rigol_DP811": ["supply"],
     "Rigol_DP821": ["supply"],
     "Rigol_DP831": ["supply"],
+    # DP711: RS-232-only, surfaced via a custom-device assignment (serial://
+    # address) rather than USB enumeration. Roles mirror
+    # box/lager/devices/catalog.py — same catalog-data duplication tech debt
+    # as the scanner's SUPPORTED_USB tables.
+    "Rigol_DP711": ["supply"],
     "EA_PSB_10080_60": ["supply", "solar"],
     "EA_PSB_10060_60": ["supply", "solar"],
     "KEYSIGHT_E36233A": ["supply"],
