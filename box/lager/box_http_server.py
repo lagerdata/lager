@@ -221,8 +221,11 @@ def status():
         # Capabilities let the control plane route per box. `netCommand` means
         # this box serves POST /net/command, so Stout can use the warm in-process
         # path instead of the `lager python` exec fallback for Tier-1 instruments.
+        # Must reflect whether the route actually registered (see _has_net_command
+        # above): advertising it unconditionally makes the control plane route to
+        # /net/command on boxes where the handler import failed, which 404s.
         'capabilities': {
-            'netCommand': True,
+            'netCommand': _has_net_command,
         },
     })
 
