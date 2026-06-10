@@ -80,6 +80,23 @@ def _asrl_address(address: Optional[str]) -> Optional[str]:
     return None
 
 
+def _assignment_serial_settings(address: str) -> Optional[dict]:
+    """Per-assignment serial settings for a durable ``serial://`` address.
+
+    The assignment record can carry a ``--baud`` override on top of the
+    catalog defaults (the DP711's rate is front-panel-configurable, so it can
+    differ per unit). Guarded: returns None for non-durable addresses or when
+    the store is unavailable, and the caller falls back to catalog defaults.
+    """
+    if not is_serial_address(address):
+        return None
+    try:
+        from lager.devices.custom_store import serial_settings_for_address
+        return serial_settings_for_address(address)
+    except Exception:
+        return None
+
+
 def _apply_serial_settings(inst: Any, cfg: dict) -> None:
     """Best-effort application of baud/data/stop/parity to an ASRL resource."""
     try:
@@ -184,7 +201,12 @@ class RigolDP700(SupplyNet):
         # the cached driver would otherwise hold a stale /dev/ttyUSB* session).
         self._raw_address = addr
         self._durable = is_serial_address(addr)
-        self._cfg = serial_cfg if serial_cfg is not None else (serial_params(CATALOG_NAME) or {})
+        if serial_cfg is not None:
+            self._cfg = serial_cfg
+        else:
+            # Assignment-level overrides (e.g. --baud) win over catalog defaults.
+            self._cfg = (_assignment_serial_settings(addr)
+                         or serial_params(CATALOG_NAME) or {})
         self._rm = None
         self.instr = None
         self._opened_tty: Optional[str] = None

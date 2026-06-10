@@ -144,6 +144,51 @@ class CustomStoreTests(unittest.TestCase):
         self.assertIsNone(cs.instrument_for_address("serial://067b:23a3/serial/nope"))
         self.assertIsNone(cs.instrument_for_address("not-an-address"))
 
+    # ---- baud override / serial settings ---------------------------------
+
+    def test_add_with_baud_persists_override(self):
+        rec = cs.add("Rigol_DP711", VID, PID, serial="s", baud=19200)
+        self.assertEqual(rec["baud"], 19200)
+        self.assertEqual(cs.load()[0]["baud"], 19200)
+
+    def test_add_without_baud_omits_field(self):
+        rec = cs.add("Rigol_DP711", VID, PID, serial="s")
+        self.assertNotIn("baud", rec)
+
+    def test_upsert_without_baud_drops_old_override(self):
+        cs.add("Rigol_DP711", VID, PID, serial="s", baud=19200)
+        cs.add("Rigol_DP711", VID, PID, serial="s")
+        records = cs.load()
+        self.assertEqual(len(records), 1)
+        self.assertNotIn("baud", records[0])
+
+    def test_serial_settings_default_to_catalog(self):
+        rec = cs.add("Rigol_DP711", VID, PID, serial="00000006")
+        settings = cs.serial_settings_for_address(cs.address_for(rec))
+        # Catalog defaults (DP700 factory settings) pass through untouched.
+        self.assertEqual(settings["baud"], 9600)
+        self.assertEqual(settings["parity"], "N")
+
+    def test_serial_settings_apply_baud_override(self):
+        rec = cs.add("Rigol_DP711", VID, PID, serial="00000006", baud=19200)
+        settings = cs.serial_settings_for_address(cs.address_for(rec))
+        self.assertEqual(settings["baud"], 19200)
+        # Only baud is overridable; the rest stays catalog-defined.
+        self.assertEqual(settings["bytesize"], 8)
+
+    def test_serial_settings_none_for_unassigned_or_invalid_address(self):
+        self.assertIsNone(cs.serial_settings_for_address("serial://067b:23a3/serial/nope"))
+        self.assertIsNone(cs.serial_settings_for_address("USB0::0x1AB1::0x0E11::X::INSTR"))
+
+    # ---- record_for -------------------------------------------------------
+
+    def test_record_for_returns_full_record(self):
+        cs.add("Rigol_DP711", VID, PID, serial="s", baud=19200)
+        rec = cs.record_for(VID, PID, serial="s")
+        self.assertEqual(rec["instrument"], "Rigol_DP711")
+        self.assertEqual(rec["baud"], 19200)
+        self.assertIsNone(cs.record_for(VID, PID, serial="other"))
+
     # ---- resilience -----------------------------------------------------
 
     def test_corrupt_store_is_tolerated(self):

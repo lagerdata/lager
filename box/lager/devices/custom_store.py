@@ -24,7 +24,7 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
-from lager.devices.catalog import canonical_name
+from lager.devices.catalog import canonical_name, serial_params
 from lager.devices.serial_id import make_address, parse_address
 
 STORE_PATH = os.environ.get(
@@ -83,8 +83,13 @@ def load() -> List[Dict[str, Any]]:
 
 
 def add(instrument: str, vid: str, pid: str,
-        serial: Optional[str] = None, port_path: Optional[str] = None) -> Dict[str, Any]:
+        serial: Optional[str] = None, port_path: Optional[str] = None,
+        baud: Optional[int] = None) -> Dict[str, Any]:
     """Upsert an assignment of a cable identity to a catalog instrument.
+
+    *baud* optionally overrides the catalog's default rate for this one
+    assignment (the DP711's rate is set on its front panel, so it can differ
+    per unit). Omitted entirely from the record when not given.
 
     Raises ValueError if *instrument* is unknown or no identity is provided.
     """
@@ -101,6 +106,8 @@ def add(instrument: str, vid: str, pid: str,
         "serial": serial or None,
         "port_path": port_path or None,
     }
+    if baud is not None:
+        rec["baud"] = int(baud)
     records = [r for r in _load_raw() if _identity_key(r) != _identity_key(rec)]
     records.append(rec)
     _atomic_write(records)
@@ -120,9 +127,9 @@ def remove(vid: str, pid: str,
     return True
 
 
-def resolve(vid: str, pid: str,
-            serial: Optional[str] = None, port_path: Optional[str] = None) -> Optional[str]:
-    """Return the assigned instrument name for a live device, or None.
+def record_for(vid: str, pid: str,
+               serial: Optional[str] = None, port_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Return the stored assignment record matching a cable identity, or None.
 
     Matches by serial when the stored record has one (and it equals the live
     serial); otherwise by port path. vid/pid must match.
@@ -133,11 +140,18 @@ def resolve(vid: str, pid: str,
             continue
         if r.get("serial"):
             if serial and r["serial"] == serial:
-                return r.get("instrument")
+                return r
         elif r.get("port_path"):
             if port_path and r["port_path"] == port_path:
-                return r.get("instrument")
+                return r
     return None
+
+
+def resolve(vid: str, pid: str,
+            serial: Optional[str] = None, port_path: Optional[str] = None) -> Optional[str]:
+    """Return the assigned instrument name for a live device, or None."""
+    rec = record_for(vid, pid, serial=serial, port_path=port_path)
+    return rec.get("instrument") if rec else None
 
 
 def instrument_for_address(address: str) -> Optional[str]:
@@ -147,6 +161,30 @@ def instrument_for_address(address: str) -> Optional[str]:
         return None
     return resolve(parts["vid"], parts["pid"],
                    serial=parts.get("serial"), port_path=parts.get("port_path"))
+
+
+def serial_settings_for_address(address: str) -> Optional[Dict[str, Any]]:
+    """Serial line settings for a ``serial://`` address, or None.
+
+    The assigned instrument's catalog defaults (``catalog.serial_params``),
+    overlaid with the assignment's stored overrides — currently just ``baud``,
+    set with ``lager nets assign --baud`` when the instrument's front panel
+    is not at the factory rate. None when the address is not a ``serial://``
+    resource, has no assignment, or the instrument is not serial-transport.
+    """
+    parts = parse_address(address)
+    if not parts:
+        return None
+    rec = record_for(parts["vid"], parts["pid"],
+                     serial=parts.get("serial"), port_path=parts.get("port_path"))
+    if not rec:
+        return None
+    settings = serial_params(rec.get("instrument"))
+    if settings is None:
+        return None
+    if rec.get("baud"):
+        settings["baud"] = int(rec["baud"])
+    return settings
 
 
 def address_for(rec: Dict[str, Any]) -> str:
