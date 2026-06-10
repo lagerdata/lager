@@ -58,10 +58,52 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+SECRET_KEY_PATH = '/etc/lager/secret_key'
+
+
+def _load_secret_key():
+    """Resolve Flask SECRET_KEY: env var, then persistent file, else generate and persist.
+
+    /etc/lager is host-mounted (see start_box.sh), so a key written there
+    survives container rebuilds/restarts and Flask sessions stay valid.
+    """
+    key = os.environ.get('SECRET_KEY')
+    if key:
+        return key
+
+    try:
+        with open(SECRET_KEY_PATH) as f:
+            key = f.read().strip()
+    except FileNotFoundError:
+        key = None
+    except OSError as e:
+        logger.warning("Could not read %s: %s", SECRET_KEY_PATH, e)
+        key = None
+
+    if key:
+        try:
+            os.chmod(SECRET_KEY_PATH, 0o600)
+        except OSError:
+            pass
+        return key
+
+    key = os.urandom(24).hex()
+    try:
+        fd = os.open(SECRET_KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(key)
+    except OSError as e:
+        logger.warning(
+            "Could not persist SECRET_KEY to %s; sessions will not survive restart: %s",
+            SECRET_KEY_PATH, e
+        )
+    return key
+
+
 # Create Flask app
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max request size
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or os.urandom(24).hex()
+app.config['SECRET_KEY'] = _load_secret_key()
 
 # Initialize SocketIO
 # Force threading mode since eventlet 0.35.2 has issues with Python 3.12
