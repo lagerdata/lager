@@ -102,6 +102,9 @@ class GetControllerLeakTests(unittest.TestCase):
         ctrl.exit.assert_not_called()
         self.assertIn(('NRF52840_XXAA', '127.0.0.1', 2331),
                       gdb._gdb_controller_cache)
+        # A clean connect keeps non-stop; RTT detection relies on this flag to
+        # decide it does NOT need to resume the core after its memory reads.
+        self.assertIs(result.lager_non_stop, True)
 
     @staticmethod
     def _ctor_factory(created, error_item_for, *, only_first=False):
@@ -156,6 +159,9 @@ class GetControllerLeakTests(unittest.TestCase):
         self.assertNotIn('set non-stop on', self._written(created[1]))
         self.assertTrue(any(c.startswith('tar ext') for c in self._written(created[1])))
         self.assertIn(('NRF52840_XXAA', '127.0.0.1', 2331), gdb._gdb_controller_cache)
+        # The fallback controller is in all-stop; the recorded flag lets RTT
+        # detection know it must resume the core after its halting memory reads.
+        self.assertIs(created[1].lager_non_stop, False)
 
     def test_genuine_target_error_still_raises_and_retries(self):
         """A non-(non-stop) `target` error is NOT swallowed: it retries the full
