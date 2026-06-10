@@ -69,7 +69,12 @@ done
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 LOCAL_HANDLER="$REPO_ROOT/box/lager/http_handlers/lock_handler.py"
-CONTAINER_HANDLER="/box/lager/http_handlers/lock_handler.py"
+# In-container path comes from box/lager/docker/box.Dockerfile:
+#   COPY http_handlers /app/lager/lager/http_handlers
+# The lager container does NOT bind-mount the source tree; it COPYs at
+# build time, which is why this script uses `docker cp` instead of
+# editing a host file.
+CONTAINER_HANDLER="/app/lager/lager/http_handlers/lock_handler.py"
 BOX_STAGED="/tmp/lock_handler.py.new"
 BOX_BACKUP="/tmp/lock_handler.py.orig"
 
