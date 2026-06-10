@@ -21,10 +21,46 @@ import json
 import logging
 import pathlib
 import re
+import threading
+import time
 
 from flask import Flask, jsonify, request
 
 logger = logging.getLogger(__name__)
+
+# Fixed-window rate limit for /authorize-key: the endpoint is token-protected,
+# but without a limiter the bearer token is brute-forceable. In-memory on
+# purpose — no new box-image dependency, and limits reset with the container.
+_RATE_LIMIT_MAX_ATTEMPTS = 5
+_RATE_LIMIT_WINDOW_SECONDS = 60
+_RATE_LIMIT_PRUNE_THRESHOLD = 1024
+_rate_limit_lock = threading.Lock()
+_rate_limit_attempts: dict[str, tuple[float, int]] = {}  # ip -> (window_start, count)
+
+
+def _rate_limited(ip: str) -> bool:
+    """Record an attempt from ip; return True if it exceeded the window limit."""
+    now = time.monotonic()
+    with _rate_limit_lock:
+        if len(_rate_limit_attempts) > _RATE_LIMIT_PRUNE_THRESHOLD:
+            expired = [
+                addr for addr, (start, _) in _rate_limit_attempts.items()
+                if now - start >= _RATE_LIMIT_WINDOW_SECONDS
+            ]
+            for addr in expired:
+                del _rate_limit_attempts[addr]
+        window_start, count = _rate_limit_attempts.get(ip, (now, 0))
+        if now - window_start >= _RATE_LIMIT_WINDOW_SECONDS:
+            window_start, count = now, 0
+        count += 1
+        _rate_limit_attempts[ip] = (window_start, count)
+        return count > _RATE_LIMIT_MAX_ATTEMPTS
+
+
+def _rate_limit_reset(ip: str) -> None:
+    """Clear the attempt window for ip (called after successful auth)."""
+    with _rate_limit_lock:
+        _rate_limit_attempts.pop(ip, None)
 
 # Best-effort immediate path: host's /home/lagerdata/.ssh is bind-mounted here by
 # start_box.sh. Writing here takes effect immediately but may fail if the host
@@ -102,6 +138,13 @@ def register_ssh_routes(app: Flask) -> None:
           400  { "error": "..." }  — bad request
           500  { "error": "..." }  — filesystem error
         """
+        # Rate limit before any token comparison so the bearer token cannot be
+        # brute-forced (fixed window, per source IP).
+        remote_ip = request.remote_addr or 'unknown'
+        if _rate_limited(remote_ip):
+            logger.warning('authorize-key: rate limit exceeded for %s', remote_ip)
+            return jsonify({'error': 'Too many authorization attempts; retry later'}), 429
+
         # Authenticate: require a Bearer token matching the authorize_token in
         # control_plane.json. Use hmac.compare_digest for timing-safe comparison.
         auth_header = request.headers.get('Authorization', '')
@@ -118,6 +161,8 @@ def register_ssh_routes(app: Flask) -> None:
         if not hmac.compare_digest(provided_token, expected_token):
             logger.warning('authorize-key: Bearer token mismatch — rejecting request')
             return jsonify({'error': 'Invalid authorization token'}), 401
+
+        _rate_limit_reset(remote_ip)
 
         data = request.get_json(silent=True) or {}
         public_key = (data.get('public_key') or '').strip()
