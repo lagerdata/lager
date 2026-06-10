@@ -31,7 +31,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from urllib.parse import quote, unquote
 
 _SYS_TTY = Path("/sys/class/tty")
@@ -169,3 +169,38 @@ def resolve_address_to_tty(address: str) -> Optional[str]:
         parts["vid"], parts["pid"],
         serial=parts.get("serial"), port_path=parts.get("port_path"),
     )
+
+
+def list_cables() -> List[Dict[str, Optional[str]]]:
+    """Enumerate live USB-serial cables, one record per tty.
+
+    Returns ``[{"vid", "pid", "serial", "port_path", "tty"}]`` for every
+    ``/dev/ttyUSB*`` / ``/dev/ttyACM*`` backed by a USB device. ``port_path``
+    is the sysfs device-dir basename (e.g. ``1-1.2``) used by the port-pinned
+    assignment form; ``serial`` is None for cables without a programmed one.
+
+    This is the cable picker's data source: the assign flow identifies a
+    cable by serial or port path and captures its vid/pid from here, so an
+    assignment can only be created for hardware that is actually plugged in.
+    """
+    cables: List[Dict[str, Optional[str]]] = []
+    if not _SYS_TTY.exists():
+        return cables
+    for tty_dev in sorted(_SYS_TTY.iterdir(), key=lambda p: p.name):
+        if not tty_dev.name.startswith(("ttyUSB", "ttyACM")):
+            continue
+        usb_dir = _usb_device_dir_for_tty(tty_dev)
+        if usb_dir is None:
+            continue
+        vid = (_read_sysfs_text(usb_dir / "idVendor") or "").lower()
+        pid = (_read_sysfs_text(usb_dir / "idProduct") or "").lower()
+        if not vid or not pid:
+            continue
+        cables.append({
+            "vid": vid,
+            "pid": pid,
+            "serial": _read_sysfs_text(usb_dir / "serial"),
+            "port_path": usb_dir.name,
+            "tty": f"/dev/{tty_dev.name}",
+        })
+    return cables
