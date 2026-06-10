@@ -47,10 +47,10 @@ To add a new udev rule for another instrument:
 3. **Add the udev rule:**
    ```bash
    # Template:
-   SUBSYSTEM=="usb", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", MODE="0666"
+   SUBSYSTEM=="usb", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", MODE="0660", GROUP="lager"
 
    # Example for Keysight scope (hypothetical):
-   SUBSYSTEM=="usb", ATTRS{idVendor}=="0957", ATTRS{idProduct}=="1234", MODE="0666"
+   SUBSYSTEM=="usb", ATTRS{idVendor}=="0957", ATTRS{idProduct}=="1234", MODE="0660", GROUP="lager"
    ```
 
 4. **Deploy using the deployment script:**
@@ -63,13 +63,15 @@ To add a new udev rule for another instrument:
 
 ### Basic Permission Rule
 ```bash
-SUBSYSTEM=="usb", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", MODE="0660", GROUP="lager"
 ```
 
 - `SUBSYSTEM=="usb"`: Match USB devices only
 - `ATTRS{idVendor}=="<VID>"`: Match specific vendor ID (4-digit hex)
 - `ATTRS{idProduct}=="<PID>"`: Match specific product ID (4-digit hex)
-- `MODE="0666"`: Set permissions to read/write for all users
+- `MODE="0660", GROUP="lager"`: Read/write for the lager group only. The
+  container user gets access via `--group-add` in start_box.sh; the host
+  needs the group (`sudo groupadd -f lager` — `lager update` ensures this).
 
 ### SCPI/USBTMC Instruments (prevents "Resource busy" errors)
 
@@ -79,7 +81,7 @@ access the device directly via libusb, preventing "Resource busy" (Errno 16) err
 
 ```bash
 # Permission rule (required)
-SUBSYSTEM=="usb", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", MODE="0660", GROUP="lager"
 # Unbind usbtmc driver when it binds (required for PyVISA access)
 ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="usbtmc", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/usbtmc/unbind 2>/dev/null || true'"
 ```

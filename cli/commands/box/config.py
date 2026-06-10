@@ -2011,7 +2011,7 @@ def udev_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None
     ),
 )
 @click.argument("devices", nargs=-1, required=True)
-@click.option("--mode", default="0666", show_default=True, help="Octal device-node permission mode.")
+@click.option("--mode", default="0660", show_default=True, help="Octal device-node permission mode.")
 @click.option("--usbtmc", is_flag=True, help="Also emit the usbtmc driver-unbind rule (for PyVISA/SCPI).")
 @click.option("--box", help="Lagerbox name or IP")
 @click.pass_context

@@ -1788,7 +1788,7 @@ class UdevAddCommand(unittest.TestCase):
         # 0x prefix stripped, lowercased; usbtmc flag carried through.
         self.assertEqual(
             payload["rules"],
-            [{"vid": "1209", "pid": "0001", "mode": "0666", "usbtmc": True}],
+            [{"vid": "1209", "pid": "0001", "mode": "0660", "usbtmc": True}],
         )
 
     def test_malformed_token_rejected_before_box_call(self):
