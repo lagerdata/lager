@@ -110,18 +110,33 @@ BOX_SSH="${BOX_SSH_USER}@${BOX_IP}"
 # the key `lager install` provisions), then your default agent/key,
 # and only drop to interactive password if the caller asks for it.
 LAGER_KEY="${LAGER_BOX_SSH_KEY:-$HOME/.ssh/lager_box}"
+
+# Non-sudo commands (file existence checks, scp): BatchMode is fine and
+# lets us fail fast on auth errors instead of hanging on a prompt.
 SSH_OPTS=( -o ConnectTimeout=10 )
+# Sudo commands (docker cp / docker restart): must have a TTY so sudo
+# can read a password. -tt forces tty allocation even when the local
+# stdin isn't a terminal.
+SSH_OPTS_SUDO=( -tt -o ConnectTimeout=10 )
+
 if [ "$USE_PASSWORD" = "1" ]; then
-    SSH_OPTS+=( -o NumberOfPasswordPrompts=3 -o PreferredAuthentications=password,keyboard-interactive )
     echo "  (password auth enabled — you may be prompted multiple times)"
+    for arr in SSH_OPTS SSH_OPTS_SUDO; do
+        eval "$arr+=( -o NumberOfPasswordPrompts=3 -o PreferredAuthentications=password,keyboard-interactive )"
+    done
 else
     SSH_OPTS+=( -o BatchMode=yes )
+    # SSH_OPTS_SUDO deliberately does NOT set BatchMode — sudo needs to
+    # prompt. Key auth still works because the -i flag below is added
+    # for both arrays.
     if [ -f "$LAGER_KEY" ]; then
         SSH_OPTS+=( -i "$LAGER_KEY" )
+        SSH_OPTS_SUDO+=( -i "$LAGER_KEY" )
     fi
 fi
 
 ssh_box() { ssh "${SSH_OPTS[@]}" "$BOX_SSH" "$@"; }
+ssh_box_sudo() { ssh "${SSH_OPTS_SUDO[@]}" "$BOX_SSH" "$@"; }
 scp_to_box() { scp "${SSH_OPTS[@]}" "$1" "${BOX_SSH}:$2"; }
 
 check_ssh() {
@@ -169,23 +184,31 @@ deploy() {
     echo "         -> ${BOX_SSH}:${CONTAINER_HANDLER}"
     check_ssh
 
-    # 1. Stage the file on the box.
+    # 1. Stage the file on the box (no sudo needed for scp to /tmp).
     scp_to_box "$LOCAL_HANDLER" "$BOX_STAGED"
 
-    # 2. Snapshot the existing in-container file ONLY on the first deploy
-    #    (don't overwrite a real snapshot with a smoke-modified copy on a
-    #    repeat run — that would defeat --restore).
-    if ! ssh_box "test -f '$BOX_BACKUP'"; then
-        echo "  Snapshotting current $CONTAINER_HANDLER -> $BOX_BACKUP"
-        ssh_box "sudo docker cp lager:${CONTAINER_HANDLER} ${BOX_BACKUP}" \
-            || { echo "ERROR: could not snapshot existing handler" >&2; exit 1; }
-    else
-        echo "  Existing snapshot already at $BOX_BACKUP (preserving original)"
-    fi
-
-    # 3. Copy into the container and bounce it.
-    ssh_box "sudo docker cp ${BOX_STAGED} lager:${CONTAINER_HANDLER} && sudo docker restart lager" \
-        || { echo "ERROR: docker cp + restart failed" >&2; exit 1; }
+    # 2. Snapshot + docker cp + docker restart in ONE ssh-with-tty
+    #    session so sudo's credential cache means at most one password
+    #    prompt for this script. The remote script is sent as a single
+    #    argument so heredoc/stdin doesn't fight sudo for the TTY.
+    local remote_script
+    remote_script=$(cat <<EOF
+set -e
+if [ -f "$BOX_BACKUP" ]; then
+    echo "  Existing snapshot preserved at $BOX_BACKUP"
+else
+    echo "  Snapshotting current $CONTAINER_HANDLER -> $BOX_BACKUP"
+    sudo docker cp lager:$CONTAINER_HANDLER $BOX_BACKUP
+fi
+echo "  docker cp $BOX_STAGED -> lager:$CONTAINER_HANDLER"
+sudo docker cp $BOX_STAGED lager:$CONTAINER_HANDLER
+echo "  docker restart lager"
+sudo docker restart lager
+EOF
+)
+    echo "  (you may be prompted for the sudo password on the box)"
+    ssh_box_sudo "$remote_script" \
+        || { echo "ERROR: remote docker cp / restart failed" >&2; exit 1; }
 
     wait_for_http
 
@@ -214,13 +237,24 @@ restore() {
     fi
 
     echo "Restoring $BOX_BACKUP -> ${BOX_SSH}:${CONTAINER_HANDLER}"
-    ssh_box "sudo docker cp ${BOX_BACKUP} lager:${CONTAINER_HANDLER} && sudo docker restart lager" \
-        || { echo "ERROR: docker cp + restart failed" >&2; exit 1; }
+    # The snapshot was created by `sudo docker cp` so it's root-owned;
+    # use sudo for the rm too. Single ssh-tty session to keep it to one
+    # sudo prompt.
+    local remote_script
+    remote_script=$(cat <<EOF
+set -e
+echo "  docker cp $BOX_BACKUP -> lager:$CONTAINER_HANDLER"
+sudo docker cp $BOX_BACKUP lager:$CONTAINER_HANDLER
+echo "  docker restart lager"
+sudo docker restart lager
+echo "  removing $BOX_BACKUP and $BOX_STAGED"
+sudo rm -f $BOX_BACKUP $BOX_STAGED
+EOF
+)
+    echo "  (you may be prompted for the sudo password on the box)"
+    ssh_box_sudo "$remote_script" \
+        || { echo "ERROR: remote docker cp / restart failed" >&2; exit 1; }
     wait_for_http
-
-    # Delete the snapshot so a future deploy snapshots the freshly
-    # restored (i.e. main-branch) file.
-    ssh_box "rm -f '$BOX_BACKUP' '$BOX_STAGED'" || true
     echo "  Snapshot cleared; deploy again to re-test."
 }
 
