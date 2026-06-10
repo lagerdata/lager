@@ -11,11 +11,20 @@
 # --detach retention, and pre-existing user lock pass-through.
 #
 # Usage:
-#     test/manual/hardware_lock_smoke.sh <BOX_NAME_OR_IP> [BOX_SSH_USER]
+#     test/manual/hardware_lock_smoke.sh <BOX_NAME_OR_IP> [--user USER] [--password]
 #
 # Defaults:
-#   - BOX_SSH_USER = lagerdata
-#   - SSH key auth assumed (the script does not prompt for passwords).
+#   - BOX_SSH_USER  = third column of `lager boxes` for this box, else
+#                     lagerdata
+#   - SSH key       = ~/.ssh/lager_box if it exists (the key the lager
+#                     CLI provisions), else your default agent/key
+#   - Pass --password (or LAGER_BOX_SSH_PASS=1) to drop BatchMode and
+#     use interactive password auth.
+#
+# Env vars (override transport without flags):
+#   LAGER_BOX_SSH_USER   default SSH user
+#   LAGER_BOX_SSH_KEY    private key path (default: ~/.ssh/lager_box)
+#   LAGER_BOX_SSH_PASS   "1" -> interactive password auth
 #
 # Safety:
 #   1. Refuses to run if the box is currently locked by a non-test
@@ -37,39 +46,55 @@ set -o pipefail
 
 if [ $# -lt 1 ]; then
     cat <<EOF >&2
-Usage: $0 <BOX_NAME_OR_IP> [BOX_SSH_USER]
+Usage: $0 <BOX_NAME_OR_IP> [--user USER] [--password]
 
   BOX_NAME_OR_IP   The box name (resolved via 'lager boxes') or raw IP.
-  BOX_SSH_USER     SSH user (default: lagerdata).
+  --user USER      Override SSH user (default: stored / lagerdata).
+  --password       Use interactive password auth (no BatchMode).
 
 Env vars:
-  SMOKE_FORCE=1    Skip the "box is locked by another user" pre-flight.
-  SMOKE_KEEP=1     Skip the restore step (useful for post-mortem).
-  SMOKE_VERBOSE=1  Echo every command before running.
+  SMOKE_FORCE=1         Skip "box is locked by another user" pre-flight.
+  SMOKE_KEEP=1          Skip the restore step (useful for post-mortem).
+  SMOKE_VERBOSE=1       Echo every command before running.
+  LAGER_BOX_SSH_USER    Default SSH user.
+  LAGER_BOX_SSH_KEY     Private key path (default: ~/.ssh/lager_box).
+  LAGER_BOX_SSH_PASS=1  Same as --password.
 EOF
     exit 1
 fi
 
 BOX="$1"
-BOX_SSH_USER="${2:-lagerdata}"
+shift
+
+BOX_SSH_USER="${LAGER_BOX_SSH_USER:-}"
+USE_PASSWORD="${LAGER_BOX_SSH_PASS:-0}"
 SMOKE_FORCE="${SMOKE_FORCE:-0}"
 SMOKE_KEEP="${SMOKE_KEEP:-0}"
 SMOKE_VERBOSE="${SMOKE_VERBOSE:-0}"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --user)    BOX_SSH_USER="$2"; shift 2 ;;
+        --user=*)  BOX_SSH_USER="${1#*=}"; shift ;;
+        --password|-p) USE_PASSWORD=1; shift ;;
+        *) echo "Unknown arg: $1" >&2; exit 1 ;;
+    esac
+done
 
 if [ "$SMOKE_VERBOSE" = "1" ]; then
     set -x
 fi
 
-# Source the existing color/harness helpers if available so output
-# matches the rest of the integration suite.
+# Colors — force the variables to contain *real* ESC bytes (via $'...')
+# rather than the literal backslash-escape strings in framework/colors.sh,
+# because this script prints them via `printf '%s'` (which does NOT
+# interpret backslash escapes). Without this, you'd see `\033[0m` in
+# the output instead of color.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -f "$HERE/../framework/colors.sh" ]; then
-    # shellcheck disable=SC1091
-    source "$HERE/../framework/colors.sh"
-else
-    # Minimal fallback so the script is usable when run standalone.
-    GREEN=$'\033[0;32m'; RED=$'\033[0;31m'; YELLOW=$'\033[1;33m'; NC=$'\033[0m'
-fi
+GREEN=$'\033[0;32m'
+RED=$'\033[0;31m'
+YELLOW=$'\033[1;33m'
+NC=$'\033[0m'
 
 # ----------------------------------------------------------------------
 # Globals
@@ -87,27 +112,61 @@ TESTS_PASSED=0
 TESTS_FAILED=0
 FAILED_NAMES=()
 
-# Resolve BOX -> IP using the lager CLI. Tolerates both names and raw IPs.
-resolve_ip() {
-    local input="$1"
-    if [[ "$input" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        echo "$input"
-        return
+# Resolve BOX -> (IP, user). Tolerates names and raw IPs. Adopts the
+# third column of `lager boxes` as the SSH user when --user / env var
+# weren't supplied (matches the deploy script's behavior).
+if [[ "$BOX" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    BOX_IP="$BOX"
+else
+    if ! command -v lager >/dev/null 2>&1; then
+        echo "ERROR: '$BOX' is not an IP and 'lager' CLI is not on PATH." >&2
+        exit 1
     fi
-    # Try the CLI's box storage first
-    local ip
-    ip="$(lager boxes 2>/dev/null | awk -v name="$input" '$1==name {print $2; exit}')"
-    if [ -n "$ip" ]; then
-        echo "$ip"
-        return
+    BOX_LINE="$(lager boxes 2>/dev/null | awk -v n="$BOX" '$1==n {print; exit}')"
+    if [ -z "$BOX_LINE" ]; then
+        echo "Could not resolve '$BOX' to an IP. Add it with:" >&2
+        echo "  lager boxes add --name $BOX --ip <IP> --user <ssh-user>" >&2
+        exit 1
     fi
-    echo "Could not resolve '$input' to an IP. Add it with: lager boxes add --name $input --ip <IP>" >&2
-    exit 1
-}
-
-BOX_IP="$(resolve_ip "$BOX")"
+    BOX_IP="$(echo "$BOX_LINE" | awk '{print $2}')"
+    if [ -z "$BOX_SSH_USER" ]; then
+        col3="$(echo "$BOX_LINE" | awk '{print $3}')"
+        if [ -n "$col3" ] && [[ ! "$col3" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            BOX_SSH_USER="$col3"
+        fi
+    fi
+fi
+BOX_SSH_USER="${BOX_SSH_USER:-lagerdata}"
 BOX_SSH="${BOX_SSH_USER}@${BOX_IP}"
 LOCK_URL="http://${BOX_IP}:5000/lock"
+
+# SSH options — same pattern as test/manual/deploy_branch_to_tester.sh.
+# SSH_OPTS for non-sudo (BatchMode=yes, fail fast on auth errors).
+# SSH_OPTS_SUDO drops BatchMode and forces a TTY so sudo can prompt.
+LAGER_KEY="${LAGER_BOX_SSH_KEY:-$HOME/.ssh/lager_box}"
+SSH_OPTS=( -o ConnectTimeout=10 )
+SSH_OPTS_SUDO=( -tt -o ConnectTimeout=10 )
+if [ "$USE_PASSWORD" = "1" ]; then
+    for arr in SSH_OPTS SSH_OPTS_SUDO; do
+        eval "$arr+=( -o NumberOfPasswordPrompts=3 -o PreferredAuthentications=password,keyboard-interactive )"
+    done
+else
+    SSH_OPTS+=( -o BatchMode=yes )
+    if [ -f "$LAGER_KEY" ]; then
+        SSH_OPTS+=( -i "$LAGER_KEY" )
+        SSH_OPTS_SUDO+=( -i "$LAGER_KEY" )
+    fi
+fi
+
+_ssh_auth_summary() {
+    if [ "$USE_PASSWORD" = "1" ]; then
+        echo "password (interactive)"
+    elif [ -f "$LAGER_KEY" ]; then
+        echo "key ($LAGER_KEY)"
+    else
+        echo "default agent / keys"
+    fi
+}
 
 cat <<EOF
 ========================================================================
@@ -115,6 +174,7 @@ LAGER AUTO-LOCK HARDWARE SMOKE TEST
 ========================================================================
 Box:           $BOX ($BOX_IP)
 SSH user:      $BOX_SSH_USER
+SSH auth:      $(_ssh_auth_summary)
 Test holder:   $TEST_HOLDER
 Local tmpdir:  $LOCAL_TMP
 Box snapshot:  $BOX_TMP_TAR
@@ -125,7 +185,14 @@ EOF
 # ----------------------------------------------------------------------
 
 ssh_box() {
-    ssh -o BatchMode=yes -o ConnectTimeout=10 "$BOX_SSH" "$@"
+    ssh "${SSH_OPTS[@]}" "$BOX_SSH" "$@"
+}
+
+# For commands that need sudo on the box. Combines multiple operations
+# into one ssh -tt session so sudo's credential cache gives at most one
+# password prompt per call.
+ssh_box_sudo() {
+    ssh "${SSH_OPTS_SUDO[@]}" "$BOX_SSH" "$@"
 }
 
 curl_box() {
@@ -222,15 +289,27 @@ preflight() {
 
     # 1. Box reachable via SSH (needed for backup/restore)?
     if ! ssh_box 'echo ok' >/dev/null 2>&1; then
-        echo "${RED}[FAIL]${NC} SSH to $BOX_SSH failed; cannot back up /etc/lager." >&2
-        echo "       Either fix SSH access or skip the snapshot with SMOKE_KEEP=1." >&2
+        printf '%s[FAIL]%s SSH to %s failed; cannot back up /etc/lager.\n' \
+            "$RED" "$NC" "$BOX_SSH" >&2
+        cat >&2 <<EOF
+       Tried key: $LAGER_KEY (exists: $([ -f "$LAGER_KEY" ] && echo yes || echo no))
+       Tried opts: ${SSH_OPTS[*]}
+
+       Fix one of:
+         1. Put the lager-provisioned key at $LAGER_KEY
+         2. Authorize your default key: ssh-copy-id $BOX_SSH
+         3. Use password auth: $0 $BOX --password
+         4. Different SSH user: $0 $BOX --user <user>
+       Or skip the snapshot entirely with SMOKE_KEEP=1.
+EOF
         exit 1
     fi
     echo "  SSH to $BOX_SSH ok"
 
     # 2. HTTP server reachable?
     if ! get_lock >/dev/null; then
-        echo "${RED}[FAIL]${NC} HTTP GET $LOCK_URL failed; is the box container up?" >&2
+        printf '%s[FAIL]%s HTTP GET %s failed; is the box container up?\n' \
+            "$RED" "$NC" "$LOCK_URL" >&2
         exit 1
     fi
     echo "  HTTP $LOCK_URL ok"
@@ -243,9 +322,11 @@ preflight() {
         && [[ "$current" != "$TEST_HOLDER" ]] \
         && [[ "$current" != "$TEST_HOLDER_ALT" ]]; then
         if [ "$SMOKE_FORCE" = "1" ]; then
-            echo "${YELLOW}[WARN]${NC} Box is locked by '$current' (SMOKE_FORCE=1 — continuing)"
+            printf '%s[WARN]%s Box is locked by %q (SMOKE_FORCE=1 — continuing)\n' \
+                "$YELLOW" "$NC" "$current"
         else
-            echo "${RED}[FAIL]${NC} Box is currently locked by '$current'." >&2
+            printf '%s[FAIL]%s Box is currently locked by %q.\n' \
+                "$RED" "$NC" "$current" >&2
             echo "       Re-run with SMOKE_FORCE=1 to override (this will overwrite the lock)." >&2
             exit 2
         fi
@@ -255,13 +336,16 @@ preflight() {
 
 backup_etc_lager() {
     section "BACKUP /etc/lager"
+    echo "  (you may be prompted for the sudo password on the box)"
     # Snapshot config dir on the box (NOT pulling locally — faster and
     # the data never has to leave the box). tar respects /etc/lager
-    # being root-owned via sudo.
-    if ssh_box "sudo tar czf '${BOX_TMP_TAR}' -C /etc lager 2>/dev/null"; then
+    # being root-owned via sudo. ssh_box_sudo allocates a TTY so sudo
+    # can prompt; sudo's credential cache covers the restore at exit.
+    if ssh_box_sudo "sudo tar czf '${BOX_TMP_TAR}' -C /etc lager 2>/dev/null"; then
         echo "  Snapshotted /etc/lager -> $BOX_TMP_TAR"
     else
-        echo "${YELLOW}[WARN]${NC} Could not snapshot /etc/lager (continuing without backup)" >&2
+        printf '%s[WARN]%s Could not snapshot /etc/lager (continuing without backup)\n' \
+            "$YELLOW" "$NC" >&2
     fi
 }
 
@@ -271,29 +355,43 @@ restore_etc_lager() {
         echo "  SMOKE_KEEP=1 — leaving box state as-is (snapshot remains at $BOX_TMP_TAR)"
         return
     fi
-    # 1. Stop the box container so it doesn't hold open file handles
-    #    while we mutate the config.
-    ssh_box 'sudo docker stop lager >/dev/null 2>&1' || true
 
-    # 2. Wipe and restore /etc/lager from the snapshot.
-    if ssh_box "test -f '${BOX_TMP_TAR}'" 2>/dev/null; then
-        ssh_box "sudo rm -rf /etc/lager && sudo tar xzf '${BOX_TMP_TAR}' -C /etc" \
-            && echo "  Restored /etc/lager from $BOX_TMP_TAR" \
-            || echo "${YELLOW}[WARN]${NC} Restore tar failed; /etc/lager may be inconsistent" >&2
-        ssh_box "rm -f '${BOX_TMP_TAR}'" || true
-    else
-        echo "${YELLOW}[WARN]${NC} No snapshot at $BOX_TMP_TAR — skipping restore"
+    # If we never set up SSH (e.g., pre-flight bailed before backup),
+    # don't pester the user for a sudo password just to fail again.
+    if ! ssh_box 'echo ok' >/dev/null 2>&1; then
+        printf '%s[WARN]%s SSH not available; skipping restore\n' "$YELLOW" "$NC"
+        return
     fi
 
-    # 3. Start the container back up.
-    ssh_box 'sudo docker start lager >/dev/null 2>&1' || true
+    # 1. Check whether the snapshot exists before opening a sudo session.
+    if ! ssh_box "test -f '${BOX_TMP_TAR}'" 2>/dev/null; then
+        printf '%s[WARN]%s No snapshot at %s — skipping restore\n' \
+            "$YELLOW" "$NC" "$BOX_TMP_TAR"
+        return
+    fi
 
-    # 4. Wait for the HTTP server to be reachable again.
+    echo "  (you may be prompted for the sudo password on the box)"
+    # 2. Stop -> wipe -> restore -> start, all in one sudo session.
+    if ! ssh_box_sudo "
+        sudo docker stop lager >/dev/null 2>&1 || true
+        sudo rm -rf /etc/lager
+        sudo tar xzf '${BOX_TMP_TAR}' -C /etc
+        sudo docker start lager >/dev/null 2>&1 || true
+        sudo rm -f '${BOX_TMP_TAR}'
+    "; then
+        printf '%s[WARN]%s Restore failed; /etc/lager may be inconsistent\n' \
+            "$YELLOW" "$NC" >&2
+    else
+        echo "  Restored /etc/lager from $BOX_TMP_TAR"
+    fi
+
+    # 3. Wait for the HTTP server to be reachable again.
     local attempts=0
     while ! get_lock >/dev/null 2>&1; do
         attempts=$((attempts + 1))
         if [ "$attempts" -gt 30 ]; then
-            echo "${YELLOW}[WARN]${NC} Box container did not come back within 30s" >&2
+            printf '%s[WARN]%s Box container did not come back within 30s\n' \
+                "$YELLOW" "$NC" >&2
             break
         fi
         sleep 1
