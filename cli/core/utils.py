@@ -218,7 +218,8 @@ def zip_dir(root, extra_files, max_content_size=math.inf, include_dirs=None):
             fileinfo = ZipInfo(basename)
             fileinfo.create_system = 3
             fileinfo.external_attr = os.stat(source_file).st_mode << 16
-            zip_archive.writestr(fileinfo, open(source_file, 'rb').read(), ZIP_DEFLATED)
+            with open(source_file, 'rb') as f:
+                zip_archive.writestr(fileinfo, f.read(), ZIP_DEFLATED)
 
         # Add include directories
         for dest_path, source_path in include_dirs.items():
