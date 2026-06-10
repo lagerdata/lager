@@ -81,13 +81,13 @@ This document tracks what test coverage exists across all Lager features and the
 
 ```
 test/
-├── api/                  # Python API tests (76 files, run on box via `lager python`)
-│   ├── communication/    # 28 files: I2C, SPI, UART, BLE, BluFi, WiFi, debug
-│   ├── io/               # 17 files: ADC, DAC, GPIO, PWM, pin conflict
+├── api/                  # Python API tests (71 files, run on box via `lager python`)
+│   ├── communication/    # 27 files: I2C, SPI, UART, BLE, BluFi, WiFi, debug
+│   ├── io/               # 16 files: ADC, DAC, GPIO, PWM, pin conflict
 │   ├── peripherals/      # 9 files: scope, arm, webcam, rotation, actuate
 │   ├── power/            # 4 files: supply, battery, solar, eload
-│   ├── sensors/          # 9 files: thermocouple, watt, energy, joulescope
-│   ├── usb/              # 7 files: USB hub enable/disable/toggle/stress
+│   ├── sensors/          # 8 files: thermocouple, watt, energy, joulescope
+│   ├── usb/              # 6 files: USB hub enable/disable/toggle/stress
 │   └── utility/          # 2 files: binaries, net listing
 ├── integration/          # Bash integration tests (36 files, run from host via harness.sh)
 │   ├── communication/    # 14 files: I2C, SPI, UART, WiFi, debug, J-Link
@@ -152,14 +152,12 @@ test/
 | `test_blufi_comprehensive.py` | BluFi provisioning protocol |
 | `test_debug_comprehensive.py` | J-Link flash, reset, erase, memory read |
 | `test_wait_for_level.py` | GPI level wait with 15 sub-tests |
-| `test_wait_for_level_simple.py` | GPI level wait (simplified) |
 | `test_wifi_comprehensive.py` | WiFi scan, connect, status, delete |
 
-#### I/O (17 files)
+#### I/O (16 files)
 
 | File | What it tests |
 |------|---------------|
-| `test_adc_single.py` | Single ADC read, type + range check |
 | `test_adc_multiple.py` | Multi-channel ADC reads (8 channels) |
 | `test_adc_continuous.py` | Continuous ADC sampling, stability |
 | `test_dac_output.py` | DAC voltage output, readback tolerance |
@@ -175,7 +173,6 @@ test/
 | `test_io_comprehensive.py` | Combined ADC + DAC + GPIO tests |
 | `test_pin_conflict.py` | Pin conflict detection |
 | `test_pwm_measurement.py` | PWM frequency, Vpp, duty cycle |
-| `diag_aardvark_gpio_adc.py` | Diagnostic tool (not a test) |
 
 #### Sensors (9 files)
 
@@ -184,7 +181,6 @@ test/
 | `test_thermocouple_single.py` | Single thermocouple read, range -40 to 125C |
 | `test_thermocouple_multiple.py` | Multi-channel thermocouple, cross-channel delta |
 | `test_thermocouple_monitor.py` | Continuous thermocouple monitoring, stability |
-| `test_watt_meter.py` | Watt meter per-sample type + range |
 | `test_watt_profile.py` | Watt profile: min/mean/max validation |
 | `test_sensors_comprehensive.py` | Multi-sensor enable/disable lifecycle |
 | `test_energy_analyzer.py` | Energy analysis: duration, Wh/J cross-check |
@@ -205,12 +201,11 @@ test/
 | `test_rotation_encoder.py` | Rotation encoder position reads |
 | `test_actuate.py` | Linear actuator control |
 
-#### USB (7 files)
+#### USB (6 files)
 
 | File | What it tests |
 |------|---------------|
 | `test_usb_comprehensive.py` | USB hub port list, per-port cycle |
-| `test_usb_enable_module.py` | USB enable via Net API |
 | `test_usb_multiple.py` | Multi-port disable/enable |
 | `test_usb_net_api.py` | USB Net.get API |
 | `test_usb_power_cycle.py` | USB port power cycle timing |
