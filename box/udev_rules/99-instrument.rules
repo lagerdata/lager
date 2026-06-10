@@ -1,5 +1,7 @@
 # Lab Instrument USB device permissions
-# Allows all users to access lab test equipment via USB
+# Grants the "lager" group access to lab test equipment via USB.
+# The container user (www-data) is joined to this group via --group-add in
+# start_box.sh; the host must have a "lager" group (sudo groupadd lager).
 # This file is synced from lager/box/udev_rules/99-instrument.rules
 
 # ============================================================================
@@ -7,35 +9,35 @@
 # ============================================================================
 
 # Rigol DP821 Power Supply: VID=0x1ab1, PID=0x0e11
-SUBSYSTEM=="usb", ATTRS{idVendor}=="1ab1", ATTRS{idProduct}=="0e11", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1ab1", ATTRS{idProduct}=="0e11", MODE="0660", GROUP="lager"
 ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="usbtmc", ATTRS{idVendor}=="1ab1", ATTRS{idProduct}=="0e11", RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/usbtmc/unbind 2>/dev/null || true'"
 
 # Rigol DP831 Power Supply: VID=0x1ab1, PID=0x0e31
-SUBSYSTEM=="usb", ATTRS{idVendor}=="1ab1", ATTRS{idProduct}=="0e31", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1ab1", ATTRS{idProduct}=="0e31", MODE="0660", GROUP="lager"
 ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="usbtmc", ATTRS{idVendor}=="1ab1", ATTRS{idProduct}=="0e31", RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/usbtmc/unbind 2>/dev/null || true'"
 
 # EA Elektro-Automatik PSB 10080-60 / PSB 10060-60: VID=0x232e, PID=0x0053
 # Supports both power-supply and solar modes
-SUBSYSTEM=="usb", ATTRS{idVendor}=="232e", ATTRS{idProduct}=="0053", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="232e", ATTRS{idProduct}=="0053", MODE="0660", GROUP="lager"
 ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="usbtmc", ATTRS{idVendor}=="232e", ATTRS{idProduct}=="0053", RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/usbtmc/unbind 2>/dev/null || true'"
 
 # Keysight E36233A Power Supply: VID=0x2a8d, PID=0x3302
 # Set permissions for direct USB access via PyVISA
-SUBSYSTEM=="usb", ATTRS{idVendor}=="2a8d", ATTRS{idProduct}=="3302", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2a8d", ATTRS{idProduct}=="3302", MODE="0660", GROUP="lager"
 # Unbind usbtmc driver from interface 0 to prevent "Resource busy" errors
 # This allows PyVISA to access the device directly via libusb
 ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="usbtmc", ATTRS{idVendor}=="2a8d", ATTRS{idProduct}=="3302", RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/usbtmc/unbind 2>/dev/null || true'"
 
 # Keysight E36312A Power Supply: VID=0x2a8d, PID=0x1102
 # Set permissions for direct USB access via PyVISA
-SUBSYSTEM=="usb", ATTRS{idVendor}=="2a8d", ATTRS{idProduct}=="1102", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2a8d", ATTRS{idProduct}=="1102", MODE="0660", GROUP="lager"
 # Unbind usbtmc driver from interface 0 to prevent "Resource busy" errors
 # This allows PyVISA to access the device directly via libusb
 ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="usbtmc", ATTRS{idVendor}=="2a8d", ATTRS{idProduct}=="1102", RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/usbtmc/unbind 2>/dev/null || true'"
 
 # Keysight E36313A Power Supply: VID=0x2a8d, PID=0x1202
 # Set permissions for direct USB access via PyVISA
-SUBSYSTEM=="usb", ATTRS{idVendor}=="2a8d", ATTRS{idProduct}=="1202", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2a8d", ATTRS{idProduct}=="1202", MODE="0660", GROUP="lager"
 # Unbind usbtmc driver from interface 0 to prevent "Resource busy" errors
 # This allows PyVISA to access the device directly via libusb
 ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="usbtmc", ATTRS{idVendor}=="2a8d", ATTRS{idProduct}=="1202", RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/usbtmc/unbind 2>/dev/null || true'"
@@ -46,7 +48,7 @@ ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="usbtmc", ATTRS{idVendor}=="2a8d", ATT
 
 # Keithley 2281S Battery Emulator: VID=0x05e6, PID=0x2281
 # Supports both battery and power-supply modes
-SUBSYSTEM=="usb", ATTRS{idVendor}=="05e6", ATTRS{idProduct}=="2281", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="05e6", ATTRS{idProduct}=="2281", MODE="0660", GROUP="lager"
 ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="usbtmc", ATTRS{idVendor}=="05e6", ATTRS{idProduct}=="2281", RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/usbtmc/unbind 2>/dev/null || true'"
 
 # ============================================================================
@@ -54,11 +56,11 @@ ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="usbtmc", ATTRS{idVendor}=="05e6", ATT
 # ============================================================================
 
 # Rigol MSO5204 Oscilloscope: VID=0x1ab1, PID=0x0515
-SUBSYSTEM=="usb", ATTRS{idVendor}=="1ab1", ATTRS{idProduct}=="0515", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1ab1", ATTRS{idProduct}=="0515", MODE="0660", GROUP="lager"
 ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="usbtmc", ATTRS{idVendor}=="1ab1", ATTRS{idProduct}=="0515", RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/usbtmc/unbind 2>/dev/null || true'"
 
 # Picoscope 2000 Series: VID=0x0ce9, PID=0x1007
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0ce9", ATTRS{idProduct}=="1007", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0ce9", ATTRS{idProduct}=="1007", MODE="0660", GROUP="lager"
 
 # ============================================================================
 # ADC / GPIO / DAC
@@ -66,43 +68,43 @@ SUBSYSTEM=="usb", ATTRS{idVendor}=="0ce9", ATTRS{idProduct}=="1007", MODE="0666"
 
 # LabJack T7: VID=0x0cd5, PID=0x0007
 # Fixes LJME_DEVICE_CURRENTLY_CLAIMED_BY_ANOTHER_PROCESS errors
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0cd5", ATTRS{idProduct}=="0007", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0cd5", ATTRS{idProduct}=="0007", MODE="0660", GROUP="lager"
 
 # Measurement Computing USB-202 DAQ: VID=0x09db, PID=0x012b
 # Allows all users to access MCC USB-202 data acquisition devices
-SUBSYSTEM=="usb", ATTRS{idVendor}=="09db", ATTRS{idProduct}=="012b", MODE="0666", GROUP="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="09db", ATTRS{idProduct}=="012b", MODE="0660", GROUP="lager"
 
 # ============================================================================
 # DEBUG / PROGRAMMERS
 # ============================================================================
 
 # Segger J-Link: VID=0x1366, PID=0x1024
-SUBSYSTEM=="usb", ATTRS{idVendor}=="1366", ATTRS{idProduct}=="1024", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1366", ATTRS{idProduct}=="1024", MODE="0660", GROUP="lager"
 
 # Segger J-Link Plus: VID=0x1366, PID=0x0101
-SUBSYSTEM=="usb", ATTRS{idVendor}=="1366", ATTRS{idProduct}=="0101", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1366", ATTRS{idProduct}=="0101", MODE="0660", GROUP="lager"
 
 # Segger Flasher ARM: VID=0x1366, PID=0x0503
-SUBSYSTEM=="usb", ATTRS{idVendor}=="1366", ATTRS{idProduct}=="0503", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1366", ATTRS{idProduct}=="0503", MODE="0660", GROUP="lager"
 
 # ST-Link v2 / v2-1 / v3 (OpenOCD): VID=0x0483, PIDs 0x3748/0x374B/0x374D-F
 # ST-Link is shipped on every Nucleo and Discovery board, plus standalone
 # programmers. OpenOCD's interface/stlink.cfg handles all variants once the
 # user-space access mode is open.
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="3748", MODE="0666"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374b", MODE="0666"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374d", MODE="0666"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374e", MODE="0666"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374f", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="3748", MODE="0660", GROUP="lager"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374b", MODE="0660", GROUP="lager"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374d", MODE="0660", GROUP="lager"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374e", MODE="0660", GROUP="lager"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374f", MODE="0660", GROUP="lager"
 
 # Raspberry Pi Picoprobe (RP2040 CMSIS-DAP firmware): VID=0x2e8a, PID=0x000c
-SUBSYSTEM=="usb", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="000c", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="000c", MODE="0660", GROUP="lager"
 
 # Atmel EDBG (CMSIS-DAP): VID=0x03eb, PID=0x2111
-SUBSYSTEM=="usb", ATTRS{idVendor}=="03eb", ATTRS{idProduct}=="2111", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="03eb", ATTRS{idProduct}=="2111", MODE="0660", GROUP="lager"
 
 # Generic DAPLink: VID=0x0d28, PID=0x0204
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", MODE="0660", GROUP="lager"
 
 # Note: FTDI-based debug adapters (FT232H 0x6014, FT2232H 0x6010, FT4232H
 # 0x6011) already have permissive rules in the UART/SERIAL ADAPTERS section
@@ -116,19 +118,19 @@ SUBSYSTEM=="usb", ATTRS{idVendor}=="0d28", ATTRS{idProduct}=="0204", MODE="0666"
 # Acroname BrainStem USB Hub: VID=0x24ff (all models)
 # Allows control of programmable USB hubs via BrainStem SDK
 # Covers USBHub2x4 (0x0011), USBHub3+ (0x0013), and other variants
-SUBSYSTEM=="usb", ATTRS{idVendor}=="24ff", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="24ff", MODE="0660", GROUP="lager"
 
 # Yepkit YKUSH USB Hub: VID=0x04d8, PID=0xf2f7 (YKUSH), 0x0042 (YKUSH3)
 # Allows control of YKUSH programmable USB hubs via pykush library
-SUBSYSTEM=="usb", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="f2f7", MODE="0666"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="0042", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="f2f7", MODE="0660", GROUP="lager"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="0042", MODE="0660", GROUP="lager"
 
 # ============================================================================
 # ELECTRONIC LOADS
 # ============================================================================
 
 # Rigol DL3021 Electronic Load: VID=0x1ab1, PID=0x0451
-SUBSYSTEM=="usb", ATTRS{idVendor}=="1ab1", ATTRS{idProduct}=="0451", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1ab1", ATTRS{idProduct}=="0451", MODE="0660", GROUP="lager"
 ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="usbtmc", ATTRS{idVendor}=="1ab1", ATTRS{idProduct}=="0451", RUN+="/bin/sh -c 'echo %k > /sys/bus/usb/drivers/usbtmc/unbind 2>/dev/null || true'"
 
 # ============================================================================
@@ -136,65 +138,65 @@ ACTION=="bind", SUBSYSTEM=="usb", DRIVER=="usbtmc", ATTRS{idVendor}=="1ab1", ATT
 # ============================================================================
 
 # Logitech BRIO HD: VID=0x046d, PID=0x085e
-SUBSYSTEM=="usb", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="085e", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="085e", MODE="0660", GROUP="lager"
 
 # Logitech BRIO: VID=0x046d, PID=0x0856
-SUBSYSTEM=="usb", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="0856", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="0856", MODE="0660", GROUP="lager"
 
 # Logitech C930e Webcam: VID=0x046d, PID=0x0843
-SUBSYSTEM=="usb", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="0843", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="0843", MODE="0660", GROUP="lager"
 
 # ============================================================================
 # POWER METERS
 # ============================================================================
 
 # Yocto-Watt Power Meter: VID=0x24e0, PID=0x002a
-SUBSYSTEM=="usb", ATTRS{idVendor}=="24e0", ATTRS{idProduct}=="002a", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="24e0", ATTRS{idProduct}=="002a", MODE="0660", GROUP="lager"
 
 # Joulescope JS220 Energy Analyzer: VID=0x16d0, PID=0x10ba
 # Uses jsdrv/libusb directly; no usbtmc kernel driver involved
-SUBSYSTEM=="usb", ATTRS{idVendor}=="16d0", ATTRS{idProduct}=="10ba", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="16d0", ATTRS{idProduct}=="10ba", MODE="0660", GROUP="lager"
 
 # Nordic Semiconductor PPK2 (Power Profiler Kit II): VID=0x1915, PID=0xc00a
 # Communicates via USB CDC serial; no usbtmc driver needed
-SUBSYSTEM=="usb", ATTRS{idVendor}=="1915", ATTRS{idProduct}=="c00a", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1915", ATTRS{idProduct}=="c00a", MODE="0660", GROUP="lager"
 
 # ============================================================================
 # THERMOCOUPLES
 # ============================================================================
 
 # Phidget Thermocouple: VID=0x06c2, PID=0x0046
-SUBSYSTEM=="usb", ATTRS{idVendor}=="06c2", ATTRS{idProduct}=="0046", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="06c2", ATTRS{idProduct}=="0046", MODE="0660", GROUP="lager"
 
 # ============================================================================
 # ROBOTIC ARMS
 # ============================================================================
 
 # Rotrics Dexarm: VID=0x0483, PID=0x5740
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5740", MODE="0660", GROUP="lager"
 
 # ============================================================================
 # UART / SERIAL ADAPTERS
 # ============================================================================
 
 # Prolific USB-Serial: VID=0x067b, PID=0x23a3
-SUBSYSTEM=="usb", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="23a3", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="23a3", MODE="0660", GROUP="lager"
 
 # Silicon Labs CP210x USB-Serial: VID=0x10c4, PID=0xea60
-SUBSYSTEM=="usb", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", MODE="0660", GROUP="lager"
 
 # FTDI FT232R USB-Serial: VID=0x0403, PID=0x6001
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", MODE="0660", GROUP="lager"
 
 # FTDI FT4232H Quad USB-Serial: VID=0x0403, PID=0x6011
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6011", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6011", MODE="0660", GROUP="lager"
 
 # Espressif ESP32 USB JTAG/Serial Debug Unit: VID=0x303a, PID=0x1001
-SUBSYSTEM=="usb", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="1001", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="1001", MODE="0660", GROUP="lager"
 
 # ============================================================================
 # GENERAL USBTMC DEVICES
 # ============================================================================
 
 # Generic USBTMC kernel driver for SCPI instruments
-KERNEL=="usbtmc*", MODE="0666"
+KERNEL=="usbtmc*", MODE="0660", GROUP="lager"
