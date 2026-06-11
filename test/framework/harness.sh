@@ -72,8 +72,15 @@ init_harness() {
             echo "init_harness: LAGER_TEST_LOCK=1 but \$BOX is not set yet; skipping session lock" >&2
         else
             acquire_box_lock_harness "$BOX"
+            # EXIT covers all termination paths. Trapping INT/TERM
+            # additionally would *swallow* those signals in bash (the
+            # handler doesn't call `exit`), letting the suite keep
+            # running unlocked after Ctrl+C — exactly the failure
+            # mode we're trying to prevent. With INT/TERM untrapped,
+            # bash exits on those signals and then fires EXIT, so
+            # the lock is still released.
             # shellcheck disable=SC2064  # we want $BOX expanded at trap-time, not later
-            trap "release_box_lock_harness '$BOX'" EXIT INT TERM
+            trap "release_box_lock_harness '$BOX'" EXIT
         fi
     fi
 }

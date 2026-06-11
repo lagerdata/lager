@@ -24,6 +24,25 @@ from .. import lock_state
 _UNSET = lock_state._UNSET  # noqa: SLF001
 
 
+def _parse_lock_body():
+    """Pull a dict-shaped JSON body off the current Flask request.
+
+    Returns (data, error_response). On success ``error_response`` is None;
+    on failure ``data`` is None and the caller should return the response.
+
+    Why this exists: ``request.get_json(silent=True) or {}`` silently
+    treats ``[]`` / ``"foo"`` / ``42`` as a valid payload, and downstream
+    ``data.get(...)`` / ``data['holder_type']`` then crashes with a 500.
+    Reject non-dict bodies as 400 instead.
+    """
+    data = request.get_json(silent=True)
+    if data is None:
+        return {}, None
+    if not isinstance(data, dict):
+        return None, (jsonify({'error': 'Expected a JSON object'}), 400)
+    return data, None
+
+
 def register_lock_routes(app: Flask) -> None:
     """Register lock REST routes with the Flask app."""
 
@@ -34,7 +53,9 @@ def register_lock_routes(app: Flask) -> None:
 
     @app.route('/lock', methods=['POST'])
     def lock_box():
-        data = request.get_json(silent=True) or {}
+        data, err = _parse_lock_body()
+        if err is not None:
+            return err
         user = data.get('user')
         holder_type = data['holder_type'] if 'holder_type' in data else _UNSET
         ttl_seconds = data['ttl_seconds'] if 'ttl_seconds' in data else _UNSET
@@ -45,13 +66,17 @@ def register_lock_routes(app: Flask) -> None:
 
     @app.route('/lock/heartbeat', methods=['POST'])
     def lock_heartbeat():
-        data = request.get_json(silent=True) or {}
+        data, err = _parse_lock_body()
+        if err is not None:
+            return err
         code, body = lock_state.heartbeat(user=data.get('user'))
         return jsonify(body), code
 
     @app.route('/unlock', methods=['POST'])
     def unlock_box():
-        data = request.get_json(silent=True) or {}
+        data, err = _parse_lock_body()
+        if err is not None:
+            return err
         code, body = lock_state.release(
             user=data.get('user'), force=bool(data.get('force', False)),
         )
