@@ -60,7 +60,7 @@ This document tracks what test coverage exists across all Lager features and the
 | **SPI** | Aardvark I2C/SPI adapter | 4 files | 2 files | Yes |
 | **SPI** | LabJack T7 | 3 files | 2 files | Yes |
 | **SPI** | FTDI FT232H | 3 files | `spi_ft232h.sh` | Yes |
-| **GPIO / ADC / DAC** | LabJack T7 | 7 files | `labjack.sh` | Yes |
+| **GPIO / ADC / DAC** | LabJack T7 | 8 files | `labjack.sh` | Yes |
 | **GPIO** | FTDI FT232H | 2 files | `gpio_ft232h.sh` | Yes |
 | **GPIO** | Aardvark I2C/SPI adapter | 1 file | 2 files | Yes |
 | **Oscilloscope** | Rigol MSO5000 series | 5 files | — | Yes |
@@ -105,16 +105,16 @@ This document tracks what test coverage exists across all Lager features and the
 
 - **Communication protocols**: I2C and SPI have 18+ test files across three hardware backends (Aardvark, LabJack, FT232H) with full 3-suite coverage.
 - **Power management**: Supply, Battery, Solar, and ELoad all have full 3-suite coverage with tolerance checks, boundary tests, and safety teardown. Power supply has an additional Rigol DP821-specific suite (`test_supply_Rigol_DP821.py`) covering live measurements, output modes, voltage sweeps across embedded rail voltages, measurement stability, and per-channel OVP/OCP state management.
-- **I/O domain**: 17 Python API tests covering ADC, DAC, GPIO, and PWM with real value assertions and safety teardown. 3 FT232H/Aardvark API tests are gold standard with 100+ assertions each.
+- **I/O domain**: 18 Python API tests covering ADC, DAC, GPIO, and PWM with real value assertions and safety teardown. `test_LabJack_T7.py` is a comprehensive 11-group suite with env var configuration, preflight check, DAC boundary enforcement, stability analysis, optional loopback, and rapid stress testing. 3 FT232H/Aardvark API tests are gold standard with 100+ assertions each.
 - **MCP server**: 384 unit tests (mocked, no hardware) plus 64+ integration tests covering 165+ tools across 25 unit and 11 integration test files.
 
 ## Test File Inventory
 
 ```
 test/
-├── api/                  # Python API tests (72 files, run on box via `lager python`)
+├── api/                  # Python API tests (73 files, run on box via `lager python`)
 │   ├── communication/    # 27 files: I2C, SPI, UART, BLE, BluFi, WiFi, debug
-│   ├── io/               # 16 files: ADC, DAC, GPIO, PWM, pin conflict
+│   ├── io/               # 17 files: ADC, DAC, GPIO, PWM, pin conflict
 │   ├── peripherals/      # 9 files: scope, arm, webcam, rotation, actuate
 │   ├── power/            # 5 files: supply (2 files), battery, solar, eload
 │   ├── sensors/          # 8 files: thermocouple, watt, energy, joulescope
@@ -205,6 +205,7 @@ test/
 | `test_io_comprehensive.py` | Combined ADC + DAC + GPIO tests |
 | `test_pin_conflict.py` | Pin conflict detection |
 | `test_pwm_measurement.py` | PWM frequency, Vpp, duty cycle |
+| `test_LabJack_T7.py` | Comprehensive LabJack T7 suite: 11 groups — ADC (single, multi-channel, stability), DAC (output/readback, ramp, boundary enforcement), GPIO (output, input, pulse), optional DAC→ADC loopback, rapid stress |
 
 #### Sensors (9 files)
 
