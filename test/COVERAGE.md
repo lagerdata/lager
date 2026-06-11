@@ -44,6 +44,37 @@ This document tracks what test coverage exists across all Lager features and the
 | **Update** | No | Partial | No |
 | **Hello/Status** | No | No | Partial |
 
+## Device Coverage
+
+| Category | Device | Python API | Bash Integration | MCP |
+|----------|--------|:----------:|:----------------:|:---:|
+| **Power Supply** | Rigol DP821 | 2 files | `supply.sh` | Yes |
+| **Power Supply** | Keysight E36xxx | — | `keysight_supply.sh` | — |
+| **Power Supply** | Multi-channel (generic) | — | `multichannel_supply.sh` | — |
+| **Battery Simulator** | Keithley 2281S | 1 file | `battery.sh` | Yes |
+| **Solar Simulator** | EA PSB series | 1 file | `solar.sh` | Yes |
+| **Electronic Load** | Rigol DL3021 | 1 file | `eload.sh` | Yes |
+| **I2C** | Aardvark I2C/SPI adapter | 2 files | `i2c_aardvark.sh` | Yes |
+| **I2C** | LabJack T7 | 2 files | `i2c_labjack.sh` | Yes |
+| **I2C** | FTDI FT232H | 1 file | `i2c_ft232h.sh` | Yes |
+| **SPI** | Aardvark I2C/SPI adapter | 4 files | 2 files | Yes |
+| **SPI** | LabJack T7 | 3 files | 2 files | Yes |
+| **SPI** | FTDI FT232H | 3 files | `spi_ft232h.sh` | Yes |
+| **GPIO / ADC / DAC** | LabJack T7 | 7 files | `labjack.sh` | Yes |
+| **GPIO** | FTDI FT232H | 2 files | `gpio_ft232h.sh` | Yes |
+| **GPIO** | Aardvark I2C/SPI adapter | 1 file | 2 files | Yes |
+| **Oscilloscope** | Rigol MSO5000 series | 5 files | — | Yes |
+| **Logic Analyzer** | Rigol MSO5000 (embedded) | — | `logic.sh` | Yes |
+| **USB Hub** | Acroname USBHub3+ | 6 files | `acroname.sh` | Yes |
+| **USB Hub** | Yepkit YKUSH | — | `ykush.sh` | — |
+| **Debug Probe** | Segger J-Link | 1 file | `debug.sh`, `jlink_script.sh` | Yes |
+| **Energy Analyzer** | Joulescope JS220 | 3 files | — | Yes |
+| **Power Profiler** | Nordic PPK2 | 1 file | — | Yes |
+| **Watt Meter** | Yoctopuce Watt | 2 files | — | Yes |
+| **Thermocouple** | Phidget temperature hub | 3 files | `thermocouple.sh` | Yes |
+| **Webcam** | Logitech BRIO / C930e | 1 file | — | Yes |
+| **Robotic Arm** | Rotrics Dexarm | 1 file | `arm.sh` | Yes |
+
 ## Coverage Gaps
 
 ### High Priority
@@ -73,7 +104,7 @@ This document tracks what test coverage exists across all Lager features and the
 ## Coverage Strengths
 
 - **Communication protocols**: I2C and SPI have 18+ test files across three hardware backends (Aardvark, LabJack, FT232H) with full 3-suite coverage.
-- **Power management**: Supply, Battery, Solar, and ELoad all have full 3-suite coverage with tolerance checks, boundary tests, and safety teardown.
+- **Power management**: Supply, Battery, Solar, and ELoad all have full 3-suite coverage with tolerance checks, boundary tests, and safety teardown. Power supply has an additional Rigol DP821-specific suite (`test_supply_Rigol_DP821.py`) covering live measurements, output modes, voltage sweeps across embedded rail voltages, measurement stability, and per-channel OVP/OCP state management.
 - **I/O domain**: 17 Python API tests covering ADC, DAC, GPIO, and PWM with real value assertions and safety teardown. 3 FT232H/Aardvark API tests are gold standard with 100+ assertions each.
 - **MCP server**: 384 unit tests (mocked, no hardware) plus 64+ integration tests covering 165+ tools across 25 unit and 11 integration test files.
 
@@ -81,11 +112,11 @@ This document tracks what test coverage exists across all Lager features and the
 
 ```
 test/
-├── api/                  # Python API tests (71 files, run on box via `lager python`)
+├── api/                  # Python API tests (72 files, run on box via `lager python`)
 │   ├── communication/    # 27 files: I2C, SPI, UART, BLE, BluFi, WiFi, debug
 │   ├── io/               # 16 files: ADC, DAC, GPIO, PWM, pin conflict
 │   ├── peripherals/      # 9 files: scope, arm, webcam, rotation, actuate
-│   ├── power/            # 4 files: supply, battery, solar, eload
+│   ├── power/            # 5 files: supply (2 files), battery, solar, eload
 │   ├── sensors/          # 8 files: thermocouple, watt, energy, joulescope
 │   ├── usb/              # 6 files: USB hub enable/disable/toggle/stress
 │   └── utility/          # 2 files: binaries, net listing
@@ -113,11 +144,12 @@ test/
 
 ### Python API Tests (`test/api/`)
 
-#### Power (4 files)
+#### Power (5 files)
 
 | File | What it tests |
 |------|---------------|
 | `test_supply_comprehensive.py` | Voltage/current set, readback, enable/disable, OVP/OCP, limits |
+| `test_supply_Rigol_DP821.py` | Live measurements, output mode, voltage sweep across embedded rail voltages (channel-filtered), measurement stability, OVP/OCP state management, rapid cycling; channel limits configurable via `CHANNEL_MAX_VOLTAGE` / `CHANNEL_MAX_CURRENT` env vars |
 | `test_battery_comprehensive.py` | SOC, VOC, capacity, mode, enable/disable, OVP/OCP, clear |
 | `test_eload_comprehensive.py` | CC, CV, CR, CP modes, enable/disable, state verification |
 | `test_solar_comprehensive.py` | Set, stop, irradiance, resistance, temperature, VOC, MPP |
