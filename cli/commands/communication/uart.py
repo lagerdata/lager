@@ -388,8 +388,8 @@ def uart(ctx, netname, action, box, baudrate, bytesize, parity, stopbits, xonxof
         click.echo(f"\nRun 'lager uart' to see available UART nets on {target_box}", err=True)
         click.echo(f"\nTo create a new UART net:", err=True)
         click.echo(f"  1. Find available UART devices: lager instruments --box {target_box}", err=True)
-        click.echo(f"  2a. Standard: lager nets create {netname} uart [DEVICE_SERIAL] [ADDRESS]", err=True)
-        click.echo(f"  2b. No serial on adapter: lager nets create {netname} uart /dev/ttyUSB0 [LABEL]", err=True)
+        click.echo(f"  2a. Standard: lager nets add {netname} uart [DEVICE_SERIAL] [ADDRESS]", err=True)
+        click.echo(f"  2b. No serial on adapter: lager nets add {netname} uart /dev/ttyUSB0 [LABEL]", err=True)
         ctx.exit(1)
 
     # Validate TTY for interactive mode

@@ -36,7 +36,7 @@ def find_saved_net(
     net = get_nets_cache().find_by_name(netname)
     if not net:
         raise error_class(
-            f"Net '{netname}' not found. Create it with 'lager nets create'."
+            f"Net '{netname}' not found. Create it with 'lager nets add'."
         )
     return net
 

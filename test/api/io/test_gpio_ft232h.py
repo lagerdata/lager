@@ -9,7 +9,7 @@ Run with: lager python test/api/io/test_gpio_ft232h.py --box <boxname>
 
 Prerequisites:
 - GPIO nets configured via 'lager nets add-all' (creates gpio1=AD4, gpio2=AD5, etc.)
-- Or manually: 'lager nets create gpio1 gpio FTDI_FT232H <address> --pin 4'
+- Or manually: 'lager nets add gpio1 gpio FTDI_FT232H <address> --pin 4'
 
 Hardware:
 - QYF-740 vibrating motor module wired as:

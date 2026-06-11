@@ -216,7 +216,7 @@ def _get_debug_net(ctx, box, net_name=None):
         else:
             # Find first available debug net
             if not debug_nets:
-                click.secho("No debug nets found. Create one with: lager nets create [NAME] debug [DEVICE_TYPE] [ADDRESS]", fg='red', err=True)
+                click.secho("No debug nets found. Create one with: lager nets add [NAME] debug [DEVICE_TYPE] [ADDRESS]", fg='red', err=True)
                 ctx.exit(1)
             target_net = debug_nets[0]
 

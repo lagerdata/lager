@@ -26,9 +26,9 @@ lager nets [OPTIONS] [COMMAND]
 | `delete` | Delete a specific net by name and type |
 | `delete-all` | Delete all saved nets (dangerous) |
 | `rename` | Rename an existing net |
-| `create` | Create a new net |
-| `create-all` | Auto-create all available nets from connected instruments |
-| `create-batch` | Create multiple nets from a JSON file |
+| `add` | Add a new net |
+| `add-all` | Auto-create all available nets from connected instruments |
+| `add-batch` | Create multiple nets from a JSON file |
 | `assign` | Assign a USB-serial cable to an RS-232 instrument the box can't auto-detect |
 | `tui` | Launch interactive Net Manager TUI |
 | `set-script` | Attach a J-Link script *or* OpenOCD `.cfg`/`.tcl` to a debug net (backend auto-detected) |
@@ -50,7 +50,7 @@ lager nets --box my-lager-box
 | Column | Description |
 |--------|-------------|
 | `Name` | User-friendly net identifier |
-| `Net Type` | Role/type of net (supply, debug, adc, gpio, i2c, spi, etc.) |
+| `Net Type` | Role/type of net (power-supply, debug, adc, gpio, i2c, spi, etc.) |
 | `Instrument` | Physical equipment (Rigol_DP811, Keithley_2281S, etc.) |
 | `Channel` | Specific channel on the instrument |
 | `Address` | VISA or USB address of the instrument |
@@ -63,8 +63,8 @@ The `Script` column only appears if any debug net has a J-Link script attached.
 ```
 Name        Net Type    Instrument        Channel  Address
 ================================================================================
-supply1     supply      Rigol_DP811       1        TCPIP::192.168.1.100::INSTR
-battery1    batt        Keithley_2281S    1        TCPIP::192.168.1.101::INSTR
+supply1     power-supply  Rigol_DP811     1        TCPIP::192.168.1.100::INSTR
+battery1    battery       Keithley_2281S  1        TCPIP::192.168.1.101::INSTR
 debug1      debug       J-Link            STM32F4  USB::001::002
 adc1        adc         LabJack_T7        AIN0     USB::470026574
 gpio1       gpio        LabJack_T7        FIO0     USB::470026574
@@ -73,17 +73,17 @@ spi1        spi         Aardvark          0        USB::2238595116
 uart1       uart        Prolific_USB      0        /dev/ttyUSB0
 ```
 
-### `create`
+### `add`
 
 Create a new net by specifying its name, type, channel, and instrument address.
 
 ```bash
-lager nets create NAME ROLE CHANNEL ADDRESS [OPTIONS]
+lager nets add NAME ROLE CHANNEL ADDRESS [OPTIONS]
 ```
 
 **Arguments:**
 - `NAME` - Unique name for the net (e.g., `supply1`, `debug_main`)
-- `ROLE` - Type of net: `supply`, `batt`, `solar`, `debug`, `adc`, `dac`, `gpio`, `scope`, `eload`, `uart`, `usb`, `camera`, `arm`, `watt-meter`, `thermocouple`, `i2c`, `spi`
+- `ROLE` - Type of net: `power-supply`, `battery`, `solar`, `debug`, `adc`, `dac`, `gpio`, `scope`, `eload`, `uart`, `usb`, `camera`, `arm`, `watt-meter`, `thermocouple`, `i2c`, `spi`. The legacy tokens `supply` and `batt` are accepted as input aliases and normalized to `power-supply` / `battery` — saved nets always carry the canonical role.
 - `CHANNEL` - Channel identifier (e.g., `1`, `AIN0`, `FIO0`, `STM32F4`, `0`)
 - `ADDRESS` - VISA address or device path (e.g., `TCPIP::192.168.1.100::INSTR`)
 
@@ -95,31 +95,31 @@ lager nets create NAME ROLE CHANNEL ADDRESS [OPTIONS]
 
 ```bash
 # Create a power supply net
-lager nets create supply1 supply 1 TCPIP::192.168.1.100::INSTR --box my-lager-box
+lager nets add supply1 power-supply 1 TCPIP::192.168.1.100::INSTR --box my-lager-box
 
 # Create a debug net for STM32
-lager nets create debug1 debug STM32F407VG USB::001::002 --box my-lager-box
+lager nets add debug1 debug STM32F407VG USB::001::002 --box my-lager-box
 
 # Create a debug net with J-Link script
-lager nets create debug1 debug STM32F407VG USB::001::002 --jlink-script ./my_device.JLinkScript --box my-lager-box
+lager nets add debug1 debug STM32F407VG USB::001::002 --jlink-script ./my_device.JLinkScript --box my-lager-box
 
 # Create an ADC net on LabJack
-lager nets create temp_sensor adc AIN0 USB::470026574 --box my-lager-box
+lager nets add temp_sensor adc AIN0 USB::470026574 --box my-lager-box
 
 # Create an I2C net on LabJack
-lager nets create i2c_bus i2c 0 USB::470026574 --box my-lager-box
+lager nets add i2c_bus i2c 0 USB::470026574 --box my-lager-box
 
 # Create an I2C net on Aardvark
-lager nets create i2c_aardvark i2c 0 USB::2238595116 --box my-lager-box
+lager nets add i2c_aardvark i2c 0 USB::2238595116 --box my-lager-box
 
 # Create an SPI net on LabJack
-lager nets create spi_bus spi 0 USB::470026574 --box my-lager-box
+lager nets add spi_bus spi 0 USB::470026574 --box my-lager-box
 
 # Create an SPI net on Aardvark
-lager nets create spi_aardvark spi 0 USB::2238595116 --box my-lager-box
+lager nets add spi_aardvark spi 0 USB::2238595116 --box my-lager-box
 
 # Create a UART net
-lager nets create serial1 uart 0 /dev/ttyUSB0 --box my-lager-box
+lager nets add serial1 uart 0 /dev/ttyUSB0 --box my-lager-box
 ```
 
 <Note>
@@ -133,7 +133,7 @@ The `--jlink-script` option is only applicable for debug nets. If used with othe
 
 ### Channel & Role Constraints
 
-Different instrument families bind nets to channels differently. Lager classifies every supported instrument into one of three categories and enforces the rules consistently across `create`, `create-all`, and the TUI.
+Different instrument families bind nets to channels differently. Lager classifies every supported instrument into one of three categories and enforces the rules consistently across `add`, `add-all`, and the TUI.
 
 #### 1. Multi-channel instruments
 
@@ -141,7 +141,7 @@ Instruments with physically independent outputs / inputs. Each channel is its ow
 
 | Instrument | Channels | Notes |
 |---|---|---|
-| `Rigol_DP811` / `DP821` / `DP831` / `DP832` | `1`, `2`, `3` | One `supply` net per output |
+| `Rigol_DP811` / `DP821` / `DP831` / `DP832` | `1`, `2`, `3` | One `power-supply` net per output |
 | `KEYSIGHT_E36233A` | `1`, `2` | Dual-output supply |
 | `KEYSIGHT_E36313A` / `E36312A` | `1`, `2`, `3` | Triple-output supply |
 | `LabJack_T7` | `AIN0`–`AIN13`, `FIO0`–`FIO7`, `DAC0`–`DAC1`, etc. | One net per pin |
@@ -158,9 +158,9 @@ Instruments with one physical channel that can run in one of several **modes** b
 
 | Instrument | Allowed roles | Why exclusive |
 |---|---|---|
-| `Keithley_2281S` | `batt` or `supply` | One channel: battery-simulator firmware OR power-supply firmware |
-| `EA_PSB_10080_60` | `solar` or `supply` | One channel: solar-array simulator OR straight supply |
-| `EA_PSB_10060_60` | `solar` or `supply` | Same as above |
+| `Keithley_2281S` | `battery` or `power-supply` | One channel: battery-simulator firmware OR power-supply firmware |
+| `EA_PSB_10080_60` | `solar` or `power-supply` | One channel: solar-array simulator OR straight supply |
+| `EA_PSB_10060_60` | `solar` or `power-supply` | Same as above |
 | `FTDI_FT232H` | `spi` or `i2c` or `gpio` or `debug` or `uart` | One channel hardware-multiplexed between MPSSE (libftdi) and async-serial (`ftdi_sio`) modes |
 
 **Rule:** at most one net per `(instrument, address)`. Once any role is saved on the chip, every other role disappears from the add list. To switch modes, delete the existing net first.
@@ -189,10 +189,10 @@ Standalone debugger boxes — one probe drives one target MCU.
 
 ```bash
 # Channel A (interface 0) — by far the most common
-lager nets create debug_a debug STM32F4x@A USB0::0x0403::0x6010::ABCDEF::INSTR
+lager nets add debug_a debug STM32F4x@A USB0::0x0403::0x6010::ABCDEF::INSTR
 
 # Channel B (interface 1) — second target on the same FT2232H
-lager nets create debug_b debug NRF52840_XXAA@B USB0::0x0403::0x6010::ABCDEF::INSTR
+lager nets add debug_b debug NRF52840_XXAA@B USB0::0x0403::0x6010::ABCDEF::INSTR
 ```
 
 Equivalent forms: `@A`/`@0`, `@B`/`@1`, `@C`/`@2`, `@D`/`@3`. Devices without an `@` suffix default to the interface OpenOCD's interface config picks (typically channel A).
@@ -211,20 +211,20 @@ The user is responsible for not double-booking channel A (e.g. picking `debug@A`
 
 | You want to add a second net on the same chip | Allowed? |
 |---|---|
-| `supply` on `Rigol_DP811` CH1 + `supply` on Rigol_DP811 CH2 | Yes |
-| `batt` on `Keithley_2281S` + `supply` on the same Keithley | **No** — pick one |
-| `solar` on `EA_PSB_10080_60` + `supply` on the same EA | **No** — pick one |
+| `power-supply` on `Rigol_DP811` CH1 + `power-supply` on Rigol_DP811 CH2 | Yes |
+| `battery` on `Keithley_2281S` + `power-supply` on the same Keithley | **No** — pick one |
+| `solar` on `EA_PSB_10080_60` + `power-supply` on the same EA | **No** — pick one |
 | `spi` on `FTDI_FT232H` + `uart` on the same FT232H | **No** — pick one |
 | `debug@A` on `FTDI_FT2232H` + `uart` on a different interface of the same FT2232H | Yes |
 | Two `debug@A` nets on the same `FTDI_FT2232H` | **No** — same channel |
 | Two `debug` nets on the same J-Link | **No** — single-target probe |
 
-### `create-all`
+### `add-all`
 
 Automatically create nets for all available channels on all connected instruments. This is useful for quickly setting up a new Lager Box.
 
 ```bash
-lager nets create-all [OPTIONS]
+lager nets add-all [OPTIONS]
 ```
 
 **Options:**
@@ -235,10 +235,10 @@ lager nets create-all [OPTIONS]
 
 ```bash
 # Preview what nets would be created
-lager nets create-all --box my-lager-box
+lager nets add-all --box my-lager-box
 
 # Create all nets without prompting
-lager nets create-all --box my-lager-box --yes
+lager nets add-all --box my-lager-box --yes
 ```
 
 **Output:**
@@ -256,12 +256,12 @@ Found 8 nets that can be created:
 Create all 8 nets on box <BOX_IP>? [y/N]:
 ```
 
-### `create-batch`
+### `add-batch`
 
 Create multiple nets from a JSON file for efficient bulk setup.
 
 ```bash
-lager nets create-batch JSON_FILE [OPTIONS]
+lager nets add-batch JSON_FILE [OPTIONS]
 ```
 
 **Arguments:**
@@ -298,7 +298,7 @@ lager nets create-batch JSON_FILE [OPTIONS]
 **Example:**
 
 ```bash
-lager nets create-batch nets.json --box my-lager-box
+lager nets add-batch nets.json --box my-lager-box
 ```
 
 ### `assign`
@@ -583,8 +583,8 @@ lager nets show-script debug1 --box my-lager-box > script.txt
 
 | Net Type | Description | Typical Instruments |
 |----------|-------------|---------------------|
-| `supply` | Power supply output | Rigol DP800, Rigol DP711 (via [`assign`](#assign)), Keithley 2200/2280, Keysight E36200 |
-| `batt` | Battery simulator | Keithley 2281S |
+| `power-supply` (alias `supply`) | Power supply output | Rigol DP800, Rigol DP711 (via [`assign`](#assign)), Keithley 2200/2280, Keysight E36200 |
+| `battery` (alias `batt`) | Battery simulator | Keithley 2281S |
 | `solar` | Solar simulator | EA PSI/EL series |
 | `eload` | Electronic load | Rigol DL3021 |
 | `debug` | Debug probe | J-Link, CMSIS-DAP, ST-Link |
@@ -626,10 +626,10 @@ lager nets remove-script debug1 --box my-lager-box
 You can also attach a script at net creation time:
 
 ```bash
-lager nets create debug1 debug STM32F407VG USB::001::002 \
+lager nets add debug1 debug STM32F407VG USB::001::002 \
   --jlink-script ./my_device.JLinkScript --box my-lager-box
 
-lager nets create debug2 debug d2763 USB::003::004 \
+lager nets add debug2 debug d2763 USB::003::004 \
   --openocd-config ./probe.cfg --box my-lager-box
 ```
 
@@ -652,14 +652,14 @@ When both a net-level script (via `set-script`) and a project-level script (via 
 lager nets --box my-lager-box
 
 # Create a new power supply net
-lager nets create vdd_main supply 1 TCPIP::192.168.1.100::INSTR --box my-lager-box
+lager nets add vdd_main power-supply 1 TCPIP::192.168.1.100::INSTR --box my-lager-box
 
 # Create I2C and SPI bus nets
-lager nets create i2c_sensors i2c 0 USB::470026574 --box my-lager-box
-lager nets create spi_flash spi 0 USB::2238595116 --box my-lager-box
+lager nets add i2c_sensors i2c 0 USB::470026574 --box my-lager-box
+lager nets add spi_flash spi 0 USB::2238595116 --box my-lager-box
 
 # Auto-create all available nets
-lager nets create-all --box my-lager-box --yes
+lager nets add-all --box my-lager-box --yes
 
 # Delete a specific net
 lager nets delete old_supply supply --box my-lager-box --yes
@@ -671,7 +671,7 @@ lager nets rename supply1 main_power --box my-lager-box
 lager nets tui --box my-lager-box
 
 # Bulk create from JSON file
-lager nets create-batch testbed-nets.json --box my-lager-box
+lager nets add-batch testbed-nets.json --box my-lager-box
 
 # Manage debug-probe scripts (J-Link or OpenOCD, auto-detected)
 lager nets set-script debug1 ./custom_init.JLinkScript --box my-lager-box
@@ -685,7 +685,7 @@ lager nets remove-script debug1 --box my-lager-box
 - Net names are globally unique regardless of type
 - Use `lager instruments --box <lager-box>` to see available instruments and channels
 - The TUI provides the easiest way to set up nets for the first time
-- Use `create-all` to quickly configure a new Lager Box with sensible defaults
+- Use `add-all` to quickly configure a new Lager Box with sensible defaults
 - I2C and SPI nets are supported on LabJack T7 and Aardvark adapters
 - Debug scripts (both J-Link and OpenOCD) are base64-encoded for storage and decoded automatically during debug operations
 - A debug net carries at most one script (`jlink_script` or `openocd_config`); `set-script` enforces this by clearing the other field when present
