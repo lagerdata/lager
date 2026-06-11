@@ -364,6 +364,48 @@ class CustomDevicesImplTests(unittest.TestCase):
         self.assertEqual(result["deleted_nets"], [])
         self.assertEqual(len(_FakeNet.db), 1)
 
+    def test_assign_retires_preexisting_uart_nets_on_the_cable(self):
+        # A generic UART net saved for the bare cable BEFORE assignment would
+        # keep the tty drivable as a terminal while the instrument driver
+        # owns it. Assignment retires it (matched by exact USB serial in the
+        # VISA address or pin); unrelated uart nets survive.
+        self.cables = [CABLE]
+        _FakeNet.db = [
+            {"name": "uart1", "role": "uart",
+             "address": f"USB0::0x067B::0x23A3::{SERIAL}::INSTR", "pin": TTY},
+            {"name": "uart2", "role": "uart",
+             "address": "USB0::0x10C4::0xEA60::OTHER::INSTR", "pin": "/dev/ttyUSB1"},
+            {"name": "dbg", "role": "debug",
+             "address": f"USB0::0x067B::0x23A3::{SERIAL}::INSTR", "pin": "X"},
+        ]
+        result = self._run(["assign", json.dumps(
+            {"instrument": "Rigol_DP711", "serial": SERIAL})])
+        self.assertEqual(result["deleted_nets"], ["uart1"])
+        # Non-uart roles and other cables' uart nets are untouched.
+        self.assertEqual(sorted(n["name"] for n in _FakeNet.db), ["dbg", "uart2"])
+
+    def test_assign_retires_uart_net_keyed_by_pin_serial(self):
+        # Legacy uart nets sometimes carry the USB serial in the pin field.
+        self.cables = [CABLE]
+        _FakeNet.db = [{"name": "uart1", "role": "uart",
+                        "address": "/dev/ttyUSB0", "pin": SERIAL}]
+        result = self._run(["assign", json.dumps(
+            {"instrument": "Rigol_DP711", "serial": SERIAL})])
+        self.assertEqual(result["deleted_nets"], ["uart1"])
+
+    def test_serial_less_cable_assign_leaves_uart_nets_alone(self):
+        # tty paths renumber, so a path match could hit a different cable —
+        # the conservative rule skips the uart cascade for port-pinned
+        # (serial-less) assignments.
+        cable = {**CABLE, "serial": None}
+        self.cables = [cable]
+        _FakeNet.db = [{"name": "uart1", "role": "uart",
+                        "address": "USB0::0x067B::0x23A3::::INSTR", "pin": TTY}]
+        result = self._run(["assign", json.dumps(
+            {"instrument": "Rigol_DP711", "port_path": "1-1.2"})])
+        self.assertEqual(result["deleted_nets"], [])
+        self.assertEqual(len(_FakeNet.db), 1)
+
     def test_cascade_degrades_when_nets_module_unavailable(self):
         # sys.modules[name] = None makes the lazy import raise ImportError:
         # the removal itself must still succeed, just without the cascade.

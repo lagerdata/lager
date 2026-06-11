@@ -63,49 +63,16 @@ class UARTNetSaveValidationError(ValueError):
 def _parse_backend_json_tui(raw: str):
     """
     Parse JSON response from backend, handling duplicate output from double execution.
-    Same logic as in nets_commands.py but for TUI usage.
+    Same logic as in nets.py's _parse_backend_json but for TUI usage.
     """
     try:
         return json.loads(raw or "[]")
     except json.JSONDecodeError:
-        # Handle duplicate JSON output from backend double execution
-        if raw and raw.count('[') >= 2:
-            # Try to extract the first JSON array
-            depth = 0
-            first_array_end = -1
-            for i, char in enumerate(raw):
-                if char == '[':
-                    depth += 1
-                elif char == ']':
-                    depth -= 1
-                    if depth == 0:
-                        first_array_end = i + 1
-                        break
-
-            if first_array_end > 0:
-                first_json = raw[:first_array_end]
-                return json.loads(first_json)
-            else:
-                raise json.JSONDecodeError("Could not find complete JSON array", raw, 0)
-        else:
-            # Handle duplicate JSON objects (e.g., {"ok": true}{"ok": true})
-            if raw and raw.count('{') >= 2:
-                depth = 0
-                first_obj_end = -1
-                for i, char in enumerate(raw):
-                    if char == '{':
-                        depth += 1
-                    elif char == '}':
-                        depth -= 1
-                        if depth == 0:
-                            first_obj_end = i + 1
-                            break
-
-                if first_obj_end > 0:
-                    first_json = raw[:first_obj_end]
-                    return json.loads(first_json)
-
-            raise  # Re-raise original exception
+        # Duplicate output from double execution ("[...][...]" / "{...}{...}"):
+        # parse the first complete JSON value and ignore the rest. raw_decode
+        # handles nested brackets correctly — the previous hand-rolled depth
+        # scan misrouted doubled objects that contained arrays.
+        return json.JSONDecoder().raw_decode(raw.strip())[0]
 
 def _uid(instr: str, chan: str, role: str, name: str) -> str:
     """Return a row-key that is unique for (instrument, USB0::0x05E6::0x2281::4519728::INSTR channel, type, name)."""
@@ -274,6 +241,17 @@ def _net_from_assignment(assignment: dict, name: str) -> Net:
 def _net_name_taken(nets: list["Net"], name: str) -> bool:
     """True if a saved net already uses *name* (names are globally unique)."""
     return any(n.saved and n.net == name for n in nets)
+
+
+def _address_has_saved_net(nets: list["Net"], address: str) -> bool:
+    """True if any saved net is already bound to *address*.
+
+    Used to suppress the post-assign Create Net offer on a re-assign (e.g.
+    a baud-only update keeps the existing nets): catalog instruments are
+    single-channel, and offering the dialog again would let a second net be
+    saved for the same instrument, bypassing nets-add's single-channel check.
+    """
+    return bool(address) and any(n.saved and n.addr == address for n in nets)
 
 _UART_PIN_HINT = (
     "UART nets need either a /dev/tty* path or a non-empty USB serial in "
@@ -1936,9 +1914,12 @@ class AssignDeviceScreen(Screen):
         app.show_success(msg)
         app.refresh_instruments()
         self._reload()
-        # TUI twin of --as-net: offer to create the instrument's net now.
-        app.push_screen(CreateNetDialog(
-            result, lambda name: self._create_net(result, name)))
+        # TUI twin of --as-net: offer to create the instrument's net now —
+        # unless one already exists for this address (re-assign/baud update),
+        # where a second net would bypass the single-channel constraint.
+        if not _address_has_saved_net(app.nets, result.get("address", "")):
+            app.push_screen(CreateNetDialog(
+                result, lambda name: self._create_net(result, name)))
 
     def _create_net(self, assignment: dict, name: str) -> None:
         """Save the net offered by CreateNetDialog (TUI --as-net)."""
@@ -2697,7 +2678,9 @@ class NetApp(App):
         """
         try:
             raw = _run_script(self.ctx, "query_instruments.py", self.dut)
-            inst_list = json.loads(raw) if raw.strip() else []
+            # Duplicate-tolerant parse — same reason as everywhere else this
+            # file consumes backend stdout ("double execution" boxes).
+            inst_list = _parse_backend_json_tui(raw) if raw.strip() else []
         except (json.JSONDecodeError, AttributeError):
             # Keep the previous scan rather than wiping the add list.
             return
