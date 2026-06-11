@@ -139,6 +139,32 @@ class TestAcquire:
         assert body["holder_type"] == "ci"
         assert body["ttl_seconds"] == 1800
 
+    def test_explicit_null_ttl_with_ephemeral_holds_eternal(self, lock_state):
+        """`lager python --detach` sends ttl_seconds=None with
+        holder_type=ephemeral. The server MUST honor that explicit null
+        (eternal lock) rather than clobbering it back to the ephemeral
+        default of 1800 — the detached run outlives the CLI and there's
+        nobody to heartbeat.
+
+        Regression: hardware smoke 2026-06-10 ran with the old code and
+        saw ttl_seconds=1800 in the response; the fix in _normalize_ttl
+        + acquire's _UNSET branch keeps None -> None.
+        """
+        code, body = lock_state.acquire(
+            user="detached-runner", holder_type="ephemeral", ttl_seconds=None,
+        )
+        assert code == 200
+        assert body["holder_type"] == "ephemeral"
+        assert body["ttl_seconds"] is None
+
+    def test_absent_ttl_with_ephemeral_still_defaults_to_1800(self, lock_state):
+        # Same holder_type but field truly absent — must still default
+        # to 1800. Guards against an over-correction where we'd treat
+        # both absent and explicit-null as eternal.
+        code, body = lock_state.acquire(user="alice", holder_type="ephemeral")
+        assert code == 200
+        assert body["ttl_seconds"] == 1800
+
 
 # ---------------------------------------------------------------------------
 # heartbeat()
