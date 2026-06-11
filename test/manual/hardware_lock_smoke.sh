@@ -234,12 +234,27 @@ pp_json() {
 extract_field() {
     local key="$1"
     if have_jq; then
-        jq -r --arg k "$key" '.[$k] // empty'
+        # `.locked // empty` is WRONG: jq's `//` operator treats both
+        # null AND false as "missing", so `extract_field locked` on a
+        # `{"locked": false}` body returned "" instead of "false". This
+        # masked half of the smoke failures (Tests 1, 3, 4, 8, 9 in the
+        # 2026-06-10 run). Use has() + tostring so:
+        #   - field absent       -> ""
+        #   - field present null -> ""  (preserves the legacy ttl=null
+        #                                check; both expected and actual
+        #                                are "" so they still compare)
+        #   - false              -> "false"
+        #   - true               -> "true"
+        #   - 1800               -> "1800"
+        #   - "ci"               -> "ci"
+        jq -r --arg k "$key" \
+            'if has($k) and .[$k] != null then (.[$k] | tostring) else "" end'
     else
         grep -oE "\"$key\"[[:space:]]*:[[:space:]]*(\"[^\"]*\"|true|false|null|[0-9]+)" \
             | head -1 \
             | sed -E "s/^.*:[[:space:]]*//" \
-            | sed -E 's/^"//; s/"$//'
+            | sed -E 's/^"//; s/"$//' \
+            | sed -E 's/^null$//'
     fi
 }
 
@@ -526,10 +541,15 @@ test_05_dev_fail_fast_on_collision() {
     post_unlock "{\"user\":\"$TEST_HOLDER\",\"force\":true}" >/dev/null
     post_lock "{\"user\":\"$TEST_HOLDER_ALT\",\"holder_type\":\"user\",\"ttl_seconds\":null}" >/dev/null
 
+    # `lager python` takes a file path positionally, NOT a -c flag.
+    # Use the same sleep fixture but with LAGER_SMOKE_SLEEP=1 so the
+    # script is quick if it ever runs (it shouldn't — we expect the
+    # lock acquire to fail before script upload).
     local start=$SECONDS
     LAGER_LOCK_HOLDER="$TEST_HOLDER" \
         LAGER_LOCK_WAIT=0 \
-        lager python -c 'print(1)' --box "$BOX" >"${LOCAL_TMP}/run5.log" 2>&1
+        LAGER_SMOKE_SLEEP=1 \
+        lager python "$SLEEP_SCRIPT" --box "$BOX" >"${LOCAL_TMP}/run5.log" 2>&1
     local rc=$?
     local elapsed=$((SECONDS - start))
 
@@ -553,14 +573,25 @@ test_06_ci_wait_then_acquire() {
     local start=$SECONDS
     LAGER_LOCK_HOLDER="$TEST_HOLDER" \
         LAGER_LOCK_WAIT=60 \
-        lager python -c 'print(1)' --box "$BOX" >"${LOCAL_TMP}/run6.log" 2>&1
+        LAGER_SMOKE_SLEEP=1 \
+        lager python "$SLEEP_SCRIPT" --box "$BOX" >"${LOCAL_TMP}/run6.log" 2>&1
     local rc=$?
     local elapsed=$((SECONDS - start))
     wait $releaser 2>/dev/null || true
 
     assert_eq "exit 0 after waiting and acquiring" "$rc" "0"
     assert_true "waited at least 7s (queue worked)" "[ $elapsed -ge 7 ]"
-    assert_true "didn't time out (under 20s)" "[ $elapsed -lt 20 ]"
+    # Upper bound is LAGER_LOCK_WAIT (60s). If we'd actually hit the
+    # wait timeout, rc would be 1 (acquire_box_lock raises SystemExit(1)
+    # after the deadline) and the exit-0 assertion above would already
+    # have failed.
+    #
+    # The 2026-06-10 smoke had this bound at <20s, which was unreachable
+    # because the test's elapsed = (queue wait) + (lager python end-to-
+    # end overhead, ~25-30s for script upload, container exec, result
+    # streaming, teardown). Observed breakdown via parallel-observer
+    # instrumentation: queue wait 9s, script execution 30s, total 39s.
+    assert_true "didn't time out (under LAGER_LOCK_WAIT=60s)" "[ $elapsed -lt 60 ]"
 }
 
 test_07_heartbeat_survives_one_ttl() {

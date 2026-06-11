@@ -221,15 +221,24 @@ def _normalize_holder_type(value: Any, default: str = 'ephemeral') -> str:
 
 
 def _normalize_ttl(value: Any, default: Optional[int] = 1800) -> Optional[int]:
-    """Normalize ``ttl_seconds`` from a request payload.
+    """Coerce an *explicitly specified* ttl value.
 
-    - ``None`` -> ``default`` (None for user, 1800 otherwise).
-    - ``"null"`` / ``"none"`` / ``""`` (string) -> ``None`` (eternal).
-    - Integer-like -> ``max(1, int(value))`` (never < 1 second).
-    - Garbage -> ``default``.
+    The caller (``acquire``) decides whether the field was specified at
+    all and supplies the appropriate per-holder-type default itself; by
+    the time we land here, ``value`` came from the request payload and
+    Python ``None`` must mean "the client sent JSON null" (i.e. wants
+    an eternal lock), NOT "use the default". Treating None as default
+    is the bug that broke ``lager python --detach`` (the CLI sent
+    ``ttl_seconds: null`` and the server kept clobbering it to 1800).
+
+    - ``None``                              -> ``None`` (explicit null,
+                                                eternal lock).
+    - ``"null"`` / ``"none"`` / ``""`` str  -> ``None``.
+    - Integer-like                          -> ``max(1, int(value))``.
+    - Garbage                               -> ``default``.
     """
     if value is None:
-        return default
+        return None
     if isinstance(value, str):
         if value.lower() in ('null', 'none', ''):
             return None
@@ -302,11 +311,20 @@ def acquire(
         norm_holder_type = _normalize_holder_type(
             provided_ht, default='ephemeral',
         )
-        provided_ttl = None if ttl_seconds is _UNSET else ttl_seconds
-        norm_ttl = _normalize_ttl(
-            provided_ttl,
-            default=None if norm_holder_type == 'user' else 1800,
-        )
+        # CRITICAL: we must distinguish "field absent" from "field
+        # present and null". Both arrive as ``None`` in vanilla JSON
+        # decoding; we use the ``_UNSET`` sentinel to tell them apart.
+        #   - absent  -> use the per-holder-type default (None for
+        #               user, 1800 otherwise). This preserves the
+        #               documented contract that `lager boxes lock`
+        #               (legacy or with explicit holder_type=user) gives
+        #               an eternal lock.
+        #   - present -> honor exactly. JSON ``null`` -> Python None ->
+        #               eternal. Numbers -> clamp >= 1.
+        if ttl_seconds is _UNSET:
+            norm_ttl = None if norm_holder_type == 'user' else 1800
+        else:
+            norm_ttl = _normalize_ttl(ttl_seconds, default=1800)
 
     with FileGuard():
         existing = _read_lock()
