@@ -2,6 +2,27 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.25.0] - 2026-06-11
+
+One theme: instruments the box can't identify by USB enumeration become first-class. An RS-232-only bench instrument (first case: the Rigol DP711 power supply, reached through a generic Prolific USB-serial cable that enumerates as the cable, not the PSU) can now be assigned to its cable once — after which it scans, nets, and drives exactly like an auto-detected instrument.
+
+### Added
+- **`lager nets assign` — tell the box what's on the other end of a USB-serial cable.** `--list` shows assignable devices, current assignments, and unassigned cables; `lager nets assign Rigol_DP711 --serial <USB_SERIAL>` (or `--port <sysfs-path>` for serial-less clone cables) stores the assignment on the box, durable across reboots and replugs. `--baud` overrides the catalog default when the instrument's front panel differs; `--as-net [NAME]` creates the net in the same step. Assignments live in `/etc/lager/custom_devices.json`; the cable's vid/pid are captured from the live device, so assigning requires the cable plugged in, and ambiguous clone-cable serials are rejected with a pin-by-port hint.
+- **Assign Device flow in the Net TUI** — the interactive twin of `nets assign`: pick a cable from the unassigned list, pick the instrument (with optional baud), and name its net in a follow-up dialog. Assignments can be removed from the same screen.
+- **Rigol DP711 (DP700-series) support** — single-channel RS-232 supply driver with the DP800-compatible method surface, driven over a durable `serial://<vid>:<pid>/serial/<s>` (or `/port/<p>`) address that re-resolves to the live tty at open time, surviving tty renumbering, port moves, and replugs. Self-heals stale sessions; per-assignment baud override.
+- **Generic POST `/net/command` endpoint** on the box HTTP server for Tier-1 instruments (GPIO, ADC, DAC, thermocouple, watt-meter, e-load), giving them the same warm in-process path the supply/battery endpoints use instead of a `lager python` subprocess per call. The `netCommand` capability is advertised in `/status` only when the route actually registers.
+
+### Changed
+- **Nets live and die with their assignment.** Removing (or replacing) a cable assignment deletes the saved nets bound to its address and reports them; pre-existing generic-UART nets on the cable are retired at assign time so a terminal session can never fight the instrument driver for one tty. A baud-only re-assign keeps existing nets.
+- **The scanner reports assigned instruments, not their cables.** `lager instruments`, the TUI, and the box's `/instruments/list` show the catalog instrument (e.g. `Rigol_DP711`) at its durable `serial://` address; the cable's generic UART record is suppressed while assigned, and assigned ttys are excluded from the Dexarm G-code handshake probe.
+- **`lager nets add`/`delete`/`add-batch` normalize the legacy role tokens** `supply` → `power-supply` and `batt` → `battery`. The short tokens were previously saved verbatim, producing nets that listed fine but could never be driven (every consumer — the instrument CLIs, the box dispatchers, `NetType.from_role` — matches the saved role string exactly). The tokens remain accepted as input aliases; `delete` reaches legacy nets saved under either spelling.
+
+### Fixed
+- **Manually-added supply/battery nets are driveable again** (see role-token normalization above) — and channel validation for supplies actually runs on `nets add` (it was silently skipped because the legacy token never matched the scanner's channel map).
+- **`nets create` ghost exorcised**: the docs and four runtime error hints referenced `lager nets create`/`create-all`/`create-batch`, commands that don't exist — all renamed to the real `add`/`add-all`/`add-batch`, and the documented role vocabulary now matches what nets actually carry.
+- **Backend JSON parsing tolerates doubled output for objects, not just arrays** — the duplicate-output recovery in `_parse_backend_json` misrouted doubled objects containing arrays; both CLI and TUI parsers now take the first complete JSON value via `raw_decode`.
+- **DP700 driver reports a missing cable as `DeviceNotFoundError`** when unplugged mid-session, instead of a raw NoneType traceback.
+
 ## [0.24.0] - 2026-06-05
 
 Two themes: the MCP server becomes a focused, read-only surface for *learning* a bench and its device-under-test (so an agent can author a correct `lager python` test), and the debug/RTT path becomes resilient enough to survive scripted flash → attach → reset loops without human babysitting.

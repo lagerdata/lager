@@ -4,9 +4,9 @@
 
 | Version         | Supported              |
 | --------------- | ---------------------- |
-| 0.24.x (latest) | Supported              |
-| 0.23.x          | Security fixes only    |
-| < 0.23          | Not supported          |
+| 0.25.x (latest) | Supported              |
+| 0.24.x          | Security fixes only    |
+| < 0.24          | Not supported          |
 
 ## Reporting a Vulnerability
 
