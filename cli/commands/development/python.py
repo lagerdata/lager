@@ -92,7 +92,7 @@ def _do_exit(exit_code, box, session, downloads):
                     else:
                         try:
                             error_msg = resp.json().get('error', resp.text)
-                        except:
+                        except ValueError:
                             error_msg = resp.text
                         click.secho(f'Failed to download {filename}: HTTP {resp.status_code} - {error_msg}', fg='red', err=True)
                     continue

@@ -130,6 +130,18 @@ if [ ! -f /etc/lager/saved_nets.json ]; then
     chmod 666 /etc/lager/saved_nets.json
 fi
 
+# Secrets must not be group/world-readable. The executor also enforces this on
+# load (box/lager/python/executor.py); doing it at boot covers files dropped
+# while the container was down. Best-effort: these files may be owned by the
+# container user (www-data), which this script's user cannot chmod — that must
+# never block container startup.
+for secret_file in /etc/lager/org_secrets.json /etc/lager/secret_key; do
+    if [ -f "$secret_file" ] && ! chmod 600 "$secret_file" 2>/dev/null; then
+        echo "[WARNING] Could not chmod 600 $secret_file (not owner)."
+        echo "          The container enforces this on load; or run: sudo chmod 600 $secret_file"
+    fi
+done
+
 # /tmp/lager-authorized-keys.d is created on demand by the container process (www-data).
 # /tmp is 1777 on the host so www-data can create the directory there and own it.
 # The poller below reads it as lagerdata (which has "other" read access).
@@ -417,9 +429,27 @@ fi
 # (cargo's env file, ssh's default config, pip user installs, etc.) find them.
 # Without this, $HOME defaults to /var/www per /etc/passwd and ~-expansion
 # misses everything.
+
+# Instrument device access: udev_rules/99-instrument.rules sets instrument
+# device nodes to MODE 0660, GROUP "lager" on the host. The container runs as
+# www-data, so it needs the host group's GID as a supplementary group to open
+# the devices. Resolved numerically because the GID mapping is what matters
+# inside the container, not the group name.
+LAGER_GROUP_ADD=()
+LAGER_GID="$(getent group lager | cut -d: -f3)"
+if [ -n "$LAGER_GID" ]; then
+    LAGER_GROUP_ADD=(--group-add "$LAGER_GID")
+else
+    echo "[WARNING] Host group 'lager' not found. Instrument udev rules grant"
+    echo "          access via GROUP=\"lager\"; without it the container cannot"
+    echo "          open instrument USB devices. Create it with:"
+    echo "              sudo groupadd lager && sudo udevadm trigger"
+fi
+
 docker run -d \
     --network lagernet \
     --privileged \
+    "${LAGER_GROUP_ADD[@]}" \
     -v /tmp:/tmp \
     -v /dev:/dev \
     -v /sys/bus/usb:/sys/bus/usb:ro \

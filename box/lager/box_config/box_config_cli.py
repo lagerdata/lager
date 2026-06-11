@@ -599,7 +599,7 @@ def _cmd_udev_add(payload: str) -> None:
             return
         vid = cfg.normalize_udev_id(r.get("vid", ""))
         pid = cfg.normalize_udev_id(r.get("pid", ""))
-        mode = r.get("mode", "0666")
+        mode = r.get("mode", "0660")
         ok, reason = cfg.validate_udev_format(vid, pid, mode)
         if not ok:
             _stdout_json({"ok": False, "errors": [f"{r.get('vid')}:{r.get('pid')}: {reason}"]})

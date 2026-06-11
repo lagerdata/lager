@@ -491,7 +491,7 @@ class DirectIPSession:
                     error_data = response.json()
                     if 'error' in error_data:
                         error_msg = error_data['error']
-                except:
+                except ValueError:
                     pass
                 raise requests.HTTPError(error_msg)
 
