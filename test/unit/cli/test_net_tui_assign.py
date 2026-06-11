@@ -103,6 +103,56 @@ class TestRunCustomDevices:
 
 
 # --------------------------------------------------------------------------- #
+# row labels — markup safety                                                  #
+# --------------------------------------------------------------------------- #
+
+class TestRowLabels:
+    """REGRESSION: device fields like ``[067b:23a3]`` crashed the TUI with
+    ``MarkupError: Expected markup style value`` when interpolated into
+    markup-parsed widget content. Tree rows therefore use ``rich.Text``
+    objects (markup-inert) and the dialogs pass ``markup=False``.
+    """
+
+    CABLE = {"serial": "00000006", "vid": "067b", "pid": "23a3",
+             "port_path": "1-1.2", "tty": "/dev/ttyUSB0"}
+
+    def test_cable_label_is_markup_inert_text(self):
+        from rich.text import Text
+        label = tui._cable_row_label(self.CABLE)
+        assert isinstance(label, Text)
+        # The vid:pid brackets survive literally instead of being parsed.
+        assert "[067b:23a3]" in label.plain
+        assert "/dev/ttyUSB0" in label.plain
+
+    def test_assignment_label_is_markup_inert_text(self):
+        from rich.text import Text
+        label = tui._assignment_row_label({
+            "instrument": "Rigol_DP711", "serial": "00000006",
+            "tty": "/dev/ttyUSB0", "baud": 19200,
+        })
+        assert isinstance(label, Text)
+        assert "Rigol_DP711" in label.plain
+        assert "baud 19200" in label.plain
+        assert "→ /dev/ttyUSB0" in label.plain
+
+    def test_assignment_label_unplugged_cable(self):
+        label = tui._assignment_row_label({"instrument": "Rigol_DP711",
+                                           "serial": "S"})
+        assert "(cable not connected)" in label.plain
+
+    def test_bracketed_device_data_crashes_markup_statics(self):
+        # Pin the failure mechanism this guards against: the same string
+        # crashes a default (markup=True) Static but renders with
+        # markup=False — the setting DevicePickDialog / ConfirmUnassignDialog
+        # use for interpolated content.
+        from textual.widgets import Static
+        content = tui._cable_row_label(self.CABLE).plain
+        with pytest.raises(Exception):
+            Static(content).visual  # noqa: B018 — render is the assertion
+        Static(content, markup=False).visual  # must not raise
+
+
+# --------------------------------------------------------------------------- #
 # table regression                                                            #
 # --------------------------------------------------------------------------- #
 

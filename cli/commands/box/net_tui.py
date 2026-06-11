@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 import click
+from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -209,6 +210,26 @@ def _cable_ident(rec: dict) -> str:
     if rec.get("serial"):
         return f"serial {rec['serial']}"
     return f"port {rec.get('port_path')}"
+
+
+def _cable_row_label(c: dict) -> Text:
+    """Tree label for an unassigned-cable row.
+
+    Returns a ``Text`` object (not a str) so the content is markup-inert:
+    device fields like ``[067b:23a3]`` would otherwise be parsed as markup
+    tags and crash rendering with a MarkupError.
+    """
+    return Text(f"{_cable_ident(c)}  [{c.get('vid')}:{c.get('pid')}]  {c.get('tty')}")
+
+
+def _assignment_row_label(a: dict) -> Text:
+    """Tree label for an assignment row (instrument bolded, data inert)."""
+    status = f"→ {a['tty']}" if a.get("tty") else "(cable not connected)"
+    baud_note = f"  baud {a['baud']}" if a.get("baud") else ""
+    return Text.assemble(
+        (str(a.get("instrument", "?")), "bold"),
+        f"  cable {_cable_ident(a)}{baud_note}  {status}",
+    )
 
 
 def _assign_payload(cable: dict, device: str, baud: int | None) -> dict:
@@ -1839,19 +1860,15 @@ class AssignDeviceScreen(Screen):
         cables_branch = tree.root.add("Unassigned USB-serial cables", expand=True)
         cables = self.data.get("cables") or []
         for c in cables:
-            label = f"{_cable_ident(c)}  [{c.get('vid')}:{c.get('pid')}]  {c.get('tty')}"
-            cables_branch.add_leaf(label, data={"kind": "cable", "rec": c})
+            cables_branch.add_leaf(_cable_row_label(c), data={"kind": "cable", "rec": c})
         if not cables:
             cables_branch.add_leaf("(none — plug the instrument's cable into the box)")
 
         assigned_branch = tree.root.add("Assignments", expand=True)
         assignments = self.data.get("assignments") or []
         for a in assignments:
-            status = f"→ {a['tty']}" if a.get("tty") else "(cable not connected)"
-            baud_note = f"  baud {a['baud']}" if a.get("baud") else ""
-            label = (f"[bold]{a.get('instrument')}[/bold]  cable {_cable_ident(a)}"
-                     f"{baud_note}  {status}")
-            assigned_branch.add_leaf(label, data={"kind": "assignment", "rec": a})
+            assigned_branch.add_leaf(_assignment_row_label(a),
+                                     data={"kind": "assignment", "rec": a})
         if not assignments:
             assigned_branch.add_leaf("(none)")
 
@@ -1933,12 +1950,15 @@ class DevicePickDialog(Screen):
     def compose(self) -> ComposeResult:
         with Vertical(classes="dialog"):
             yield Static("Assign Cable", classes="dialog-title")
+            # markup=False: the interpolated device fields (e.g. "[067b:23a3]")
+            # would otherwise be parsed as markup tags and crash rendering.
             yield Static(
                 f"Cable: {_cable_ident(self.cable)}  "
                 f"[{self.cable.get('vid')}:{self.cable.get('pid')}]  {self.cable.get('tty')}\n\n"
                 f"Which instrument is on the other end of this cable?\n"
                 f"A baud override must match the instrument's front-panel setting.",
                 classes="dialog-content",
+                markup=False,
             )
             for i, entry in enumerate(self.catalog):
                 roles = ", ".join(entry.get("roles") or [])
@@ -1969,7 +1989,9 @@ class DevicePickDialog(Screen):
                 try:
                     self.query_one("#baud_hint", Static).update(msg)
                 except NoMatches:
-                    self.mount(Static(msg, id="baud_hint", classes="warning"))
+                    # markup=False: user-typed input could contain "[".
+                    self.mount(Static(msg, id="baud_hint", classes="warning",
+                                      markup=False))
                 return
 
         entry = self.catalog[int(event.button.id.rsplit("-", 1)[1])]
@@ -1991,12 +2013,15 @@ class ConfirmUnassignDialog(Screen):
                      if a.get("address") else "")
         with Vertical(classes="dialog"):
             yield Static("Remove Assignment", classes="dialog-title")
+            # markup=False: defensive — interpolated device data must never be
+            # parsed as markup (see DevicePickDialog).
             yield Static(
                 f"Remove the {a.get('instrument')} assignment from the cable at "
                 f"{_cable_ident(a)}?\n\n"
                 f"The cable will be offered as a generic UART device again."
                 f"{addr_note}",
                 classes="dialog-content warning",
+                markup=False,
             )
             with Horizontal(classes="dialog-buttons"):
                 yield Button("Cancel", id="unassign-cancel")
