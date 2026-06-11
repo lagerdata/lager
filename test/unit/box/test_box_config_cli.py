@@ -111,6 +111,21 @@ class MountAddPrepThenPersist(unittest.TestCase):
         self.assertIn("Added mount /Hyphen -> /Hyphen", result.output)
         self.assertIn("mount-add", [c[0] for c in backend.calls])
 
+    def test_mount_add_rerun_exits_zero_both_times(self):
+        # run.sh is re-run after partial failures; the second identical
+        # mount add must succeed (box-side upserts by container path).
+        backend = FakeBoxBackend({"mount-add": [{"ok": True}, {"ok": True}]})
+        args = ["mount", "add", "/Hyphen", "/Hyphen", "--readonly", "--box", "test-box"]
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch("cli.commands.box.config.ensure_host_path_owned",
+                   return_value=self._make_prep(ok=True, action="ok_readonly", message="exists")):
+            r1 = self.runner.invoke(box_config_cli.box_config, args)
+            r2 = self.runner.invoke(box_config_cli.box_config, args)
+        self.assertEqual(r1.exit_code, 0, msg=r1.output)
+        self.assertEqual(r2.exit_code, 0, msg=r2.output)
+        self.assertEqual([c[0] for c in backend.calls].count("mount-add"), 2)
+
     def test_no_auto_prep_skips_prep_and_persists_directly(self):
         backend = FakeBoxBackend({"mount-add": [{"ok": True}]})
         with _patch_resolve(), \
@@ -134,9 +149,9 @@ class ApplyReadinessPolling(unittest.TestCase):
         self.runner = CliRunner()
 
     def _backend_for_apply(self, cur_hash="aaa", applied_hash="bbb"):
-        # `show` is consulted twice during apply: once by _preflight_mounts and
-        # once by the apt/sysctl host-side helpers. The single registered
-        # response is reused for both calls.
+        # `show` is consulted twice during apply: once by the apt/sysctl
+        # host-side helpers and once by _preflight_mounts (which now runs
+        # after them). The single registered response is reused for both.
         return FakeBoxBackend({
             "validate": [{"ok": True, "errors": [], "exists": True}],
             "hash": [{"hash": cur_hash}],
@@ -941,8 +956,9 @@ class ApplyPreConfirmDiff(unittest.TestCase):
             "hash": [{"hash": "aaa"}],
             "applied-hash": [{"hash": "bbb"}],
             "show": [
-                {"version": 1, "mounts": []},                     # _preflight_mounts
-                {"version": 1, "apt_packages": ["strace"]},       # current_show
+                # current_show; _preflight_mounts never fires because the
+                # test declines at the confirm prompt, which now precedes it.
+                {"version": 1, "apt_packages": ["strace"]},
             ],
             "applied-show": [{"version": 1, "apt_packages": []}],
         })
@@ -1861,6 +1877,468 @@ class FieldRegistrySync(unittest.TestCase):
             "box-side and CLI-side first-class field registries drifted; "
             "add the new field to both config.py files.",
         )
+
+
+# ---------------------------------------------------------------------------
+# apply: mount pre-flight — SSH-failure policy and ordering
+# ---------------------------------------------------------------------------
+
+def _prep(ok, action, host_path="/usr/bin/dfu-util", message="", manual_fix=None):
+    from cli.commands.box._mount_prep import PrepResult
+    return PrepResult(
+        ok=ok, action=action, host_path=host_path,
+        message=message, manual_fix=manual_fix,
+    )
+
+
+_SSH_FAILED_PREP = _prep(
+    False, "ssh_failed",
+    message=(
+        "Could not SSH to juultest@10.101.9.207 to check /usr/bin/dfu-util: "
+        "Permission denied (publickey,password)."
+    ),
+)
+
+
+class ApplyPreflightSshWarn(unittest.TestCase):
+    """An SSH transport failure during pre-flight warns and continues;
+    verified-bad path states still abort before the bounce."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def _backend(self):
+        current = {
+            "version": 1,
+            "apt_packages": [],
+            "sysctl": {},
+            "mounts": [{"host": "/usr/bin/dfu-util", "container": "/usr/local/bin/dfu-util", "readonly": True}],
+        }
+        return FakeBoxBackend({
+            "validate": [{"ok": True, "errors": [], "exists": True}],
+            "hash": [{"hash": "aaa"}],
+            "applied-hash": [{"hash": "bbb"}],
+            "show": [current],
+            "applied-show": [None],
+            "set-applied-hash": [{"ok": True}],
+        })
+
+    def test_ssh_failed_preflight_warns_and_continues(self):
+        backend = self._backend()
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container", return_value=True) as bounce_mock, \
+             patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
+             patch("cli.commands.box.config.ensure_host_path_owned",
+                   return_value=_SSH_FAILED_PREP):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "test-box", "--yes"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("Could not SSH to juultest@10.101.9.207", result.output)
+        self.assertIn("continuing with apply", result.output)
+        bounce_mock.assert_called_once()
+        self.assertIn("set-applied-hash", [c[0] for c in backend.calls])
+
+    def test_ssh_failed_checks_only_first_mount(self):
+        # One transport failure means all remaining mounts would fail the
+        # same way; don't pay an SSH round-trip per mount.
+        backend = self._backend()
+        current = backend.responses["show"][0]
+        current["mounts"].append(
+            {"host": "/usr/bin/lsusb", "container": "/usr/local/bin/lsusb", "readonly": True},
+        )
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
+             patch("cli.commands.box.config.ensure_host_path_owned",
+                   return_value=_SSH_FAILED_PREP) as prep_mock:
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "test-box", "--yes"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        prep_mock.assert_called_once()
+
+    def test_refused_populated_still_aborts(self):
+        backend = self._backend()
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container") as bounce_mock, \
+             patch("cli.commands.box.config.ensure_host_path_owned",
+                   return_value=_prep(
+                       False, "refused_populated",
+                       message="/usr/bin/dfu-util is owned by 1000:1000 and contains files.",
+                       manual_fix="sudo chown -R 33:33 /usr/bin/dfu-util",
+                   )):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "test-box", "--yes"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("failed pre-flight", result.output)
+        bounce_mock.assert_not_called()
+        self.assertNotIn("set-applied-hash", [c[0] for c in backend.calls])
+
+    def test_sudo_failed_still_aborts(self):
+        backend = self._backend()
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container") as bounce_mock, \
+             patch("cli.commands.box.config.ensure_host_path_owned",
+                   return_value=_prep(
+                       False, "sudo_failed",
+                       message="passwordless sudo is not configured on the box.",
+                       manual_fix="sudo mkdir -p /usr/bin/dfu-util",
+                   )):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "test-box", "--yes"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        bounce_mock.assert_not_called()
+
+
+class ApplyPreflightOrdering(unittest.TestCase):
+    """Pre-flight must run after apt provisioning (a mount's host path may be
+    a file installed by an apt package in the same apply) and after the
+    confirm prompt (no host mutation before the operator says yes)."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def _backend(self):
+        current = {
+            "version": 1,
+            "apt_packages": ["dfu-util"],
+            "sysctl": {},
+            "mounts": [{"host": "/usr/bin/dfu-util", "container": "/usr/local/bin/dfu-util", "readonly": True}],
+        }
+        applied = {"version": 1, "apt_packages": [], "sysctl": {}, "mounts": []}
+        return FakeBoxBackend({
+            "validate": [{"ok": True, "errors": [], "exists": True}],
+            "hash": [{"hash": "aaa"}],
+            "applied-hash": [{"hash": "bbb"}],
+            "show": [current],
+            "applied-show": [applied],
+            "set-applied-hash": [{"ok": True}],
+        })
+
+    def test_preflight_runs_after_apt_and_before_bounce(self):
+        from cli.commands.box._host_ops import HostOpResult
+        order = []
+        apt_result = HostOpResult(ok=True, action="installed", message="Installed 1 apt package(s).")
+
+        def fake_apt(*args, **kwargs):
+            order.append("apt")
+            return apt_result
+
+        def fake_prep(*args, **kwargs):
+            order.append("preflight")
+            return _prep(True, "ok_readonly", message="/usr/bin/dfu-util exists.")
+
+        def fake_bounce(*args, **kwargs):
+            order.append("bounce")
+            return True
+
+        backend = self._backend()
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container", side_effect=fake_bounce), \
+             patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
+             patch("cli.commands.box.config.apt_install", side_effect=fake_apt), \
+             patch("cli.commands.box.config.ensure_host_path_owned", side_effect=fake_prep):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "test-box", "--yes"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertEqual(order, ["apt", "preflight", "bounce"])
+
+    def test_preflight_not_run_when_confirm_declined(self):
+        backend = self._backend()
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container") as bounce_mock, \
+             patch("cli.commands.box.config.ensure_host_path_owned") as prep_mock:
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "test-box"],
+                input="n\n",
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        prep_mock.assert_not_called()
+        bounce_mock.assert_not_called()
+
+    def test_skip_restart_skips_preflight(self):
+        backend = self._backend()
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch("cli.commands.box.config.ensure_host_path_owned") as prep_mock:
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "test-box", "--yes", "--skip-restart"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        prep_mock.assert_not_called()
+        self.assertIn("set-applied-hash", [c[0] for c in backend.calls])
+
+
+class ApplyFlagEdges(unittest.TestCase):
+    """--force, --dry-run, and --no-auto-prep interplay with the pre-flight."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def _backend(self, cur_hash="aaa", applied_hash="bbb"):
+        current = {
+            "version": 1,
+            "apt_packages": [],
+            "sysctl": {},
+            "mounts": [{"host": "/Hyphen", "container": "/Hyphen", "readonly": False}],
+        }
+        return FakeBoxBackend({
+            "validate": [{"ok": True, "errors": [], "exists": True}],
+            "hash": [{"hash": cur_hash}],
+            "applied-hash": [{"hash": applied_hash}],
+            "show": [current],
+            "applied-show": [current],
+            "set-applied-hash": [{"ok": True}],
+        })
+
+    def test_force_unchanged_hash_runs_preflight_before_bounce(self):
+        order = []
+
+        def fake_prep(*args, **kwargs):
+            order.append("preflight")
+            return _prep(True, "ok", message="/Hyphen already owned by 33:33.")
+
+        def fake_bounce(*args, **kwargs):
+            order.append("bounce")
+            return True
+
+        backend = self._backend(cur_hash="aaa", applied_hash="aaa")
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container", side_effect=fake_bounce), \
+             patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
+             patch("cli.commands.box.config.ensure_host_path_owned", side_effect=fake_prep):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "test-box", "--yes", "--force"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertEqual(order, ["preflight", "bounce"])
+
+    def test_dry_run_with_mounts_never_touches_ssh(self):
+        backend = self._backend()
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container") as bounce_mock, \
+             patch("cli.commands.box.config.ensure_host_path_owned") as prep_mock:
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "test-box", "--dry-run"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        prep_mock.assert_not_called()
+        bounce_mock.assert_not_called()
+
+    def test_no_auto_prep_skips_preflight_but_bounces(self):
+        backend = self._backend()
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container", return_value=True) as bounce_mock, \
+             patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
+             patch("cli.commands.box.config.ensure_host_path_owned") as prep_mock:
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "test-box", "--yes", "--no-auto-prep"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        prep_mock.assert_not_called()
+        bounce_mock.assert_called_once()
+
+
+class ApplyMultiBoxFanout(unittest.TestCase):
+    """apply --box A,B: per-box isolation of warn-and-continue and failures."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def _backend(self):
+        current = {
+            "version": 1,
+            "apt_packages": [],
+            "sysctl": {},
+            "mounts": [{"host": "/Hyphen", "container": "/Hyphen", "readonly": True}],
+        }
+        return FakeBoxBackend({
+            "validate": [{"ok": True, "errors": [], "exists": True}],
+            "hash": [{"hash": "aaa"}],
+            "applied-hash": [{"hash": "bbb"}],
+            "show": [current],
+            "applied-show": [None],
+            "set-applied-hash": [{"ok": True}],
+        })
+
+    def test_ssh_warn_on_one_box_does_not_fail_fanout(self):
+        backend = self._backend()
+        preps = iter([_SSH_FAILED_PREP, _prep(True, "ok_readonly", message="/Hyphen exists.")])
+        with patch.object(box_config_cli, "_resolve_boxes", return_value=["1.1.1.1", "2.2.2.2"]), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
+             patch("cli.commands.box.config.ensure_host_path_owned",
+                   side_effect=lambda *a, **k: next(preps)):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "1.1.1.1,2.2.2.2", "--yes"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("=== 1.1.1.1 ===", result.output)
+        self.assertIn("=== 2.2.2.2 ===", result.output)
+        self.assertIn("continuing with apply", result.output)
+
+    def test_hard_failure_on_one_box_continues_and_aggregates(self):
+        backend = self._backend()
+        preps = iter([
+            _prep(False, "refused_populated",
+                  message="/Hyphen is owned by 1000:1000 and contains files.",
+                  manual_fix="sudo chown -R 33:33 /Hyphen"),
+            _prep(True, "ok_readonly", message="/Hyphen exists."),
+        ])
+        with patch.object(box_config_cli, "_resolve_boxes", return_value=["1.1.1.1", "2.2.2.2"]), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container", return_value=True) as bounce_mock, \
+             patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
+             patch("cli.commands.box.config.ensure_host_path_owned",
+                   side_effect=lambda *a, **k: next(preps)):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "1.1.1.1,2.2.2.2", "--yes"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Apply failed on 1/2 box(es): 1.1.1.1", result.output)
+        # Box 2 still got its bounce despite box 1 failing.
+        bounce_mock.assert_called_once()
+
+
+class ApplyPreflightMixedResults(unittest.TestCase):
+    """Interactions between verified-bad and ssh_failed within one box."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def _backend_two_mounts(self):
+        current = {
+            "version": 1,
+            "apt_packages": [],
+            "sysctl": {},
+            "mounts": [
+                {"host": "/m1", "container": "/m1", "readonly": False},
+                {"host": "/m2", "container": "/m2", "readonly": False},
+            ],
+        }
+        return FakeBoxBackend({
+            "validate": [{"ok": True, "errors": [], "exists": True}],
+            "hash": [{"hash": "aaa"}],
+            "applied-hash": [{"hash": "bbb"}],
+            "show": [current],
+            "applied-show": [None],
+            "set-applied-hash": [{"ok": True}],
+        })
+
+    def test_real_failure_then_ssh_failed_aborts(self):
+        backend = self._backend_two_mounts()
+        preps = iter([
+            _prep(False, "refused_populated", host_path="/m1",
+                  message="/m1 is owned by 1000:1000 and contains files.",
+                  manual_fix="sudo chown -R 33:33 /m1"),
+            _prep(False, "ssh_failed", host_path="/m2",
+                  message="Could not SSH to lagerdata@1.2.3.4 to check /m2: ..."),
+        ])
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container") as bounce_mock, \
+             patch("cli.commands.box.config.ensure_host_path_owned",
+                   side_effect=lambda *a, **k: next(preps)):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "test-box", "--yes"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("failed pre-flight", result.output)
+        bounce_mock.assert_not_called()
+
+    def test_non_string_host_skipped_without_crash(self):
+        current = {
+            "version": 1, "apt_packages": [], "sysctl": {},
+            "mounts": [{"host": None, "container": "/x", "readonly": False}],
+        }
+        backend = FakeBoxBackend({
+            "validate": [{"ok": True, "errors": [], "exists": True}],
+            "hash": [{"hash": "aaa"}],
+            "applied-hash": [{"hash": "bbb"}],
+            "show": [current],
+            "applied-show": [None],
+            "set-applied-hash": [{"ok": True}],
+        })
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
+             patch("cli.commands.box.config.ensure_host_path_owned") as prep_mock:
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "test-box", "--yes"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        prep_mock.assert_not_called()
+
+    def test_bounce_failure_after_ssh_warn_engages_rollback(self):
+        backend = self._backend_two_mounts()
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "_bounce_container", return_value=False), \
+             patch.object(box_config_cli, "_attempt_rollback", return_value=True) as rb_mock, \
+             patch("cli.commands.box.config.ensure_host_path_owned",
+                   return_value=_SSH_FAILED_PREP):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "test-box", "--yes"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("continuing with apply", result.output)
+        rb_mock.assert_called_once()
+        self.assertIn("Rolled back", result.output)
+
+
+class MountAddSshFailed(unittest.TestCase):
+    """`mount add` persists the mount when prep fails only because the box
+    host was unreachable over SSH — apply re-checks before the restart."""
+
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def test_ssh_failed_prep_warns_and_persists(self):
+        backend = FakeBoxBackend({"mount-add": [{"ok": True}]})
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch("cli.commands.box.config.ensure_host_path_owned",
+                   return_value=_SSH_FAILED_PREP):
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["mount", "add", "/usr/bin/dfu-util", "/usr/local/bin/dfu-util",
+                 "--readonly", "--box", "test-box"],
+            )
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("mount-add", [c[0] for c in backend.calls])
+        self.assertIn("Could not SSH to juultest@10.101.9.207", result.output)
+        self.assertIn("re-checks the host path", result.output)
+        self.assertIn("Added mount /usr/bin/dfu-util -> /usr/local/bin/dfu-util (ro)", result.output)
 
 
 if __name__ == "__main__":
