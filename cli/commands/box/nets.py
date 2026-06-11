@@ -315,13 +315,30 @@ def _serial_from_visa_address(address) -> str:
 
 _MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port"}
 _SINGLE_CHANNEL_INST = {
-    "Keithley_2281S": ("batt", "supply"),
-    "EA_PSB_10060_60": ("solar", "supply"),
-    "EA_PSB_10080_60": ("solar", "supply"),
+    "Keithley_2281S": ("battery", "power-supply"),
+    "EA_PSB_10060_60": ("solar", "power-supply"),
+    "EA_PSB_10080_60": ("solar", "power-supply"),
     # Custom serial instrument (DEVICE_CATALOG single_channel=True): only one
     # net may reference the instrument at its serial:// address.
     "Rigol_DP711": ("power-supply",),
 }
+
+# Saved nets must carry the scanner-vocabulary role string verbatim — the
+# instrument CLIs (validate_net_exists), the box dispatchers (ensure_role)
+# and NetType.from_role all match it EXACTLY. ``nets add`` historically
+# accepted the short tokens below and saved them as-is, producing nets that
+# listed fine but could never be driven ("Net 'x' is a 'supply' net, not
+# 'power-supply'"). The tokens stay accepted as input aliases and are
+# normalized before any validation or save.
+_ROLE_ALIASES = {
+    "supply": "power-supply",
+    "batt": "battery",
+}
+
+
+def _canonical_role(role: str) -> str:
+    """Map a user-typed role token to the canonical saved-role string."""
+    return _ROLE_ALIASES.get(role, role)
 # Chips that can run in exactly one mode at a time, across ALL roles. The
 # canonical case is the FT232H: one physical channel, hardware-multiplexed
 # between MPSSE (spi/i2c/gpio/debug) and async-serial (uart). Once the user
@@ -329,28 +346,26 @@ _SINGLE_CHANNEL_INST = {
 # from the "add nets" menu. Multi-channel FTDIs (FT2232H, FT4232H) are NOT
 # in this set — they get one role per channel via the @A/@B/... suffix.
 _MODE_EXCLUSIVE_INST = {"FTDI_FT232H"}
+# Allowed roles per instrument, in the canonical saved-role vocabulary.
+# User input goes through _canonical_role() before being checked against
+# this table, so the legacy "supply"/"batt" tokens still work as input.
 INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     # supply
-    "Rigol_DP811": ["supply"],
-    "Rigol_DP821": ["supply"],
-    "Rigol_DP831": ["supply"],
+    "Rigol_DP811": ["power-supply"],
+    "Rigol_DP821": ["power-supply"],
+    "Rigol_DP831": ["power-supply"],
     # DP711: RS-232-only, surfaced via a custom-device assignment (serial://
     # address) rather than USB enumeration. Roles mirror
     # box/lager/devices/catalog.py — same catalog-data duplication tech debt
     # as the scanner's SUPPORTED_USB tables.
-    # NOTE the saved role must be the scanner-vocabulary "power-supply", NOT
-    # the legacy "supply" token used elsewhere in this table: the supply CLI
-    # (validate_net_exists) and the box dispatcher (ensure_role) both match
-    # the saved role string against "power-supply" exactly, so a net saved
-    # as "supply" exists but cannot be driven.
     "Rigol_DP711": ["power-supply"],
-    "EA_PSB_10080_60": ["supply", "solar"],
-    "EA_PSB_10060_60": ["supply", "solar"],
-    "KEYSIGHT_E36233A": ["supply"],
-    "KEYSIGHT_E36313A": ["supply"],
+    "EA_PSB_10080_60": ["power-supply", "solar"],
+    "EA_PSB_10060_60": ["power-supply", "solar"],
+    "KEYSIGHT_E36233A": ["power-supply"],
+    "KEYSIGHT_E36313A": ["power-supply"],
 
-    # batt
-    "Keithley_2281S": ["batt", "supply"],
+    # battery
+    "Keithley_2281S": ["battery", "power-supply"],
 
     # scope
     "Rigol_MS05204": ["scope"],
@@ -671,6 +686,8 @@ def nets(ctx: click.Context, box: str | None) -> None:  # noqa: D401
 def delete_cmd(
     ctx: click.Context, name: str, net_type: str, box: str | None, yes: bool
 ) -> None:
+    # Accept the same legacy role tokens nets-add does ("supply", "batt").
+    net_type = _canonical_role(net_type)
     resolved_box = _resolve_box(ctx, box)
     raw = _run_net_py(ctx, resolved_box, "list")
     try:
@@ -784,6 +801,11 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
     Add a net using inferred instrument from VISA address
     """
     from ...box_storage import resolve_and_validate_box
+
+    # Normalize legacy role tokens ("supply" -> "power-supply") before any
+    # validation or save: the saved role string must be the canonical one or
+    # the instrument CLIs / box dispatcher refuse to drive the net.
+    role = _canonical_role(role)
 
     # Resolve and validate the box name
     resolved_box = resolve_and_validate_box(ctx, box)
@@ -1651,7 +1673,9 @@ def create_batch_cmd(ctx: click.Context, json_file, box: str | None) -> None:
 
         normalized_net = {
             "name": net_data["name"],
-            "role": net_data["role"],
+            # Legacy role tokens are normalized like nets-add ("supply" ->
+            # "power-supply"); the saved string must be canonical.
+            "role": _canonical_role(net_data["role"]),
             "address": net_data["address"],
             "pin": net_data["channel"],
             "instrument": instrument

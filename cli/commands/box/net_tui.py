@@ -139,10 +139,12 @@ def _debug_channel_suffix(value) -> str:
 _MODE_EXCLUSIVE_INST = {"FTDI_FT232H"}
 
 _MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port"}
+# Role tuples use the canonical saved-role vocabulary (what nets actually
+# carry: "power-supply", "battery"), matching the table in nets.py.
 _SINGLE_CHANNEL_INST = {
-    "Keithley_2281S": ("batt", "supply"),
-    "EA_PSB_10060_60": ("solar", "supply"),
-    "EA_PSB_10080_60": ("solar", "supply"),
+    "Keithley_2281S": ("battery", "power-supply"),
+    "EA_PSB_10060_60": ("solar", "power-supply"),
+    "EA_PSB_10080_60": ("solar", "power-supply"),
     # Custom serial instrument (DEVICE_CATALOG single_channel=True): only one
     # net may reference the instrument at its serial:// address.
     "Rigol_DP711": ("power-supply",),
