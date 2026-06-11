@@ -305,3 +305,268 @@ class TestHeartbeatBoxLock:
         box_storage.heartbeat_box_lock('10.0.0.1', 'alice')
         assert captured['url'] == 'http://10.0.0.1:5000/lock/heartbeat'
         assert captured['json'] == {'user': 'alice'}
+
+
+# ---------------------------------------------------------------------------
+# auto_lock_around_command  (context manager used by install/uninstall/
+# install-wheel) + auto_lock_acquire_for_command (imperative variant used
+# by update).
+# ---------------------------------------------------------------------------
+
+
+class TestAutoLockAroundCommand:
+    """Context-manager helper. Verifies the full happy-path lifecycle
+    (acquire on enter, heartbeat starts, release on exit) plus a few
+    edge cases (LAGER_AUTO_LOCK_DISABLE, already_ours, unreachable)."""
+
+    def test_acquires_on_enter_and_releases_on_exit(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            box_storage, 'acquire_box_lock',
+            lambda *a, **k: (calls.append(('acquire', a, k)) or ('acquired', {})),
+        )
+        monkeypatch.setattr(
+            box_storage, 'release_box_lock',
+            lambda *a, **k: calls.append(('release', a, k)) or True,
+        )
+        monkeypatch.setattr(
+            box_storage, 'get_lock_holder', lambda: 'test-holder',
+        )
+        # Skip the heartbeat thread for determinism.
+        monkeypatch.setattr(
+            box_storage, 'HeartbeatThread',
+            lambda *a, **k: mock.Mock(start=mock.Mock(), stop=mock.Mock()),
+        )
+
+        with box_storage.auto_lock_around_command(
+            '10.0.0.1', 'lab-box', 'install',
+        ) as (holder, state):
+            assert holder == 'test-holder'
+            assert state == 'acquired'
+
+        kinds = [c[0] for c in calls]
+        assert kinds == ['acquire', 'release']
+
+    def test_release_fires_on_exception(self, monkeypatch):
+        released = []
+        monkeypatch.setattr(
+            box_storage, 'acquire_box_lock',
+            lambda *a, **k: ('acquired', {}),
+        )
+        monkeypatch.setattr(
+            box_storage, 'release_box_lock',
+            lambda *a, **k: released.append(a) or True,
+        )
+        monkeypatch.setattr(
+            box_storage, 'get_lock_holder', lambda: 'test-holder',
+        )
+        monkeypatch.setattr(
+            box_storage, 'HeartbeatThread',
+            lambda *a, **k: mock.Mock(start=mock.Mock(), stop=mock.Mock()),
+        )
+
+        with pytest.raises(RuntimeError):
+            with box_storage.auto_lock_around_command(
+                '10.0.0.1', 'lab-box', 'install',
+            ):
+                raise RuntimeError("oops")
+
+        assert len(released) == 1, "release must run on exception unwind"
+
+    def test_release_fires_on_systemexit(self, monkeypatch):
+        # `ctx.exit(1)` raises SystemExit inside the with-block. The lock
+        # release must still run.
+        released = []
+        monkeypatch.setattr(
+            box_storage, 'acquire_box_lock',
+            lambda *a, **k: ('acquired', {}),
+        )
+        monkeypatch.setattr(
+            box_storage, 'release_box_lock',
+            lambda *a, **k: released.append(a) or True,
+        )
+        monkeypatch.setattr(
+            box_storage, 'get_lock_holder', lambda: 'test-holder',
+        )
+        monkeypatch.setattr(
+            box_storage, 'HeartbeatThread',
+            lambda *a, **k: mock.Mock(start=mock.Mock(), stop=mock.Mock()),
+        )
+
+        with pytest.raises(SystemExit):
+            with box_storage.auto_lock_around_command(
+                '10.0.0.1', 'lab-box', 'install',
+            ):
+                raise SystemExit(1)
+        assert len(released) == 1
+
+    def test_disabled_via_env_yields_disabled_state(self, monkeypatch):
+        # The LAGER_AUTO_LOCK_DISABLE escape hatch must skip the acquire
+        # entirely and yield state="disabled".
+        monkeypatch.setenv('LAGER_AUTO_LOCK_DISABLE', '1')
+
+        def boom(*a, **k):
+            raise AssertionError("acquire must not be called when disabled")
+
+        monkeypatch.setattr(box_storage, 'acquire_box_lock', boom)
+        monkeypatch.setattr(box_storage, 'release_box_lock', boom)
+        monkeypatch.setattr(
+            box_storage, 'get_lock_holder', lambda: 'test-holder',
+        )
+
+        with box_storage.auto_lock_around_command(
+            '10.0.0.1', 'lab-box', 'install',
+        ) as (_holder, state):
+            assert state == 'disabled'
+
+    def test_already_ours_does_not_release(self, monkeypatch):
+        # When a user lock from `lager boxes lock` already exists with the
+        # SAME holder, acquire_box_lock returns ("already_ours", ...) and
+        # we must NOT release on exit — the user lock has to survive.
+        released = []
+        monkeypatch.setattr(
+            box_storage, 'acquire_box_lock',
+            lambda *a, **k: ('already_ours', {}),
+        )
+        monkeypatch.setattr(
+            box_storage, 'release_box_lock',
+            lambda *a, **k: released.append(a) or True,
+        )
+        monkeypatch.setattr(
+            box_storage, 'get_lock_holder', lambda: 'test-holder',
+        )
+
+        with box_storage.auto_lock_around_command(
+            '10.0.0.1', 'lab-box', 'install',
+        ) as (_holder, state):
+            assert state == 'already_ours'
+
+        assert released == [], "must not release a pre-existing user lock"
+
+    def test_unreachable_box_does_not_release(self, monkeypatch):
+        # If the box is unreachable, acquire_box_lock returns
+        # ("unreachable", None) — we never held the lock so don't try
+        # to release.
+        released = []
+        monkeypatch.setattr(
+            box_storage, 'acquire_box_lock',
+            lambda *a, **k: ('unreachable', None),
+        )
+        monkeypatch.setattr(
+            box_storage, 'release_box_lock',
+            lambda *a, **k: released.append(a) or True,
+        )
+        monkeypatch.setattr(
+            box_storage, 'get_lock_holder', lambda: 'test-holder',
+        )
+
+        with box_storage.auto_lock_around_command(
+            '10.0.0.1', 'lab-box', 'install',
+        ):
+            pass
+
+        assert released == []
+
+    def test_passes_ci_holder_type_when_in_ci(self, monkeypatch):
+        # holder_type defaults to 'ci' when running under any CI provider.
+        captured = {}
+        monkeypatch.setenv('CI', 'true')
+        monkeypatch.setenv('GITHUB_RUN_ID', '999')
+
+        def fake_acquire(*args, **kwargs):
+            captured.update(kwargs)
+            return ('acquired', {})
+
+        monkeypatch.setattr(box_storage, 'acquire_box_lock', fake_acquire)
+        monkeypatch.setattr(
+            box_storage, 'release_box_lock', lambda *a, **k: True,
+        )
+        monkeypatch.setattr(
+            box_storage, 'get_lock_holder', lambda: 'gh:run-999',
+        )
+        monkeypatch.setattr(
+            box_storage, 'HeartbeatThread',
+            lambda *a, **k: mock.Mock(start=mock.Mock(), stop=mock.Mock()),
+        )
+
+        with box_storage.auto_lock_around_command(
+            '10.0.0.1', 'lab-box', 'install',
+        ):
+            pass
+
+        assert captured['holder_type'] == 'ci'
+
+
+class TestAutoLockAcquireForCommand:
+    """Imperative variant used by update.py. Same lifecycle guarantees as
+    the context manager, but the release callable is returned to the
+    caller and we register an atexit hook as a fallback."""
+
+    def test_returns_callable_that_releases(self, monkeypatch):
+        released = []
+        monkeypatch.setattr(
+            box_storage, 'acquire_box_lock',
+            lambda *a, **k: ('acquired', {}),
+        )
+        monkeypatch.setattr(
+            box_storage, 'release_box_lock',
+            lambda *a, **k: released.append(a) or True,
+        )
+        monkeypatch.setattr(
+            box_storage, 'get_lock_holder', lambda: 'test-holder',
+        )
+        monkeypatch.setattr(
+            box_storage, 'HeartbeatThread',
+            lambda *a, **k: mock.Mock(start=mock.Mock(), stop=mock.Mock()),
+        )
+
+        release = box_storage.auto_lock_acquire_for_command(
+            '10.0.0.1', 'lab-box', 'update',
+        )
+        assert release.state == 'acquired'
+        release()
+        assert len(released) == 1
+
+    def test_release_is_idempotent(self, monkeypatch):
+        # Long-running commands often have multiple cleanup paths
+        # (explicit release + atexit). Calling release() more than
+        # once must NOT double-release.
+        released = []
+        monkeypatch.setattr(
+            box_storage, 'acquire_box_lock',
+            lambda *a, **k: ('acquired', {}),
+        )
+        monkeypatch.setattr(
+            box_storage, 'release_box_lock',
+            lambda *a, **k: released.append(a) or True,
+        )
+        monkeypatch.setattr(
+            box_storage, 'get_lock_holder', lambda: 'test-holder',
+        )
+        monkeypatch.setattr(
+            box_storage, 'HeartbeatThread',
+            lambda *a, **k: mock.Mock(start=mock.Mock(), stop=mock.Mock()),
+        )
+
+        release = box_storage.auto_lock_acquire_for_command(
+            '10.0.0.1', 'lab-box', 'update',
+        )
+        release()
+        release()
+        release()
+        assert len(released) == 1, "release must be idempotent"
+
+    def test_disabled_returns_noop(self, monkeypatch):
+        monkeypatch.setenv('LAGER_AUTO_LOCK_DISABLE', '1')
+
+        def boom(*a, **k):
+            raise AssertionError("acquire must not be called when disabled")
+
+        monkeypatch.setattr(box_storage, 'acquire_box_lock', boom)
+        monkeypatch.setattr(box_storage, 'release_box_lock', boom)
+
+        release = box_storage.auto_lock_acquire_for_command(
+            '10.0.0.1', 'lab-box', 'update',
+        )
+        assert release.state == 'disabled'
+        release()  # no-op; must not raise

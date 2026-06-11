@@ -734,6 +734,294 @@ def heartbeat_box_lock(ip, holder, *, quiet=True):
     return resp.status_code == 200
 
 
+# ---------------------------------------------------------------------------
+# Heartbeat thread + context manager for auto-locking around a command
+# ---------------------------------------------------------------------------
+#
+# Used by `lager python` (the original site) and by the admin commands —
+# `install`, `uninstall`, `update`, `install-wheel` — to keep the
+# server-side TTL from reaping a still-running command.
+
+
+import threading as _threading_for_heartbeat
+
+
+class HeartbeatThread(_threading_for_heartbeat.Thread):
+    """Refreshes the box lock periodically while a command is running.
+
+    Daemon thread so it dies with the CLI process. Stop by calling ``stop()``;
+    that wakes the sleep so shutdown is prompt. ``join()`` is inherited from
+    ``threading.Thread`` (used by unit tests and admin commands that want
+    to wait for the heartbeat to finish before continuing).
+
+    Heartbeat failures are logged once (lowercase warning) and then retried
+    silently. We do NOT abort the command on heartbeat failure — the
+    server-side TTL is the authoritative reaper, and treating a flaky network
+    as a fatal error would generate more flake than it prevents.
+    """
+
+    def __init__(self, ip, holder, interval, *, warn_label='lock heartbeat'):
+        super().__init__(daemon=True, name='lager-lock-heartbeat')
+        self._ip = ip
+        self._holder = holder
+        self._interval = max(1, int(interval))
+        self._warn_label = warn_label
+        # NOTE: must NOT be named ``_stop`` — ``threading.Thread`` itself
+        # uses ``self._stop`` as a method during teardown, and assigning an
+        # Event there raises ``TypeError: 'Event' object is not callable``
+        # when the thread finishes normally.
+        self._stop_event = _threading_for_heartbeat.Event()
+        self._warned = False
+
+    def stop(self):
+        self._stop_event.set()
+
+    def run(self):
+        import click
+
+        while not self._stop_event.wait(self._interval):
+            try:
+                ok = heartbeat_box_lock(self._ip, self._holder)
+            except Exception:  # pylint: disable=broad-except
+                ok = False
+            if not ok and not self._warned:
+                self._warned = True
+                try:
+                    click.secho(
+                        f'Warning: {self._warn_label} failed; relying on server TTL.',
+                        fg='yellow', err=True,
+                    )
+                except Exception:  # pylint: disable=broad-except
+                    pass
+
+
+def _default_admin_holder_type():
+    """Return ``'ci'`` when running under any known CI provider, else
+    ``'ephemeral'``.
+
+    The distinction matters because matrix CI jobs need their holder string
+    to encode run/job coordinates (already handled by ``get_lock_holder``)
+    AND the server applies the same TTL policy. Failing closed (treating
+    unknown environments as ``'ephemeral'``) is safe: ephemeral locks still
+    heartbeat + reap, just without the explicit "this came from CI" tag.
+    """
+    try:
+        from .context.ci_detection import get_ci_environment, CIEnvironment
+        return 'ci' if get_ci_environment() != CIEnvironment.HOST else 'ephemeral'
+    except Exception:  # pylint: disable=broad-except
+        return 'ephemeral'
+
+
+def auto_lock_around_command(
+    ip,
+    box_label,
+    command_name,
+    *,
+    holder=None,
+    ttl_seconds=None,
+    wait_seconds=None,
+    holder_type=None,
+    heartbeat_interval=None,
+):
+    """Context manager: auto-acquire a box lock for the duration of an
+    admin command (`install`, `uninstall`, `update`, `install-wheel`).
+
+    Use as::
+
+        with auto_lock_around_command(ip, box_label, 'install'):
+            ... do the install ...
+
+    On enter the box lock is acquired with ``holder_type=ephemeral`` (or
+    ``'ci'`` under CI) and a heartbeat thread keeps it alive. On exit the
+    lock is released — including on exception, ``ctx.exit()``, and
+    ``SystemExit``. ``atexit`` provides a final-safety release for paths
+    that bypass the with-block's ``__exit__`` (fatal signals, ``os._exit``).
+
+    Defaults:
+      * ``holder``      = :func:`get_lock_holder` (CI-aware identity).
+      * ``holder_type`` = ``'ci'`` in CI, ``'ephemeral'`` otherwise.
+      * ``ttl_seconds`` = :func:`default_lock_ttl_seconds` (1800).
+      * ``wait_seconds`` = :func:`default_lock_wait_seconds` (0 in dev,
+                            1800 in CI; overridable via ``LAGER_LOCK_WAIT``).
+
+    Set the ``LAGER_AUTO_LOCK_DISABLE`` environment variable to skip the
+    lock entirely (emergency escape hatch for a wedged box).
+
+    Collision behavior follows :func:`acquire_box_lock`: it raises
+    ``SystemExit(1)`` with a "locked by ..." message after the wait
+    deadline.
+
+    Yields the ``(holder, state)`` tuple, where ``state`` is one of
+    ``"acquired"``, ``"already_ours"``, ``"unreachable"``, or
+    ``"disabled"``. Callers can use ``state`` to short-circuit downstream
+    work but the lock lifecycle is fully handled by the context manager.
+    """
+    import contextlib
+
+    @contextlib.contextmanager
+    def _cm():
+        import atexit as _atexit
+        import os as _os
+
+        if _os.getenv('LAGER_AUTO_LOCK_DISABLE'):
+            yield (holder or get_lock_holder(), 'disabled')
+            return
+
+        resolved_holder = holder or get_lock_holder()
+        resolved_ttl = (
+            default_lock_ttl_seconds() if ttl_seconds is None else ttl_seconds
+        )
+        resolved_wait = (
+            default_lock_wait_seconds() if wait_seconds is None else wait_seconds
+        )
+        resolved_type = holder_type or _default_admin_holder_type()
+
+        state, _data = acquire_box_lock(
+            ip,
+            box_label,
+            resolved_holder,
+            holder_type=resolved_type,
+            ttl_seconds=resolved_ttl,
+            wait_seconds=resolved_wait,
+        )
+
+        should_release = (state == 'acquired')
+        released = {'done': not should_release}
+
+        def _safe_release():
+            if released['done']:
+                return
+            released['done'] = True
+            try:
+                release_box_lock(ip, resolved_holder)
+            except Exception:  # pylint: disable=broad-except
+                pass
+
+        if should_release:
+            # atexit covers paths that bypass __exit__ (signals not raised
+            # as Python exceptions, ``os._exit``). Registering here rather
+            # than at module load time means we only register when we
+            # actually hold the lock — no surprise release of someone
+            # else's lock at interpreter shutdown.
+            _atexit.register(_safe_release)
+
+        heartbeat = None
+        if should_release and resolved_ttl is not None:
+            heartbeat = HeartbeatThread(
+                ip,
+                resolved_holder,
+                heartbeat_interval or default_heartbeat_interval(),
+                warn_label=f'{command_name} lock heartbeat',
+            )
+            heartbeat.start()
+
+        try:
+            yield (resolved_holder, state)
+        finally:
+            if heartbeat is not None:
+                heartbeat.stop()
+            _safe_release()
+
+    return _cm()
+
+
+def auto_lock_acquire_for_command(
+    ip,
+    box_label,
+    command_name,
+    *,
+    holder=None,
+    ttl_seconds=None,
+    wait_seconds=None,
+    holder_type=None,
+    heartbeat_interval=None,
+):
+    """Imperative variant of :func:`auto_lock_around_command` for commands
+    whose destructive section sits inside a long, multi-branch function
+    that would be impractical to re-indent under a ``with`` block (e.g.
+    ``_update_logic`` in ``commands/utility/update.py``).
+
+    Acquires the box lock, registers an ``atexit`` release for paths that
+    bypass the explicit release call (``ctx.exit``, ``sys.exit``, fatal
+    signals), starts a heartbeat thread, and returns a callable that
+    releases the lock + stops the heartbeat when invoked.
+
+    Usage::
+
+        release = auto_lock_acquire_for_command(ip, box, 'update')
+        try:
+            ... destructive work ...
+        finally:
+            release()
+
+    The returned callable is idempotent — calling it more than once is a
+    no-op after the first successful release. State is one of
+    ``"acquired"``, ``"already_ours"``, ``"unreachable"``, or
+    ``"disabled"``; it's stored on the returned callable as
+    ``release.state`` for callers that need to branch on it.
+
+    Collision behavior is identical to :func:`auto_lock_around_command`:
+    a 409 past ``wait_seconds`` raises ``SystemExit(1)``.
+    """
+    import atexit as _atexit
+    import os as _os
+
+    def _noop_release():
+        return None
+    _noop_release.state = 'disabled'
+
+    if _os.getenv('LAGER_AUTO_LOCK_DISABLE'):
+        return _noop_release
+
+    resolved_holder = holder or get_lock_holder()
+    resolved_ttl = (
+        default_lock_ttl_seconds() if ttl_seconds is None else ttl_seconds
+    )
+    resolved_wait = (
+        default_lock_wait_seconds() if wait_seconds is None else wait_seconds
+    )
+    resolved_type = holder_type or _default_admin_holder_type()
+
+    state, _data = acquire_box_lock(
+        ip,
+        box_label,
+        resolved_holder,
+        holder_type=resolved_type,
+        ttl_seconds=resolved_ttl,
+        wait_seconds=resolved_wait,
+    )
+
+    should_release = (state == 'acquired')
+    released = {'done': not should_release}
+    heartbeat = None
+
+    def _release():
+        if released['done']:
+            return
+        released['done'] = True
+        if heartbeat is not None:
+            heartbeat.stop()
+        try:
+            release_box_lock(ip, resolved_holder)
+        except Exception:  # pylint: disable=broad-except
+            pass
+
+    _release.state = state
+
+    if should_release:
+        _atexit.register(_release)
+        if resolved_ttl is not None:
+            heartbeat = HeartbeatThread(
+                ip,
+                resolved_holder,
+                heartbeat_interval or default_heartbeat_interval(),
+                warn_label=f'{command_name} lock heartbeat',
+            )
+            heartbeat.start()
+
+    return _release
+
+
 def box_not_found_error(box_name):
     """Build an actionable LagerError for an unrecognized ``--box`` value.
 

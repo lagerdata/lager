@@ -96,49 +96,13 @@ def _auto_lock_release(reason=''):
 atexit.register(_auto_lock_release, 'atexit')
 
 
-class _HeartbeatThread(threading.Thread):
-    """Refreshes the box lock periodically while a test is running.
-
-    Daemon thread so it dies with the CLI process. Stop by calling .stop();
-    that also wakes the sleep so shutdown is prompt.
-
-    Heartbeat failures are logged once (to stderr, lowercase warning) and
-    then retried silently. We do NOT abort the test on heartbeat failure —
-    the server-side TTL is the authoritative reaper, and treating a flaky
-    network as a test failure would generate more flake than it prevents.
-    """
-
-    def __init__(self, ip, holder, interval):
-        super().__init__(daemon=True, name='lager-lock-heartbeat')
-        self._ip = ip
-        self._holder = holder
-        self._interval = max(1, int(interval))
-        # NOTE: must NOT be named ``_stop`` — ``threading.Thread`` itself
-        # uses ``self._stop`` as a method during teardown, and assigning an
-        # Event there raises ``TypeError: 'Event' object is not callable``
-        # when the thread finishes normally.
-        self._stop_event = threading.Event()
-        self._warned = False
-
-    def stop(self):
-        self._stop_event.set()
-
-    def run(self):
-        from ...box_storage import heartbeat_box_lock
-        while not self._stop_event.wait(self._interval):
-            try:
-                ok = heartbeat_box_lock(self._ip, self._holder)
-            except Exception:  # pylint: disable=broad-except
-                ok = False
-            if not ok and not self._warned:
-                self._warned = True
-                try:
-                    click.secho(
-                        'Warning: lock heartbeat failed; relying on server TTL.',
-                        fg='yellow', err=True,
-                    )
-                except Exception:  # pylint: disable=broad-except
-                    pass
+# The heartbeat thread used to live here. It moved to
+# ``cli.box_storage.HeartbeatThread`` when the admin commands
+# (`install`/`uninstall`/`update`/`install-wheel`) also needed
+# auto-locking with heartbeat; one shared implementation keeps `lager
+# python` and the admin commands in sync on retry policy + warning
+# semantics. The private alias below preserves call-sites in this file.
+from ...box_storage import HeartbeatThread as _HeartbeatThread  # noqa: E402
 
 
 def sigint_handler(kill_python, box_ip, _sig, _frame):

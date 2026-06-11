@@ -13,7 +13,12 @@ import shutil
 from pathlib import Path
 from importlib import resources
 from ...address_utils import validate_ip_or_hostname, VALID_FORMATS_CHEATSHEET
-from ...box_storage import add_box, get_box_ip, get_box_user
+from ...box_storage import (
+    add_box,
+    auto_lock_around_command,
+    get_box_ip,
+    get_box_user,
+)
 from ...core.ssh_utils import host_in_known_hosts
 from ...errors import ssh_error, LagerError
 
@@ -100,9 +105,6 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
             click.secho("Use 'lager boxes' to see available boxes, or use --ip to specify directly.", fg='yellow', err=True)
             ctx.exit(1)
         ip = stored_ip
-
-        from ...box_storage import acquire_command_lock_with_cleanup
-        acquire_command_lock_with_cleanup(ctx, ip, box, 'install')
 
         # Look up username from box storage (if not explicitly provided)
         if user is None:
@@ -349,6 +351,11 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     click.echo()
 
     # 6. Run setup_and_deploy_box.sh with --sparse
+    #
+    # The deploy script restarts the on-box docker container, which would
+    # clobber a `lager python` test mid-run if one were active. Acquire
+    # the auto-lock for the duration so a concurrent test fail-fasts
+    # (dev) or queues (CI) instead of getting killed.
     click.secho("Running box deployment...", fg='cyan')
     click.echo("This may take several minutes.\n")
 
@@ -363,28 +370,29 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     if corporate_vpn:
         deploy_args.extend(["--corporate-vpn", corporate_vpn])
 
-    try:
-        # Run the deploy script, streaming output to the terminal
-        result = subprocess.run(
-            deploy_args,
-            check=False,
-            timeout=1800,  # 30 minute timeout
-        )
+    with auto_lock_around_command(ip, box or ip, 'install'):
+        try:
+            # Run the deploy script, streaming output to the terminal
+            result = subprocess.run(
+                deploy_args,
+                check=False,
+                timeout=1800,  # 30 minute timeout
+            )
 
-        if result.returncode != 0:
+            if result.returncode != 0:
+                click.echo()
+                click.secho("Deployment failed!", fg='red', err=True)
+                click.secho("Check the output above for details.", fg='yellow', err=True)
+                ctx.exit(1)
+
+        except subprocess.TimeoutExpired:
+            click.echo()
+            click.secho("Deployment timed out after 30 minutes.", fg='red', err=True)
+            ctx.exit(1)
+        except Exception as e:
             click.echo()
             click.secho("Deployment failed!", fg='red', err=True)
-            click.secho("Check the output above for details.", fg='yellow', err=True)
             ctx.exit(1)
-
-    except subprocess.TimeoutExpired:
-        click.echo()
-        click.secho("Deployment timed out after 30 minutes.", fg='red', err=True)
-        ctx.exit(1)
-    except Exception as e:
-        click.echo()
-        click.secho("Deployment failed!", fg='red', err=True)
-        ctx.exit(1)
 
     click.echo()
     click.secho("Box deployment complete!", fg='green', bold=True)

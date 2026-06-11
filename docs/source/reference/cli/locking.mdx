@@ -7,8 +7,10 @@ When multiple users — or multiple CI jobs — share a Lager Box, locks
 prevent two callers from clobbering each other. Lager provides two locking
 mechanisms:
 
-1. **Automatic test lock** — `lager python` reserves the box for the
-   lifetime of the test run.
+1. **Automatic test / admin lock** — `lager python` and the box-mutating
+   admin commands (`lager install`, `lager uninstall`, `lager update`,
+   `lager install-wheel`) reserve the box for the lifetime of the
+   command.
 2. **User lock** — `lager boxes lock` explicitly reserves a box until you
    unlock it.
 
@@ -19,6 +21,23 @@ lock at start and releases it at end. This includes failures, `Ctrl+C`,
 crashes, and signal-killed runs — the lock is released through a `finally`
 block, a signal handler, an `atexit` net, and (worst case) a server-side
 TTL reap.
+
+### Which commands auto-lock
+
+| Command                | Lock window                                                                | Why                                                                                              |
+|------------------------|----------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------|
+| `lager python`         | Full test run (acquire → heartbeat → release)                              | Canonical test runner.                                                                            |
+| `lager install`        | The `setup_and_deploy_box.sh` step (the part that restarts the container)  | Container restart mid-test would kill the test outright.                                          |
+| `lager uninstall`      | Container teardown, image wipe, `~/box` and `/etc/lager` removal           | Same — destructive on-box mutation.                                                              |
+| `lager update`         | Container stop → image rebuild → restart → health check                    | Container restart is the test-clobbering action. Read-only probe / fetch are deliberately outside the lock. |
+| `lager install-wheel`  | The `pip install` invocation inside the container                          | `pip install` mutates the container's Python environment; a concurrent test could race on imports. |
+
+Read-only commands (`lager hello`, `lager boxes list`, `lager boxes lock` /
+`unlock` itself, status / dry-run paths, etc.) do **not** acquire the
+auto-lock. Note: this is intentionally narrower than the v0.12–0.13.3
+behavior, which slapped a `--force-command`-overridable lock on every
+single CLI command. See *Backward compatibility* below for the
+v0.13.4 history.
 
 The lock identity is **CI-aware** so concurrent test runs in CI mutually
 exclude correctly. Holder formats:
@@ -205,7 +224,20 @@ call needed.
   payload with neither field as legacy and applies the same defaults.
 - `_check_box_lock` (the read-only lock check that already gates every
   command in resolve_and_validate_box) is unchanged.
-- The old ephemeral *per-CLI-command* lock from 0.12–0.13.3 stays
-  removed. The new lock is *per `lager python` test*, not per individual
-  CLI invocation, which avoids the supply/gdbserver/ssh leaks that
-  motivated the 0.13.4 removal.
+
+### How this differs from v0.13.0 – v0.13.3 (removed in v0.13.4)
+
+v0.13.0 added an ephemeral "command-in-progress" lock that fired on
+**every** CLI command via a shared decorator, gated by a
+`--force-command` flag. v0.13.4 removed it because three corner cases
+were unfixable in that design:
+
+| v0.13.4 corner case                                          | How this PR avoids it                                                                                                                                                                                                              |
+|--------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| *"Supply commands never released the lock"*                  | The auto-lock is only attached to **5 commands** (`python`, `install`, `uninstall`, `update`, `install-wheel`), not every CLI surface. Supply commands etc. don't touch the lock — no decorator-on-everything to leak from.        |
+| *"Long-running commands blocked all other commands on the same box"* | Only those 5 commands check the lock; status / list / read-only paths are unaffected. For genuine concurrent test runs, dev gets fail-fast in <5s and CI gets a queue (default 60s, configurable). That's the *desired* policy. |
+| *"Detached processes left stale locks"*                      | `--detach` is **opt-in** for a long-lived hold (`ttl_seconds: null` is intentional). Non-detached runs have heartbeat + TTL reap, so an abnormal CLI exit self-recovers in ≤ TTL + grace.                                          |
+
+`--force-command` is **gone**. Collision policy is structured (fail-fast
+in dev, queue in CI) and the existing `lager boxes lock --force` is the
+escape hatch when you genuinely need to override.
