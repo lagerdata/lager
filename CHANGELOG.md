@@ -2,6 +2,20 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+`lager box config` host-side operations no longer dead-end on boxes with customer-managed SSH users: the dedicated lager_box key falls back to the user's own keys on auth failure, an unreachable box host during mount pre-flight is reported as exactly that (and no longer blocks `apply`), and the pre-flight runs late enough that mounts of apt-installed files work in a single `apply`.
+
+### Fixed
+- **The `~/.ssh/lager_box` key no longer locks out a user's own SSH key.** Passing `-i ~/.ssh/lager_box` replaces ssh's default identity list, so on boxes whose user was authorized via `ssh-copy-id` (customer-managed users), every `lager box config` host-side call failed with `Permission denied (publickey,password)` — even right after `ssh-copy-id` succeeded. The shared SSH runner now retries once without the key on an auth failure (and remembers the fallback per destination for the rest of the process), so default identities get their chance. Auth failure means the remote command never ran, so the retry cannot double-execute anything; timeouts and no-route errors are not retried.
+- **`apply`/`mount add` no longer misreport an SSH transport failure as a host-path problem.** ssh's own exit code (255) during the mount pre-flight was read as "path missing", producing a wrong `Manual fix: sudo mkdir -p ...` and aborting the apply. An unreachable box host is now classified separately: the message names the user@ip and the actual fixes (`ssh-copy-id`, `lager update`, `--no-auto-prep`), `mount add` persists the mount (apply re-checks it), and `apply` warns and continues — could-not-verify is not verified-bad. Genuinely bad states (wrong-owner populated directory, sudo refused) still abort before the container restart.
+- **A hung SSH connection no longer crashes the CLI with a traceback.** `lager box config` host-side calls (mount prep, apt, sysctl, udev, container bounce) ran ssh with a 60s timeout but never caught `subprocess.TimeoutExpired`, so a half-dead box or dropping link dumped a raw Python stack trace mid-apply. A timeout now surfaces as the same transport-failure result as any other SSH failure ("ssh timed out after Ns to user@ip") and is not retried.
+- **An SSH connection that dies mid-prep is reported as an SSH failure, not a sudo failure.** The transport-failure classification only covered the first `stat` call in host-path prep; a connection dropping before the mkdir/find/chown step still produced the misleading raw-stderr message with a wrong manual fix. All prep SSH calls now classify ssh's rc 255 as `ssh_failed` with the ssh-copy-id/`lager update`/`--no-auto-prep` guidance.
+- **Mount pre-flight now runs after the confirm prompt and after apt/sysctl/udev provisioning.** Previously it ran first, so a mount whose host path is installed by an apt package in the same config (e.g. `/usr/bin/dfu-util` from `dfu-util`) was seen as missing and pre-empted by a `sudo mkdir -p` directory at that path, breaking the package unpack — and the host was mutated before the operator confirmed the apply. The sudoers bootstrap snippet in prep failure messages also now names the box's actual SSH user instead of hard-coding `lagerdata`.
+
+### Changed
+- **`apply --skip-restart` no longer runs the mount pre-flight.** Mounts only take effect at the container restart this flag skips, and the eventual full `apply` re-checks them; running prep there mutated the host with no confirm prompt and before apt provisioning.
+
 ## [0.24.0] - 2026-06-05
 
 Two themes: the MCP server becomes a focused, read-only surface for *learning* a bench and its device-under-test (so an agent can author a correct `lager python` test), and the debug/RTT path becomes resilient enough to survive scripted flash → attach → reset loops without human babysitting.

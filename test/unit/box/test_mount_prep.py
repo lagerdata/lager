@@ -182,6 +182,103 @@ class SudoFailures(unittest.TestCase):
         self.assertIn("Read-only file system", r.message)
 
 
+def _ssh_dead():
+    return (255, "", "juultest@10.101.9.207: Permission denied (publickey,password).\r\n")
+
+
+class SshTransportFailure(unittest.TestCase):
+    def test_stat_ssh_failure_returns_ssh_failed(self):
+        # rc 255 is ssh's own exit code; the path was never checked, so no
+        # mkdir/chown attempt and no manual_fix suggesting one.
+        ssh = FakeSsh([_ssh_dead()])
+        r = mp.ensure_host_path_owned("10.101.9.207", "/usr/bin/dfu-util", ssh_runner=ssh)
+        self.assertFalse(r.ok)
+        self.assertEqual(r.action, "ssh_failed")
+        self.assertEqual(len(ssh.calls), 1)
+        self.assertIsNone(r.manual_fix)
+
+    def test_ssh_failure_message_names_fix(self):
+        ssh = FakeSsh([_ssh_dead()])
+        r = mp.ensure_host_path_owned(
+            "10.101.9.207", "/usr/bin/dfu-util", ssh_runner=ssh, box_user="juultest",
+        )
+        self.assertIn("ssh-copy-id juultest@10.101.9.207", r.message)
+        self.assertIn("--no-auto-prep", r.message)
+        self.assertIn("Permission denied (publickey,password)", r.message)
+
+    def test_ssh_failure_on_mkdir_call(self):
+        # Transport dies BETWEEN stat and mkdir (flaky link, dropping VPN):
+        # must classify as ssh_failed, not sudo_failed with raw ssh stderr.
+        ssh = FakeSsh([_stat_missing(), _ssh_dead()])
+        r = mp.ensure_host_path_owned("10.101.9.207", "/Hyphen", ssh_runner=ssh)
+        self.assertFalse(r.ok)
+        self.assertEqual(r.action, "ssh_failed")
+        self.assertIsNone(r.manual_fix)
+        self.assertIn("ssh-copy-id", r.message)
+
+    def test_ssh_failure_on_find_call(self):
+        ssh = FakeSsh([_stat_owner("1000:1000"), _ssh_dead()])
+        r = mp.ensure_host_path_owned("10.101.9.207", "/Hyphen", ssh_runner=ssh)
+        self.assertFalse(r.ok)
+        self.assertEqual(r.action, "ssh_failed")
+        self.assertIsNone(r.manual_fix)
+
+    def test_ssh_failure_on_chown_call(self):
+        ssh = FakeSsh([
+            _stat_owner("1000:1000"),
+            (0, "", ""),  # find: empty dir
+            _ssh_dead(),
+        ])
+        r = mp.ensure_host_path_owned("10.101.9.207", "/Hyphen", ssh_runner=ssh)
+        self.assertFalse(r.ok)
+        self.assertEqual(r.action, "ssh_failed")
+        self.assertIsNone(r.manual_fix)
+
+    def test_empty_stderr_renders_generic_detail(self):
+        ssh = FakeSsh([(255, "", "")])
+        r = mp.ensure_host_path_owned("1.2.3.4", "/Hyphen", ssh_runner=ssh)
+        self.assertEqual(r.action, "ssh_failed")
+        self.assertIn("ssh exited 255", r.message)
+
+    def test_banner_stderr_uses_last_line(self):
+        # Login banners precede the actual error on stderr; the message
+        # should show the denial, not the banner.
+        ssh = FakeSsh([(255, "", "Authorized use only.\nPermission denied (publickey).\n")])
+        r = mp.ensure_host_path_owned("1.2.3.4", "/Hyphen", ssh_runner=ssh)
+        self.assertIn("Permission denied (publickey)", r.message)
+        self.assertNotIn("Authorized use only", r.message)
+
+    def test_spaced_path_in_message(self):
+        ssh = FakeSsh([_ssh_dead()])
+        r = mp.ensure_host_path_owned("1.2.3.4", "/path with space", ssh_runner=ssh)
+        self.assertEqual(r.action, "ssh_failed")
+        self.assertIn("/path with space", r.message)
+
+    def test_remote_stat_exit_1_still_means_missing(self):
+        # Regression guard: a remote stat failing with rc 1 (path absent)
+        # must keep taking the create branch, not be mistaken for ssh death.
+        ssh = FakeSsh([_stat_missing(), _ok()])
+        r = mp.ensure_host_path_owned("1.2.3.4", "/Hyphen", ssh_runner=ssh)
+        self.assertTrue(r.ok)
+        self.assertEqual(r.action, "created")
+
+
+class SudoersBootstrapUser(unittest.TestCase):
+    def test_bootstrap_uses_resolved_user(self):
+        ssh = FakeSsh([_stat_missing(), _sudo_failed()])
+        r = mp.ensure_host_path_owned(
+            "10.101.9.207", "/Hyphen", ssh_runner=ssh, box_user="juultest",
+        )
+        self.assertFalse(r.ok)
+        self.assertIn("juultest ALL=(root)", r.message)
+        self.assertNotIn("lagerdata", r.message)
+
+    def test_bootstrap_defaults_to_lagerdata(self):
+        ssh = FakeSsh([_stat_missing(), _sudo_failed()])
+        r = mp.ensure_host_path_owned("1.2.3.4", "/Hyphen", ssh_runner=ssh)
+        self.assertIn("lagerdata ALL=(root)", r.message)
+
+
 class ManualFixCommand(unittest.TestCase):
     def test_quotes_paths_with_spaces(self):
         cmd = mp.manual_fix_command("/path with space")
