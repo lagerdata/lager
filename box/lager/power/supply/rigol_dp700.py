@@ -252,9 +252,19 @@ class RigolDP700(SupplyNet):
             return False
 
     def _ensure_open(self) -> None:
-        """Cheap pre-op check: if a durable cable's tty vanished, reopen."""
+        """Cheap pre-op check: if a durable cable's tty vanished, reopen.
+
+        A failed reopen must surface as DeviceNotFoundError here: ignoring it
+        leaves ``self.instr`` as None, and the next IO would raise a raw
+        NoneType AttributeError — which ``_safe_query`` deliberately re-raises
+        as a programming error instead of reporting a missing cable.
+        """
         if self._durable and self._opened_tty and not os.path.exists(self._opened_tty):
-            self._reopen()
+            if not self._reopen():
+                raise DeviceNotFoundError(
+                    f"DP700 cable for '{self._raw_address}' is not currently "
+                    f"connected (tty vanished and could not be re-resolved)."
+                )
 
     def _is_connection_alive(self) -> bool:
         """Liveness hook for the dispatcher driver cache.
@@ -270,12 +280,22 @@ class RigolDP700(SupplyNet):
     # ------------------------------ IO shims ------------------------------
 
     def _raw_write(self, cmd: str) -> None:
+        if self.instr is None:
+            # Closed/never-reopened session (e.g. a retry after a failed
+            # _reopen): report the missing device, not a NoneType access.
+            raise DeviceNotFoundError(
+                f"DP700 at '{self._raw_address}' has no open session."
+            )
         try:
             self.instr.write(cmd, check_errors=False)
         except TypeError:
             self.instr.write(cmd)
 
     def _raw_query(self, cmd: str) -> str:
+        if self.instr is None:
+            raise DeviceNotFoundError(
+                f"DP700 at '{self._raw_address}' has no open session."
+            )
         try:
             return self.instr.query(cmd, check_errors=False)
         except TypeError:

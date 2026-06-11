@@ -155,6 +155,30 @@ class TestNetNameTaken:
         assert tui._net_name_taken(nets, "other") is False
 
 
+class TestAddressHasSavedNet:
+    """REGRESSION: a baud-only re-assign must not re-offer the Create Net
+    dialog — a second net at the same serial:// address would bypass the
+    single-channel constraint nets-add enforces."""
+
+    ADDR = "serial://067b:23a3/serial/00000006"
+
+    def test_saved_net_at_address_suppresses_offer(self):
+        nets = [tui.Net("Rigol_DP711", "1", "power-supply", "supply1",
+                        self.ADDR, saved=True)]
+        assert tui._address_has_saved_net(nets, self.ADDR) is True
+
+    def test_unsaved_placeholder_does_not_suppress(self):
+        nets = [tui.Net("Rigol_DP711", "1", "power-supply", "supply1",
+                        self.ADDR, saved=False)]
+        assert tui._address_has_saved_net(nets, self.ADDR) is False
+
+    def test_other_address_does_not_suppress(self):
+        nets = [tui.Net("Rigol_DP711", "1", "power-supply", "supply1",
+                        "serial://067b:23a3/serial/OTHER", saved=True)]
+        assert tui._address_has_saved_net(nets, self.ADDR) is False
+        assert tui._address_has_saved_net(nets, "") is False
+
+
 # --------------------------------------------------------------------------- #
 # row labels — markup safety                                                  #
 # --------------------------------------------------------------------------- #

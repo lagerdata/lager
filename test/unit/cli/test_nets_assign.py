@@ -49,6 +49,13 @@ class FakeBox:
         # Names the next "assign" should report as cascade-deleted (the
         # replaced-assignment case); tests inject these directly.
         self.pending_deleted_on_assign: list[str] = []
+        # Simulate the known box quirk where the exec path emits the JSON
+        # payload twice ("double execution").
+        self.double_output = False
+
+    def _emit(self, obj) -> None:
+        payload = json.dumps(obj)
+        print(payload * 2 if self.double_output else payload)
 
     # The DP711 record the scanner reports once the cable is assigned.
     def _dp711_record(self) -> dict:
@@ -69,7 +76,7 @@ class FakeBox:
         if script == "custom_devices.py":
             cmd = args[0]
             if cmd == "list":
-                print(json.dumps({
+                self._emit({
                     "catalog": [{"name": "Rigol_DP711", "display_name": "Rigol DP711",
                                  "roles": ["power-supply"],
                                  "channels": {"power-supply": ["1"]},
@@ -78,7 +85,7 @@ class FakeBox:
                     "cables": [] if self.assignments else [
                         {"vid": VID, "pid": PID, "serial": SERIAL,
                          "port_path": "1-1.2", "tty": TTY}],
-                }))
+                })
             elif cmd == "assign":
                 payload = json.loads(args[1])
                 # Mirror the impl's replacement cascade: stale nets are
@@ -98,7 +105,7 @@ class FakeBox:
                 if payload.get("baud") is not None:
                     rec["baud"] = payload["baud"]
                 self.assignments = [rec]
-                print(json.dumps(rec))
+                self._emit(rec)
             elif cmd == "remove":
                 removed = bool(self.assignments)
                 self.assignments = []
@@ -108,23 +115,23 @@ class FakeBox:
                            if n.get("address") == ADDR] if removed else []
                 self.saved_nets = [n for n in self.saved_nets
                                    if n.get("address") != ADDR or not removed]
-                print(json.dumps({"removed": removed, "instrument": "Rigol_DP711",
-                                  "address": ADDR, "deleted_nets": deleted}))
+                self._emit({"removed": removed, "instrument": "Rigol_DP711",
+                           "address": ADDR, "deleted_nets": deleted})
             return
 
         if script == "query_instruments.py":
             instruments = [self._dp711_record()] if self.assignments else []
             if args and args[0] == "get_instrument":
                 match = next((i for i in instruments if i["address"] == args[1]), {})
-                print(json.dumps(match))
+                self._emit(match)
             else:
-                print(json.dumps(instruments))
+                self._emit(instruments)
             return
 
         if script == "net.py":
             cmd = args[0]
             if cmd == "list":
-                print(json.dumps(self.saved_nets))
+                self._emit(self.saved_nets)
             elif cmd == "save":
                 self.saved_nets.append(json.loads(args[1]))
             return
@@ -265,6 +272,40 @@ class TestNetCascade:
         result = _invoke(["assign", "Rigol_DP711", "--serial", SERIAL, "--box", "b"])
         assert result.exit_code == 0
         assert "Replaced" not in result.output
+
+
+# --------------------------------------------------------------------------- #
+# backend output robustness                                                   #
+# --------------------------------------------------------------------------- #
+
+class TestDoubledBackendOutput:
+    """REGRESSION: the box exec path is known to emit the JSON payload twice
+    on some boxes ("double execution"); _run_backend must use the
+    duplicate-tolerant parser, not bare json.loads."""
+
+    def test_assign_tolerates_doubled_json(self, fake_box):
+        fake_box.double_output = True
+        result = _invoke(["assign", "Rigol_DP711", "--serial", SERIAL, "--box", "b"])
+        assert result.exit_code == 0, result.output
+        assert ADDR in result.output
+
+    def test_remove_tolerates_doubled_json(self, fake_box):
+        _invoke(["assign", "Rigol_DP711", "--serial", SERIAL, "--box", "b"])
+        fake_box.double_output = True
+        result = _invoke(["assign", "--remove", "--serial", SERIAL, "--box", "b"])
+        assert result.exit_code == 0, result.output
+        assert "Removed" in result.output
+
+    def test_empty_backend_output_is_clean_error(self, fake_box):
+        # An empty payload (e.g. backend crashed before printing) must raise
+        # the actionable LagerError, not an AttributeError on a list.
+        with patch.object(fake_box, "_emit", lambda obj: None):
+            result = CliRunner().invoke(
+                nets_group,
+                ["assign", "Rigol_DP711", "--serial", SERIAL, "--box", "b"],
+            )
+        assert result.exit_code != 0
+        assert "Unexpected response" in result.output
 
 
 # --------------------------------------------------------------------------- #

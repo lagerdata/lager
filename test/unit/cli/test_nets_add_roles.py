@@ -175,6 +175,40 @@ class TestDeleteRoleAliases:
         assert result.exit_code == 0, result.output
         assert fake_box.saved_nets == []
 
+    def test_delete_reaches_legacy_saved_nets(self, fake_box):
+        # REGRESSION: nets saved by older CLIs carry the raw legacy role
+        # ("supply"). Both token spellings must still find and delete them —
+        # they're exactly the (undriveable) nets users need to clean up. The
+        # box-side delete is exact-match, so the CLI must pass the record's
+        # stored role.
+        fake_box.saved_nets.append({
+            "name": "oldnet", "role": "supply", "instrument": "Rigol_DP811",
+            "pin": "1", "address": DP811_ADDR,
+        })
+        result = _invoke(["delete", "oldnet", "supply", "--box", "b", "--yes"])
+        assert result.exit_code == 0, result.output
+        assert fake_box.saved_nets == []
+
+        fake_box.saved_nets.append({
+            "name": "oldbat", "role": "batt", "instrument": "Keithley_2281S",
+            "pin": "1", "address": KEITHLEY_ADDR,
+        })
+        result = _invoke(["delete", "oldbat", "battery", "--box", "b", "--yes"])
+        assert result.exit_code == 0, result.output
+        assert fake_box.saved_nets == []
+
+    def test_add_duplicate_guard_sees_legacy_saved_roles(self, fake_box):
+        # REGRESSION: a legacy net (role "supply") on the same channel must
+        # still block re-adding it with the canonical role.
+        fake_box.saved_nets.append({
+            "name": "oldnet", "role": "supply", "instrument": "Rigol_DP811",
+            "pin": "1", "address": DP811_ADDR,
+        })
+        result = _invoke(["add", "psu2", "power-supply", "1", DP811_ADDR, "--box", "b"])
+        assert result.exit_code != 0
+        assert "already exists" in result.output
+        assert len(fake_box.saved_nets) == 1
+
 
 # --------------------------------------------------------------------------- #
 # add-batch: alias normalization                                              #

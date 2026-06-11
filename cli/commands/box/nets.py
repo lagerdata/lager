@@ -47,44 +47,11 @@ def _parse_backend_json(raw: str) -> Any:
     try:
         return json.loads(raw or "[]")
     except json.JSONDecodeError:
-        # Handle duplicate JSON output if present
-        if raw and raw.count('[') >= 2:
-            # Try to extract the first JSON array
-            depth = 0
-            first_array_end = -1
-            for i, char in enumerate(raw):
-                if char == '[':
-                    depth += 1
-                elif char == ']':
-                    depth -= 1
-                    if depth == 0:
-                        first_array_end = i + 1
-                        break
-
-            if first_array_end > 0:
-                first_json = raw[:first_array_end]
-                return json.loads(first_json)
-            else:
-                raise json.JSONDecodeError("Could not find complete JSON array", raw, 0)
-        else:
-            # Handle duplicate JSON objects (e.g., {"ok": true}{"ok": true})
-            if raw and raw.count('{') >= 2:
-                depth = 0
-                first_obj_end = -1
-                for i, char in enumerate(raw):
-                    if char == '{':
-                        depth += 1
-                    elif char == '}':
-                        depth -= 1
-                        if depth == 0:
-                            first_obj_end = i + 1
-                            break
-
-                if first_obj_end > 0:
-                    first_json = raw[:first_obj_end]
-                    return json.loads(first_json)
-
-            raise  # Re-raise original exception
+        # Duplicate output from double execution ("[...][...]" / "{...}{...}"):
+        # parse the first complete JSON value and ignore the rest. raw_decode
+        # handles nested brackets correctly — the previous hand-rolled depth
+        # scan misrouted doubled objects that contained arrays.
+        return json.JSONDecoder().raw_decode(raw.strip())[0]
 
 def _debug_channel_suffix(value) -> str:
     """Return the ``@<channel>`` portion of a debug net's device field.
@@ -700,7 +667,12 @@ def delete_cmd(
             click.secho(f"Raw output: {repr(raw)}", fg="yellow", err=True)
         ctx.exit(1)
 
-    match = [r for r in recs if r.get("name") == name and r.get("role") == net_type]
+    # Canonicalize BOTH sides of the role match: boxes hold legacy nets saved
+    # with the raw short tokens ("supply"/"batt"), and those are exactly the
+    # nets users most need to delete (they can't be driven). The box-side
+    # delete is exact-match, so pass the record's stored role, not our token.
+    match = [r for r in recs if r.get("name") == name
+             and _canonical_role(r.get("role", "")) == net_type]
     if not match:
         click.secho(f"Net '{name}' ({net_type}) not found on {resolved_box}.", fg="yellow")
         ctx.exit(1)
@@ -711,7 +683,7 @@ def delete_cmd(
         click.secho("Aborted.", fg="yellow")
         return
 
-    _run_net_py(ctx, resolved_box, "delete", name, net_type)
+    _run_net_py(ctx, resolved_box, "delete", name, match[0].get("role", net_type))
     click.secho(f"Deleted '{name}' ({net_type}) on box {resolved_box}.", fg="green")
 
 
@@ -975,8 +947,10 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
         ctx.exit(1)
 
     # ─────────── unique role/instrument/channel/address ──────────────
+    # Saved roles are canonicalized for the comparison so legacy nets stored
+    # with the short tokens ("supply") still block duplicates.
     if any(
-        n["role"] == role
+        _canonical_role(n.get("role", "")) == role
         and n["instrument"] == instrument
         and str(n["pin"]) == str(channel)
         and n["address"] == address
@@ -1191,15 +1165,22 @@ def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net,
                     ],
                 )
         raw = buf.getvalue()
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
+        result = None
+        if raw.strip():
+            try:
+                # Duplicate-tolerant parser: the box exec path is known to
+                # emit the payload twice on some boxes ("double execution").
+                result = _parse_backend_json(raw)
+            except json.JSONDecodeError:
+                result = None
+        if not isinstance(result, dict):
             raise LagerError(
                 "Unexpected response from the box.",
                 cause="The assign backend did not return valid JSON.",
                 fixes=[f"Make sure the box software is current: lager update {resolved_box}"],
                 raw=raw or None,
             )
+        return result
 
     # ─────────── --list ───────────
     if list_:

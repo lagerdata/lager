@@ -82,6 +82,41 @@ def _delete_nets_for_address(address) -> list:
     return deleted
 
 
+def _delete_uart_nets_for_cable(cable: dict) -> list:
+    """Delete saved generic-UART nets that reference the assigned cable.
+
+    A UART net created for the bare cable *before* it was assigned keeps the
+    tty drivable as a terminal while the instrument driver owns it — the same
+    double-owner conflict the scanner suppression prevents for new nets, but
+    for nets that already exist. Conservative matching: only by the cable's
+    exact USB serial (in the VISA address serial segment, or stored as the
+    net's pin). Serial-less cables are left alone — tty paths renumber, so a
+    path match could hit a different cable.
+    """
+    serial = cable.get("serial")
+    if not serial:
+        return []
+    try:
+        from lager.nets.net import Net
+    except Exception:
+        return []
+    try:
+        nets = Net.get_local_nets()
+    except Exception:
+        return []
+
+    def references_cable(n: dict) -> bool:
+        if n.get("role") != "uart":
+            return False
+        return (f"::{serial}::" in str(n.get("address") or "")
+                or str(n.get("pin")) == serial)
+
+    deleted = [n.get("name") for n in nets if references_cable(n)]
+    if deleted:
+        Net.save_local_nets([n for n in nets if not references_cable(n)])
+    return deleted
+
+
 def _catalog_entries() -> list:
     """Serializable summaries of the assignable instruments."""
     entries = []
@@ -183,6 +218,10 @@ def _cmd_assign(payload: dict) -> dict:
             _custom_store.remove(old["vid"], old["pid"],
                                  serial=old.get("serial"),
                                  port_path=old.get("port_path"))
+
+    # Also retire any generic-UART nets saved for the bare cable before it
+    # was assigned — the serial line now belongs to the instrument.
+    deleted_nets.extend(_delete_uart_nets_for_cable(cable))
 
     rec = _custom_store.add(
         instrument, cable["vid"], cable["pid"],
