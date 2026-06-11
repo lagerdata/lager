@@ -353,7 +353,7 @@ Without `--as-net`, the command prints the exact `lager nets add` invocation
 for the new instrument:
 
 ```bash
-lager nets add <name> supply 1 'serial://067b:23a3/serial/00000006'
+lager nets add <name> power-supply 1 'serial://067b:23a3/serial/00000006'
 ```
 
 **How it works:**
@@ -477,6 +477,8 @@ lager nets tui --box my-lager-box
 **TUI Features:**
 - Browse all connected instruments and their channels
 - Create new nets with guided prompts
+- Assign custom serial devices (RS-232 instruments) to their USB cables — the
+  interactive twin of [`assign`](#assign)
 - Delete existing nets
 - View net details and instrument information
 - Keyboard navigation
