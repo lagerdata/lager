@@ -320,7 +320,7 @@ _SINGLE_CHANNEL_INST = {
     "EA_PSB_10080_60": ("solar", "supply"),
     # Custom serial instrument (DEVICE_CATALOG single_channel=True): only one
     # net may reference the instrument at its serial:// address.
-    "Rigol_DP711": ("supply",),
+    "Rigol_DP711": ("power-supply",),
 }
 # Chips that can run in exactly one mode at a time, across ALL roles. The
 # canonical case is the FT232H: one physical channel, hardware-multiplexed
@@ -338,7 +338,12 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     # address) rather than USB enumeration. Roles mirror
     # box/lager/devices/catalog.py — same catalog-data duplication tech debt
     # as the scanner's SUPPORTED_USB tables.
-    "Rigol_DP711": ["supply"],
+    # NOTE the saved role must be the scanner-vocabulary "power-supply", NOT
+    # the legacy "supply" token used elsewhere in this table: the supply CLI
+    # (validate_net_exists) and the box dispatcher (ensure_role) both match
+    # the saved role string against "power-supply" exactly, so a net saved
+    # as "supply" exists but cannot be driven.
+    "Rigol_DP711": ["power-supply"],
     "EA_PSB_10080_60": ["supply", "solar"],
     "EA_PSB_10060_60": ["supply", "solar"],
     "KEYSIGHT_E36233A": ["supply"],
@@ -1220,13 +1225,14 @@ def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net,
         click.echo(f"Baud override: {result['baud']}")
     click.echo(f"Address: {address}")
 
-    # Net role/channel from the catalog facts the backend returned. Saved-net
-    # roles use the short form ('supply'), scanner roles the hyphenated one
-    # ('power-supply') — same mapping as add-all's _first_word.
+    # Net role/channel from the catalog facts the backend returned. The saved
+    # net must carry the scanner/catalog role verbatim ("power-supply"): the
+    # supply CLI (validate_net_exists) and the box dispatcher (ensure_role)
+    # match the saved role string exactly. The short tokens nets-add
+    # historically accepted ("supply") save a net those paths reject.
     roles = result.get("roles") or []
-    role_raw = roles[0] if roles else "power-supply"
-    net_role = "supply" if role_raw == "power-supply" else role_raw.split("-")[0]
-    channels = (result.get("channels") or {}).get(role_raw) or ["1"]
+    net_role = roles[0] if roles else "power-supply"
+    channels = (result.get("channels") or {}).get(net_role) or ["1"]
     channel = str(channels[0])
 
     if as_net is not None:

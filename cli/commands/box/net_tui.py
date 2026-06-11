@@ -142,6 +142,9 @@ _SINGLE_CHANNEL_INST = {
     "Keithley_2281S": ("batt", "supply"),
     "EA_PSB_10060_60": ("solar", "supply"),
     "EA_PSB_10080_60": ("solar", "supply"),
+    # Custom serial instrument (DEVICE_CATALOG single_channel=True): only one
+    # net may reference the instrument at its serial:// address.
+    "Rigol_DP711": ("power-supply",),
 }
 
 def _first_word(role: str) -> str:
@@ -178,6 +181,52 @@ def _run_script(ctx: click.Context, script: str, dut: str, *args) -> str:
     except SystemExit:
         pass
     return buf.getvalue()
+
+
+# ──────────── custom-device (cable) assignment helpers ────────────
+# TUI twin of ``lager nets assign``, backed by the same box-side script
+# (cli/impl/custom_devices.py). Pure helpers live at module level so they
+# can be unit-tested without a running Textual app.
+
+def _run_custom_devices(ctx: click.Context, dut: str, *args):
+    """Run the custom_devices.py backend; None on failure.
+
+    The backend reports failures on stderr with a non-zero exit, which
+    ``_run_script`` swallows — so "no parseable stdout" is the TUI's failure
+    signal, covering both errors and box images that predate the script.
+    """
+    raw = _run_script(ctx, "custom_devices.py", dut, *args)
+    if not raw.strip():
+        return None
+    try:
+        return _parse_backend_json_tui(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def _cable_ident(rec: dict) -> str:
+    """Human label for a cable/assignment identity (serial, else port)."""
+    if rec.get("serial"):
+        return f"serial {rec['serial']}"
+    return f"port {rec.get('port_path')}"
+
+
+def _assign_payload(cable: dict, device: str, baud: int | None) -> dict:
+    """Build the ``custom_devices.py assign`` payload for a picked cable.
+
+    Identity choice mirrors the durable-address rules: prefer the USB serial
+    when the cable has one (assignment follows the cable across ports), else
+    pin to the USB port path. Clone cables sharing one serial are rejected
+    by the backend with a pin-by-port hint — that case needs the CLI.
+    """
+    payload: dict = {"instrument": device}
+    if cable.get("serial"):
+        payload["serial"] = cable["serial"]
+    else:
+        payload["port_path"] = cable.get("port_path")
+    if baud is not None:
+        payload["baud"] = baud
+    return payload
 
 _UART_PIN_HINT = (
     "UART nets need either a /dev/tty* path or a non-empty USB serial in "
@@ -1744,6 +1793,221 @@ class ConfirmDeleteAll(Screen):
         app._refresh_table()
         app.pop_screen()
 
+
+# ──────────────── custom-device assignment screens ────────────────
+
+class AssignDeviceScreen(Screen):
+    """Map a USB-serial cable to a catalog instrument (custom devices).
+
+    Shows the box's unassigned USB-serial cables and current assignments
+    (from cli/impl/custom_devices.py list). Selecting a cable opens the
+    device-pick dialog; selecting an assignment offers removal. After
+    either action the app re-scans instruments so the (un)assigned
+    instrument appears in / disappears from the Add Nets flow.
+    """
+
+    def __init__(self, data: dict) -> None:
+        super().__init__()
+        self.data: dict = data or {}
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Static("Assign Custom Device", classes="dialog-title")
+            yield Static(
+                "Some instruments (e.g. a Rigol DP711 on RS-232) reach the box "
+                "through a generic USB-serial cable the scanner can't identify. "
+                "Assign the cable to its instrument once — it then shows up like "
+                "any auto-detected device and nets are added the normal way.\n\n"
+                "Select a cable to assign it; select an assignment to remove it.",
+                classes="dialog-content",
+            )
+            self.assign_tree = Tree("Cables", id="assign_tree")
+            self.assign_tree.show_root = False
+            self.assign_tree.root.expand()
+            yield self.assign_tree
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Close", id="assign-close", variant="primary")
+
+    def on_mount(self) -> None:
+        self._build_tree()
+        self.assign_tree.focus()
+
+    def _build_tree(self) -> None:
+        tree = self.assign_tree
+        tree.clear()
+
+        cables_branch = tree.root.add("Unassigned USB-serial cables", expand=True)
+        cables = self.data.get("cables") or []
+        for c in cables:
+            label = f"{_cable_ident(c)}  [{c.get('vid')}:{c.get('pid')}]  {c.get('tty')}"
+            cables_branch.add_leaf(label, data={"kind": "cable", "rec": c})
+        if not cables:
+            cables_branch.add_leaf("(none — plug the instrument's cable into the box)")
+
+        assigned_branch = tree.root.add("Assignments", expand=True)
+        assignments = self.data.get("assignments") or []
+        for a in assignments:
+            status = f"→ {a['tty']}" if a.get("tty") else "(cable not connected)"
+            baud_note = f"  baud {a['baud']}" if a.get("baud") else ""
+            label = (f"[bold]{a.get('instrument')}[/bold]  cable {_cable_ident(a)}"
+                     f"{baud_note}  {status}")
+            assigned_branch.add_leaf(label, data={"kind": "assignment", "rec": a})
+        if not assignments:
+            assigned_branch.add_leaf("(none)")
+
+    def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
+        event.stop()
+        data = event.node.data
+        if not isinstance(data, dict):
+            # Branch headers / "(none)" placeholders: just toggle branches.
+            if event.node.children:
+                event.node.toggle()
+            return
+        if data["kind"] == "cable":
+            catalog = self.data.get("catalog") or []
+            self.app.push_screen(DevicePickDialog(data["rec"], catalog, self._do_assign))
+        elif data["kind"] == "assignment":
+            self.app.push_screen(ConfirmUnassignDialog(data["rec"], self._do_unassign))
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "assign-close":
+            self.app.pop_screen()
+
+    # ---- backend actions -------------------------------------------------
+
+    def _do_assign(self, cable: dict, device: str, baud: int | None) -> None:
+        app: NetApp = self.app  # type: ignore[assignment]
+        payload = _assign_payload(cable, device, baud)
+        result = _run_custom_devices(app.ctx, app.dut, "assign", json.dumps(payload))
+        if not isinstance(result, dict) or not result.get("address"):
+            app.show_error(
+                "Assignment failed — run 'lager nets assign' in a terminal for details."
+            )
+            return
+        app.show_success(
+            f"Assigned {result.get('instrument', device)} — add its net via + Add Nets"
+        )
+        app.refresh_instruments()
+        self._reload()
+
+    def _do_unassign(self, assignment: dict) -> None:
+        app: NetApp = self.app  # type: ignore[assignment]
+        if assignment.get("serial"):
+            ident = {"serial": assignment["serial"]}
+        else:
+            ident = {"port_path": assignment.get("port_path")}
+        result = _run_custom_devices(app.ctx, app.dut, "remove", json.dumps(ident))
+        if not isinstance(result, dict) or not result.get("removed"):
+            app.show_error("Could not remove the assignment.")
+            return
+        app.show_success(f"Removed the {assignment.get('instrument')} assignment")
+        app.refresh_instruments()
+        self._reload()
+
+    def _reload(self) -> None:
+        """Refresh this screen's data after an (un)assignment."""
+        app: NetApp = self.app  # type: ignore[assignment]
+        data = _run_custom_devices(app.ctx, app.dut, "list")
+        if isinstance(data, dict):
+            self.data = data
+        self._build_tree()
+
+
+class DevicePickDialog(Screen):
+    """Pick the catalog instrument (and optional baud) for a cable."""
+
+    def __init__(self, cable: dict, catalog: list[dict],
+                 callback: Callable[[dict, str, int | None], None]) -> None:
+        super().__init__()
+        self.cable = cable
+        self.catalog = catalog
+        self.callback = callback
+        # One shared default-baud hint; per-device defaults still apply on
+        # the box (the override is only needed when the front panel differs).
+        defaults = sorted({e.get("default_baud") for e in catalog if e.get("default_baud")})
+        hint = f"default {defaults[0]}" if len(defaults) == 1 else "instrument default"
+        self.baud_input = Input(
+            placeholder=f"Baud override (optional, {hint})", id="assign_baud"
+        )
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Static("Assign Cable", classes="dialog-title")
+            yield Static(
+                f"Cable: {_cable_ident(self.cable)}  "
+                f"[{self.cable.get('vid')}:{self.cable.get('pid')}]  {self.cable.get('tty')}\n\n"
+                f"Which instrument is on the other end of this cable?\n"
+                f"A baud override must match the instrument's front-panel setting.",
+                classes="dialog-content",
+            )
+            for i, entry in enumerate(self.catalog):
+                roles = ", ".join(entry.get("roles") or [])
+                yield Button(
+                    f"{entry.get('display_name', entry['name'])} ({roles})",
+                    id=f"assign-dev-{i}", variant="success",
+                )
+            yield self.baud_input
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Cancel", id="assign-dev-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "assign-dev-cancel":
+            self.app.pop_screen()
+            return
+        if not (event.button.id or "").startswith("assign-dev-"):
+            return
+
+        baud_raw = self.baud_input.value.strip()
+        baud: int | None = None
+        if baud_raw:
+            try:
+                baud = int(baud_raw)
+                if baud <= 0:
+                    raise ValueError
+            except ValueError:
+                msg = f"Baud must be a positive integer (got {baud_raw!r})."
+                try:
+                    self.query_one("#baud_hint", Static).update(msg)
+                except NoMatches:
+                    self.mount(Static(msg, id="baud_hint", classes="warning"))
+                return
+
+        entry = self.catalog[int(event.button.id.rsplit("-", 1)[1])]
+        self.app.pop_screen()
+        self.callback(self.cable, entry["name"], baud)
+
+
+class ConfirmUnassignDialog(Screen):
+    """Are-you-sure overlay for removing a custom-device assignment."""
+
+    def __init__(self, assignment: dict, callback: Callable[[dict], None]) -> None:
+        super().__init__()
+        self.assignment = assignment
+        self.callback = callback
+
+    def compose(self) -> ComposeResult:
+        a = self.assignment
+        addr_note = (f"\nSaved nets pointing at {a['address']} will stop working."
+                     if a.get("address") else "")
+        with Vertical(classes="dialog"):
+            yield Static("Remove Assignment", classes="dialog-title")
+            yield Static(
+                f"Remove the {a.get('instrument')} assignment from the cable at "
+                f"{_cable_ident(a)}?\n\n"
+                f"The cable will be offered as a generic UART device again."
+                f"{addr_note}",
+                classes="dialog-content warning",
+            )
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Cancel", id="unassign-cancel")
+                yield Button("Remove", id="unassign-confirm", variant="error")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.app.pop_screen()
+        if event.button.id == "unassign-confirm":
+            self.callback(self.assignment)
+
+
 # ────────────────────────── main app ───────────────────────────────
 class NetApp(App):
     TITLE = "Lager Nets TUI"
@@ -2002,7 +2266,56 @@ class NetApp(App):
         color: black;
     }
 
+    #assign_btn {
+        background: khaki;
+        color: black;
+    }
+
     #del_all_btn {
+        background: coral;
+        color: black;
+    }
+
+    /* Custom-device assignment screen */
+    #assign_tree {
+        background: $surface;
+        border: solid hotpink;
+        height: 1fr;
+        max-height: 25;
+        margin: 1 0;
+    }
+
+    #assign_tree > .tree--guides {
+        color: hotpink;
+    }
+
+    #assign_tree > .tree--cursor {
+        background: $accent 30%;
+    }
+
+    #assign_tree > .tree--highlight {
+        background: hotpink 20%;
+    }
+
+    #assign_baud {
+        max-width: 60;
+    }
+
+    #assign-dev-cancel {
+        background: coral;
+        color: black;
+    }
+
+    #assign-close {
+        min-width: 12;
+    }
+
+    #unassign-cancel {
+        background: mediumaquamarine;
+        color: black;
+    }
+
+    #unassign-confirm {
         background: coral;
         color: black;
     }
@@ -2128,9 +2441,11 @@ class NetApp(App):
             # Center buttons container
             with Horizontal(classes="button-container-center"):
                 self.add_btn = Button("+ Add Nets", id="add_btn", variant="primary")
+                self.assign_btn = Button("Assign Device", id="assign_btn")
                 self.del_all_btn = Button("Delete All Nets", id="del_all_btn", variant="error")
                 self.del_all_btn.display = False  # shown only when nets exist
                 yield self.add_btn
+                yield self.assign_btn
                 yield self.del_all_btn
             # Right button container
             self.right_container = Horizontal(classes="button-container-right")
@@ -2203,6 +2518,25 @@ class NetApp(App):
         ]
         self._ensure_autogen_unsaved()
 
+    def refresh_instruments(self) -> None:
+        """Re-scan instruments and rebuild the unsaved placeholder nets.
+
+        Called after a custom-device (un)assignment changes what the scanner
+        reports: the assigned instrument appears (or disappears) and its
+        generic UART cable record does the inverse. Saved nets are left
+        untouched; only the auto-generated placeholders are rebuilt.
+        """
+        try:
+            raw = _run_script(self.ctx, "query_instruments.py", self.dut)
+            inst_list = json.loads(raw) if raw.strip() else []
+        except (json.JSONDecodeError, AttributeError):
+            # Keep the previous scan rather than wiping the add list.
+            return
+        self.inst_list = inst_list
+        self.nets = [n for n in self.nets if n.saved]
+        self._ensure_autogen_unsaved()
+        self._refresh_table()
+
     def show_error(self, message: str) -> None:
         """Show error message to user."""
         error_msg = Static(f"Error: {message}", classes="error")
@@ -2271,9 +2605,19 @@ class NetApp(App):
             self.push_screen(NetActionDialog(data.net))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Handle *Add Nets*, *Delete All Nets*, and *Save & Exit* buttons."""
+        """Handle *Add Nets*, *Assign Device*, *Delete All Nets*, and *Exit* buttons."""
         if event.button.id == "add_btn":
             self.push_screen(AddScreen(self.nets, self.multi_labjack))
+            return
+        if event.button.id == "assign_btn":
+            data = _run_custom_devices(self.ctx, self.dut, "list")
+            if not isinstance(data, dict):
+                self.show_error(
+                    "Custom-device assignment needs newer box software — "
+                    "run 'lager update' and retry."
+                )
+                return
+            self.push_screen(AssignDeviceScreen(data))
             return
         if event.button.id == "del_all_btn":
             self.push_screen(ConfirmDeleteAll())
@@ -2287,6 +2631,8 @@ class NetApp(App):
         buttons = []
         if self.add_btn.visible:
             buttons.append(self.add_btn)
+        if self.assign_btn.visible:
+            buttons.append(self.assign_btn)
         if self.del_all_btn.visible:
             buttons.append(self.del_all_btn)
         if self.exit_btn.visible:
