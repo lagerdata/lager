@@ -9,7 +9,13 @@
 import click
 import subprocess
 from ...address_utils import validate_ip_or_hostname, VALID_FORMATS_CHEATSHEET
-from ...box_storage import get_box_ip, get_box_user, get_box_name_by_ip, delete_box
+from ...box_storage import (
+    auto_lock_around_command,
+    delete_box,
+    get_box_ip,
+    get_box_name_by_ip,
+    get_box_user,
+)
 from ...core.ssh_utils import host_in_known_hosts, get_ssh_connection_pool
 
 
@@ -39,9 +45,6 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
             click.secho("Use 'lager boxes' to see available boxes, or use --ip to specify directly.", fg='yellow', err=True)
             ctx.exit(1)
         ip = stored_ip
-
-        from ...box_storage import acquire_command_lock_with_cleanup
-        acquire_command_lock_with_cleanup(ctx, ip, box, 'uninstall')
 
         if user is None:
             stored_user = get_box_user(box)
@@ -468,88 +471,95 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
     click.echo()
 
     # 5. Stop and remove Docker containers (targeted to lager only)
-    click.secho("[Step 1/5] Stopping Docker containers...", fg='cyan')
-    run_ssh(
-        "cd ~/box && docker compose down 2>/dev/null || true",
-        "Running docker compose down",
-        allow_fail=True
-    )
-    run_ssh("docker stop lager 2>/dev/null; docker rm -f lager 2>/dev/null || true", "Removing lager container", allow_fail=True)
-    run_ssh("docker stop pigpio 2>/dev/null; docker rm -f pigpio 2>/dev/null || true", "Removing pigpio container", allow_fail=True)
-    run_ssh("docker network rm lagernet 2>/dev/null || true", "Removing lagernet network", allow_fail=True)
-    click.echo()
-
-    # 6. Remove Docker images (unless --keep-docker-images)
-    click.secho("[Step 2/5] Cleaning Docker...", fg='cyan')
-    if not keep_docker_images:
-        run_ssh("docker image prune -af 2>/dev/null || true", "Removing Docker images", allow_fail=True)
-        run_ssh("docker builder prune -af 2>/dev/null || true", "Clearing Docker build cache", allow_fail=True)
-    else:
-        click.echo("  Skipping Docker image removal (--keep-docker-images)")
-    click.echo()
-
-    # 7. Remove ~/box directory
-    click.secho("[Step 3/5] Removing box code...", fg='cyan')
-    run_ssh("rm -rf ~/box", "Removing ~/box directory")
-    click.echo()
-
-    # 8. Remove /etc/lager (unless --keep-config, or with --all)
-    click.secho("[Step 4/5] Removing configuration...", fg='cyan')
-    if remove_all or not keep_config:
-        run_ssh("sudo rm -rf /etc/lager 2>/dev/null || true", "Removing /etc/lager directory", allow_fail=True)
-    else:
-        click.echo("  Skipping /etc/lager removal (--keep-config)")
-    click.echo()
-
-    # 9. Remove additional components if --all
-    click.secho("[Step 5/5] Cleaning up additional components...", fg='cyan')
-    if remove_all:
-        # Remove udev rules
+    #
+    # Acquire the auto-lock for the duration of the destructive steps
+    # below — stopping the lager container, removing images, wiping
+    # ~/box, /etc/lager, etc. all clobber a running `lager python` test.
+    # A concurrent test fail-fasts (dev) or queues (CI) on the box lock
+    # rather than getting killed mid-run.
+    with auto_lock_around_command(ip, box or ip, 'uninstall'):
+        click.secho("[Step 1/5] Stopping Docker containers...", fg='cyan')
         run_ssh(
-            "sudo rm -f /etc/udev/rules.d/lager-*.rules /etc/udev/rules.d/*lager*.rules 2>/dev/null; "
-            "sudo udevadm control --reload-rules 2>/dev/null || true",
-            "Removing udev rules",
+            "cd ~/box && docker compose down 2>/dev/null || true",
+            "Running docker compose down",
             allow_fail=True
         )
+        run_ssh("docker stop lager 2>/dev/null; docker rm -f lager 2>/dev/null || true", "Removing lager container", allow_fail=True)
+        run_ssh("docker stop pigpio 2>/dev/null; docker rm -f pigpio 2>/dev/null || true", "Removing pigpio container", allow_fail=True)
+        run_ssh("docker network rm lagernet 2>/dev/null || true", "Removing lagernet network", allow_fail=True)
+        click.echo()
 
-        # Remove sudoers file
-        run_ssh(
-            "sudo rm -f /etc/sudoers.d/lagerdata-udev 2>/dev/null || true",
-            "Removing sudoers file",
-            allow_fail=True
-        )
+        # 6. Remove Docker images (unless --keep-docker-images)
+        click.secho("[Step 2/5] Cleaning Docker...", fg='cyan')
+        if not keep_docker_images:
+            run_ssh("docker image prune -af 2>/dev/null || true", "Removing Docker images", allow_fail=True)
+            run_ssh("docker builder prune -af 2>/dev/null || true", "Clearing Docker build cache", allow_fail=True)
+        else:
+            click.echo("  Skipping Docker image removal (--keep-docker-images)")
+        click.echo()
 
-        # Remove third_party directory
-        run_ssh("rm -rf ~/third_party", "Removing ~/third_party directory", allow_fail=True)
+        # 7. Remove ~/box directory
+        click.secho("[Step 3/5] Removing box code...", fg='cyan')
+        run_ssh("rm -rf ~/box", "Removing ~/box directory")
+        click.echo()
 
-        # Remove both legacy and current SSH keys
-        run_ssh(
-            "rm -f ~/.ssh/lager_deploy_key ~/.ssh/lager_deploy_key.pub "
-            "~/.ssh/lager_box ~/.ssh/lager_box.pub",
-            "Removing SSH keys (lager_deploy_key, lager_box)",
-            allow_fail=True
-        )
+        # 8. Remove /etc/lager (unless --keep-config, or with --all)
+        click.secho("[Step 4/5] Removing configuration...", fg='cyan')
+        if remove_all or not keep_config:
+            run_ssh("sudo rm -rf /etc/lager 2>/dev/null || true", "Removing /etc/lager directory", allow_fail=True)
+        else:
+            click.echo("  Skipping /etc/lager removal (--keep-config)")
+        click.echo()
 
-        # Clean up SSH config (remove both legacy and current lager entries)
-        run_ssh(
-            "sed -i '/# Lager deploy key/,/IdentityFile.*lager_deploy_key/d' ~/.ssh/config 2>/dev/null; "
-            "sed -i '/# Lager box key/,/IdentityFile.*lager_box/d' ~/.ssh/config 2>/dev/null || true",
-            "Cleaning SSH config",
-            allow_fail=True
-        )
+        # 9. Remove additional components if --all
+        click.secho("[Step 5/5] Cleaning up additional components...", fg='cyan')
+        if remove_all:
+            # Remove udev rules
+            run_ssh(
+                "sudo rm -f /etc/udev/rules.d/lager-*.rules /etc/udev/rules.d/*lager*.rules 2>/dev/null; "
+                "sudo udevadm control --reload-rules 2>/dev/null || true",
+                "Removing udev rules",
+                allow_fail=True
+            )
 
-        # Reset UFW firewall to defaults (SSH-only)
-        run_ssh(
-            "sudo ufw --force reset 2>/dev/null && "
-            "sudo ufw default deny incoming 2>/dev/null && "
-            "sudo ufw default allow outgoing 2>/dev/null && "
-            "sudo ufw allow ssh 2>/dev/null && "
-            "sudo ufw --force enable 2>/dev/null || true",
-            "Resetting UFW firewall to defaults",
-            allow_fail=True
-        )
-    else:
-        click.echo("  Skipping additional cleanup (use --all for complete removal)")
+            # Remove sudoers file
+            run_ssh(
+                "sudo rm -f /etc/sudoers.d/lagerdata-udev 2>/dev/null || true",
+                "Removing sudoers file",
+                allow_fail=True
+            )
+
+            # Remove third_party directory
+            run_ssh("rm -rf ~/third_party", "Removing ~/third_party directory", allow_fail=True)
+
+            # Remove both legacy and current SSH keys
+            run_ssh(
+                "rm -f ~/.ssh/lager_deploy_key ~/.ssh/lager_deploy_key.pub "
+                "~/.ssh/lager_box ~/.ssh/lager_box.pub",
+                "Removing SSH keys (lager_deploy_key, lager_box)",
+                allow_fail=True
+            )
+
+            # Clean up SSH config (remove both legacy and current lager entries)
+            run_ssh(
+                "sed -i '/# Lager deploy key/,/IdentityFile.*lager_deploy_key/d' ~/.ssh/config 2>/dev/null; "
+                "sed -i '/# Lager box key/,/IdentityFile.*lager_box/d' ~/.ssh/config 2>/dev/null || true",
+                "Cleaning SSH config",
+                allow_fail=True
+            )
+
+            # Reset UFW firewall to defaults (SSH-only)
+            run_ssh(
+                "sudo ufw --force reset 2>/dev/null && "
+                "sudo ufw default deny incoming 2>/dev/null && "
+                "sudo ufw default allow outgoing 2>/dev/null && "
+                "sudo ufw allow ssh 2>/dev/null && "
+                "sudo ufw --force enable 2>/dev/null || true",
+                "Resetting UFW firewall to defaults",
+                allow_fail=True
+            )
+        else:
+            click.echo("  Skipping additional cleanup (use --all for complete removal)")
 
     # Clean up SSH multiplexing
     if ssh_pool:
