@@ -828,7 +828,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
 
-    # Handle get_instrument command used by nets create
+    # Handle get_instrument command used by nets add
     if len(argv) >= 2 and argv[0] == "get_instrument":
         address = argv[1]
         custom = _custom_instruments()

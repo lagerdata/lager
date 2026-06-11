@@ -401,7 +401,7 @@ There are three ways to attach a J-Link script to a debug net:
 **1. During net creation:**
 
 ```bash
-lager nets create debug1 debug STM32F407VG USB::001::002 \
+lager nets add debug1 debug STM32F407VG USB::001::002 \
   --jlink-script ./my_device.JLinkScript --box my-lager-box
 ```
 
@@ -528,7 +528,7 @@ Devices not in the table above default to Cortex-M4 (ARMv7E-M) architecture. If 
 
 ## Notes
 
-- Debug nets are created with `lager nets create <name> debug <device_type> <address>`
+- Debug nets are created with `lager nets add <name> debug <device_type> <address>`
 - The system auto-connects when needed for commands like `flash` and `reset`
 - Use `--erase` before flashing for clean RTT initialization
 - RTT streaming requires the device to have RTT support in firmware
