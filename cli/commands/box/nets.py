@@ -1194,13 +1194,16 @@ def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net,
         if result.get("removed"):
             inst = result.get("instrument") or "device"
             click.secho(f"Removed the {inst} assignment.", fg="green")
-            click.echo("The cable will be offered as a generic UART adapter again.")
-            if result.get("address"):
+            deleted = result.get("deleted_nets") or []
+            if deleted:
+                # Nets live and die with their assignment — the backend
+                # cascades the delete; surface what went with it.
                 click.secho(
-                    f"Note: saved nets still pointing at {result['address']} will stop "
-                    f"working — delete them with 'lager nets delete'.",
+                    f"Deleted {len(deleted)} net{'s' if len(deleted) != 1 else ''} "
+                    f"bound to it: {', '.join(deleted)}.",
                     fg="yellow",
                 )
+            click.echo("The cable will be offered as a generic UART adapter again.")
         else:
             click.secho("No matching assignment found.", fg="yellow")
             click.echo("See current assignments: lager nets assign --list")
@@ -1221,6 +1224,14 @@ def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net,
         f"[{result.get('vid')}:{result.get('pid')}].",
         fg="green",
     )
+    replaced = result.get("deleted_nets") or []
+    if replaced:
+        click.secho(
+            f"Replaced the cable's previous assignment; deleted "
+            f"{len(replaced)} stale net{'s' if len(replaced) != 1 else ''}: "
+            f"{', '.join(replaced)}.",
+            fg="yellow",
+        )
     if result.get("baud"):
         click.echo(f"Baud override: {result['baud']}")
     click.echo(f"Address: {address}")

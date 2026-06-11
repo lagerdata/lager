@@ -379,8 +379,12 @@ different port breaks the assignment.
 lager nets assign --remove --serial 00000006 --box my-lager-box
 ```
 
-The cable is offered as a generic UART device again. Saved nets still pointing
-at the old `serial://` address stop working — delete them with `lager nets delete`.
+The cable is offered as a generic UART device again. **Nets live and die with
+their assignment**: any saved nets bound to the assignment's `serial://`
+address are deleted automatically and reported in the output. The same cascade
+applies when re-assigning a cable to a different instrument (or switching its
+identity from `--serial` to `--port`) — only a baud-only re-assign keeps the
+existing nets.
 
 **Currently assignable devices:** Rigol DP711 (single-channel RS-232 power
 supply). Run `lager nets assign --list` to see the catalog your box supports.

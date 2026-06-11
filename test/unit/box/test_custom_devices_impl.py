@@ -66,10 +66,26 @@ _lager_devices.custom_store = cs
 cd = _load_module("custom_devices_under_test", IMPL_PATH)
 
 
+class _FakeNet:
+    """In-memory stand-in for ``lager.nets.net.Net`` (the cascade's import)."""
+
+    db: list = []
+
+    @classmethod
+    def get_local_nets(cls):
+        return [dict(n) for n in cls.db]
+
+    @classmethod
+    def save_local_nets(cls, nets):
+        cls.db = [dict(n) for n in nets]
+
+
 # A real Prolific USB-serial cable identity (the DP711's adapter).
 VID, PID, SERIAL = "067b", "23a3", "00000006"
 TTY = "/dev/ttyUSB0"
 CABLE = {"vid": VID, "pid": PID, "serial": SERIAL, "port_path": "1-1.2", "tty": TTY}
+SERIAL_ADDR = f"serial://{VID}:{PID}/serial/{SERIAL}"
+PORT_ADDR = f"serial://{VID}:{PID}/port/1-1.2"
 
 
 class CustomDevicesImplTests(unittest.TestCase):
@@ -92,7 +108,26 @@ class CustomDevicesImplTests(unittest.TestCase):
 
         self._orig_framework = (cd._catalog, cd._custom_store, cd._serial_id)
 
+        # Fake nets module for the assignment->nets cascade. Registered in
+        # sys.modules so the impl's lazy ``from lager.nets.net import Net``
+        # never touches the real (heavy) box module.
+        _FakeNet.db = []
+        self._saved_net_modules = {
+            name: sys.modules.get(name) for name in ("lager.nets", "lager.nets.net")
+        }
+        nets_pkg = types.ModuleType("lager.nets")
+        nets_pkg.__path__ = []  # bare namespace; never import from disk
+        nets_mod = types.ModuleType("lager.nets.net")
+        nets_mod.Net = _FakeNet
+        sys.modules["lager.nets"] = nets_pkg
+        sys.modules["lager.nets.net"] = nets_mod
+
     def tearDown(self):
+        for name, mod in self._saved_net_modules.items():
+            if mod is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = mod
         cd._catalog, cd._custom_store, cd._serial_id = self._orig_framework
         serial_id.resolve_tty = self._orig_resolve_tty
         serial_id.list_cables = self._orig_list_cables
@@ -217,6 +252,126 @@ class CustomDevicesImplTests(unittest.TestCase):
         cs.add("Rigol_DP711", VID, PID, port_path="1-1.2")
         result = self._run(["remove", json.dumps({"port_path": "1-1.2"})])
         self.assertTrue(result["removed"])
+
+    # ---- assignment -> nets cascade ---------------------------------------------
+    # Nets live and die with their assignment: removing (or replacing) an
+    # assignment deletes the saved nets bound to its address. Without the
+    # cascade a stale net keeps driving the instrument — the DP700 driver
+    # resolves serial:// addresses from sysfs without consulting the store.
+
+    def _add_second_catalog_device(self):
+        catalog.DEVICE_CATALOG["Test_PSU"] = {
+            "display_name": "Test PSU",
+            "roles": ["power-supply"],
+            "channels": {"power-supply": ["1"]},
+            "single_channel": True,
+            "transport": "serial",
+            "serial": {"baud": 9600},
+        }
+        self.addCleanup(catalog.DEVICE_CATALOG.pop, "Test_PSU", None)
+
+    def test_remove_deletes_nets_bound_to_assignment(self):
+        cs.add("Rigol_DP711", VID, PID, serial=SERIAL)
+        _FakeNet.db = [
+            {"name": "supply1", "role": "power-supply", "address": SERIAL_ADDR},
+            {"name": "other", "role": "uart", "address": "USB0::0x10C4::0xEA60::X::INSTR"},
+        ]
+
+        result = self._run(["remove", json.dumps({"serial": SERIAL})])
+        self.assertTrue(result["removed"])
+        self.assertEqual(result["deleted_nets"], ["supply1"])
+        # Unrelated nets survive untouched.
+        self.assertEqual([n["name"] for n in _FakeNet.db], ["other"])
+
+    def test_remove_without_nets_reports_empty_cascade(self):
+        cs.add("Rigol_DP711", VID, PID, serial=SERIAL)
+        result = self._run(["remove", json.dumps({"serial": SERIAL})])
+        self.assertTrue(result["removed"])
+        self.assertEqual(result["deleted_nets"], [])
+
+    def test_remove_missing_assignment_touches_no_nets(self):
+        _FakeNet.db = [{"name": "supply1", "address": SERIAL_ADDR}]
+        result = self._run(["remove", json.dumps({"serial": "nope"})])
+        self.assertEqual(result, {"removed": False})
+        self.assertEqual(len(_FakeNet.db), 1)
+
+    def test_remove_port_assignment_deletes_port_address_nets(self):
+        cs.add("Rigol_DP711", VID, PID, port_path="1-1.2")
+        _FakeNet.db = [{"name": "supply1", "address": PORT_ADDR}]
+        result = self._run(["remove", json.dumps({"port_path": "1-1.2"})])
+        self.assertEqual(result["deleted_nets"], ["supply1"])
+        self.assertEqual(_FakeNet.db, [])
+
+    def test_remove_with_cable_unplugged_still_cascades(self):
+        # remove is a store-only operation; the cascade must not depend on
+        # the cable being live.
+        cs.add("Rigol_DP711", VID, PID, serial=SERIAL)
+        _FakeNet.db = [{"name": "supply1", "address": SERIAL_ADDR}]
+        self.cables = []
+        result = self._run(["remove", json.dumps({"serial": SERIAL})])
+        self.assertTrue(result["removed"])
+        self.assertEqual(result["deleted_nets"], ["supply1"])
+
+    def test_rebaud_same_instrument_keeps_nets(self):
+        # A --baud update re-assigns with the same identity + instrument:
+        # the address and instrument stand, so the nets must survive.
+        self.cables = [CABLE]
+        self._run(["assign", json.dumps({"instrument": "Rigol_DP711", "serial": SERIAL})])
+        _FakeNet.db = [{"name": "supply1", "address": SERIAL_ADDR}]
+
+        result = self._run(["assign", json.dumps(
+            {"instrument": "Rigol_DP711", "serial": SERIAL, "baud": 19200})])
+        self.assertEqual(result["deleted_nets"], [])
+        self.assertEqual(len(_FakeNet.db), 1)
+        self.assertEqual(cs.load()[0]["baud"], 19200)
+
+    def test_reassign_different_instrument_deletes_nets(self):
+        self._add_second_catalog_device()
+        self.cables = [CABLE]
+        self._run(["assign", json.dumps({"instrument": "Rigol_DP711", "serial": SERIAL})])
+        _FakeNet.db = [{"name": "supply1", "address": SERIAL_ADDR}]
+
+        result = self._run(["assign", json.dumps(
+            {"instrument": "Test_PSU", "serial": SERIAL})])
+        self.assertEqual(result["instrument"], "Test_PSU")
+        self.assertEqual(result["deleted_nets"], ["supply1"])
+        self.assertEqual(_FakeNet.db, [])
+        # Still exactly one assignment for the cable (upsert).
+        self.assertEqual(len(cs.load()), 1)
+
+    def test_reassign_identity_form_change_replaces_record_and_deletes_nets(self):
+        # serial-keyed -> port-keyed: the old address loses its assignment,
+        # so its nets go and the old record is dropped (one cable == one
+        # assignment, never two records under different identity forms).
+        self.cables = [CABLE]
+        self._run(["assign", json.dumps({"instrument": "Rigol_DP711", "serial": SERIAL})])
+        _FakeNet.db = [{"name": "supply1", "address": SERIAL_ADDR}]
+
+        result = self._run(["assign", json.dumps(
+            {"instrument": "Rigol_DP711", "port_path": "1-1.2"})])
+        self.assertEqual(result["address"], PORT_ADDR)
+        self.assertEqual(result["deleted_nets"], ["supply1"])
+        records = cs.load()
+        self.assertEqual(len(records), 1)
+        self.assertIsNone(records[0]["serial"])
+        self.assertEqual(records[0]["port_path"], "1-1.2")
+
+    def test_fresh_assign_deletes_nothing(self):
+        self.cables = [CABLE]
+        _FakeNet.db = [{"name": "other", "address": "USB0::0x10C4::0xEA60::X::INSTR"}]
+        result = self._run(["assign", json.dumps(
+            {"instrument": "Rigol_DP711", "serial": SERIAL})])
+        self.assertEqual(result["deleted_nets"], [])
+        self.assertEqual(len(_FakeNet.db), 1)
+
+    def test_cascade_degrades_when_nets_module_unavailable(self):
+        # sys.modules[name] = None makes the lazy import raise ImportError:
+        # the removal itself must still succeed, just without the cascade.
+        cs.add("Rigol_DP711", VID, PID, serial=SERIAL)
+        sys.modules["lager.nets.net"] = None
+        result = self._run(["remove", json.dumps({"serial": SERIAL})])
+        self.assertTrue(result["removed"])
+        self.assertEqual(result["deleted_nets"], [])
 
     # ---- protocol / degraded mode ---------------------------------------------
 
