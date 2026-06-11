@@ -101,7 +101,10 @@ def mapper_factory(net, device_type, net_info):
     elif device_type == "picoscope_2000":
         # Picoscope uses passthrough mapper - actual implementation via websocket daemon
         return PassThroughMapper(net, Device(device_type, net_info))
-    elif device_type in ("rigol_dp800", "rigol_dp800_2"):
+    elif device_type in ("rigol_dp800", "rigol_dp800_2", "rigol_dp700"):
+        # DP700 (DP711/DP712) exposes the same method surface as the DP800
+        # backend, so it reuses the DP800 function mapper. The device_type is
+        # forwarded to hardware_service as the module name (lager.power.supply.*).
         return RigolDP800FunctionMapper(net, Device(device_type, net_info))
     elif device_type in ("rigol_dl3000", "rigol_dl3021"):
         # Use explicit mapper for consistent API behavior
@@ -372,6 +375,9 @@ class Net:
                     instrument_lower = item['instrument'].lower()
                     if 'keithley' in instrument_lower:
                         net.device_type = 'keithley'
+                    elif 'rigol_dp7' in instrument_lower or instrument_lower.startswith('dp7'):
+                        # DP700 series (DP711/DP712) — single-channel RS-232 supply.
+                        net.device_type = 'rigol_dp700'
                     elif 'rigol_dp' in instrument_lower or instrument_lower.startswith('dp8'):
                         # Covers DP800, DP821, DP831, etc.
                         net.device_type = 'rigol_dp800'

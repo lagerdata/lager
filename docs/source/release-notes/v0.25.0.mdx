@@ -1,0 +1,42 @@
+---
+title: "Version 0.25.0"
+description: "June 11, 2026"
+---
+
+## <u>Features</u>
+
+- **Custom serial-device assignment — RS-232 instruments become first-class.** Instruments the Lager Box cannot identify by USB enumeration (first case: the Rigol DP711 power supply, reached through a generic Prolific USB-serial cable that enumerates as the cable, not the PSU) can now be assigned to their cable once with `lager nets assign`. From then on the instrument scans, nets, and drives exactly like an auto-detected device.
+- **`lager nets assign`** — `--list` shows assignable devices, current assignments, and unassigned USB-serial cables; `lager nets assign Rigol_DP711 --serial <USB_SERIAL>` (or `--port <sysfs-path>` for serial-less clone cables) stores the assignment on the Lager Box, durable across reboots and replugs. `--baud` overrides the catalog default when the instrument's front panel differs; `--as-net [NAME]` creates the net in the same step; `--remove` unassigns.
+- **Assign Device flow in the Net Manager TUI** — the interactive twin of `nets assign`: pick a cable, pick the instrument (with optional baud override), and name its net in a follow-up dialog. Assignments can be removed from the same screen.
+- **Rigol DP711 (DP700-series) support** — single-channel RS-232 power supply driver with the DP800-compatible method surface, addressed by a durable `serial://<vid>:<pid>/serial/<s>` (or `/port/<p>`) identity that re-resolves to the live tty at open time — surviving tty renumbering, port moves, and replugs — with stale-session self-healing.
+- **Generic `POST /net/command` endpoint** on the Lager Box HTTP server for Tier-1 instruments (GPIO, ADC, DAC, thermocouple, watt-meter, e-load), giving them the same warm in-process path the supply/battery endpoints use instead of a subprocess per call. The `netCommand` capability is advertised in `/status` only when the route actually registers.
+
+## <u>Improvements</u>
+
+- **Nets live and die with their assignment.** Removing (or replacing) a cable assignment deletes the saved nets bound to its address and reports them; pre-existing generic-UART nets on the cable are retired at assign time so a terminal session can never fight the instrument driver for one tty. A baud-only re-assign keeps existing nets.
+- **The scanner reports assigned instruments, not their cables.** `lager instruments`, the TUI, and the Lager Box's `/instruments/list` show the catalog instrument at its durable `serial://` address; the cable's generic UART record is suppressed while assigned, and assigned ttys are excluded from the Dexarm G-code handshake probe.
+- **Backend JSON parsing is robust to doubled output for objects, not just arrays** — both the CLI and TUI parsers now take the first complete JSON value, fixing a latent recovery bug for the known "double execution" Lager Box output.
+
+## <u>Bug Fixes</u>
+
+- **Manually-added supply and battery nets are driveable again.** `lager nets add`/`delete`/`add-batch` now normalize the legacy role tokens `supply` → `power-supply` and `batt` → `battery`; the short tokens were previously saved verbatim, producing nets that listed fine but that no supply/battery command could drive. The tokens remain accepted as input aliases, `delete` reaches legacy nets saved under either spelling, and channel validation for supplies now actually runs on `nets add`.
+- **Documentation and error hints no longer reference the nonexistent `lager nets create` family** — renamed to the real `add`/`add-all`/`add-batch` commands across the docs, READMEs, and four runtime error messages, and the documented role vocabulary now matches what saved nets actually carry.
+- **The DP700 driver reports a missing cable as a device-not-found error** when unplugged mid-session, instead of a raw Python traceback.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.25.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.25.0/)

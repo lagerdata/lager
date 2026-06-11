@@ -141,6 +141,15 @@ from lager.http_handlers.battery import (
 # Import USB handler (fast-path mirror of supply/battery; no SocketIO).
 from lager.http_handlers.usb import register_usb_routes
 
+# Import generic net command handler (warm-path replacement for the
+# `lager python` exec path on instruments without a dedicated endpoint).
+try:
+    from lager.http_handlers.net_command import register_net_command_routes
+    _has_net_command = True
+except Exception as e:
+    logger.warning("Net command handler not available: %s", e)
+    _has_net_command = False
+
 # Import nets handler
 try:
     from lager.http_handlers.nets_handler import register_nets_routes
@@ -251,6 +260,15 @@ def status():
         'healthy': True,
         'version': version,
         'nets': nets,
+        # Capabilities let the control plane route per box. `netCommand` means
+        # this box serves POST /net/command, so Stout can use the warm in-process
+        # path instead of the `lager python` exec fallback for Tier-1 instruments.
+        # Must reflect whether the route actually registered (see _has_net_command
+        # above): advertising it unconditionally makes the control plane route to
+        # /net/command on boxes where the handler import failed, which 404s.
+        'capabilities': {
+            'netCommand': _has_net_command,
+        },
     })
 
 
@@ -270,6 +288,14 @@ register_battery_socketio(socketio)
 
 # Register USB HTTP handler (fast-path /usb/command; no WebSocket namespace)
 register_usb_routes(app)
+
+# Register generic /net/command handler (if available)
+if _has_net_command:
+    register_net_command_routes(app)
+    logger.info("Net command endpoint registered")
+    print("[INIT] Net command endpoint registered", flush=True)
+else:
+    print("[INIT] Net command endpoint NOT available", flush=True)
 
 # Register nets REST handlers (if available)
 if _has_nets:

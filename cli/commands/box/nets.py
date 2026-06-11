@@ -21,6 +21,7 @@ from texttable import Texttable
 import shutil
 
 from ...context import get_default_box, get_impl_path
+from ...errors import LagerError
 from ...sort_utils import natural_sort_key as _natural_sort_key
 from ..development.python import run_python_internal
 from .net_tui import launch_tui
@@ -46,44 +47,11 @@ def _parse_backend_json(raw: str) -> Any:
     try:
         return json.loads(raw or "[]")
     except json.JSONDecodeError:
-        # Handle duplicate JSON output if present
-        if raw and raw.count('[') >= 2:
-            # Try to extract the first JSON array
-            depth = 0
-            first_array_end = -1
-            for i, char in enumerate(raw):
-                if char == '[':
-                    depth += 1
-                elif char == ']':
-                    depth -= 1
-                    if depth == 0:
-                        first_array_end = i + 1
-                        break
-
-            if first_array_end > 0:
-                first_json = raw[:first_array_end]
-                return json.loads(first_json)
-            else:
-                raise json.JSONDecodeError("Could not find complete JSON array", raw, 0)
-        else:
-            # Handle duplicate JSON objects (e.g., {"ok": true}{"ok": true})
-            if raw and raw.count('{') >= 2:
-                depth = 0
-                first_obj_end = -1
-                for i, char in enumerate(raw):
-                    if char == '{':
-                        depth += 1
-                    elif char == '}':
-                        depth -= 1
-                        if depth == 0:
-                            first_obj_end = i + 1
-                            break
-
-                if first_obj_end > 0:
-                    first_json = raw[:first_obj_end]
-                    return json.loads(first_json)
-
-            raise  # Re-raise original exception
+        # Duplicate output from double execution ("[...][...]" / "{...}{...}"):
+        # parse the first complete JSON value and ignore the rest. raw_decode
+        # handles nested brackets correctly — the previous hand-rolled depth
+        # scan misrouted doubled objects that contained arrays.
+        return json.JSONDecoder().raw_decode(raw.strip())[0]
 
 def _debug_channel_suffix(value) -> str:
     """Return the ``@<channel>`` portion of a debug net's device field.
@@ -314,10 +282,30 @@ def _serial_from_visa_address(address) -> str:
 
 _MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port"}
 _SINGLE_CHANNEL_INST = {
-    "Keithley_2281S": ("batt", "supply"),
-    "EA_PSB_10060_60": ("solar", "supply"),
-    "EA_PSB_10080_60": ("solar", "supply"),
+    "Keithley_2281S": ("battery", "power-supply"),
+    "EA_PSB_10060_60": ("solar", "power-supply"),
+    "EA_PSB_10080_60": ("solar", "power-supply"),
+    # Custom serial instrument (DEVICE_CATALOG single_channel=True): only one
+    # net may reference the instrument at its serial:// address.
+    "Rigol_DP711": ("power-supply",),
 }
+
+# Saved nets must carry the scanner-vocabulary role string verbatim — the
+# instrument CLIs (validate_net_exists), the box dispatchers (ensure_role)
+# and NetType.from_role all match it EXACTLY. ``nets add`` historically
+# accepted the short tokens below and saved them as-is, producing nets that
+# listed fine but could never be driven ("Net 'x' is a 'supply' net, not
+# 'power-supply'"). The tokens stay accepted as input aliases and are
+# normalized before any validation or save.
+_ROLE_ALIASES = {
+    "supply": "power-supply",
+    "batt": "battery",
+}
+
+
+def _canonical_role(role: str) -> str:
+    """Map a user-typed role token to the canonical saved-role string."""
+    return _ROLE_ALIASES.get(role, role)
 # Chips that can run in exactly one mode at a time, across ALL roles. The
 # canonical case is the FT232H: one physical channel, hardware-multiplexed
 # between MPSSE (spi/i2c/gpio/debug) and async-serial (uart). Once the user
@@ -325,18 +313,26 @@ _SINGLE_CHANNEL_INST = {
 # from the "add nets" menu. Multi-channel FTDIs (FT2232H, FT4232H) are NOT
 # in this set — they get one role per channel via the @A/@B/... suffix.
 _MODE_EXCLUSIVE_INST = {"FTDI_FT232H"}
+# Allowed roles per instrument, in the canonical saved-role vocabulary.
+# User input goes through _canonical_role() before being checked against
+# this table, so the legacy "supply"/"batt" tokens still work as input.
 INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     # supply
-    "Rigol_DP811": ["supply"],
-    "Rigol_DP821": ["supply"],
-    "Rigol_DP831": ["supply"],
-    "EA_PSB_10080_60": ["supply", "solar"],
-    "EA_PSB_10060_60": ["supply", "solar"],
-    "KEYSIGHT_E36233A": ["supply"],
-    "KEYSIGHT_E36313A": ["supply"],
+    "Rigol_DP811": ["power-supply"],
+    "Rigol_DP821": ["power-supply"],
+    "Rigol_DP831": ["power-supply"],
+    # DP711: RS-232-only, surfaced via a custom-device assignment (serial://
+    # address) rather than USB enumeration. Roles mirror
+    # box/lager/devices/catalog.py — same catalog-data duplication tech debt
+    # as the scanner's SUPPORTED_USB tables.
+    "Rigol_DP711": ["power-supply"],
+    "EA_PSB_10080_60": ["power-supply", "solar"],
+    "EA_PSB_10060_60": ["power-supply", "solar"],
+    "KEYSIGHT_E36233A": ["power-supply"],
+    "KEYSIGHT_E36313A": ["power-supply"],
 
-    # batt
-    "Keithley_2281S": ["batt", "supply"],
+    # battery
+    "Keithley_2281S": ["battery", "power-supply"],
 
     # scope
     "Rigol_MS05204": ["scope"],
@@ -657,6 +653,8 @@ def nets(ctx: click.Context, box: str | None) -> None:  # noqa: D401
 def delete_cmd(
     ctx: click.Context, name: str, net_type: str, box: str | None, yes: bool
 ) -> None:
+    # Accept the same legacy role tokens nets-add does ("supply", "batt").
+    net_type = _canonical_role(net_type)
     resolved_box = _resolve_box(ctx, box)
     raw = _run_net_py(ctx, resolved_box, "list")
     try:
@@ -669,7 +667,12 @@ def delete_cmd(
             click.secho(f"Raw output: {repr(raw)}", fg="yellow", err=True)
         ctx.exit(1)
 
-    match = [r for r in recs if r.get("name") == name and r.get("role") == net_type]
+    # Canonicalize BOTH sides of the role match: boxes hold legacy nets saved
+    # with the raw short tokens ("supply"/"batt"), and those are exactly the
+    # nets users most need to delete (they can't be driven). The box-side
+    # delete is exact-match, so pass the record's stored role, not our token.
+    match = [r for r in recs if r.get("name") == name
+             and _canonical_role(r.get("role", "")) == net_type]
     if not match:
         click.secho(f"Net '{name}' ({net_type}) not found on {resolved_box}.", fg="yellow")
         ctx.exit(1)
@@ -680,7 +683,7 @@ def delete_cmd(
         click.secho("Aborted.", fg="yellow")
         return
 
-    _run_net_py(ctx, resolved_box, "delete", name, net_type)
+    _run_net_py(ctx, resolved_box, "delete", name, match[0].get("role", net_type))
     click.secho(f"Deleted '{name}' ({net_type}) on box {resolved_box}.", fg="green")
 
 
@@ -770,6 +773,11 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
     Add a net using inferred instrument from VISA address
     """
     from ...box_storage import resolve_and_validate_box
+
+    # Normalize legacy role tokens ("supply" -> "power-supply") before any
+    # validation or save: the saved role string must be the canonical one or
+    # the instrument CLIs / box dispatcher refuse to drive the net.
+    role = _canonical_role(role)
 
     # Resolve and validate the box name
     resolved_box = resolve_and_validate_box(ctx, box)
@@ -939,8 +947,10 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
         ctx.exit(1)
 
     # ─────────── unique role/instrument/channel/address ──────────────
+    # Saved roles are canonicalized for the comparison so legacy nets stored
+    # with the short tokens ("supply") still block duplicates.
     if any(
-        n["role"] == role
+        _canonical_role(n.get("role", "")) == role
         and n["instrument"] == instrument
         and str(n["pin"]) == str(channel)
         and n["address"] == address
@@ -1036,6 +1046,219 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
             raise
 
     click.secho(f"Saved new net '{name}' on {resolved_box}.", fg="green")
+
+
+def _print_assign_listing(data: dict) -> None:
+    """Render the three sections of ``lager nets assign --list``."""
+    click.secho("Assignable devices:", bold=True)
+    for entry in data.get("catalog") or []:
+        roles = ", ".join(entry.get("roles") or [])
+        baud = entry.get("default_baud")
+        baud_note = f", default baud {baud}" if baud else ""
+        click.echo(f"  {entry['name']} — {entry.get('display_name', entry['name'])}"
+                   f" ({roles}{baud_note})")
+
+    click.echo()
+    click.secho("Assignments:", bold=True)
+    assignments = data.get("assignments") or []
+    if not assignments:
+        click.echo("  (none)")
+    for a in assignments:
+        ident = (f"serial {a['serial']}" if a.get("serial")
+                 else f"port {a.get('port_path')}")
+        baud_note = f"  baud {a['baud']}" if a.get("baud") else ""
+        status = f"→ {a['tty']}" if a.get("tty") else "(cable not connected)"
+        click.echo(f"  {a.get('instrument')}  cable {ident}"
+                   f"  [{a.get('vid')}:{a.get('pid')}]{baud_note}  {status}")
+
+    click.echo()
+    click.secho("Unassigned USB-serial cables:", bold=True)
+    cables = data.get("cables") or []
+    if not cables:
+        click.echo("  (none)")
+    for c in cables:
+        serial_note = f"serial {c['serial']}" if c.get("serial") else "no serial"
+        click.echo(f"  {serial_note}  port {c.get('port_path')}"
+                   f"  [{c.get('vid')}:{c.get('pid')}]  {c.get('tty')}")
+
+
+@nets.command("assign")
+@click.argument("device", required=False)
+@click.option("--list", "list_", is_flag=True,
+              help="List assignable devices, current assignments, and unassigned cables")
+@click.option("--serial", "usb_serial",
+              help="USB serial number of the cable (durable; survives port moves)")
+@click.option("--port", "port_path",
+              help="USB port path (sysfs name, e.g. 1-1.2); pins the assignment to a "
+                   "physical box port — for cables without a usable serial number")
+@click.option("--baud", type=int,
+              help="Baud-rate override; must match the instrument's front-panel setting")
+@click.option("--remove", "remove_", is_flag=True,
+              help="Remove the assignment matching --serial/--port")
+# Optional-value option: bare `--as-net` derives the net name from the device.
+# NOTE: no explicit `default=` — click only allows omitting the value while the
+# default is unset (`_flag_needs_value`); the parameter still resolves to None
+# when the option is absent.
+@click.option("--as-net", "as_net", is_flag=False, flag_value="",
+              help="Also create a net for the instrument (optionally pass a net name; "
+                   "defaults to the device name)")
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net, box):
+    """Assign a USB-serial cable to a known instrument (e.g. a Rigol DP711).
+
+    Some instruments are RS-232-only: the box sees their USB-serial cable, not
+    the instrument behind it. Assigning the cable tells the box what is on the
+    other end. The assignment is stored on the box, survives reboots and
+    replugs, and makes the instrument show up in `lager instruments`,
+    `lager nets add`, and the TUI. Assign once per cable; create nets as usual
+    afterwards.
+
+    \b
+    Examples:
+      lager nets assign --list
+      lager nets assign Rigol_DP711 --serial 00000006
+      lager nets assign Rigol_DP711 --port 1-1.2 --baud 19200 --as-net main_supply
+      lager nets assign --remove --serial 00000006
+    """
+    from ...box_storage import resolve_and_validate_box
+
+    resolved_box = resolve_and_validate_box(ctx, box)
+
+    if sum(map(bool, (list_, remove_, device))) != 1:
+        raise LagerError(
+            "Choose one of: --list, DEVICE --serial/--port, or --remove --serial/--port.",
+            fixes=[
+                "See devices and cables: lager nets assign --list",
+                "Assign: lager nets assign Rigol_DP711 --serial <USB_SERIAL>",
+                "Unassign: lager nets assign --remove --serial <USB_SERIAL>",
+            ],
+        )
+
+    def _require_cable_identity():
+        if bool(usb_serial) == bool(port_path):
+            raise LagerError(
+                "Identify the cable with exactly one of --serial or --port.",
+                fixes=["Find both in: lager nets assign --list"],
+            )
+
+    def _run_backend(args: tuple[str, ...]) -> dict:
+        buf = io.StringIO()
+        try:
+            with redirect_stdout(buf):
+                run_python_internal(
+                    ctx, get_impl_path("custom_devices.py"), resolved_box,
+                    env={}, passenv=(), kill=False, download=(),
+                    allow_overwrite=False, signum="SIGTERM", timeout=30,
+                    detach=False, port=(), org=None, args=args,
+                )
+        except SystemExit as e:
+            if e.code not in (0, None):
+                # The backend's reason arrives on stderr (streamed through to
+                # the terminal already); buf catches anything sent to stdout.
+                raise LagerError(
+                    "The box could not complete the assign command.",
+                    cause=buf.getvalue().strip() or None,
+                    fixes=[
+                        "See live cables and devices: lager nets assign --list",
+                        f"Make sure the box software is current: lager update {resolved_box}",
+                    ],
+                )
+        raw = buf.getvalue()
+        result = None
+        if raw.strip():
+            try:
+                # Duplicate-tolerant parser: the box exec path is known to
+                # emit the payload twice on some boxes ("double execution").
+                result = _parse_backend_json(raw)
+            except json.JSONDecodeError:
+                result = None
+        if not isinstance(result, dict):
+            raise LagerError(
+                "Unexpected response from the box.",
+                cause="The assign backend did not return valid JSON.",
+                fixes=[f"Make sure the box software is current: lager update {resolved_box}"],
+                raw=raw or None,
+            )
+        return result
+
+    # ─────────── --list ───────────
+    if list_:
+        _print_assign_listing(_run_backend(("list",)))
+        return
+
+    # ─────────── --remove ───────────
+    if remove_:
+        _require_cable_identity()
+        if baud is not None or as_net is not None:
+            raise LagerError("--baud and --as-net cannot be combined with --remove.")
+        payload = {"serial": usb_serial, "port_path": port_path}
+        result = _run_backend(("remove", json.dumps(payload)))
+        if result.get("removed"):
+            inst = result.get("instrument") or "device"
+            click.secho(f"Removed the {inst} assignment.", fg="green")
+            deleted = result.get("deleted_nets") or []
+            if deleted:
+                # Nets live and die with their assignment — the backend
+                # cascades the delete; surface what went with it.
+                click.secho(
+                    f"Deleted {len(deleted)} net{'s' if len(deleted) != 1 else ''} "
+                    f"bound to it: {', '.join(deleted)}.",
+                    fg="yellow",
+                )
+            click.echo("The cable will be offered as a generic UART adapter again.")
+        else:
+            click.secho("No matching assignment found.", fg="yellow")
+            click.echo("See current assignments: lager nets assign --list")
+        return
+
+    # ─────────── assign ───────────
+    _require_cable_identity()
+    payload = {"instrument": device, "serial": usb_serial, "port_path": port_path}
+    if baud is not None:
+        payload["baud"] = baud
+    result = _run_backend(("assign", json.dumps(payload)))
+
+    inst = result.get("instrument", device)
+    address = result.get("address", "")
+    ident = f"serial {usb_serial}" if usb_serial else f"port {port_path}"
+    click.secho(
+        f"Assigned {inst} to the cable at {ident} "
+        f"[{result.get('vid')}:{result.get('pid')}].",
+        fg="green",
+    )
+    replaced = result.get("deleted_nets") or []
+    if replaced:
+        click.secho(
+            f"Replaced the cable's previous assignment; deleted "
+            f"{len(replaced)} stale net{'s' if len(replaced) != 1 else ''}: "
+            f"{', '.join(replaced)}.",
+            fg="yellow",
+        )
+    if result.get("baud"):
+        click.echo(f"Baud override: {result['baud']}")
+    click.echo(f"Address: {address}")
+
+    # Net role/channel from the catalog facts the backend returned. The saved
+    # net must carry the scanner/catalog role verbatim ("power-supply"): the
+    # supply CLI (validate_net_exists) and the box dispatcher (ensure_role)
+    # match the saved role string exactly. The short tokens nets-add
+    # historically accepted ("supply") save a net those paths reject.
+    roles = result.get("roles") or []
+    net_role = roles[0] if roles else "power-supply"
+    channels = (result.get("channels") or {}).get(net_role) or ["1"]
+    channel = str(channels[0])
+
+    if as_net is not None:
+        net_name = as_net or inst.lower()
+        click.echo()
+        ctx.invoke(add_cmd, name=net_name, role=net_role, channel=channel,
+                   address=address, box=resolved_box,
+                   jlink_script=None, openocd_config=None)
+    else:
+        click.echo()
+        click.echo("Create a net for it with:")
+        click.echo(f"  lager nets add <name> {net_role} {channel} '{address}'")
 
 
 @nets.command("add-all", help="Add all possible nets that can be created on the box")
@@ -1431,7 +1654,9 @@ def create_batch_cmd(ctx: click.Context, json_file, box: str | None) -> None:
 
         normalized_net = {
             "name": net_data["name"],
-            "role": net_data["role"],
+            # Legacy role tokens are normalized like nets-add ("supply" ->
+            # "power-supply"); the saved string must be canonical.
+            "role": _canonical_role(net_data["role"]),
             "address": net_data["address"],
             "pin": net_data["channel"],
             "instrument": instrument

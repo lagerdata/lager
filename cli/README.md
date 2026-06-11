@@ -131,7 +131,7 @@ lager uart -i --test-runner unity
 lager uart <net> serial-port
 
 # Create a UART net for an adapter without a USB serial number (store /dev path directly)
-lager nets create <net> uart /dev/ttyUSB0 <label> --box <box>
+lager nets add <net> uart /dev/ttyUSB0 <label> --box <box>
 # Warning: tty names can change after reboot; prefer device-serial mode when available
 ```
 
@@ -189,10 +189,10 @@ Lager uses "nets" to represent physical test points or signals on your PCB:
 lager nets
 
 # Create a new power supply net
-lager nets create VDD_3V3 supply 1 USB0::0x1AB1::0x0E11::DP8C0000001
+lager nets add VDD_3V3 supply 1 USB0::0x1AB1::0x0E11::DP8C0000001
 
 # Auto-discover and create all nets
-lager nets create-all
+lager nets add-all
 
 # Interactive TUI for net management
 lager nets tui

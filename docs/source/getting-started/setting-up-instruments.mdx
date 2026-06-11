@@ -94,6 +94,36 @@ lager nets tui --box my-lager-box
 
 ---
 
+## RS-232 Instruments (Manual Assignment)
+
+Some instruments have no USB control port and connect through a USB-serial
+adapter — for example, a Rigol DP711 power supply on its RS-232 port. The
+Lager Box sees only the adapter cable, so it can't tell what instrument is
+behind it, and nothing appears automatically.
+
+Tell the box what the cable is connected to, once per cable:
+
+```bash
+# See the unassigned USB-serial cables on the box
+lager nets assign --list --box my-lager-box
+
+# Assign the cable to the instrument — and create a supply net in one step
+lager nets assign Rigol_DP711 --serial 00000006 --as-net main_supply --box my-lager-box
+```
+
+The same flow is available in the Net TUI (`lager nets tui`) via the
+**Assign Device** button: pick the cable, pick the instrument, and name the
+net in the same flow — done.
+
+After assignment, the instrument shows up in `lager instruments` and in the
+TUI like any auto-detected device, and nets can be added for it normally. The
+assignment is stored on the box and survives reboots and replugs.
+
+See the [`nets assign` reference](/source/reference/cli/nets#assign) for
+port-pinned assignments, baud-rate overrides, and removal.
+
+---
+
 ## Debug Nets
 
 For debug instruments (e.g., Segger J-Link, ST-Link), you must specify the target MCU when creating the net.

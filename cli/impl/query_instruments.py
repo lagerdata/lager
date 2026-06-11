@@ -14,6 +14,18 @@ from serial import Serial, SerialException
 import subprocess
 from collections import defaultdict
 
+try:
+    # Box-side custom-device framework. This script executes on the box, where
+    # the box's ``lager`` package is importable (same mechanism as net.py's
+    # ``from lager.nets.net_cli import _cli``). Older box images predate
+    # ``lager.devices`` — degrade to "no custom devices" rather than failing
+    # the whole scan.
+    from lager.devices import catalog as _catalog
+    from lager.devices import custom_store as _custom_store
+    from lager.devices import serial_id as _serial_id
+except Exception:
+    _catalog = _custom_store = _serial_id = None
+
 T = TypeVar('T')
 
 # ---------------------------------------------------------------------------
@@ -415,6 +427,77 @@ def _merge_or_append(entry: dict, instruments: List[dict]) -> None:
     instruments.append(entry)
 
 # ---------------------------------------------------------------------------
+#  Custom (user-assigned) devices
+# ---------------------------------------------------------------------------
+# A cable the scanner can't classify on its own (e.g. a Rigol DP711 reached
+# through a generic Prolific USB-serial adapter) can be manually assigned to a
+# catalog instrument with ``lager nets assign``. Assignments persist in
+# /etc/lager/custom_devices.json on the box; each one whose cable is currently
+# plugged in is surfaced here as a synthetic instrument record so the normal
+# ``nets add`` / TUI flows light up without special-casing.
+# Keep in sync with ``box/lager/http_handlers/usb_scanner.py`` (same
+# duplication tech-debt as SUPPORTED_USB / CHANNEL_MAPS).
+
+def _custom_instruments() -> List[dict]:
+    """Synthetic instrument records for live custom-device assignments."""
+    if _custom_store is None:
+        return []
+    results: List[dict] = []
+    for rec in _custom_store.load():
+        entry = _catalog.get_device(rec.get("instrument"))
+        if not entry:
+            # Stale assignment (instrument no longer in the catalog) — skip.
+            continue
+        tty = _serial_id.resolve_tty(
+            rec.get("vid"), rec.get("pid"),
+            serial=rec.get("serial"), port_path=rec.get("port_path"),
+        )
+        if not tty:
+            # Cable not currently plugged in; the scan only reports live HW.
+            continue
+        try:
+            address = _custom_store.address_for(rec)
+        except ValueError:
+            continue
+        results.append({
+            "name": rec["instrument"],
+            "vid": rec.get("vid"),
+            "pid": rec.get("pid"),
+            "serial": rec.get("serial"),
+            "address": address,
+            "net_type": list(entry.get("roles", [])),
+            # Copy per-role lists so callers can't mutate the catalog.
+            "channels": {role: list(chs)
+                         for role, chs in (entry.get("channels") or {}).items()},
+            "tty_path": tty,
+            "custom": True,
+        })
+    return results
+
+
+def _apply_custom_devices(instruments: List[dict], custom: List[dict]) -> List[dict]:
+    """Add custom-device records, replacing their generic cable records.
+
+    An assigned cable must not also be offered as a generic UART adapter —
+    both records would point at the same tty, and a UART net opening it would
+    fight the instrument driver. Only UART-only entries are suppressed;
+    multi-role chips (e.g. FTDI debug+uart) keep their generic record.
+    """
+    if not custom:
+        return instruments
+    custom_ttys = {dev["tty_path"] for dev in custom if dev.get("tty_path")}
+    kept = []
+    for inst in instruments:
+        ttys = set(inst.get("tty_paths") or [])
+        if inst.get("tty_path"):
+            ttys.add(inst["tty_path"])
+        if inst.get("net_type") == ["uart"] and ttys & custom_ttys:
+            continue
+        kept.append(inst)
+    kept.extend(custom)
+    return kept
+
+# ---------------------------------------------------------------------------
 #  UART USB-Serial Helpers
 # ---------------------------------------------------------------------------
 
@@ -745,16 +828,21 @@ def main(argv: Optional[List[str]] = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
 
-    # Handle get_instrument command used by nets create
+    # Handle get_instrument command used by nets add
     if len(argv) >= 2 and argv[0] == "get_instrument":
         address = argv[1]
+        custom = _custom_instruments()
         instruments: List[dict] = _scan_usb()
-        # Build exclusion list from already-identified UART devices to prevent handshake probing
+        # Build exclusion list from already-identified UART devices to prevent
+        # handshake probing. Custom-assigned cables are excluded too: writing
+        # G-code at a bench instrument (e.g. a DP711 supply) could actuate it.
         uart_ports = {dev.get("tty_path") for dev in instruments if dev.get("tty_path")}
+        uart_ports |= {dev["tty_path"] for dev in custom if dev.get("tty_path")}
         for dex in _by_handshake(exclude=uart_ports):
             _merge_or_append(dex, instruments)
         for cam in _by_camera():
             _merge_or_append(cam, instruments)
+        instruments = _apply_custom_devices(instruments, custom)
 
         # Find instrument by address
         for instrument in instruments:
@@ -769,15 +857,20 @@ def main(argv: Optional[List[str]] = None) -> None:
         return
 
     # Default behavior: list all instruments
+    custom = _custom_instruments()
     instruments: List[dict] = _scan_usb()
-    # Build exclusion list from already-identified UART devices to prevent handshake probing
+    # Build exclusion list from already-identified UART devices to prevent
+    # handshake probing. Custom-assigned cables are excluded too: writing
+    # G-code at a bench instrument (e.g. a DP711 supply) could actuate it.
     uart_ports = {dev.get("tty_path") for dev in instruments if dev.get("tty_path")}
+    uart_ports |= {dev["tty_path"] for dev in custom if dev.get("tty_path")}
     for dex in _by_handshake(exclude=uart_ports):
         _merge_or_append(dex, instruments)
 
     for cam in _by_camera():
         _merge_or_append(cam, instruments)
 
+    instruments = _apply_custom_devices(instruments, custom)
     instruments.sort(key=lambda d: (d["name"], d.get("address", "")))
     json.dump(instruments, sys.stdout, indent=2)
     sys.stdout.write("\n")
