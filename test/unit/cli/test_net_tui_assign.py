@@ -103,6 +103,59 @@ class TestRunCustomDevices:
 
 
 # --------------------------------------------------------------------------- #
+# --as-net twin (CreateNetDialog helpers)                                     #
+# --------------------------------------------------------------------------- #
+
+ASSIGNMENT = {
+    "instrument": "Rigol_DP711",
+    "address": "serial://067b:23a3/serial/00000006",
+    "roles": ["power-supply"],
+    "channels": {"power-supply": ["1"]},
+}
+
+
+class TestNetFromAssignment:
+    def test_builds_power_supply_net(self):
+        net = tui._net_from_assignment(ASSIGNMENT, "main_supply")
+        assert net.net == "main_supply"
+        assert net.instrument == "Rigol_DP711"
+        # REGRESSION: the saved role must be the scanner-vocabulary
+        # "power-supply" — the supply CLI and the box dispatcher match it
+        # exactly; the legacy "supply" token saves an undriveable net.
+        assert net.type == "power-supply"
+        assert net.chan == "1"
+        assert net.addr == ASSIGNMENT["address"]
+        assert net.saved is False
+
+    def test_falls_back_to_power_supply_defaults(self):
+        # Old backend response without roles/channels: sane defaults.
+        net = tui._net_from_assignment(
+            {"instrument": "Rigol_DP711", "address": "serial://x"}, "n")
+        assert net.type == "power-supply"
+        assert net.chan == "1"
+
+
+class TestDefaultNetName:
+    def test_derives_from_instrument(self):
+        assert tui._default_net_name(ASSIGNMENT) == "rigol_dp711"
+
+    def test_tolerates_missing_instrument(self):
+        assert tui._default_net_name({}) == "net"
+
+
+class TestNetNameTaken:
+    def test_saved_name_is_taken(self):
+        nets = [tui.Net("I", "1", "power-supply", "supply1", "a", saved=True)]
+        assert tui._net_name_taken(nets, "supply1") is True
+
+    def test_unsaved_placeholder_does_not_block(self):
+        # Placeholders get auto-names; only *saved* nets reserve a name.
+        nets = [tui.Net("I", "1", "power-supply", "supply1", "a", saved=False)]
+        assert tui._net_name_taken(nets, "supply1") is False
+        assert tui._net_name_taken(nets, "other") is False
+
+
+# --------------------------------------------------------------------------- #
 # row labels — markup safety                                                  #
 # --------------------------------------------------------------------------- #
 

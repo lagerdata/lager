@@ -249,6 +249,30 @@ def _assign_payload(cable: dict, device: str, baud: int | None) -> dict:
         payload["baud"] = baud
     return payload
 
+
+def _default_net_name(assignment: dict) -> str:
+    """Default net name for a just-assigned instrument (CLI --as-net parity)."""
+    return str(assignment.get("instrument") or "net").lower()
+
+
+def _net_from_assignment(assignment: dict, name: str) -> Net:
+    """Build the saved-net row for a just-assigned instrument (TUI --as-net).
+
+    Mirrors the CLI's --as-net derivation: the first catalog role verbatim
+    (saved supply nets must carry the scanner-vocabulary "power-supply" —
+    see the nets-add tables) and the role's first catalog channel.
+    """
+    roles = assignment.get("roles") or ["power-supply"]
+    role = roles[0]
+    channels = (assignment.get("channels") or {}).get(role) or ["1"]
+    return Net(assignment.get("instrument", ""), str(channels[0]), role, name,
+               assignment.get("address", ""))
+
+
+def _net_name_taken(nets: list["Net"], name: str) -> bool:
+    """True if a saved net already uses *name* (names are globally unique)."""
+    return any(n.saved and n.net == name for n in nets)
+
 _UART_PIN_HINT = (
     "UART nets need either a /dev/tty* path or a non-empty USB serial in "
     "the ``pin`` slot — bare interface indices won't survive the box-side "
@@ -1901,7 +1925,7 @@ class AssignDeviceScreen(Screen):
                 "Assignment failed — run 'lager nets assign' in a terminal for details."
             )
             return
-        msg = f"Assigned {result.get('instrument', device)} — add its net via + Add Nets"
+        msg = f"Assigned {result.get('instrument', device)}"
         deleted = result.get("deleted_nets") or []
         if deleted:
             # Replacing the cable's previous assignment cascaded to its nets.
@@ -1910,6 +1934,25 @@ class AssignDeviceScreen(Screen):
         app.show_success(msg)
         app.refresh_instruments()
         self._reload()
+        # TUI twin of --as-net: offer to create the instrument's net now.
+        app.push_screen(CreateNetDialog(
+            result, lambda name: self._create_net(result, name)))
+
+    def _create_net(self, assignment: dict, name: str) -> None:
+        """Save the net offered by CreateNetDialog (TUI --as-net)."""
+        app: NetApp = self.app  # type: ignore[assignment]
+        net = _net_from_assignment(assignment, name)
+        try:
+            ok = _save_nets_batch(app.ctx, app.dut, [net])
+        except UARTNetSaveValidationError as exc:
+            app.show_error(str(exc))
+            return
+        if ok:
+            app.show_success(f"Created net '{name}' for {net.instrument}")
+        else:
+            app.show_error(f"Failed to create net '{name}'")
+        app._sync_saved_from_disk()
+        app._refresh_table()
 
     def _do_unassign(self, assignment: dict) -> None:
         app: NetApp = self.app  # type: ignore[assignment]
@@ -2009,6 +2052,79 @@ class DevicePickDialog(Screen):
         entry = self.catalog[int(event.button.id.rsplit("-", 1)[1])]
         self.app.pop_screen()
         self.callback(self.cable, entry["name"], baud)
+
+
+class CreateNetDialog(Screen):
+    """Offer to create the net for a just-assigned instrument.
+
+    The TUI twin of ``lager nets assign --as-net``: shown right after a
+    successful assignment, pre-filled with the CLI's default name. Skipping
+    is always safe — the instrument stays available under + Add Nets.
+    """
+
+    def __init__(self, assignment: dict, callback: Callable[[str], None]) -> None:
+        super().__init__()
+        self.assignment = assignment
+        self.callback = callback
+        # NOTE: the default value is set in on_mount, not here — Input's
+        # value watcher needs an active app, and the constructor may run
+        # outside one (e.g. in tests).
+        self.name_input = Input(placeholder="Net name", id="asnet_name")
+
+    def compose(self) -> ComposeResult:
+        net = _net_from_assignment(self.assignment, "")
+        with Vertical(classes="dialog"):
+            yield Static("Create Net", classes="dialog-title")
+            # markup=False: interpolated device data (see DevicePickDialog).
+            yield Static(
+                f"{self.assignment.get('instrument')} is assigned. "
+                f"Create its net now?\n\n"
+                f"Role: {net.type}   Channel: {net.chan}\n"
+                f"Address: {self.assignment.get('address')}",
+                classes="dialog-content",
+                markup=False,
+            )
+            yield self.name_input
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Skip", id="asnet-skip")
+                yield Button("Create Net", id="asnet-create", variant="success")
+
+    def on_mount(self) -> None:
+        self.name_input.value = _default_net_name(self.assignment)
+        self.name_input.focus()
+
+    def _show_hint(self, msg: str) -> None:
+        try:
+            self.query_one("#asnet_hint", Static).update(msg)
+        except NoMatches:
+            # markup=False: the message echoes user-typed input.
+            self.mount(Static(msg, id="asnet_hint", classes="warning",
+                              markup=False))
+
+    def _try_create(self) -> None:
+        name = self.name_input.value.strip()
+        if not name:
+            self._show_hint("Enter a net name (or press Skip).")
+            return
+        app: NetApp = self.app  # type: ignore[assignment]
+        if _net_name_taken(app.nets, name):
+            self._show_hint(f"A net named '{name}' already exists — "
+                            f"net names are globally unique.")
+            return
+        self.app.pop_screen()
+        self.callback(name)
+
+    @on(Input.Submitted, "#asnet_name")
+    def _on_name_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self._try_create()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "asnet-skip":
+            self.app.pop_screen()
+            return
+        if event.button.id == "asnet-create":
+            self._try_create()
 
 
 class ConfirmUnassignDialog(Screen):
@@ -2354,6 +2470,20 @@ class NetApp(App):
 
     #unassign-confirm {
         background: coral;
+        color: black;
+    }
+
+    #asnet_name {
+        max-width: 60;
+    }
+
+    #asnet-skip {
+        background: coral;
+        color: black;
+    }
+
+    #asnet-create {
+        background: mediumaquamarine;
         color: black;
     }
 
