@@ -370,3 +370,13 @@ class TestFlaskShim:
         client.post("/lock", json={"user": "alice"})
         resp = client.post("/unlock", json={"user": "alice"})
         assert resp.status_code == 200
+
+    # Regression: non-dict JSON used to crash with 500 because downstream
+    # handlers do data.get(...) / data['holder_type']. Each lock-route
+    # POST must now reject non-object bodies with 400.
+    @pytest.mark.parametrize("payload", [[], [1, 2], "hello", 42, True])
+    @pytest.mark.parametrize("route", ["/lock", "/lock/heartbeat", "/unlock"])
+    def test_non_dict_body_returns_400(self, client, route, payload):
+        resp = client.post(route, json=payload)
+        assert resp.status_code == 400
+        assert "Expected a JSON object" in (resp.get_json() or {}).get("error", "")

@@ -532,12 +532,21 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         Returns (data, error). On failure, ``data`` is None and the
         error has already been sent to the client. Callers should
         early-return when ``error`` is True.
+
+        Enforces dict shape: ``[]`` / ``"foo"`` / ``42`` / ``null`` are
+        all valid JSON but downstream handlers do ``data.get(...)`` /
+        ``data['holder_type']`` and would crash with a 500. Reject those
+        early as 400.
         """
         try:
-            return self._read_json_body(), False
+            data = self._read_json_body()
         except (json.JSONDecodeError, ValueError):
             self.send_json_response(400, {'error': 'Invalid JSON'})
             return None, True
+        if not isinstance(data, dict):
+            self.send_json_response(400, {'error': 'Expected a JSON object'})
+            return None, True
+        return data, False
 
     def _handle_lock_status(self):
         """Handle GET /lock - Return lock status."""
