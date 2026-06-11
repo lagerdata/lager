@@ -46,6 +46,9 @@ class FakeBox:
     def __init__(self):
         self.assignments: list[dict] = []
         self.saved_nets: list[dict] = []
+        # Names the next "assign" should report as cascade-deleted (the
+        # replaced-assignment case); tests inject these directly.
+        self.pending_deleted_on_assign: list[str] = []
 
     # The DP711 record the scanner reports once the cable is assigned.
     def _dp711_record(self) -> dict:
@@ -78,6 +81,10 @@ class FakeBox:
                 }))
             elif cmd == "assign":
                 payload = json.loads(args[1])
+                # Mirror the impl's replacement cascade: stale nets are
+                # reported via deleted_nets (tests inject them directly).
+                deleted = list(self.pending_deleted_on_assign)
+                self.pending_deleted_on_assign = []
                 rec = {
                     "instrument": "Rigol_DP711",
                     "vid": VID, "pid": PID,
@@ -86,6 +93,7 @@ class FakeBox:
                     "address": ADDR, "tty": TTY,
                     "roles": ["power-supply"],
                     "channels": {"power-supply": ["1"]},
+                    "deleted_nets": deleted,
                 }
                 if payload.get("baud") is not None:
                     rec["baud"] = payload["baud"]
@@ -94,8 +102,14 @@ class FakeBox:
             elif cmd == "remove":
                 removed = bool(self.assignments)
                 self.assignments = []
+                # Mirror the impl's cascade: nets bound to the assignment's
+                # address are deleted and reported.
+                deleted = [n["name"] for n in self.saved_nets
+                           if n.get("address") == ADDR] if removed else []
+                self.saved_nets = [n for n in self.saved_nets
+                                   if n.get("address") != ADDR or not removed]
                 print(json.dumps({"removed": removed, "instrument": "Rigol_DP711",
-                                  "address": ADDR}))
+                                  "address": ADDR, "deleted_nets": deleted}))
             return
 
         if script == "query_instruments.py":
@@ -211,6 +225,46 @@ class TestModes:
         result = _invoke(["assign", "--remove", "--serial", SERIAL,
                           "--baud", "9600", "--box", "b"])
         assert result.exit_code != 0
+
+
+# --------------------------------------------------------------------------- #
+# assignment -> nets cascade                                                  #
+# --------------------------------------------------------------------------- #
+
+class TestNetCascade:
+    """Nets live and die with their assignment: removing it deletes the nets
+    bound to its address (backend cascade) and the CLI reports the names."""
+
+    def test_remove_reports_cascaded_net_deletion(self, fake_box):
+        # Full user story: assign + --as-net, then remove the assignment.
+        _invoke(["assign", "Rigol_DP711", "--serial", SERIAL,
+                 "--as-net", "supply1", "--box", "b"])
+        assert [n["name"] for n in fake_box.saved_nets] == ["supply1"]
+
+        result = _invoke(["assign", "--remove", "--serial", SERIAL, "--box", "b"])
+        assert result.exit_code == 0
+        assert "Deleted 1 net" in result.output
+        assert "supply1" in result.output
+        # The net is gone from the box, not merely warned about.
+        assert fake_box.saved_nets == []
+
+    def test_remove_without_nets_prints_no_deletion_line(self, fake_box):
+        _invoke(["assign", "Rigol_DP711", "--serial", SERIAL, "--box", "b"])
+        result = _invoke(["assign", "--remove", "--serial", SERIAL, "--box", "b"])
+        assert result.exit_code == 0
+        assert "Deleted" not in result.output
+
+    def test_assign_reports_replaced_assignment_nets(self, fake_box):
+        fake_box.pending_deleted_on_assign = ["supply1"]
+        result = _invoke(["assign", "Rigol_DP711", "--serial", SERIAL, "--box", "b"])
+        assert result.exit_code == 0
+        assert "Replaced the cable's previous assignment" in result.output
+        assert "supply1" in result.output
+
+    def test_fresh_assign_prints_no_replacement_line(self, fake_box):
+        result = _invoke(["assign", "Rigol_DP711", "--serial", SERIAL, "--box", "b"])
+        assert result.exit_code == 0
+        assert "Replaced" not in result.output
 
 
 # --------------------------------------------------------------------------- #

@@ -1901,9 +1901,13 @@ class AssignDeviceScreen(Screen):
                 "Assignment failed — run 'lager nets assign' in a terminal for details."
             )
             return
-        app.show_success(
-            f"Assigned {result.get('instrument', device)} — add its net via + Add Nets"
-        )
+        msg = f"Assigned {result.get('instrument', device)} — add its net via + Add Nets"
+        deleted = result.get("deleted_nets") or []
+        if deleted:
+            # Replacing the cable's previous assignment cascaded to its nets.
+            msg += f" (deleted stale net{'s' if len(deleted) != 1 else ''}: {', '.join(deleted)})"
+            app._sync_saved_from_disk()
+        app.show_success(msg)
         app.refresh_instruments()
         self._reload()
 
@@ -1917,7 +1921,15 @@ class AssignDeviceScreen(Screen):
         if not isinstance(result, dict) or not result.get("removed"):
             app.show_error("Could not remove the assignment.")
             return
-        app.show_success(f"Removed the {assignment.get('instrument')} assignment")
+        msg = f"Removed the {assignment.get('instrument')} assignment"
+        deleted = result.get("deleted_nets") or []
+        if deleted:
+            # Nets live and die with their assignment (backend cascade).
+            msg += f" (deleted net{'s' if len(deleted) != 1 else ''}: {', '.join(deleted)})"
+        app.show_success(msg)
+        # The cascade may have changed saved nets on disk — re-sync so the
+        # Saved Nets tree drops them, then re-scan for the placeholder list.
+        app._sync_saved_from_disk()
         app.refresh_instruments()
         self._reload()
 
@@ -2009,7 +2021,7 @@ class ConfirmUnassignDialog(Screen):
 
     def compose(self) -> ComposeResult:
         a = self.assignment
-        addr_note = (f"\nSaved nets pointing at {a['address']} will stop working."
+        addr_note = (f"\nSaved nets pointing at {a['address']} will be deleted."
                      if a.get("address") else "")
         with Vertical(classes="dialog"):
             yield Static("Remove Assignment", classes="dialog-title")

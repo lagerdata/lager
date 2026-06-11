@@ -8,14 +8,17 @@ Executes on the box via the same mechanism as ``net.py`` /
 with a message on stderr, which the CLI surfaces to the user):
 
     list             -> {"catalog": [...], "assignments": [...], "cables": [...]}
-    assign  <json>   -> the stored assignment record (+ "address", "tty", ...)
-    remove  <json>   -> {"removed": true|false, ...}
+    assign  <json>   -> the stored assignment record (+ "address", "tty",
+                        "roles", "channels", "deleted_nets")
+    remove  <json>   -> {"removed": true|false, "deleted_nets": [...], ...}
 
 ``assign`` payload:  {"instrument", "serial" | "port_path", "baud"?}
 ``remove`` payload:  {"serial" | "port_path"}
 
 A cable's vid/pid are captured from the live device, so ``assign`` requires
-the cable to be plugged in. ``remove`` only consults the store.
+the cable to be plugged in. ``remove`` only consults the store. Saved nets
+live and die with their assignment: removing (or replacing) an assignment
+deletes the nets bound to its address — ``deleted_nets`` reports them.
 """
 
 import json
@@ -48,6 +51,35 @@ def _safe_address(rec: dict):
         return _custom_store.address_for(rec)
     except Exception:
         return None
+
+
+def _delete_nets_for_address(address) -> list:
+    """Delete saved nets bound to *address*; return their names.
+
+    A net for a custom device is meaningless once its assignment is gone —
+    the scanner no longer reports the instrument and ``nets add`` would
+    refuse to recreate it — so assignment removal/replacement cascades to
+    the nets. (The DP700 driver resolves ``serial://`` addresses from sysfs
+    without consulting the store, so without this cascade a stale net would
+    keep driving the instrument.) Guarded: returns [] when the nets module
+    is unavailable.
+    """
+    if not address:
+        return []
+    try:
+        from lager.nets.net import Net
+    except Exception:
+        return []
+    try:
+        nets = Net.get_local_nets()
+    except Exception:
+        return []
+    deleted = [n.get("name") for n in nets if n.get("address") == address]
+    if deleted:
+        # save_local_nets also invalidates the box's nets cache, so the
+        # warm /net/command path stops resolving these immediately.
+        Net.save_local_nets([n for n in nets if n.get("address") != address])
+    return deleted
 
 
 def _catalog_entries() -> list:
@@ -123,6 +155,35 @@ def _cmd_assign(payload: dict) -> dict:
         )
 
     cable = matches[0]
+
+    # One cable == one assignment. Replace any existing assignment for this
+    # physical cable regardless of which identity form (serial vs port) it
+    # was stored under, and cascade to its nets when they'd go stale:
+    #   * same identity + same instrument (a --baud update): nets kept;
+    #   * instrument changed: nets reference the wrong instrument — deleted;
+    #   * identity form changed: the old address loses its assignment — its
+    #     nets are deleted and the old record dropped (add() only upserts
+    #     records with the identical identity key).
+    new_key = (serial, port_path)
+    deleted_nets: list = []
+    for old in _custom_store.load():
+        if old.get("vid") != cable["vid"] or old.get("pid") != cable["pid"]:
+            continue
+        same_cable = (
+            (old.get("serial") and old.get("serial") == cable.get("serial"))
+            or (old.get("port_path") and old.get("port_path") == cable.get("port_path"))
+        )
+        if not same_cable:
+            continue
+        old_key = (old.get("serial") or None, old.get("port_path") or None)
+        if old_key == new_key and old.get("instrument") == instrument:
+            continue  # baud-only update; the address and instrument stand
+        deleted_nets.extend(_delete_nets_for_address(_safe_address(old)))
+        if old_key != new_key:
+            _custom_store.remove(old["vid"], old["pid"],
+                                 serial=old.get("serial"),
+                                 port_path=old.get("port_path"))
+
     rec = _custom_store.add(
         instrument, cable["vid"], cable["pid"],
         serial=serial, port_path=port_path,
@@ -136,6 +197,7 @@ def _cmd_assign(payload: dict) -> dict:
         # Catalog facts the CLI needs for messaging / --as-net.
         "roles": list(entry.get("roles", [])),
         "channels": {r: list(c) for r, c in (entry.get("channels") or {}).items()},
+        "deleted_nets": deleted_nets,
     }
 
 
@@ -153,10 +215,14 @@ def _cmd_remove(payload: dict) -> dict:
         target["vid"], target["pid"],
         serial=target.get("serial"), port_path=target.get("port_path"),
     )
+    address = _safe_address(target)
+    # Cascade: the assignment's nets go with it (see _delete_nets_for_address).
+    deleted_nets = _delete_nets_for_address(address) if removed else []
     return {
         "removed": removed,
         "instrument": target.get("instrument"),
-        "address": _safe_address(target),
+        "address": address,
+        "deleted_nets": deleted_nets,
     }
 
 
