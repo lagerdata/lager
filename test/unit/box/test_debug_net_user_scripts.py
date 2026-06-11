@@ -386,5 +386,209 @@ class OpenocdSpeedLadderTests(unittest.TestCase):
         self.assertEqual(debug_net.openocd_speed_ladder(None), [None])
 
 
+class RepointJlinkScriptTests(unittest.TestCase):
+    """``_repoint_jlink_script`` — per-connect override copied to the shared path."""
+
+    def setUp(self):
+        # Same shared-path redirection as MaterialiseUserScriptTests.
+        self._tmpdir = tempfile.mkdtemp()
+        import shutil
+        self.addCleanup(lambda: shutil.rmtree(self._tmpdir, ignore_errors=True))
+        self._patched = {}
+        for suffix, real in list(debug_net._SHARED_PATH_FOR_SUFFIX.items()):
+            self._patched[suffix] = real
+            debug_net._SHARED_PATH_FOR_SUFFIX[suffix] = os.path.join(
+                self._tmpdir, f'lager_user{suffix}',
+            )
+
+    def tearDown(self):
+        for suffix, real in self._patched.items():
+            debug_net._SHARED_PATH_FOR_SUFFIX[suffix] = real
+
+    def _shared(self):
+        return debug_net._SHARED_PATH_FOR_SUFFIX['.JLinkScript']
+
+    def _write_source(self, blob):
+        path = os.path.join(self._tmpdir, 'override.JLinkScript')
+        with open(path, 'wb') as f:
+            f.write(blob)
+        return path
+
+    def test_existing_path_copies_bytes_to_shared(self):
+        blob = b'/* per-connect */\nvoid ResetTarget(void) {}\n'
+        src = self._write_source(blob)
+        result = debug_net._repoint_jlink_script(src)
+        # Copy-not-alias: the return is the SHARED path, never the input path.
+        self.assertEqual(result, self._shared())
+        self.assertNotEqual(result, src)
+        with open(self._shared(), 'rb') as f:
+            self.assertEqual(f.read(), blob)
+
+    def test_base64_blob_writes_shared(self):
+        blob = b'void InitTarget(void) {}\n'
+        result = debug_net._repoint_jlink_script(
+            base64.b64encode(blob).decode('ascii'))
+        self.assertEqual(result, self._shared())
+        with open(self._shared(), 'rb') as f:
+            self.assertEqual(f.read(), blob)
+
+    def test_none_and_empty_are_noops(self):
+        for bad in (None, '', '   ', 42):
+            with self.subTest(value=bad):
+                self.assertIsNone(debug_net._repoint_jlink_script(bad))
+                self.assertFalse(os.path.exists(self._shared()))
+
+    def test_nonexistent_path_preserves_prior_content(self):
+        with open(self._shared(), 'wb') as f:
+            f.write(b'OLD')
+        # The '.' is outside the base64 alphabet, so validate=True rejects it.
+        self.assertIsNone(
+            debug_net._repoint_jlink_script('/does/not/exist.JLinkScript'))
+        with open(self._shared(), 'rb') as f:
+            self.assertEqual(f.read(), b'OLD')
+
+    def test_garbage_not_base64_is_noop(self):
+        self.assertIsNone(debug_net._repoint_jlink_script('not base64 at all!!!'))
+        self.assertFalse(os.path.exists(self._shared()))
+
+    def test_existing_path_wins_over_base64_lookalike(self):
+        # 'YWJj' is valid base64 ('abc') — but if a file by that name exists,
+        # its CONTENT must win over decoding the string.
+        src = os.path.join(self._tmpdir, 'YWJj')
+        with open(src, 'wb') as f:
+            f.write(b'X')
+        cwd = os.getcwd()
+        os.chdir(self._tmpdir)
+        try:
+            self.assertEqual(debug_net._repoint_jlink_script('YWJj'), self._shared())
+        finally:
+            os.chdir(cwd)
+        with open(self._shared(), 'rb') as f:
+            self.assertEqual(f.read(), b'X')
+
+
+def _load_debug_net_full():
+    """Load ``debug_net`` with the heavy try-block SUCCEEDING, so the real
+    ``DebugNet`` class exists, by stubbing the ``..debug`` sibling package.
+
+    Two-level synthetic package: ``stub_box`` -> ``stub_box.nets`` (real
+    directory) + ``stub_box.debug`` / ``stub_box.debug.probes`` (stubs). The
+    exception types must be real exception classes (they appear in ``except``
+    clauses); everything else can be a MagicMock. ``probes`` callables are
+    concrete lambdas because ``__init__`` unpacks/compares their results.
+    """
+    from unittest import mock as _mock
+
+    def _install(name, module):
+        sys.modules[name] = module
+        _INSTALLED_STUB_KEYS.append(name)
+
+    box_pkg = types.ModuleType('stub_box')
+    box_pkg.__path__ = []
+    _install('stub_box', box_pkg)
+
+    debug_mod = types.ModuleType('stub_box.debug')
+    debug_mod.__path__ = []
+    debug_mod.DebugError = type('DebugError', (Exception,), {})
+    debug_mod.JLinkNotRunning = type('JLinkNotRunning', (debug_mod.DebugError,), {})
+    debug_mod.OpenOcdRpcError = type('OpenOcdRpcError', (Exception,), {})
+    for name in ('connect_jlink', 'disconnect', 'reset_device', 'flash_device',
+                 'chip_erase', 'erase_flash', 'get_jlink_status',
+                 'get_jlink_gdbserver_status', 'read_memory', 'RTT',
+                 'start_openocd_gdbserver', 'stop_openocd', 'get_openocd_status',
+                 'OpenOcdRpc'):
+        setattr(debug_mod, name, _mock.MagicMock(name=name))
+    _install('stub_box.debug', debug_mod)
+
+    probes_mod = types.ModuleType('stub_box.debug.probes')
+    probes_mod.resolve_serial_from_net = lambda n: None
+    probes_mod.resolve_backend = lambda n: 'jlink'
+    probes_mod.gdb_port_for_slot = lambda s: 2331
+    probes_mod.rtt_port_for_slot = lambda s: 9090
+    probes_mod.openocd_telnet_port_for_slot = lambda s: 4444
+    probes_mod.openocd_tcl_port_for_slot = lambda s: 6666
+    probes_mod.parse_device_field = lambda d: (d, None)
+    probes_mod.parse_probe_serial = lambda a: None
+    probes_mod.compute_slot = lambda s, all_s: 0
+    probes_mod.BACKEND_JLINK = 'jlink'
+    probes_mod.BACKEND_OPENOCD = 'openocd'
+    _install('stub_box.debug.probes', probes_mod)
+
+    nets_pkg = types.ModuleType('stub_box.nets')
+    nets_pkg.__path__ = [NETS_DIR]
+    _install('stub_box.nets', nets_pkg)
+
+    constants_spec = importlib.util.spec_from_file_location(
+        'stub_box.nets.constants', CONSTANTS_PATH,
+    )
+    constants_mod = importlib.util.module_from_spec(constants_spec)
+    constants_mod.__package__ = 'stub_box.nets'
+    _install('stub_box.nets.constants', constants_mod)
+    constants_spec.loader.exec_module(constants_mod)
+
+    spec = importlib.util.spec_from_file_location(
+        'stub_box.nets.debug_net', DEBUG_NET_PATH,
+    )
+    mod = importlib.util.module_from_spec(spec)
+    mod.__package__ = 'stub_box.nets'
+    _install('stub_box.nets.debug_net', mod)
+    spec.loader.exec_module(mod)
+    return mod, debug_mod
+
+
+class DebugNetConnectScriptTests(unittest.TestCase):
+    """``DebugNet.connect(script=...)`` end to end against the stubbed backend."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.full, cls.debug_stub = _load_debug_net_full()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        import shutil
+        self.addCleanup(lambda: shutil.rmtree(self._tmpdir, ignore_errors=True))
+        self._patched = {}
+        for suffix, real in list(self.full._SHARED_PATH_FOR_SUFFIX.items()):
+            self._patched[suffix] = real
+            self.full._SHARED_PATH_FOR_SUFFIX[suffix] = os.path.join(
+                self._tmpdir, f'lager_user{suffix}',
+            )
+        self.debug_stub.connect_jlink.reset_mock()
+
+    def tearDown(self):
+        for suffix, real in self._patched.items():
+            self.full._SHARED_PATH_FOR_SUFFIX[suffix] = real
+
+    def _shared(self):
+        return self.full._SHARED_PATH_FOR_SUFFIX['.JLinkScript']
+
+    def test_connect_repoints_and_passes_shared_path(self):
+        blob = b'void ResetTarget(void) { /* halt in place */ }\n'
+        src = os.path.join(self._tmpdir, 'override.JLinkScript')
+        with open(src, 'wb') as f:
+            f.write(blob)
+        dbg = self.full.DebugNet('dbg', {'channel': 'DA14695'})
+        dbg.connect(script=src, force=True)
+        kwargs = self.debug_stub.connect_jlink.call_args.kwargs
+        self.assertEqual(kwargs['script_file'], self._shared())
+        with open(self._shared(), 'rb') as f:
+            self.assertEqual(f.read(), blob)
+
+    def test_connect_without_script_keeps_existing(self):
+        dbg = self.full.DebugNet('dbg', {'channel': 'DA14695'})
+        dbg._jlink_script_path = '/some/prior.JLinkScript'
+        dbg.connect()
+        kwargs = self.debug_stub.connect_jlink.call_args.kwargs
+        self.assertEqual(kwargs['script_file'], '/some/prior.JLinkScript')
+        self.assertFalse(os.path.exists(self._shared()))
+
+    def test_connect_bad_script_keeps_existing(self):
+        dbg = self.full.DebugNet('dbg', {'channel': 'DA14695'})
+        dbg._jlink_script_path = '/some/prior.JLinkScript'
+        dbg.connect(script='/missing/override.JLinkScript')
+        kwargs = self.debug_stub.connect_jlink.call_args.kwargs
+        self.assertEqual(kwargs['script_file'], '/some/prior.JLinkScript')
+
+
 if __name__ == '__main__':
     unittest.main()
