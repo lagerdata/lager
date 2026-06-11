@@ -145,8 +145,22 @@ def sigint_handler(kill_python, box_ip, _sig, _frame):
     """
     Handle Ctrl+C by restoring the old signal handler (so that subsequent
     Ctrl+C will actually stop python) and sending SIGTERM to the running
-    docker container. Also releases the auto-acquired box lock so other
-    callers don't have to wait for the TTL to reap it.
+    docker container.
+
+    The auto-lock is NOT released from this handler; instead the lock is
+    released by:
+      * the ``try/finally`` wrapping the ``python`` command body, which
+        runs once ``kill_python`` causes the streaming loop to unwind
+        normally, AND
+      * the ``atexit``-registered ``_auto_lock_release`` as a final
+        belt-and-suspenders.
+
+    Why we don't call ``_auto_lock_release`` here: per Gemini PR#79
+    review, doing synchronous HTTP from a Python signal handler invites
+    reentrancy issues if the handler interrupts an in-flight network
+    operation on the same thread. ``kill_python`` is unavoidable
+    (that's the whole point of the handler), but the lock release is
+    redundant with the finally/atexit paths and gains us nothing.
 
     Note: prior versions also POSTed /cache/clear to hardware_service here
     (the v0.16.5 band-aid). v0.16.8 routes all hardware access through a
@@ -157,10 +171,7 @@ def sigint_handler(kill_python, box_ip, _sig, _frame):
     """
     click.echo(' Attempting to stop Lager Python job')
     signal.signal(signal.SIGINT, _ORIGINAL_SIGINT_HANDLER)
-    try:
-        kill_python(signal.SIGTERM)
-    finally:
-        _auto_lock_release('sigint')
+    kill_python(signal.SIGTERM)
 
 
 def _do_exit(exit_code, box, session, downloads):
