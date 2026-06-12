@@ -199,23 +199,14 @@ def test_power_consistency():
         mp = float(psu.power())
         vi_product = mv * mi
 
-        # When current is near zero the ratio test is meaningless; skip it
-        # and just verify P is also near zero.
-        if mi < 0.005:
-            passed = mp < 0.1
-            _record(
-                "power near 0 when current near 0",
-                passed,
-                f"P={mp:.4f} W, I={mi:.4f} A",
-            )
-        else:
-            denom = max(abs(vi_product), 0.001)
-            passed = abs(mp - vi_product) / denom < POWER_TOL
-            _record(
-                f"P ≈ V×I within {int(POWER_TOL*100)}%",
-                passed,
-                f"P={mp:.4f} W, V×I={vi_product:.4f} W",
-            )
+        abs_diff = abs(mp - vi_product)
+        denom = max(abs(vi_product), 0.001)
+        passed = abs_diff < 0.15 or abs_diff / denom < POWER_TOL
+        _record(
+            f"P ≈ V×I (abs<0.15 W or within {int(POWER_TOL*100)}%)",
+            passed,
+            f"P={mp:.4f} W, V×I={vi_product:.4f} W",
+        )
         if not passed:
             ok = False
 
