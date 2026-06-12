@@ -2,22 +2,23 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-`lager box` — top-level group for box-side declarative configuration.
-
-PR #1 only registers the `config` sub-tree. Reserved for future
-box-scoped commands (status, exec, etc.) so we don't have to migrate
-later.
+`lager box` — top-level group for box-scoped commands: declarative
+configuration (`config`), DUT context authoring (`dut`), and SSH key
+authorization (`authorize`).
 """
 import click
 
+from .authorize import box_authorize
 from .config import box_config
 from .dut import box_dut
+from ...core.group_usage import LagerGroup
 
 
-@click.group(name="box")
+@click.group(name="box", cls=LagerGroup)
 def box() -> None:
     """Box-side configuration and provisioning"""
 
 
+box.add_command(box_authorize, name="authorize")
 box.add_command(box_config, name="config")
 box.add_command(box_dut, name="dut")

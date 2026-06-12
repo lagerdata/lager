@@ -24,12 +24,14 @@ import requests
 
 from ...box_storage import get_box_ip, list_boxes
 from ...context import get_default_box, get_impl_path
+from ...core.group_usage import LagerGroup
+from ...errors import ssh_error
 from ..development.python import run_python_internal_get_output
 from . import _shim_verbs as verbs
 from ._host_ops import apt_install, sysctl_apply, udev_apply
 from ._mount_prep import ensure_host_path_owned, manual_fix_command
 from ._pip_validation import is_direct_ref, validate_on_pypi
-from ._ssh import default_ssh_runner
+from ._ssh import default_ssh_runner, resolve_box_user
 
 # How long we'll wait for the box's HTTP API to come up after start_box.sh
 # returns 0. The container itself starts in ~3-5s on a healthy box; the
@@ -164,7 +166,7 @@ def _list_field(
             click.echo(formatter(item))
 
 
-@click.group(name="config", invoke_without_command=True, help="Manage declarative box provisioning")
+@click.group(name="config", cls=LagerGroup, invoke_without_command=True, help="Manage declarative box provisioning")
 @click.option("--box", help="Lagerbox name or IP")
 @click.pass_context
 def box_config(ctx: click.Context, box: Optional[str]) -> None:
@@ -912,10 +914,14 @@ def repair_cmd(ctx: click.Context, box: Optional[str], yes: bool) -> None:
     resolved = _resolve_box(ctx, box)
 
     # Confirm snapshot exists before announcing repair.
-    rc, _stdout, _stderr = default_ssh_runner(
+    rc, _stdout, stderr = default_ssh_runner(
         resolved,
         "test -f /etc/lager/box_config.applied.json",
     )
+    if rc == 255:
+        # rc 255 is ssh's own failure — the test never ran, so "no
+        # snapshot" would be a misdiagnosis.
+        ssh_error(stderr, resolved, user=resolve_box_user(resolved)).die()
     if rc != 0:
         click.secho(
             f"No applied snapshot on {resolved}; cannot repair. This box has "
@@ -1449,10 +1455,19 @@ def _attempt_rollback(
     # Confirm the snapshot exists before announcing rollback. test rc=0 iff
     # the snapshot file is present; if missing this is a first-apply box and
     # rollback isn't possible.
-    rc, _stdout, _stderr = default_ssh_runner(
+    rc, _stdout, stderr = default_ssh_runner(
         resolved_box,
         "test -f /etc/lager/box_config.applied.json",
     )
+    if rc == 255:
+        # Transport failure, not a missing snapshot. This helper returns
+        # bool deep in the apply pipeline, so report and let the caller's
+        # rollback-failed path run rather than dying here.
+        click.secho(
+            ssh_error(stderr, resolved_box).format_message(),
+            err=True,
+        )
+        return False
     if rc != 0:
         return False
 

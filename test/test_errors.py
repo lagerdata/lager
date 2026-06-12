@@ -149,7 +149,13 @@ class TestSshErrorClassifier:
     def test_key_not_authorized(self):
         out = plain(ssh_error('Permission denied (publickey).', '10.0.0.5').format_message())
         assert 'key authentication failed' in out.lower()
+        assert 'lager box authorize 10.0.0.5' in out
         assert 'ssh-copy-id lagerdata@10.0.0.5' in out
+
+    def test_key_not_authorized_custom_user(self):
+        out = plain(ssh_error('Permission denied (publickey).', '10.0.0.5', user='boxuser').format_message())
+        assert 'lager box authorize 10.0.0.5' in out
+        assert 'ssh-copy-id boxuser@10.0.0.5' in out
 
     def test_connection_refused(self):
         out = plain(ssh_error('connect to host x port 22: Connection refused', '10.0.0.5').format_message())

@@ -15,11 +15,12 @@ import click
 from texttable import Texttable
 
 # Import consolidated helpers from cli.core.net_helpers
+from ...core.group_usage import LagerGroup
 from ...core.net_helpers import resolve_box, run_impl_script
 from ...context import get_impl_path
 
 
-@click.group(name='ble')
+@click.group(name='ble', cls=LagerGroup)
 def ble():
     """Scan and connect to Bluetooth Low Energy devices"""
     pass

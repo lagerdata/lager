@@ -21,6 +21,7 @@ from texttable import Texttable
 import shutil
 
 from ...context import get_default_box, get_impl_path
+from ...core.group_usage import LagerGroup
 from ...errors import LagerError
 from ...sort_utils import natural_sort_key as _natural_sort_key
 from ..development.python import run_python_internal
@@ -660,8 +661,7 @@ def _display_table(records):
         instrument, addr = key.split("|", 1)
         display_name = instrument.replace("_", " ")
         if addr and addr != "NA":
-            addr_display = addr if len(addr) <= 50 else addr[:45] + "..."
-            group_label = (display_name, f" [{addr_display}]")
+            group_label = (display_name, f" [{addr}]")
         else:
             group_label = (display_name, "")
 
@@ -672,8 +672,6 @@ def _display_table(records):
         rows = []
         for rec in nets:
             pin = rec.get("pin", "") or ""
-            if rec.get("role") == "uart" and len(pin) > 10:
-                pin = pin[:10]
             row = [
                 rec.get("name", ""),
                 rec.get("role", ""),
@@ -782,6 +780,7 @@ def _save_nets_batch(ctx: click.Context, box: str, nets_data: List[dict]) -> Non
 # --------------------------------------------------------------------------- #
 @click.group(
     name="nets",
+    cls=LagerGroup,
     invoke_without_command=True,
     help="List and manage saved nets",
 )

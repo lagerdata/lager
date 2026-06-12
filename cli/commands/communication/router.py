@@ -12,6 +12,7 @@ import json
 
 import click
 
+from ...core.group_usage import LagerGroup
 from ...core.net_helpers import resolve_box, run_impl_script
 
 
@@ -34,7 +35,7 @@ def _run_router(ctx: click.Context, box_ip: str, args_dict: dict) -> None:
         ctx.exit(1)
 
 
-@click.group(name="router")
+@click.group(name="router", cls=LagerGroup)
 def router():
     """Manage routers as Lager nets"""
     pass

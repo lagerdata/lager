@@ -14,6 +14,7 @@ import click
 from texttable import Texttable
 
 # Import consolidated helpers from cli.core.net_helpers
+from ...core.group_usage import LagerGroup
 from ...core.net_helpers import resolve_box, run_impl_script
 
 # WiFi constraints
@@ -103,7 +104,7 @@ def _run_wifi_command(ctx: click.Context, box_ip: str, args_dict: dict) -> None:
         ctx.exit(1)
 
 
-@click.group(name='wifi', hidden=True)
+@click.group(name='wifi', cls=LagerGroup, hidden=True)
 def _wifi():
     """Manage WiFi network settings"""
     pass
