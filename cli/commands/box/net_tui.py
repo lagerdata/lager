@@ -177,6 +177,16 @@ def _run_custom_devices(ctx: click.Context, dut: str, *args):
         return None
 
 
+def _set_dialog_busy(screen: Screen, busy: bool) -> None:
+    """Disable a dialog's buttons while a run_box_job worker is in flight.
+
+    Prevents double-submits and gives immediate visual feedback that the
+    click registered (the box round-trip itself takes seconds).
+    """
+    for btn in screen.query(Button):
+        btn.disabled = busy
+
+
 def _cable_ident(rec: dict) -> str:
     """Human label for a cable/assignment identity (serial, else port)."""
     if rec.get("serial"):
@@ -1174,15 +1184,24 @@ class EditDetailsDialog(Screen):
             "tags": tags,
         }
 
-        try:
-            _run_script(app.ctx, "net.py", app.dut, "save", json.dumps(net_data))
-            app.show_success(f"Updated details for net '{self.net.net}'")
-        except Exception as e:
-            app.show_error(f"Failed to save details: {str(e)}")
+        _set_dialog_busy(self, True)
 
-        app._sync_saved_from_disk()
-        app._refresh_table()
-        app.pop_screen()
+        def work() -> dict:
+            _run_script(app.ctx, "net.py", app.dut, "save", json.dumps(net_data))
+            return {"saved": app._fetch_saved_records()}
+
+        def done(out: object) -> None:
+            _set_dialog_busy(self, False)
+            if isinstance(out, Exception):
+                app.show_error(f"Failed to save details: {str(out)}")
+            else:
+                app.show_success(f"Updated details for net '{self.net.net}'")
+                if out.get("saved") is not None:
+                    app._apply_saved_records(out["saved"])
+            app._refresh_table()
+            app.pop_screen()
+
+        app.run_box_job(work, done)
 
 
 class ConfirmDelete(Screen):
@@ -1215,33 +1234,42 @@ class ConfirmDelete(Screen):
             return
 
         app.pop_screen()
-        # Delete this net via net.py script
-        try:
-            _run_script(app.ctx, "net.py", app.dut, "delete", self.net.net, self.net.type)
-            app.show_success(f"Successfully deleted net '{self.net.net}'")
-        except Exception as e:
-            app.show_error(f"Failed to delete net: {str(e)}")
-            return
+        app.show_loading(f"Deleting net '{self.net.net}'...")
 
-        if self.net in app.nets:
-            app.nets.remove(self.net)
-        auto_name = f"{self.net.type}{self.net.chan}"
-        duplicate = next(
-            (n for n in app.nets if (n.type, n.instrument, n.chan, n.addr) ==
-             (self.net.type, self.net.instrument, self.net.chan, self.net.addr)),
-            None,
-        )
-        if duplicate is None:
-            app.nets.append(Net(
-                instrument=self.net.instrument,
-                chan=self.net.chan,
-                type=self.net.type,
-                net=auto_name,
-                addr=self.net.addr,
-                saved=False,
-            ))
-        app._sync_saved_from_disk()
-        app._refresh_table()
+        # Delete this net via net.py script (off the UI thread)
+        def work() -> dict:
+            _run_script(app.ctx, "net.py", app.dut, "delete", self.net.net, self.net.type)
+            return {"saved": app._fetch_saved_records()}
+
+        def done(out: object) -> None:
+            app.hide_loading()
+            if isinstance(out, Exception):
+                app.show_error(f"Failed to delete net: {str(out)}")
+                return
+            app.show_success(f"Successfully deleted net '{self.net.net}'")
+
+            if self.net in app.nets:
+                app.nets.remove(self.net)
+            auto_name = f"{self.net.type}{self.net.chan}"
+            duplicate = next(
+                (n for n in app.nets if (n.type, n.instrument, n.chan, n.addr) ==
+                 (self.net.type, self.net.instrument, self.net.chan, self.net.addr)),
+                None,
+            )
+            if duplicate is None:
+                app.nets.append(Net(
+                    instrument=self.net.instrument,
+                    chan=self.net.chan,
+                    type=self.net.type,
+                    net=auto_name,
+                    addr=self.net.addr,
+                    saved=False,
+                ))
+            if out.get("saved") is not None:
+                app._apply_saved_records(out["saved"])
+            app._refresh_table()
+
+        app.run_box_job(work, done)
 
 class RenameDialog(Screen):
     """Prompt + text box to enter a new name."""
@@ -1293,36 +1321,39 @@ class RenameDialog(Screen):
             return
 
         app.pop_screen()
-        # Rename the net via net.py script
-        try:
-            _run_script(
-                app.ctx,
-                "net.py",
-                app.dut,
-                "rename",
-                self.net.net,
-                new_name
-            )
+        app.show_loading(f"Renaming net to '{new_name}'...")
+        old_name = self.net.net
+
+        # Rename the net via net.py script (off the UI thread)
+        def work() -> dict:
+            _run_script(app.ctx, "net.py", app.dut, "rename", old_name, new_name)
+            return {"saved": app._fetch_saved_records()}
+
+        def done(out: object) -> None:
+            app.hide_loading()
+            if isinstance(out, Exception):
+                app.show_error(f"Failed to rename net: {str(out)}")
+                return
             app.show_success(f"Successfully renamed net to '{new_name}'")
-        except Exception as e:
-            app.show_error(f"Failed to rename net: {str(e)}")
-            return
 
-        # Update the net name locally
-        self.net.net = new_name
-        self.net._uid = _uid(self.net.instrument, self.net.chan, self.net.type, new_name)
+            # Update the net name locally
+            self.net.net = new_name
+            self.net._uid = _uid(self.net.instrument, self.net.chan, self.net.type, new_name)
 
-        placeholder = next(
-            (n for n in app.nets if not n.saved and
-             (n.type, n.instrument, n.chan, n.addr) ==
-             (self.net.type, self.net.instrument, self.net.chan, self.net.addr)),
-            None,
-        )
-        if placeholder is not None:
-            app.nets.remove(placeholder)
+            placeholder = next(
+                (n for n in app.nets if not n.saved and
+                 (n.type, n.instrument, n.chan, n.addr) ==
+                 (self.net.type, self.net.instrument, self.net.chan, self.net.addr)),
+                None,
+            )
+            if placeholder is not None:
+                app.nets.remove(placeholder)
 
-        app._sync_saved_from_disk()
-        app._refresh_table()
+            if out.get("saved") is not None:
+                app._apply_saved_records(out["saved"])
+            app._refresh_table()
+
+        app.run_box_job(work, done)
 
 class RenameNewNetDialog(Screen):
     """Prompt + text box to enter a new name for an unsaved net in AddScreen."""
@@ -1894,6 +1925,47 @@ class AddScreen(Screen):
 
         after_pin_dialogs()
 
+    def _batch_save_and_close(
+        self,
+        main: "NetApp",
+        nets_to_save: list[Net],
+        pop_on_validation_error: bool = False,
+    ) -> None:
+        """Batch-save off the UI thread, then refresh and close this screen.
+
+        ``pop_on_validation_error`` preserves the historical difference
+        between the two save paths: the plain path keeps the Add screen up
+        (selection intact) when a UART net fails validation, while the
+        J-Link path abandons it.
+        """
+        _set_dialog_busy(self, True)
+
+        def work() -> dict:
+            ok = _save_nets_batch(main.ctx, main.dut, nets_to_save, self.custom_names)
+            return {"ok": ok, "saved": main._fetch_saved_records()}
+
+        def done(out: object) -> None:
+            _set_dialog_busy(self, False)
+            if isinstance(out, UARTNetSaveValidationError):
+                main.show_error(str(out))
+                if pop_on_validation_error:
+                    main.pop_screen()
+                return
+            if isinstance(out, Exception):
+                main.show_error(f"Failed to save nets: {str(out)}")
+                return
+            if out["ok"]:
+                main.show_success(f"Successfully added {len(nets_to_save)} nets")
+            else:
+                main.show_error("Failed to save some nets")
+            # Refresh saved nets and update UI
+            if out.get("saved") is not None:
+                main._apply_saved_records(out["saved"])
+            main._refresh_table()
+            main.pop_screen()
+
+        main.run_box_job(work, done)
+
     def _save_selected(
         self,
         main: "NetApp",
@@ -1906,19 +1978,7 @@ class AddScreen(Screen):
         out so the LabJack pin dialogs can run before it.)"""
         # If no debug nets selected, save immediately using batch save
         if not debug_nets:
-            try:
-                ok = _save_nets_batch(main.ctx, main.dut, selected_nets, self.custom_names)
-            except UARTNetSaveValidationError as exc:
-                main.show_error(str(exc))
-                return
-            if ok:
-                main.show_success(f"Successfully added {len(selected_nets)} nets")
-            else:
-                main.show_error("Failed to save some nets")
-            # Refresh saved nets and update UI
-            main._sync_saved_from_disk()
-            main._refresh_table()
-            main.pop_screen()
+            self._batch_save_and_close(main, selected_nets)
             return
 
         # If there are debug nets, prompt for each J-Link device type
@@ -1947,19 +2007,8 @@ class AddScreen(Screen):
                 return
             # All debug prompts done – save all pending nets using batch save
             all_nets_to_save = self._pending_normal_nets + self._pending_debug_nets
-            try:
-                ok = _save_nets_batch(main.ctx, main.dut, all_nets_to_save, self.custom_names)
-            except UARTNetSaveValidationError as exc:
-                main.show_error(str(exc))
-                main.pop_screen()
-                return
-            if ok:
-                main.show_success(f"Successfully added {len(all_nets_to_save)} nets")
-            else:
-                main.show_error("Failed to save some nets")
-            main._sync_saved_from_disk()
-            main._refresh_table()
-            main.pop_screen()
+            self._batch_save_and_close(main, all_nets_to_save,
+                                       pop_on_validation_error=True)
 
         def prompt_next():
             n = self._pending_debug_nets[self._debug_idx]
@@ -1994,15 +2043,25 @@ class ConfirmDeleteAll(Screen):
             app.pop_screen()
             return
 
-        # Delete all saved nets via net.py script
-        try:
+        _set_dialog_busy(self, True)
+
+        # Delete all saved nets via net.py script (off the UI thread)
+        def work() -> dict:
             _run_script(app.ctx, "net.py", app.dut, "delete-all")
-            app.show_success("Successfully deleted all nets")
-        except Exception as e:
-            app.show_error(f"Failed to delete all nets: {str(e)}")
-        app._sync_saved_from_disk()
-        app._refresh_table()
-        app.pop_screen()
+            return {"saved": app._fetch_saved_records()}
+
+        def done(out: object) -> None:
+            _set_dialog_busy(self, False)
+            if isinstance(out, Exception):
+                app.show_error(f"Failed to delete all nets: {str(out)}")
+            else:
+                app.show_success("Successfully deleted all nets")
+                if out.get("saved") is not None:
+                    app._apply_saved_records(out["saved"])
+            app._refresh_table()
+            app.pop_screen()
+
+        app.run_box_job(work, done)
 
 
 # ──────────────── custom-device assignment screens ────────────────
@@ -2959,15 +3018,6 @@ class NetApp(App):
             ) for rec in saved_from_disk
         ]
         self._ensure_autogen_unsaved()
-
-    def _sync_saved_from_disk(self) -> None:
-        # Retrieve saved nets from disk via net.py list
-        saved_from_disk = self._fetch_saved_records()
-        if saved_from_disk is None:
-            # Show error message to user but continue with empty list
-            self.show_error("Error loading saved nets")
-            saved_from_disk = []
-        self._apply_saved_records(saved_from_disk)
 
     def _fetch_instruments(self) -> list | None:
         """Blocking instrument re-scan; None on failure.

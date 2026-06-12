@@ -375,6 +375,162 @@ class TestAssignActionsOffloadBoxCalls:
         asyncio.run(main())
 
 
+class TestSavedNetFlowsOffloadBoxCalls:
+    """The pre-0.24 flows (save details, delete, rename, batch add,
+    delete-all) used to run their net.py round-trips synchronously inside
+    button handlers — same freeze as the assign regression. They now go
+    through run_box_job too."""
+
+    @staticmethod
+    def _saved_net():
+        return tui.Net("Rigol_DP832", "1", "power-supply", "supply1",
+                       "USB0::0x1AB1::INSTR", saved=True)
+
+    @staticmethod
+    def _fake_run_script(record=None):
+        """net.py stub: mutations return nothing, list returns ``record``."""
+        listing = json.dumps([record] if record else [])
+
+        def fake(ctx, script, dut, *args):
+            assert threading.current_thread() is not threading.main_thread()
+            return listing if args and args[0] == "list" else ""
+        return fake
+
+    def test_delete_all_runs_in_worker(self):
+        async def main():
+            app = tui.NetApp(ctx=None, dut="box", inst_list=[],
+                             nets=[self._saved_net()])
+            with patch.object(tui, "_run_script",
+                              side_effect=self._fake_run_script()):
+                async with app.run_test(size=(100, 40)) as pilot:
+                    await pilot.pause()
+                    screen = tui.ConfirmDeleteAll()
+                    app.push_screen(screen)
+                    await pilot.pause()
+                    screen.on_button_pressed(
+                        Button.Pressed(screen.query_one("#confirm", Button)))
+                    await app.workers.wait_for_complete()
+                    await pilot.pause()
+                    assert not isinstance(app.screen, tui.ConfirmDeleteAll)
+                    assert not any(n.saved for n in app.nets)
+
+        asyncio.run(main())
+
+    def test_delete_single_net_runs_in_worker(self):
+        net = self._saved_net()
+
+        async def main():
+            app = tui.NetApp(ctx=None, dut="box", inst_list=[], nets=[net])
+            with patch.object(tui, "_run_script",
+                              side_effect=self._fake_run_script()):
+                async with app.run_test(size=(100, 40)) as pilot:
+                    await pilot.pause()
+                    screen = tui.ConfirmDelete(net)
+                    app.push_screen(screen)
+                    await pilot.pause()
+                    screen.on_button_pressed(
+                        Button.Pressed(screen.query_one("#confirm", Button)))
+                    await app.workers.wait_for_complete()
+                    await pilot.pause()
+                    assert net not in app.nets
+                    # The channel is re-offered as an unsaved placeholder.
+                    assert any(not n.saved and n.chan == net.chan
+                               for n in app.nets)
+
+        asyncio.run(main())
+
+    def test_rename_runs_in_worker(self):
+        net = self._saved_net()
+        renamed = {"name": "main_supply", "role": "power-supply",
+                   "instrument": "Rigol_DP832", "pin": "1",
+                   "address": "USB0::0x1AB1::INSTR"}
+
+        async def main():
+            app = tui.NetApp(ctx=None, dut="box", inst_list=[], nets=[net])
+            with patch.object(tui, "_run_script",
+                              side_effect=self._fake_run_script(renamed)):
+                async with app.run_test(size=(100, 40)) as pilot:
+                    await pilot.pause()
+                    screen = tui.RenameDialog(net)
+                    app.push_screen(screen)
+                    await pilot.pause()
+                    screen.input.value = "main_supply"
+                    screen.on_button_pressed(
+                        Button.Pressed(screen.query_one("#confirm", Button)))
+                    await app.workers.wait_for_complete()
+                    await pilot.pause()
+                    assert net.net == "main_supply"
+                    assert any(n.saved and n.net == "main_supply"
+                               for n in app.nets)
+
+        asyncio.run(main())
+
+    def test_save_details_runs_in_worker(self):
+        net = self._saved_net()
+
+        async def main():
+            app = tui.NetApp(ctx=None, dut="box", inst_list=[], nets=[net])
+            with patch.object(tui, "_run_script",
+                              side_effect=self._fake_run_script()):
+                async with app.run_test(size=(100, 40)) as pilot:
+                    await pilot.pause()
+                    screen = tui.EditDetailsDialog(net)
+                    app.push_screen(screen)
+                    await pilot.pause()
+                    screen.purpose_input.value = "Main DUT power rail"
+                    screen.on_button_pressed(
+                        Button.Pressed(screen.query_one("#save_details", Button)))
+                    await app.workers.wait_for_complete()
+                    await pilot.pause()
+                    assert not isinstance(app.screen, tui.EditDetailsDialog)
+                    assert net.purpose == "Main DUT power rail"
+
+        asyncio.run(main())
+
+    def test_batch_save_runs_in_worker_and_pops_add_screen(self):
+        net = tui.Net("Rigol_DP832", "1", "power-supply", "supply1",
+                      "USB0::0x1AB1::INSTR", saved=False)
+
+        async def main():
+            app = tui.NetApp(ctx=None, dut="box", inst_list=[], nets=[net])
+            app._fetch_saved_records = lambda: []
+            with patch.object(tui, "_save_nets_batch", return_value=True) as sb:
+                async with app.run_test(size=(100, 40)) as pilot:
+                    await pilot.pause()
+                    screen = tui.AddScreen([net], False)
+                    app.push_screen(screen)
+                    await pilot.pause()
+                    screen._batch_save_and_close(app, [net])
+                    await app.workers.wait_for_complete()
+                    await pilot.pause()
+                    assert sb.call_count == 1
+                    assert not isinstance(app.screen, tui.AddScreen)
+
+        asyncio.run(main())
+
+    def test_batch_save_validation_error_keeps_add_screen_up(self):
+        net = tui.Net("FTDI", "0", "uart", "uart1", "usb", saved=False)
+
+        async def main():
+            app = tui.NetApp(ctx=None, dut="box", inst_list=[], nets=[net])
+            with patch.object(
+                tui, "_save_nets_batch",
+                side_effect=tui.UARTNetSaveValidationError("bad pin"),
+            ):
+                async with app.run_test(size=(100, 40)) as pilot:
+                    await pilot.pause()
+                    screen = tui.AddScreen([net], False)
+                    app.push_screen(screen)
+                    await pilot.pause()
+                    screen._batch_save_and_close(app, [net])
+                    await app.workers.wait_for_complete()
+                    await pilot.pause()
+                    # Selection preserved so the user can fix and retry.
+                    assert app.screen is screen
+
+        asyncio.run(main())
+
+
 # --------------------------------------------------------------------------- #
 # table regression                                                            #
 # --------------------------------------------------------------------------- #
