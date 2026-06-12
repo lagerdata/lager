@@ -389,6 +389,188 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     "ESP32_JTAG_Serial": ["uart"],
 }
 
+# --------------------------------------------------------------------------- #
+# LabJack custom pin selection for i2c / spi nets.                             #
+#                                                                              #
+# The LabJack T7 can run its built-in I2C/SPI masters on any DIO pin           #
+# (FIO0-7 = DIO 0-7, EIO0-7 = 8-15, CIO0-3 = 16-19, MIO0-2 = 20-22). The box   #
+# dispatchers already honour explicit pin numbers in the net record's          #
+# ``params`` dict; these helpers let ``nets add`` populate that dict instead   #
+# of forcing the hardcoded FIO0-FIO3 / FIO4-FIO5 defaults.                     #
+# --------------------------------------------------------------------------- #
+
+_LJ_PIN_PREFIXES = (
+    # (prefix, dio offset, count)
+    ("FIO", 0, 8),
+    ("EIO", 8, 8),
+    ("CIO", 16, 4),
+    ("MIO", 20, 3),
+)
+_LJ_MAX_DIO = 22
+
+_LJ_INSTRUMENT_NAMES = {"labjack_t7", "labjack", "t7"}
+
+
+def _parse_labjack_pin(value: str, signal: str) -> int:
+    """Convert a pin name (FIO4/EIO0/CIO1/MIO2) or DIO number to a DIO int."""
+    text = str(value).strip().upper()
+    for prefix, offset, count in _LJ_PIN_PREFIXES:
+        if text.startswith(prefix):
+            try:
+                idx = int(text[len(prefix):])
+            except ValueError:
+                idx = -1
+            if 0 <= idx < count:
+                return offset + idx
+            raise LagerError(
+                f"Invalid LabJack pin '{value}' for {signal}: {prefix} pins "
+                f"range from {prefix}0 to {prefix}{count - 1}."
+            )
+    try:
+        dio = int(text)
+    except ValueError:
+        raise LagerError(
+            f"Invalid LabJack pin '{value}' for {signal}.",
+            fixes=["Use a pin name (FIO0-FIO7, EIO0-EIO7, CIO0-CIO3, MIO0-MIO2) "
+                   "or a DIO number 0-22."],
+        )
+    if 0 <= dio <= _LJ_MAX_DIO:
+        return dio
+    raise LagerError(
+        f"Invalid LabJack DIO number {dio} for {signal}: must be 0-{_LJ_MAX_DIO}."
+    )
+
+
+def _labjack_pin_name(dio: int) -> str:
+    """Convert a DIO number back to its canonical LabJack pin name."""
+    for prefix, offset, count in _LJ_PIN_PREFIXES:
+        if offset <= dio < offset + count:
+            return f"{prefix}{dio - offset}"
+    return f"DIO{dio}"
+
+
+# Signal name -> params key used by the box dispatchers.
+_I2C_PIN_PARAMS = {"sda": "sda_pin", "scl": "scl_pin"}
+_SPI_PIN_PARAMS = {"cs": "cs_pin", "sck": "clk_pin", "mosi": "mosi_pin", "miso": "miso_pin"}
+
+
+def _build_custom_pin_config(role: str, instrument: str, pin_opts: dict) -> Optional[dict]:
+    """Validate ``--sda/--scl/--cs/--sck/--mosi/--miso`` and build the net's
+    pin summary + params.
+
+    Returns ``None`` when no pin option was given. Otherwise returns
+    ``{"pin": <label>, "params": {...}}`` or raises LagerError.
+    """
+    given = {k: v for k, v in pin_opts.items() if v is not None}
+    if not given:
+        return None
+
+    opts_str = ", ".join(f"--{k}" for k in given)
+    if instrument.lower() not in _LJ_INSTRUMENT_NAMES:
+        raise LagerError(
+            f"Pin options ({opts_str}) are only supported for LabJack T7 nets; "
+            f"'{instrument}' has fixed hardware pins."
+        )
+
+    if role == "i2c":
+        expected, params_map, optional = {"sda", "scl"}, _I2C_PIN_PARAMS, set()
+    elif role == "spi":
+        expected, params_map, optional = {"cs", "sck", "mosi", "miso"}, _SPI_PIN_PARAMS, {"cs"}
+    else:
+        raise LagerError(
+            f"Pin options ({opts_str}) only apply to i2c or spi nets, not '{role}'."
+        )
+
+    wrong = set(given) - expected
+    if wrong:
+        raise LagerError(
+            f"Option(s) {', '.join('--' + w for w in sorted(wrong))} do not "
+            f"apply to {role} nets. {role} nets use: "
+            f"{', '.join('--' + e for e in sorted(expected))}."
+        )
+    missing = expected - set(given) - optional
+    if missing:
+        hint = " (--cs is optional: omit it for 3-pin SPI with manual chip select)" \
+            if role == "spi" else ""
+        raise LagerError(
+            f"Missing pin option(s) for {role}: "
+            f"{', '.join('--' + m for m in sorted(missing))}. "
+            f"Specify all pins when customizing{hint}."
+        )
+
+    # Parse in display order so the label is stable.
+    order = ["sda", "scl"] if role == "i2c" else ["cs", "sck", "mosi", "miso"]
+    params: dict[str, int] = {}
+    label_parts: list[str] = []
+    seen: dict[int, str] = {}
+    for signal in order:
+        if signal not in given:
+            continue
+        dio = _parse_labjack_pin(given[signal], signal.upper())
+        if dio in seen:
+            raise LagerError(
+                f"Pin {_labjack_pin_name(dio)} is assigned to both "
+                f"{seen[dio]} and {signal.upper()}; each signal needs its own pin."
+            )
+        seen[dio] = signal.upper()
+        params[params_map[signal]] = dio
+        label_parts.append(f"{signal.upper()}:{_labjack_pin_name(dio)}")
+
+    return {"pin": " ".join(label_parts), "params": params}
+
+
+def _labjack_claimed_pins(saved_nets: list, address: str) -> dict[str, tuple[str, str]]:
+    """Map DIO pin name -> (net name, role) for LabJack nets saved at *address*.
+
+    Best-effort: covers gpio nets (pin field is the DIO name), the default
+    spi/i2c pin strings, and custom params-based spi/i2c nets. Used only to
+    warn about overlaps, never to block.
+    """
+    claimed: dict[str, tuple[str, str]] = {}
+
+    def claim(dio: int, net: dict) -> None:
+        claimed.setdefault(
+            _labjack_pin_name(dio), (net.get("name", "?"), net.get("role", "?"))
+        )
+
+    for net in saved_nets:
+        if net.get("address") != address:
+            continue
+        if str(net.get("instrument", "")).lower() not in _LJ_INSTRUMENT_NAMES:
+            continue
+        role = net.get("role", "")
+        pin_field = str(net.get("pin", "") or "")
+        params = net.get("params") or {}
+
+        if role == "gpio":
+            try:
+                claim(_parse_labjack_pin(pin_field, "GPIO"), net)
+            except LagerError:
+                pass
+        elif role == "spi":
+            if pin_field == "FIO0-FIO3":
+                for dio in (0, 1, 2, 3):
+                    claim(dio, net)
+            elif pin_field == "FIO1-FIO3":
+                for dio in (1, 2, 3):
+                    claim(dio, net)
+            else:
+                for key in _SPI_PIN_PARAMS.values():
+                    if isinstance(params.get(key), int):
+                        claim(params[key], net)
+        elif role == "i2c":
+            m = re.fullmatch(r"FIO(\d+)-FIO(\d+)", pin_field)
+            if m:
+                claim(int(m.group(1)), net)
+                claim(int(m.group(2)), net)
+            else:
+                for key in _I2C_PIN_PARAMS.values():
+                    if isinstance(params.get(key), int):
+                        claim(params[key], net)
+
+    return claimed
+
+
 def _run_net_py(ctx: click.Context, box: str, *net_args: str) -> str:
     """
     Run `net.py …` via run_python_internal and capture stdout.
@@ -767,10 +949,35 @@ def rename_cmd(
 @click.option("--openocd-config", type=click.Path(exists=True),
               help="OpenOCD .cfg/.tcl file for debug nets (stored on box). "
                    "Replaces the auto-detected interface cfg.")
+@click.option("--sda", default=None,
+              help="LabJack SDA pin for i2c nets (e.g. FIO4, EIO0, or DIO number)")
+@click.option("--scl", default=None,
+              help="LabJack SCL pin for i2c nets (e.g. FIO5, EIO1, or DIO number)")
+@click.option("--cs", default=None,
+              help="LabJack chip-select pin for spi nets; omit for 3-pin SPI "
+                   "with manual chip select")
+@click.option("--sck", default=None,
+              help="LabJack clock pin for spi nets (e.g. FIO1, EIO2, or DIO number)")
+@click.option("--mosi", default=None,
+              help="LabJack MOSI pin for spi nets (e.g. FIO2, EIO3, or DIO number)")
+@click.option("--miso", default=None,
+              help="LabJack MISO pin for spi nets (e.g. FIO3, EIO4, or DIO number)")
 @click.pass_context
-def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config):
+def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config,
+            sda, scl, cs, sck, mosi, miso):
     """
-    Add a net using inferred instrument from VISA address
+    Add a net using inferred instrument from VISA address.
+
+    For LabJack T7 i2c/spi nets, custom pins may be chosen with
+    --sda/--scl (i2c) or --cs/--sck/--mosi/--miso (spi); any DIO pin
+    (FIO0-FIO7, EIO0-EIO7, CIO0-CIO3, MIO0-MIO2) is accepted. When pin
+    options are given, the CHANNEL argument is ignored (pass e.g. 'custom').
+
+    \b
+    Examples:
+      lager nets add mybus i2c FIO4-FIO5 <addr>
+      lager nets add mybus i2c custom <addr> --sda EIO0 --scl EIO1
+      lager nets add flash spi custom <addr> --cs FIO6 --sck FIO7 --mosi EIO0 --miso EIO1
     """
     from ...box_storage import resolve_and_validate_box
 
@@ -901,6 +1108,29 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
         chan_map = {}
         role_chans = None
 
+    # ─────────── custom LabJack i2c/spi pins ──────────
+    # Validates the pin options against role/instrument and converts them to
+    # the params dict the box dispatchers consume. When set, the CHANNEL
+    # argument is replaced by the labeled pin summary and channel validation
+    # against the scanner's default pin string is skipped.
+    custom_pins = _build_custom_pin_config(
+        role, instrument,
+        {"sda": sda, "scl": scl, "cs": cs, "sck": sck, "mosi": mosi, "miso": miso},
+    )
+    if custom_pins is not None:
+        channel = custom_pins["pin"]
+        role_chans = None
+        claimed = _labjack_claimed_pins(saved_nets, address)
+        for pin_name in custom_pins["pin"].split(" "):
+            _, _, pname = pin_name.partition(":")
+            if pname in claimed:
+                other_name, other_role = claimed[pname]
+                click.secho(
+                    f"Warning: pin {pname} is already used by net "
+                    f"'{other_name}' ({other_role}).",
+                    fg="yellow", err=True,
+                )
+
     if role == "debug":
         for net in saved_nets:
             if (
@@ -992,6 +1222,8 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
         "instrument": instrument,
         "pin":        channel,
     }
+    if custom_pins is not None:
+        net_data["params"] = custom_pins["params"]
     if is_uart_device_path:
         net_data["device_path"] = channel
 

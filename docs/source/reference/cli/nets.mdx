@@ -90,6 +90,10 @@ lager nets add NAME ROLE CHANNEL ADDRESS [OPTIONS]
 **Options:**
 - `--box TEXT` - Lagerbox name or IP
 - `--jlink-script FILE` - J-Link script file for debug nets (stored on box)
+- `--sda PIN` / `--scl PIN` - Custom LabJack pins for `i2c` nets
+- `--cs PIN` / `--sck PIN` / `--mosi PIN` / `--miso PIN` - Custom LabJack pins for `spi` nets (`--cs` is optional; omit it for 3-pin SPI with manual chip select)
+
+Pin values accept LabJack DIO names (`FIO0`-`FIO7`, `EIO0`-`EIO7`, `CIO0`-`CIO3`, `MIO0`-`MIO2`) or raw DIO numbers (`0`-`22`). When pin options are given, the `CHANNEL` argument is ignored — pass `custom`. If a chosen pin overlaps another saved LabJack net, a warning is printed but the net is still created.
 
 **Examples:**
 
@@ -106,14 +110,23 @@ lager nets add debug1 debug STM32F407VG USB::001::002 --jlink-script ./my_device
 # Create an ADC net on LabJack
 lager nets add temp_sensor adc AIN0 USB::470026574 --box my-lager-box
 
-# Create an I2C net on LabJack
-lager nets add i2c_bus i2c 0 USB::470026574 --box my-lager-box
+# Create an I2C net on LabJack (default pins: SDA=FIO4, SCL=FIO5)
+lager nets add i2c_bus i2c FIO4-FIO5 USB::470026574 --box my-lager-box
+
+# Create an I2C net on LabJack with custom pins
+lager nets add i2c_bus i2c custom USB::470026574 --sda EIO0 --scl EIO1 --box my-lager-box
 
 # Create an I2C net on Aardvark
 lager nets add i2c_aardvark i2c 0 USB::2238595116 --box my-lager-box
 
-# Create an SPI net on LabJack
-lager nets add spi_bus spi 0 USB::470026574 --box my-lager-box
+# Create an SPI net on LabJack (default pins: CS=FIO0, SCK=FIO1, MOSI=FIO2, MISO=FIO3)
+lager nets add spi_bus spi FIO0-FIO3 USB::470026574 --box my-lager-box
+
+# Create an SPI net on LabJack with custom pins
+lager nets add spi_flash spi custom USB::470026574 --cs FIO6 --sck FIO7 --mosi EIO0 --miso EIO1 --box my-lager-box
+
+# Custom-pin SPI without chip select (3-pin SPI, manual CS via gpio)
+lager nets add spi_flash spi custom USB::470026574 --sck FIO7 --mosi EIO0 --miso EIO1 --box my-lager-box
 
 # Create an SPI net on Aardvark
 lager nets add spi_aardvark spi 0 USB::2238595116 --box my-lager-box
