@@ -109,12 +109,7 @@ def instruments(ctx, box: str | None) -> None:
             lines = []
             for role, chs in sorted(chan_map.items(), key=lambda x: natural_sort_key(x[0])):
                 if chs:
-                    # Truncate UART serial numbers to 10 chars to reduce clutter
-                    if role == "uart":
-                        chs_display = [ch[:10] if len(ch) > 10 else ch for ch in chs]
-                    else:
-                        chs_display = chs
-                    lines.append(f"{role}: {', '.join(chs_display)}")
+                    lines.append(f"{role}: {', '.join(chs)}")
                 else:
                     lines.append(f"{role}: —")
             channels_str = "\n".join(lines)

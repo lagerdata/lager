@@ -8,11 +8,12 @@
 """
 import click
 import subprocess
+from ...core.group_usage import LagerGroup
 from ...sort_utils import natural_sort_key
 from ...box_storage import list_boxes
 
 
-@click.group()
+@click.group(cls=LagerGroup)
 def logs():
     """Manage box logs"""
     pass

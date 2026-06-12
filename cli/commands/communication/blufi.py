@@ -12,10 +12,11 @@ import json
 
 import click
 
+from ...core.group_usage import LagerGroup
 from ...core.net_helpers import resolve_box, run_impl_script
 
 
-@click.group(name='blufi')
+@click.group(name='blufi', cls=LagerGroup)
 def blufi():
     """Provision ESP32 WiFi credentials over BLE (BluFi protocol)"""
     pass

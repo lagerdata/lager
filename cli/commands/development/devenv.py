@@ -15,6 +15,7 @@ import subprocess
 from pathlib import Path
 import click
 
+from ...core.group_usage import LagerGroup
 from ...sort_utils import natural_sort_key
 from ...config import (
     read_lager_json,
@@ -27,7 +28,7 @@ from ...config import (
 )
 
 
-@click.group()
+@click.group(cls=LagerGroup)
 def devenv():
     """
     Manage development environments

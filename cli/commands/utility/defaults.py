@@ -9,11 +9,12 @@
 import click
 from texttable import Texttable
 from ...config import read_config_file, write_config_file
+from ...core.group_usage import LagerGroup
 from ...box_storage import load_boxes
 from ...sort_utils import natural_sort_key
 
 
-@click.group(invoke_without_command=True)
+@click.group(cls=LagerGroup, invoke_without_command=True)
 @click.pass_context
 def defaults(ctx):
     """Manage default settings"""

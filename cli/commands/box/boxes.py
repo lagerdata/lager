@@ -11,6 +11,7 @@ import json
 from texttable import Texttable
 from ...address_utils import validate_ip_or_hostname, VALID_FORMATS_CHEATSHEET
 from ...box_storage import add_box, delete_box, delete_all_boxes, list_boxes, load_boxes, save_boxes, get_lager_file_path, format_lock_user
+from ...core.group_usage import LagerGroup
 from ...sort_utils import natural_sort_key
 
 
@@ -203,7 +204,7 @@ def _list_boxes_live(port=5000, timeout=5):
         click.secho('Use --user to specify your username next time: lager boxes lock --box [BOX_NAME] --user [USERNAME]', fg='yellow')
 
 
-@click.group(invoke_without_command=True)
+@click.group(cls=LagerGroup, invoke_without_command=True)
 @click.pass_context
 def boxes(ctx):
     """Manage box names and IP addresses"""

@@ -22,6 +22,7 @@ import click
 from . import __version__
 from .config import read_config_file
 from .context import LagerContext
+from .core.group_usage import CommandFirstUsageMixin
 from .update_check import start_background_check, notify_if_update_available
 
 
@@ -110,7 +111,7 @@ def _decode_environment():
             os.environ[key] = urllib.parse.unquote(os.environ[key])
 
 
-class SectionedGroup(click.Group):
+class SectionedGroup(CommandFirstUsageMixin, click.Group):
     """Root CLI group that lists commands under category headings.
 
     A flat, alphabetical wall of 40+ commands is hard for a new user to scan.

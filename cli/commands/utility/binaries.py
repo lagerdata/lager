@@ -11,6 +11,7 @@ import requests
 from pathlib import Path
 from ...box_storage import resolve_and_validate_box
 from ...context import get_default_box
+from ...core.group_usage import LagerGroup
 
 # Container path where customer binaries are mounted
 CONTAINER_BINARIES_PATH = '/home/www-data/customer-binaries'
@@ -25,7 +26,7 @@ def _format_size(size_bytes):
     return f"{size_bytes:.1f} TB"
 
 
-@click.group(invoke_without_command=True)
+@click.group(cls=LagerGroup, invoke_without_command=True)
 @click.pass_context
 def binaries(ctx):
     """
