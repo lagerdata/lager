@@ -534,6 +534,40 @@ class KeithleyBattery(BatteryNet):
         ovp_status = f"{RED}YES{RESET}" if ovp_tripped else f"{GREEN}NO{RESET}"
         print(f"    OVP Tripped: {ovp_status}")
 
+    def get_monitor_state(self, channel=None) -> dict:
+        """Single-call monitor state for the battery TUI WebSocket.
+
+        Same queries as ``print_state`` but returned as a dict in the
+        ``battery_state_update`` wire shape (minus ``netname``/``channel``,
+        which the monitor adds). One hardware_service ``/invoke`` — and one
+        per-device lock acquisition — per monitor tick instead of ~17, so
+        polling cannot starve interactive commands on slow instruments.
+        """
+        enabled = self._is_batt_output_on()
+        mode_str = self._mode_string()
+        model_str = self._safe_query(":BATT:STAT?", "") or "Custom"
+
+        trip = (self._safe_query(":OUTP:PROT:TRIP?", "").upper() or "")
+
+        return {
+            'terminal_voltage': float(self._safe_query(":BATT:SIM:TVOL?", "0")),
+            'current': float(self._safe_query(":BATT:SIM:CURR?", "0")),
+            'esr': float(self._safe_query(":BATT:SIM:RES?", "0.067")),
+            'soc': float(self._safe_query(":BATT:SIM:SOC?", "0")),
+            'voc': float(self._safe_query(":BATT:SIM:VOC?", "0")),
+            'enabled': enabled,
+            'mode': mode_str,
+            'model': model_str,
+            'capacity': float(self._safe_query(":BATT:SIM:CAP:LIM?", "1.0")),
+            'current_limit': float(self._safe_query(":BATT:SIM:CURR:LIM?", "1.0")),
+            'ocp_limit': float(self._safe_query(":BATT:SIM:CURR:PROT?", "2.0")),
+            'ovp_limit': float(self._safe_query(":BATT:SIM:TVOL:PROT?", "4.5")),
+            'volt_full': float(self._safe_query(":BATT:SIM:VOC:FULL?", "4.2")),
+            'volt_empty': float(self._safe_query(":BATT:SIM:VOC:EMPT?", "3.0")),
+            'ocp_tripped': trip == "OCP",
+            'ovp_tripped': trip == "OVP",
+        }
+
     # ----------------------------- helpers -----------------------------
 
     def _enter_battery_ef(self) -> None:
