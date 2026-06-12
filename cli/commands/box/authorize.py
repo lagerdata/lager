@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-`lager box authorize` -- install this machine's lager_box SSH key on a box.
+`lager authorize` -- install this machine's lager_box SSH key on a box.
 
 Wraps the ssh-keygen / ssh-copy-id dance (see
 cli/deployment/scripts/setup_ssh_key.sh for the shell ancestor) so a
@@ -11,70 +11,41 @@ one command instead of knowing the key path and ssh-copy-id incantation.
 """
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from typing import Optional
 
 import click
 
-from ._ssh import _KEY_FALLBACK_DESTS, _LAGER_BOX_KEY, resolve_box_user
+from ._ssh import (
+    _KEY_FALLBACK_DESTS,
+    _LAGER_BOX_KEY,
+    ensure_lager_box_keypair,
+    key_auth_works,
+    resolve_box_user,
+)
 from ...box_storage import resolve_and_validate_box
+from ...core.net_group import BoxCommand
 from ...errors import LagerError
-
-_CONNECT_TIMEOUT = 5
-
-
-def _ensure_keypair(key_path: str = _LAGER_BOX_KEY) -> bool:
-    """Generate the ed25519 keypair if missing. Returns True if generated."""
-    if os.path.exists(key_path):
-        return False
-    os.makedirs(os.path.dirname(key_path), mode=0o700, exist_ok=True)
-    proc = subprocess.run(
-        ["ssh-keygen", "-t", "ed25519", "-f", key_path, "-N", "", "-C", "lager-box-access"],
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        raise LagerError(
-            "Could not generate the SSH key.",
-            cause=(proc.stderr or "").strip() or None,
-            fixes=[f'Generate it manually: ssh-keygen -t ed25519 -f {key_path} -N ""'],
-        )
-    return True
-
-
-def _key_auth_works(dest: str, key_path: str = _LAGER_BOX_KEY) -> bool:
-    """Probe whether the key is already authorized, without ever prompting."""
-    proc = subprocess.run(
-        [
-            "ssh", "-i", key_path,
-            "-o", "BatchMode=yes",
-            "-o", f"ConnectTimeout={_CONNECT_TIMEOUT}",
-            dest, "true",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    return proc.returncode == 0
 
 
 @click.command(
     name="authorize",
+    cls=BoxCommand,
     help="Authorize this machine's SSH key on a box (enter the box password "
          "once; lager commands work passwordless after).",
 )
-@click.argument("box", required=False, metavar="[BOX]")
+@click.option("--box", help="Lagerbox name or IP")
 @click.pass_context
-def box_authorize(ctx: click.Context, box: Optional[str]) -> None:
+def authorize(ctx: click.Context, box: Optional[str]) -> None:
     ip = resolve_and_validate_box(ctx, box)
     user = resolve_box_user(ip)
     dest = f"{user}@{ip}"
 
-    if _ensure_keypair():
+    if ensure_lager_box_keypair():
         click.echo(f"Generated SSH key at {_LAGER_BOX_KEY}")
 
-    if _key_auth_works(dest):
+    if key_auth_works(dest):
         _KEY_FALLBACK_DESTS.discard(dest)
         click.secho(f"{dest} is already authorized — no password needed.", fg="green")
         return
@@ -103,7 +74,7 @@ def box_authorize(ctx: click.Context, box: Optional[str]) -> None:
             ],
         )
 
-    if not _key_auth_works(dest):
+    if not key_auth_works(dest):
         raise LagerError(
             "The key was copied but key authentication still fails.",
             fixes=[

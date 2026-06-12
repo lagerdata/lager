@@ -71,6 +71,7 @@ from .commands.measurement.energy import energy
 
 # Box commands (from commands.box package)
 from .commands.box import hello, boxes, instruments, nets, ssh, box
+from .commands.box.authorize import authorize
 from .commands.box.diagnose import diagnose
 
 # Utility commands (from commands.utility package)
@@ -132,7 +133,8 @@ class SectionedGroup(CommandFirstUsageMixin, click.Group):
         ("Communication", ["uart", "usb", "spi", "i2c", "ble", "blufi",
                             "router"]),
         ("Box setup & management", ["hello", "boxes", "box", "nets",
-                                    "instruments", "ssh", "defaults", "webcam"]),
+                                    "instruments", "ssh", "authorize",
+                                    "defaults", "webcam"]),
         ("Install & maintenance", ["update", "install", "uninstall",
                                    "install-wheel", "binaries", "logs",
                                    "terminal"]),
@@ -240,6 +242,7 @@ cli.add_command(boxes)
 cli.add_command(box)
 cli.add_command(instruments)
 cli.add_command(ssh)
+cli.add_command(authorize)
 # `lager update` is the canonical box-update command. It previously also
 # existed as `lager box update`; that form was removed in favor of the
 # shorter top-level spelling.

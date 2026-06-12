@@ -291,7 +291,7 @@ def ssh_error(stderr, ip, user=None):
             'SSH key authentication failed — the box rejected your key.',
             cause='Your SSH key has not been authorized on this box yet.',
             fixes=[
-                f'Authorize it (enter the box password once): lager box authorize {ip}',
+                f'Authorize it (enter the box password once): lager authorize --box {ip}',
                 f'Or manually: ssh-copy-id {user or "lagerdata"}@{ip}',
                 'Then re-run this command.',
             ],

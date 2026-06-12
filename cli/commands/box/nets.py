@@ -21,7 +21,7 @@ from texttable import Texttable
 import shutil
 
 from ...context import get_default_box, get_impl_path
-from ...core.group_usage import LagerGroup
+from ...core.net_group import NetGroupHelpMixin
 from ...errors import LagerError
 from ...sort_utils import natural_sort_key as _natural_sort_key
 from ..development.python import run_python_internal
@@ -778,9 +778,16 @@ def _save_nets_batch(ctx: click.Context, box: str, nets_data: List[dict]) -> Non
 # --------------------------------------------------------------------------- #
 # Top-level group                                                             #
 # --------------------------------------------------------------------------- #
+class _NetsGroup(NetGroupHelpMixin, click.Group):
+    """nets operates on all saved nets, so its usage matches the net-style
+    ``[COMMAND] --box [BOX_NAME]`` convention but without a NET_NAME."""
+
+    net_takes_netname = False
+
+
 @click.group(
     name="nets",
-    cls=LagerGroup,
+    cls=_NetsGroup,
     invoke_without_command=True,
     help="List and manage saved nets",
 )

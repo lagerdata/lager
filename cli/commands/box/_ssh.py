@@ -17,6 +17,8 @@ import os
 import subprocess
 from typing import Callable, Optional, Tuple
 
+from ...errors import LagerError
+
 SshRunner = Callable[..., Tuple[int, str, str]]
 
 # Dedicated key used by `lager install` / `lager update`. When present,
@@ -36,6 +38,59 @@ _LAGER_BOX_KEY = os.path.expanduser("~/.ssh/lager_box")
 _KEY_FALLBACK_DESTS: set = set()
 
 _AUTH_FAILURE_MARKERS = ("permission denied", "too many authentication failures")
+
+
+def ensure_lager_box_keypair(key_path: str = _LAGER_BOX_KEY) -> bool:
+    """Generate the ed25519 lager_box keypair if it doesn't exist.
+
+    Returns True if a new key was generated, False if one already existed.
+    Raises :class:`LagerError` if ssh-keygen fails. This is the single
+    definition of how the lager_box key is created — ``lager authorize``
+    and ``lager update`` both call it, so the key type and comment can
+    never drift apart between the two provisioning paths.
+    """
+    if os.path.exists(key_path):
+        return False
+    os.makedirs(os.path.dirname(key_path), mode=0o700, exist_ok=True)
+    proc = subprocess.run(
+        ["ssh-keygen", "-t", "ed25519", "-f", key_path, "-N", "", "-C", "lager-box-access"],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise LagerError(
+            "Could not generate the SSH key.",
+            cause=(proc.stderr or "").strip() or None,
+            fixes=[f'Generate it manually: ssh-keygen -t ed25519 -f {key_path} -N ""'],
+        )
+    return True
+
+
+def key_auth_works(
+    dest: str,
+    *,
+    key_path: str = _LAGER_BOX_KEY,
+    connect_timeout: int = 5,
+) -> bool:
+    """Return True if ``dest`` (user@host) accepts the lager_box key unattended.
+
+    BatchMode refuses any password/passphrase prompt, so this never hangs:
+    a box that hasn't authorized the key fails fast instead of blocking on
+    a prompt. accept-new auto-trusts a first-seen host key so a brand-new
+    box doesn't wedge on the interactive host-key question either.
+    """
+    proc = subprocess.run(
+        [
+            "ssh", "-i", key_path,
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", f"ConnectTimeout={connect_timeout}",
+            dest, "true",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode == 0
 
 
 def resolve_box_user(box_ip: str) -> str:

@@ -15,16 +15,17 @@ from click.testing import CliRunner
 
 from cli.core.group_usage import LagerGroup
 from cli.commands.box.nets import nets
+from cli.commands.box.authorize import authorize
 from cli.commands.power.supply import supply
 from cli.main import cli
 
 
 class PlainGroupUsage(unittest.TestCase):
-    def test_nets_usage_is_command_first(self):
-        result = CliRunner().invoke(nets, ["--help"])
+    def test_box_group_is_command_first(self):
+        from cli.commands.box.box_group import box
+        result = CliRunner().invoke(box, ["--help"])
         self.assertEqual(result.exit_code, 0)
-        # nets is invoke_without_command=True, so COMMAND is optional.
-        self.assertIn("nets [COMMAND] [OPTIONS]", result.output)
+        self.assertIn("box COMMAND [OPTIONS]", result.output)
         self.assertNotIn("[ARGS]", result.output)
 
     def test_required_subcommand_group(self):
@@ -44,6 +45,22 @@ class NetGroupUnaffected(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("[NET_NAME]", result.output)
         self.assertIn("--box [BOX_NAME]", result.output)
+
+
+class BoxStyleUsage(unittest.TestCase):
+    def test_nets_shows_box_name_usage(self):
+        result = CliRunner().invoke(nets, ["--help"])
+        self.assertEqual(result.exit_code, 0)
+        # Net-style usage, but no NET_NAME (nets operates on all nets).
+        self.assertIn("nets [COMMAND] --box [BOX_NAME]", result.output)
+        self.assertNotIn("[NET_NAME]", result.output)
+        self.assertNotIn("[ARGS]", result.output)
+
+    def test_authorize_shows_box_name_usage(self):
+        result = CliRunner().invoke(authorize, ["--help"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("authorize --box [BOX_NAME]", result.output)
+        self.assertNotIn("[ARGS]", result.output)
 
 
 class RootHelp(unittest.TestCase):
