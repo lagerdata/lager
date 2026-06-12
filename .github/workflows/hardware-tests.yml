@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: ["main", "master"]
   schedule:
-    - cron: "0 11 * * *"   # 3:00 AM PST (UTC-8); runs at 3 AM PST / 4 AM PDT (no DST adjustment)
+    - cron: "17 20 * * *"  # TEMPORARY: fires ~20:17 UTC today for testing; revert to "0 11 * * *" (3 AM PST) after confirming
   workflow_dispatch:
     inputs:
       box_name:
