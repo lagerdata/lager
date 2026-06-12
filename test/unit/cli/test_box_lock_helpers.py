@@ -171,11 +171,87 @@ class TestDefaultLockWaitSeconds:
 
 
 # ---------------------------------------------------------------------------
+# default_auto_holder_type
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultAutoHolderType:
+    """Shared by `lager python` and the admin commands: 'ci' under any CI
+    provider, 'ephemeral' on a dev machine. (Regression: `lager python`
+    used to tag interactive dev runs as 'ci'.)"""
+
+    def test_dev_is_ephemeral(self):
+        assert box_storage.default_auto_holder_type() == 'ephemeral'
+
+    def test_ci_is_ci(self, monkeypatch):
+        monkeypatch.setenv('CI', 'true')
+        monkeypatch.setenv('GITHUB_RUN_ID', '999')
+        assert box_storage.default_auto_holder_type() == 'ci'
+
+
+# ---------------------------------------------------------------------------
 # acquire_box_lock
 # ---------------------------------------------------------------------------
 
 
 class TestAcquireBoxLock:
+    @pytest.fixture(autouse=True)
+    def _box_unlocked_on_get(self, monkeypatch):
+        # acquire_box_lock now GETs /lock before POSTing (so a pre-existing
+        # lock of ours is never re-acquired). Default every test to "box is
+        # unlocked"; tests for the already_ours path override this.
+        monkeypatch.setattr(
+            requests, 'get',
+            lambda *a, **k: _FakeResp(200, {'locked': False}),
+        )
+
+    def test_preexisting_own_lock_returns_already_ours_without_post(self, monkeypatch):
+        # The guarantee: a lock we already hold (e.g. `lager boxes lock`)
+        # must not even be POSTed to — a re-acquire would let the server
+        # rewrite holder_type/ttl, and old servers would misreport it as
+        # freshly acquired (and we'd release it on exit).
+        monkeypatch.setattr(
+            requests, 'get',
+            lambda *a, **k: _FakeResp(200, {
+                'locked': True, 'user': 'alice',
+                'holder_type': 'user', 'ttl_seconds': None,
+            }),
+        )
+
+        def no_post(*a, **k):
+            raise AssertionError('must not POST /lock over our own lock')
+
+        monkeypatch.setattr(requests, 'post', no_post)
+        state, data = box_storage.acquire_box_lock(
+            '10.0.0.1', 'lab-box', 'alice', wait_seconds=0,
+        )
+        assert state == 'already_ours'
+        assert data['holder_type'] == 'user'
+
+    def test_old_server_response_without_previous_user_is_acquired(self, monkeypatch):
+        # Old servers don't echo previous_user at all. Since the GET above
+        # said "unlocked", a 200 here means we genuinely created the lock.
+        responses = iter([_FakeResp(200, {'locked': True, 'user': 'alice'})])
+        monkeypatch.setattr(requests, 'post', lambda *a, **k: next(responses))
+        state, _ = box_storage.acquire_box_lock(
+            '10.0.0.1', 'lab-box', 'alice', wait_seconds=0,
+        )
+        assert state == 'acquired'
+
+    def test_get_transport_error_falls_through_to_post(self, monkeypatch):
+        def get_boom(*a, **k):
+            raise requests.exceptions.ConnectionError('nope')
+
+        monkeypatch.setattr(requests, 'get', get_boom)
+        monkeypatch.setattr(
+            requests, 'post',
+            lambda *a, **k: _FakeResp(200, {'locked': True, 'user': 'alice', 'previous_user': None}),
+        )
+        state, _ = box_storage.acquire_box_lock(
+            '10.0.0.1', 'lab-box', 'alice', wait_seconds=0,
+        )
+        assert state == 'acquired'
+
     def test_acquired_when_previous_user_differs(self, monkeypatch):
         responses = iter([_FakeResp(200, {'locked': True, 'user': 'alice', 'previous_user': None})])
         monkeypatch.setattr(requests, 'post', lambda *a, **k: next(responses))
@@ -443,6 +519,56 @@ class TestAutoLockAroundCommand:
 
         assert released == [], "must not release a pre-existing user lock"
 
+    def test_already_ours_with_ttl_heartbeats_but_never_releases(self, monkeypatch):
+        # Resuming a leftover ephemeral lock (crashed run): keep it alive
+        # with a heartbeat so it can't TTL-expire mid-command, but still
+        # never release it.
+        released = []
+        hb = mock.Mock(start=mock.Mock(), stop=mock.Mock())
+        monkeypatch.setattr(
+            box_storage, 'acquire_box_lock',
+            lambda *a, **k: ('already_ours', {'ttl_seconds': 1800}),
+        )
+        monkeypatch.setattr(
+            box_storage, 'release_box_lock',
+            lambda *a, **k: released.append(a) or True,
+        )
+        monkeypatch.setattr(
+            box_storage, 'get_lock_holder', lambda: 'test-holder',
+        )
+        monkeypatch.setattr(box_storage, 'HeartbeatThread', lambda *a, **k: hb)
+
+        with box_storage.auto_lock_around_command(
+            '10.0.0.1', 'lab-box', 'install',
+        ):
+            pass
+
+        hb.start.assert_called_once()
+        hb.stop.assert_called_once()
+        assert released == []
+
+    def test_already_ours_eternal_lock_gets_no_heartbeat(self, monkeypatch):
+        # A pre-existing user lock (ttl null) needs no keep-alive.
+        def no_heartbeat(*a, **k):
+            raise AssertionError('must not heartbeat an eternal user lock')
+
+        monkeypatch.setattr(
+            box_storage, 'acquire_box_lock',
+            lambda *a, **k: ('already_ours', {'holder_type': 'user', 'ttl_seconds': None}),
+        )
+        monkeypatch.setattr(
+            box_storage, 'release_box_lock', lambda *a, **k: True,
+        )
+        monkeypatch.setattr(
+            box_storage, 'get_lock_holder', lambda: 'test-holder',
+        )
+        monkeypatch.setattr(box_storage, 'HeartbeatThread', no_heartbeat)
+
+        with box_storage.auto_lock_around_command(
+            '10.0.0.1', 'lab-box', 'install',
+        ):
+            pass
+
     def test_unreachable_box_does_not_release(self, monkeypatch):
         # If the box is unreachable, acquire_box_lock returns
         # ("unreachable", None) — we never held the lock so don't try
@@ -570,3 +696,49 @@ class TestAutoLockAcquireForCommand:
         )
         assert release.state == 'disabled'
         release()  # no-op; must not raise
+
+    def test_already_ours_with_ttl_heartbeats_but_never_releases(self, monkeypatch):
+        released = []
+        hb = mock.Mock(start=mock.Mock(), stop=mock.Mock())
+        monkeypatch.setattr(
+            box_storage, 'acquire_box_lock',
+            lambda *a, **k: ('already_ours', {'ttl_seconds': 1800}),
+        )
+        monkeypatch.setattr(
+            box_storage, 'release_box_lock',
+            lambda *a, **k: released.append(a) or True,
+        )
+        monkeypatch.setattr(
+            box_storage, 'get_lock_holder', lambda: 'test-holder',
+        )
+        monkeypatch.setattr(box_storage, 'HeartbeatThread', lambda *a, **k: hb)
+
+        release = box_storage.auto_lock_acquire_for_command(
+            '10.0.0.1', 'lab-box', 'update',
+        )
+        assert release.state == 'already_ours'
+        hb.start.assert_called_once()
+        release()
+        hb.stop.assert_called_once()
+        assert released == [], "must not release a resumed lock"
+
+    def test_already_ours_eternal_lock_gets_no_heartbeat(self, monkeypatch):
+        def no_heartbeat(*a, **k):
+            raise AssertionError('must not heartbeat an eternal user lock')
+
+        monkeypatch.setattr(
+            box_storage, 'acquire_box_lock',
+            lambda *a, **k: ('already_ours', {'holder_type': 'user', 'ttl_seconds': None}),
+        )
+        monkeypatch.setattr(
+            box_storage, 'release_box_lock', lambda *a, **k: True,
+        )
+        monkeypatch.setattr(
+            box_storage, 'get_lock_holder', lambda: 'test-holder',
+        )
+        monkeypatch.setattr(box_storage, 'HeartbeatThread', no_heartbeat)
+
+        release = box_storage.auto_lock_acquire_for_command(
+            '10.0.0.1', 'lab-box', 'update',
+        )
+        release()  # stops nothing, releases nothing; must not raise

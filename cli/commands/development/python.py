@@ -745,6 +745,7 @@ def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_ove
         resolve_and_validate_box,
         acquire_box_lock,
         get_lock_holder,
+        default_auto_holder_type,
         default_lock_wait_seconds,
         default_lock_ttl_seconds,
         default_heartbeat_interval,
@@ -831,11 +832,14 @@ def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_ove
         # be unlocked manually via `lager boxes unlock`.
         ttl = None if detach else default_lock_ttl_seconds()
         wait_seconds = default_lock_wait_seconds()
-        state, _data = acquire_box_lock(
+        # holder_type is 'ci' under CI and 'ephemeral' otherwise — same
+        # classification the admin commands use. --detach only changes the
+        # TTL (eternal), not the type.
+        state, lock_data = acquire_box_lock(
             box_ip,
             box_name,
             holder,
-            holder_type='ephemeral' if detach else 'ci',
+            holder_type=default_auto_holder_type(),
             ttl_seconds=ttl,
             wait_seconds=wait_seconds,
         )
@@ -859,9 +863,15 @@ def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_ove
                 heartbeat = _HeartbeatThread(box_ip, holder, default_heartbeat_interval())
                 heartbeat.start()
         elif state == 'already_ours':
-            # Pre-existing lock from `lager boxes lock` (same holder). Do NOT
-            # release on exit so the user's persistent lock survives.
-            pass
+            # Pre-existing lock with our holder string. Do NOT release on
+            # exit — for a `lager boxes lock` reservation that's the whole
+            # guarantee, and for a leftover ephemeral lock the release is
+            # the original holder's call. If the resumed lock carries a TTL
+            # (leftover ephemeral, not a user reservation), heartbeat it so
+            # it can't expire mid-run.
+            if not detach and (lock_data or {}).get('ttl_seconds') is not None:
+                heartbeat = _HeartbeatThread(box_ip, holder, default_heartbeat_interval())
+                heartbeat.start()
         # state == 'unreachable' -> no lock taken; the real command will
         # surface the connection failure when it tries to POST the script.
 
