@@ -1,0 +1,41 @@
+---
+title: "Version 0.26.0"
+description: "June 11, 2026"
+---
+
+## <u>Security</u>
+
+- **Key authorization is rate limited.** Bad-token attempts against the Lager Box `/authorize-key` endpoint are limited per client IP (5 attempts per 60-second window, then HTTP 429); the window resets on a successful authorization.
+- **The Lager Box web service `SECRET_KEY` persists across restarts.** Generated once and stored at `/etc/lager/secret_key` (mode 0600) instead of regenerated on every boot, so sessions survive container restarts.
+- **`org_secrets.json` is held at owner-only permissions.** The on-box secrets file is tightened to mode 0600 at load time, and the boot-time permission fix is best-effort so an unexpected owner can no longer abort container startup.
+- **Instrument device nodes are scoped to a dedicated `lager` group.** The shipped udev rules grant `MODE="0660", GROUP="lager"` instead of world-writable 0666; `lager update` creates the group on the Lager Box host when missing and the container joins it automatically. User-added udev rules (`lager box config udev add`) default to the same scoping — run `lager update` on a Lager Box before applying new user udev rules so the group exists.
+
+## <u>Features</u>
+
+- **Per-connect J-Link script override — `DebugNet.connect(script=...)`.** Pass a path on the Lager Box or a base64 blob to swap the J-Link script for one session phase (for example, a halt-in-place reset script for a memory read-back, then the stock script to reboot the target). The bytes are copied to the shared script path so `flash`/`reset`/`read_memory` pick the new script up immediately; an already-running gdbserver adopts it on relaunch (`force=True`). Invalid input is ignored and the net's saved script stays in effect.
+- **Opt-in cache-coherent post-program verify for DA1469x QSPI images (experimental).** Set `LAGER_DA1469_UNCACHED_VERIFY=1` to read programmed `.bin` bytes back through the uncached QSPI mirror after a cache-controller flush: a matching image suppresses J-Link's stale-cache false "verification failed" report from no-reset attaches, a real mismatch is reported with its first differing address, and an inconclusive read-back leaves the original output untouched. `LAGER_DA1469_UNCACHED_VERIFY_BYTES` caps the compare (0 = whole file). Default off; flash output is unchanged when unset.
+
+## <u>Bug Fixes</u>
+
+- **`lager box config` host-side operations no longer dead-end on Lager Boxes with customer-managed SSH users.** The dedicated `~/.ssh/lager_box` key previously replaced ssh's default identity list, so a user whose own key was authorized (via `ssh-copy-id`) failed every host-side call with `Permission denied (publickey,password)` even though `lager ssh` worked. The SSH runner now retries once without the dedicated key on an auth failure, so default identities get their chance.
+- **SSH transport failures are reported as SSH failures.** An unreachable or hung Lager Box host during mount pre-flight was misread as "path missing" (producing a wrong manual fix) or crashed with a raw traceback; it is now classified separately with the real user@ip and actionable fixes, `mount add` persists the mount, and `apply` warns and continues.
+- **Mount pre-flight runs after the confirm prompt and after apt/sysctl/udev provisioning**, so a mount of a file installed by an apt package in the same config (for example `/usr/bin/dfu-util`) works in a single `apply`, and the host is no longer mutated before the operator confirms. `apply --skip-restart` no longer runs the pre-flight at all.
+- **Leaked file handles closed** in project packaging (`zip_dir`) and the gdb `--debugfile` read; **bare `except:` clauses replaced with specific exceptions** across the CLI so interrupts and unexpected errors surface instead of being silently swallowed.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.26.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.26.0/)
