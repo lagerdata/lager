@@ -1,0 +1,80 @@
+name: Hardware Tests
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+  schedule:
+    - cron: "17 20 * * *"  # TEMPORARY: fires ~20:17 UTC today for testing; revert to "0 11 * * *" (3 AM PST) after confirming
+  workflow_dispatch:
+    inputs:
+      box_name:
+        description: "Lager box name (overrides secret LAGER_BOX_NAME)"
+        required: false
+        type: string
+
+jobs:
+  hardware-tests:
+    name: Run hardware tests on lager box
+    runs-on: [self-hosted, lager-hardware]
+    timeout-minutes: 20
+
+    env:
+      LAGER_BOX_NAME: ${{ inputs.box_name || secrets.LAGER_BOX_NAME }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install lager CLI (editable)
+        run: pip install -e cli/
+
+      - name: Register lager box
+        run: |
+          lager boxes add \
+            --name "$LAGER_BOX_NAME" \
+            --ip "${{ secrets.LAGER_BOX_IP }}" \
+            --yes
+        shell: bash
+
+      - name: Verify box connectivity
+        run: lager hello --box "$LAGER_BOX_NAME"
+        shell: bash
+
+      - name: Test Rigol DP821 power supply
+        id: rigol-test
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          SUPPLY_NET: ${{ vars.SUPPLY_NET || 'supply1' }}
+          CHANNEL_MAX_VOLTAGE: ${{ vars.CHANNEL_MAX_VOLTAGE || '60.0' }}
+          CHANNEL_MAX_CURRENT: ${{ vars.CHANNEL_MAX_CURRENT || '1.0' }}
+        run: |
+          lager python test/api/power/test_supply_Rigol_DP821.py \
+            --box "$LAGER_BOX_NAME"
+        shell: bash
+
+      - name: Test LabJack T7 (ADC / DAC / GPIO)
+        id: labjack-test
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          ADC_NET: ${{ vars.ADC_NET || 'adc1' }}
+          DAC_NET: ${{ vars.DAC_NET || 'dac1' }}
+          GPIO_NET: ${{ vars.GPIO_NET || 'gpio16' }}
+          ADC_NETS: ${{ vars.ADC_NETS || 'adc1,adc2,adc3' }}
+          LOOPBACK_ADC_NET: ${{ vars.LOOPBACK_ADC_NET || 'adc1' }}
+        run: |
+          lager python test/api/io/test_LabJack_T7.py \
+            --box "$LAGER_BOX_NAME"
+        shell: bash
+
+      - name: Fail job if any test failed
+        if: steps.rigol-test.outcome == 'failure' || steps.labjack-test.outcome == 'failure'
+        run: |
+          echo "One or more hardware tests failed:"
+          echo "  rigol-test:   ${{ steps.rigol-test.outcome }}"
+          echo "  labjack-test: ${{ steps.labjack-test.outcome }}"
+          exit 1
+        shell: bash

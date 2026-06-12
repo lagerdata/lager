@@ -44,6 +44,37 @@ This document tracks what test coverage exists across all Lager features and the
 | **Update** | No | Partial | No |
 | **Hello/Status** | No | No | Partial |
 
+## Device Coverage
+
+| Category | Device | Python API | Bash Integration | MCP |
+|----------|--------|:----------:|:----------------:|:---:|
+| **Power Supply** | Rigol DP821 | 2 files | `supply.sh` | Yes |
+| **Power Supply** | Keysight E36xxx | — | `keysight_supply.sh` | — |
+| **Power Supply** | Multi-channel (generic) | — | `multichannel_supply.sh` | — |
+| **Battery Simulator** | Keithley 2281S | 1 file | `battery.sh` | Yes |
+| **Solar Simulator** | EA PSB series | 1 file | `solar.sh` | Yes |
+| **Electronic Load** | Rigol DL3021 | 1 file | `eload.sh` | Yes |
+| **I2C** | Aardvark I2C/SPI adapter | 2 files | `i2c_aardvark.sh` | Yes |
+| **I2C** | LabJack T7 | 2 files | `i2c_labjack.sh` | Yes |
+| **I2C** | FTDI FT232H | 1 file | `i2c_ft232h.sh` | Yes |
+| **SPI** | Aardvark I2C/SPI adapter | 4 files | 2 files | Yes |
+| **SPI** | LabJack T7 | 3 files | 2 files | Yes |
+| **SPI** | FTDI FT232H | 3 files | `spi_ft232h.sh` | Yes |
+| **GPIO / ADC / DAC** | LabJack T7 | 8 files | `labjack.sh` | Yes |
+| **GPIO** | FTDI FT232H | 2 files | `gpio_ft232h.sh` | Yes |
+| **GPIO** | Aardvark I2C/SPI adapter | 1 file | 2 files | Yes |
+| **Oscilloscope** | Rigol MSO5000 series | 5 files | — | Yes |
+| **Logic Analyzer** | Rigol MSO5000 (embedded) | — | `logic.sh` | Yes |
+| **USB Hub** | Acroname USBHub3+ | 6 files | `acroname.sh` | Yes |
+| **USB Hub** | Yepkit YKUSH | — | `ykush.sh` | — |
+| **Debug Probe** | Segger J-Link | 1 file | `debug.sh`, `jlink_script.sh` | Yes |
+| **Energy Analyzer** | Joulescope JS220 | 3 files | — | Yes |
+| **Power Profiler** | Nordic PPK2 | 1 file | — | Yes |
+| **Watt Meter** | Yoctopuce Watt | 2 files | — | Yes |
+| **Thermocouple** | Phidget temperature hub | 3 files | `thermocouple.sh` | Yes |
+| **Webcam** | Logitech BRIO / C930e | 1 file | — | Yes |
+| **Robotic Arm** | Rotrics Dexarm | 1 file | `arm.sh` | Yes |
+
 ## Coverage Gaps
 
 ### High Priority
@@ -73,21 +104,21 @@ This document tracks what test coverage exists across all Lager features and the
 ## Coverage Strengths
 
 - **Communication protocols**: I2C and SPI have 18+ test files across three hardware backends (Aardvark, LabJack, FT232H) with full 3-suite coverage.
-- **Power management**: Supply, Battery, Solar, and ELoad all have full 3-suite coverage with tolerance checks, boundary tests, and safety teardown.
-- **I/O domain**: 17 Python API tests covering ADC, DAC, GPIO, and PWM with real value assertions and safety teardown. 3 FT232H/Aardvark API tests are gold standard with 100+ assertions each.
+- **Power management**: Supply, Battery, Solar, and ELoad all have full 3-suite coverage with tolerance checks, boundary tests, and safety teardown. Power supply has an additional Rigol DP821-specific suite (`test_supply_Rigol_DP821.py`) covering live measurements, output modes, voltage sweeps across embedded rail voltages, measurement stability, and per-channel OVP/OCP state management.
+- **I/O domain**: 18 Python API tests covering ADC, DAC, GPIO, and PWM with real value assertions and safety teardown. `test_LabJack_T7.py` is a comprehensive 11-group suite with env var configuration, preflight check, DAC boundary enforcement, stability analysis, optional loopback, and rapid stress testing. 3 FT232H/Aardvark API tests are gold standard with 100+ assertions each.
 - **MCP server**: 384 unit tests (mocked, no hardware) plus 64+ integration tests covering 165+ tools across 25 unit and 11 integration test files.
 
 ## Test File Inventory
 
 ```
 test/
-├── api/                  # Python API tests (76 files, run on box via `lager python`)
-│   ├── communication/    # 28 files: I2C, SPI, UART, BLE, BluFi, WiFi, debug
+├── api/                  # Python API tests (73 files, run on box via `lager python`)
+│   ├── communication/    # 27 files: I2C, SPI, UART, BLE, BluFi, WiFi, debug
 │   ├── io/               # 17 files: ADC, DAC, GPIO, PWM, pin conflict
 │   ├── peripherals/      # 9 files: scope, arm, webcam, rotation, actuate
-│   ├── power/            # 4 files: supply, battery, solar, eload
-│   ├── sensors/          # 9 files: thermocouple, watt, energy, joulescope
-│   ├── usb/              # 7 files: USB hub enable/disable/toggle/stress
+│   ├── power/            # 5 files: supply (2 files), battery, solar, eload
+│   ├── sensors/          # 8 files: thermocouple, watt, energy, joulescope
+│   ├── usb/              # 6 files: USB hub enable/disable/toggle/stress
 │   └── utility/          # 2 files: binaries, net listing
 ├── integration/          # Bash integration tests (36 files, run from host via harness.sh)
 │   ├── communication/    # 14 files: I2C, SPI, UART, WiFi, debug, J-Link
@@ -113,11 +144,12 @@ test/
 
 ### Python API Tests (`test/api/`)
 
-#### Power (4 files)
+#### Power (5 files)
 
 | File | What it tests |
 |------|---------------|
 | `test_supply_comprehensive.py` | Voltage/current set, readback, enable/disable, OVP/OCP, limits |
+| `test_supply_Rigol_DP821.py` | Live measurements, output mode, voltage sweep across embedded rail voltages (channel-filtered), measurement stability, OVP/OCP state management, rapid cycling; channel limits configurable via `CHANNEL_MAX_VOLTAGE` / `CHANNEL_MAX_CURRENT` env vars |
 | `test_battery_comprehensive.py` | SOC, VOC, capacity, mode, enable/disable, OVP/OCP, clear |
 | `test_eload_comprehensive.py` | CC, CV, CR, CP modes, enable/disable, state verification |
 | `test_solar_comprehensive.py` | Set, stop, irradiance, resistance, temperature, VOC, MPP |
@@ -152,14 +184,12 @@ test/
 | `test_blufi_comprehensive.py` | BluFi provisioning protocol |
 | `test_debug_comprehensive.py` | J-Link flash, reset, erase, memory read |
 | `test_wait_for_level.py` | GPI level wait with 15 sub-tests |
-| `test_wait_for_level_simple.py` | GPI level wait (simplified) |
 | `test_wifi_comprehensive.py` | WiFi scan, connect, status, delete |
 
-#### I/O (17 files)
+#### I/O (16 files)
 
 | File | What it tests |
 |------|---------------|
-| `test_adc_single.py` | Single ADC read, type + range check |
 | `test_adc_multiple.py` | Multi-channel ADC reads (8 channels) |
 | `test_adc_continuous.py` | Continuous ADC sampling, stability |
 | `test_dac_output.py` | DAC voltage output, readback tolerance |
@@ -175,7 +205,7 @@ test/
 | `test_io_comprehensive.py` | Combined ADC + DAC + GPIO tests |
 | `test_pin_conflict.py` | Pin conflict detection |
 | `test_pwm_measurement.py` | PWM frequency, Vpp, duty cycle |
-| `diag_aardvark_gpio_adc.py` | Diagnostic tool (not a test) |
+| `test_LabJack_T7.py` | Comprehensive LabJack T7 suite: 11 groups — ADC (single, multi-channel, stability), DAC (output/readback, ramp, boundary enforcement), GPIO (output, input, pulse), optional DAC→ADC loopback, rapid stress |
 
 #### Sensors (9 files)
 
@@ -184,7 +214,6 @@ test/
 | `test_thermocouple_single.py` | Single thermocouple read, range -40 to 125C |
 | `test_thermocouple_multiple.py` | Multi-channel thermocouple, cross-channel delta |
 | `test_thermocouple_monitor.py` | Continuous thermocouple monitoring, stability |
-| `test_watt_meter.py` | Watt meter per-sample type + range |
 | `test_watt_profile.py` | Watt profile: min/mean/max validation |
 | `test_sensors_comprehensive.py` | Multi-sensor enable/disable lifecycle |
 | `test_energy_analyzer.py` | Energy analysis: duration, Wh/J cross-check |
@@ -205,12 +234,11 @@ test/
 | `test_rotation_encoder.py` | Rotation encoder position reads |
 | `test_actuate.py` | Linear actuator control |
 
-#### USB (7 files)
+#### USB (6 files)
 
 | File | What it tests |
 |------|---------------|
 | `test_usb_comprehensive.py` | USB hub port list, per-port cycle |
-| `test_usb_enable_module.py` | USB enable via Net API |
 | `test_usb_multiple.py` | Multi-port disable/enable |
 | `test_usb_net_api.py` | USB Net.get API |
 | `test_usb_power_cycle.py` | USB port power cycle timing |
