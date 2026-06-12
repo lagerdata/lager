@@ -496,9 +496,13 @@ def test_protection_pre_enable():
         from lager import Net, NetType
         psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
 
-        psu.set_voltage(5.0)
-        psu.set_ovp(5.5)
-        psu.set_ocp(1.0)
+        test_voltage = min(5.0, CHANNEL_MAX_VOLTAGE)
+        ovp_limit = min(test_voltage * 1.1, CHANNEL_MAX_VOLTAGE)
+        ocp_limit = min(1.0, CHANNEL_MAX_CURRENT)
+
+        psu.set_voltage(test_voltage)
+        psu.set_ovp(ovp_limit)
+        psu.set_ocp(ocp_limit)
         psu.enable()
         time.sleep(0.5)
 
@@ -506,7 +510,7 @@ def test_protection_pre_enable():
         ovp_val = psu.get_ovp_limit()
         ocp_val = psu.get_ocp_limit()
 
-        passed_v = isinstance(v_sp, (int, float)) and _close_enough(float(v_sp), 5.0, TOLERANCE)
+        passed_v = isinstance(v_sp, (int, float)) and _close_enough(float(v_sp), test_voltage, TOLERANCE)
         _record("voltage setpoint readable after enable", passed_v, f"v={v_sp}")
         if not passed_v:
             ok = False
