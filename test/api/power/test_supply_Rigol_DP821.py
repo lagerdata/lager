@@ -336,7 +336,7 @@ def test_embedded_voltages():
         time.sleep(0.5)
 
         _all_voltages = [1.8, 2.5, 3.3, 5.0, 12.0]
-        targets = [v for v in _all_voltages if v < CHANNEL_MAX_VOLTAGE]
+        targets = [v for v in _all_voltages if v <= CHANNEL_MAX_VOLTAGE]
         if not targets:
             _record("embedded voltages skipped — channel max too low", True,
                     f"max={CHANNEL_MAX_VOLTAGE} V, candidates={_all_voltages}")
