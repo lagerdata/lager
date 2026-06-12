@@ -31,6 +31,18 @@ lj = importlib.import_module('cli.commands.box.labjack_pins')
 LJ_ADDR = "USB0::0x0CD5::0x0007::470012345::INSTR"
 
 
+def _static_text(widget) -> str:
+    """A Static's content as plain text across textual versions.
+
+    ``Static.renderable`` was removed in textual 8.x; ``render()`` exists on
+    both old and new versions (returning a str/Text on 3.x and a Content on
+    8.x, both of which carry the plain text).
+    """
+    rendered = widget.render()
+    plain = getattr(rendered, 'plain', None)
+    return plain if isinstance(plain, str) else str(rendered)
+
+
 def _make_net(**overrides):
     defaults = dict(
         instrument='LabJack_T7',
@@ -284,7 +296,7 @@ class TestLabJackPinDialog:
                 await pilot.pause()
                 # Dialog stays up, error rendered, callback never fired.
                 assert app.screen is dialog
-                warn = str(dialog.query_one("#pin_warn", Static).renderable)
+                warn = _static_text(dialog.query_one("#pin_warn", Static))
                 assert 'EIO0' in warn
                 assert app.result is None
             return app
@@ -309,7 +321,7 @@ class TestLabJackPinDialog:
                 dialog = app.screen
                 dialog.query_one("#pin_sda", Select).value = "EIO0"
                 await pilot.pause()
-                warn = str(dialog.query_one("#pin_warn", Static).renderable)
+                warn = _static_text(dialog.query_one("#pin_warn", Static))
                 assert 'gpio_led' in warn and 'EIO0' in warn
         asyncio.run(main())
 

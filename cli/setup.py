@@ -61,8 +61,8 @@ if __name__ == "__main__":
             trio-websocket
             urllib3 >= 1.26.20, < 3.0.0
             wsproto >= 0.14.1
-            textual >= 3.2.0
-            python-socketio >= 5.10.0
+            textual >= 3.2.0, < 9
+            python-socketio >= 5.10.0, < 6
             websocket-client >= 1.0.0
         ''',
         extras_require={
