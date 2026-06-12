@@ -396,57 +396,30 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
 # (FIO0-7 = DIO 0-7, EIO0-7 = 8-15, CIO0-3 = 16-19, MIO0-2 = 20-22). The box   #
 # dispatchers already honour explicit pin numbers in the net record's          #
 # ``params`` dict; these helpers let ``nets add`` populate that dict instead   #
-# of forcing the hardcoded FIO0-FIO3 / FIO4-FIO5 defaults.                     #
+# of forcing the hardcoded FIO0-FIO3 / FIO4-FIO5 defaults. Pin name parsing    #
+# is shared with the TUI pin-picker via labjack_pins.py.                       #
 # --------------------------------------------------------------------------- #
 
-_LJ_PIN_PREFIXES = (
-    # (prefix, dio offset, count)
-    ("FIO", 0, 8),
-    ("EIO", 8, 8),
-    ("CIO", 16, 4),
-    ("MIO", 20, 3),
-)
-_LJ_MAX_DIO = 22
+from . import labjack_pins as _lj
 
 _LJ_INSTRUMENT_NAMES = {"labjack_t7", "labjack", "t7"}
 
 
 def _parse_labjack_pin(value: str, signal: str) -> int:
     """Convert a pin name (FIO4/EIO0/CIO1/MIO2) or DIO number to a DIO int."""
-    text = str(value).strip().upper()
-    for prefix, offset, count in _LJ_PIN_PREFIXES:
-        if text.startswith(prefix):
-            try:
-                idx = int(text[len(prefix):])
-            except ValueError:
-                idx = -1
-            if 0 <= idx < count:
-                return offset + idx
-            raise LagerError(
-                f"Invalid LabJack pin '{value}' for {signal}: {prefix} pins "
-                f"range from {prefix}0 to {prefix}{count - 1}."
-            )
-    try:
-        dio = int(text)
-    except ValueError:
+    dio = _lj.try_parse_pin(value)
+    if dio is None:
         raise LagerError(
             f"Invalid LabJack pin '{value}' for {signal}.",
             fixes=["Use a pin name (FIO0-FIO7, EIO0-EIO7, CIO0-CIO3, MIO0-MIO2) "
                    "or a DIO number 0-22."],
         )
-    if 0 <= dio <= _LJ_MAX_DIO:
-        return dio
-    raise LagerError(
-        f"Invalid LabJack DIO number {dio} for {signal}: must be 0-{_LJ_MAX_DIO}."
-    )
+    return dio
 
 
 def _labjack_pin_name(dio: int) -> str:
     """Convert a DIO number back to its canonical LabJack pin name."""
-    for prefix, offset, count in _LJ_PIN_PREFIXES:
-        if offset <= dio < offset + count:
-            return f"{prefix}{dio - offset}"
-    return f"DIO{dio}"
+    return _lj.pin_name(dio)
 
 
 # Signal name -> params key used by the box dispatchers.

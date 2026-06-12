@@ -494,6 +494,10 @@ lager nets tui --box my-lager-box
 **TUI Features:**
 - Browse all connected instruments and their channels
 - Create new nets with guided prompts
+- Pick custom LabJack pins when adding i2c/spi nets — a pin dialog opens with
+  the defaults preselected (I2C: SDA=FIO4/SCL=FIO5; SPI: CS=FIO0/SCK=FIO1/
+  MOSI=FIO2/MISO=FIO3); any DIO pin can be chosen per signal, CS can be set to
+  none for 3-pin SPI, and pins already used by saved nets show a warning
 - Assign custom serial devices (RS-232 instruments) to their USB cables — the
   interactive twin of [`assign`](#assign), including the optional
   create-the-net step (`--as-net`)
