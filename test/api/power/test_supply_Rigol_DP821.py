@@ -64,8 +64,8 @@ def test_live_measurements():
     try:
         from lager import Net, NetType
         psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
-        psu.set_voltage(5.0)
-        psu.set_current(1.0)
+        psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
+        psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
         psu.enable()
         time.sleep(0.5)
 
@@ -189,8 +189,8 @@ def test_power_consistency():
     try:
         from lager import Net, NetType
         psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
-        psu.set_voltage(5.0)
-        psu.set_current(1.0)
+        psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
+        psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
         psu.enable()
         time.sleep(0.5)
 
@@ -237,7 +237,7 @@ def test_output_is_enabled():
     try:
         from lager import Net, NetType
         psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
-        psu.set_voltage(5.0)
+        psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
 
         psu.enable()
         time.sleep(0.3)
@@ -282,8 +282,8 @@ def test_output_mode():
     try:
         from lager import Net, NetType
         psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
-        psu.set_voltage(5.0)
-        psu.set_current(1.0)
+        psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
+        psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
         psu.enable()
         time.sleep(0.5)
 
@@ -330,7 +330,7 @@ def test_embedded_voltages():
     try:
         from lager import Net, NetType
         psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
-        psu.set_current(1.0)
+        psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
         psu.set_ovp(CHANNEL_MAX_VOLTAGE)
         psu.enable()
         time.sleep(0.5)
@@ -386,8 +386,8 @@ def test_measurement_stability():
     try:
         from lager import Net, NetType
         psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
-        psu.set_voltage(5.0)
-        psu.set_current(1.0)
+        psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
+        psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
         psu.enable()
         time.sleep(1.5)
 
@@ -442,7 +442,7 @@ def test_current_limit_readback():
     try:
         from lager import Net, NetType
         psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
-        psu.set_voltage(5.0)
+        psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         psu.enable()
         time.sleep(0.3)
 
@@ -563,8 +563,8 @@ def test_rapid_cycling():
     try:
         from lager import Net, NetType
         psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
-        psu.set_voltage(5.0)
-        psu.set_current(1.0)
+        psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
+        psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
 
         for i in range(CYCLES):
             psu.enable()
@@ -617,7 +617,7 @@ def test_full_state():
                     "method not present on this driver — skipping")
             return True  # Not a hard failure; method is driver-specific
 
-        psu.set_voltage(5.0)
+        psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         psu.enable()
         time.sleep(0.3)
 
