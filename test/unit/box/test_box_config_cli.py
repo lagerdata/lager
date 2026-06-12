@@ -1894,7 +1894,7 @@ def _prep(ok, action, host_path="/usr/bin/dfu-util", message="", manual_fix=None
 _SSH_FAILED_PREP = _prep(
     False, "ssh_failed",
     message=(
-        "Could not SSH to juultest@10.101.9.207 to check /usr/bin/dfu-util: "
+        "Could not SSH to boxuser@192.0.2.7 to check /usr/bin/dfu-util: "
         "Permission denied (publickey,password)."
     ),
 )
@@ -1936,7 +1936,7 @@ class ApplyPreflightSshWarn(unittest.TestCase):
                 ["apply", "--box", "test-box", "--yes"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
-        self.assertIn("Could not SSH to juultest@10.101.9.207", result.output)
+        self.assertIn("Could not SSH to boxuser@192.0.2.7", result.output)
         self.assertIn("continuing with apply", result.output)
         bounce_mock.assert_called_once()
         self.assertIn("set-applied-hash", [c[0] for c in backend.calls])
@@ -2336,7 +2336,7 @@ class MountAddSshFailed(unittest.TestCase):
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("mount-add", [c[0] for c in backend.calls])
-        self.assertIn("Could not SSH to juultest@10.101.9.207", result.output)
+        self.assertIn("Could not SSH to boxuser@192.0.2.7", result.output)
         self.assertIn("re-checks the host path", result.output)
         self.assertIn("Added mount /usr/bin/dfu-util -> /usr/local/bin/dfu-util (ro)", result.output)
 

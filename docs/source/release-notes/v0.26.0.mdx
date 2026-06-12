@@ -17,6 +17,7 @@ description: "June 11, 2026"
 
 ## <u>Bug Fixes</u>
 
+- **`lager debug ... gdbserver --rtt` no longer leaves the target halted** on probes whose J-Link GDB server rejects non-stop mode: the RTT control-block scan implicitly halts the core in the all-stop fallback, and the core is now resumed after the scan. Non-stop and OpenOCD paths are unchanged.
 - **`lager box config` host-side operations no longer dead-end on Lager Boxes with customer-managed SSH users.** The dedicated `~/.ssh/lager_box` key previously replaced ssh's default identity list, so a user whose own key was authorized (via `ssh-copy-id`) failed every host-side call with `Permission denied (publickey,password)` even though `lager ssh` worked. The SSH runner now retries once without the dedicated key on an auth failure, so default identities get their chance.
 - **SSH transport failures are reported as SSH failures.** An unreachable or hung Lager Box host during mount pre-flight was misread as "path missing" (producing a wrong manual fix) or crashed with a raw traceback; it is now classified separately with the real user@ip and actionable fixes, `mount add` persists the mount, and `apply` warns and continues.
 - **Mount pre-flight runs after the confirm prompt and after apt/sysctl/udev provisioning**, so a mount of a file installed by an apt package in the same config (for example `/usr/bin/dfu-util`) works in a single `apply`, and the host is no longer mutated before the operator confirms. `apply --skip-restart` no longer runs the pre-flight at all.
