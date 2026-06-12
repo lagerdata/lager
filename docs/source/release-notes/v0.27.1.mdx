@@ -1,0 +1,35 @@
+---
+title: "Version 0.27.1"
+description: "June 12, 2026"
+---
+
+## <u>Features</u>
+
+- **`lager authorize --box [BOX]`** sets up passwordless SSH to a Lager Box in one step: it creates `~/.ssh/lager_box` if needed, copies the key to the box (one password prompt), and verifies it works. Running it again against an already-authorized box just confirms it. When a command fails with `Permission denied (publickey,password)`, the error now points you straight at `lager authorize`.
+
+## <u>Bug Fixes</u>
+
+- **`lager nets` and `lager instruments` no longer cut off data.** UART serial-port paths (for example `/dev/ttyUSB0`) and full VISA/USB addresses now display in full instead of being truncated.
+- **Clearer SSH error reporting in `lager box dut` and `lager box config`.** A failed connection now shows the real cause and the fix to run, instead of a raw error line or a misleading "no snapshot" message.
+
+## <u>Improvements</u>
+
+- **Cleaner `--help` usage lines.** Command groups now read `COMMAND [OPTIONS]`, and `lager nets` / `lager authorize` show `--box [BOX_NAME]`, consistent with commands like `lager supply`.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.27.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.27.1/)

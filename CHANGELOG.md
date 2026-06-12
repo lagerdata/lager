@@ -2,6 +2,21 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.27.1] - 2026-06-12
+
+A quality-of-life pass: a one-command fix for SSH key authorization, untruncated `lager nets`/`lager instruments` output, and clearer `--help` usage lines.
+
+### Added
+- **`lager authorize --box [BOX]`.** Authorizes this machine's SSH key on a box in one step: it generates `~/.ssh/lager_box` if missing, copies it with `ssh-copy-id` (one box-password prompt), and verifies passwordless auth — re-running against an already-authorized box reports that and changes nothing. It replaces having to know the key path and the `ssh-copy-id` incantation by hand. The `Permission denied (publickey,password)` SSH error now points at this command, and shows the box's actual SSH user in the manual `ssh-copy-id` fallback instead of a hardcoded user.
+
+### Fixed
+- **`lager nets` and `lager instruments` no longer truncate output.** UART channel paths were cut to 10 characters (showing `/dev/ttyUS` instead of `/dev/ttyUSB0`) and the bracketed VISA/USB address to 45; both now display in full.
+- **`lager box dut` and `lager box config` report SSH failures clearly.** Transport failures that previously printed a raw `SSH read failed: ...` line — or, in `box config`, were misread as a missing config snapshot — now route through the shared SSH error classifier, which names the cause and suggests `lager authorize`. This also closes a path where `lager box dut edit` could write back a `bench.json` missing its other keys after a failed read.
+
+### Changed
+- **Command `--help` usage lines read `COMMAND [OPTIONS]`** instead of the misleading `[OPTIONS] COMMAND [ARGS]...` on groups whose subcommands take no positional arguments. `lager nets` and `lager authorize` show `... --box [BOX_NAME]`, matching the net-style commands like `lager supply`.
+- **SSH key provisioning is defined once.** `lager authorize` and `lager update` now share a single keypair-generation and key-probe implementation, so the key type and comment can't drift between the two paths.
+
 ## [0.27.0] - 2026-06-12
 
 One theme: LabJack T7 i2c/spi pins are no longer hardcoded. Any DIO pin can be chosen per signal when adding a net — from the CLI or the Net TUI — and the TUI no longer freezes while talking to the box (a 0.25.0 regression).
