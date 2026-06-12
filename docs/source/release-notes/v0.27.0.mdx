@@ -1,0 +1,37 @@
+---
+title: "Version 0.27.0"
+description: "June 12, 2026"
+---
+
+## <u>Features</u>
+
+- **Custom LabJack pin selection for i2c/spi nets.** `lager nets add` now accepts `--sda`/`--scl` (i2c) and `--cs`/`--sck`/`--mosi`/`--miso` (spi). Any DIO pin (FIO0-FIO7, EIO0-EIO7, CIO0-CIO3, MIO0-MIO2) or raw DIO number can be assigned per signal; omit `--cs` for 3-pin SPI with manual chip select. Defaults are unchanged, and pins already used by another saved LabJack net warn without blocking.
+- **Net TUI pin-picker dialog.** Adding a LabJack i2c/spi net in the TUI opens a pin dialog with the historical defaults preselected (I2C: SDA=FIO4/SCL=FIO5; SPI: CS=FIO0/SCK=FIO1/MOSI=FIO2/MISO=FIO3). Duplicate pins block the save; pins claimed by saved nets warn live.
+
+## <u>Bug Fixes</u>
+
+- **Net TUI buttons no longer need multiple clicks** (a 0.25.0 regression): box round-trips ran on the UI thread and froze the interface for seconds per call, worst right after launch and on Assign Device. All box calls — assign flows, add/save, delete, rename, delete-all, edit details — now run in the background with busy indicators and disabled controls while in flight.
+- **Fixed a `signal only works in main thread` crash** when TUI actions ran Lager Box scripts from worker threads; the Ctrl+C handler is now only installed for interactive command-line runs.
+
+## <u>Improvements</u>
+
+- `lager i2c` and `lager spi` display custom LabJack pin assignments with canonical pin names (for example `EIO0` instead of a raw DIO number).
+- Net TUI startup is faster: the saved-nets list is no longer fetched a second time while the first screen paints.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.27.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.27.0/)

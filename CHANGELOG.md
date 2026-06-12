@@ -2,6 +2,18 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.27.0] - 2026-06-12
+
+One theme: LabJack T7 i2c/spi pins are no longer hardcoded. Any DIO pin can be chosen per signal when adding a net — from the CLI or the Net TUI — and the TUI no longer freezes while talking to the box (a 0.25.0 regression).
+
+### Added
+- **Custom LabJack pin selection for i2c/spi nets.** `lager nets add` accepts `--sda/--scl` (i2c) and `--cs/--sck/--mosi/--miso` (spi); any DIO pin (FIO0-FIO7, EIO0-EIO7, CIO0-CIO3, MIO0-MIO2) or raw DIO number works, and omitting `--cs` selects 3-pin SPI with manual chip select. Custom selections persist via the net record's `params` dict — the format the box dispatchers already consume — plus a labeled `pin` summary (`SDA:EIO0 SCL:EIO1`). Accepting the defaults saves a record identical to the previous hardcoded flow. Pins already claimed by another saved LabJack net warn without blocking, matching the runtime PinRegistry policy.
+- **Net TUI pin-picker dialog.** Adding a LabJack i2c/spi net opens a dialog with the historical defaults preselected (I2C: SDA=FIO4/SCL=FIO5; SPI: CS=FIO0/SCK=FIO1/MOSI=FIO2/MISO=FIO3). Duplicate pins block the save; pins claimed by saved nets warn live. `lager i2c`/`lager spi` display custom pins with their canonical names.
+
+### Fixed
+- **Net TUI buttons no longer need multiple clicks (0.25.0 regression).** Box round-trips ran synchronously inside button handlers and `on_mount`, freezing the event loop for seconds per call — worst right after launch and on Assign Device. All box I/O (assign flows, add/save, delete, rename, delete-all, edit details) now runs on worker threads with busy indicators and disabled controls while in flight, and startup no longer re-fetches data it already loaded.
+- **`run_python_internal` works off the main thread.** It installed a SIGINT handler on every call, which `signal.signal()` forbids outside the main thread — every TUI worker-thread box call failed with "signal only works in main thread of the main interpreter". The handler is now only installed for interactive main-thread runs, and the TUI serializes box calls behind a lock so overlapping workers can't capture each other's output.
+
 ## [0.26.0] - 2026-06-11
 
 Three themes: a security-hardening pass over the box services (rate-limited key authorization, persisted secrets with tight permissions, instrument device nodes scoped to a dedicated group), `lager box config` host-side operations that no longer dead-end on boxes with customer-managed SSH users (the dedicated lager_box key falls back to the user's own keys on auth failure, an unreachable box host is reported as exactly that, and the mount pre-flight runs late enough that mounts of apt-installed files work in a single `apply`), and two opt-in debug-stack additions for scripted J-Link workflows.
