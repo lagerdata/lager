@@ -455,8 +455,11 @@ def tui(ctx, box):
     netname = require_netname(ctx, "battery")
 
     if not validate_net(ctx, resolved_box, netname, BATTERY_ROLE):
-        click.echo(f"{netname} is not a battery net")
-        return
+        # Match the supply TUI's behavior: red error on stderr, exit 1
+        # (this used to print to stdout and exit 0, so scripts/CI could
+        # not detect the failure).
+        click.secho(f"Error: '{netname}' is not a battery net", fg='red', err=True)
+        ctx.exit(1)
 
     try:
         # Import from the original battery location for TUI

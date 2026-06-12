@@ -22,16 +22,20 @@ from cli.core.ws_diagnose import make_ws_failure_message
 
 class MakeWsFailureMessageTests(unittest.TestCase):
 
-    def test_healthy_box_means_ws_namespace_missing(self):
-        """Box answers /health with 200 → box is up, WS namespace didn't
-        register → suggest box update."""
+    def test_healthy_box_points_at_instrument_first(self):
+        """Box answers /health with 200 → box services are up, so the most
+        likely culprit is the instrument (offline/busy/slow), not the box
+        image. The old message blamed a 'pre-0.20 image' even when the real
+        problem was an unplugged or saturated instrument."""
         with patch('cli.core.ws_diagnose.requests.get') as mock_get:
             mock_get.return_value = MagicMock(status_code=200)
             msg = make_ws_failure_message('10.0.0.5', original_error='handshake timeout')
 
         self.assertIn('10.0.0.5:9000', msg)
-        self.assertIn('pre-0.20 image', msg)
-        self.assertIn('lager box update', msg)
+        self.assertIn('instrument is offline, busy, or slow', msg)
+        self.assertIn('lager instruments', msg)
+        self.assertIn('docker logs lager', msg)
+        self.assertIn('lager update', msg)  # pre-0.20 namespace case still covered
         self.assertIn('handshake timeout', msg)  # original error preserved
 
     def test_non_200_response_says_services_partially_up(self):

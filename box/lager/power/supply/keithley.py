@@ -487,6 +487,53 @@ class Keithley2281S(SupplyNet):
         print(f"{GREEN}Voltage_Max: {v_max}{RESET}")
         print(f"{GREEN}Current_Max: {i_max}{RESET}")
 
+    def get_monitor_state(self, channel=None) -> dict:
+        """Non-intrusive single-call monitor state for the supply TUI.
+
+        Overrides the SupplyNet default with ``_safe_query_no_mode``-only
+        queries so polling never enforces or switches the 2281S entry
+        function. The per-field default path is unusable here: when the
+        instrument sits in battery mode, mode-enforcing supply queries
+        fail at VISA-timeout speed, blow the Device proxy's 10s HTTP
+        budget (surfacing as bare ``ConnectionFailed``), and hold the
+        shared per-device lock long enough to starve interactive
+        commands. This mirrors ``state()``/``get_full_state()``, which
+        are non-intrusive for the same reason — but returns a dict for
+        the WebSocket monitor instead of printing.
+        """
+        enabled_raw = self._safe_query_no_mode(":OUTP?", default="").strip().upper()
+        enabled = enabled_raw in ("1", "ON")
+
+        v_set = self._safe_float(self._safe_query_no_mode(":SOUR1:VOLT?", default="0.0"))
+        i_set = self._safe_float(self._safe_query_no_mode(":SOUR1:CURR?", default="0.0"))
+        if enabled:
+            v = self._safe_float(self._safe_query_no_mode(":MEAS:VOLT?", default=str(v_set)))
+            i = self._safe_float(self._safe_query_no_mode(":MEAS:CURR?", default=str(i_set)))
+            mode = self._determine_operating_mode_no_mode()
+        else:
+            v, i = v_set, i_set
+            mode = "CV"
+
+        ocp_limit = self._safe_float(self._safe_query_no_mode(":SOUR1:CURR:PROT?", default="0"))
+        ovp_limit = self._safe_float(self._safe_query_no_mode(":SOUR1:VOLT:PROT?", default="0"))
+        trip = self._safe_query_no_mode(":OUTP:PROT:TRIP?", default="").strip()
+
+        return {
+            'voltage': v,
+            'current': i,
+            'power': v * i,
+            'enabled': enabled,
+            'mode': mode,
+            'voltage_set': v_set,
+            'current_set': i_set,
+            'voltage_max': KEITHLEY_2281S_MAX_VOLTAGE,
+            'current_max': KEITHLEY_2281S_MAX_CURRENT,
+            'ocp_limit': ocp_limit,
+            'ocp_tripped': trip == "OCP",
+            'ovp_limit': ovp_limit,
+            'ovp_tripped': trip == "OVP",
+        }
+
     def __str__(self) -> str:
         return self._idn_cache or self._safe_query("*IDN?", default="Keithley 2281S")
 

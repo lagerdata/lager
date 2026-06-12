@@ -29,6 +29,24 @@ class ConnectionFailed(Exception):
 class DeviceError(Exception):
     pass
 
+
+def describe_error(exc: Exception) -> str:
+    """Human-readable description of an exception that may stringify empty.
+
+    ``ConnectionFailed`` is raised bare (``raise ConnectionFailed from exc``),
+    so ``str(exc)`` is '' and messages built with ``f'... {e}'`` end with
+    nothing — e.g. the supply TUI's 'Hardware service unreachable: '. Fall
+    back to the cause chain, then to the exception class names, so the user
+    always sees WHAT failed (timeout vs refused vs device error).
+    """
+    text = str(exc).strip()
+    cause = exc.__cause__ or exc.__context__
+    if not text and cause is not None:
+        text = str(cause).strip() or type(cause).__name__
+    name = type(exc).__name__
+    return f"{name}: {text}" if text else name
+
+
 def enum_decoder(obj):
     if '__enum__' in obj:
         cls, name = obj['__enum__']['type'], obj['__enum__']['value']

@@ -41,10 +41,13 @@ def make_ws_failure_message(box_ip: str, original_error: str | Exception = '') -
         if r.status_code == 200:
             return (
                 f'{base}{detail}.\n'
-                f'Action: box is reachable on :9000 but the WebSocket handshake '
-                f'failed — the box may be on a pre-0.20 image without the '
-                f'battery/supply WS namespace registered. '
-                f'Run `lager box update --box <name>` to update the box.'
+                f'Action: box services are up but the supply/battery session did '
+                f'not start. Most often the instrument is offline, busy, or slow '
+                f'to respond — check it is powered on and appears in '
+                f'`lager instruments --box <name>`, and check the box-side monitor '
+                f'log (`lager ssh <name>`, then `sudo docker logs lager | grep MONITOR`). '
+                f'On very old boxes (pre-0.20) the WS namespace itself may be '
+                f'missing — `lager update --box <name>` fixes that.'
             )
         return (
             f'{base}{detail}.\n'
