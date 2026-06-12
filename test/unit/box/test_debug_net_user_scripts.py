@@ -432,6 +432,18 @@ class RepointJlinkScriptTests(unittest.TestCase):
         with open(self._shared(), 'rb') as f:
             self.assertEqual(f.read(), blob)
 
+    def test_long_base64_blob_writes_shared(self):
+        # A realistic full script blob far exceeds NAME_MAX (255); the
+        # os.path.exists() probe must not choke on it (it swallows OSError and
+        # returns False), so the base64 branch still runs.
+        blob = (b'/* big script */\n' + b'void ResetTarget(void) {}\n' * 300)
+        encoded = base64.b64encode(blob).decode('ascii')
+        self.assertGreater(len(encoded), 4096)
+        result = debug_net._repoint_jlink_script(encoded)
+        self.assertEqual(result, self._shared())
+        with open(self._shared(), 'rb') as f:
+            self.assertEqual(f.read(), blob)
+
     def test_none_and_empty_are_noops(self):
         for bad in (None, '', '   ', 42):
             with self.subTest(value=bad):

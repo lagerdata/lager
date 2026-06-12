@@ -49,6 +49,13 @@ def _rate_limited(ip: str) -> bool:
             ]
             for addr in expired:
                 del _rate_limit_attempts[addr]
+            # Hard cap: a many-unique-IP flood can keep the dict full of live
+            # windows, making the prune scan O(N) per request under the lock.
+            # Dropping all state resets limits mid-attack (per-IP limits don't
+            # constrain a distributed attacker anyway) but keeps CPU and
+            # memory bounded so the service stays responsive.
+            if len(_rate_limit_attempts) > _RATE_LIMIT_PRUNE_THRESHOLD * 2:
+                _rate_limit_attempts.clear()
         window_start, count = _rate_limit_attempts.get(ip, (now, 0))
         if now - window_start >= _RATE_LIMIT_WINDOW_SECONDS:
             window_start, count = now, 0
