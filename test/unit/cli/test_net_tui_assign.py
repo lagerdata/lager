@@ -375,6 +375,49 @@ class TestAssignActionsOffloadBoxCalls:
         asyncio.run(main())
 
 
+class TestRunPythonOffMainThread:
+    """REGRESSION: run_python_internal installed a SIGINT handler on every
+    call, but signal.signal() raises ValueError off the main thread — so the
+    TUI's run_box_job workers crashed every box action with 'signal only
+    works in main thread of the main interpreter'. The handler is now only
+    installed for main-thread (interactive CLI) runs."""
+
+    def test_worker_thread_run_does_not_touch_signal(self, tmp_path):
+        from types import SimpleNamespace
+        pymod = importlib.import_module('cli.commands.development.python')
+
+        script = tmp_path / "script.py"
+        script.write_text("print('hi')\n")
+        fake_resp = SimpleNamespace(status_code=200)
+        fake_session = SimpleNamespace(
+            run_python=lambda box, files: fake_resp,
+            kill_python=lambda *a, **k: None,
+        )
+        fake_ctx = SimpleNamespace(obj=SimpleNamespace(
+            get_session_for_box=lambda ip, box_name=None: fake_session))
+
+        errors: list[Exception] = []
+
+        def run():
+            try:
+                with patch.object(pymod, 'stream_python_output',
+                                  return_value=iter([])):
+                    pymod.run_python_internal(
+                        fake_ctx, str(script), 'mybox', env={}, passenv=(),
+                        kill=False, download=(), allow_overwrite=False,
+                        signum='SIGTERM', timeout=30, detach=False, port=(),
+                        org=None, args=(), dut_name='mybox',
+                        watch_stdin_resume=False)
+            except Exception as exc:
+                errors.append(exc)
+
+        t = threading.Thread(target=run)
+        t.start()
+        t.join(timeout=10)
+        assert not t.is_alive()
+        assert errors == []
+
+
 class TestSavedNetFlowsOffloadBoxCalls:
     """The pre-0.24 flows (save details, delete, rename, batch add,
     delete-all) used to run their net.py round-trips synchronously inside

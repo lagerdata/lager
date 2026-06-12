@@ -7,6 +7,7 @@ import asyncio
 import io
 import json
 import re
+import threading
 from collections import defaultdict
 from contextlib import redirect_stdout
 from ...sort_utils import natural_sort_key
@@ -145,14 +146,21 @@ _RUN_PYTHON_KWARGS = {
     "watch_stdin_resume": False,
 }
 
+# redirect_stdout swaps the process-global sys.stdout, and run_box_job
+# workers may overlap (e.g. clicking Assign Device while a delete is in
+# flight) — serialize box calls so they can't capture each other's output.
+_RUN_SCRIPT_LOCK = threading.Lock()
+
+
 def _run_script(ctx: click.Context, script: str, dut: str, *args) -> str:
     """Execute an internal script with given arguments and capture stdout."""
     buf = io.StringIO()
-    try:
-        with redirect_stdout(buf):
-            run_python_internal(ctx, get_impl_path(script), dut, **_RUN_PYTHON_KWARGS, args=args)
-    except SystemExit:
-        pass
+    with _RUN_SCRIPT_LOCK:
+        try:
+            with redirect_stdout(buf):
+                run_python_internal(ctx, get_impl_path(script), dut, **_RUN_PYTHON_KWARGS, args=args)
+        except SystemExit:
+            pass
     return buf.getvalue()
 
 
