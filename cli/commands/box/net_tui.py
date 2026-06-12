@@ -26,10 +26,13 @@ from textual.widgets import (
     Header,
     Input,
     Label,
+    Select,
     Static,
     Tree,
 )
 from textual.widgets.tree import TreeNode
+
+from . import labjack_pins as _lj
 
 # Handle NoMatches compatibility across textual versions
 try:  # textual >= 0.15
@@ -326,13 +329,16 @@ def _save_nets_batch(ctx: click.Context, dut: str, nets: list["Net"], custom_nam
     nets_data = []
     for n in nets:
         net_name = custom_names.get(n.key(), n.net)
-        nets_data.append({
+        record = {
             "name": net_name,
             "role": n.type,
             "address": n.addr,
             "instrument": n.instrument,
             "pin": n.chan,
-        })
+        }
+        if n.params:
+            record["params"] = n.params
+        nets_data.append(record)
 
     # Try batch save first
     try:
@@ -351,13 +357,16 @@ def _save_nets_batch(ctx: click.Context, dut: str, nets: list["Net"], custom_nam
     for n in nets:
         try:
             net_name = custom_names.get(n.key(), n.net)
-            _run_script(ctx, "net.py", dut, "save", json.dumps({
+            record = {
                 "name": net_name,
                 "role": n.type,
                 "address": n.addr,
                 "instrument": n.instrument,
                 "pin": n.chan,
-            }))
+            }
+            if n.params:
+                record["params"] = n.params
+            _run_script(ctx, "net.py", dut, "save", json.dumps(record))
             saved_count += 1
         except Exception:
             pass  # Continue trying to save other nets
@@ -394,6 +403,10 @@ class Net:
     purpose: str = ""
     notes: str = ""
     tags: list[str] = field(default_factory=list)
+    # Custom LabJack i2c/spi pin assignment (sda_pin/scl_pin or
+    # cs_pin/clk_pin/mosi_pin/miso_pin). None means default pins; the box
+    # dispatchers decode the legacy channel string in that case.
+    params: dict | None = None
     _uid: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -1442,6 +1455,133 @@ class JLinkDeviceTypeDialog(Screen):
         self.app.pop_screen()
         self.callback(True, jlink_device_type)
 
+def _labjack_claimed_pin_map(all_nets: list["Net"], target: "Net") -> dict[str, str]:
+    """Map DIO pin name -> owning net name for pins claimed by *saved*
+    LabJack nets at the same address as ``target``. Used by the pin-picker
+    dialog to surface (non-blocking) conflict warnings."""
+    claimed: dict[str, str] = {}
+    for s in all_nets:
+        if not s.saved or s.addr != target.addr:
+            continue
+        if s.instrument != "LabJack_T7":
+            continue
+        for pin in _lj.claimed_pins_from_chan(s.type, s.chan):
+            claimed.setdefault(pin, s.net)
+    return claimed
+
+
+class LabJackPinDialog(Screen):
+    """Pick the LabJack DIO pins for an i2c/spi net before saving it.
+
+    Dropdowns are prefilled with the historical defaults (I2C: SDA=FIO4
+    SCL=FIO5; SPI: CS=FIO0 SCK=FIO1 MOSI=FIO2 MISO=FIO3), so accepting the
+    dialog unchanged saves exactly what the TUI saved before this dialog
+    existed (the legacy channel string, no params). Custom selections are
+    written to the net's ``params`` dict — the format the box dispatchers
+    already consume — plus a labeled channel summary for display.
+
+    Pins already claimed by saved LabJack nets show a warning but don't
+    block: that matches the runtime PinRegistry behavior and the
+    ``lager nets add`` CLI.
+    """
+
+    def __init__(
+        self,
+        net: "Net",
+        claimed: dict[str, str],
+        callback: Callable[[bool], None],
+    ):
+        super().__init__()
+        self.net = net
+        self.claimed = claimed
+        self.callback = callback
+        self.signals = _lj.I2C_SIGNALS if net.type == "i2c" else _lj.SPI_SIGNALS
+        self.defaults = (
+            _lj.I2C_DEFAULT_PINS if net.type == "i2c" else _lj.SPI_DEFAULT_PINS
+        )
+
+    def _select_id(self, signal: str) -> str:
+        return f"pin_{signal.lower()}"
+
+    def compose(self) -> ComposeResult:
+        pin_options = [(name, name) for name in _lj.ALL_PIN_NAMES]
+        with Vertical(classes="dialog"):
+            yield Static(
+                f"Configure {self.net.type.upper()} Pins", classes="dialog-title"
+            )
+            yield Static(
+                f"Net: {self.net.net}  |  Instrument: LabJack T7\n"
+                f"Any DIO pin may be used. Defaults are preselected.",
+                classes="dialog-content",
+            )
+            for signal in self.signals:
+                options = list(pin_options)
+                if signal == "CS":
+                    options.insert(0, ("(none — manual CS)", _lj.NO_CS))
+                with Horizontal(classes="pin-row"):
+                    yield Label(f"{signal:<5}", classes="pin-label")
+                    yield Select(
+                        options,
+                        value=self.defaults[signal],
+                        allow_blank=False,
+                        id=self._select_id(signal),
+                    )
+            yield Static("", id="pin_warn", classes="pin-warn")
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Cancel", id="pin-cancel")
+                yield Button("Save", id="pin-confirm", variant="success")
+
+    def _chosen(self) -> dict[str, str]:
+        return {
+            signal: str(self.query_one(f"#{self._select_id(signal)}", Select).value)
+            for signal in self.signals
+        }
+
+    def _update_warning(self) -> None:
+        chosen = self._chosen()
+        notes = []
+        seen: dict[str, str] = {}
+        for signal, pin in chosen.items():
+            if pin == _lj.NO_CS:
+                continue
+            if pin in seen:
+                notes.append(f"{seen[pin]} and {signal} both use {pin}")
+            seen.setdefault(pin, signal)
+            if pin in self.claimed:
+                notes.append(f"{pin} is used by net '{self.claimed[pin]}'")
+        self.query_one("#pin_warn", Static).update(
+            ("Warning: " + "; ".join(notes)) if notes else ""
+        )
+
+    @on(Select.Changed)
+    def _on_pin_changed(self, event: Select.Changed) -> None:
+        self._update_warning()
+
+    @on(Button.Pressed)
+    def _on_pin_button(self, event: Button.Pressed) -> None:
+        if event.button.id == "pin-cancel":
+            self.app.pop_screen()
+            self.callback(False)
+            return
+        if event.button.id != "pin-confirm":
+            return
+
+        label, params, error = _lj.resolve_pin_selection(self.net.type, self._chosen())
+        if error:
+            self.query_one("#pin_warn", Static).update(f"Error: {error}")
+            return
+
+        if label is not None:
+            # Custom pins: labeled summary for display, params for the
+            # box dispatchers. Default selection leaves the net untouched
+            # so the saved record is identical to a pre-dialog save.
+            self.net.chan = label
+            self.net.params = params
+
+        self.app.pop_screen()
+        self.callback(True)
+
+
 class AddScreen(Screen):
     """Dialog that lets the user multi-select nets to add (unsaved only)."""
 
@@ -1718,6 +1858,52 @@ class AddScreen(Screen):
                 self.mount(Static(msg, id="keithley_hint", classes="warning"))
             return
 
+        # LabJack i2c/spi nets get a pin-picker dialog before saving;
+        # defaults are preselected so accepting unchanged behaves exactly
+        # like the pre-dialog flow.
+        labjack_pin_nets = [
+            n for n in selected_nets
+            if n.type in ("i2c", "spi") and n.instrument == "LabJack_T7"
+        ]
+
+        def after_pin_dialogs():
+            self._save_selected(main, selected_nets, debug_nets, normal_nets)
+
+        if labjack_pin_nets:
+            self._pin_nets = labjack_pin_nets
+            self._pin_idx = 0
+
+            def handle_pin_complete(success: bool):
+                if not success:
+                    # Cancel aborts the whole add; the Add screen stays up
+                    # with the selection intact.
+                    return
+                self._pin_idx += 1
+                if self._pin_idx < len(self._pin_nets):
+                    prompt_next_pin()
+                else:
+                    after_pin_dialogs()
+
+            def prompt_next_pin():
+                n = self._pin_nets[self._pin_idx]
+                claimed = _labjack_claimed_pin_map(main.nets, n)
+                main.push_screen(LabJackPinDialog(n, claimed, handle_pin_complete))
+
+            prompt_next_pin()
+            return
+
+        after_pin_dialogs()
+
+    def _save_selected(
+        self,
+        main: "NetApp",
+        selected_nets: list[Net],
+        debug_nets: list[Net],
+        normal_nets: list[Net],
+    ) -> None:
+        """Save the selection, prompting for J-Link device types first if
+        any debug nets are included. (Tail of the add-confirm flow; split
+        out so the LabJack pin dialogs can run before it.)"""
         # If no debug nets selected, save immediately using batch save
         if not debug_nets:
             try:
@@ -2394,6 +2580,30 @@ class NetApp(App):
         margin-top: 1;
         dock: bottom;
         padding: 1 0;
+    }
+
+    /* LabJack pin-picker dialog */
+    .pin-row {
+        height: 3;
+        margin: 0 0;
+    }
+
+    .pin-label {
+        width: 8;
+        padding: 1 1;
+        text-style: bold;
+        color: $accent;
+    }
+
+    .pin-row Select {
+        width: 32;
+    }
+
+    .pin-warn {
+        color: $warning;
+        text-style: bold;
+        margin: 1 0;
+        height: auto;
     }
 
     /* Action buttons specific styling */
