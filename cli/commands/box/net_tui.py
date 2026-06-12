@@ -2036,6 +2036,9 @@ class AssignDeviceScreen(Screen):
             self.assign_tree.show_root = False
             self.assign_tree.root.expand()
             yield self.assign_tree
+            self.busy_note = Static("", id="assign_busy", classes="loading")
+            self.busy_note.display = False
+            yield self.busy_note
             with Horizontal(classes="dialog-buttons"):
                 yield Button("Close", id="assign-close", variant="primary")
 
@@ -2081,47 +2084,100 @@ class AssignDeviceScreen(Screen):
             self.app.pop_screen()
 
     # ---- backend actions -------------------------------------------------
+    # Each action batches its box round-trips (the change itself plus the
+    # refreshes the UI needs) into one run_box_job worker: the calls still
+    # run sequentially, but off the UI thread, so the app stays responsive
+    # instead of freezing for several seconds per click.
+
+    def _set_busy(self, message: str | None) -> None:
+        """Show progress and ignore further input while a box job runs."""
+        busy = message is not None
+        self.busy_note.update(message or "")
+        self.busy_note.display = busy
+        self.assign_tree.disabled = busy
+        self.query_one("#assign-close", Button).disabled = busy
+
+    def _apply_refreshes(self, out: dict) -> None:
+        """Apply the refresh data an action's worker fetched (UI thread)."""
+        app: NetApp = self.app  # type: ignore[assignment]
+        if out.get("saved") is not None:
+            app._apply_saved_records(out["saved"])
+        if out.get("instruments") is not None:
+            app._apply_instruments(out["instruments"])
+        app._refresh_table()
+        if isinstance(out.get("data"), dict):
+            self.data = out["data"]
+        self._build_tree()
 
     def _do_assign(self, cable: dict, device: str, baud: int | None) -> None:
         app: NetApp = self.app  # type: ignore[assignment]
         payload = _assign_payload(cable, device, baud)
-        result = _run_custom_devices(app.ctx, app.dut, "assign", json.dumps(payload))
-        if not isinstance(result, dict) or not result.get("address"):
-            app.show_error(
-                "Assignment failed — run 'lager nets assign' in a terminal for details."
-            )
-            return
-        msg = f"Assigned {result.get('instrument', device)}"
-        deleted = result.get("deleted_nets") or []
-        if deleted:
-            # Replacing the cable's previous assignment cascaded to its nets.
-            msg += f" (deleted stale net{'s' if len(deleted) != 1 else ''}: {', '.join(deleted)})"
-            app._sync_saved_from_disk()
-        app.show_success(msg)
-        app.refresh_instruments()
-        self._reload()
-        # TUI twin of --as-net: offer to create the instrument's net now —
-        # unless one already exists for this address (re-assign/baud update),
-        # where a second net would bypass the single-channel constraint.
-        if not _address_has_saved_net(app.nets, result.get("address", "")):
-            app.push_screen(CreateNetDialog(
-                result, lambda name: self._create_net(result, name)))
+        self._set_busy(f"Assigning {device}...")
+
+        def work() -> dict:
+            result = _run_custom_devices(app.ctx, app.dut, "assign", json.dumps(payload))
+            if not isinstance(result, dict) or not result.get("address"):
+                return {"result": result}
+            out: dict = {"result": result}
+            if result.get("deleted_nets"):
+                # Replacing the cable's previous assignment cascaded to its
+                # nets — re-sync the saved list.
+                out["saved"] = app._fetch_saved_records()
+            out["instruments"] = app._fetch_instruments()
+            out["data"] = _run_custom_devices(app.ctx, app.dut, "list")
+            return out
+
+        def done(out: object) -> None:
+            self._set_busy(None)
+            result = out.get("result") if isinstance(out, dict) else None
+            if not isinstance(result, dict) or not result.get("address"):
+                app.show_error(
+                    "Assignment failed — run 'lager nets assign' in a terminal for details."
+                )
+                return
+            msg = f"Assigned {result.get('instrument', device)}"
+            deleted = result.get("deleted_nets") or []
+            if deleted:
+                msg += f" (deleted stale net{'s' if len(deleted) != 1 else ''}: {', '.join(deleted)})"
+            app.show_success(msg)
+            self._apply_refreshes(out)
+            # TUI twin of --as-net: offer to create the instrument's net now —
+            # unless one already exists for this address (re-assign/baud
+            # update), where a second net would bypass the single-channel
+            # constraint.
+            if not _address_has_saved_net(app.nets, result.get("address", "")):
+                app.push_screen(CreateNetDialog(
+                    result, lambda name: self._create_net(result, name)))
+
+        app.run_box_job(work, done)
 
     def _create_net(self, assignment: dict, name: str) -> None:
         """Save the net offered by CreateNetDialog (TUI --as-net)."""
         app: NetApp = self.app  # type: ignore[assignment]
         net = _net_from_assignment(assignment, name)
-        try:
+        self._set_busy(f"Creating net '{name}'...")
+
+        def work() -> dict:
             ok = _save_nets_batch(app.ctx, app.dut, [net])
-        except UARTNetSaveValidationError as exc:
-            app.show_error(str(exc))
-            return
-        if ok:
-            app.show_success(f"Created net '{name}' for {net.instrument}")
-        else:
-            app.show_error(f"Failed to create net '{name}'")
-        app._sync_saved_from_disk()
-        app._refresh_table()
+            return {"ok": ok, "saved": app._fetch_saved_records()}
+
+        def done(out: object) -> None:
+            self._set_busy(None)
+            if isinstance(out, UARTNetSaveValidationError):
+                app.show_error(str(out))
+                return
+            if not isinstance(out, dict):
+                app.show_error(f"Failed to create net '{name}'")
+                return
+            if out["ok"]:
+                app.show_success(f"Created net '{name}' for {net.instrument}")
+            else:
+                app.show_error(f"Failed to create net '{name}'")
+            if out.get("saved") is not None:
+                app._apply_saved_records(out["saved"])
+            app._refresh_table()
+
+        app.run_box_job(work, done)
 
     def _do_unassign(self, assignment: dict) -> None:
         app: NetApp = self.app  # type: ignore[assignment]
@@ -2129,29 +2185,37 @@ class AssignDeviceScreen(Screen):
             ident = {"serial": assignment["serial"]}
         else:
             ident = {"port_path": assignment.get("port_path")}
-        result = _run_custom_devices(app.ctx, app.dut, "remove", json.dumps(ident))
-        if not isinstance(result, dict) or not result.get("removed"):
-            app.show_error("Could not remove the assignment.")
-            return
-        msg = f"Removed the {assignment.get('instrument')} assignment"
-        deleted = result.get("deleted_nets") or []
-        if deleted:
-            # Nets live and die with their assignment (backend cascade).
-            msg += f" (deleted net{'s' if len(deleted) != 1 else ''}: {', '.join(deleted)})"
-        app.show_success(msg)
-        # The cascade may have changed saved nets on disk — re-sync so the
-        # Saved Nets tree drops them, then re-scan for the placeholder list.
-        app._sync_saved_from_disk()
-        app.refresh_instruments()
-        self._reload()
+        self._set_busy("Removing assignment...")
 
-    def _reload(self) -> None:
-        """Refresh this screen's data after an (un)assignment."""
-        app: NetApp = self.app  # type: ignore[assignment]
-        data = _run_custom_devices(app.ctx, app.dut, "list")
-        if isinstance(data, dict):
-            self.data = data
-        self._build_tree()
+        def work() -> dict:
+            result = _run_custom_devices(app.ctx, app.dut, "remove", json.dumps(ident))
+            if not isinstance(result, dict) or not result.get("removed"):
+                return {"result": result}
+            return {
+                "result": result,
+                # The cascade may have changed saved nets on disk — re-sync
+                # so the Saved Nets tree drops them, then re-scan for the
+                # placeholder list.
+                "saved": app._fetch_saved_records(),
+                "instruments": app._fetch_instruments(),
+                "data": _run_custom_devices(app.ctx, app.dut, "list"),
+            }
+
+        def done(out: object) -> None:
+            self._set_busy(None)
+            result = out.get("result") if isinstance(out, dict) else None
+            if not isinstance(result, dict) or not result.get("removed"):
+                app.show_error("Could not remove the assignment.")
+                return
+            msg = f"Removed the {assignment.get('instrument')} assignment"
+            deleted = result.get("deleted_nets") or []
+            if deleted:
+                # Nets live and die with their assignment (backend cascade).
+                msg += f" (deleted net{'s' if len(deleted) != 1 else ''}: {', '.join(deleted)})"
+            app.show_success(msg)
+            self._apply_refreshes(out)
+
+        app.run_box_job(work, done)
 
 
 class DevicePickDialog(Screen):
@@ -2816,10 +2880,11 @@ class NetApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.show_loading("Loading saved nets...")
-        self._sync_saved_from_disk()
+        # launch_tui fetched instruments and saved nets moments before
+        # constructing the app — re-fetching here blocked the UI thread for
+        # another box round-trip, so the freshly painted screen ignored
+        # clicks for its duration.
         self._refresh_table()
-        self.hide_loading()
 
     def show_loading(self, message: str) -> None:
         """Show loading message."""
@@ -2833,6 +2898,25 @@ class NetApp(App):
         """Hide loading message."""
         if hasattr(self, 'loading_msg'):
             self.loading_msg.remove()
+            del self.loading_msg
+
+    def run_box_job(self, work, on_done) -> None:
+        """Run blocking box I/O on a worker thread, then update the UI.
+
+        Every box round-trip (run_python_internal) can take seconds; doing
+        one synchronously inside an event handler freezes the whole event
+        loop — buttons stop responding until it returns, which reads as
+        "I have to click multiple times". ``work`` runs on a thread and must
+        not touch widgets; ``on_done`` receives its return value (or the
+        raised exception) back on the UI thread.
+        """
+        def job() -> None:
+            try:
+                result = work()
+            except Exception as exc:
+                result = exc
+            self.call_from_thread(on_done, result)
+        self.run_worker(job, thread=True, exclusive=False)
 
     def _refresh_table(self) -> None:
         """Re-populate the saved nets tree & toggle *Delete All* visibility."""
@@ -2847,21 +2931,19 @@ class NetApp(App):
             self.no_saved.display = True
             self.del_all_btn.display = False
 
-    def _sync_saved_from_disk(self) -> None:
-        # Retrieve saved nets from disk via net.py list
+    def _fetch_saved_records(self) -> list | None:
+        """Blocking ``net.py list`` round-trip; None on failure.
+
+        No widget access — safe to call from a ``run_box_job`` thread.
+        """
         try:
             output = _run_script(self.ctx, "net.py", self.dut, "list")
-            saved_from_disk = _parse_backend_json_tui(output) if output.strip() else []
-        except (json.JSONDecodeError, AttributeError) as e:
-            # Show error message to user but continue with empty list
-            self.show_error(f"Error loading saved nets: {str(e)}")
-            saved_from_disk = []
-        except Exception as e:
-            # Handle any other unexpected errors
-            self.show_error(f"Unexpected error: {str(e)}")
-            saved_from_disk = []
+            return _parse_backend_json_tui(output) if output.strip() else []
+        except Exception:
+            return None
 
-        # Keep unsaved nets and replace saved nets with those from disk
+    def _apply_saved_records(self, saved_from_disk: list) -> None:
+        """Replace saved nets with the given backend records (UI thread)."""
         self.nets = [n for n in self.nets if not n.saved] + [
             Net(
                 instrument=rec.get("instrument", "NA"),
@@ -2878,26 +2960,40 @@ class NetApp(App):
         ]
         self._ensure_autogen_unsaved()
 
-    def refresh_instruments(self) -> None:
-        """Re-scan instruments and rebuild the unsaved placeholder nets.
+    def _sync_saved_from_disk(self) -> None:
+        # Retrieve saved nets from disk via net.py list
+        saved_from_disk = self._fetch_saved_records()
+        if saved_from_disk is None:
+            # Show error message to user but continue with empty list
+            self.show_error("Error loading saved nets")
+            saved_from_disk = []
+        self._apply_saved_records(saved_from_disk)
+
+    def _fetch_instruments(self) -> list | None:
+        """Blocking instrument re-scan; None on failure.
+
+        No widget access — safe to call from a ``run_box_job`` thread.
+        """
+        try:
+            raw = _run_script(self.ctx, "query_instruments.py", self.dut)
+            # Duplicate-tolerant parse — same reason as everywhere else this
+            # file consumes backend stdout ("double execution" boxes).
+            return _parse_backend_json_tui(raw) if raw.strip() else []
+        except (json.JSONDecodeError, AttributeError):
+            # Keep the previous scan rather than wiping the add list.
+            return None
+
+    def _apply_instruments(self, inst_list: list) -> None:
+        """Rebuild the unsaved placeholder nets from a fresh scan (UI thread).
 
         Called after a custom-device (un)assignment changes what the scanner
         reports: the assigned instrument appears (or disappears) and its
         generic UART cable record does the inverse. Saved nets are left
         untouched; only the auto-generated placeholders are rebuilt.
         """
-        try:
-            raw = _run_script(self.ctx, "query_instruments.py", self.dut)
-            # Duplicate-tolerant parse — same reason as everywhere else this
-            # file consumes backend stdout ("double execution" boxes).
-            inst_list = _parse_backend_json_tui(raw) if raw.strip() else []
-        except (json.JSONDecodeError, AttributeError):
-            # Keep the previous scan rather than wiping the add list.
-            return
         self.inst_list = inst_list
         self.nets = [n for n in self.nets if n.saved]
         self._ensure_autogen_unsaved()
-        self._refresh_table()
 
     def show_error(self, message: str) -> None:
         """Show error message to user."""
@@ -2972,14 +3068,27 @@ class NetApp(App):
             self.push_screen(AddScreen(self.nets, self.multi_labjack))
             return
         if event.button.id == "assign_btn":
-            data = _run_custom_devices(self.ctx, self.dut, "list")
-            if not isinstance(data, dict):
-                self.show_error(
-                    "Custom-device assignment needs newer box software — "
-                    "run 'lager update' and retry."
-                )
-                return
-            self.push_screen(AssignDeviceScreen(data))
+            # The custom_devices.py round-trip takes seconds — run it off the
+            # UI thread so the app keeps responding, and disable the button
+            # so the click visibly registered.
+            self.assign_btn.disabled = True
+            self.show_loading("Contacting box...")
+
+            def _open_assign(data: object) -> None:
+                self.hide_loading()
+                self.assign_btn.disabled = False
+                if not isinstance(data, dict):
+                    self.show_error(
+                        "Custom-device assignment needs newer box software — "
+                        "run 'lager update' and retry."
+                    )
+                    return
+                self.push_screen(AssignDeviceScreen(data))
+
+            self.run_box_job(
+                lambda: _run_custom_devices(self.ctx, self.dut, "list"),
+                _open_assign,
+            )
             return
         if event.button.id == "del_all_btn":
             self.push_screen(ConfirmDeleteAll())

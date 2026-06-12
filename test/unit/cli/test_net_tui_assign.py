@@ -21,10 +21,12 @@ app — same approach as test_net_tui_uart_guard.py:
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import json
 import os
 import sys
+import threading
 from unittest.mock import patch
 
 import pytest
@@ -227,6 +229,150 @@ class TestRowLabels:
         with pytest.raises(Exception):
             Static(content).visual  # noqa: B018 — render is the assertion
         Static(content, markup=False).visual  # must not raise
+
+
+# --------------------------------------------------------------------------- #
+# UI responsiveness (textual test pilot)                                      #
+# --------------------------------------------------------------------------- #
+# REGRESSION (reported against 0.25.0): box round-trips ran synchronously
+# inside button handlers and on_mount, freezing the whole event loop — the
+# TUI ignored clicks for seconds at launch and after pressing Assign Device.
+# Box I/O must run through NetApp.run_box_job (worker thread), never on the
+# UI thread.
+
+from textual.widgets import Button  # noqa: E402
+
+DEVICES_DATA = {"catalog": [], "assignments": [], "cables": []}
+
+
+def _make_app():
+    return tui.NetApp(ctx=None, dut="box", inst_list=[], nets=[])
+
+
+class TestStartupDoesNotBlock:
+    def test_on_mount_makes_no_box_roundtrip(self):
+        # launch_tui already fetched instruments and saved nets; re-fetching
+        # at mount blocked the freshly painted UI for another round-trip.
+        async def main():
+            with patch.object(tui, "_run_script") as rs:
+                app = _make_app()
+                async with app.run_test(size=(100, 40)) as pilot:
+                    await pilot.pause()
+            assert rs.call_count == 0
+        asyncio.run(main())
+
+
+class TestAssignButtonOffloadsBoxCall:
+    def test_ui_stays_live_while_listing_devices(self):
+        gate = threading.Event()
+        seen: dict = {}
+
+        def fake_list(ctx, dut, *args):
+            seen["thread"] = threading.current_thread()
+            gate.wait(timeout=2)
+            return DEVICES_DATA
+
+        async def main():
+            app = _make_app()
+            with patch.object(tui, "_run_custom_devices", side_effect=fake_list):
+                async with app.run_test(size=(100, 40)) as pilot:
+                    await pilot.pause()
+                    app.on_button_pressed(Button.Pressed(app.assign_btn))
+                    # The handler must return with the box call still in
+                    # flight: button disabled as feedback, screen not yet
+                    # pushed, event loop alive (this pause would hang under
+                    # the old synchronous code).
+                    await pilot.pause()
+                    assert app.assign_btn.disabled is True
+                    assert not isinstance(app.screen, tui.AssignDeviceScreen)
+                    gate.set()
+                    await app.workers.wait_for_complete()
+                    await pilot.pause()
+                    assert isinstance(app.screen, tui.AssignDeviceScreen)
+                    assert app.assign_btn.disabled is False
+            assert seen["thread"] is not threading.main_thread()
+
+        asyncio.run(main())
+
+    def test_old_box_image_shows_error_and_reenables_button(self):
+        async def main():
+            app = _make_app()
+            with patch.object(tui, "_run_custom_devices", return_value=None):
+                async with app.run_test(size=(100, 40)) as pilot:
+                    await pilot.pause()
+                    app.on_button_pressed(Button.Pressed(app.assign_btn))
+                    await app.workers.wait_for_complete()
+                    await pilot.pause()
+                    assert not isinstance(app.screen, tui.AssignDeviceScreen)
+                    assert app.assign_btn.disabled is False
+
+        asyncio.run(main())
+
+
+class TestAssignActionsOffloadBoxCalls:
+    CABLE = {"serial": "00000006", "vid": "067b", "pid": "23a3",
+             "port_path": "1-1.2", "tty": "/dev/ttyUSB0"}
+
+    def test_do_assign_runs_in_worker_and_offers_create_net(self):
+        seen: dict = {}
+
+        def fake_devices(ctx, dut, *args):
+            seen.setdefault("threads", []).append(threading.current_thread())
+            if args[0] == "assign":
+                return {"instrument": "Rigol_DP711", "address": "serial://x"}
+            return DEVICES_DATA
+
+        async def main():
+            app = _make_app()
+            app._fetch_instruments = lambda: []
+            with patch.object(tui, "_run_custom_devices", side_effect=fake_devices):
+                async with app.run_test(size=(100, 40)) as pilot:
+                    await pilot.pause()
+                    screen = tui.AssignDeviceScreen({"catalog": [],
+                                                     "assignments": [],
+                                                     "cables": [self.CABLE]})
+                    app.push_screen(screen)
+                    await pilot.pause()
+                    screen._do_assign(self.CABLE, "Rigol_DP711", None)
+                    await app.workers.wait_for_complete()
+                    await pilot.pause()
+                    # Success path: busy state cleared, data refreshed, and
+                    # the --as-net twin dialog offered on top.
+                    assert screen.busy_note.display is False
+                    assert screen.assign_tree.disabled is False
+                    assert screen.data == DEVICES_DATA
+                    assert isinstance(app.screen, tui.CreateNetDialog)
+            assert all(t is not threading.main_thread() for t in seen["threads"])
+
+        asyncio.run(main())
+
+    def test_do_unassign_runs_in_worker_and_rebuilds(self):
+        assignment = {"instrument": "Rigol_DP711", "serial": "00000006"}
+
+        def fake_devices(ctx, dut, *args):
+            if args[0] == "remove":
+                return {"removed": True}
+            return DEVICES_DATA
+
+        async def main():
+            app = _make_app()
+            app._fetch_instruments = lambda: []
+            app._fetch_saved_records = lambda: []
+            with patch.object(tui, "_run_custom_devices", side_effect=fake_devices):
+                async with app.run_test(size=(100, 40)) as pilot:
+                    await pilot.pause()
+                    screen = tui.AssignDeviceScreen(
+                        {"catalog": [], "assignments": [assignment], "cables": []})
+                    app.push_screen(screen)
+                    await pilot.pause()
+                    screen._do_unassign(assignment)
+                    await app.workers.wait_for_complete()
+                    await pilot.pause()
+                    assert screen.busy_note.display is False
+                    assert screen.assign_tree.disabled is False
+                    assert screen.data == DEVICES_DATA
+
+        asyncio.run(main())
 
 
 # --------------------------------------------------------------------------- #
