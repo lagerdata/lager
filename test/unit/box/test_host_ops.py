@@ -132,8 +132,14 @@ class RenderUdevRulesFile(unittest.TestCase):
         self.assertIn("# Managed by `lager box config udev`", body)
         self.assertIn('ATTRS{idVendor}=="1209"', body)
         self.assertIn('ATTRS{idProduct}=="0001"', body)
-        self.assertIn('MODE="0666"', body)
+        self.assertIn('MODE="0666"', body)  # explicit mode override is honored
+        self.assertIn('GROUP="lager"', body)
         self.assertNotIn("usbtmc/unbind", body)
+
+    def test_default_mode_is_group_scoped(self):
+        body = ops.render_udev_rules_file([{"vid": "1209", "pid": "0001"}])
+        self.assertIn('MODE="0660"', body)
+        self.assertIn('GROUP="lager"', body)
 
     def test_usbtmc_emits_unbind(self):
         body = ops.render_udev_rules_file(

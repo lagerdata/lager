@@ -1181,10 +1181,15 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     else:
         log_status('update needed', 'yellow')
 
-        # The `&&` chain means a non-zero exit already implies the `sudo cp`
-        # to /etc failed, so no separate post-install verify is needed.
+        # The `&&` chain means a non-zero exit already implies one of the
+        # sudo steps failed, so no separate post-install verify is needed.
+        # The "lager" group is what the instrument rules grant device access
+        # to (GROUP="lager"); the getent guard keeps the groupadd off the
+        # common path so provisioned boxes stay within the passwordless
+        # sudoers grant and see no password prompt.
         install_cmd = (
             f'cp {udev_src_path}/99-instrument.rules /tmp/ && '
+            '{ getent group lager >/dev/null || sudo /usr/sbin/groupadd lager; } && '
             'sudo /bin/cp /tmp/99-instrument.rules /etc/udev/rules.d/ && '
             'sudo /bin/chmod 644 /etc/udev/rules.d/99-instrument.rules && '
             'sudo /usr/bin/udevadm control --reload-rules && '
@@ -1215,6 +1220,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             if verbose:
                 click.echo('  Could not install udev rules — likely a sudoers permission issue.', err=True)
                 click.echo(f'  Manual fix: ssh {ssh_host}, then:', err=True)
+                click.echo('    sudo groupadd -f lager', err=True)
                 click.echo(f'    sudo cp {udev_src_path}/99-instrument.rules /etc/udev/rules.d/', err=True)
                 click.echo('    sudo udevadm control --reload-rules && sudo udevadm trigger', err=True)
 

@@ -26,6 +26,22 @@ _DA1469X_QSPI_XIP_START = 0x16000000
 _DA1469X_QSPI_FLASH_BANK0_BASE = _DA1469X_QSPI_XIP_START
 _DA1469X_QSPI_XIP_END = _DA1469X_QSPI_XIP_START + _DA1469X_QSPI_RANGE_BYTES - 1
 
+# DA1469x QSPI XIP is fetched through the cache controller; the same flash is
+# also mapped UNCACHED at XIP + 0x2000_0000 (so 0x16000000 mirrors at
+# 0x36000000). Reads via the mirror always hit QSPI, never a stale cache line
+# (datasheet memory map: QSPIC cached vs uncached regions).
+_DA1469X_QSPI_UNCACHED_OFFSET = 0x20000000
+# DA1469x CACHE_CTRL1_REG: writing 1 sets the cache-flush field, so subsequent
+# cached fetches refill from QSPI (datasheet: CACHE_CTRL1_REG).
+_DA1469X_CACHE_CTRL1_REG = 0x100C0000
+# mem8 read-back chunk for the uncached verify: ~256 Commander output lines per
+# command — big enough to amortise REPL round-trips, small enough to stay well
+# inside pexpect/replwrap buffering.
+_UNCACHED_VERIFY_CHUNK = 4096
+# J-Link Commander's loadfile compare-failure line; wording varies across
+# Commander versions ("Verification failed", "Verify failed").
+_VERIFY_FAILED_RE = re.compile(r'verif(?:y|ication)\s+failed', re.IGNORECASE)
+
 # Optional in .JLinkScript: LAGER_ERASE_RANGE: 0x16000000 0x160FFFFF
 _LAGER_ERASE_RANGE_PATTERN = re.compile(
     r'LAGER_ERASE_RANGE\s*:\s*(0x[0-9A-Fa-f]+)\s+(0x[0-9A-Fa-f]+)',
@@ -72,23 +88,146 @@ _LOADFILE_SKIPPED_MSG = (
 )
 
 
+def _parse_mem8_bytes(output, length):
+    """Parse J-Link Commander ``mem8`` output into bytes.
+
+    Only lines containing '=' carry data ("00000000 = FF FF .."); everything
+    else (echoed command, prompt fragments, banners) is skipped. Returns at
+    most *length* bytes — fewer means the read came back short or garbled.
+    """
+    memory_data = []
+    for line in output.split('\n'):
+        if '=' in line:
+            # Split on '=' and take the right side (the memory bytes)
+            parts = line.split('=', 1)
+            if len(parts) == 2:
+                hex_bytes = re.findall(r'([0-9A-Fa-f]{2})', parts[1])
+                for hex_byte in hex_bytes:
+                    memory_data.append(int(hex_byte, 16))
+    return bytes(memory_data[:length])
+
+
+def _iter_loadfile_cmds(hexfiles, binfiles, elffiles):
+    """Yield (command, bin_address_or_None, path) in hex -> bin -> elf order."""
+    for file in hexfiles:
+        yield f'loadfile {file}', None, file
+    for (file, address) in binfiles:
+        yield f'loadfile {file} {hex(address)}', address, file
+    for file in elffiles:
+        yield f'loadfile {file}', None, file
+
+
+def _loadfile_one(jl, cmd):
+    """Run one loadfile; return (output, skip_warning_or_None)."""
+    out = jl.run_command(cmd)
+    warn = _LOADFILE_SKIPPED_MSG if _loadfile_skipped_programming(out) else None
+    return out, warn
+
+
 def _yield_loadfile_outputs(jl, hexfiles, binfiles, elffiles):
     """Run loadfile for hex, bin, elf lists; yield Commander output and skip warnings."""
-    for file in hexfiles:
-        out = jl.run_command(f'loadfile {file}')
+    for cmd, _addr, _path in _iter_loadfile_cmds(hexfiles, binfiles, elffiles):
+        out, warn = _loadfile_one(jl, cmd)
         yield out
-        if _loadfile_skipped_programming(out):
-            yield _LOADFILE_SKIPPED_MSG
-    for (file, address) in binfiles:
-        out = jl.run_command(f'loadfile {file} {hex(address)}')
-        yield out
-        if _loadfile_skipped_programming(out):
-            yield _LOADFILE_SKIPPED_MSG
-    for file in elffiles:
-        out = jl.run_command(f'loadfile {file}')
-        yield out
-        if _loadfile_skipped_programming(out):
-            yield _LOADFILE_SKIPPED_MSG
+        if warn:
+            yield warn
+
+
+def _verify_bin_uncached(jl, captured_output, path, address):
+    """Cache-coherent read-back of one just-programmed QSPI-XIP bin.
+
+    J-Link's loadfile compare reads through the CACHED XIP window; on a
+    no-reset attach the cache can hold a stale line at the start of the
+    programmed region, so the compare reports a false "Verification failed"
+    even though flash is correct. Flush the cache controller, read the image
+    back through the uncached mirror on the same Commander session, and
+    byte-compare against the file on disk:
+
+    * match        -> yield the captured loadfile output with the (false)
+                      compare-failure line(s) removed, then a success note.
+    * mismatch     -> yield the captured output unmodified plus a real
+                      'Verification failed @ 0x...' line naming the first
+                      differing byte (cached-window address).
+    * inconclusive -> (short/garbled read, Commander error) yield the captured
+                      output unmodified plus a warning; a genuine failure line
+                      in the capture survives untouched.
+
+    ``LAGER_DA1469_UNCACHED_VERIFY_BYTES`` caps the compare (0 = whole file).
+    Note: with LAGER_DA1469_PRE_FLASH_RUN_HALT=0 the core may be running while
+    the flush register is written; the opt-in flag gates that exposure.
+    """
+    try:
+        with open(path, 'rb') as f:
+            expected = f.read()
+    except OSError as e:
+        yield captured_output
+        yield f'WARNING: uncached verify skipped - could not read {path} on disk ({e})'
+        return
+
+    raw = os.environ.get('LAGER_DA1469_UNCACHED_VERIFY_BYTES', '0').strip()
+    try:
+        cap = int(raw, 0)
+    except ValueError:
+        cap = 0
+    total = len(expected) if cap <= 0 else min(len(expected), cap)
+
+    mirror = address + _DA1469X_QSPI_UNCACHED_OFFSET
+    mismatch = None       # cached-window address of the first differing byte
+    inconclusive = None   # human-readable reason
+    try:
+        # Flush BEFORE any read-back so the cached and uncached views agree.
+        jl.run_command(f'w4 {hex(_DA1469X_CACHE_CTRL1_REG)} 1')
+        for offset in range(0, total, _UNCACHED_VERIFY_CHUNK):
+            n = min(_UNCACHED_VERIFY_CHUNK, total - offset)
+            got = _parse_mem8_bytes(jl.run_command(f'mem8 {hex(mirror + offset)} {n}'), n)
+            if len(got) != n:
+                inconclusive = f'short read at {hex(mirror + offset)} ({len(got)}/{n} bytes)'
+                break
+            want = expected[offset:offset + n]
+            if got != want:
+                i = next(i for i, (g, w) in enumerate(zip(got, want)) if g != w)
+                mismatch = address + offset + i
+                break
+    except Exception as e:  # noqa: BLE001 — a dead Commander must not kill the flash stream
+        inconclusive = f'{type(e).__name__}: {e}'
+
+    if mismatch is not None:
+        yield captured_output
+        yield (f'Verification failed @ {hex(mismatch)} '
+               f'(uncached QSPI read-back mismatch after cache flush)')
+    elif inconclusive is not None:
+        yield captured_output
+        yield (f'WARNING: uncached verify could not complete ({inconclusive}); '
+               f'see loadfile output above')
+    else:
+        # All compared bytes match flash, so any compare-failure line in the
+        # loadfile output was a stale-cache false negative — drop it so
+        # consumers grepping for it don't trip. join/split is the identity
+        # when no line matches.
+        yield '\n'.join(
+            line for line in captured_output.split('\n')
+            if not _VERIFY_FAILED_RE.search(line)
+        )
+        yield (f'Uncached read-back OK: {total} of {len(expected)} bytes @ {hex(address)} '
+               f'match flash via {hex(mirror)} after cache flush '
+               f'(a stale-cache false negative from the J-Link compare, if printed, was dropped)')
+
+
+def _yield_loadfile_outputs_uncached_verify(jl, hexfiles, binfiles, elffiles):
+    """_yield_loadfile_outputs plus an uncached read-back for QSPI-XIP bins.
+
+    hex/elf loads and bins outside the DA1469x cached XIP window stream
+    exactly as the default path; an in-window bin gets _verify_bin_uncached's
+    verdict between its loadfile output and any skip warning.
+    """
+    for cmd, addr, path in _iter_loadfile_cmds(hexfiles, binfiles, elffiles):
+        out, warn = _loadfile_one(jl, cmd)
+        if addr is not None and _DA1469X_QSPI_XIP_START <= addr <= _DA1469X_QSPI_XIP_END:
+            yield from _verify_bin_uncached(jl, out, path, addr)
+        else:
+            yield out
+        if warn:
+            yield warn
 
 
 # JLinkExe paths (checked in order)
@@ -289,28 +428,11 @@ class JLink:
         Returns:
             bytes object containing the memory data
         """
-        memory_data = []
-
         with commander(self.args, script_file=self.script_file, serial=self.serial) as jl:
             jl.run_command('connect')
             # J-Link Commander mem8 syntax: mem8 address count
             output = jl.run_command(f'mem8 {hex(address)} {length}')
-
-            # Parse output format: "00000000 = FF FF FF FF ..."
-            # Each line contains one address worth of data
-            for line in output.split('\n'):
-                if '=' in line:
-                    # Split on '=' and take the right side (the memory bytes)
-                    parts = line.split('=', 1)
-                    if len(parts) == 2:
-                        data_part = parts[1]
-                        # Extract hex bytes (2-character hex patterns)
-                        hex_bytes = re.findall(r'([0-9A-Fa-f]{2})', data_part)
-                        for hex_byte in hex_bytes:
-                            memory_data.append(int(hex_byte, 16))
-
-        # Trim to requested length
-        return bytes(memory_data[:length])
+        return _parse_mem8_bytes(output, length)
 
     def flash(self, files, preverify=False, verify=False, *, close=True):
         """
@@ -327,7 +449,10 @@ class JLink:
             because flash already matched (no bytes written).
 
         **DA1469x:** ``rnh`` / ``h`` before ``loadfile`` (``LAGER_DA1469_PRE_FLASH_RUN_HALT=0`` to
-        skip).
+        skip). Set ``LAGER_DA1469_UNCACHED_VERIFY=1`` (default off) for a cache-coherent
+        read-back of QSPI-XIP bins through the uncached mirror after each ``loadfile`` —
+        suppresses stale-cache false verify failures, reports real mismatches;
+        ``LAGER_DA1469_UNCACHED_VERIFY_BYTES`` caps the compare (0 = whole file).
         """
         (hexfiles, binfiles, elffiles) = files
         with commander(self.args, script_file=self.script_file, serial=self.serial) as jl:
@@ -350,6 +475,14 @@ class JLink:
                     yield jl.run_command('rnh')
                     time.sleep(0.1)
                     yield jl.run_command('h')
+                # Opt-in cache-coherent post-program verify (default OFF; an
+                # empty value counts as off, unlike the default-on flag above).
+                uncached = os.environ.get('LAGER_DA1469_UNCACHED_VERIFY', '0').strip().lower()
+                if uncached and uncached not in ('0', 'false', 'no', 'off'):
+                    logger.info('DA1469x: uncached read-back verify after loadfile')
+                    yield from _yield_loadfile_outputs_uncached_verify(
+                        jl, hexfiles, binfiles, elffiles)
+                    return
 
             yield from _yield_loadfile_outputs(jl, hexfiles, binfiles, elffiles)
 

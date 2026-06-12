@@ -455,7 +455,14 @@ def get_controller(device=None, host='127.0.0.1', port=2331, max_retries=3):
                 _discard_failed_controller(gdbmi)
                 continue  # free retry: does not consume `attempt`, no sleep
 
-            # Cache the successful connection
+            # Cache the successful connection.
+            #
+            # Record the effective stop mode on the controller so callers can
+            # tell whether we fell back to all-stop. RTT control-block
+            # detection uses this to resume the core after its memory reads:
+            # in all-stop those reads implicitly halt the CPU (the v0.18.1
+            # condition) and nothing else would resume it.
+            gdbmi.lager_non_stop = use_non_stop
             _gdb_controller_cache[cache_key] = gdbmi
             _gdb_use_counts[cache_key] = 1  # Initialize use count
             return gdbmi

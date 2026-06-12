@@ -199,16 +199,16 @@ def normalize_udev_id(value: str) -> str:
 
 
 def validate_udev_format(
-    vid: str, pid: str, mode: str = "0666"
+    vid: str, pid: str, mode: str = "0660"
 ) -> tuple[bool, Optional[str]]:
     """Format check for a single udev rule. vid/pid must be 4 hex digits
-    (after normalization); mode must be a 4-char octal like 0666."""
+    (after normalization); mode must be a 4-char octal like 0660."""
     if not isinstance(vid, str) or not _UDEV_HEXID_RE.match(normalize_udev_id(vid)):
         return False, "vendor id must be 4 hex digits (e.g. 1209)"
     if not isinstance(pid, str) or not _UDEV_HEXID_RE.match(normalize_udev_id(pid)):
         return False, "product id must be 4 hex digits (e.g. 0001)"
     if not isinstance(mode, str) or not _UDEV_MODE_RE.match(mode):
-        return False, "mode must be an octal like 0666"
+        return False, "mode must be an octal like 0660"
     return True, None
 
 
@@ -253,10 +253,15 @@ class UdevRule:
     tools inside the container (which sees /dev and /sys/bus/usb via bind
     mounts) open the device — fixing e.g. `dfu-util`'s "No DFU capable USB
     device available". Applied host-side during `lager box config apply`.
+
+    Rules grant access via the "lager" group (the container user joins it via
+    --group-add in start_box.sh) rather than world-rw, matching the shipped
+    99-instrument.rules. The mode stays overridable for the rare device that
+    genuinely needs 0666.
     """
     vid: str
     pid: str
-    mode: str = "0666"
+    mode: str = "0660"
     usbtmc: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
@@ -270,7 +275,7 @@ class UdevRule:
         lines = [
             f"# vid:pid {self.vid}:{self.pid} (added via `lager box config udev`)",
             f'SUBSYSTEM=="usb", ATTRS{{idVendor}}=="{self.vid}", '
-            f'ATTRS{{idProduct}}=="{self.pid}", MODE="{self.mode}"',
+            f'ATTRS{{idProduct}}=="{self.pid}", MODE="{self.mode}", GROUP="lager"',
         ]
         if self.usbtmc:
             lines.append(
@@ -369,7 +374,7 @@ class BoxConfig:
             UdevRule(
                 vid=normalize_udev_id(u.get("vid", "")),
                 pid=normalize_udev_id(u.get("pid", "")),
-                mode=u.get("mode", "0666"),
+                mode=u.get("mode", "0660"),
                 usbtmc=bool(u.get("usbtmc", False)),
             )
             for u in raw.get("udev_rules", [])
@@ -820,7 +825,7 @@ def _validate_udev_rules(raw: Dict[str, Any]) -> List[str]:
             continue
         vid = r.get("vid")
         pid = r.get("pid")
-        mode = r.get("mode", "0666")
+        mode = r.get("mode", "0660")
         if vid is None:
             errors.append(f"udev_rules[{i}]: missing required key 'vid'.")
         if pid is None:
