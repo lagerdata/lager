@@ -695,11 +695,20 @@ test_11_user_lock_passthrough() {
     # User pre-locks the box explicitly.
     post_lock "{\"user\":\"$TEST_HOLDER\",\"holder_type\":\"user\",\"ttl_seconds\":null}" >/dev/null
 
+    # A real runnable, and we assert the run actually succeeded. (The
+    # previous version of this scenario invoked `lager python -c ...`,
+    # which is not a valid invocation — Click exited 2 before any lock
+    # traffic, so the assertions below passed against a lock that was
+    # never exercised.)
+    printf 'print("ok")\n' > "${LOCAL_TMP}/run11.py"
     LAGER_LOCK_HOLDER="$TEST_HOLDER" \
-        lager python -c 'print("ok")' --box "$BOX" >"${LOCAL_TMP}/run11.log" 2>&1
+        lager python "${LOCAL_TMP}/run11.py" --box "$BOX" >"${LOCAL_TMP}/run11.log" 2>&1
+    assert_eq "lager python run exits 0" "$?" "0"
 
-    # After lager python exits, the user lock should still be held (we
-    # saw "already_ours" and did NOT release it).
+    # After lager python exits, the user lock must still be held (we saw
+    # "already_ours" and did NOT release it), still classified as a user
+    # lock, and still eternal — a re-acquire must not stamp a TTL on it,
+    # or the reservation silently expires ~30 minutes later.
     sleep 1
     local locked
     locked="$(get_lock | extract_field locked)"
@@ -707,6 +716,12 @@ test_11_user_lock_passthrough() {
     local holder_type
     holder_type="$(get_lock | extract_field holder_type)"
     assert_eq "Lock still holder_type=user" "$holder_type" "user"
+    local ttl
+    ttl="$(get_lock | extract_field ttl_seconds)"
+    # extract_field yields "" for json null under jq and "null" under the
+    # grep fallback; normalize so both count as eternal.
+    [ -z "$ttl" ] && ttl="null"
+    assert_eq "Lock still eternal (ttl_seconds=null)" "$ttl" "null"
 
     # Clean up
     post_unlock "{\"user\":\"$TEST_HOLDER\"}" >/dev/null

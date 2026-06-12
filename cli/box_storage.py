@@ -583,6 +583,27 @@ def acquire_box_lock(
     import click
     import requests
 
+    # Check the lock state BEFORE posting an acquire. If the box is already
+    # locked by us (a pre-existing `lager boxes lock`), we must not touch it
+    # at all: a re-acquire POST would let the server rewrite the lock's
+    # holder_type/ttl (old servers store whatever we send; see the refresh
+    # guard in box/lager/lock_state.py for the new ones), and against an old
+    # server the 200-without-previous_user response below would misclassify
+    # the pre-existing lock as freshly acquired — and release it on exit.
+    try:
+        pre = requests.get(_lock_url(ip), timeout=5)
+        if pre.status_code == 200:
+            try:
+                pre_data = pre.json()
+            except ValueError:
+                pre_data = {}
+            if pre_data.get('locked') and pre_data.get('user') == holder:
+                return ('already_ours', pre_data)
+    except requests.exceptions.RequestException:
+        # Unreachable for the GET; let the POST loop below produce the
+        # canonical 'unreachable' result (or succeed if it was transient).
+        pass
+
     payload = {'user': holder, 'holder_type': holder_type}
     if ttl_seconds is None:
         payload['ttl_seconds'] = None
@@ -613,8 +634,10 @@ def acquire_box_lock(
                 data = {}
             previous_holder = data.get('previous_user')
             if previous_holder is None:
-                # Box doesn't echo previous_user (older server). Fall back to
-                # locked_at: if locked_at is recent (<= 2s) assume we acquired.
+                # Box doesn't echo previous_user (older server). The GET
+                # check above already returned 'already_ours' for any
+                # pre-existing lock of ours, so reaching a 200 here means
+                # we genuinely created the lock.
                 state = 'acquired'
             elif previous_holder == holder:
                 state = 'already_ours'
@@ -795,15 +818,17 @@ class HeartbeatThread(_threading_for_heartbeat.Thread):
                     pass
 
 
-def _default_admin_holder_type():
+def default_auto_holder_type():
     """Return ``'ci'`` when running under any known CI provider, else
     ``'ephemeral'``.
 
-    The distinction matters because matrix CI jobs need their holder string
-    to encode run/job coordinates (already handled by ``get_lock_holder``)
-    AND the server applies the same TTL policy. Failing closed (treating
-    unknown environments as ``'ephemeral'``) is safe: ephemeral locks still
-    heartbeat + reap, just without the explicit "this came from CI" tag.
+    Shared by `lager python` and the admin commands so every auto-lock
+    carries the same classification. The distinction matters because matrix
+    CI jobs need their holder string to encode run/job coordinates (already
+    handled by ``get_lock_holder``) AND the server applies the same TTL
+    policy. Failing closed (treating unknown environments as
+    ``'ephemeral'``) is safe: ephemeral locks still heartbeat + reap, just
+    without the explicit "this came from CI" tag.
     """
     try:
         from .context.ci_detection import get_ci_environment, CIEnvironment
@@ -874,9 +899,9 @@ def auto_lock_around_command(
         resolved_wait = (
             default_lock_wait_seconds() if wait_seconds is None else wait_seconds
         )
-        resolved_type = holder_type or _default_admin_holder_type()
+        resolved_type = holder_type or default_auto_holder_type()
 
-        state, _data = acquire_box_lock(
+        state, lock_data = acquire_box_lock(
             ip,
             box_label,
             resolved_holder,
@@ -906,7 +931,15 @@ def auto_lock_around_command(
             _atexit.register(_safe_release)
 
         heartbeat = None
-        if should_release and resolved_ttl is not None:
+        # Heartbeat whenever the lock we're running under has a TTL: locks
+        # we just acquired with one, and pre-existing ephemeral locks we
+        # resumed (e.g. left by a crashed run) — without a heartbeat the
+        # latter could expire mid-command. Pre-existing user locks have
+        # ttl null and get no heartbeat, as before.
+        resumed_ttl = (
+            (lock_data or {}).get('ttl_seconds') if state == 'already_ours' else None
+        )
+        if (should_release and resolved_ttl is not None) or resumed_ttl is not None:
             heartbeat = HeartbeatThread(
                 ip,
                 resolved_holder,
@@ -980,9 +1013,9 @@ def auto_lock_acquire_for_command(
     resolved_wait = (
         default_lock_wait_seconds() if wait_seconds is None else wait_seconds
     )
-    resolved_type = holder_type or _default_admin_holder_type()
+    resolved_type = holder_type or default_auto_holder_type()
 
-    state, _data = acquire_box_lock(
+    state, lock_data = acquire_box_lock(
         ip,
         box_label,
         resolved_holder,
@@ -992,19 +1025,20 @@ def auto_lock_acquire_for_command(
     )
 
     should_release = (state == 'acquired')
-    released = {'done': not should_release}
+    done = {'done': False}
     heartbeat = None
 
     def _release():
-        if released['done']:
+        if done['done']:
             return
-        released['done'] = True
+        done['done'] = True
         if heartbeat is not None:
             heartbeat.stop()
-        try:
-            release_box_lock(ip, resolved_holder)
-        except Exception:  # pylint: disable=broad-except
-            pass
+        if should_release:
+            try:
+                release_box_lock(ip, resolved_holder)
+            except Exception:  # pylint: disable=broad-except
+                pass
 
     _release.state = state
 
@@ -1018,6 +1052,18 @@ def auto_lock_acquire_for_command(
                 warn_label=f'{command_name} lock heartbeat',
             )
             heartbeat.start()
+    elif state == 'already_ours' and (lock_data or {}).get('ttl_seconds') is not None:
+        # Resumed a pre-existing ephemeral lock (e.g. left by a crashed
+        # run): keep it alive for the duration of this command, but never
+        # release it — that's the original holder's call. User locks have
+        # ttl null and skip this branch.
+        heartbeat = HeartbeatThread(
+            ip,
+            resolved_holder,
+            heartbeat_interval or default_heartbeat_interval(),
+            warn_label=f'{command_name} lock heartbeat',
+        )
+        heartbeat.start()
 
     return _release
 

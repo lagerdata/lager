@@ -337,14 +337,22 @@ def acquire(
 
         now = _now_utc_iso()
         if existing:
+            # Same-holder refresh. Only auto-lock types (ephemeral/ci) may
+            # have their classification and TTL rewritten by a re-acquire;
+            # a reservation (`user`, `stout`, or a legacy record with no
+            # holder_type — those were all written by `lager boxes lock`
+            # era servers) must survive any number of `lager python` runs
+            # untouched, or an eternal lock silently gains a TTL and gets
+            # reaped behind the holder's back.
             new_lock = dict(existing)
             new_lock.update({
                 'locked': True,
                 'user': user,
-                'holder_type': norm_holder_type,
                 'last_heartbeat': now,
-                'ttl_seconds': norm_ttl,
             })
+            if existing.get('holder_type') in ('ephemeral', 'ci'):
+                new_lock['holder_type'] = norm_holder_type
+                new_lock['ttl_seconds'] = norm_ttl
         else:
             new_lock = {
                 'locked': True,

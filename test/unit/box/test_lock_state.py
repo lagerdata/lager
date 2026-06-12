@@ -105,6 +105,61 @@ class TestAcquire:
         assert code == 200
         assert body["previous_user"] == "alice"
 
+    def test_reacquire_preserves_user_lock_type_and_ttl(self, lock_state):
+        # The core guarantee: an explicit `lager boxes lock` reservation
+        # (user/eternal) must survive a `lager python` re-acquire untouched.
+        # Regression for the bug where the refresh path rewrote it to
+        # ci/1800, after which nothing heartbeat it and the server reaped
+        # the "eternal" lock 30 minutes later.
+        lock_state.acquire(user="alice", holder_type="user", ttl_seconds=None)
+        code, body = lock_state.acquire(
+            user="alice", holder_type="ci", ttl_seconds=1800,
+        )
+        assert code == 200
+        assert body["holder_type"] == "user"
+        assert body["ttl_seconds"] is None
+
+        on_disk = json.loads(lock_state._test_lock_file.read_text())
+        assert on_disk["holder_type"] == "user"
+        assert on_disk["ttl_seconds"] is None
+
+    def test_reacquire_preserves_legacy_record_without_holder_type(self, lock_state):
+        # Locks written by pre-holder_type servers (surviving an upgrade in
+        # /etc/lager) are user reservations; a re-acquire must not classify
+        # them as ephemeral and stamp a TTL on them.
+        lock_state._write_lock({
+            "locked": True, "user": "alice",
+            "locked_at": "2026-01-01T00:00:00Z",
+        })
+        code, body = lock_state.acquire(
+            user="alice", holder_type="ephemeral", ttl_seconds=1800,
+        )
+        assert code == 200
+        assert "holder_type" not in body or body["holder_type"] is None
+        assert body.get("ttl_seconds") is None
+
+    def test_reacquire_refreshes_ephemeral_lock(self, lock_state):
+        # Auto-lock types may legitimately be refreshed by a re-acquire
+        # (e.g. a CI retry with a new TTL).
+        lock_state.acquire(user="runner", holder_type="ephemeral", ttl_seconds=60)
+        code, body = lock_state.acquire(
+            user="runner", holder_type="ci", ttl_seconds=1800,
+        )
+        assert code == 200
+        assert body["holder_type"] == "ci"
+        assert body["ttl_seconds"] == 1800
+
+    def test_boxes_lock_upgrades_leftover_ephemeral_lock(self, lock_state):
+        # `lager boxes lock` over your own leftover ephemeral lock (crashed
+        # run) upgrades it to an eternal user reservation.
+        lock_state.acquire(user="alice", holder_type="ephemeral", ttl_seconds=1800)
+        code, body = lock_state.acquire(
+            user="alice", holder_type="user", ttl_seconds=None,
+        )
+        assert code == 200
+        assert body["holder_type"] == "user"
+        assert body["ttl_seconds"] is None
+
     def test_collision_returns_409(self, lock_state):
         lock_state.acquire(user="alice")
         code, body = lock_state.acquire(user="bob")
