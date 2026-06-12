@@ -387,8 +387,14 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
         return
 
     kill_python = functools.partial(session.kill_python, box_ip, lager_process_id)
-    handler = functools.partial(sigint_handler, kill_python, box_ip)
-    signal.signal(signal.SIGINT, handler)
+    if threading.current_thread() is threading.main_thread():
+        # signal.signal() raises ValueError off the main thread, and the
+        # Net TUI now runs box calls on worker threads (run_box_job). The
+        # handler only exists to turn Ctrl+C into a remote kill for
+        # interactive foreground runs; SIGINT is delivered to the main
+        # thread regardless, so a worker-thread run has nothing to install.
+        handler = functools.partial(sigint_handler, kill_python, box_ip)
+        signal.signal(signal.SIGINT, handler)
 
     # Let the user resume a lager.pause() breakpoint by pressing Enter. The box
     # prints the breakpoint banner to the streamed stderr; this just turns a
