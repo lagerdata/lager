@@ -226,6 +226,19 @@ def _read_data_file(filepath: str) -> List[int]:
         raise click.BadParameter(f"Could not read data file '{filepath}': {e}")
 
 
+def _dio_name(dio) -> str:
+    """Convert a LabJack DIO number to its pin name (FIO/EIO/CIO/MIO)."""
+    try:
+        n = int(dio)
+    except (TypeError, ValueError):
+        return str(dio)
+    for prefix, offset, count in (("FIO", 0, 8), ("EIO", 8, 8),
+                                  ("CIO", 16, 4), ("MIO", 20, 3)):
+        if offset <= n < offset + count:
+            return f"{prefix}{n - offset}"
+    return f"DIO{n}"
+
+
 def display_nets(ctx, box, netname: Optional[str] = None):
     """Display I2C nets with their configuration parameters."""
     i2c_nets = _list_i2c_nets(ctx, box)
@@ -263,9 +276,9 @@ def display_nets(ctx, box, netname: Optional[str] = None):
             elif pin_field.startswith("FIO") and "-" in pin_field:
                 pins = pin_field.replace("-", "/")
             elif params.get("sda_pin") is not None:
-                sda = params.get("sda_pin", "?")
-                scl = params.get("scl_pin", "?")
-                pins = f"FIO{sda}/FIO{scl}"
+                sda = _dio_name(params.get("sda_pin", "?"))
+                scl = _dio_name(params.get("scl_pin", "?"))
+                pins = f"{sda}/{scl}"
             else:
                 pins = pin_field if pin_field else "?/?"
 
