@@ -18,7 +18,7 @@ import click
 @click.argument('wheel_path')
 def install_wheel(ctx, box, wheel_path):
     """Install a local Python wheel file on a lagerbox"""
-    from ...box_storage import resolve_and_validate_box
+    from ...box_storage import auto_lock_around_command, resolve_and_validate_box
     from ..development.python import run_python_internal, MAX_ZIP_SIZE
 
     if not os.path.isfile(wheel_path):
@@ -69,23 +69,32 @@ print(f'Successfully installed {{package_name}}', flush=True)
         f.write(script_content)
         temp_script = f.name
 
+    # `install-wheel` runs `pip install` inside the lager container on
+    # the box. A concurrent `lager python` test could share Python state
+    # or even race on the import system, so hold the auto-lock for the
+    # duration of the pip operation.
+    #
+    # Note: `install-wheel` is a thin wrapper around `run_python_internal`,
+    # which bypasses the auto-lock setup in the `python` Click command —
+    # so we have to add the lock here explicitly.
     try:
-        run_python_internal(
-            ctx,
-            temp_script,
-            target,
-            env=(),
-            passenv=(),
-            kill=False,
-            download=(),
-            allow_overwrite=False,
-            signum='SIGTERM',
-            timeout=300,
-            detach=False,
-            port=(),
-            org=None,
-            args=(),
-            extra_files=[wheel_path],
-        )
+        with auto_lock_around_command(target, box or target, 'install-wheel'):
+            run_python_internal(
+                ctx,
+                temp_script,
+                target,
+                env=(),
+                passenv=(),
+                kill=False,
+                download=(),
+                allow_overwrite=False,
+                signum='SIGTERM',
+                timeout=300,
+                detach=False,
+                port=(),
+                org=None,
+                args=(),
+                extra_files=[wheel_path],
+            )
     finally:
         os.unlink(temp_script)

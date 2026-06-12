@@ -3,52 +3,136 @@ title: Box Locking
 description: Shared access control for Lager Boxes
 ---
 
-When multiple users share a Lager Box, locks prevent conflicting operations. Lager provides two locking mechanisms: automatic command locks that protect running commands, and user locks for explicit reservation.
+When multiple users — or multiple CI jobs — share a Lager Box, locks
+prevent two callers from clobbering each other. Lager provides two locking
+mechanisms:
 
-## How It Works
+1. **Automatic test / admin lock** — `lager python` and the box-mutating
+   admin commands (`lager install`, `lager uninstall`, `lager update`,
+   `lager install-wheel`) reserve the box for the lifetime of the
+   command.
+2. **User lock** — `lager boxes lock` explicitly reserves a box until you
+   unlock it.
 
-### Automatic Command Lock
+## Automatic test lock
 
-Every command that targets a box automatically acquires a **command lock** before it runs. This prevents two users from issuing conflicting commands to the same box at the same time.
+Every `lager python <runnable>` invocation automatically acquires the box
+lock at start and releases it at end. This includes failures, `Ctrl+C`,
+crashes, and signal-killed runs — the lock is released through a `finally`
+block, a signal handler, an `atexit` net, and (worst case) a server-side
+TTL reap.
 
-- **All callers blocked**: Any command targeting the same box is blocked until the first command finishes, even from the same user
-- **Auto-expires**: After 30 minutes of inactivity, stale command locks are automatically cleaned up
-- **Released on completion**: The lock is released when the command finishes or when you press `Ctrl+C`
+### Which commands auto-lock
 
-If a command is already in progress, you'll see:
+| Command                | Lock window                                                                | Why                                                                                              |
+|------------------------|----------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------|
+| `lager python`         | Full test run (acquire → heartbeat → release)                              | Canonical test runner.                                                                            |
+| `lager install`        | The `setup_and_deploy_box.sh` step (the part that restarts the container)  | Container restart mid-test would kill the test outright.                                          |
+| `lager uninstall`      | Container teardown, image wipe, `~/box` and `/etc/lager` removal           | Same — destructive on-box mutation.                                                              |
+| `lager update`         | Container stop → image rebuild → restart → health check                    | Container restart is the test-clobbering action. Read-only probe / fetch are deliberately outside the lock. |
+| `lager install-wheel`  | The `pip install` invocation inside the container                          | `pip install` mutates the container's Python environment; a concurrent test could race on imports. |
 
+Read-only commands (`lager hello`, `lager boxes list`, `lager boxes lock` /
+`unlock` itself, status / dry-run paths, etc.) do **not** acquire the
+auto-lock. Note: this is intentionally narrower than the v0.12–0.13.3
+behavior, which slapped a `--force-command`-overridable lock on every
+single CLI command. See *Backward compatibility* below for the
+v0.13.4 history.
+
+The lock identity is **CI-aware** so concurrent test runs in CI mutually
+exclude correctly. Holder formats:
+
+| Environment           | Holder string                                                              |
+|-----------------------|----------------------------------------------------------------------------|
+| Dev (your machine)    | OS user (same as `lager defaults --user`)                                  |
+| GitHub Actions        | `ci:github:<repo>#<run>-<attempt>/<job>@<runner>:<pid>`                    |
+| Drone                 | `ci:drone:<repo>#<build>:<pid>@<host>`                                     |
+| GitLab CI             | `ci:gitlab:<project>#<pipeline>/<job>:<pid>@<host>`                        |
+| Bitbucket Pipelines   | `ci:bitbucket:<repo>#<build>:<pid>@<host>`                                 |
+| Jenkins               | `ci:jenkins:<tag>:<pid>@<host>`                                            |
+| Generic CI fallback   | `ci:generic:<host>:<pid>`                                                  |
+
+The `:pid` (and `@runner` / `@host`) suffix guarantees that two parallel
+matrix items in the same workflow run get distinct holder strings.
+
+### Collision behavior
+
+When `lager python` tries to acquire a lock that another holder owns:
+
+- **On dev**: prints an error and exits 1 immediately (no waiting).
+- **In CI**: waits up to `LAGER_LOCK_WAIT` seconds (default `1800`, i.e.
+  30 min), polling every 2s, and only fails if the wait elapses. This lets
+  matrix jobs queue against the same self-hosted box.
+
+If you have already `lager boxes lock`ed the box as yourself before running
+`lager python`, the CLI sees the lock as already-ours and **does not
+release it on exit** — your explicit reservation survives the test.
+
+### TTL & heartbeat
+
+Each test lock is written with `ttl_seconds: 1800` and refreshed every
+60 seconds by a background heartbeat thread inside the CLI. The TTL is
+**not** a cap on test runtime — as long as the heartbeat keeps refreshing
+`last_heartbeat`, the lock stays valid indefinitely.
+
+What the TTL actually bounds is the worst-case **stale-lock dwell time
+after a CLI crash**. If your laptop loses network or the CI runner is
+hard-killed, the box reaps the lock once `last_heartbeat + ttl_seconds`
+falls in the past, so another caller waits at most one TTL.
+
+### `--detach` keeps the lock
+
+`lager python script.py --detach` acquires the lock with `ttl_seconds: null`
+(no auto-expiry) because the heartbeat thread dies with the CLI. The
+detached script keeps running on the box, but the lock must be released
+manually:
+
+```bash
+lager python long_test.py --box lab-box --detach
+# Box 'lab-box' locked for detached run; release with: lager boxes unlock --box lab-box
+
+# ... later, after the script finishes on the box:
+lager boxes unlock --box lab-box
 ```
-Error: Box 'lab-box' is busy — 'python' in progress by alice. Use --force-command to override.
-```
 
-### User Lock
+### Escape hatches
 
-A **user lock** is an explicit, persistent lock you place on a box. Unlike command locks, user locks do not expire — you must manually unlock the box when you're done.
+| Env var                       | Effect                                                                                                  |
+|-------------------------------|---------------------------------------------------------------------------------------------------------|
+| `LAGER_AUTO_LOCK_DISABLE=1`   | Skip auto-lock entirely. The command still checks for someone else's user lock but does not acquire.    |
+| `LAGER_LOCK_WAIT=<seconds>`   | Override collision wait time. `0` = fail-fast (dev default), large value = patient queue (CI default).   |
+| `LAGER_LOCK_HOLDER=<string>`  | Override the holder identity. Useful when you intentionally want two jobs to share a single reservation. |
+| `LAGER_LOCK_TTL=<seconds>`    | Override the TTL the CLI writes. `LAGER_LOCK_TTL=none` = eternal (caller must `lager boxes unlock`).    |
+| `LAGER_LOCK_HEARTBEAT=<sec>`  | Override the heartbeat refresh interval (default 60s).                                                   |
+
+## User lock
+
+A **user lock** is an explicit, persistent reservation you place on a box.
+Unlike the automatic test lock, user locks **never expire** — you must
+manually unlock when you're done.
 
 Use cases:
-- Reserving a box for an extended debugging session
-- Preventing others from using a box during maintenance
-- Claiming a box when you're not actively running a command
-
-## Commands
+- Reserving a box for an extended debugging session.
+- Preventing others from using a box during maintenance.
+- Claiming a box when you're not actively running a command.
 
 ### `lager boxes lock`
-
-Lock a box to prevent others from using it.
 
 ```bash
 lager boxes lock --box NAME
 ```
 
-**Options:**
-- `--box` (required) - Name of the box to lock
+**Options**:
+- `--box` (required) — name of the box to lock.
+- `--user` — username to lock as (useful when running inside Docker where
+  the user would otherwise be `root`).
 
-**Example:**
+**Example**:
 ```bash
 lager boxes lock --box lab-box
 
 # Output:
-Box 'lab-box' locked by alice at 2026-03-20T14:30:00Z
+Box 'lab-box' is locked by alice
 ```
 
 If the box is already locked by another user:
@@ -59,17 +143,16 @@ Error: Box 'lab-box' is already locked by bob (since 2026-03-20T13:00:00Z)
 
 ### `lager boxes unlock`
 
-Unlock a box to allow others to use it.
-
 ```bash
 lager boxes unlock --box NAME [--force]
 ```
 
-**Options:**
-- `--box` (required) - Name of the box to unlock
-- `--force` - Force unlock even if the box was locked by another user
+**Options**:
+- `--box` (required) — name of the box to unlock.
+- `--force` — force unlock even if the box was locked by another user
+  (use this to clear a stale `lager boxes lock` left by a teammate).
 
-**Examples:**
+**Examples**:
 ```bash
 # Unlock your own lock
 lager boxes unlock --box lab-box
@@ -78,99 +161,83 @@ lager boxes unlock --box lab-box
 lager boxes unlock --box lab-box --force
 ```
 
-## Bypassing Locks
+## Management operations skip the lock
 
-### `--force-command`
+The following sub-commands of `lager python` are *management operations*
+on already-running processes and intentionally skip both lock checks and
+auto-acquire:
 
-Use the `--force-command` flag to bypass both command locks and user locks:
-
-```bash
-lager python script.py --box lab-box --force-command
-```
-
-The `--force-command` flag is available on all subcommands that target a box. This is useful when you know it's safe to proceed despite an existing lock (e.g., a stale lock from a disconnected session).
-
-### Management operations
-
-The following operations skip lock checks entirely because they manage running processes rather than starting new ones:
-
-- `lager python --kill ID`
+- `lager python --kill <ID>`
 - `lager python --kill-all`
-- `lager python --reattach ID`
+- `lager python --reattach <ID>`
+- `lager python --continue <ID>`
+- `lager python --console <ID>`
 
-## `lager boxes`
+This is what lets you Ctrl+C a hung detached script and immediately
+`--kill` it without first having to fight an unrelated user lock.
 
-When boxes are locked or busy, `lager boxes` shows additional columns:
+## `lager boxes` shows lock holders
 
-```
- name        ip               version   status    locked by   busy
-==========================================================================
- lab-box-1   100.x.x.1        0.12.0    current   alice
- lab-box-2   100.x.x.2        0.12.0    current               bob (python)
- lab-box-3   100.x.x.3        0.12.0    current
-```
-
-- **Locked By** — shows the user who placed an explicit lock (magenta)
-- **Busy** — shows the user and command currently in progress (yellow)
-
-These columns only appear when at least one box is locked or busy.
-
-## Special Cases
-
-### `--detach` keeps the command lock
-
-When you run a command with `--detach`, the command lock is held until the detached process finishes on the box. This prevents other users from accidentally interfering with your running script.
-
-```bash
-# Lock is acquired and held until the script finishes on the box
-lager python long_test.py --box lab-box --detach
-
-# Other users are blocked until the detached script completes
-lager hello --box lab-box
-# Error: Box 'lab-box' is busy — 'python' in progress by alice. Use --force-command to override.
-```
-
-### `lager update --all` skips locked boxes
-
-When updating all boxes at once, locked or busy boxes are skipped rather than blocking the update:
+When boxes are locked, `lager boxes` shows an extra column:
 
 ```
-Updating all boxes...
-  lab-box-1: updated to 0.12.0
-  lab-box-2: SKIPPED (locked or busy)
-  lab-box-3: updated to 0.12.0
+ name        ip               version   status    locked by
+=====================================================================
+ lab-box-1   100.x.x.1        0.24.0    current   alice
+ lab-box-2   100.x.x.2        0.24.0    current   github lager run 9182 job test on runner-3
+ lab-box-3   100.x.x.3        0.24.0    current
 ```
 
-### Stale lock auto-expiry
+CI holders are formatted human-readably (e.g. `github lager run 9182 job
+test on runner-3`) rather than printed as raw colon-delimited strings.
 
-Command locks older than 30 minutes are automatically cleaned up. This handles cases where a client disconnects without releasing its lock (e.g., network failure, laptop sleep). User locks do not expire.
+## CI workflow example
 
-## Examples
+The always-on auto-lock + CI auto-wait combination means a CI matrix job
+needs no special invocation:
 
-### Multi-user workflow
-
-```bash
-# Alice starts a test
-alice$ lager python test_suite.py --box lab-box
-
-# Bob tries to use the same box — blocked
-bob$ lager python quick_check.py --box lab-box
-# Error: Box 'lab-box' is busy — 'python' in progress by alice. Use --force-command to override.
-
-# Alice's test finishes — lock released automatically
-# Bob can now use the box
-bob$ lager python quick_check.py --box lab-box
+```yaml
+# .github/workflows/integration-tests.yml
+jobs:
+  hardware-tests:
+    strategy:
+      matrix:
+        suite: [power, communication, debug]
+    runs-on: [self-hosted, lager-bench]
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install lager-cli
+      - run: lager python test/api/${{ matrix.suite }} --box lab-box
 ```
 
-### Running a long detached script
+The three matrix items each get a unique holder (`...GITHUB_JOB=hardware-tests/<runner>:<pid>`
+differs per item), POST `/lock`, and whichever loses the race waits up to
+30 minutes for the winner to finish before retrying. No `lager boxes lock`
+call needed.
 
-```bash
-# Detached scripts hold the command lock until they finish
-lager python overnight_test.py --box lab-box --detach
+## Backward compatibility
 
-# To check on it later
-lager python --reattach <PROCESS_ID> --box lab-box
+- `lager boxes lock` and `lager boxes unlock` behave exactly as before. The
+  CLI now sends `holder_type: "user"` + `ttl_seconds: null` on the wire,
+  but legacy clients (e.g. older CLIs against the new box server) get the
+  same eternal-lock behavior automatically because the server treats a
+  payload with neither field as legacy and applies the same defaults.
+- `_check_box_lock` (the read-only lock check that already gates every
+  command in resolve_and_validate_box) is unchanged.
 
-# To stop it early
-lager python --kill <PROCESS_ID> --box lab-box
-```
+### How this differs from v0.13.0 – v0.13.3 (removed in v0.13.4)
+
+v0.13.0 added an ephemeral "command-in-progress" lock that fired on
+**every** CLI command via a shared decorator, gated by a
+`--force-command` flag. v0.13.4 removed it because three corner cases
+were unfixable in that design:
+
+| v0.13.4 corner case                                          | How this PR avoids it                                                                                                                                                                                                              |
+|--------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| *"Supply commands never released the lock"*                  | The auto-lock is only attached to **5 commands** (`python`, `install`, `uninstall`, `update`, `install-wheel`), not every CLI surface. Supply commands etc. don't touch the lock — no decorator-on-everything to leak from.        |
+| *"Long-running commands blocked all other commands on the same box"* | Only those 5 commands check the lock; status / list / read-only paths are unaffected. For genuine concurrent test runs, dev gets fail-fast in <5s and CI gets a queue (default 60s, configurable). That's the *desired* policy. |
+| *"Detached processes left stale locks"*                      | `--detach` is **opt-in** for a long-lived hold (`ttl_seconds: null` is intentional). Non-detached runs have heartbeat + TTL reap, so an abnormal CLI exit self-recovers in ≤ TTL + grace.                                          |
+
+`--force-command` is **gone**. Collision policy is structured (fail-fast
+in dev, queue in CI) and the existing `lager boxes lock --force` is the
+escape hatch when you genuinely need to override.

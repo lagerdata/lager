@@ -1,56 +1,46 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
-"""Lock HTTP handler for the Lager Box HTTP server.
+"""Flask shim that exposes the shared lock state over the port-9000 server.
 
-Provides endpoints to lock/unlock a box so that shared users
-can prevent others from using a box while they're working with it.
+All real logic lives in ``lager.lock_state``. This file is intentionally
+small: it just translates Flask requests into ``lock_state`` calls so the
+port-9000 endpoint behaves identically to the port-5000 endpoint inside
+``lager/python/service.py`` (which uses the raw ``http.server`` stack).
 
-Lock state file: /etc/lager/lock.json
+If you change behavior, change it in ``lock_state.py`` so both ports
+stay in sync.
 """
 
-import json
-import logging
-from datetime import datetime, timezone
+from __future__ import annotations
 
 from flask import Flask, jsonify, request
 
-logger = logging.getLogger(__name__)
+from .. import lock_state
 
-LOCK_FILE = '/etc/lager/lock.json'
-
-
-def _read_lock():
-    """Read lock state from disk. Returns None if unlocked."""
-    try:
-        with open(LOCK_FILE, 'r') as f:
-            data = json.load(f)
-        if data.get('locked'):
-            return data
-    except (FileNotFoundError, json.JSONDecodeError, TypeError):
-        pass
-    return None
+# Reuse the sentinel from lock_state so identity comparisons work.
+# (Having our own ``object()`` here would silently fall through to the
+# ephemeral default, breaking legacy `lager boxes lock` clients.)
+_UNSET = lock_state._UNSET  # noqa: SLF001
 
 
-def _write_lock(user):
-    """Write lock state to disk."""
-    data = {
-        'locked': True,
-        'user': user,
-        'locked_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-    }
-    with open(LOCK_FILE, 'w') as f:
-        json.dump(data, f, indent=2)
-    return data
+def _parse_lock_body():
+    """Pull a dict-shaped JSON body off the current Flask request.
 
+    Returns (data, error_response). On success ``error_response`` is None;
+    on failure ``data`` is None and the caller should return the response.
 
-def _clear_lock():
-    """Remove lock state."""
-    import os
-    try:
-        os.remove(LOCK_FILE)
-    except FileNotFoundError:
-        pass
+    Why this exists: ``request.get_json(silent=True) or {}`` silently
+    treats ``[]`` / ``"foo"`` / ``42`` as a valid payload, and downstream
+    ``data.get(...)`` / ``data['holder_type']`` then crashes with a 500.
+    Reject non-dict bodies as 400 instead.
+    """
+    data = request.get_json(silent=True)
+    if data is None:
+        return {}, None
+    if not isinstance(data, dict):
+        return None, (jsonify({'error': 'Expected a JSON object'}), 400)
+    return data, None
 
 
 def register_lock_routes(app: Flask) -> None:
@@ -58,53 +48,36 @@ def register_lock_routes(app: Flask) -> None:
 
     @app.route('/lock', methods=['GET'])
     def lock_status():
-        """Return current lock status."""
-        lock = _read_lock()
-        if lock:
-            return jsonify(lock)
-        return jsonify({'locked': False})
+        code, body = lock_state.status()
+        return jsonify(body), code
 
     @app.route('/lock', methods=['POST'])
     def lock_box():
-        """Lock the box for a user."""
-        data = request.get_json(silent=True) or {}
+        data, err = _parse_lock_body()
+        if err is not None:
+            return err
         user = data.get('user')
-        if not user:
-            return jsonify({'error': 'user is required'}), 400
+        holder_type = data['holder_type'] if 'holder_type' in data else _UNSET
+        ttl_seconds = data['ttl_seconds'] if 'ttl_seconds' in data else _UNSET
+        code, body = lock_state.acquire(
+            user=user, holder_type=holder_type, ttl_seconds=ttl_seconds,
+        )
+        return jsonify(body), code
 
-        lock = _read_lock()
-        if lock:
-            if lock.get('user') == user:
-                # Already locked by this user
-                return jsonify(lock)
-            # Locked by someone else
-            return jsonify({
-                'error': f'Box is locked by {lock["user"]}',
-                'lock': lock,
-            }), 409
-
-        new_lock = _write_lock(user)
-        return jsonify(new_lock)
+    @app.route('/lock/heartbeat', methods=['POST'])
+    def lock_heartbeat():
+        data, err = _parse_lock_body()
+        if err is not None:
+            return err
+        code, body = lock_state.heartbeat(user=data.get('user'))
+        return jsonify(body), code
 
     @app.route('/unlock', methods=['POST'])
     def unlock_box():
-        """Unlock the box."""
-        data = request.get_json(silent=True) or {}
-        user = data.get('user')
-        force = data.get('force', False)
-
-        if not user:
-            return jsonify({'error': 'user is required'}), 400
-
-        lock = _read_lock()
-        if not lock:
-            return jsonify({'locked': False, 'message': 'Box is already unlocked'})
-
-        if lock.get('user') != user and not force:
-            return jsonify({
-                'error': f'Box is locked by {lock["user"]}',
-                'lock': lock,
-            }), 403
-
-        _clear_lock()
-        return jsonify({'locked': False, 'message': 'Box unlocked'})
+        data, err = _parse_lock_body()
+        if err is not None:
+            return err
+        code, body = lock_state.release(
+            user=data.get('user'), force=bool(data.get('force', False)),
+        )
+        return jsonify(body), code

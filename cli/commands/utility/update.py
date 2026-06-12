@@ -16,7 +16,11 @@ import subprocess
 import threading
 import time
 import sys
-from ...box_storage import resolve_and_validate_box, get_box_user
+from ...box_storage import (
+    auto_lock_acquire_for_command,
+    get_box_user,
+    resolve_and_validate_box,
+)
 from ...context import get_default_box
 from ...core.ssh_utils import get_ssh_connection_pool
 from ..box._ssh import ensure_lager_box_keypair, key_auth_works
@@ -1472,6 +1476,19 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         click.echo()
         ctx.exit(0)
 
+    # Acquire the auto-lock now — the first action below stops the lager
+    # docker container, which would clobber a `lager python` test that's
+    # mid-run. Held through the rest of `_update_logic` (container
+    # rebuild + restart + health probe + J-Link install + version write)
+    # and released on the final success message OR via the atexit hook
+    # registered inside `auto_lock_acquire_for_command` for any
+    # SystemExit / signal path. The imperative variant (not `with`) is
+    # used here because re-indenting ~450 lines of branchy update logic
+    # would be far riskier than registering an atexit release.
+    _release_update_lock = auto_lock_acquire_for_command(
+        resolved_box, box_name or resolved_box, 'update',
+    )
+
     # Step 8: Stop containers
     if progress:
         progress.update("Stopping containers...")
@@ -1925,6 +1942,11 @@ fi
         fg='green', bold=True,
     )
     click.echo()
+
+    # Release the auto-lock on the success path. SystemExit/error paths
+    # above are covered by the atexit hook registered when the lock was
+    # acquired. Idempotent — calling twice is harmless.
+    _release_update_lock()
 
 
 # ---------------------------------------------------------------------------

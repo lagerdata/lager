@@ -486,6 +486,8 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                 self._handle_test_execute()
             elif self.path == '/lock':
                 self._handle_lock_acquire()
+            elif self.path == '/lock/heartbeat':
+                self._handle_lock_heartbeat()
             elif self.path == '/unlock':
                 self._handle_unlock()
             elif self.path == '/binaries/add':
@@ -502,19 +504,19 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
             self.send_error_response(500, f"Internal server error: {e}")
 
     # --- Lock endpoints ---
+    #
+    # All four endpoints delegate to lager.lock_state so the wire shape
+    # is identical to the port-9000 Flask shim in
+    # lager/http_handlers/lock_handler.py. Do NOT add bespoke lock logic
+    # here; change lock_state.py instead.
 
-    LOCK_FILE = '/etc/lager/lock.json'
-
-    def _read_lock(self):
-        """Read lock state from disk. Returns dict if locked, None otherwise."""
-        try:
-            with open(self.LOCK_FILE, 'r') as f:
-                data = json.load(f)
-            if data.get('locked'):
-                return data
-        except (FileNotFoundError, json.JSONDecodeError, TypeError):
-            pass
-        return None
+    # Kept for backward compat — older code paths reference this attribute.
+    # The module constant is the source of truth; we expose it on the
+    # handler class so legacy `self.LOCK_FILE` references keep working
+    # without monkey-patching surprises.
+    from .. import lock_state as _lock_state
+    LOCK_FILE = _lock_state.LOCK_FILE
+    del _lock_state
 
     def _read_json_body(self):
         """Read and parse JSON from request body."""
@@ -524,80 +526,77 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(content_length)
         return json.loads(body)
 
+    def _lock_request_body(self):
+        """Parse the JSON body for a lock-related POST.
+
+        Returns (data, error). On failure, ``data`` is None and the
+        error has already been sent to the client. Callers should
+        early-return when ``error`` is True.
+
+        Enforces dict shape: ``[]`` / ``"foo"`` / ``42`` / ``null`` are
+        all valid JSON but downstream handlers do ``data.get(...)`` /
+        ``data['holder_type']`` and would crash with a 500. Reject those
+        early as 400.
+        """
+        try:
+            data = self._read_json_body()
+        except (json.JSONDecodeError, ValueError):
+            self.send_json_response(400, {'error': 'Invalid JSON'})
+            return None, True
+        if not isinstance(data, dict):
+            self.send_json_response(400, {'error': 'Expected a JSON object'})
+            return None, True
+        return data, False
+
     def _handle_lock_status(self):
         """Handle GET /lock - Return lock status."""
-        lock = self._read_lock()
-        response = dict(lock) if lock else {'locked': False}
-        response['busy'] = False
-        self.send_json_response(200, response)
+        from .. import lock_state
+        code, body = lock_state.status()
+        # ``busy`` is a legacy field that older CLI versions still read.
+        # Keep emitting ``false`` so a freshly deployed server doesn't
+        # break an old client that hasn't been upgraded yet.
+        body = dict(body)
+        body.setdefault('busy', False)
+        self.send_json_response(code, body)
 
     def _handle_lock_acquire(self):
         """Handle POST /lock - Lock the box for a user."""
-        try:
-            data = self._read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json_response(400, {'error': 'Invalid JSON'})
+        from .. import lock_state
+        data, err = self._lock_request_body()
+        if err:
             return
+        # Distinguish "field absent" from "field present and null" so
+        # lock_state can correctly pick the legacy default (eternal
+        # user lock) for old `lager boxes lock` clients.
+        holder_type = data['holder_type'] if 'holder_type' in data else lock_state._UNSET
+        ttl_seconds = data['ttl_seconds'] if 'ttl_seconds' in data else lock_state._UNSET
+        code, body = lock_state.acquire(
+            user=data.get('user'),
+            holder_type=holder_type,
+            ttl_seconds=ttl_seconds,
+        )
+        self.send_json_response(code, body)
 
-        user = data.get('user')
-        if not user:
-            self.send_json_response(400, {'error': 'user is required'})
+    def _handle_lock_heartbeat(self):
+        """Handle POST /lock/heartbeat - Refresh the heartbeat for the current holder."""
+        from .. import lock_state
+        data, err = self._lock_request_body()
+        if err:
             return
-
-        lock = self._read_lock()
-        if lock:
-            if lock.get('user') == user:
-                self.send_json_response(200, lock)
-            else:
-                self.send_json_response(409, {
-                    'error': f'Box is locked by {lock["user"]}',
-                    'lock': lock,
-                })
-            return
-
-        from datetime import datetime, timezone
-        new_lock = {
-            'locked': True,
-            'user': user,
-            'locked_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-        }
-        with open(self.LOCK_FILE, 'w') as f:
-            json.dump(new_lock, f, indent=2)
-        self.send_json_response(200, new_lock)
+        code, body = lock_state.heartbeat(user=data.get('user'))
+        self.send_json_response(code, body)
 
     def _handle_unlock(self):
         """Handle POST /unlock - Unlock the box."""
-        try:
-            data = self._read_json_body()
-        except (json.JSONDecodeError, ValueError):
-            self.send_json_response(400, {'error': 'Invalid JSON'})
+        from .. import lock_state
+        data, err = self._lock_request_body()
+        if err:
             return
-
-        user = data.get('user')
-        force = data.get('force', False)
-
-        if not user:
-            self.send_json_response(400, {'error': 'user is required'})
-            return
-
-        lock = self._read_lock()
-        if not lock:
-            self.send_json_response(200, {'locked': False, 'message': 'Box is already unlocked'})
-            return
-
-        if lock.get('user') != user and not force:
-            self.send_json_response(403, {
-                'error': f'Box is locked by {lock["user"]}',
-                'lock': lock,
-            })
-            return
-
-        import os
-        try:
-            os.remove(self.LOCK_FILE)
-        except FileNotFoundError:
-            pass
-        self.send_json_response(200, {'locked': False, 'message': 'Box unlocked'})
+        code, body = lock_state.release(
+            user=data.get('user'),
+            force=bool(data.get('force', False)),
+        )
+        self.send_json_response(code, body)
 
     # --- End lock endpoints ---
 
