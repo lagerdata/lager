@@ -165,6 +165,9 @@ COPY binaries /app/lager/lager/binaries
 COPY box_config /app/lager/lager/box_config
 COPY debug /app/lager/lager/debug
 COPY dispatchers /app/lager/lager/dispatchers
+# devices/ — declarative catalog of manually-assignable custom instruments
+# (e.g. the RS-232 Rigol DP711). Consumed by the supply dispatcher + drivers.
+COPY devices /app/lager/lager/devices
 COPY exec /app/lager/lager/exec
 COPY http_handlers /app/lager/lager/http_handlers
 COPY instrument_wrappers /app/lager/lager/instrument_wrappers

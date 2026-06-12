@@ -7,6 +7,7 @@ import asyncio
 import io
 import json
 import re
+import threading
 from collections import defaultdict
 from contextlib import redirect_stdout
 from ...sort_utils import natural_sort_key
@@ -14,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 import click
+from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -25,10 +27,13 @@ from textual.widgets import (
     Header,
     Input,
     Label,
+    Select,
     Static,
     Tree,
 )
 from textual.widgets.tree import TreeNode
+
+from . import labjack_pins as _lj
 
 # Handle NoMatches compatibility across textual versions
 try:  # textual >= 0.15
@@ -62,49 +67,16 @@ class UARTNetSaveValidationError(ValueError):
 def _parse_backend_json_tui(raw: str):
     """
     Parse JSON response from backend, handling duplicate output from double execution.
-    Same logic as in nets_commands.py but for TUI usage.
+    Same logic as in nets.py's _parse_backend_json but for TUI usage.
     """
     try:
         return json.loads(raw or "[]")
     except json.JSONDecodeError:
-        # Handle duplicate JSON output from backend double execution
-        if raw and raw.count('[') >= 2:
-            # Try to extract the first JSON array
-            depth = 0
-            first_array_end = -1
-            for i, char in enumerate(raw):
-                if char == '[':
-                    depth += 1
-                elif char == ']':
-                    depth -= 1
-                    if depth == 0:
-                        first_array_end = i + 1
-                        break
-
-            if first_array_end > 0:
-                first_json = raw[:first_array_end]
-                return json.loads(first_json)
-            else:
-                raise json.JSONDecodeError("Could not find complete JSON array", raw, 0)
-        else:
-            # Handle duplicate JSON objects (e.g., {"ok": true}{"ok": true})
-            if raw and raw.count('{') >= 2:
-                depth = 0
-                first_obj_end = -1
-                for i, char in enumerate(raw):
-                    if char == '{':
-                        depth += 1
-                    elif char == '}':
-                        depth -= 1
-                        if depth == 0:
-                            first_obj_end = i + 1
-                            break
-
-                if first_obj_end > 0:
-                    first_json = raw[:first_obj_end]
-                    return json.loads(first_json)
-
-            raise  # Re-raise original exception
+        # Duplicate output from double execution ("[...][...]" / "{...}{...}"):
+        # parse the first complete JSON value and ignore the rest. raw_decode
+        # handles nested brackets correctly — the previous hand-rolled depth
+        # scan misrouted doubled objects that contained arrays.
+        return json.JSONDecoder().raw_decode(raw.strip())[0]
 
 def _uid(instr: str, chan: str, role: str, name: str) -> str:
     """Return a row-key that is unique for (instrument, USB0::0x05E6::0x2281::4519728::INSTR channel, type, name)."""
@@ -138,10 +110,15 @@ def _debug_channel_suffix(value) -> str:
 _MODE_EXCLUSIVE_INST = {"FTDI_FT232H"}
 
 _MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port"}
+# Role tuples use the canonical saved-role vocabulary (what nets actually
+# carry: "power-supply", "battery"), matching the table in nets.py.
 _SINGLE_CHANNEL_INST = {
-    "Keithley_2281S": ("batt", "supply"),
-    "EA_PSB_10060_60": ("solar", "supply"),
-    "EA_PSB_10080_60": ("solar", "supply"),
+    "Keithley_2281S": ("battery", "power-supply"),
+    "EA_PSB_10060_60": ("solar", "power-supply"),
+    "EA_PSB_10080_60": ("solar", "power-supply"),
+    # Custom serial instrument (DEVICE_CATALOG single_channel=True): only one
+    # net may reference the instrument at its serial:// address.
+    "Rigol_DP711": ("power-supply",),
 }
 
 def _first_word(role: str) -> str:
@@ -169,15 +146,133 @@ _RUN_PYTHON_KWARGS = {
     "watch_stdin_resume": False,
 }
 
+# redirect_stdout swaps the process-global sys.stdout, and run_box_job
+# workers may overlap (e.g. clicking Assign Device while a delete is in
+# flight) — serialize box calls so they can't capture each other's output.
+_RUN_SCRIPT_LOCK = threading.Lock()
+
+
 def _run_script(ctx: click.Context, script: str, dut: str, *args) -> str:
     """Execute an internal script with given arguments and capture stdout."""
     buf = io.StringIO()
-    try:
-        with redirect_stdout(buf):
-            run_python_internal(ctx, get_impl_path(script), dut, **_RUN_PYTHON_KWARGS, args=args)
-    except SystemExit:
-        pass
+    with _RUN_SCRIPT_LOCK:
+        try:
+            with redirect_stdout(buf):
+                run_python_internal(ctx, get_impl_path(script), dut, **_RUN_PYTHON_KWARGS, args=args)
+        except SystemExit:
+            pass
     return buf.getvalue()
+
+
+# ──────────── custom-device (cable) assignment helpers ────────────
+# TUI twin of ``lager nets assign``, backed by the same box-side script
+# (cli/impl/custom_devices.py). Pure helpers live at module level so they
+# can be unit-tested without a running Textual app.
+
+def _run_custom_devices(ctx: click.Context, dut: str, *args):
+    """Run the custom_devices.py backend; None on failure.
+
+    The backend reports failures on stderr with a non-zero exit, which
+    ``_run_script`` swallows — so "no parseable stdout" is the TUI's failure
+    signal, covering both errors and box images that predate the script.
+    """
+    raw = _run_script(ctx, "custom_devices.py", dut, *args)
+    if not raw.strip():
+        return None
+    try:
+        return _parse_backend_json_tui(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def _set_dialog_busy(screen: Screen, busy: bool) -> None:
+    """Disable a dialog's buttons while a run_box_job worker is in flight.
+
+    Prevents double-submits and gives immediate visual feedback that the
+    click registered (the box round-trip itself takes seconds).
+    """
+    for btn in screen.query(Button):
+        btn.disabled = busy
+
+
+def _cable_ident(rec: dict) -> str:
+    """Human label for a cable/assignment identity (serial, else port)."""
+    if rec.get("serial"):
+        return f"serial {rec['serial']}"
+    return f"port {rec.get('port_path')}"
+
+
+def _cable_row_label(c: dict) -> Text:
+    """Tree label for an unassigned-cable row.
+
+    Returns a ``Text`` object (not a str) so the content is markup-inert:
+    device fields like ``[067b:23a3]`` would otherwise be parsed as markup
+    tags and crash rendering with a MarkupError.
+    """
+    return Text(f"{_cable_ident(c)}  [{c.get('vid')}:{c.get('pid')}]  {c.get('tty')}")
+
+
+def _assignment_row_label(a: dict) -> Text:
+    """Tree label for an assignment row (instrument bolded, data inert)."""
+    status = f"→ {a['tty']}" if a.get("tty") else "(cable not connected)"
+    baud_note = f"  baud {a['baud']}" if a.get("baud") else ""
+    return Text.assemble(
+        (str(a.get("instrument", "?")), "bold"),
+        f"  cable {_cable_ident(a)}{baud_note}  {status}",
+    )
+
+
+def _assign_payload(cable: dict, device: str, baud: int | None) -> dict:
+    """Build the ``custom_devices.py assign`` payload for a picked cable.
+
+    Identity choice mirrors the durable-address rules: prefer the USB serial
+    when the cable has one (assignment follows the cable across ports), else
+    pin to the USB port path. Clone cables sharing one serial are rejected
+    by the backend with a pin-by-port hint — that case needs the CLI.
+    """
+    payload: dict = {"instrument": device}
+    if cable.get("serial"):
+        payload["serial"] = cable["serial"]
+    else:
+        payload["port_path"] = cable.get("port_path")
+    if baud is not None:
+        payload["baud"] = baud
+    return payload
+
+
+def _default_net_name(assignment: dict) -> str:
+    """Default net name for a just-assigned instrument (CLI --as-net parity)."""
+    return str(assignment.get("instrument") or "net").lower()
+
+
+def _net_from_assignment(assignment: dict, name: str) -> Net:
+    """Build the saved-net row for a just-assigned instrument (TUI --as-net).
+
+    Mirrors the CLI's --as-net derivation: the first catalog role verbatim
+    (saved supply nets must carry the scanner-vocabulary "power-supply" —
+    see the nets-add tables) and the role's first catalog channel.
+    """
+    roles = assignment.get("roles") or ["power-supply"]
+    role = roles[0]
+    channels = (assignment.get("channels") or {}).get(role) or ["1"]
+    return Net(assignment.get("instrument", ""), str(channels[0]), role, name,
+               assignment.get("address", ""))
+
+
+def _net_name_taken(nets: list["Net"], name: str) -> bool:
+    """True if a saved net already uses *name* (names are globally unique)."""
+    return any(n.saved and n.net == name for n in nets)
+
+
+def _address_has_saved_net(nets: list["Net"], address: str) -> bool:
+    """True if any saved net is already bound to *address*.
+
+    Used to suppress the post-assign Create Net offer on a re-assign (e.g.
+    a baud-only update keeps the existing nets): catalog instruments are
+    single-channel, and offering the dialog again would let a second net be
+    saved for the same instrument, bypassing nets-add's single-channel check.
+    """
+    return bool(address) and any(n.saved and n.addr == address for n in nets)
 
 _UART_PIN_HINT = (
     "UART nets need either a /dev/tty* path or a non-empty USB serial in "
@@ -252,13 +347,16 @@ def _save_nets_batch(ctx: click.Context, dut: str, nets: list["Net"], custom_nam
     nets_data = []
     for n in nets:
         net_name = custom_names.get(n.key(), n.net)
-        nets_data.append({
+        record = {
             "name": net_name,
             "role": n.type,
             "address": n.addr,
             "instrument": n.instrument,
             "pin": n.chan,
-        })
+        }
+        if n.params:
+            record["params"] = n.params
+        nets_data.append(record)
 
     # Try batch save first
     try:
@@ -277,13 +375,16 @@ def _save_nets_batch(ctx: click.Context, dut: str, nets: list["Net"], custom_nam
     for n in nets:
         try:
             net_name = custom_names.get(n.key(), n.net)
-            _run_script(ctx, "net.py", dut, "save", json.dumps({
+            record = {
                 "name": net_name,
                 "role": n.type,
                 "address": n.addr,
                 "instrument": n.instrument,
                 "pin": n.chan,
-            }))
+            }
+            if n.params:
+                record["params"] = n.params
+            _run_script(ctx, "net.py", dut, "save", json.dumps(record))
             saved_count += 1
         except Exception:
             pass  # Continue trying to save other nets
@@ -320,6 +421,10 @@ class Net:
     purpose: str = ""
     notes: str = ""
     tags: list[str] = field(default_factory=list)
+    # Custom LabJack i2c/spi pin assignment (sda_pin/scl_pin or
+    # cs_pin/clk_pin/mosi_pin/miso_pin). None means default pins; the box
+    # dispatchers decode the legacy channel string in that case.
+    params: dict | None = None
     _uid: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -1087,15 +1192,24 @@ class EditDetailsDialog(Screen):
             "tags": tags,
         }
 
-        try:
-            _run_script(app.ctx, "net.py", app.dut, "save", json.dumps(net_data))
-            app.show_success(f"Updated details for net '{self.net.net}'")
-        except Exception as e:
-            app.show_error(f"Failed to save details: {str(e)}")
+        _set_dialog_busy(self, True)
 
-        app._sync_saved_from_disk()
-        app._refresh_table()
-        app.pop_screen()
+        def work() -> dict:
+            _run_script(app.ctx, "net.py", app.dut, "save", json.dumps(net_data))
+            return {"saved": app._fetch_saved_records()}
+
+        def done(out: object) -> None:
+            _set_dialog_busy(self, False)
+            if isinstance(out, Exception):
+                app.show_error(f"Failed to save details: {str(out)}")
+            else:
+                app.show_success(f"Updated details for net '{self.net.net}'")
+                if out.get("saved") is not None:
+                    app._apply_saved_records(out["saved"])
+            app._refresh_table()
+            app.pop_screen()
+
+        app.run_box_job(work, done)
 
 
 class ConfirmDelete(Screen):
@@ -1128,33 +1242,42 @@ class ConfirmDelete(Screen):
             return
 
         app.pop_screen()
-        # Delete this net via net.py script
-        try:
-            _run_script(app.ctx, "net.py", app.dut, "delete", self.net.net, self.net.type)
-            app.show_success(f"Successfully deleted net '{self.net.net}'")
-        except Exception as e:
-            app.show_error(f"Failed to delete net: {str(e)}")
-            return
+        app.show_loading(f"Deleting net '{self.net.net}'...")
 
-        if self.net in app.nets:
-            app.nets.remove(self.net)
-        auto_name = f"{self.net.type}{self.net.chan}"
-        duplicate = next(
-            (n for n in app.nets if (n.type, n.instrument, n.chan, n.addr) ==
-             (self.net.type, self.net.instrument, self.net.chan, self.net.addr)),
-            None,
-        )
-        if duplicate is None:
-            app.nets.append(Net(
-                instrument=self.net.instrument,
-                chan=self.net.chan,
-                type=self.net.type,
-                net=auto_name,
-                addr=self.net.addr,
-                saved=False,
-            ))
-        app._sync_saved_from_disk()
-        app._refresh_table()
+        # Delete this net via net.py script (off the UI thread)
+        def work() -> dict:
+            _run_script(app.ctx, "net.py", app.dut, "delete", self.net.net, self.net.type)
+            return {"saved": app._fetch_saved_records()}
+
+        def done(out: object) -> None:
+            app.hide_loading()
+            if isinstance(out, Exception):
+                app.show_error(f"Failed to delete net: {str(out)}")
+                return
+            app.show_success(f"Successfully deleted net '{self.net.net}'")
+
+            if self.net in app.nets:
+                app.nets.remove(self.net)
+            auto_name = f"{self.net.type}{self.net.chan}"
+            duplicate = next(
+                (n for n in app.nets if (n.type, n.instrument, n.chan, n.addr) ==
+                 (self.net.type, self.net.instrument, self.net.chan, self.net.addr)),
+                None,
+            )
+            if duplicate is None:
+                app.nets.append(Net(
+                    instrument=self.net.instrument,
+                    chan=self.net.chan,
+                    type=self.net.type,
+                    net=auto_name,
+                    addr=self.net.addr,
+                    saved=False,
+                ))
+            if out.get("saved") is not None:
+                app._apply_saved_records(out["saved"])
+            app._refresh_table()
+
+        app.run_box_job(work, done)
 
 class RenameDialog(Screen):
     """Prompt + text box to enter a new name."""
@@ -1206,36 +1329,39 @@ class RenameDialog(Screen):
             return
 
         app.pop_screen()
-        # Rename the net via net.py script
-        try:
-            _run_script(
-                app.ctx,
-                "net.py",
-                app.dut,
-                "rename",
-                self.net.net,
-                new_name
-            )
+        app.show_loading(f"Renaming net to '{new_name}'...")
+        old_name = self.net.net
+
+        # Rename the net via net.py script (off the UI thread)
+        def work() -> dict:
+            _run_script(app.ctx, "net.py", app.dut, "rename", old_name, new_name)
+            return {"saved": app._fetch_saved_records()}
+
+        def done(out: object) -> None:
+            app.hide_loading()
+            if isinstance(out, Exception):
+                app.show_error(f"Failed to rename net: {str(out)}")
+                return
             app.show_success(f"Successfully renamed net to '{new_name}'")
-        except Exception as e:
-            app.show_error(f"Failed to rename net: {str(e)}")
-            return
 
-        # Update the net name locally
-        self.net.net = new_name
-        self.net._uid = _uid(self.net.instrument, self.net.chan, self.net.type, new_name)
+            # Update the net name locally
+            self.net.net = new_name
+            self.net._uid = _uid(self.net.instrument, self.net.chan, self.net.type, new_name)
 
-        placeholder = next(
-            (n for n in app.nets if not n.saved and
-             (n.type, n.instrument, n.chan, n.addr) ==
-             (self.net.type, self.net.instrument, self.net.chan, self.net.addr)),
-            None,
-        )
-        if placeholder is not None:
-            app.nets.remove(placeholder)
+            placeholder = next(
+                (n for n in app.nets if not n.saved and
+                 (n.type, n.instrument, n.chan, n.addr) ==
+                 (self.net.type, self.net.instrument, self.net.chan, self.net.addr)),
+                None,
+            )
+            if placeholder is not None:
+                app.nets.remove(placeholder)
 
-        app._sync_saved_from_disk()
-        app._refresh_table()
+            if out.get("saved") is not None:
+                app._apply_saved_records(out["saved"])
+            app._refresh_table()
+
+        app.run_box_job(work, done)
 
 class RenameNewNetDialog(Screen):
     """Prompt + text box to enter a new name for an unsaved net in AddScreen."""
@@ -1367,6 +1493,133 @@ class JLinkDeviceTypeDialog(Screen):
 
         self.app.pop_screen()
         self.callback(True, jlink_device_type)
+
+def _labjack_claimed_pin_map(all_nets: list["Net"], target: "Net") -> dict[str, str]:
+    """Map DIO pin name -> owning net name for pins claimed by *saved*
+    LabJack nets at the same address as ``target``. Used by the pin-picker
+    dialog to surface (non-blocking) conflict warnings."""
+    claimed: dict[str, str] = {}
+    for s in all_nets:
+        if not s.saved or s.addr != target.addr:
+            continue
+        if s.instrument != "LabJack_T7":
+            continue
+        for pin in _lj.claimed_pins_from_chan(s.type, s.chan):
+            claimed.setdefault(pin, s.net)
+    return claimed
+
+
+class LabJackPinDialog(Screen):
+    """Pick the LabJack DIO pins for an i2c/spi net before saving it.
+
+    Dropdowns are prefilled with the historical defaults (I2C: SDA=FIO4
+    SCL=FIO5; SPI: CS=FIO0 SCK=FIO1 MOSI=FIO2 MISO=FIO3), so accepting the
+    dialog unchanged saves exactly what the TUI saved before this dialog
+    existed (the legacy channel string, no params). Custom selections are
+    written to the net's ``params`` dict — the format the box dispatchers
+    already consume — plus a labeled channel summary for display.
+
+    Pins already claimed by saved LabJack nets show a warning but don't
+    block: that matches the runtime PinRegistry behavior and the
+    ``lager nets add`` CLI.
+    """
+
+    def __init__(
+        self,
+        net: "Net",
+        claimed: dict[str, str],
+        callback: Callable[[bool], None],
+    ):
+        super().__init__()
+        self.net = net
+        self.claimed = claimed
+        self.callback = callback
+        self.signals = _lj.I2C_SIGNALS if net.type == "i2c" else _lj.SPI_SIGNALS
+        self.defaults = (
+            _lj.I2C_DEFAULT_PINS if net.type == "i2c" else _lj.SPI_DEFAULT_PINS
+        )
+
+    def _select_id(self, signal: str) -> str:
+        return f"pin_{signal.lower()}"
+
+    def compose(self) -> ComposeResult:
+        pin_options = [(name, name) for name in _lj.ALL_PIN_NAMES]
+        with Vertical(classes="dialog"):
+            yield Static(
+                f"Configure {self.net.type.upper()} Pins", classes="dialog-title"
+            )
+            yield Static(
+                f"Net: {self.net.net}  |  Instrument: LabJack T7\n"
+                f"Any DIO pin may be used. Defaults are preselected.",
+                classes="dialog-content",
+            )
+            for signal in self.signals:
+                options = list(pin_options)
+                if signal == "CS":
+                    options.insert(0, ("(none — manual CS)", _lj.NO_CS))
+                with Horizontal(classes="pin-row"):
+                    yield Label(f"{signal:<5}", classes="pin-label")
+                    yield Select(
+                        options,
+                        value=self.defaults[signal],
+                        allow_blank=False,
+                        id=self._select_id(signal),
+                    )
+            yield Static("", id="pin_warn", classes="pin-warn")
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Cancel", id="pin-cancel")
+                yield Button("Save", id="pin-confirm", variant="success")
+
+    def _chosen(self) -> dict[str, str]:
+        return {
+            signal: str(self.query_one(f"#{self._select_id(signal)}", Select).value)
+            for signal in self.signals
+        }
+
+    def _update_warning(self) -> None:
+        chosen = self._chosen()
+        notes = []
+        seen: dict[str, str] = {}
+        for signal, pin in chosen.items():
+            if pin == _lj.NO_CS:
+                continue
+            if pin in seen:
+                notes.append(f"{seen[pin]} and {signal} both use {pin}")
+            seen.setdefault(pin, signal)
+            if pin in self.claimed:
+                notes.append(f"{pin} is used by net '{self.claimed[pin]}'")
+        self.query_one("#pin_warn", Static).update(
+            ("Warning: " + "; ".join(notes)) if notes else ""
+        )
+
+    @on(Select.Changed)
+    def _on_pin_changed(self, event: Select.Changed) -> None:
+        self._update_warning()
+
+    @on(Button.Pressed)
+    def _on_pin_button(self, event: Button.Pressed) -> None:
+        if event.button.id == "pin-cancel":
+            self.app.pop_screen()
+            self.callback(False)
+            return
+        if event.button.id != "pin-confirm":
+            return
+
+        label, params, error = _lj.resolve_pin_selection(self.net.type, self._chosen())
+        if error:
+            self.query_one("#pin_warn", Static).update(f"Error: {error}")
+            return
+
+        if label is not None:
+            # Custom pins: labeled summary for display, params for the
+            # box dispatchers. Default selection leaves the net untouched
+            # so the saved record is identical to a pre-dialog save.
+            self.net.chan = label
+            self.net.params = params
+
+        self.app.pop_screen()
+        self.callback(True)
+
 
 class AddScreen(Screen):
     """Dialog that lets the user multi-select nets to add (unsaved only)."""
@@ -1644,21 +1897,96 @@ class AddScreen(Screen):
                 self.mount(Static(msg, id="keithley_hint", classes="warning"))
             return
 
-        # If no debug nets selected, save immediately using batch save
-        if not debug_nets:
-            try:
-                ok = _save_nets_batch(main.ctx, main.dut, selected_nets, self.custom_names)
-            except UARTNetSaveValidationError as exc:
-                main.show_error(str(exc))
+        # LabJack i2c/spi nets get a pin-picker dialog before saving;
+        # defaults are preselected so accepting unchanged behaves exactly
+        # like the pre-dialog flow.
+        labjack_pin_nets = [
+            n for n in selected_nets
+            if n.type in ("i2c", "spi") and n.instrument == "LabJack_T7"
+        ]
+
+        def after_pin_dialogs():
+            self._save_selected(main, selected_nets, debug_nets, normal_nets)
+
+        if labjack_pin_nets:
+            self._pin_nets = labjack_pin_nets
+            self._pin_idx = 0
+
+            def handle_pin_complete(success: bool):
+                if not success:
+                    # Cancel aborts the whole add; the Add screen stays up
+                    # with the selection intact.
+                    return
+                self._pin_idx += 1
+                if self._pin_idx < len(self._pin_nets):
+                    prompt_next_pin()
+                else:
+                    after_pin_dialogs()
+
+            def prompt_next_pin():
+                n = self._pin_nets[self._pin_idx]
+                claimed = _labjack_claimed_pin_map(main.nets, n)
+                main.push_screen(LabJackPinDialog(n, claimed, handle_pin_complete))
+
+            prompt_next_pin()
+            return
+
+        after_pin_dialogs()
+
+    def _batch_save_and_close(
+        self,
+        main: "NetApp",
+        nets_to_save: list[Net],
+        pop_on_validation_error: bool = False,
+    ) -> None:
+        """Batch-save off the UI thread, then refresh and close this screen.
+
+        ``pop_on_validation_error`` preserves the historical difference
+        between the two save paths: the plain path keeps the Add screen up
+        (selection intact) when a UART net fails validation, while the
+        J-Link path abandons it.
+        """
+        _set_dialog_busy(self, True)
+
+        def work() -> dict:
+            ok = _save_nets_batch(main.ctx, main.dut, nets_to_save, self.custom_names)
+            return {"ok": ok, "saved": main._fetch_saved_records()}
+
+        def done(out: object) -> None:
+            _set_dialog_busy(self, False)
+            if isinstance(out, UARTNetSaveValidationError):
+                main.show_error(str(out))
+                if pop_on_validation_error:
+                    main.pop_screen()
                 return
-            if ok:
-                main.show_success(f"Successfully added {len(selected_nets)} nets")
+            if isinstance(out, Exception):
+                main.show_error(f"Failed to save nets: {str(out)}")
+                return
+            if out["ok"]:
+                main.show_success(f"Successfully added {len(nets_to_save)} nets")
             else:
                 main.show_error("Failed to save some nets")
             # Refresh saved nets and update UI
-            main._sync_saved_from_disk()
+            if out.get("saved") is not None:
+                main._apply_saved_records(out["saved"])
             main._refresh_table()
             main.pop_screen()
+
+        main.run_box_job(work, done)
+
+    def _save_selected(
+        self,
+        main: "NetApp",
+        selected_nets: list[Net],
+        debug_nets: list[Net],
+        normal_nets: list[Net],
+    ) -> None:
+        """Save the selection, prompting for J-Link device types first if
+        any debug nets are included. (Tail of the add-confirm flow; split
+        out so the LabJack pin dialogs can run before it.)"""
+        # If no debug nets selected, save immediately using batch save
+        if not debug_nets:
+            self._batch_save_and_close(main, selected_nets)
             return
 
         # If there are debug nets, prompt for each J-Link device type
@@ -1687,19 +2015,8 @@ class AddScreen(Screen):
                 return
             # All debug prompts done – save all pending nets using batch save
             all_nets_to_save = self._pending_normal_nets + self._pending_debug_nets
-            try:
-                ok = _save_nets_batch(main.ctx, main.dut, all_nets_to_save, self.custom_names)
-            except UARTNetSaveValidationError as exc:
-                main.show_error(str(exc))
-                main.pop_screen()
-                return
-            if ok:
-                main.show_success(f"Successfully added {len(all_nets_to_save)} nets")
-            else:
-                main.show_error("Failed to save some nets")
-            main._sync_saved_from_disk()
-            main._refresh_table()
-            main.pop_screen()
+            self._batch_save_and_close(main, all_nets_to_save,
+                                       pop_on_validation_error=True)
 
         def prompt_next():
             n = self._pending_debug_nets[self._debug_idx]
@@ -1734,15 +2051,415 @@ class ConfirmDeleteAll(Screen):
             app.pop_screen()
             return
 
-        # Delete all saved nets via net.py script
-        try:
+        _set_dialog_busy(self, True)
+
+        # Delete all saved nets via net.py script (off the UI thread)
+        def work() -> dict:
             _run_script(app.ctx, "net.py", app.dut, "delete-all")
-            app.show_success("Successfully deleted all nets")
-        except Exception as e:
-            app.show_error(f"Failed to delete all nets: {str(e)}")
-        app._sync_saved_from_disk()
+            return {"saved": app._fetch_saved_records()}
+
+        def done(out: object) -> None:
+            _set_dialog_busy(self, False)
+            if isinstance(out, Exception):
+                app.show_error(f"Failed to delete all nets: {str(out)}")
+            else:
+                app.show_success("Successfully deleted all nets")
+                if out.get("saved") is not None:
+                    app._apply_saved_records(out["saved"])
+            app._refresh_table()
+            app.pop_screen()
+
+        app.run_box_job(work, done)
+
+
+# ──────────────── custom-device assignment screens ────────────────
+
+class AssignDeviceScreen(Screen):
+    """Map a USB-serial cable to a catalog instrument (custom devices).
+
+    Shows the box's unassigned USB-serial cables and current assignments
+    (from cli/impl/custom_devices.py list). Selecting a cable opens the
+    device-pick dialog; selecting an assignment offers removal. After
+    either action the app re-scans instruments so the (un)assigned
+    instrument appears in / disappears from the Add Nets flow.
+    """
+
+    def __init__(self, data: dict) -> None:
+        super().__init__()
+        self.data: dict = data or {}
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Static("Assign Custom Device", classes="dialog-title")
+            yield Static(
+                "Some instruments (e.g. a Rigol DP711 on RS-232) reach the box "
+                "through a generic USB-serial cable the scanner can't identify. "
+                "Assign the cable to its instrument once — it then shows up like "
+                "any auto-detected device and nets are added the normal way.\n\n"
+                "Select a cable to assign it; select an assignment to remove it.",
+                classes="dialog-content",
+            )
+            self.assign_tree = Tree("Cables", id="assign_tree")
+            self.assign_tree.show_root = False
+            self.assign_tree.root.expand()
+            yield self.assign_tree
+            self.busy_note = Static("", id="assign_busy", classes="loading")
+            self.busy_note.display = False
+            yield self.busy_note
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Close", id="assign-close", variant="primary")
+
+    def on_mount(self) -> None:
+        self._build_tree()
+        self.assign_tree.focus()
+
+    def _build_tree(self) -> None:
+        tree = self.assign_tree
+        tree.clear()
+
+        cables_branch = tree.root.add("Unassigned USB-serial cables", expand=True)
+        cables = self.data.get("cables") or []
+        for c in cables:
+            cables_branch.add_leaf(_cable_row_label(c), data={"kind": "cable", "rec": c})
+        if not cables:
+            cables_branch.add_leaf("(none — plug the instrument's cable into the box)")
+
+        assigned_branch = tree.root.add("Assignments", expand=True)
+        assignments = self.data.get("assignments") or []
+        for a in assignments:
+            assigned_branch.add_leaf(_assignment_row_label(a),
+                                     data={"kind": "assignment", "rec": a})
+        if not assignments:
+            assigned_branch.add_leaf("(none)")
+
+    def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
+        event.stop()
+        data = event.node.data
+        if not isinstance(data, dict):
+            # Branch headers / "(none)" placeholders: just toggle branches.
+            if event.node.children:
+                event.node.toggle()
+            return
+        if data["kind"] == "cable":
+            catalog = self.data.get("catalog") or []
+            self.app.push_screen(DevicePickDialog(data["rec"], catalog, self._do_assign))
+        elif data["kind"] == "assignment":
+            self.app.push_screen(ConfirmUnassignDialog(data["rec"], self._do_unassign))
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "assign-close":
+            self.app.pop_screen()
+
+    # ---- backend actions -------------------------------------------------
+    # Each action batches its box round-trips (the change itself plus the
+    # refreshes the UI needs) into one run_box_job worker: the calls still
+    # run sequentially, but off the UI thread, so the app stays responsive
+    # instead of freezing for several seconds per click.
+
+    def _set_busy(self, message: str | None) -> None:
+        """Show progress and ignore further input while a box job runs."""
+        busy = message is not None
+        self.busy_note.update(message or "")
+        self.busy_note.display = busy
+        self.assign_tree.disabled = busy
+        self.query_one("#assign-close", Button).disabled = busy
+
+    def _apply_refreshes(self, out: dict) -> None:
+        """Apply the refresh data an action's worker fetched (UI thread)."""
+        app: NetApp = self.app  # type: ignore[assignment]
+        if out.get("saved") is not None:
+            app._apply_saved_records(out["saved"])
+        if out.get("instruments") is not None:
+            app._apply_instruments(out["instruments"])
         app._refresh_table()
-        app.pop_screen()
+        if isinstance(out.get("data"), dict):
+            self.data = out["data"]
+        self._build_tree()
+
+    def _do_assign(self, cable: dict, device: str, baud: int | None) -> None:
+        app: NetApp = self.app  # type: ignore[assignment]
+        payload = _assign_payload(cable, device, baud)
+        self._set_busy(f"Assigning {device}...")
+
+        def work() -> dict:
+            result = _run_custom_devices(app.ctx, app.dut, "assign", json.dumps(payload))
+            if not isinstance(result, dict) or not result.get("address"):
+                return {"result": result}
+            out: dict = {"result": result}
+            if result.get("deleted_nets"):
+                # Replacing the cable's previous assignment cascaded to its
+                # nets — re-sync the saved list.
+                out["saved"] = app._fetch_saved_records()
+            out["instruments"] = app._fetch_instruments()
+            out["data"] = _run_custom_devices(app.ctx, app.dut, "list")
+            return out
+
+        def done(out: object) -> None:
+            self._set_busy(None)
+            result = out.get("result") if isinstance(out, dict) else None
+            if not isinstance(result, dict) or not result.get("address"):
+                app.show_error(
+                    "Assignment failed — run 'lager nets assign' in a terminal for details."
+                )
+                return
+            msg = f"Assigned {result.get('instrument', device)}"
+            deleted = result.get("deleted_nets") or []
+            if deleted:
+                msg += f" (deleted stale net{'s' if len(deleted) != 1 else ''}: {', '.join(deleted)})"
+            app.show_success(msg)
+            self._apply_refreshes(out)
+            # TUI twin of --as-net: offer to create the instrument's net now —
+            # unless one already exists for this address (re-assign/baud
+            # update), where a second net would bypass the single-channel
+            # constraint.
+            if not _address_has_saved_net(app.nets, result.get("address", "")):
+                app.push_screen(CreateNetDialog(
+                    result, lambda name: self._create_net(result, name)))
+
+        app.run_box_job(work, done)
+
+    def _create_net(self, assignment: dict, name: str) -> None:
+        """Save the net offered by CreateNetDialog (TUI --as-net)."""
+        app: NetApp = self.app  # type: ignore[assignment]
+        net = _net_from_assignment(assignment, name)
+        self._set_busy(f"Creating net '{name}'...")
+
+        def work() -> dict:
+            ok = _save_nets_batch(app.ctx, app.dut, [net])
+            return {"ok": ok, "saved": app._fetch_saved_records()}
+
+        def done(out: object) -> None:
+            self._set_busy(None)
+            if isinstance(out, UARTNetSaveValidationError):
+                app.show_error(str(out))
+                return
+            if not isinstance(out, dict):
+                app.show_error(f"Failed to create net '{name}'")
+                return
+            if out["ok"]:
+                app.show_success(f"Created net '{name}' for {net.instrument}")
+            else:
+                app.show_error(f"Failed to create net '{name}'")
+            if out.get("saved") is not None:
+                app._apply_saved_records(out["saved"])
+            app._refresh_table()
+
+        app.run_box_job(work, done)
+
+    def _do_unassign(self, assignment: dict) -> None:
+        app: NetApp = self.app  # type: ignore[assignment]
+        if assignment.get("serial"):
+            ident = {"serial": assignment["serial"]}
+        else:
+            ident = {"port_path": assignment.get("port_path")}
+        self._set_busy("Removing assignment...")
+
+        def work() -> dict:
+            result = _run_custom_devices(app.ctx, app.dut, "remove", json.dumps(ident))
+            if not isinstance(result, dict) or not result.get("removed"):
+                return {"result": result}
+            return {
+                "result": result,
+                # The cascade may have changed saved nets on disk — re-sync
+                # so the Saved Nets tree drops them, then re-scan for the
+                # placeholder list.
+                "saved": app._fetch_saved_records(),
+                "instruments": app._fetch_instruments(),
+                "data": _run_custom_devices(app.ctx, app.dut, "list"),
+            }
+
+        def done(out: object) -> None:
+            self._set_busy(None)
+            result = out.get("result") if isinstance(out, dict) else None
+            if not isinstance(result, dict) or not result.get("removed"):
+                app.show_error("Could not remove the assignment.")
+                return
+            msg = f"Removed the {assignment.get('instrument')} assignment"
+            deleted = result.get("deleted_nets") or []
+            if deleted:
+                # Nets live and die with their assignment (backend cascade).
+                msg += f" (deleted net{'s' if len(deleted) != 1 else ''}: {', '.join(deleted)})"
+            app.show_success(msg)
+            self._apply_refreshes(out)
+
+        app.run_box_job(work, done)
+
+
+class DevicePickDialog(Screen):
+    """Pick the catalog instrument (and optional baud) for a cable."""
+
+    def __init__(self, cable: dict, catalog: list[dict],
+                 callback: Callable[[dict, str, int | None], None]) -> None:
+        super().__init__()
+        self.cable = cable
+        self.catalog = catalog
+        self.callback = callback
+        # One shared default-baud hint; per-device defaults still apply on
+        # the box (the override is only needed when the front panel differs).
+        defaults = sorted({e.get("default_baud") for e in catalog if e.get("default_baud")})
+        hint = f"default {defaults[0]}" if len(defaults) == 1 else "instrument default"
+        self.baud_input = Input(
+            placeholder=f"Baud override (optional, {hint})", id="assign_baud"
+        )
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="dialog"):
+            yield Static("Assign Cable", classes="dialog-title")
+            # markup=False: the interpolated device fields (e.g. "[067b:23a3]")
+            # would otherwise be parsed as markup tags and crash rendering.
+            yield Static(
+                f"Cable: {_cable_ident(self.cable)}  "
+                f"[{self.cable.get('vid')}:{self.cable.get('pid')}]  {self.cable.get('tty')}\n\n"
+                f"Which instrument is on the other end of this cable?\n"
+                f"A baud override must match the instrument's front-panel setting.",
+                classes="dialog-content",
+                markup=False,
+            )
+            for i, entry in enumerate(self.catalog):
+                roles = ", ".join(entry.get("roles") or [])
+                yield Button(
+                    f"{entry.get('display_name', entry['name'])} ({roles})",
+                    id=f"assign-dev-{i}", variant="success",
+                )
+            yield self.baud_input
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Cancel", id="assign-dev-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "assign-dev-cancel":
+            self.app.pop_screen()
+            return
+        if not (event.button.id or "").startswith("assign-dev-"):
+            return
+
+        baud_raw = self.baud_input.value.strip()
+        baud: int | None = None
+        if baud_raw:
+            try:
+                baud = int(baud_raw)
+                if baud <= 0:
+                    raise ValueError
+            except ValueError:
+                msg = f"Baud must be a positive integer (got {baud_raw!r})."
+                try:
+                    self.query_one("#baud_hint", Static).update(msg)
+                except NoMatches:
+                    # markup=False: user-typed input could contain "[".
+                    self.mount(Static(msg, id="baud_hint", classes="warning",
+                                      markup=False))
+                return
+
+        entry = self.catalog[int(event.button.id.rsplit("-", 1)[1])]
+        self.app.pop_screen()
+        self.callback(self.cable, entry["name"], baud)
+
+
+class CreateNetDialog(Screen):
+    """Offer to create the net for a just-assigned instrument.
+
+    The TUI twin of ``lager nets assign --as-net``: shown right after a
+    successful assignment, pre-filled with the CLI's default name. Skipping
+    is always safe — the instrument stays available under + Add Nets.
+    """
+
+    def __init__(self, assignment: dict, callback: Callable[[str], None]) -> None:
+        super().__init__()
+        self.assignment = assignment
+        self.callback = callback
+        # NOTE: the default value is set in on_mount, not here — Input's
+        # value watcher needs an active app, and the constructor may run
+        # outside one (e.g. in tests).
+        self.name_input = Input(placeholder="Net name", id="asnet_name")
+
+    def compose(self) -> ComposeResult:
+        net = _net_from_assignment(self.assignment, "")
+        with Vertical(classes="dialog"):
+            yield Static("Create Net", classes="dialog-title")
+            # markup=False: interpolated device data (see DevicePickDialog).
+            yield Static(
+                f"{self.assignment.get('instrument')} is assigned. "
+                f"Create its net now?\n\n"
+                f"Role: {net.type}   Channel: {net.chan}\n"
+                f"Address: {self.assignment.get('address')}",
+                classes="dialog-content",
+                markup=False,
+            )
+            yield self.name_input
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Skip", id="asnet-skip")
+                yield Button("Create Net", id="asnet-create", variant="success")
+
+    def on_mount(self) -> None:
+        self.name_input.value = _default_net_name(self.assignment)
+        self.name_input.focus()
+
+    def _show_hint(self, msg: str) -> None:
+        try:
+            self.query_one("#asnet_hint", Static).update(msg)
+        except NoMatches:
+            # markup=False: the message echoes user-typed input.
+            self.mount(Static(msg, id="asnet_hint", classes="warning",
+                              markup=False))
+
+    def _try_create(self) -> None:
+        name = self.name_input.value.strip()
+        if not name:
+            self._show_hint("Enter a net name (or press Skip).")
+            return
+        app: NetApp = self.app  # type: ignore[assignment]
+        if _net_name_taken(app.nets, name):
+            self._show_hint(f"A net named '{name}' already exists — "
+                            f"net names are globally unique.")
+            return
+        self.app.pop_screen()
+        self.callback(name)
+
+    @on(Input.Submitted, "#asnet_name")
+    def _on_name_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self._try_create()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "asnet-skip":
+            self.app.pop_screen()
+            return
+        if event.button.id == "asnet-create":
+            self._try_create()
+
+
+class ConfirmUnassignDialog(Screen):
+    """Are-you-sure overlay for removing a custom-device assignment."""
+
+    def __init__(self, assignment: dict, callback: Callable[[dict], None]) -> None:
+        super().__init__()
+        self.assignment = assignment
+        self.callback = callback
+
+    def compose(self) -> ComposeResult:
+        a = self.assignment
+        addr_note = (f"\nSaved nets pointing at {a['address']} will be deleted."
+                     if a.get("address") else "")
+        with Vertical(classes="dialog"):
+            yield Static("Remove Assignment", classes="dialog-title")
+            # markup=False: defensive — interpolated device data must never be
+            # parsed as markup (see DevicePickDialog).
+            yield Static(
+                f"Remove the {a.get('instrument')} assignment from the cable at "
+                f"{_cable_ident(a)}?\n\n"
+                f"The cable will be offered as a generic UART device again."
+                f"{addr_note}",
+                classes="dialog-content warning",
+                markup=False,
+            )
+            with Horizontal(classes="dialog-buttons"):
+                yield Button("Cancel", id="unassign-cancel")
+                yield Button("Remove", id="unassign-confirm", variant="error")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.app.pop_screen()
+        if event.button.id == "unassign-confirm":
+            self.callback(self.assignment)
+
 
 # ────────────────────────── main app ───────────────────────────────
 class NetApp(App):
@@ -1996,14 +2713,101 @@ class NetApp(App):
         padding: 1 0;
     }
 
+    /* LabJack pin-picker dialog */
+    .pin-row {
+        height: 3;
+        margin: 0 0;
+    }
+
+    .pin-label {
+        width: 8;
+        padding: 1 1;
+        text-style: bold;
+        color: $accent;
+    }
+
+    .pin-row Select {
+        width: 32;
+    }
+
+    .pin-warn {
+        color: $warning;
+        text-style: bold;
+        margin: 1 0;
+        height: auto;
+    }
+
     /* Action buttons specific styling */
     #add_btn {
         background: mediumaquamarine;
         color: black;
     }
 
+    #assign_btn {
+        background: khaki;
+        color: black;
+    }
+
     #del_all_btn {
         background: coral;
+        color: black;
+    }
+
+    /* Custom-device assignment screen */
+    #assign_tree {
+        background: $surface;
+        border: solid hotpink;
+        height: 1fr;
+        max-height: 25;
+        margin: 1 0;
+    }
+
+    #assign_tree > .tree--guides {
+        color: hotpink;
+    }
+
+    #assign_tree > .tree--cursor {
+        background: $accent 30%;
+    }
+
+    #assign_tree > .tree--highlight {
+        background: hotpink 20%;
+    }
+
+    #assign_baud {
+        max-width: 60;
+    }
+
+    #assign-dev-cancel {
+        background: coral;
+        color: black;
+    }
+
+    #assign-close {
+        min-width: 12;
+    }
+
+    #unassign-cancel {
+        background: mediumaquamarine;
+        color: black;
+    }
+
+    #unassign-confirm {
+        background: coral;
+        color: black;
+    }
+
+    #asnet_name {
+        max-width: 60;
+    }
+
+    #asnet-skip {
+        background: coral;
+        color: black;
+    }
+
+    #asnet-create {
+        background: mediumaquamarine;
         color: black;
     }
 
@@ -2128,9 +2932,11 @@ class NetApp(App):
             # Center buttons container
             with Horizontal(classes="button-container-center"):
                 self.add_btn = Button("+ Add Nets", id="add_btn", variant="primary")
+                self.assign_btn = Button("Assign Device", id="assign_btn")
                 self.del_all_btn = Button("Delete All Nets", id="del_all_btn", variant="error")
                 self.del_all_btn.display = False  # shown only when nets exist
                 yield self.add_btn
+                yield self.assign_btn
                 yield self.del_all_btn
             # Right button container
             self.right_container = Horizontal(classes="button-container-right")
@@ -2141,10 +2947,11 @@ class NetApp(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.show_loading("Loading saved nets...")
-        self._sync_saved_from_disk()
+        # launch_tui fetched instruments and saved nets moments before
+        # constructing the app — re-fetching here blocked the UI thread for
+        # another box round-trip, so the freshly painted screen ignored
+        # clicks for its duration.
         self._refresh_table()
-        self.hide_loading()
 
     def show_loading(self, message: str) -> None:
         """Show loading message."""
@@ -2158,6 +2965,25 @@ class NetApp(App):
         """Hide loading message."""
         if hasattr(self, 'loading_msg'):
             self.loading_msg.remove()
+            del self.loading_msg
+
+    def run_box_job(self, work, on_done) -> None:
+        """Run blocking box I/O on a worker thread, then update the UI.
+
+        Every box round-trip (run_python_internal) can take seconds; doing
+        one synchronously inside an event handler freezes the whole event
+        loop — buttons stop responding until it returns, which reads as
+        "I have to click multiple times". ``work`` runs on a thread and must
+        not touch widgets; ``on_done`` receives its return value (or the
+        raised exception) back on the UI thread.
+        """
+        def job() -> None:
+            try:
+                result = work()
+            except Exception as exc:
+                result = exc
+            self.call_from_thread(on_done, result)
+        self.run_worker(job, thread=True, exclusive=False)
 
     def _refresh_table(self) -> None:
         """Re-populate the saved nets tree & toggle *Delete All* visibility."""
@@ -2172,21 +2998,19 @@ class NetApp(App):
             self.no_saved.display = True
             self.del_all_btn.display = False
 
-    def _sync_saved_from_disk(self) -> None:
-        # Retrieve saved nets from disk via net.py list
+    def _fetch_saved_records(self) -> list | None:
+        """Blocking ``net.py list`` round-trip; None on failure.
+
+        No widget access — safe to call from a ``run_box_job`` thread.
+        """
         try:
             output = _run_script(self.ctx, "net.py", self.dut, "list")
-            saved_from_disk = _parse_backend_json_tui(output) if output.strip() else []
-        except (json.JSONDecodeError, AttributeError) as e:
-            # Show error message to user but continue with empty list
-            self.show_error(f"Error loading saved nets: {str(e)}")
-            saved_from_disk = []
-        except Exception as e:
-            # Handle any other unexpected errors
-            self.show_error(f"Unexpected error: {str(e)}")
-            saved_from_disk = []
+            return _parse_backend_json_tui(output) if output.strip() else []
+        except Exception:
+            return None
 
-        # Keep unsaved nets and replace saved nets with those from disk
+    def _apply_saved_records(self, saved_from_disk: list) -> None:
+        """Replace saved nets with the given backend records (UI thread)."""
         self.nets = [n for n in self.nets if not n.saved] + [
             Net(
                 instrument=rec.get("instrument", "NA"),
@@ -2201,6 +3025,32 @@ class NetApp(App):
                 tags=rec.get("tags", []),
             ) for rec in saved_from_disk
         ]
+        self._ensure_autogen_unsaved()
+
+    def _fetch_instruments(self) -> list | None:
+        """Blocking instrument re-scan; None on failure.
+
+        No widget access — safe to call from a ``run_box_job`` thread.
+        """
+        try:
+            raw = _run_script(self.ctx, "query_instruments.py", self.dut)
+            # Duplicate-tolerant parse — same reason as everywhere else this
+            # file consumes backend stdout ("double execution" boxes).
+            return _parse_backend_json_tui(raw) if raw.strip() else []
+        except (json.JSONDecodeError, AttributeError):
+            # Keep the previous scan rather than wiping the add list.
+            return None
+
+    def _apply_instruments(self, inst_list: list) -> None:
+        """Rebuild the unsaved placeholder nets from a fresh scan (UI thread).
+
+        Called after a custom-device (un)assignment changes what the scanner
+        reports: the assigned instrument appears (or disappears) and its
+        generic UART cable record does the inverse. Saved nets are left
+        untouched; only the auto-generated placeholders are rebuilt.
+        """
+        self.inst_list = inst_list
+        self.nets = [n for n in self.nets if n.saved]
         self._ensure_autogen_unsaved()
 
     def show_error(self, message: str) -> None:
@@ -2271,9 +3121,32 @@ class NetApp(App):
             self.push_screen(NetActionDialog(data.net))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Handle *Add Nets*, *Delete All Nets*, and *Save & Exit* buttons."""
+        """Handle *Add Nets*, *Assign Device*, *Delete All Nets*, and *Exit* buttons."""
         if event.button.id == "add_btn":
             self.push_screen(AddScreen(self.nets, self.multi_labjack))
+            return
+        if event.button.id == "assign_btn":
+            # The custom_devices.py round-trip takes seconds — run it off the
+            # UI thread so the app keeps responding, and disable the button
+            # so the click visibly registered.
+            self.assign_btn.disabled = True
+            self.show_loading("Contacting box...")
+
+            def _open_assign(data: object) -> None:
+                self.hide_loading()
+                self.assign_btn.disabled = False
+                if not isinstance(data, dict):
+                    self.show_error(
+                        "Custom-device assignment needs newer box software — "
+                        "run 'lager update' and retry."
+                    )
+                    return
+                self.push_screen(AssignDeviceScreen(data))
+
+            self.run_box_job(
+                lambda: _run_custom_devices(self.ctx, self.dut, "list"),
+                _open_assign,
+            )
             return
         if event.button.id == "del_all_btn":
             self.push_screen(ConfirmDeleteAll())
@@ -2287,6 +3160,8 @@ class NetApp(App):
         buttons = []
         if self.add_btn.visible:
             buttons.append(self.add_btn)
+        if self.assign_btn.visible:
+            buttons.append(self.assign_btn)
         if self.del_all_btn.visible:
             buttons.append(self.del_all_btn)
         if self.exit_btn.visible:

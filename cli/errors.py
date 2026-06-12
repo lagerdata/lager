@@ -271,13 +271,15 @@ def net_not_specified_error(net_label, command, *, default_flag=None):
     )
 
 
-def ssh_error(stderr, ip):
+def ssh_error(stderr, ip, user=None):
     """Translate the stderr of a failed ``ssh`` subprocess into a LagerError.
 
     The same handful of SSH failure modes (key not authorized, refused, no
     route, bad hostname, changed host key) recur across `lager logs`,
     `install`, and `uninstall`. This is the single place that maps them to
-    actionable guidance.
+    actionable guidance. ``user`` is the box's SSH user when the caller
+    knows it (boxes with custom users); it only refines the manual
+    ssh-copy-id fix text.
 
     Note callers inside a broad ``except Exception`` should use
     ``ssh_error(...).die()`` rather than ``raise`` — see :meth:`LagerError.die`.
@@ -289,7 +291,8 @@ def ssh_error(stderr, ip):
             'SSH key authentication failed — the box rejected your key.',
             cause='Your SSH key has not been authorized on this box yet.',
             fixes=[
-                f'Authorize it (enter the box password once): ssh-copy-id lagerdata@{ip}',
+                f'Authorize it (enter the box password once): lager authorize --box {ip}',
+                f'Or manually: ssh-copy-id {user or "lagerdata"}@{ip}',
                 'Then re-run this command.',
             ],
             raw=stderr or None,

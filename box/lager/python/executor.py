@@ -93,6 +93,16 @@ def load_box_secrets():
 
     if os.path.exists(secrets_file):
         try:
+            mode = os.stat(secrets_file).st_mode & 0o777
+            if mode & 0o077:
+                logger.warning(
+                    "%s was group/world-readable (%03o); tightening to 0600",
+                    secrets_file, mode
+                )
+                os.chmod(secrets_file, 0o600)
+        except OSError as e:
+            logger.warning(f"Could not check/fix permissions on {secrets_file}: {e}")
+        try:
             with open(secrets_file, 'r') as f:
                 return json.load(f)
         except Exception as e:

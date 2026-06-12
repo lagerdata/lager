@@ -86,8 +86,8 @@ When creating ADC nets, the channel name depends on the hardware:
 **LabJack T7:**
 ```bash
 # Both forms accepted:
-lager nets create SENSOR_1 adc AIN0 USB::470026574
-lager nets create SENSOR_1 adc 0 USB::470026574    # Numeric shorthand
+lager nets add SENSOR_1 adc AIN0 USB::470026574
+lager nets add SENSOR_1 adc 0 USB::470026574    # Numeric shorthand
 ```
 
 Numeric pins `0`-`13` map to `AIN0`-`AIN13` internally.
@@ -95,8 +95,8 @@ Numeric pins `0`-`13` map to `AIN0`-`AIN13` internally.
 **MCC USB-202:**
 ```bash
 # Both forms accepted (case-insensitive):
-lager nets create SENSOR_1 adc CH0 USB0::0x09DB::...
-lager nets create SENSOR_1 adc 0 USB0::0x09DB::...  # Numeric shorthand
+lager nets add SENSOR_1 adc CH0 USB0::0x09DB::...
+lager nets add SENSOR_1 adc 0 USB0::0x09DB::...  # Numeric shorthand
 ```
 
 Numeric pins `0`-`7` and named pins `CH0`-`CH7` are both accepted. Channel names are case-insensitive.
@@ -164,7 +164,7 @@ echo "Voltage OK: $VOLTAGE V"
 
 - Results are returned in volts with 6 decimal places
 - Both hardware backends support bipolar measurement (+/-10 V range)
-- ADC nets must be configured before use with `lager nets create <name> adc <channel> <address>`
+- ADC nets must be configured before use with `lager nets add <name> adc <channel> <address>`
 - Default net can be set with `lager defaults add --adc-net`
 - LabJack T7 shares a connection handle with DAC, GPIO, and SPI operations on the same device
 - USB-202 opens and closes the connection on each read

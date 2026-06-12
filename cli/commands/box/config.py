@@ -24,12 +24,14 @@ import requests
 
 from ...box_storage import get_box_ip, list_boxes
 from ...context import get_default_box, get_impl_path
+from ...core.group_usage import LagerGroup
+from ...errors import ssh_error
 from ..development.python import run_python_internal_get_output
 from . import _shim_verbs as verbs
 from ._host_ops import apt_install, sysctl_apply, udev_apply
 from ._mount_prep import ensure_host_path_owned, manual_fix_command
 from ._pip_validation import is_direct_ref, validate_on_pypi
-from ._ssh import default_ssh_runner
+from ._ssh import default_ssh_runner, resolve_box_user
 
 # How long we'll wait for the box's HTTP API to come up after start_box.sh
 # returns 0. The container itself starts in ~3-5s on a healthy box; the
@@ -164,7 +166,7 @@ def _list_field(
             click.echo(formatter(item))
 
 
-@click.group(name="config", invoke_without_command=True, help="Manage declarative box provisioning")
+@click.group(name="config", cls=LagerGroup, invoke_without_command=True, help="Manage declarative box provisioning")
 @click.option("--box", help="Lagerbox name or IP")
 @click.pass_context
 def box_config(ctx: click.Context, box: Optional[str]) -> None:
@@ -912,10 +914,14 @@ def repair_cmd(ctx: click.Context, box: Optional[str], yes: bool) -> None:
     resolved = _resolve_box(ctx, box)
 
     # Confirm snapshot exists before announcing repair.
-    rc, _stdout, _stderr = default_ssh_runner(
+    rc, _stdout, stderr = default_ssh_runner(
         resolved,
         "test -f /etc/lager/box_config.applied.json",
     )
+    if rc == 255:
+        # rc 255 is ssh's own failure — the test never ran, so "no
+        # snapshot" would be a misdiagnosis.
+        ssh_error(stderr, resolved, user=resolve_box_user(resolved)).die()
     if rc != 0:
         click.secho(
             f"No applied snapshot on {resolved}; cannot repair. This box has "
@@ -1177,11 +1183,9 @@ def _apply_one(
         click.secho("Config unchanged since last apply; skipping restart.", fg="green")
         return True
 
-    if not no_auto_prep:
-        if not _preflight_mounts(ctx, resolved, recursive=recursive_chown):
-            return False
-
     if skip_restart:
+        # No mount pre-flight here: mounts only take effect at the container
+        # restart this flag skips, and the eventual full apply re-checks them.
         _run_box_config_py(ctx, resolved, verbs.SET_APPLIED_HASH, cur_hash)
         click.secho("Config validated; restart skipped (--skip-restart).", fg="yellow")
         return True
@@ -1215,6 +1219,15 @@ def _apply_one(
         return False
     if not _ensure_udev_rules(resolved, current_show, applied_snapshot):
         return False
+
+    # Mount pre-flight runs AFTER the confirm prompt (no host mutation before
+    # the operator says yes) and AFTER apt provisioning, so a mount whose host
+    # path is installed by an apt package in this same apply (e.g.
+    # /usr/bin/dfu-util from dfu-util) is seen as the file it is, instead of
+    # being pre-empted by a `sudo mkdir -p` directory at that path.
+    if not no_auto_prep:
+        if not _preflight_mounts(ctx, resolved, recursive=recursive_chown):
+            return False
 
     if not _bounce_container(ctx, resolved):
         # Bounce of the new config failed. The container may be down (start_box.sh
@@ -1442,10 +1455,19 @@ def _attempt_rollback(
     # Confirm the snapshot exists before announcing rollback. test rc=0 iff
     # the snapshot file is present; if missing this is a first-apply box and
     # rollback isn't possible.
-    rc, _stdout, _stderr = default_ssh_runner(
+    rc, _stdout, stderr = default_ssh_runner(
         resolved_box,
         "test -f /etc/lager/box_config.applied.json",
     )
+    if rc == 255:
+        # Transport failure, not a missing snapshot. This helper returns
+        # bool deep in the apply pipeline, so report and let the caller's
+        # rollback-failed path run rather than dying here.
+        click.secho(
+            ssh_error(stderr, resolved_box).format_message(),
+            err=True,
+        )
+        return False
     if rc != 0:
         return False
 
@@ -1498,7 +1520,8 @@ def _preflight_mounts(ctx: click.Context, resolved: str, *, recursive: bool) -> 
 
     Catches the case where a mount was added by editing /etc/lager/box_config.json
     directly (skipping `mount add`'s auto-prep). Returns False on any failure that
-    should abort apply.
+    should abort apply. An SSH transport failure is NOT one: could-not-verify is
+    not verified-bad, so it warns and lets the apply proceed.
     """
     raw = _run_box_config_py(ctx, resolved, verbs.SHOW)
     payload = _parse_response(raw, ctx) or {}
@@ -1507,6 +1530,7 @@ def _preflight_mounts(ctx: click.Context, resolved: str, *, recursive: bool) -> 
         return True
 
     failed = False
+    ssh_warned = False
     for m in mounts:
         host = m.get("host")
         container = m.get("container")
@@ -1522,6 +1546,16 @@ def _preflight_mounts(ctx: click.Context, resolved: str, *, recursive: bool) -> 
             if result.action not in ("ok", "ok_readonly"):
                 click.secho(f"Mount {host} -> {container}: {result.message}", fg="green")
             continue
+        if result.action == "ssh_failed":
+            ssh_warned = True
+            click.secho(
+                f"Mount {host} -> {container}: {result.message}",
+                fg="yellow",
+                err=True,
+            )
+            # Every remaining mount uses the same transport; don't pay a
+            # failed auth round-trip (or a dead-box timeout) per mount.
+            break
         failed = True
         click.secho(
             f"Mount {host} -> {container}: {result.message}",
@@ -1530,6 +1564,16 @@ def _preflight_mounts(ctx: click.Context, resolved: str, *, recursive: bool) -> 
         )
         if result.manual_fix:
             click.echo(f"  Manual fix: {result.manual_fix}", err=True)
+
+    if ssh_warned and not failed:
+        click.secho(
+            "Warning: could not verify mount host paths over SSH; continuing with "
+            "apply. If the container fails to start or a mounted path is missing "
+            "or unwritable, fix SSH access to the box host (see above) and re-run "
+            "`lager box config apply`.",
+            fg="yellow",
+            err=True,
+        )
 
     if failed:
         click.secho(
@@ -1662,20 +1706,30 @@ def mount_add_cmd(
             resolved, host, readonly=readonly, recursive=recursive_chown,
         )
         if not prep_result.ok:
-            click.secho(
-                f"Host path prep failed for {host} -> {container}: {prep_result.message}",
-                fg="red",
-                err=True,
-            )
-            if prep_result.manual_fix:
-                click.echo("Manual fix (SSH into the box and run):", err=True)
-                click.echo(f"  {prep_result.manual_fix}", err=True)
-            click.secho(
-                "Mount NOT added to box_config.json. Fix the host path and re-run.",
-                fg="yellow",
-                err=True,
-            )
-            ctx.exit(1)
+            if prep_result.action == "ssh_failed":
+                # Could-not-verify is not verified-bad: persist the mount and
+                # let apply's pre-flight re-check once SSH access is fixed.
+                click.secho(f"Warning: {prep_result.message}", fg="yellow", err=True)
+                click.secho(
+                    "Adding the mount to box_config.json anyway; `lager box config "
+                    "apply` re-checks the host path before restarting the container.",
+                    fg="yellow",
+                )
+            else:
+                click.secho(
+                    f"Host path prep failed for {host} -> {container}: {prep_result.message}",
+                    fg="red",
+                    err=True,
+                )
+                if prep_result.manual_fix:
+                    click.echo("Manual fix (SSH into the box and run):", err=True)
+                    click.echo(f"  {prep_result.manual_fix}", err=True)
+                click.secho(
+                    "Mount NOT added to box_config.json. Fix the host path and re-run.",
+                    fg="yellow",
+                    err=True,
+                )
+                ctx.exit(1)
 
     payload_json = json.dumps({"host": host, "container": container, "readonly": readonly})
     raw = _run_box_config_py(ctx, resolved, verbs.MOUNT_ADD, payload_json)
@@ -1695,7 +1749,8 @@ def mount_add_cmd(
             f"writable by uid 33, run on the box: {manual_fix_command(host)}",
             fg="yellow",
         )
-    else:
+    elif prep_result.action != "ssh_failed":
+        # ssh_failed already printed its warning above; don't restyle it green.
         if prep_result.action in ("ok", "ok_readonly"):
             click.echo(f"Host path: {prep_result.message}")
         else:
@@ -2011,7 +2066,7 @@ def udev_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None
     ),
 )
 @click.argument("devices", nargs=-1, required=True)
-@click.option("--mode", default="0666", show_default=True, help="Octal device-node permission mode.")
+@click.option("--mode", default="0660", show_default=True, help="Octal device-node permission mode.")
 @click.option("--usbtmc", is_flag=True, help="Also emit the usbtmc driver-unbind rule (for PyVISA/SCPI).")
 @click.option("--box", help="Lagerbox name or IP")
 @click.pass_context

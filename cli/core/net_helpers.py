@@ -767,7 +767,7 @@ def validate_net_exists(
             click.secho(f"Available {role} nets: {', '.join(available)}", err=True)
         else:
             click.secho(f"No {role} nets configured. Create one with:", err=True)
-            click.secho(f"  lager nets create [NAME] {role} [DEVICE] [ADDRESS]", err=True)
+            click.secho(f"  lager nets add [NAME] {role} [DEVICE] [ADDRESS]", err=True)
         if exit_on_error:
             ctx.exit(1)
         return None

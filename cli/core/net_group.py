@@ -112,3 +112,16 @@ class NetSubCommand(NetExamplesMixin, click.Command):
 
 class NetCommand(NetExamplesMixin, click.Command):
     """A standalone leaf net command (e.g. ``adc``) with an ``Examples`` section."""
+
+
+class BoxCommand(click.Command):
+    """A leaf command whose target is a box, not a net.
+
+    Renders its usage as ``... --box [BOX_NAME]`` so box-scoped commands
+    (e.g. ``lager authorize``) read consistently with the net-style
+    commands instead of the bare ``[OPTIONS]``. ``--box`` is still listed
+    under Options.
+    """
+
+    def format_usage(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        formatter.write_usage(ctx.command_path, "--box [BOX_NAME]")

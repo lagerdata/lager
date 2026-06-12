@@ -58,10 +58,52 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+SECRET_KEY_PATH = '/etc/lager/secret_key'
+
+
+def _load_secret_key():
+    """Resolve Flask SECRET_KEY: env var, then persistent file, else generate and persist.
+
+    /etc/lager is host-mounted (see start_box.sh), so a key written there
+    survives container rebuilds/restarts and Flask sessions stay valid.
+    """
+    key = os.environ.get('SECRET_KEY')
+    if key:
+        return key
+
+    try:
+        with open(SECRET_KEY_PATH) as f:
+            key = f.read().strip()
+    except FileNotFoundError:
+        key = None
+    except OSError as e:
+        logger.warning("Could not read %s: %s", SECRET_KEY_PATH, e)
+        key = None
+
+    if key:
+        try:
+            os.chmod(SECRET_KEY_PATH, 0o600)
+        except OSError:
+            pass
+        return key
+
+    key = os.urandom(24).hex()
+    try:
+        fd = os.open(SECRET_KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            f.write(key)
+    except OSError as e:
+        logger.warning(
+            "Could not persist SECRET_KEY to %s; sessions will not survive restart: %s",
+            SECRET_KEY_PATH, e
+        )
+    return key
+
+
 # Create Flask app
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max request size
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or os.urandom(24).hex()
+app.config['SECRET_KEY'] = _load_secret_key()
 
 # Initialize SocketIO
 # Force threading mode since eventlet 0.35.2 has issues with Python 3.12
@@ -98,6 +140,15 @@ from lager.http_handlers.battery import (
 )
 # Import USB handler (fast-path mirror of supply/battery; no SocketIO).
 from lager.http_handlers.usb import register_usb_routes
+
+# Import generic net command handler (warm-path replacement for the
+# `lager python` exec path on instruments without a dedicated endpoint).
+try:
+    from lager.http_handlers.net_command import register_net_command_routes
+    _has_net_command = True
+except Exception as e:
+    logger.warning("Net command handler not available: %s", e)
+    _has_net_command = False
 
 # Import nets handler
 try:
@@ -209,6 +260,15 @@ def status():
         'healthy': True,
         'version': version,
         'nets': nets,
+        # Capabilities let the control plane route per box. `netCommand` means
+        # this box serves POST /net/command, so Stout can use the warm in-process
+        # path instead of the `lager python` exec fallback for Tier-1 instruments.
+        # Must reflect whether the route actually registered (see _has_net_command
+        # above): advertising it unconditionally makes the control plane route to
+        # /net/command on boxes where the handler import failed, which 404s.
+        'capabilities': {
+            'netCommand': _has_net_command,
+        },
     })
 
 
@@ -228,6 +288,14 @@ register_battery_socketio(socketio)
 
 # Register USB HTTP handler (fast-path /usb/command; no WebSocket namespace)
 register_usb_routes(app)
+
+# Register generic /net/command handler (if available)
+if _has_net_command:
+    register_net_command_routes(app)
+    logger.info("Net command endpoint registered")
+    print("[INIT] Net command endpoint registered", flush=True)
+else:
+    print("[INIT] Net command endpoint NOT available", flush=True)
 
 # Register nets REST handlers (if available)
 if _has_nets:

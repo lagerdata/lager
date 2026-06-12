@@ -23,6 +23,8 @@ from ...box_storage import (
 )
 from ...context import get_default_box
 from ...core.ssh_utils import get_ssh_connection_pool
+from ..box._ssh import ensure_lager_box_keypair, key_auth_works
+from ...errors import LagerError
 
 
 def resolve_version_ref(target_version):
@@ -520,21 +522,19 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         """Create lager_box key if needed and copy to box. Returns True if successful."""
         nonlocal use_explicit_key
 
-        key_exists = os.path.exists(key_file)
-
-        # Create key if it doesn't exist
-        if not key_exists:
+        # Create key if it doesn't exist. Shared with `lager authorize` via
+        # ensure_lager_box_keypair so the key type/comment can't drift between
+        # the two provisioning paths; it raises on failure, which we translate
+        # to this function's bool-return contract.
+        if not os.path.exists(key_file):
             click.echo()
             click.echo('Creating SSH key...')
-            os.makedirs(os.path.expanduser('~/.ssh'), exist_ok=True)
-            keygen_result = subprocess.run(
-                ['ssh-keygen', '-t', 'ed25519', '-f', key_file, '-N', '', '-C', 'lager-box-access'],
-                capture_output=True, text=True
-            )
-            if keygen_result.returncode != 0:
-                log_error('Error: Failed to create SSH key')
-                return False
-            click.secho('SSH key created', fg='green')
+        try:
+            if ensure_lager_box_keypair(key_file):
+                click.secho('SSH key created', fg='green')
+        except LagerError:
+            log_error('Error: Failed to create SSH key')
+            return False
 
         # Copy key to box
         click.echo()
@@ -550,45 +550,24 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             timeout=300  # 5 minutes - allow time for user to enter password
         )
 
-        if copy_result.returncode == 0:
-            # Verify key works
-            verify_result = subprocess.run(
-                ['ssh', '-i', key_file,
-                 '-o', 'BatchMode=yes',
-                 '-o', 'StrictHostKeyChecking=accept-new',
-                 '-o', 'ConnectTimeout=5',
-                 ssh_host, 'echo test'],
-                capture_output=True, text=True, timeout=10
-            )
-            if verify_result.returncode == 0:
-                click.echo()
-                click.secho('SSH key installed successfully!', fg='green')
-                click.echo('Future connections will not require a password.')
-                click.echo()
-                use_explicit_key = True
-                return True
+        if copy_result.returncode == 0 and key_auth_works(ssh_host):
+            click.echo()
+            click.secho('SSH key installed successfully!', fg='green')
+            click.echo('Future connections will not require a password.')
+            click.echo()
+            use_explicit_key = True
+            return True
 
         click.secho('Failed to set up SSH key.', fg='yellow')
         return False
 
     try:
-        # First try with lager_box key if it exists
-        if os.path.exists(key_file):
-            result = subprocess.run(
-                ['ssh', '-i', key_file,
-                 '-o', 'ConnectTimeout=5',
-                 '-o', 'BatchMode=yes',
-                 '-o', 'StrictHostKeyChecking=accept-new',
-                 ssh_host, 'echo test'],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            if result.returncode == 0:
-                use_explicit_key = True
-                log_status('OK', 'green')
-                # Skip the rest of connectivity check - key already works
-                result = type('obj', (object,), {'returncode': 0})()
+        # First try with the lager_box key if it exists. Same unattended
+        # probe `lager authorize` uses, so "does the key already work?" is
+        # answered identically in both commands.
+        if os.path.exists(key_file) and key_auth_works(ssh_host):
+            use_explicit_key = True
+            log_status('OK', 'green')
 
         # If lager_box key didn't work for this box, we need to set it up
         if not use_explicit_key:
@@ -1185,10 +1164,15 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     else:
         log_status('update needed', 'yellow')
 
-        # The `&&` chain means a non-zero exit already implies the `sudo cp`
-        # to /etc failed, so no separate post-install verify is needed.
+        # The `&&` chain means a non-zero exit already implies one of the
+        # sudo steps failed, so no separate post-install verify is needed.
+        # The "lager" group is what the instrument rules grant device access
+        # to (GROUP="lager"); the getent guard keeps the groupadd off the
+        # common path so provisioned boxes stay within the passwordless
+        # sudoers grant and see no password prompt.
         install_cmd = (
             f'cp {udev_src_path}/99-instrument.rules /tmp/ && '
+            '{ getent group lager >/dev/null || sudo /usr/sbin/groupadd lager; } && '
             'sudo /bin/cp /tmp/99-instrument.rules /etc/udev/rules.d/ && '
             'sudo /bin/chmod 644 /etc/udev/rules.d/99-instrument.rules && '
             'sudo /usr/bin/udevadm control --reload-rules && '
@@ -1219,6 +1203,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             if verbose:
                 click.echo('  Could not install udev rules — likely a sudoers permission issue.', err=True)
                 click.echo(f'  Manual fix: ssh {ssh_host}, then:', err=True)
+                click.echo('    sudo groupadd -f lager', err=True)
                 click.echo(f'    sudo cp {udev_src_path}/99-instrument.rules /etc/udev/rules.d/', err=True)
                 click.echo('    sudo udevadm control --reload-rules && sudo udevadm trigger', err=True)
 

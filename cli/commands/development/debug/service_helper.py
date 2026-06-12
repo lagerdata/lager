@@ -44,7 +44,7 @@ class ServiceTunnel:
             result = sock.connect_ex(('127.0.0.1', self.local_port))
             sock.close()
             return result == 0
-        except:
+        except OSError:
             return False
 
     def establish_tunnel(self) -> bool:
@@ -87,10 +87,10 @@ class ServiceTunnel:
             try:
                 self.tunnel_process.terminate()
                 self.tunnel_process.wait(timeout=2)
-            except:
+            except (subprocess.TimeoutExpired, OSError):
                 try:
                     self.tunnel_process.kill()
-                except:
+                except OSError:
                     pass
             self.tunnel_process = None
 
@@ -118,7 +118,7 @@ def is_service_available(box_ip: str, username: str = 'lagerdata') -> bool:
     try:
         response = requests.get('http://127.0.0.1:8765/health', timeout=2)
         return response.status_code == 200
-    except:
+    except requests.RequestException:
         return False
 
 
@@ -168,7 +168,8 @@ def cleanup_tunnels():
     for tunnel in _tunnel_cache.values():
         try:
             tunnel.close_tunnel()
-        except:
+        except Exception:
+            # atexit cleanup must never raise; tunnels may already be dead
             pass
     _tunnel_cache.clear()
 

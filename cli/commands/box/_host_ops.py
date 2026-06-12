@@ -180,11 +180,11 @@ def render_udev_rules_file(rules: List[Dict[str, object]]) -> str:
     for r in rules:
         vid = str(r.get("vid", ""))
         pid = str(r.get("pid", ""))
-        mode = str(r.get("mode", "0666"))
+        mode = str(r.get("mode", "0660"))
         body += f"# vid:pid {vid}:{pid} (added via `lager box config udev`)\n"
         body += (
             f'SUBSYSTEM=="usb", ATTRS{{idVendor}}=="{vid}", '
-            f'ATTRS{{idProduct}}=="{pid}", MODE="{mode}"\n'
+            f'ATTRS{{idProduct}}=="{pid}", MODE="{mode}", GROUP="lager"\n'
         )
         if bool(r.get("usbtmc", False)):
             body += (

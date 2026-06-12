@@ -356,12 +356,23 @@ def display_nets(ctx, box, netname: Optional[str] = None):
             elif pin_field == "FIO0-FIO3":
                 # Standard LabJack SPI pin mapping
                 pins = "FIO0/FIO1/FIO2/FIO3"
-            elif params.get("cs_pin") or params.get("clk_pin"):
-                # Legacy params-based configuration
-                cs = params.get("cs_pin", "?")
-                clk = params.get("clk_pin", "?")
-                mosi = params.get("mosi_pin", "?")
-                miso = params.get("miso_pin", "?")
+            elif params.get("cs_pin") is not None or params.get("clk_pin") is not None:
+                # Params-based configuration (custom pins)
+                def _dio_name(dio):
+                    try:
+                        n = int(dio)
+                    except (TypeError, ValueError):
+                        return str(dio)
+                    for prefix, offset, count in (("FIO", 0, 8), ("EIO", 8, 8),
+                                                  ("CIO", 16, 4), ("MIO", 20, 3)):
+                        if offset <= n < offset + count:
+                            return f"{prefix}{n - offset}"
+                    return f"DIO{n}"
+
+                cs = _dio_name(params["cs_pin"]) if params.get("cs_pin") is not None else "manual"
+                clk = _dio_name(params.get("clk_pin", "?"))
+                mosi = _dio_name(params.get("mosi_pin", "?"))
+                miso = _dio_name(params.get("miso_pin", "?"))
                 pins = f"{cs}/{clk}/{mosi}/{miso}"
             else:
                 pins = pin_field if pin_field else "?/?/?/?"

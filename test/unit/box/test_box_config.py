@@ -528,7 +528,8 @@ class ValidateUdevRules(unittest.TestCase):
         self.assertEqual(len(lines), 2)  # comment + permission line
         self.assertIn('ATTRS{idVendor}=="1209"', lines[1])
         self.assertIn('ATTRS{idProduct}=="0001"', lines[1])
-        self.assertIn('MODE="0666"', lines[1])
+        self.assertIn('MODE="0660"', lines[1])
+        self.assertIn('GROUP="lager"', lines[1])
 
     def test_to_rule_lines_usbtmc_adds_unbind(self):
         rule = cfg.UdevRule(vid="1ab1", pid="0e11", usbtmc=True)

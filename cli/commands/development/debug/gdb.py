@@ -264,7 +264,8 @@ def debug(ctx, box, interpreter, verbose, tty, quiet, args, ignore_missing, cwd,
         'elf_only': elf_only,
     }
     if debugfile:
-        args['debugfile'] = open(debugfile, 'rb').read().decode()
+        with open(debugfile, 'rb') as f:
+            args['debugfile'] = f.read().decode()
     resp = session.remote_debug(box, cache, archive, args)
 
     test_run = resp.json()

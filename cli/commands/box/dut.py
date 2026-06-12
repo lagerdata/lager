@@ -32,7 +32,9 @@ from typing import Any, Optional
 import click
 
 from .config import _resolve_box
-from ._ssh import default_ssh_runner
+from ._ssh import default_ssh_runner, resolve_box_user
+from ...core.group_usage import LagerGroup
+from ...errors import ssh_error
 
 _BENCH_JSON_PATH = "/etc/lager/bench.json"
 
@@ -44,8 +46,10 @@ def _read_bench_json(box_ip: str) -> dict:
         f"cat {_BENCH_JSON_PATH} 2>/dev/null || true",
     )
     if rc != 0:
-        click.secho(f"SSH read failed: {(stderr or '').strip()}", fg="red", err=True)
-        return {}
+        # The remote cmd ends in `|| true`, so a nonzero rc is always a
+        # transport failure — continuing with {} could let `edit` write
+        # back a bench.json missing all its other keys.
+        ssh_error(stderr, box_ip, user=resolve_box_user(box_ip)).die()
     body = (stdout or "").strip()
     if not body:
         return {}
@@ -86,6 +90,8 @@ def _write_bench_json(box_ip: str, payload: dict) -> bool:
         f"{{ rm -f {tmp}; exit 1; }}"
     )
     rc, _stdout, stderr = default_ssh_runner(box_ip, cmd, stdin=body)
+    if rc == 255:
+        ssh_error(stderr, box_ip, user=resolve_box_user(box_ip)).die()
     if rc != 0:
         click.secho(
             f"Failed to write {_BENCH_JSON_PATH}: {(stderr or '').strip()}",
@@ -147,7 +153,7 @@ def _primary_slot(payload: dict) -> tuple[dict, Optional[int]]:
     return value, None
 
 
-@click.group(name="dut", help="Author the DUT context exposed to AI agents via MCP.")
+@click.group(name="dut", cls=LagerGroup, help="Author the DUT context exposed to AI agents via MCP.")
 def box_dut() -> None:
     """Manage /etc/lager/bench.json's DUT context block."""
 

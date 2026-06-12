@@ -74,6 +74,51 @@ def materialise_user_script(net_info, *, explicit_key, b64_key, suffix):
         return None
 
 
+def _repoint_jlink_script(script):
+    """Copy a per-connect J-Link script override to the shared temp path.
+
+    Unlike :func:`materialise_user_script`, an existing path is *not* returned
+    as-is — its bytes are copied to the shared path, because J-Link's
+    ``reset_device`` / ``read_memory`` resolve scripts via
+    ``api._get_script_file()`` which only checks the shared path; a foreign
+    path would silently not be used by those ops.
+
+    Args:
+        script: path to a ``.JLinkScript`` already on the box, OR a
+            base64-encoded script blob, OR None/empty.
+
+    Returns:
+        The shared temp path when the override was materialised, else None —
+        the caller leaves the previously materialised script in place.
+
+    Never raises: empty, missing-path, or undecodable input is a no-op. The
+    path-existence check runs first so a real path is never misread as
+    base64; ``validate=True`` keeps a typo'd path (whose ``.`` is outside the
+    base64 alphabet) from "decoding" into garbage and clobbering the shared
+    script. Inherits materialise_user_script's concurrency caveat: concurrent
+    connects with different scripts clobber each other.
+    """
+    import base64
+    import os
+
+    if not isinstance(script, str) or not script.strip():
+        return None
+    try:
+        if os.path.exists(script):
+            with open(script, 'rb') as f:
+                data = f.read()
+        else:
+            data = base64.b64decode(script, validate=True)
+        if not data:
+            return None
+        shared_path = _SHARED_PATH_FOR_SUFFIX['.JLinkScript']
+        with open(shared_path, 'wb') as f:
+            f.write(data)
+        return shared_path
+    except Exception:  # noqa: BLE001 — bad override leaves the current script in place
+        return None
+
+
 def openocd_speed_ladder(requested):
     """Speed-fallback ladder for OpenOCD connect attempts.
 
@@ -712,7 +757,7 @@ try:
         # ---- Public API -----------------------------------------------------
 
         def connect(self, speed=None, transport=None, *,
-                    force=False, ignore_if_connected=False):
+                    force=False, ignore_if_connected=False, script=None):
             """Start the gdbserver for this probe.
 
             Backend chosen automatically from the probe VID (or net's
@@ -734,9 +779,25 @@ try:
             immediately bomb out at the requested clock — same UX as
             ``connect_jlink``, which has the equivalent ladder baked into
             ``debug/api.py``.
+
+            ``script`` (J-Link only; the OpenOCD backend ignores it) is a
+            per-connect ``.JLinkScript`` override: a path on the box or a
+            base64 blob, copied to the shared script temp path so
+            ``flash``/``reset``/``read_memory`` all pick it up immediately
+            (they resolve via the shared path). An already-running gdbserver
+            only adopts the new script on a relaunch — pass ``force=True``;
+            ``ignore_if_connected=True`` returns early without relaunching,
+            though the file is still repointed for subsequent Commander ops.
+            Invalid input (missing path that isn't valid base64, empty
+            string) is silently ignored and the net's previously
+            materialised script stays in effect.
             """
             speed = speed or self.speed
             transport = transport or self.transport
+
+            new_script = _repoint_jlink_script(script)
+            if new_script:
+                self._jlink_script_path = new_script
 
             if self.backend == BACKEND_OPENOCD:
                 existing = get_openocd_status(serial=self.serial)

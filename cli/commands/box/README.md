@@ -3,7 +3,7 @@
 This directory implements the `lager nets …` CLI surface and the interactive
 "Net Manager" TUI:
 
-- `nets.py` — Click command group: `nets create`, `create-all`, `delete`,
+- `nets.py` — Click command group: `nets add`, `add-all`, `delete`,
   `rename`, `add-batch`, `set-script`, `remove-script`, etc. Also hosts the
   default `list` view.
   - The `set-script` / `show-script` / `remove-script` trio is
@@ -104,7 +104,7 @@ grow with future MPSSE-style adapters. Keeping them separate keeps the intent
 visible at the definition site and lets future code branch on the category
 if it ever needs to.
 
-`create-all` treats Bucket 3 specially: it refuses to auto-pick a role on
+`add-all` treats Bucket 3 specially: it refuses to auto-pick a role on
 behalf of the user (since there's no defensible default), and prints a
 warning telling them to use `lager nets add` or the TUI to choose explicitly.
 

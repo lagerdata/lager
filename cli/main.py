@@ -22,6 +22,7 @@ import click
 from . import __version__
 from .config import read_config_file
 from .context import LagerContext
+from .core.group_usage import CommandFirstUsageMixin
 from .update_check import start_background_check, notify_if_update_available
 
 
@@ -70,6 +71,7 @@ from .commands.measurement.energy import energy
 
 # Box commands (from commands.box package)
 from .commands.box import hello, boxes, instruments, nets, ssh, box
+from .commands.box.authorize import authorize
 from .commands.box.diagnose import diagnose
 
 # Utility commands (from commands.utility package)
@@ -110,7 +112,7 @@ def _decode_environment():
             os.environ[key] = urllib.parse.unquote(os.environ[key])
 
 
-class SectionedGroup(click.Group):
+class SectionedGroup(CommandFirstUsageMixin, click.Group):
     """Root CLI group that lists commands under category headings.
 
     A flat, alphabetical wall of 40+ commands is hard for a new user to scan.
@@ -131,7 +133,8 @@ class SectionedGroup(click.Group):
         ("Communication", ["uart", "usb", "spi", "i2c", "ble", "blufi",
                             "router"]),
         ("Box setup & management", ["hello", "boxes", "box", "nets",
-                                    "instruments", "ssh", "defaults", "webcam"]),
+                                    "instruments", "ssh", "authorize",
+                                    "defaults", "webcam"]),
         ("Install & maintenance", ["update", "install", "uninstall",
                                    "install-wheel", "binaries", "logs",
                                    "terminal"]),
@@ -239,6 +242,7 @@ cli.add_command(boxes)
 cli.add_command(box)
 cli.add_command(instruments)
 cli.add_command(ssh)
+cli.add_command(authorize)
 # `lager update` is the canonical box-update command. It previously also
 # existed as `lager box update`; that form was removed in favor of the
 # shorter top-level spelling.

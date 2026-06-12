@@ -2,6 +2,82 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.27.1] - 2026-06-12
+
+A quality-of-life pass: a one-command fix for SSH key authorization, untruncated `lager nets`/`lager instruments` output, and clearer `--help` usage lines.
+
+### Added
+- **`lager authorize --box [BOX]`.** Authorizes this machine's SSH key on a box in one step: it generates `~/.ssh/lager_box` if missing, copies it with `ssh-copy-id` (one box-password prompt), and verifies passwordless auth — re-running against an already-authorized box reports that and changes nothing. It replaces having to know the key path and the `ssh-copy-id` incantation by hand. The `Permission denied (publickey,password)` SSH error now points at this command, and shows the box's actual SSH user in the manual `ssh-copy-id` fallback instead of a hardcoded user.
+
+### Fixed
+- **`lager nets` and `lager instruments` no longer truncate output.** UART channel paths were cut to 10 characters (showing `/dev/ttyUS` instead of `/dev/ttyUSB0`) and the bracketed VISA/USB address to 45; both now display in full.
+- **`lager box dut` and `lager box config` report SSH failures clearly.** Transport failures that previously printed a raw `SSH read failed: ...` line — or, in `box config`, were misread as a missing config snapshot — now route through the shared SSH error classifier, which names the cause and suggests `lager authorize`. This also closes a path where `lager box dut edit` could write back a `bench.json` missing its other keys after a failed read.
+
+### Changed
+- **Command `--help` usage lines read `COMMAND [OPTIONS]`** instead of the misleading `[OPTIONS] COMMAND [ARGS]...` on groups whose subcommands take no positional arguments. `lager nets` and `lager authorize` show `... --box [BOX_NAME]`, matching the net-style commands like `lager supply`.
+- **SSH key provisioning is defined once.** `lager authorize` and `lager update` now share a single keypair-generation and key-probe implementation, so the key type and comment can't drift between the two paths.
+
+## [0.27.0] - 2026-06-12
+
+One theme: LabJack T7 i2c/spi pins are no longer hardcoded. Any DIO pin can be chosen per signal when adding a net — from the CLI or the Net TUI — and the TUI no longer freezes while talking to the box (a 0.25.0 regression).
+
+### Added
+- **Custom LabJack pin selection for i2c/spi nets.** `lager nets add` accepts `--sda/--scl` (i2c) and `--cs/--sck/--mosi/--miso` (spi); any DIO pin (FIO0-FIO7, EIO0-EIO7, CIO0-CIO3, MIO0-MIO2) or raw DIO number works, and omitting `--cs` selects 3-pin SPI with manual chip select. Custom selections persist via the net record's `params` dict — the format the box dispatchers already consume — plus a labeled `pin` summary (`SDA:EIO0 SCL:EIO1`). Accepting the defaults saves a record identical to the previous hardcoded flow. Pins already claimed by another saved LabJack net warn without blocking, matching the runtime PinRegistry policy.
+- **Net TUI pin-picker dialog.** Adding a LabJack i2c/spi net opens a dialog with the historical defaults preselected (I2C: SDA=FIO4/SCL=FIO5; SPI: CS=FIO0/SCK=FIO1/MOSI=FIO2/MISO=FIO3). Duplicate pins block the save; pins claimed by saved nets warn live. `lager i2c`/`lager spi` display custom pins with their canonical names.
+
+### Fixed
+- **Net TUI buttons no longer need multiple clicks (0.25.0 regression).** Box round-trips ran synchronously inside button handlers and `on_mount`, freezing the event loop for seconds per call — worst right after launch and on Assign Device. All box I/O (assign flows, add/save, delete, rename, delete-all, edit details) now runs on worker threads with busy indicators and disabled controls while in flight, and startup no longer re-fetches data it already loaded.
+- **`run_python_internal` works off the main thread.** It installed a SIGINT handler on every call, which `signal.signal()` forbids outside the main thread — every TUI worker-thread box call failed with "signal only works in main thread of the main interpreter". The handler is now only installed for interactive main-thread runs, and the TUI serializes box calls behind a lock so overlapping workers can't capture each other's output.
+
+## [0.26.0] - 2026-06-11
+
+Three themes: a security-hardening pass over the box services (rate-limited key authorization, persisted secrets with tight permissions, instrument device nodes scoped to a dedicated group), `lager box config` host-side operations that no longer dead-end on boxes with customer-managed SSH users (the dedicated lager_box key falls back to the user's own keys on auth failure, an unreachable box host is reported as exactly that, and the mount pre-flight runs late enough that mounts of apt-installed files work in a single `apply`), and two opt-in debug-stack additions for scripted J-Link workflows.
+
+### Added
+- **Per-connect J-Link script override — `DebugNet.connect(script=...)`.** Accepts a path on the box or a base64 blob; the bytes are copied to the shared script temp path so `flash`/`reset`/`read_memory` pick the new script up immediately. An already-running gdbserver only adopts it on relaunch (`force=True`). Invalid input is ignored and the net's saved script stays in effect. The OpenOCD backend ignores the argument.
+- **Opt-in cache-coherent post-program verify for DA1469x QSPI images (experimental).** Set `LAGER_DA1469_UNCACHED_VERIFY=1` to read programmed `.bin` bytes back through the uncached QSPI mirror after a cache-controller flush: a matching image suppresses J-Link's stale-cache false "verification failed" report, a real mismatch is reported with its first differing address, and an inconclusive read-back leaves the original output untouched. `LAGER_DA1469_UNCACHED_VERIFY_BYTES` caps the compare (0 = whole file). Default off; flash output is byte-identical when unset. Experimental: unit-tested with regression parity, pending validation against live QSPI firmware.
+
+### Security
+- **`/authorize-key` is rate limited.** Bad-token attempts against the box key-authorization endpoint are limited per client IP (5 attempts per 60 s window, then HTTP 429); the window resets on a successful authorization.
+- **The box web service `SECRET_KEY` persists across restarts.** Generated once and stored at `/etc/lager/secret_key` (mode 0600) instead of regenerated per boot, so sessions survive container restarts and the key never appears in process listings.
+- **`org_secrets.json` is held at mode 0600.** The on-box secrets file is tightened to owner-only permissions at load time (with a warning when it had to be corrected), and the boot-time permission fix is best-effort so an unexpected owner can no longer abort container startup.
+- **Instrument device nodes are scoped to a `lager` group.** The shipped udev rules grant `MODE="0660", GROUP="lager"` instead of world-writable 0666; `lager update` creates the group on the box host when missing and the container joins it via `--group-add`. User-added udev rules (`lager box config udev add`) default to the same scoping. Update a box before applying new user udev rules so the group exists.
+
+### Fixed
+- **The `~/.ssh/lager_box` key no longer locks out a user's own SSH key.** Passing `-i ~/.ssh/lager_box` replaces ssh's default identity list, so on boxes whose user was authorized via `ssh-copy-id` (customer-managed users), every `lager box config` host-side call failed with `Permission denied (publickey,password)` — even right after `ssh-copy-id` succeeded. The shared SSH runner now retries once without the key on an auth failure (and remembers the fallback per destination for the rest of the process), so default identities get their chance. Auth failure means the remote command never ran, so the retry cannot double-execute anything; timeouts and no-route errors are not retried.
+- **`apply`/`mount add` no longer misreport an SSH transport failure as a host-path problem.** ssh's own exit code (255) during the mount pre-flight was read as "path missing", producing a wrong `Manual fix: sudo mkdir -p ...` and aborting the apply. An unreachable box host is now classified separately: the message names the user@ip and the actual fixes (`ssh-copy-id`, `lager update`, `--no-auto-prep`), `mount add` persists the mount (apply re-checks it), and `apply` warns and continues — could-not-verify is not verified-bad. Genuinely bad states (wrong-owner populated directory, sudo refused) still abort before the container restart.
+- **A hung SSH connection no longer crashes the CLI with a traceback.** `lager box config` host-side calls (mount prep, apt, sysctl, udev, container bounce) ran ssh with a 60s timeout but never caught `subprocess.TimeoutExpired`, so a half-dead box or dropping link dumped a raw Python stack trace mid-apply. A timeout now surfaces as the same transport-failure result as any other SSH failure ("ssh timed out after Ns to user@ip") and is not retried.
+- **An SSH connection that dies mid-prep is reported as an SSH failure, not a sudo failure.** The transport-failure classification only covered the first `stat` call in host-path prep; a connection dropping before the mkdir/find/chown step still produced the misleading raw-stderr message with a wrong manual fix. All prep SSH calls now classify ssh's rc 255 as `ssh_failed` with the ssh-copy-id/`lager update`/`--no-auto-prep` guidance.
+- **Mount pre-flight now runs after the confirm prompt and after apt/sysctl/udev provisioning.** Previously it ran first, so a mount whose host path is installed by an apt package in the same config (e.g. `/usr/bin/dfu-util` from `dfu-util`) was seen as missing and pre-empted by a `sudo mkdir -p` directory at that path, breaking the package unpack — and the host was mutated before the operator confirmed the apply. The sudoers bootstrap snippet in prep failure messages also now names the box's actual SSH user instead of hard-coding `lagerdata`.
+
+- **`lager debug ... gdbserver --rtt` no longer leaves the target halted on probes whose J-Link GDB server rejects non-stop mode.** The 0.24.0 all-stop fallback meant the RTT control-block RAM scan implicitly halted the core and nothing resumed it. The effective stop mode is now recorded on the controller and the core is resumed after the scan — only in the all-stop fallback; non-stop and OpenOCD paths are unchanged.
+- **Leaked file handles closed in `zip_dir` and the gdb `--debugfile` read** — long-lived CLI processes no longer accumulate open descriptors from project packaging or debug-file uploads.
+- **Bare `except:` clauses replaced with specific exceptions** across the CLI's debug tunnel helper, wifi scan parsing, session error handling, and download error paths — `KeyboardInterrupt`/`SystemExit` are no longer silently swallowed, and unexpected errors surface instead of being masked.
+
+### Changed
+- **`apply --skip-restart` no longer runs the mount pre-flight.** Mounts only take effect at the container restart this flag skips, and the eventual full `apply` re-checks them; running prep there mutated the host with no confirm prompt and before apt provisioning.
+
+## [0.25.0] - 2026-06-11
+
+One theme: instruments the box can't identify by USB enumeration become first-class. An RS-232-only bench instrument (first case: the Rigol DP711 power supply, reached through a generic Prolific USB-serial cable that enumerates as the cable, not the PSU) can now be assigned to its cable once — after which it scans, nets, and drives exactly like an auto-detected instrument.
+
+### Added
+- **`lager nets assign` — tell the box what's on the other end of a USB-serial cable.** `--list` shows assignable devices, current assignments, and unassigned cables; `lager nets assign Rigol_DP711 --serial <USB_SERIAL>` (or `--port <sysfs-path>` for serial-less clone cables) stores the assignment on the box, durable across reboots and replugs. `--baud` overrides the catalog default when the instrument's front panel differs; `--as-net [NAME]` creates the net in the same step. Assignments live in `/etc/lager/custom_devices.json`; the cable's vid/pid are captured from the live device, so assigning requires the cable plugged in, and ambiguous clone-cable serials are rejected with a pin-by-port hint.
+- **Assign Device flow in the Net TUI** — the interactive twin of `nets assign`: pick a cable from the unassigned list, pick the instrument (with optional baud), and name its net in a follow-up dialog. Assignments can be removed from the same screen.
+- **Rigol DP711 (DP700-series) support** — single-channel RS-232 supply driver with the DP800-compatible method surface, driven over a durable `serial://<vid>:<pid>/serial/<s>` (or `/port/<p>`) address that re-resolves to the live tty at open time, surviving tty renumbering, port moves, and replugs. Self-heals stale sessions; per-assignment baud override.
+- **Generic POST `/net/command` endpoint** on the box HTTP server for Tier-1 instruments (GPIO, ADC, DAC, thermocouple, watt-meter, e-load), giving them the same warm in-process path the supply/battery endpoints use instead of a `lager python` subprocess per call. The `netCommand` capability is advertised in `/status` only when the route actually registers.
+
+### Changed
+- **Nets live and die with their assignment.** Removing (or replacing) a cable assignment deletes the saved nets bound to its address and reports them; pre-existing generic-UART nets on the cable are retired at assign time so a terminal session can never fight the instrument driver for one tty. A baud-only re-assign keeps existing nets.
+- **The scanner reports assigned instruments, not their cables.** `lager instruments`, the TUI, and the box's `/instruments/list` show the catalog instrument (e.g. `Rigol_DP711`) at its durable `serial://` address; the cable's generic UART record is suppressed while assigned, and assigned ttys are excluded from the Dexarm G-code handshake probe.
+- **`lager nets add`/`delete`/`add-batch` normalize the legacy role tokens** `supply` → `power-supply` and `batt` → `battery`. The short tokens were previously saved verbatim, producing nets that listed fine but could never be driven (every consumer — the instrument CLIs, the box dispatchers, `NetType.from_role` — matches the saved role string exactly). The tokens remain accepted as input aliases; `delete` reaches legacy nets saved under either spelling.
+
+### Fixed
+- **Manually-added supply/battery nets are driveable again** (see role-token normalization above) — and channel validation for supplies actually runs on `nets add` (it was silently skipped because the legacy token never matched the scanner's channel map).
+- **`nets create` ghost exorcised**: the docs and four runtime error hints referenced `lager nets create`/`create-all`/`create-batch`, commands that don't exist — all renamed to the real `add`/`add-all`/`add-batch`, and the documented role vocabulary now matches what nets actually carry.
+- **Backend JSON parsing tolerates doubled output for objects, not just arrays** — the duplicate-output recovery in `_parse_backend_json` misrouted doubled objects containing arrays; both CLI and TUI parsers now take the first complete JSON value via `raw_decode`.
+- **DP700 driver reports a missing cable as `DeviceNotFoundError`** when unplugged mid-session, instead of a raw NoneType traceback.
+
 ## [0.24.0] - 2026-06-05
 
 Two themes: the MCP server becomes a focused, read-only surface for *learning* a bench and its device-under-test (so an agent can author a correct `lager python` test), and the debug/RTT path becomes resilient enough to survive scripted flash → attach → reset loops without human babysitting.

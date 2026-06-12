@@ -28,7 +28,7 @@ def get_wifi_interfaces():
                 interface = line.split()[0]
                 interfaces.append(interface)
         return interfaces
-    except:
+    except (OSError, subprocess.SubprocessError):
         return ['wlan0']  # Default fallback
 
 
@@ -155,7 +155,7 @@ def parse_iwlist_output(output):
                     else:
                         strength = 50  # Default
                     current_network['strength'] = strength
-                except:
+                except ValueError:
                     current_network['strength'] = 50
 
         elif 'Encryption key:' in line:
@@ -187,7 +187,7 @@ def parse_nmcli_output(output):
                     'security': 'Secured' if parts[7] != '--' else 'Open'
                 }
                 networks.append(network)
-            except:
+            except (IndexError, ValueError):
                 continue
 
     return {"access_points": networks}
