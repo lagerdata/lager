@@ -237,6 +237,81 @@ class TestKeithleyMonitorStateIsNonIntrusive:
 
 
 # ---------------------------------------------------------------------------
+# KeithleyBattery.get_monitor_state: defensive numeric parsing
+# ---------------------------------------------------------------------------
+
+
+class TestBatteryMonitorStateParsing:
+    @pytest.fixture()
+    def battery_cls(self):
+        stubs = _lager_exceptions_stub()
+        wrap = types.ModuleType("lager.instrument_wrappers.instrument_wrap")
+        wrap.InstrumentWrapKeithley = object
+        defines = types.ModuleType("lager.instrument_wrappers.keithley_defines")
+        defines.Mode = types.SimpleNamespace(BatterySimulator=types.SimpleNamespace(to_cmd=lambda: "BATT"))
+        defines.SimMethod = object
+        util = types.ModuleType("lager.instrument_wrappers.util")
+        util.InvalidEnumError = type("InvalidEnumError", (Exception,), {})
+        pkg = types.ModuleType("lager.instrument_wrappers")
+        stubs.update({
+            "lager.instrument_wrappers": pkg,
+            "lager.instrument_wrappers.instrument_wrap": wrap,
+            "lager.instrument_wrappers.keithley_defines": defines,
+            "lager.instrument_wrappers.util": util,
+        })
+        for stub_name, stub in stubs.items():
+            sys.modules.setdefault(stub_name, stub)
+
+        pkg_name = "kb_pkg"
+        package = types.ModuleType(pkg_name)
+        package.__path__ = [os.path.join(_REPO_ROOT, "box/lager/power/battery")]
+        sys.modules[pkg_name] = package
+        bn = _load_module(pkg_name + ".battery_net", "box/lager/power/battery/battery_net.py")
+        sys.modules[pkg_name + ".battery_net"] = bn
+
+        path = os.path.join(_REPO_ROOT, "box/lager/power/battery/keithley.py")
+        spec = importlib.util.spec_from_file_location(pkg_name + ".keithley", path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[pkg_name + ".keithley"] = mod
+        spec.loader.exec_module(mod)
+        return mod.KeithleyBattery
+
+    def test_odd_reply_formats_parse_instead_of_failing_the_tick(self, battery_cls):
+        drv = object.__new__(battery_cls)
+        drv._is_batt_output_on = lambda: True
+        drv._mode_string = lambda: "Dynamic"
+        replies = {
+            ":BATT:SIM:TVOL?": "3.3 V",                       # trailing unit
+            ":BATT:SIM:CURR?": "+1.500000E+00A,+3.2E+00V",    # multi-value
+            ":BATT:SIM:RES?": "garbage",                       # unparseable
+            ":BATT:SIM:SOC?": "+3.000000E+01",                 # sci-notation
+        }
+        drv._safe_query = lambda cmd, default="": replies.get(cmd, default)
+
+        state = drv.get_monitor_state()
+        assert state["terminal_voltage"] == pytest.approx(3.3)
+        assert state["current"] == pytest.approx(1.5)
+        assert state["esr"] == pytest.approx(0.067)   # falls back to default
+        assert state["soc"] == pytest.approx(30.0)
+        assert state["enabled"] is True
+        assert state["mode"] == "Dynamic"
+
+    def test_clean_replies_unchanged(self, battery_cls):
+        drv = object.__new__(battery_cls)
+        drv._is_batt_output_on = lambda: False
+        drv._mode_string = lambda: "OFF"
+        drv._safe_query = lambda cmd, default="": {
+            ":BATT:SIM:TVOL?": "0.0",
+            ":OUTP:PROT:TRIP?": "OCP",
+        }.get(cmd, default)
+
+        state = drv.get_monitor_state()
+        assert state["terminal_voltage"] == 0.0
+        assert state["ocp_tripped"] is True
+        assert state["ovp_tripped"] is False
+
+
+# ---------------------------------------------------------------------------
 # describe_error: no more empty 'Hardware service unreachable: '
 # ---------------------------------------------------------------------------
 
