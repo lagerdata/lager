@@ -335,6 +335,11 @@ def format_lock_user(user):
                 run_attempt, _, job_runner = after_hash.partition('/')
                 run_id, _, _attempt = run_attempt.partition('-')
                 job, _, runner = job_runner.partition('@')
+                if not repo.strip() or not run_id.strip():
+                    # Malformed holder: partition() never raises, so without
+                    # this check we'd render garbage like 'github  run '
+                    # instead of falling back to the raw string.
+                    return user
                 bits = ['github', repo.strip(), f'run {run_id.strip()}']
                 if job:
                     bits.append(f'job {job.strip()}')
@@ -917,6 +922,13 @@ def auto_lock_around_command(
             if released['done']:
                 return
             released['done'] = True
+            # Drop our atexit registration once we've run: callers that
+            # take many locks in one process (test suites, scripted use)
+            # shouldn't accumulate spent handlers.
+            try:
+                _atexit.unregister(_safe_release)
+            except Exception:  # pylint: disable=broad-except
+                pass
             try:
                 release_box_lock(ip, resolved_holder)
             except Exception:  # pylint: disable=broad-except
@@ -1032,6 +1044,12 @@ def auto_lock_acquire_for_command(
         if done['done']:
             return
         done['done'] = True
+        # See _safe_release in auto_lock_around_command: don't accumulate
+        # spent atexit handlers across many locks in one process.
+        try:
+            _atexit.unregister(_release)
+        except Exception:  # pylint: disable=broad-except
+            pass
         if heartbeat is not None:
             heartbeat.stop()
         if should_release:

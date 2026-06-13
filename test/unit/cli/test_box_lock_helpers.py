@@ -132,6 +132,12 @@ class TestFormatLockUserNew:
         out = box_storage.format_lock_user('ci:generic:box-99:11')
         assert out == 'ci on box-99'
 
+    def test_malformed_github_holder_falls_back_to_raw(self):
+        # partition() never raises, so malformed strings used to render as
+        # 'github  run ' garbage instead of hitting the fallback.
+        for raw in ('ci:github:weird', 'ci:github:#123/job@r:9', 'ci:github:repo#'):
+            assert box_storage.format_lock_user(raw) == raw
+
     def test_unknown_provider_passes_through(self):
         out = box_storage.format_lock_user('ci:mystery:whatever')
         assert out == 'ci:mystery:whatever'
@@ -518,6 +524,38 @@ class TestAutoLockAroundCommand:
             assert state == 'already_ours'
 
         assert released == [], "must not release a pre-existing user lock"
+
+    def test_atexit_handler_unregistered_after_release(self, monkeypatch):
+        # One process can take many locks (test suites, scripts); spent
+        # release handlers must not accumulate in atexit.
+        import atexit as real_atexit
+        unregistered = []
+        monkeypatch.setattr(
+            box_storage, 'acquire_box_lock', lambda *a, **k: ('acquired', {}),
+        )
+        monkeypatch.setattr(
+            box_storage, 'release_box_lock', lambda *a, **k: True,
+        )
+        monkeypatch.setattr(
+            box_storage, 'get_lock_holder', lambda: 'test-holder',
+        )
+        monkeypatch.setattr(
+            box_storage, 'HeartbeatThread',
+            lambda *a, **k: mock.Mock(start=mock.Mock(), stop=mock.Mock()),
+        )
+        monkeypatch.setattr(
+            real_atexit, 'unregister', lambda fn: unregistered.append(fn),
+        )
+
+        with box_storage.auto_lock_around_command('10.0.0.1', 'lab-box', 'install'):
+            pass
+        assert len(unregistered) == 1
+
+        release = box_storage.auto_lock_acquire_for_command(
+            '10.0.0.1', 'lab-box', 'update',
+        )
+        release()
+        assert len(unregistered) == 2
 
     def test_already_ours_with_ttl_heartbeats_but_never_releases(self, monkeypatch):
         # Resuming a leftover ephemeral lock (crashed run): keep it alive
