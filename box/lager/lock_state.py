@@ -186,6 +186,11 @@ def _write_lock(data: Dict[str, Any]) -> None:
         dir=os.path.dirname(LOCK_FILE),
     )
     try:
+        # mkstemp creates 0o600; the plain open() this replaced produced
+        # 0o644. Keep the lock file world-readable so a future deployment
+        # where the two HTTP servers run as different users (or any
+        # diagnostic reading /etc/lager directly) doesn't break.
+        os.fchmod(fd, 0o644)
         with os.fdopen(fd, 'w') as f:
             json.dump(data, f, indent=2)
             f.flush()
