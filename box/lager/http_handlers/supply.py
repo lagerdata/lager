@@ -10,12 +10,13 @@ This module handles power supply monitoring and control:
 """
 import logging
 import threading
+import time
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit
 
 from lager.dispatchers.helpers import resolve_net_proxy
 from lager.exceptions import SupplyBackendError
-from lager.nets.device import ConnectionFailed, DeviceError, Device
+from lager.nets.device import ConnectionFailed, DeviceError, Device, describe_error
 
 from .state import (
     active_supply_sessions,
@@ -308,7 +309,13 @@ def register_supply_socketio(socketio: SocketIO) -> None:
         """
         try:
             netname = data.get('netname')
-            interval = data.get('interval', 1.0)
+            # Coerce once at ingestion: a string interval (e.g. "2") would
+            # otherwise raise TypeError at max(interval, tick_duration) in
+            # the monitor loop and silently kill the monitor thread.
+            try:
+                interval = max(0.1, float(data.get('interval', 1.0)))
+            except (TypeError, ValueError):
+                interval = 1.0
 
             if not netname:
                 emit('error', {'message': 'netname is required'})
@@ -486,69 +493,52 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                 logger.info(f"[MONITOR-{thread_name}] Emitted supply_driver_ready event")
 
                 while not stop_event.is_set():
+                    tick_started = time.monotonic()
                     try:
-                        # Each call below is one /invoke POST; hardware_service
-                        # serializes per-device internally. No need for a local
-                        # lock.
-                        state = {
-                            'netname': netname,
-                            'channel': channel,
-                            'voltage': float(supply.measure_voltage(channel)),
-                            'current': float(supply.measure_current(channel)),
-                            'power': float(supply.measure_power(channel)),
-                            'enabled': supply.output_is_enabled(channel),
-                            'mode': supply.get_output_mode(channel) if hasattr(supply, 'get_output_mode') else 'CV',
-                            'voltage_set': float(supply.get_channel_voltage(source=channel)),
-                            'current_set': float(supply.get_channel_current(source=channel)),
-                        }
-
-                        try:
-                            limits = supply.get_channel_limits(channel)
-                            state['voltage_max'] = limits.get('voltage_max', 0)
-                            state['current_max'] = limits.get('current_max', 0)
-                        except (AttributeError, NotImplementedError):
-                            state['voltage_max'] = 0
-                            state['current_max'] = 0
-
-                        try:
-                            state['ocp_limit'] = float(supply.get_overcurrent_protection_value(channel))
-                            state['ocp_tripped'] = supply.overcurrent_protection_is_tripped(channel)
-                        except (AttributeError, NotImplementedError):
-                            state['ocp_limit'] = None
-                            state['ocp_tripped'] = None
-
-                        try:
-                            state['ovp_limit'] = float(supply.get_overvoltage_protection_value(channel))
-                            state['ovp_tripped'] = supply.overvoltage_protection_is_tripped(channel)
-                        except (AttributeError, NotImplementedError):
-                            state['ovp_limit'] = None
-                            state['ovp_tripped'] = None
+                        # ONE /invoke POST — and one per-device lock
+                        # acquisition inside hardware_service — per tick.
+                        # The previous per-field version made ~12 separate
+                        # /invoke calls per tick; on slow instruments each
+                        # call held the shared device lock long enough to
+                        # starve interactive TUI commands, and on the
+                        # Keithley 2281S in battery mode the mode-enforcing
+                        # queries blew the proxy's 10s HTTP budget outright.
+                        state = {'netname': netname, 'channel': channel}
+                        state.update(supply.get_monitor_state(channel))
 
                         socketio.emit('supply_state_update',
                                     {'state': state},
                                     namespace='/supply',
                                     room=session_id)
                     except ConnectionFailed as e:
-                        logger.error(f"[MONITOR-{thread_name}] hardware_service unreachable: {e}")
+                        detail = describe_error(e)
+                        logger.error(f"[MONITOR-{thread_name}] hardware_service unreachable: {detail}")
                         socketio.emit('error',
-                                    {'message': f'Hardware service unreachable: {e}'},
+                                    {'message': f'Hardware service unreachable: {detail}'},
                                     namespace='/supply',
                                     room=session_id)
                     except DeviceError as e:
-                        logger.error(f"[MONITOR-{thread_name}] hardware_service error: {e}")
+                        detail = describe_error(e)
+                        logger.error(f"[MONITOR-{thread_name}] hardware_service error: {detail}")
                         socketio.emit('error',
-                                    {'message': f'Hardware service error: {e}'},
+                                    {'message': f'Hardware service error: {detail}'},
                                     namespace='/supply',
                                     room=session_id)
                     except Exception as e:
-                        logger.error(f"[MONITOR-{thread_name}] Error monitoring supply: {e}")
+                        detail = describe_error(e)
+                        logger.error(f"[MONITOR-{thread_name}] Error monitoring supply: {detail}")
                         socketio.emit('error',
-                                    {'message': f'Monitoring error: {str(e)}'},
+                                    {'message': f'Monitoring error: {detail}'},
                                     namespace='/supply',
                                     room=session_id)
 
-                    # Wait for interval or stop event
-                    stop_event.wait(interval)
+                    # Adaptive cadence: never let polling occupy more than
+                    # ~half the device's time. A gather that took 3s on a
+                    # slow instrument is followed by >=3s of idle, leaving
+                    # interactive commands a window instead of a permanently
+                    # saturated lock queue.
+                    tick_duration = time.monotonic() - tick_started
+                    stop_event.wait(max(interval, tick_duration))
 
                 logger.info(f"Supply monitoring thread stopped for session {session_id}")
 

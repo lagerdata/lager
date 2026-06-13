@@ -219,16 +219,20 @@ class TestRowLabels:
                                            "serial": "S"})
         assert "(cable not connected)" in label.plain
 
-    def test_bracketed_device_data_crashes_markup_statics(self):
-        # Pin the failure mechanism this guards against: the same string
-        # crashes a default (markup=True) Static but renders with
-        # markup=False — the setting DevicePickDialog / ConfirmUnassignDialog
-        # use for interpolated content.
+    def test_bracketed_device_data_renders_literally_with_markup_false(self):
+        # Pin the contract this guards: device strings contain markup-like
+        # brackets ("[067b:23a3]"), so DevicePickDialog / ConfirmUnassignDialog
+        # Statics must be built with markup=False, which renders the brackets
+        # literally. (The failure mechanism varies by textual version: < 8
+        # crashed outright on markup=True; >= 8 silently eats the brackets
+        # as style tags. markup=False is correct on both.)
         from textual.widgets import Static
         content = tui._cable_row_label(self.CABLE).plain
-        with pytest.raises(Exception):
-            Static(content).visual  # noqa: B018 — render is the assertion
-        Static(content, markup=False).visual  # must not raise
+
+        rendered = Static(content, markup=False).render()
+        plain = getattr(rendered, 'plain', None)
+        text = plain if isinstance(plain, str) else str(rendered)
+        assert "[067b:23a3]" in text
 
 
 # --------------------------------------------------------------------------- #

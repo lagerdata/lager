@@ -10,13 +10,14 @@ This module contains all battery simulator-related endpoints:
 """
 import logging
 import threading
+import time
 
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit
 
 from lager.dispatchers.helpers import resolve_net_proxy
 from lager.exceptions import BatteryBackendError
-from lager.nets.device import ConnectionFailed, DeviceError, Device
+from lager.nets.device import ConnectionFailed, DeviceError, Device, describe_error
 
 from .state import (
     active_battery_sessions,
@@ -338,7 +339,13 @@ def register_battery_socketio(socketio: SocketIO) -> None:
         """
         try:
             netname = data.get('netname')
-            interval = data.get('interval', 1.0)
+            # Coerce once at ingestion: a string interval (e.g. "2") would
+            # otherwise raise TypeError at max(interval, tick_duration) in
+            # the monitor loop and silently kill the monitor thread.
+            try:
+                interval = max(0.1, float(data.get('interval', 1.0)))
+            except (TypeError, ValueError):
+                interval = 1.0
 
             if not netname:
                 emit('error', {'message': 'netname is required'})
@@ -480,65 +487,48 @@ def register_battery_socketio(socketio: SocketIO) -> None:
                 logger.info(f"[BATTERY-MONITOR-{thread_name}] Emitted battery_driver_ready event")
 
                 while not stop_event.is_set():
+                    tick_started = time.monotonic()
                     try:
-                        # Each call below is one /invoke POST; hardware_service
-                        # serializes per-device internally. Underscore methods
-                        # (_safe_query, _is_batt_output_on, _mode_string) proxy
-                        # through Device.__getattr__ since Python only suppresses
-                        # dunder lookups, not single-underscore names.
-                        enabled = battery._is_batt_output_on()
-                        mode_str = battery._mode_string()
-                        model_str = battery._safe_query(":BATT:STAT?", "") or "Custom"
-
-                        state = {
-                            'netname': netname,
-                            'channel': channel,
-                            'terminal_voltage': float(battery._safe_query(":BATT:SIM:TVOL?", "0")),
-                            'current': float(battery._safe_query(":BATT:SIM:CURR?", "0")),
-                            'esr': float(battery._safe_query(":BATT:SIM:RES?", "0.067")),
-                            'soc': float(battery._safe_query(":BATT:SIM:SOC?", "0")),
-                            'voc': float(battery._safe_query(":BATT:SIM:VOC?", "0")),
-                            'enabled': enabled,
-                            'mode': mode_str,
-                            'model': model_str,
-                            'capacity': float(battery._safe_query(":BATT:SIM:CAP:LIM?", "1.0")),
-                            'current_limit': float(battery._safe_query(":BATT:SIM:CURR:LIM?", "1.0")),
-                            'ocp_limit': float(battery._safe_query(":BATT:SIM:CURR:PROT?", "2.0")),
-                            'ovp_limit': float(battery._safe_query(":BATT:SIM:TVOL:PROT?", "4.5")),
-                            'volt_full': float(battery._safe_query(":BATT:SIM:VOC:FULL?", "4.2")),
-                            'volt_empty': float(battery._safe_query(":BATT:SIM:VOC:EMPT?", "3.0")),
-                        }
-
-                        # Get protection trip status
-                        trip = (battery._safe_query(":OUTP:PROT:TRIP?", "").upper() or "")
-                        state['ocp_tripped'] = (trip == "OCP")
-                        state['ovp_tripped'] = (trip == "OVP")
+                        # ONE /invoke POST — and one per-device lock
+                        # acquisition inside hardware_service — per tick.
+                        # The driver gathers all ~17 fields internally
+                        # (KeithleyBattery.get_monitor_state), so polling
+                        # cannot interleave with and starve interactive
+                        # commands the way the old per-field version could.
+                        state = {'netname': netname, 'channel': channel}
+                        state.update(battery.get_monitor_state(channel))
 
                         socketio.emit('battery_state_update',
                                     {'state': state},
                                     namespace='/battery',
                                     room=session_id)
                     except ConnectionFailed as e:
-                        logger.error(f"[BATTERY-MONITOR-{thread_name}] hardware_service unreachable: {e}")
+                        detail = describe_error(e)
+                        logger.error(f"[BATTERY-MONITOR-{thread_name}] hardware_service unreachable: {detail}")
                         socketio.emit('error',
-                                    {'message': f'Hardware service unreachable: {e}'},
+                                    {'message': f'Hardware service unreachable: {detail}'},
                                     namespace='/battery',
                                     room=session_id)
                     except DeviceError as e:
-                        logger.error(f"[BATTERY-MONITOR-{thread_name}] hardware_service error: {e}")
+                        detail = describe_error(e)
+                        logger.error(f"[BATTERY-MONITOR-{thread_name}] hardware_service error: {detail}")
                         socketio.emit('error',
-                                    {'message': f'Hardware service error: {e}'},
+                                    {'message': f'Hardware service error: {detail}'},
                                     namespace='/battery',
                                     room=session_id)
                     except Exception as e:
-                        logger.error(f"[BATTERY-MONITOR-{thread_name}] Error monitoring battery: {e}")
+                        detail = describe_error(e)
+                        logger.error(f"[BATTERY-MONITOR-{thread_name}] Error monitoring battery: {detail}")
                         socketio.emit('error',
-                                    {'message': f'Monitoring error: {str(e)}'},
+                                    {'message': f'Monitoring error: {detail}'},
                                     namespace='/battery',
                                     room=session_id)
 
-                    # Wait for interval or stop event
-                    stop_event.wait(interval)
+                    # Adaptive cadence: polling never occupies more than
+                    # ~half the device's time, leaving slow instruments a
+                    # window for interactive commands.
+                    tick_duration = time.monotonic() - tick_started
+                    stop_event.wait(max(interval, tick_duration))
 
                 logger.info(f"Battery monitoring thread stopped for session {session_id}")
 

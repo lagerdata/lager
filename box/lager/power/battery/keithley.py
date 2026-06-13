@@ -534,6 +534,54 @@ class KeithleyBattery(BatteryNet):
         ovp_status = f"{RED}YES{RESET}" if ovp_tripped else f"{GREEN}NO{RESET}"
         print(f"    OVP Tripped: {ovp_status}")
 
+    def get_monitor_state(self, channel=None) -> dict:
+        """Single-call monitor state for the battery TUI WebSocket.
+
+        Same queries as ``print_state`` but returned as a dict in the
+        ``battery_state_update`` wire shape (minus ``netname``/``channel``,
+        which the monitor adds). One hardware_service ``/invoke`` — and one
+        per-device lock acquisition — per monitor tick instead of ~17, so
+        polling cannot starve interactive commands on slow instruments.
+        """
+        enabled = self._is_batt_output_on()
+        mode_str = self._mode_string()
+        model_str = self._safe_query(":BATT:STAT?", "") or "Custom"
+
+        trip = (self._safe_query(":OUTP:PROT:TRIP?", "").upper() or "")
+
+        def q(cmd: str, default: str) -> float:
+            # Defensive parse: some 2281S firmware can answer with trailing
+            # units or multi-value strings; a bare float() would turn one
+            # odd reply into a failed monitor tick. Take the first
+            # comma-separated field and strip unit suffixes.
+            raw = self._safe_query(cmd, default)
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                try:
+                    return float(str(raw).split(',')[0].strip().rstrip('VAWs%Ω'))
+                except (TypeError, ValueError):
+                    return float(default)
+
+        return {
+            'terminal_voltage': q(":BATT:SIM:TVOL?", "0"),
+            'current': q(":BATT:SIM:CURR?", "0"),
+            'esr': q(":BATT:SIM:RES?", "0.067"),
+            'soc': q(":BATT:SIM:SOC?", "0"),
+            'voc': q(":BATT:SIM:VOC?", "0"),
+            'enabled': enabled,
+            'mode': mode_str,
+            'model': model_str,
+            'capacity': q(":BATT:SIM:CAP:LIM?", "1.0"),
+            'current_limit': q(":BATT:SIM:CURR:LIM?", "1.0"),
+            'ocp_limit': q(":BATT:SIM:CURR:PROT?", "2.0"),
+            'ovp_limit': q(":BATT:SIM:TVOL:PROT?", "4.5"),
+            'volt_full': q(":BATT:SIM:VOC:FULL?", "4.2"),
+            'volt_empty': q(":BATT:SIM:VOC:EMPT?", "3.0"),
+            'ocp_tripped': trip == "OCP",
+            'ovp_tripped': trip == "OVP",
+        }
+
     # ----------------------------- helpers -----------------------------
 
     def _enter_battery_ef(self) -> None:
