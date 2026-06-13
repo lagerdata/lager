@@ -8,10 +8,12 @@
 """
 import click
 from click.exceptions import Exit
+import os
 import subprocess
 import platform
 from ...box_storage import resolve_and_validate_box
 from ...context import get_default_box
+from ._ssh import _LAGER_BOX_KEY
 
 
 def _get_ssh_install_hint() -> str:
@@ -62,10 +64,21 @@ def ssh(ctx, box):
     # Build SSH command
     ssh_host = f'{username}@{resolved_box}'
 
+    # Offer the dedicated lager_box key (installed by `lager authorize`) when
+    # present. It isn't one of ssh's default identity filenames, so without
+    # -i it's never tried and an authorized box still drops to a password
+    # prompt. -i appends to the identity list rather than replacing it (no
+    # IdentitiesOnly), so default keys and the password fallback still work
+    # for boxes that haven't been authorized.
+    ssh_cmd = ['ssh']
+    if os.path.exists(_LAGER_BOX_KEY):
+        ssh_cmd.extend(['-i', _LAGER_BOX_KEY])
+    ssh_cmd.append(ssh_host)
+
     try:
         # Run SSH as a child process (not exec) so Click ctx.call_on_close hooks run.
         try:
-            ret = subprocess.call(['ssh', ssh_host])
+            ret = subprocess.call(ssh_cmd)
         except KeyboardInterrupt:
             ret = 130
         ctx.exit(ret if ret is not None else 0)
