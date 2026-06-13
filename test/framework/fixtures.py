@@ -43,6 +43,8 @@ from .test_utils import (
     check_hardware_service,
     validate_net_exists,
     safe_disable_output,
+    BOX_HTTP_URL,
+    DEFAULT_TIMEOUT,
 )
 
 # =============================================================================
@@ -106,6 +108,101 @@ def hardware_service():
     if not check_hardware_service(verbose=True):
         pytest.skip("Hardware service not reachable - skipping hardware tests")
     return True
+
+
+@pytest.fixture(scope="session")
+def locked_box():
+    """Reserve the box for the lifetime of the pytest session.
+
+    Acquires the box lock at session start and releases on teardown. Intended
+    for the Python ``test/api/*`` suites that talk to the box's HTTP server
+    directly (the suites typically run *inside* a ``lager python`` invocation
+    on the box, so the local Flask server is at ``localhost:5000``).
+
+    Behavior:
+        - Holder string defaults to ``LAGER_LOCK_HOLDER`` if set, otherwise
+          ``pytest:<hostname>:<pid>`` so concurrent pytest workers can't
+          accidentally share an identity.
+        - Holder type is ``ephemeral`` with TTL = ``LAGER_LOCK_TTL`` env var
+          (default 1800s). The fixture refreshes ``last_heartbeat`` from the
+          teardown path; long sessions should rely on the surrounding
+          ``lager python`` heartbeat thread for keep-alive.
+        - On 409 (locked by someone else): pytest skips the entire session
+          rather than failing — matches the ``box_connection`` fixture's
+          "skip if hardware not available" philosophy.
+        - Best-effort release on teardown; a failed release is logged but
+          never masks test results.
+
+    Use this fixture with ``autouse=True`` in a suite-local ``conftest.py``
+    if you want every test in the suite to require the lock::
+
+        # test/api/conftest.py
+        from test.framework.fixtures import locked_box
+
+        @pytest.fixture(scope="session", autouse=True)
+        def _enforce_lock(locked_box):
+            return locked_box
+    """
+    import os
+    import socket
+    import requests
+
+    holder = os.environ.get("LAGER_LOCK_HOLDER")
+    if not holder:
+        holder = f"pytest:{socket.gethostname()}:{os.getpid()}"
+
+    ttl_env = os.environ.get("LAGER_LOCK_TTL")
+    if ttl_env is not None and ttl_env.lower() in ("none", "null", ""):
+        ttl_seconds: Optional[int] = None
+    else:
+        try:
+            ttl_seconds = int(ttl_env) if ttl_env else 1800
+        except ValueError:
+            ttl_seconds = 1800
+
+    payload: Dict[str, Any] = {
+        "user": holder,
+        "holder_type": "ephemeral",
+        "ttl_seconds": ttl_seconds,
+    }
+
+    try:
+        resp = requests.post(
+            f"{BOX_HTTP_URL}/lock", json=payload, timeout=DEFAULT_TIMEOUT
+        )
+    except requests.exceptions.RequestException as exc:
+        pytest.skip(f"Could not reach box at {BOX_HTTP_URL} to lock: {exc}")
+        return None  # unreachable, satisfies type-checker
+
+    if resp.status_code == 409:
+        try:
+            other = (resp.json().get("lock") or {}).get("user", "unknown")
+        except ValueError:
+            other = "unknown"
+        pytest.skip(f"Box is locked by {other}; skipping suite")
+        return None
+    if resp.status_code != 200:
+        pytest.skip(f"Could not lock box (HTTP {resp.status_code}); skipping suite")
+        return None
+
+    try:
+        lock_info = resp.json()
+    except ValueError:
+        lock_info = {}
+
+    print(f"\n[locked_box] Acquired lock as {holder!r} (ttl={ttl_seconds})")
+    try:
+        yield lock_info
+    finally:
+        try:
+            requests.post(
+                f"{BOX_HTTP_URL}/unlock",
+                json={"user": holder},
+                timeout=DEFAULT_TIMEOUT,
+            )
+            print(f"[locked_box] Released lock for {holder!r}")
+        except requests.exceptions.RequestException as exc:
+            print(f"[locked_box] Warning: failed to release lock: {exc}")
 
 
 # =============================================================================
@@ -497,6 +594,7 @@ __all__ = [
     "lager_imports",
     "box_connection",
     "hardware_service",
+    "locked_box",
     # Module fixtures
     "hardware_cache",
     # Power fixtures

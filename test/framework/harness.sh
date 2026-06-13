@@ -45,7 +45,16 @@ GLOBAL_EXCLUDED=0
 # ============================================================
 
 # Initialize the test harness
-# Call this at the beginning of your test script
+# Call this at the beginning of your test script.
+#
+# Opt-in session-scoped box locking:
+#   LAGER_TEST_LOCK=1   - acquire `lager boxes lock --box "$BOX"` at start
+#                         and release on EXIT/INT/TERM. `$BOX` must be set
+#                         before init_harness when this is enabled.
+#   LAGER_LOCK_HOLDER   - forwarded as --user to make the lock holder
+#                         match the CLI's auto-lock identity (so the
+#                         per-script `lager python` calls inside the suite
+#                         see "already ours" rather than colliding).
 init_harness() {
     SECTION_NAMES=()
     SECTION_TOTAL=()
@@ -57,6 +66,50 @@ init_harness() {
     GLOBAL_PASSED=0
     GLOBAL_FAILED=0
     GLOBAL_EXCLUDED=0
+
+    if [ "${LAGER_TEST_LOCK:-0}" = "1" ]; then
+        if [ -z "${BOX:-}" ]; then
+            echo "init_harness: LAGER_TEST_LOCK=1 but \$BOX is not set yet; skipping session lock" >&2
+        else
+            acquire_box_lock_harness "$BOX"
+            # EXIT covers all termination paths. Trapping INT/TERM
+            # additionally would *swallow* those signals in bash (the
+            # handler doesn't call `exit`), letting the suite keep
+            # running unlocked after Ctrl+C — exactly the failure
+            # mode we're trying to prevent. With INT/TERM untrapped,
+            # bash exits on those signals and then fires EXIT, so
+            # the lock is still released.
+            # shellcheck disable=SC2064  # we want $BOX expanded at trap-time, not later
+            trap "release_box_lock_harness '$BOX'" EXIT
+        fi
+    fi
+}
+
+# Acquire a `lager boxes lock` for the duration of a bash test suite.
+# Used by init_harness when LAGER_TEST_LOCK=1; can also be called directly
+# from tests that want to manage the lock themselves.
+#
+# Usage: acquire_box_lock_harness "$BOX"
+acquire_box_lock_harness() {
+    local box="$1"
+    local args=(boxes lock --box "$box")
+    if [ -n "${LAGER_LOCK_HOLDER:-}" ]; then
+        args+=(--user "$LAGER_LOCK_HOLDER")
+    fi
+    if ! lager "${args[@]}" >&2; then
+        echo "acquire_box_lock_harness: failed to lock '$box'" >&2
+        return 1
+    fi
+}
+
+# Release the harness-acquired lock. Idempotent and best-effort: a failure
+# here must not mask the test exit code.
+#
+# Usage: release_box_lock_harness "$BOX"
+release_box_lock_harness() {
+    local box="$1"
+    [ -n "$box" ] || return 0
+    lager boxes unlock --box "$box" >/dev/null 2>&1 || true
 }
 
 # ============================================================

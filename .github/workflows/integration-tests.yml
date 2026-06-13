@@ -1,0 +1,97 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# Hardware integration tests against a shared self-hosted box.
+#
+# This workflow demonstrates the lock auto-acquire / auto-release flow:
+#
+#   - `lager python` automatically locks the box at start and releases at
+#     end (see docs/source/reference/cli/locking.mdx).
+#   - Lock identity is matrix-safe: each matrix item gets a unique holder
+#     string of the form
+#       ci:github:<repo>#<run>-<attempt>/<job>@<runner>:<pid>
+#     so two parallel items can never share an identity.
+#   - In CI, the CLI's default collision behavior is to wait up to
+#     LAGER_LOCK_WAIT seconds (default 1800) before failing. That lets
+#     parallel matrix items queue against the same physical box without
+#     any explicit `lager boxes lock` calls in this workflow.
+#
+# Tune LAGER_LOCK_WAIT down if you would rather have parallel jobs
+# fail-fast than wait. Tune LAGER_LOCK_TTL up only if heartbeats are
+# unreliable on your network.
+
+name: Integration Tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # Don't queue duplicate PR runs; the most recent push wins.
+  group: integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hardware-tests:
+    name: hardware-tests (${{ matrix.suite }})
+    runs-on: [self-hosted, lager-bench]
+    strategy:
+      # We WANT parallelism here — the lock-wait semantics serialize
+      # matrix items against the same physical box without losing the
+      # benefit of running independent suites concurrently when more
+      # than one bench is online.
+      fail-fast: false
+      matrix:
+        suite:
+          - power
+          - communication
+          - sensors
+
+    env:
+      # Required: which box this CI talks to. Set as a repository or
+      # environment secret if the box name shouldn't be in the repo.
+      LAGER_BOX: ${{ vars.LAGER_BOX || 'lab-box' }}
+
+      # Optional tuning (all defaults are sensible):
+      # LAGER_LOCK_WAIT: '1800'    # seconds to wait on lock collision
+      # LAGER_LOCK_TTL:  '1800'    # seconds the server will hold a lock without a heartbeat
+      # LAGER_LOCK_HEARTBEAT: '60' # seconds between heartbeat refreshes
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install lager-cli
+        run: pip install --upgrade lager-cli
+
+      - name: Verify box is reachable
+        # Cheap connectivity ping before we burn lock-wait time. Failing
+        # here surfaces a network / box-down problem with a clearer error.
+        run: lager hello --box "$LAGER_BOX"
+
+      - name: Run ${{ matrix.suite }} suite
+        # `lager python` auto-locks at start and auto-releases at end. If
+        # another matrix item is already holding the lock, this step
+        # blocks for up to LAGER_LOCK_WAIT seconds (default 1800) before
+        # failing. No explicit `lager boxes lock` required.
+        run: |
+          lager python "test/api/${{ matrix.suite }}" --box "$LAGER_BOX"
+
+      - name: Best-effort lock cleanup
+        # Defense in depth: if a previous step crashed in a way that
+        # bypassed every CLI cleanup hook (extremely unusual; would
+        # require os._exit or an uncatchable signal), this step force-
+        # releases the lock so it doesn't sit until the server TTL.
+        # The same-holder check on the box ensures we never stomp another
+        # matrix item's live lock here.
+        if: always()
+        run: |
+          # Best-effort; never fail the job on cleanup.
+          lager boxes unlock --box "$LAGER_BOX" 2>/dev/null || true
