@@ -309,7 +309,13 @@ def register_supply_socketio(socketio: SocketIO) -> None:
         """
         try:
             netname = data.get('netname')
-            interval = data.get('interval', 1.0)
+            # Coerce once at ingestion: a string interval (e.g. "2") would
+            # otherwise raise TypeError at max(interval, tick_duration) in
+            # the monitor loop and silently kill the monitor thread.
+            try:
+                interval = max(0.1, float(data.get('interval', 1.0)))
+            except (TypeError, ValueError):
+                interval = 1.0
 
             if not netname:
                 emit('error', {'message': 'netname is required'})
