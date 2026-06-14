@@ -19,14 +19,17 @@
 # Tune LAGER_LOCK_WAIT down if you would rather have parallel jobs
 # fail-fast than wait. Tune LAGER_LOCK_TTL up only if heartbeats are
 # unreliable on your network.
+#
+# This is a REFERENCE workflow: it targets `[self-hosted, lager-bench]`
+# runners and a box named via `vars.LAGER_BOX`, which a given org may not
+# have. It is therefore manual-trigger only (`workflow_dispatch`) so it
+# never auto-runs (and hangs/fails) on PRs against a runner that isn't
+# online. To adopt it as a real gate, add your `pull_request`/`push`
+# triggers back and point it at your own self-hosted runner + box.
 
 name: Integration Tests
 
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
