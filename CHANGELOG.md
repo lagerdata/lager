@@ -2,6 +2,18 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.28.1] - 2026-06-15
+
+Warm-path Workbench support for bus and energy instruments, plus UART hardening on the box.
+
+### Added
+- **`spi`, `i2c`, and `energy-analyzer` nets are served by the box's `/net/command` endpoint.** Stout's Workbench drives these roles, which previously round-tripped through the `/python` executor — paying an interpreter spawn + device re-open on every command. They now run in the long-lived box HTTP server like the existing gpio/adc/dac/eload/thermocouple/watt-meter roles, matching Stout's actions and params exactly (spi `transfer`/`read`, i2c `scan`/`read`/`write`/`transfer`, energy-analyzer `read_stats`/`read_energy`). Message formats match the previous `/python` fallback so the dashboard log is identical on either path, and energy-analyzer durations are clamped to 0.1–30s. Each net's transactions are serialized per netname so concurrent requests can't interleave on one device. Rollout is back-compatible: a box without this build returns 501 and Stout falls back to `/python`, with no Stout deploy needed.
+- **`simple-websocket` added to the box image** so Flask-SocketIO (threading mode) can serve the WebSocket transport instead of long-polling only. Clients negotiate transport automatically.
+
+### Fixed
+- **`lager ssh` now offers the `lager authorize` key (`~/.ssh/lager_box`).** The key isn't one of ssh's default identity filenames, so `lager ssh` ran bare `ssh user@ip` and authorized boxes still dropped to a password prompt. It now passes `-i ~/.ssh/lager_box` when the key exists (mirroring the other SSH paths); without `IdentitiesOnly`, default keys and the password fallback still work for unauthorized boxes.
+- **UART devices are opened exclusively and arbitrated against double-use.** A second opener — another dashboard socket.io session, or `lager uart` from the CLI while a Workbench session is live — now fails fast with a clear "device in use" message instead of silently interleaving reads on the same `/dev/tty*`. `start_uart` rejects a second session for a net (or for a different net mapping to the same device) before opening, and an exclusive-open failure is reported readably rather than as a raw errno.
+
 ## [0.28.0] - 2026-06-13
 
 Two themes: `lager python` (and the box-mutating admin commands) now reserve the box automatically — with CI-aware identity, heartbeat keepalive, and TTL reap of stale locks — and the supply/battery TUIs work reliably on slow or mode-shared instruments (Keithley 2281S), with honest diagnostics when they can't.

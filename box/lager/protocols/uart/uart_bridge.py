@@ -156,17 +156,13 @@ class UARTBridge:
         elif stopbits_float == 2:
             stopbits_val = serial.STOPBITS_TWO
 
-        # Kill any existing processes using this port
-        try:
-            import subprocess
-            subprocess.run(
-                ["fuser", "-k", self.device_path],
-                capture_output=True,
-                timeout=1
-            )
-            time.sleep(0.2)
-        except Exception:
-            pass
+        # NOTE: we intentionally do NOT `fuser -k` the device before opening.
+        # We open with exclusive=True (pyserial flock) so a second opener fails
+        # fast instead of interleaving reads. Killing the current holder would
+        # invert that arbitration — a `lager uart` CLI open would kill the
+        # box_http_server holding the port (and vice versa). flock is released
+        # automatically when the holding process dies, so a stale lock from a
+        # crashed opener does not persist and needs no forced kill.
 
         # Open serial connection
         self.serial_conn = serial.Serial(

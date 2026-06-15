@@ -93,6 +93,7 @@ RUN /usr/local/bin/python -m pip install --upgrade pip \
 	'Flask==3.0.0' \
 	'flask-socketio==5.3.5' \
 	'python-socketio==5.10.0' \
+	'simple-websocket==1.0.0' \
 	'websockets==12.0' \
 	'rich' \
 	'cbor2' \
