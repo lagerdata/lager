@@ -12,9 +12,10 @@ import + device-open, so these commands get the same warm path as the
 supply/battery/usb /command endpoints.
 
 This is the consolidation point that lets the rest of the instruments (GPIO,
-ADC, DAC, e-load, thermocouple, watt-meter, and later i2c/spi/scope/...) stop
-round-tripping through /python. Tier 1 is implemented here; new instruments are
-added as entries in ROLE_ACTIONS.
+ADC, DAC, e-load, thermocouple, watt-meter, spi, i2c, energy-analyzer, and
+later scope/...) stop round-tripping through /python. Tier 1 + the
+bus/measurement roles are implemented here; new instruments are added as
+entries in ROLE_ACTIONS.
 
 Request body:
     { "netname": "gpi1", "action": "input", "params": { ... } }
@@ -26,11 +27,13 @@ Response:
     { "success": false, "error": "Net 'gpi1' not found" }
 """
 import logging
+import threading
 
 from flask import Flask, request, jsonify
 
 from lager.nets.net import Net, NetType
 from lager.nets.device import ConnectionFailed, DeviceError
+from lager.exceptions import LagerBackendError
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +87,37 @@ def _net(netname, role):
           hardware_service can dispatch these device modules/methods.
     """
     return Net.get(netname, type=NetType.from_role(role))
+
+
+# ---------------------------------------------------------------------------
+# Per-netname serialization for in-process bus/measurement drivers.
+#
+# The spi/i2c dispatchers cache their drivers behind a module lock, and the
+# energy-analyzer dispatcher caches too — but that lock only guards driver
+# *construction*, not the device I/O. Flask runs threaded, so two Workbench
+# requests (or a Workbench request racing a `lager spi/i2c/energy` subprocess)
+# on the same net would interleave transactions on one physical device.
+#
+# Decision (per the _net() docstring's open question): for spi/i2c/energy-
+# analyzer we serialize the whole resolve+transact per netname. These roles are
+# inherently transactional (a transfer/scan/integration must complete before
+# the next starts), low-frequency from the dashboard, and cheap to queue. The
+# simpler stateless reads (gpio/adc/dac/thermocouple/watt-meter) are left
+# unserialized — their re-open-per-call already matches the /python path.
+# ---------------------------------------------------------------------------
+
+_net_locks = {}
+_net_locks_guard = threading.Lock()
+
+
+def _get_net_lock(netname):
+    """Return a process-wide lock unique to `netname` (created on first use)."""
+    with _net_locks_guard:
+        lock = _net_locks.get(netname)
+        if lock is None:
+            lock = threading.Lock()
+            _net_locks[netname] = lock
+        return lock
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +196,94 @@ def _eload(netname, role, action, params):
     return _ok(str(res), res)
 
 
+def _spi(netname, role, action, params):
+    # Bus transaction via the SPI dispatcher's cached, lock-guarded driver
+    # (matches cli/impl/protocols/spi.py and Stout's TIER1_NET_SCRIPT). The
+    # whole resolve+transact is serialized per netname so concurrent requests
+    # can't interleave words on the same device.
+    if action not in ("transfer", "read"):
+        raise UnknownAction(action)
+    from lager.protocols.spi.dispatcher import _resolve_net_and_driver
+    overrides = params.get("overrides") or None
+    fill = int(params.get("fill", 0xFF))
+    with _get_net_lock(netname):
+        drv = _resolve_net_and_driver(netname, overrides)
+        if action == "read":
+            result = drv.read(int(params["n_words"]), fill=fill)
+        else:
+            # transfer: pad/truncate data to n_words with fill (default 0xFF)
+            data = [int(b) for b in (params.get("data") or [])]
+            n = int(params.get("n_words") or len(data))
+            if len(data) < n:
+                data = data + [fill] * (n - len(data))
+            elif len(data) > n:
+                data = data[:n]
+            result = drv.read_write(data)
+    words = [int(w) for w in result]
+    return _ok(" ".join("%02X" % w for w in words) or "(no data)", words)
+
+
+def _i2c(netname, role, action, params):
+    # I2C transaction via the I2C dispatcher's cached, lock-guarded driver
+    # (matches cli/impl/protocols/i2c.py and Stout's TIER1_NET_SCRIPT).
+    # Serialized per netname (see _spi).
+    if action not in ("scan", "read", "write", "transfer"):
+        raise UnknownAction(action)
+    from lager.protocols.i2c.dispatcher import _resolve_net_and_driver
+    overrides = params.get("overrides") or None
+    with _get_net_lock(netname):
+        drv = _resolve_net_and_driver(netname, overrides)
+        if action == "scan":
+            found = [int(a) for a in drv.scan()]
+            if found:
+                msg = "Found %d device(s): %s" % (
+                    len(found), ", ".join("0x%02x" % a for a in found))
+            else:
+                msg = "No devices found"
+            return _ok(msg, found)
+        if action == "read":
+            result = [int(b) for b in drv.read(int(params["address"]), int(params["num_bytes"]))]
+            return _ok(" ".join("%02X" % b for b in result) or "(no data)", result)
+        if action == "write":
+            data = [int(b) for b in (params.get("data") or [])]
+            drv.write(int(params["address"]), data)
+            return _ok("Wrote %d byte(s) to 0x%02x" % (len(data), int(params["address"])))
+        # transfer: write then read in one transaction (repeated start)
+        data = [int(b) for b in (params.get("data") or [])]
+        result = [int(b) for b in drv.write_read(int(params["address"]), data, int(params["num_bytes"]))]
+        return _ok(" ".join("%02X" % b for b in result) or "(no data)", result)
+
+
+def _energy_analyzer(netname, role, action, params):
+    # Joulescope JS220 / Nordic PPK2 via the energy_analyzer dispatcher, which
+    # returns dicts directly. read_energy integrates, read_stats averages.
+    # Serialized per netname (see _spi) — a measurement must finish before the
+    # next starts on the same device.
+    if action not in ("read_stats", "read_energy"):
+        raise UnknownAction(action)
+    from lager.measurement.energy_analyzer.dispatcher import read_energy, read_stats
+    default = 10.0 if action == "read_energy" else 1.0
+    duration = float(params.get("duration") or default)
+    # Clamp to the box's safe measurement window. Stout clamps to 30s too,
+    # sized so the held connection stays under Nginx's 60s proxy_read_timeout.
+    duration = max(0.1, min(duration, 30.0))
+    with _get_net_lock(netname):
+        if action == "read_energy":
+            r = read_energy(netname, duration)
+            msg = "%.4f J (%.4f C) over %.1f s" % (
+                float(r.get("energy_j") or 0), float(r.get("charge_c") or 0),
+                float(r.get("duration_s") or duration))
+        else:
+            r = read_stats(netname, duration)
+            c = r.get("current") or {}
+            v = r.get("voltage") or {}
+            p = r.get("power") or {}
+            msg = "I %.6f A, V %.3f V, P %.6f W (mean over %.1f s)" % (
+                float(c.get("mean") or 0), float(v.get("mean") or 0),
+                float(p.get("mean") or 0), duration)
+    return _ok(msg, r)
+
+
 # role string -> handler. Keep aligned with mcp/data/api_reference.py and the
 # Stout-side allowlist (control-plane NET_PYTHON_ACTIONS / NET_COMMAND_ROUTES).
 ROLE_ACTIONS = {
@@ -171,6 +293,9 @@ ROLE_ACTIONS = {
     "thermocouple": _thermocouple,
     "watt-meter": _watt_meter,
     "eload": _eload,
+    "spi": _spi,
+    "i2c": _i2c,
+    "energy-analyzer": _energy_analyzer,
 }
 
 
@@ -226,7 +351,7 @@ def register_net_command_routes(app: Flask) -> None:
                 return jsonify({'success': False, 'error': 'Missing required value: %s' % e}), 400
             except ValueError as e:
                 return jsonify({'success': False, 'error': str(e)}), 400
-            except (ConnectionFailed, DeviceError) as e:
+            except (ConnectionFailed, DeviceError, LagerBackendError) as e:
                 logger.exception("[HTTP] /net/command hardware error on %s", netname)
                 return jsonify({'success': False, 'error': 'Hardware error: %s' % e}), 502
 

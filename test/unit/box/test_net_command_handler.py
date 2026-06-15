@@ -70,6 +70,9 @@ SAVED_NETS = [
     {"name": "tc1", "role": "thermocouple"},
     {"name": "watt1", "role": "watt-meter"},
     {"name": "load1", "role": "eload"},
+    {"name": "spi1", "role": "spi"},
+    {"name": "i2c1", "role": "i2c"},
+    {"name": "energy1", "role": "energy-analyzer"},
     {"name": "scope1", "role": "scope"},  # unsupported by /net/command
 ]
 
@@ -192,6 +195,210 @@ class TestNetCommandHandler(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.get_json()["success"])
         fake.set_constant_current.assert_called_once_with("load1", 0.5)
+
+    # ----- spi -----
+
+    def _patch_dispatcher(self, dotted, **attrs):
+        """Build a fake dispatcher module and patch it into sys.modules."""
+        fake = types.ModuleType(dotted)
+        for name, value in attrs.items():
+            setattr(fake, name, value)
+        return patch.dict(sys.modules, {dotted: fake}), fake
+
+    def test_spi_transfer_pads_to_n_words(self):
+        drv = MagicMock()
+        drv.read_write.return_value = [0xDE, 0xAD, 0xBE, 0xEF]
+        ctx, fake = self._patch_dispatcher(
+            'lager.protocols.spi.dispatcher',
+            _resolve_net_and_driver=MagicMock(return_value=drv))
+        with ctx, patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            r = self._post({"netname": "spi1", "action": "transfer",
+                            "params": {"data": [1, 2], "n_words": 4}})
+        data = r.get_json()
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(data["value"], [0xDE, 0xAD, 0xBE, 0xEF])
+        self.assertEqual(data["message"], "DE AD BE EF")
+        # data padded to n_words=4 with fill 0xFF
+        drv.read_write.assert_called_once_with([1, 2, 0xFF, 0xFF])
+
+    def test_spi_read(self):
+        drv = MagicMock()
+        drv.read.return_value = [1, 2, 3]
+        ctx, _ = self._patch_dispatcher(
+            'lager.protocols.spi.dispatcher',
+            _resolve_net_and_driver=MagicMock(return_value=drv))
+        with ctx, patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            r = self._post({"netname": "spi1", "action": "read",
+                            "params": {"n_words": 3}})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["value"], [1, 2, 3])
+        drv.read.assert_called_once_with(3, fill=0xFF)
+
+    def test_spi_known_role_unknown_action_is_400_not_501(self):
+        # Stout treats 501 as "use the /python fallback"; a supported role with
+        # an unsupported action must be a 400, never a 501.
+        ctx, _ = self._patch_dispatcher(
+            'lager.protocols.spi.dispatcher',
+            _resolve_net_and_driver=MagicMock(return_value=MagicMock()))
+        with ctx, patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            r = self._post({"netname": "spi1", "action": "bogus"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_spi_hardware_error_is_502(self):
+        ctx, _ = self._patch_dispatcher(
+            'lager.protocols.spi.dispatcher',
+            _resolve_net_and_driver=MagicMock(
+                side_effect=net_command.LagerBackendError("bus fault")))
+        with ctx, patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            r = self._post({"netname": "spi1", "action": "read",
+                            "params": {"n_words": 2}})
+        self.assertEqual(r.status_code, 502)
+
+    # ----- i2c -----
+
+    def test_i2c_scan_with_devices(self):
+        drv = MagicMock()
+        drv.scan.return_value = [0x48, 0x50]
+        ctx, _ = self._patch_dispatcher(
+            'lager.protocols.i2c.dispatcher',
+            _resolve_net_and_driver=MagicMock(return_value=drv))
+        with ctx, patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            r = self._post({"netname": "i2c1", "action": "scan"})
+        data = r.get_json()
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(data["value"], [0x48, 0x50])
+        self.assertIn("Found 2 device(s)", data["message"])
+        self.assertIn("0x48", data["message"])
+
+    def test_i2c_scan_empty(self):
+        drv = MagicMock()
+        drv.scan.return_value = []
+        ctx, _ = self._patch_dispatcher(
+            'lager.protocols.i2c.dispatcher',
+            _resolve_net_and_driver=MagicMock(return_value=drv))
+        with ctx, patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            r = self._post({"netname": "i2c1", "action": "scan"})
+        data = r.get_json()
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(data["value"], [])
+        self.assertEqual(data["message"], "No devices found")
+
+    def test_i2c_read(self):
+        drv = MagicMock()
+        drv.read.return_value = [0xAB, 0xCD]
+        ctx, _ = self._patch_dispatcher(
+            'lager.protocols.i2c.dispatcher',
+            _resolve_net_and_driver=MagicMock(return_value=drv))
+        with ctx, patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            r = self._post({"netname": "i2c1", "action": "read",
+                            "params": {"address": 0x48, "num_bytes": 2}})
+        data = r.get_json()
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(data["value"], [0xAB, 0xCD])
+        self.assertEqual(data["message"], "AB CD")
+        drv.read.assert_called_once_with(0x48, 2)
+
+    def test_i2c_write(self):
+        drv = MagicMock()
+        ctx, _ = self._patch_dispatcher(
+            'lager.protocols.i2c.dispatcher',
+            _resolve_net_and_driver=MagicMock(return_value=drv))
+        with ctx, patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            r = self._post({"netname": "i2c1", "action": "write",
+                            "params": {"address": 0x50, "data": [1, 2, 3]}})
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("Wrote 3 byte(s) to 0x50", r.get_json()["message"])
+        drv.write.assert_called_once_with(0x50, [1, 2, 3])
+
+    def test_i2c_transfer(self):
+        drv = MagicMock()
+        drv.write_read.return_value = [0x99]
+        ctx, _ = self._patch_dispatcher(
+            'lager.protocols.i2c.dispatcher',
+            _resolve_net_and_driver=MagicMock(return_value=drv))
+        with ctx, patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            r = self._post({"netname": "i2c1", "action": "transfer",
+                            "params": {"address": 0x48, "data": [7], "num_bytes": 1}})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["value"], [0x99])
+        drv.write_read.assert_called_once_with(0x48, [7], 1)
+
+    def test_i2c_read_missing_param_is_400(self):
+        ctx, _ = self._patch_dispatcher(
+            'lager.protocols.i2c.dispatcher',
+            _resolve_net_and_driver=MagicMock(return_value=MagicMock()))
+        with ctx, patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            r = self._post({"netname": "i2c1", "action": "read",
+                            "params": {"address": 0x48}})
+        self.assertEqual(r.status_code, 400)
+
+    # ----- energy-analyzer -----
+
+    def test_energy_read_stats(self):
+        ctx, fake = self._patch_dispatcher(
+            'lager.measurement.energy_analyzer.dispatcher',
+            read_stats=MagicMock(return_value={
+                "current": {"mean": 0.001234},
+                "voltage": {"mean": 3.3},
+                "power": {"mean": 0.004072},
+            }),
+            read_energy=MagicMock(return_value={}))
+        with ctx, patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            r = self._post({"netname": "energy1", "action": "read_stats",
+                            "params": {"duration": 2.0}})
+        data = r.get_json()
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("I 0.001234 A", data["message"])
+        self.assertIn("V 3.300 V", data["message"])
+        fake.read_stats.assert_called_once_with("energy1", 2.0)
+
+    def test_energy_read_energy_clamps_max_duration(self):
+        ctx, fake = self._patch_dispatcher(
+            'lager.measurement.energy_analyzer.dispatcher',
+            read_energy=MagicMock(return_value={
+                "energy_j": 1.5, "charge_c": 0.5, "duration_s": 30.0}),
+            read_stats=MagicMock(return_value={}))
+        with ctx, patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            # 99s exceeds the 30s cap -> clamped to 30.0
+            r = self._post({"netname": "energy1", "action": "read_energy",
+                            "params": {"duration": 99}})
+        self.assertEqual(r.status_code, 200)
+        fake.read_energy.assert_called_once_with("energy1", 30.0)
+
+    def test_energy_read_stats_clamps_min_duration(self):
+        ctx, fake = self._patch_dispatcher(
+            'lager.measurement.energy_analyzer.dispatcher',
+            read_stats=MagicMock(return_value={}),
+            read_energy=MagicMock(return_value={}))
+        with ctx, patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            # 0.001s is below the 0.1s floor -> clamped to 0.1
+            r = self._post({"netname": "energy1", "action": "read_stats",
+                            "params": {"duration": 0.001}})
+        self.assertEqual(r.status_code, 200)
+        fake.read_stats.assert_called_once_with("energy1", 0.1)
+
+    def test_energy_unknown_action_is_400(self):
+        ctx, _ = self._patch_dispatcher(
+            'lager.measurement.energy_analyzer.dispatcher',
+            read_stats=MagicMock(return_value={}),
+            read_energy=MagicMock(return_value={}))
+        with ctx, patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            r = self._post({"netname": "energy1", "action": "bogus"})
+        self.assertEqual(r.status_code, 400)
 
     @patch('lager.http_handlers.net_command.Net')
     def test_unknown_action_is_400(self, NetMock):
