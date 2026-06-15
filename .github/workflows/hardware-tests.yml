@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: ["main", "master"]
   schedule:
-    - cron: "17 20 * * *"  # TEMPORARY: fires ~20:17 UTC today for testing; revert to "0 11 * * *" (3 AM PST) after confirming
+    - cron: "0 11 * * *"  # 3 AM PST
   workflow_dispatch:
     inputs:
       box_name:
@@ -29,6 +29,7 @@ jobs:
 
       - name: Install lager CLI (editable)
         run: pip install -e cli/
+        shell: bash
 
       - name: Register lager box
         run: |
