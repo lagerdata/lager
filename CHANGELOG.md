@@ -2,6 +2,23 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.28.0] - 2026-06-13
+
+Two themes: `lager python` (and the box-mutating admin commands) now reserve the box automatically — with CI-aware identity, heartbeat keepalive, and TTL reap of stale locks — and the supply/battery TUIs work reliably on slow or mode-shared instruments (Keithley 2281S), with honest diagnostics when they can't.
+
+### Added
+- **Automatic box locking around `lager python`.** Every run acquires the box lock at start and releases it on exit, Ctrl+C, crash, or kill — with a server-side TTL + heartbeat reap as the backstop for hard kills. Holder identity is CI-aware (`ci:github:<repo>#<run>-<attempt>/<job>@<runner>:<pid>` and equivalents for Drone/GitLab/Bitbucket/Jenkins), so parallel CI matrix jobs queue against a shared box instead of colliding: collisions fail fast on dev machines (<1s) and wait up to `LAGER_LOCK_WAIT` in CI. `--detach` takes an eternal lock released via `lager boxes unlock`. `lager install`, `uninstall`, `update`, and `install-wheel` hold the lock across their destructive sections so a concurrent test is never killed mid-run. Escape hatches: `LAGER_AUTO_LOCK_DISABLE`, `LAGER_LOCK_WAIT`, `LAGER_LOCK_TTL`, `LAGER_LOCK_HEARTBEAT`, `LAGER_LOCK_HOLDER`.
+- **Explicit reservations are inviolable.** `lager boxes lock` reservations are never reclassified, given a TTL, or released by any auto-locking command — on new or old box servers. (Both box HTTP servers now share one lock state machine, `lock_state.py`, with atomic file I/O; previously the two ports had divergent implementations.)
+
+### Fixed
+- **Supply TUI is usable on slow/mode-shared instruments (Keithley 2281S).** The box-side monitor gathered its display state via ~12 separate hardware-service calls per second, each taking the shared per-device lock — on a 2281S in battery mode this starved interactive commands into "Command timeout" and showed "Hardware service unreachable: " with no detail. Monitors (supply and battery) now gather the whole state in a single call per tick, poll adaptively (never occupying more than ~half of a slow device's time), and the Keithley supply monitor uses only non-intrusive queries, so it works regardless of the instrument's entry function.
+- **WS/TUI errors say what actually failed.** Bare connection failures now name their cause (timeout vs refused vs device error) instead of ending in a colon, and a healthy box with a failed supply/battery session points at the instrument (offline/busy/slow, with the `lager instruments` and box-log checks) instead of blaming a "pre-0.20 box image".
+- **`lager battery <net> tui` with a non-battery net exits 1** (was a stdout message with exit 0, invisible to scripts and CI).
+
+### Changed
+- **Dependency ceilings: `textual >= 3.2.0, < 9` and `python-socketio >= 5.10.0, < 6`.** The unpinned floors let every fresh install resolve whatever major shipped that day; textual 8.x removed APIs the TUI tests relied on, which is how TUI behavior drifted between machines and releases. Existing installs inside the range are unaffected.
+- **`--force-command` remains removed** (gone since 0.13.4); the structured collision policy above replaces it, and `lager boxes unlock --force` stays the manual override.
+
 ## [0.27.1] - 2026-06-12
 
 A quality-of-life pass: a one-command fix for SSH key authorization, untruncated `lager nets`/`lager instruments` output, and clearer `--help` usage lines.

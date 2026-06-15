@@ -1,0 +1,37 @@
+---
+title: "Version 0.28.0"
+description: "June 13, 2026"
+---
+
+## <u>Features</u>
+
+- **`lager python` automatically reserves the box while it runs.** Every run acquires the box lock at start and releases it on exit, `Ctrl+C`, crash, or kill, with a server-side TTL + heartbeat reap as the backstop. Lock identity is CI-aware, so parallel CI matrix jobs queue against a shared box instead of colliding: collisions fail fast on a dev machine and wait (up to `LAGER_LOCK_WAIT`) in CI. `--detach` holds an eternal lock you release with `lager boxes unlock`. The box-mutating admin commands — `lager install`, `uninstall`, `update`, `install-wheel` — also hold the lock across their destructive steps so a concurrent test is never killed mid-run. Tune or disable via `LAGER_AUTO_LOCK_DISABLE`, `LAGER_LOCK_WAIT`, `LAGER_LOCK_TTL`, `LAGER_LOCK_HEARTBEAT`, and `LAGER_LOCK_HOLDER`.
+- **Explicit `lager boxes lock` reservations are never disturbed** by any auto-locking command — they keep their no-expiry semantics on new and old box servers alike.
+
+## <u>Bug Fixes</u>
+
+- **The supply TUI now works on slow instruments (e.g. Keithley 2281S).** Previously its live readout could stay stuck at `00.000` with repeated "Hardware service unreachable" errors and timed-out commands. The box-side monitor now reads the full display state in a single call per update and paces itself to the instrument, so readings populate and commands respond promptly — even when the instrument is shared with the battery simulator.
+- **TUI error messages now say what actually failed** (a timeout, a refused connection, or a device error) instead of an empty message, and a reachable box with a failed supply/battery session points you at the instrument (check it is on and shows in `lager instruments`) instead of suggesting an outdated box image.
+- **`lager battery <net> tui` with a non-battery net now exits with an error code** instead of reporting failure but exiting successfully.
+
+## <u>Improvements</u>
+
+- **Pinned `textual` and `python-socketio` to compatible ranges** so a fresh `pip install lager-cli` can't pull in a newer, breaking version of either library. Existing installs are unaffected.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.28.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.28.0/)
