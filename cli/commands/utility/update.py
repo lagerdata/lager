@@ -11,6 +11,7 @@
 import click
 import requests
 import re
+import shlex
 import shutil
 import subprocess
 import threading
@@ -537,27 +538,29 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             log_error('Error: Failed to create SSH key')
             return False
 
-        # Copy key to box
-        if shutil.which('ssh-copy-id') is None:
-            click.echo()
-            click.secho('ssh-copy-id is not available on this system.', fg='yellow')
-            click.echo('Append the key manually with:')
-            click.echo(f'  cat {key_file}.pub | ssh {ssh_host} '
-                       '"mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"')
-            click.echo('Then re-run: lager update')
-            return False
-
+        # Copy key to box using ssh directly — ssh-copy-id is a POSIX shell
+        # script not available on Windows, even when Git for Windows is installed.
         click.echo()
         click.echo('Copying SSH key to box (enter password when prompted):')
+        try:
+            pub_key = open(f'{key_file}.pub').read().strip()
+        except OSError as e:
+            click.secho(f'Could not read public key {key_file}.pub: {e}', fg='red')
+            return False
+
+        remote_cmd = (
+            f'mkdir -p ~/.ssh && echo {shlex.quote(pub_key)} >> ~/.ssh/authorized_keys'
+            ' && chmod 600 ~/.ssh/authorized_keys'
+        )
         copy_result = subprocess.run(
             [
-                'ssh-copy-id',
+                'ssh',
                 '-o', 'StrictHostKeyChecking=accept-new',
                 '-o', 'ConnectTimeout=30',
-                '-i', key_file,
                 ssh_host,
+                remote_cmd,
             ],
-            timeout=300  # 5 minutes - allow time for user to enter password
+            timeout=300,  # 5 minutes — allow time for user to enter password
         )
 
         if copy_result.returncode == 0 and key_auth_works(ssh_host):
