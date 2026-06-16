@@ -638,10 +638,14 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         log_error(f'Error: Connection to {ssh_host} timed out')
         ctx.exit(1)
     except Exception as e:
-        if progress:
-            progress.finish(success=False)
         import traceback as _tb
-        click.echo(_tb.format_exc(), err=True)
+        tb_str = _tb.format_exc()
+        try:
+            if progress:
+                progress.finish(success=False)
+        except Exception:
+            pass
+        click.echo(tb_str)
         log_error(f'Error: {str(e)}')
         ctx.exit(1)
 
