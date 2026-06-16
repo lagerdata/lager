@@ -640,6 +640,8 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     except Exception as e:
         if progress:
             progress.finish(success=False)
+        import traceback as _tb
+        click.echo(_tb.format_exc(), err=True)
         log_error(f'Error: {str(e)}')
         ctx.exit(1)
 
