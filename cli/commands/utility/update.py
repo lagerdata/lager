@@ -538,6 +538,15 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             return False
 
         # Copy key to box
+        if shutil.which('ssh-copy-id') is None:
+            click.echo()
+            click.secho('ssh-copy-id is not available on this system.', fg='yellow')
+            click.echo('Append the key manually with:')
+            click.echo(f'  cat {key_file}.pub | ssh {ssh_host} '
+                       '"mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"')
+            click.echo('Then re-run: lager update')
+            return False
+
         click.echo()
         click.echo('Copying SSH key to box (enter password when prompted):')
         copy_result = subprocess.run(
