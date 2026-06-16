@@ -1,0 +1,133 @@
+---
+title: BluFi
+description: Provision ESP32 WiFi credentials over BLE (BluFi protocol)
+---
+
+Provision WiFi credentials to an ESP32 device over Bluetooth Low Energy using the
+BluFi protocol. Use it to scan for BluFi-capable devices, push SSID/password
+credentials, and read back connection status and firmware version — handy for
+bringing an unprovisioned ESP32 DUT onto the network as part of a test.
+
+## Syntax
+
+```bash
+lager blufi COMMAND [ARGS] [OPTIONS]
+```
+
+Every subcommand accepts `--box BOX` (Lagerbox name or IP; uses the default box if
+omitted). All commands except `scan` take a `DEVICE_NAME` argument identifying the
+target BluFi device.
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `scan` | Scan for BluFi-capable BLE devices |
+| `connect` | Connect to a BluFi device and retrieve version and status |
+| `provision` | Provision WiFi credentials to a BluFi device |
+| `wifi-scan` | Scan for WiFi networks via a BluFi device |
+| `status` | Get WiFi connection status from a BluFi device |
+| `version` | Get firmware version from a BluFi device |
+
+---
+
+## Command Reference
+
+### `scan`
+
+Scan for BluFi-capable BLE devices.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--timeout` | `10.0` | Total time (seconds) the box spends scanning |
+| `--name-contains` | | Filter to devices whose name contains this string |
+
+```bash
+lager blufi scan --box my-lager-box
+lager blufi scan --name-contains ESP --box my-lager-box
+```
+
+### `connect`
+
+Connect to a BluFi device and retrieve its version and status.
+
+```bash
+lager blufi connect ESP32-DEVICE --box my-lager-box
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--timeout` | `20.0` | BLE connection timeout (seconds) |
+
+### `provision`
+
+Provision WiFi credentials to a BluFi device.
+
+```bash
+lager blufi provision ESP32-DEVICE --ssid HomeNet --password secret123 --box my-lager-box
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--ssid` | (required) | WiFi network SSID to provision |
+| `--password` | (required) | WiFi network password |
+| `--timeout` | `20.0` | BLE connection timeout (seconds) |
+
+### `wifi-scan`
+
+Scan for WiFi networks via a BluFi device.
+
+```bash
+lager blufi wifi-scan ESP32-DEVICE --box my-lager-box
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--timeout` | `20.0` | BLE connection timeout (seconds) |
+| `--scan-timeout` | `15.0` | WiFi scan duration on the device (seconds) |
+
+### `status`
+
+Get the WiFi connection status from a BluFi device.
+
+```bash
+lager blufi status ESP32-DEVICE --box my-lager-box
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--timeout` | `20.0` | BLE connection timeout (seconds) |
+
+### `version`
+
+Get the firmware version from a BluFi device.
+
+```bash
+lager blufi version ESP32-DEVICE --box my-lager-box
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--timeout` | `20.0` | BLE connection timeout (seconds) |
+
+---
+
+## Typical Flow
+
+```bash
+# 1. Find the device
+lager blufi scan --name-contains ESP --box my-lager-box
+
+# 2. Provision credentials
+lager blufi provision ESP32-DEVICE --ssid HomeNet --password secret123 --box my-lager-box
+
+# 3. Confirm it joined the network
+lager blufi status ESP32-DEVICE --box my-lager-box
+```
+
+---
+
+## See Also
+
+- [BLE](/source/reference/cli/ble) — scan and connect to generic BLE devices
+- [WiFi](/source/reference/cli/wifi) — manage the Lager Box's own WiFi settings

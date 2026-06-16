@@ -17,7 +17,7 @@ The Net-based API provides methods for embedded debugging operations.
 
 | Method | Description |
 |--------|-------------|
-| `connect(speed, transport)` | Connect to target device |
+| `connect(speed, transport, *, script, force, ignore_if_connected)` | Connect to target device (optional per-connect J-Link script override) |
 | `disconnect()` | Disconnect from target |
 | `reset(halt)` | Reset the device |
 | `flash(firmware_path)` | Flash firmware to device |
@@ -51,9 +51,10 @@ dbg = Net.get('DUT', type=NetType.Debug)
 
 **Note:** The debug net must be configured with the target device name stored in the `channel` field (e.g., 'NRF52840_XXAA', 'R7FA0E107').
 
-### `connect(speed=None, transport=None)`
+### `connect(speed=None, transport=None, *, script=None, force=False, ignore_if_connected=False)`
 
-Connect to the target device.
+Connect to the target device (start the gdbserver for this probe). The backend
+(J-Link or OpenOCD) is chosen automatically from the probe.
 
 ```python
 # Connect with default settings (4000 kHz, SWD)
@@ -64,6 +65,9 @@ dbg.connect(speed='adaptive')
 
 # Connect with JTAG
 dbg.connect(transport='JTAG')
+
+# Connect with a per-connect J-Link script override (box path or base64 blob)
+dbg.connect(script='/home/lagerdata/probes/my_target.JLinkScript')
 ```
 
 **Parameters:**
@@ -72,8 +76,22 @@ dbg.connect(transport='JTAG')
 |-----------|------|---------|-------------|
 | `speed` | `str` | `'4000'` | Interface speed in kHz (e.g., '4000') or 'adaptive' |
 | `transport` | `str` | `'SWD'` | Transport protocol ('SWD' or 'JTAG') |
+| `script` | `str` | `None` | **J-Link only** — a per-connect `.JLinkScript` override: a path on the box **or** a base64-encoded script blob. It is copied to the shared script temp path so subsequent `flash()` / `reset()` / `read_memory()` calls pick it up immediately. The OpenOCD backend ignores this. |
+| `force` | `bool` | `False` | Stop any gdbserver already running for this probe and start fresh. |
+| `ignore_if_connected` | `bool` | `False` | If a gdbserver is already running for this probe, return its status without touching it. |
 
 **Returns:** `dict` - Status dictionary with connection information
+
+<Note>
+A `script` override is only adopted by a *relaunch* of the gdbserver. If a server
+is already running, pass `force=True` to restart it with the new script;
+`ignore_if_connected=True` returns early without relaunching (though the script
+file is still repointed for subsequent Commander operations). Invalid input — a
+missing path that isn't valid base64, or an empty string — is silently ignored and
+the net's previously materialised script stays in effect. **Concurrency caveat:**
+two debug nets connecting with different scripts share one temp path and can clobber
+each other.
+</Note>
 
 ### `disconnect()`
 

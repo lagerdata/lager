@@ -17,7 +17,7 @@ lager update [OPTIONS]
 |--------|-------------|
 | `--box BOX` | Lagerbox name or IP address |
 | `--all` | Update all saved boxes that need updating |
-| `--version VERSION` | Lager Box version/branch to update to (default: main) |
+| `--version VERSION` | Release tag, semver pin, or branch to update to (default: main). See [Version pinning](#version-pinning). |
 | `--yes` | Skip confirmation prompt |
 | `--check` | Dry run: report what would change without modifying the box |
 | `--skip-restart` | Skip container restart after update |
@@ -28,6 +28,29 @@ lager update [OPTIONS]
 <Note>
 Either `--box` or `--all` is required. They cannot be used together.
 </Note>
+
+## Version pinning
+
+Since **lager 0.22.0**, a semver value passed to `--version` — with or without a
+leading `v` (e.g. `0.26.0` or `v0.26.0`), including common pre-release suffixes
+(`-rc1`, `-beta2`, `-alpha`, `-preview`) — resolves to the release **tag**
+`vX.Y.Z`. Release tags are the single source of truth for a pinned version.
+
+```bash
+# All three pin the same release tag (v0.26.0)
+lager update --box my-lager-box --version v0.26.0 --yes
+lager update --box my-lager-box --version 0.26.0 --yes
+lager update --box my-lager-box --version v0.27.0-rc1 --yes
+```
+
+Any other value (`main`, `staging`, or a feature branch name) resolves to
+`origin/<name>` as before.
+
+<Warning>
+Per-release **version branches** (bare `X.Y.Z` branches) are deprecated in favour
+of tags. A value like `0.26.0` now resolves to the tag `v0.26.0`, not a branch of
+the same name. See `RELEASE_PROCESS.md` in the repository.
+</Warning>
 
 ## Usage
 
