@@ -43,6 +43,10 @@ jobs:
         run: lager hello --box "$LAGER_BOX_NAME"
         shell: bash
 
+      - name: Verify update probe (dry-run)
+        run: lager update --check --box "$LAGER_BOX_NAME"
+        shell: bash
+
       - name: Test Rigol DP821 power supply
         id: rigol-test
         continue-on-error: true

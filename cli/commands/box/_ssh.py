@@ -52,11 +52,20 @@ def ensure_lager_box_keypair(key_path: str = _LAGER_BOX_KEY) -> bool:
     if os.path.exists(key_path):
         return False
     os.makedirs(os.path.dirname(key_path), mode=0o700, exist_ok=True)
-    proc = subprocess.run(
-        ["ssh-keygen", "-t", "ed25519", "-f", key_path, "-N", "", "-C", "lager-box-access"],
-        capture_output=True,
-        text=True,
-    )
+    keygen_exe = shutil.which("ssh-keygen")
+    if keygen_exe is None:
+        raise LagerError(
+            "ssh-keygen not found — install the OpenSSH client.",
+            fixes=["Windows: Settings → System → Optional Features → 'OpenSSH Client'"],
+        )
+    try:
+        proc = subprocess.run(
+            [keygen_exe, "-t", "ed25519", "-f", key_path, "-N", "", "-C", "lager-box-access"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        raise LagerError("ssh-keygen failed to launch.", cause=str(exc), raw=exc) from exc
     if proc.returncode != 0:
         raise LagerError(
             "Could not generate the SSH key.",
