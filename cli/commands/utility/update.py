@@ -537,6 +537,10 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         except LagerError:
             log_error('Error: Failed to create SSH key')
             return False
+        except FileNotFoundError:
+            click.secho('ssh-keygen not found. Install OpenSSH client tools.', fg='red')
+            click.echo('  Windows: Settings → System → Optional Features → "OpenSSH Client"')
+            return False
 
         # Copy key to box using ssh directly — ssh-copy-id is a POSIX shell
         # script not available on Windows, even when Git for Windows is installed.
@@ -552,16 +556,23 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             f'mkdir -p ~/.ssh && echo {shlex.quote(pub_key)} >> ~/.ssh/authorized_keys'
             ' && chmod 600 ~/.ssh/authorized_keys'
         )
-        copy_result = subprocess.run(
-            [
-                'ssh',
-                '-o', 'StrictHostKeyChecking=accept-new',
-                '-o', 'ConnectTimeout=30',
-                ssh_host,
-                remote_cmd,
-            ],
-            timeout=300,  # 5 minutes — allow time for user to enter password
-        )
+        try:
+            copy_result = subprocess.run(
+                [
+                    'ssh',
+                    '-o', 'StrictHostKeyChecking=accept-new',
+                    '-o', 'ConnectTimeout=30',
+                    ssh_host,
+                    remote_cmd,
+                ],
+                timeout=300,  # 5 minutes — allow time for user to enter password
+            )
+        except FileNotFoundError:
+            click.echo()
+            click.secho('ssh not found on this system.', fg='red')
+            click.echo('Install the OpenSSH client:')
+            click.echo('  Windows: Settings → System → Optional Features → "OpenSSH Client"')
+            return False
 
         if copy_result.returncode == 0 and key_auth_works(ssh_host):
             click.echo()
