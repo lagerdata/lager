@@ -567,14 +567,18 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
                 ],
                 timeout=300,  # 5 minutes — allow time for user to enter password
             )
-        except FileNotFoundError:
+        except (FileNotFoundError, OSError):
             click.echo()
             click.secho('ssh not found on this system.', fg='red')
             click.echo('Install the OpenSSH client:')
             click.echo('  Windows: Settings → System → Optional Features → "OpenSSH Client"')
             return False
 
-        if copy_result.returncode == 0 and key_auth_works(ssh_host):
+        try:
+            _key_works = copy_result.returncode == 0 and key_auth_works(ssh_host)
+        except OSError:
+            _key_works = False
+        if _key_works:
             click.echo()
             click.secho('SSH key installed successfully!', fg='green')
             click.echo('Future connections will not require a password.')
