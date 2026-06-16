@@ -46,9 +46,11 @@
               "source/reference/cli/boxes",
               "source/reference/cli/locking",
               "source/reference/cli/install",
+              "source/reference/cli/install-wheel",
               "source/reference/cli/uninstall",
               "source/reference/cli/update",
               "source/reference/cli/ssh",
+              "source/reference/cli/authorize",
               "source/reference/cli/logs",
               "source/reference/cli/pip"
             ]
@@ -59,6 +61,7 @@
               "source/reference/cli/box-config",
               "source/reference/cli/lager-file",
               "source/reference/cli/instruments",
+              "source/reference/cli/diagnose",
               "source/reference/cli/nets",
               "source/reference/cli/box-dut",
               "source/reference/cli/defaults"
@@ -95,7 +98,9 @@
               "source/reference/cli/spi",
               "source/reference/cli/usb",
               "source/reference/cli/ble",
-              "source/reference/cli/wifi"
+              "source/reference/cli/blufi",
+              "source/reference/cli/wifi",
+              "source/reference/cli/router"
             ]
           },
           {

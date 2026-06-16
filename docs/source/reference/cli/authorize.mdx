@@ -1,0 +1,90 @@
+---
+title: Authorize
+description: Authorize this machine's SSH key on a Lager Box
+---
+
+Install this machine's Lager SSH key on a Lagerbox so that `lager` commands and
+`lager ssh` work without a password. Run it once per box, enter the box password
+when prompted, and subsequent commands authenticate with the key.
+
+This wraps the `ssh-keygen` / `ssh-copy-id` dance into a single command, so a
+`Permission denied (publickey,password)` error can be fixed without knowing the
+key path or the `ssh-copy-id` incantation by hand.
+
+<Note>Introduced in **lager 0.27.1**.</Note>
+
+## Syntax
+
+```bash
+lager authorize [OPTIONS]
+```
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--box BOX` | Lagerbox name or IP address (uses the default box if omitted) |
+
+---
+
+## Usage
+
+```bash
+# Authorize a specific Lager Box
+lager authorize --box lab-lager-box
+
+# Authorize the default Lager Box
+lager authorize
+```
+
+You are prompted for the box password **once** (by `ssh-copy-id`). After the key
+is installed, no further password prompts appear for that box.
+
+---
+
+## How It Works
+
+1. **Resolves** the box name to an IP and looks up its SSH user (see
+   [SSH username resolution](/source/reference/cli/ssh#username-resolution)).
+2. **Generates** the key pair `~/.ssh/lager_box` (and `lager_box.pub`) if it does
+   not already exist.
+3. **Skips early if already authorized** — if key authentication already works for
+   the box, it reports success and changes nothing (the command is idempotent).
+4. **Copies** the public key to the box with `ssh-copy-id` (one password prompt).
+5. **Verifies** that passwordless key authentication now works, reporting a clear
+   error if it does not.
+
+The key lives at `~/.ssh/lager_box`. Because that filename is not one of SSH's
+default identities, `lager ssh` passes `-i ~/.ssh/lager_box` explicitly when the
+key exists (since lager 0.28.1), so authorized boxes connect without a password.
+
+---
+
+## Examples
+
+```bash
+# First-time setup for a new box
+lager boxes add --name lab-lager-box --ip 100.x.y.z
+lager authorize --box lab-lager-box
+
+# Re-running against an already-authorized box is safe (no-op)
+lager authorize --box lab-lager-box
+# lab-lager-box is already authorized — no password needed.
+```
+
+---
+
+## Troubleshooting
+
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| `ssh-copy-id was not found` | OpenSSH client tools are not installed | Install the OpenSSH client, or append the key manually: `cat ~/.ssh/lager_box.pub \| ssh <user>@<box> 'mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys'` |
+| `ssh-copy-id ... failed` | Wrong password, or the box rejected the connection | Confirm the box user and password with your admin, then retry |
+| Key copied but auth still fails | The box's `sshd_config` may disallow `publickey` auth | Test with `ssh -i ~/.ssh/lager_box <user>@<box>` and check `sshd_config` |
+
+---
+
+## See Also
+
+- [SSH](/source/reference/cli/ssh) — open an interactive shell on a Lager Box
+- [Boxes](/source/reference/cli/boxes) — register box names, IPs, and SSH users

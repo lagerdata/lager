@@ -1,0 +1,81 @@
+---
+title: Install Wheel
+description: Install a local Python wheel file on a Lager Box
+---
+
+Upload and install a local Python wheel (`.whl`) into the lager container on a
+Lagerbox. Use it to push a locally built package onto a box without publishing it
+to an index first — handy for iterating on a box-side library or driver.
+
+Before installing, any previously installed version of the same package is
+uninstalled, so the version number does not need to be bumped on every rebuild.
+The package name is parsed from the wheel filename per the wheel specification.
+
+## Syntax
+
+```bash
+lager install-wheel [OPTIONS] WHEEL_PATH
+```
+
+## Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `WHEEL_PATH` | Path to the local `.whl` file to install |
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--box BOX` | Lagerbox name or IP address (uses the default box if omitted) |
+
+---
+
+## Usage
+
+```bash
+# Install a locally built wheel on a specific box
+lager install-wheel dist/mypackage-0.1.0-py3-none-any.whl --box lab-lager-box
+
+# Install on the default box
+lager install-wheel dist/mypackage-0.1.0-py3-none-any.whl
+```
+
+---
+
+## How It Works
+
+1. **Validates** the file locally: it must exist, end in `.whl`, be readable, and
+   be within the box upload size limit.
+2. **Acquires the box lock** for the duration of the install. Because the install
+   runs `pip install` inside the box container, the lock prevents a concurrent
+   `lager python` test from racing on Python/import state. See
+   [Box Locking](/source/reference/cli/locking).
+3. **Uninstalls** any previously installed version of the package (best effort).
+4. **Installs** the uploaded wheel with `pip install --force-reinstall`.
+
+```
+Installing mypackage-0.1.0-py3-none-any.whl on lab-lager-box...
+Uninstalled previous version of mypackage
+Successfully installed mypackage
+```
+
+---
+
+## Notes
+
+- The wheel is uploaded to the box and installed inside the lager container; it is
+  not installed on your local machine.
+- The file must have a `.whl` extension and conform to the wheel filename format
+  (`name-version-...whl`); the package name is derived from the leading segment.
+- For installing or updating the box code itself (not a Python package), use
+  [`lager install`](/source/reference/cli/install) and
+  [`lager update`](/source/reference/cli/update).
+
+---
+
+## See Also
+
+- [Install](/source/reference/cli/install) — install the Lager Box code onto a box
+- [Update](/source/reference/cli/update) — update the Lager Box code
+- [Pip](/source/reference/cli/pip) — manage Python packages in the box container

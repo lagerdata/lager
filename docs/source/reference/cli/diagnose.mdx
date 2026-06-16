@@ -1,0 +1,153 @@
+---
+title: Diagnose
+description: Single-shot diagnosis for a misbehaving instrument net
+---
+
+`lager diagnose <net> --box <box> [--type <role>]` is a single-shot diagnosis for
+a misbehaving instrument net. It collapses the manual debug workflow (`lsof`,
+`dmesg`, bare `pyvisa` probes, hardware-service introspection) into one CLI call
+that returns an actionable classification — host-side, instrument-wedged, or
+healthy.
+
+<Note>Introduced in **lager 0.20.0**. Covers USB-TMC (pyvisa) instruments.</Note>
+
+## Syntax
+
+```bash
+lager diagnose NET [OPTIONS]
+```
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--box BOX` | Lagerbox name or IP address (uses the default box if omitted) |
+| `--type ROLE` | Net role. Defaults to `auto`, which looks up the net's role from the box's saved nets. Pass an explicit role (`battery`, `power-supply`, `scope`, `usb`, `adc`, …) to override, or to diagnose a net that isn't saved. |
+
+`NET` is the name of the net to diagnose (e.g. `battery1`, `supply1`).
+
+---
+
+## Usage
+
+```bash
+# Diagnose a net, auto-detecting its role from saved nets
+lager diagnose battery1 --box lab-lager-box
+
+# Override the role explicitly
+lager diagnose battery1 --box lab-lager-box --type battery
+```
+
+The command queries three box-side endpoints in parallel and prints a section for
+each, followed by a one-line classification with the next step.
+
+---
+
+## Output sections
+
+### USB (host-side)
+
+From `GET /diagnose/usb` on box port 5000. Reports:
+
+- `enumerated` — does the device show up on the host's USB bus?
+- `sysfs` — kernel sysfs path (e.g. `/sys/bus/usb/devices/1-4`).
+- `device` — `/dev/bus/usb/BBB/DDD` path used by `lsof`/`fuser`.
+- `usbtmc` — whether the `usbtmc` kernel module is loaded (and therefore racing
+  libusb for interface 0).
+- `lsof` — `command(pid)` list of processes holding the USB device file.
+- `dmesg tail` — last few USB / usbtmc kernel messages.
+
+### VISA (instrument-side)
+
+From `GET /diagnose/visa` on box port 5000. Opens a *fresh* `pyvisa` session and
+queries `*IDN?` with a short timeout. Skips the open (with a clear note) if the
+hardware service already holds a shared session for this address — collisions
+would either hang or return garbage. Reports:
+
+- `idn` — the IDN string if the instrument answered.
+- `elapsed` — wall-clock ms.
+- `error` / `error_class` — classified as `busy`, `nodev`, `timeout`, or `other`.
+- `skipped` — set when the hardware service holds the address.
+
+### Dispatcher (hw_service in-process)
+
+From `GET /diagnose/dispatcher` on hardware-service port 8080. Reports the
+in-process state for this address:
+
+- `cached_session` — whether the shared `pyvisa` session pool has it.
+- `cached_drivers` — driver instances cached against this address.
+- `shared_pool` — total pool size.
+
+---
+
+## Classifications
+
+The decision tree, in order (first match wins):
+
+| Classification | Trigger |
+|----------------|---------|
+| `HOST-SIDE: usbtmc kernel module loaded` | the `usbtmc` kernel module is bound (run `lager update` to install the blacklist) |
+| `HOST-SIDE: USB device claimed by multiple processes` | VISA `busy` and two or more holders in `lsof` |
+| `HOST-SIDE: USB device busy` | VISA `busy` with a single holder |
+| `TRANSIENT: device disappeared from USB` | VISA `nodev` (re-enumeration) |
+| `INSTRUMENT WEDGED` | VISA `timeout` — enumerates and opens, but won't answer `*IDN?` |
+| `NOT ENUMERATED` | the device does not show up on USB (check power/cable) |
+| `HEALTHY` | `*IDN?` returned (IDN string shown) |
+| `HEALTHY (shared session)` | the open was skipped because hw_service holds an active session |
+| `TRANSIENT: enumerated as USB-TMC but fresh open failed` | USB-TMC class but the fresh pyvisa open failed |
+| `NOT USB-TMC` | a vendor-SDK instrument (LabJack/LJM, Picoscope, Acroname, …), not pyvisa |
+| `UNCLEAR` | fallback — review the per-section output |
+
+---
+
+## Sample session
+
+```
+$ lager diagnose battery1 --box lab-lager-box
+lager diagnose — lab-lager-box → battery1
+  NetType: battery    address: USB0::0x05E6::0x2281::4518305::INSTR
+
+== USB (host-side) ==
+   enumerated:   True
+   usbtmc kmod:  not loaded (good)
+   lsof:         no holders
+
+== VISA (instrument-side) ==
+   idn:          KEITHLEY INSTRUMENTS,MODEL 2281S-20-6,4518305,01.08b
+   elapsed:      429 ms
+
+== Dispatcher (hw_service in-process) ==
+   cached_session:  False
+   shared_pool:     0 entry/entries
+
+Classification: HEALTHY — IDN: KEITHLEY INSTRUMENTS,MODEL 2281S-20-6,4518305,01.08b
+```
+
+A wedged instrument surfaces clearly so you stop trying software-only recoveries:
+
+```
+Classification: INSTRUMENT WEDGED: device enumerates and accepts session open,
+but won't respond to *IDN?. The instrument firmware is stuck — a mains-side
+power-cycle of the instrument itself is required.
+```
+
+Vendor-SDK instruments (LabJack, Picoscope, Acroname) don't go through pyvisa, so
+`lager diagnose` points you at the role-specific command instead of returning a
+misleading `UNCLEAR`.
+
+---
+
+## Backwards compatibility
+
+Against a pre-0.20 box, each endpoint returns 404 and the CLI notes that the
+section is unavailable (the box may be on a lager < 0.20 image). The remaining
+sections still run — `lager diagnose` is useful against an older box, just less
+informative.
+
+---
+
+## See Also
+
+- [Instruments](/source/reference/cli/instruments) — list attached instruments and their VISA addresses
+- [Nets](/source/reference/cli/nets) — list saved nets and their roles
+- [Hello](/source/reference/cli/hello) — basic box-side connectivity and version check
