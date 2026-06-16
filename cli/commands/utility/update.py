@@ -441,6 +441,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     and it forces a clean rebuild (wiping the cached image and the cargo/npm
     persistence volumes) so no stale layer or toolchain survives the retry.
     """
+    click.echo(f"[DEBUG] update.py: {__file__}", flush=True)
     from ...box_storage import update_box_version
     from ... import __version__ as cli_version
 
