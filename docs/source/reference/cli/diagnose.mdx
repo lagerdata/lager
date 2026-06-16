@@ -47,7 +47,7 @@ each, followed by a one-line classification with the next step.
 
 ### USB (host-side)
 
-From `GET /diagnose/usb` on box port 5000. Reports:
+From `GET /diagnose/usb` on box port 9000. Reports:
 
 - `enumerated` — does the device show up on the host's USB bus?
 - `sysfs` — kernel sysfs path (e.g. `/sys/bus/usb/devices/1-4`).
@@ -59,7 +59,7 @@ From `GET /diagnose/usb` on box port 5000. Reports:
 
 ### VISA (instrument-side)
 
-From `GET /diagnose/visa` on box port 5000. Opens a *fresh* `pyvisa` session and
+From `GET /diagnose/visa` on box port 9000. Opens a *fresh* `pyvisa` session and
 queries `*IDN?` with a short timeout. Skips the open (with a clear note) if the
 hardware service already holds a shared session for this address — collisions
 would either hang or return garbage. Reports:

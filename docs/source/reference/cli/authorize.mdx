@@ -78,9 +78,15 @@ lager authorize --box lab-lager-box
 
 | Issue | Cause | Fix |
 |-------|-------|-----|
-| `ssh-copy-id was not found` | OpenSSH client tools are not installed | Install the OpenSSH client, or append the key manually: `cat ~/.ssh/lager_box.pub \| ssh <user>@<box> 'mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys'` |
+| `ssh-copy-id was not found` | OpenSSH client tools are not installed | Install the OpenSSH client, or append the key manually (see below) |
 | `ssh-copy-id ... failed` | Wrong password, or the box rejected the connection | Confirm the box user and password with your admin, then retry |
 | Key copied but auth still fails | The box's `sshd_config` may disallow `publickey` auth | Test with `ssh -i ~/.ssh/lager_box <user>@<box>` and check `sshd_config` |
+
+If `ssh-copy-id` is unavailable, append the public key to the box manually:
+
+```bash
+cat ~/.ssh/lager_box.pub | ssh <user>@<box> 'mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys'
+```
 
 ---
 
