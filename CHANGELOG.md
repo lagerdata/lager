@@ -2,6 +2,24 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.28.2] - 2026-06-17
+
+`lager devenv` can now remember your container setup, and memory reads on DA1469x chips are fixed.
+
+### Added
+- **Save your devenv container setup in the project.** Container settings now live in the project's `.lager` file instead of needing to be retyped or kept in shell aliases. Use `devenv set`/`unset`/`show` for basic settings (image, shell, user, group, ports, and more), `devenv mount add`/`remove`/`list` for folders to share into the container, and `devenv env set`/`unset`/`list` for environment variables. `devenv terminal` and `lager exec` use these automatically, so they travel with the repo.
+- **Add settings for a single run.** `devenv terminal` and `lager exec` take `-v HOST:CONTAINER` to share a folder; `devenv terminal` also takes `-e FOO=BAR` to set a variable and `--passenv NAME` to forward one from your shell. Paths can use `~` and `${PROJECT_ROOT}`, so saved settings work on any machine.
+- **Preview a session without launching it.** `devenv terminal --info` prints the exact `docker` command it would run, then exits.
+- **`lager debug memrd --no-reset`** skips the reset-and-halt before a DA1469x read — useful on a blank chip where you don't want to reboot it.
+
+### Changed
+- **More predictable devenv settings.** When a setting is given both on the command line and in `.lager`, the command line now wins. The container entrypoint can also be saved in `.lager`.
+
+### Fixed
+- **Reading memory from a running DA1469x now works.** Live firmware turns off the debug port, so reads used to fail. The box now resets and halts the chip first. This reboots the device under test — pass `--no-reset` to skip it.
+- **Some memory reads returned wrong values** on certain chip registers; they now read correctly.
+- **`devenv terminal --group` now works** — the group setting was being ignored before.
+
 ## [0.28.1] - 2026-06-15
 
 Warm-path Workbench support for bus and energy instruments, plus UART hardening on the box.

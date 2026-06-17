@@ -1,0 +1,39 @@
+---
+title: "Version 0.28.2"
+description: "June 17, 2026"
+---
+
+## <u>Features</u>
+
+- **Save your devenv container setup in the project.** You can now store container settings in your project's `.lager` file instead of retyping them or keeping shell aliases. Use `devenv set`/`unset`/`show` for basic settings (image, shell, user, group, ports, and more), `devenv mount add`/`remove`/`list` for folders to share into the container, and `devenv env set`/`unset`/`list` for environment variables. Both `devenv terminal` and `lager exec` use these settings automatically, so they travel with the repo for everyone on the team.
+- **Add settings for a single run.** `devenv terminal` and `lager exec` take `-v HOST:CONTAINER` to share a folder. `devenv terminal` also takes `-e FOO=BAR` to set a variable and `--passenv NAME` to forward one from your shell. Paths can use `~` and `${PROJECT_ROOT}`, so saved settings work on any machine.
+- **Preview a session without launching it.** `devenv terminal --info` prints the exact `docker` command it would run, then exits without starting anything.
+- **Skip the reset before a memory read.** `lager debug memrd --no-reset` skips the reset-and-halt the Lager Box normally does before reading a DA1469x — useful on a blank chip where you don't want to reboot it.
+
+## <u>Bug Fixes</u>
+
+- **Reading memory from a running DA1469x now works.** Live firmware turns off the debug port, so reads used to fail. The Lager Box now resets and halts the chip first. This reboots the device under test — pass `--no-reset` to skip it.
+- **Some memory reads returned wrong values.** Reads of certain chip registers now return the correct values.
+- **`devenv terminal --group` now works.** The group setting was being ignored before; it is now applied.
+
+## <u>Improvements</u>
+
+- **More predictable devenv settings.** When the same setting is given both on the command line and in `.lager`, the command line now wins. The container entrypoint can also be saved in `.lager`.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.28.2
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.28.2/)
