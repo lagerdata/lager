@@ -65,7 +65,7 @@ This document tracks what test coverage exists across all Lager features and the
 | **GPIO** | Aardvark I2C/SPI adapter | 1 file | 2 files | Yes |
 | **Oscilloscope** | Rigol MSO5000 series | 5 files | — | Yes |
 | **Logic Analyzer** | Rigol MSO5000 (embedded) | — | `logic.sh` | Yes |
-| **USB Hub** | Acroname USBHub3+ | 6 files | `acroname.sh` | Yes |
+| **USB Hub** | Acroname USBHub3+ | 7 files | `acroname.sh` | Yes |
 | **USB Hub** | Yepkit YKUSH | — | `ykush.sh` | — |
 | **Debug Probe** | Segger J-Link | 1 file | `debug.sh`, `jlink_script.sh` | Yes |
 | **Energy Analyzer** | Joulescope JS220 | 3 files | — | Yes |
@@ -112,13 +112,13 @@ This document tracks what test coverage exists across all Lager features and the
 
 ```
 test/
-├── api/                  # Python API tests (73 files, run on box via `lager python`)
-│   ├── communication/    # 27 files: I2C, SPI, UART, BLE, BluFi, WiFi, debug
-│   ├── io/               # 17 files: ADC, DAC, GPIO, PWM, pin conflict
+├── api/                  # Python API tests (77 files, run on box via `lager python`)
+│   ├── communication/    # 28 files: I2C, SPI, UART, BLE, BluFi, WiFi, debug
+│   ├── io/               # 17 files: ADC, DAC, GPIO, PWM, pin conflict, USB-202
 │   ├── peripherals/      # 9 files: scope, arm, webcam, rotation, actuate
 │   ├── power/            # 5 files: supply (2 files), battery, solar, eload
-│   ├── sensors/          # 8 files: thermocouple, watt, energy, joulescope
-│   ├── usb/              # 6 files: USB hub enable/disable/toggle/stress
+│   ├── sensors/          # 9 files: thermocouple, watt, energy, joulescope, PPK2
+│   ├── usb/              # 7 files: USB hub enable/disable/toggle/stress, Acroname
 │   └── utility/          # 2 files: binaries, net listing
 ├── integration/          # Bash integration tests (36 files, run from host via harness.sh)
 │   ├── communication/    # 14 files: I2C, SPI, UART, WiFi, debug, J-Link
@@ -130,11 +130,13 @@ test/
 │   ├── sensors/          # 1 file: thermocouple
 │   └── peripherals/      # 1 file: robotic arm
 ├── mcp/                  # MCP server tests (pytest)
-│   ├── unit/             # 25 test files: mocked subprocess, no hardware
-│   └── integration/      # 11 test files: live hardware required
-├── unit/                 # Local unit tests
+│   ├── unit/             # 8 test files: mocked, no hardware
+│   └── integration/      # 1 test file: live hardware required
+├── unit/                 # Local unit tests (66 files)
+│   ├── box/              # 40 files: box-side Python unit tests
 │   ├── blufi/            # 1 file: BluFi protocol unit tests
-│   └── cli/              # 2 files: Keithley locking, performance
+│   ├── cli/              # 20 files: CLI Python unit tests
+│   └── measurement/      # 1 file: PPK2 watt/energy unit tests
 └── framework/            # Test utilities
     ├── harness.sh        # Bash test framework
     ├── colors.sh         # Bash color utilities
@@ -185,8 +187,9 @@ test/
 | `test_debug_comprehensive.py` | J-Link flash, reset, erase, memory read |
 | `test_wait_for_level.py` | GPI level wait with 15 sub-tests |
 | `test_wifi_comprehensive.py` | WiFi scan, connect, status, delete |
+| `test_wifi_new_methods.py` | Standalone WiFi functions: scan_wifi, connect_to_wifi, get_wifi_status, disconnect_wifi; validates status.py bugfix (interface_interface → current_interface) |
 
-#### I/O (16 files)
+#### I/O (17 files)
 
 | File | What it tests |
 |------|---------------|
@@ -206,6 +209,7 @@ test/
 | `test_pin_conflict.py` | Pin conflict detection |
 | `test_pwm_measurement.py` | PWM frequency, Vpp, duty cycle |
 | `test_LabJack_T7.py` | Comprehensive LabJack T7 suite: 11 groups — ADC (single, multi-channel, stability), DAC (output/readback, ramp, boundary enforcement), GPIO (output, input, pulse), optional DAC→ADC loopback, rapid stress |
+| `test_usb202.py` | MCC USB-202 DAQ: ADC reads on 8 channels (±10V range), DAC output sweep on 2 channels (0-5V), GPIO output/readback on 8 digital I/O pins |
 
 #### Sensors (9 files)
 
@@ -219,6 +223,7 @@ test/
 | `test_energy_analyzer.py` | Energy analysis: duration, Wh/J cross-check |
 | `test_energy_stats.py` | Energy statistics: per-section min/mean/max/std |
 | `test_joulescope.py` | Joulescope driver (254 assertions) |
+| `test_ppk2.py` | Nordic PPK2: WattMeter read/read_current/read_voltage/read_all, EnergyAnalyzer read_energy/read_stats (keys, types, ordering, cross-method consistency, stability) |
 
 #### Peripherals (9 files)
 
@@ -234,10 +239,11 @@ test/
 | `test_rotation_encoder.py` | Rotation encoder position reads |
 | `test_actuate.py` | Linear actuator control |
 
-#### USB (6 files)
+#### USB (7 files)
 
 | File | What it tests |
 |------|---------------|
+| `test_Acroname.py` | Acroname USB hub: Net.get() API, get_config() structure, string repr, enable/disable, toggle, power cycle timing, rapid cycling, multi-port control |
 | `test_usb_comprehensive.py` | USB hub port list, per-port cycle |
 | `test_usb_multiple.py` | Multi-port disable/enable |
 | `test_usb_net_api.py` | USB Net.get API |
@@ -317,61 +323,119 @@ test/
 
 ### MCP Tests (`test/mcp/`)
 
-#### Unit Tests (25 files, ~384 tests)
+#### Unit Tests (8 files)
 
 | File | What it tests |
 |------|---------------|
-| `test_tool_registration.py` | Module imports, tool count >= 160, name uniqueness |
-| `test_run_lager.py` | Subprocess wrapper error handling |
-| `test_power_tools.py` | Supply voltage, current, enable, OVP/OCP |
-| `test_battery_tools.py` | Battery SOC, VOC, mode, capacity, OVP/OCP |
-| `test_solar_tools.py` | Solar set, stop, irradiance, resistance |
-| `test_eload_tools.py` | ELoad CC, CV, CR, CP |
-| `test_measurement_tools.py` | ADC, DAC, GPI, GPO, thermocouple, watt |
-| `test_scope_tools.py` | Scope enable, measure, trigger, stream |
-| `test_logic_tools.py` | Logic analyzer enable, measure |
-| `test_i2c_tools.py` | I2C scan, read, write, config |
-| `test_spi_tools.py` | SPI transfer, read, write, config |
-| `test_uart_tools.py` | UART list_nets, serial_port |
-| `test_ble_tools.py` | BLE scan, info, connect, disconnect |
-| `test_blufi_tools.py` | BluFi scan, connect, provision |
-| `test_wifi_tools.py` | WiFi status, scan, connect, delete |
-| `test_usb_tools.py` | USB enable, disable, toggle |
-| `test_debug_tools.py` | Debug flash, reset, erase, gdbserver |
-| `test_arm_tools.py` | Arm position, move, home, enable |
-| `test_webcam_tools.py` | Webcam start, stop, URL |
-| `test_box_tools.py` | Status, hello, list_nets, boxes, nets |
-| `test_defaults_tools.py` | Defaults show, set, delete |
-| `test_python_tools.py` | Python run, kill |
-| `test_pip_tools.py` | Pip list, install, uninstall, apply |
-| `test_binaries_tools.py` | Binaries list, add, remove |
-| `test_logs_tools.py` | Logs clean, size, docker |
+| `test_tool_registration.py` | MCP server registers exactly the expected discovery/planning tools (7 tools total, no I/O) |
+| `test_bench_loader.py` | Bench loader: raw net descriptors → typed network objects (power supplies, SPI, ADC, etc.) |
+| `test_box_tools.py` | box_manage MCP tool: health checks and reload operations |
+| `test_capability_graph.py` | Capability graph builder: constructs available test capabilities from bench resources |
+| `test_dut_context.py` | DUT context: schema types, net metadata loading, DUT slot parsing, context-aware tools |
+| `test_heuristic_engine.py` | Heuristic engine: requirement inference and suitability assessment of test capabilities |
+| `test_schemas.py` | MCP schema model validation (BenchDefinition, NetDescriptor, CapabilityGraph, safety constraints) |
+| `test_server_state_reload.py` | Auto-reload of bench state when bench.json or saved_nets.json change (mtime-based detection) |
 
-#### Integration Tests (11 files, ~64 tests)
+#### Integration Tests (1 file)
 
 | File | What it tests |
 |------|---------------|
-| `test_server_lifecycle.py` | Tool count >= 160, unique names, callable |
-| `test_box_live.py` | Hello greeting, net listing |
-| `test_power_live.py` | Supply voltage set/read, enable/disable |
-| `test_battery_live.py` | Battery SOC, VOC, OVP/OCP, clear |
-| `test_solar_live.py` | Solar set, stop, irradiance, temperature |
-| `test_eload_live.py` | ELoad CC, CV, CR, CP with safety teardown |
-| `test_i2c_live.py` | I2C list_nets, scan |
-| `test_spi_live.py` | SPI list_nets, config, transfer |
-| `test_usb_live.py` | USB enable, disable, toggle |
-| `test_measurement_live.py` | ADC read, DAC write, GPO set |
-| `test_defaults_live.py` | Defaults set, show, delete |
+| `test_agent_loop.py` | End-to-end agent workflow: discovery → suitability → lager python execution → verify |
 
 ### Other Tests
 
-#### Unit Tests (`test/unit/` -- 3 files)
+#### Unit Tests (`test/unit/` -- 66 files)
+
+##### Box Unit Tests (`test/unit/box/` -- 40 files)
+
+| File | What it tests |
+|------|---------------|
+| `test_authorize_key_rate_limit.py` | SSH /authorize-key fixed-window rate limiter: per-IP counting and pruning |
+| `test_box_authorize.py` | `lager authorize` command and SSH key provisioning with TTY passthrough |
+| `test_box_config.py` | box_config v1 schema validation rules and idempotency hash |
+| `test_box_config_addverb_idempotency.py` | mount-add/apt-add/udev-add upsert behavior for provisioning re-runs |
+| `test_box_config_cli.py` | `lager box config` CLI: mount prep, readiness polling, rollback on bounce failure |
+| `test_box_dut_cli.py` | `lager box dut` CLI detached-list regression fix |
+| `test_box_http_server_capabilities.py` | /status capabilities block advertises netCommand based on route registration |
+| `test_breakpoint_pause.py` | `lager.pause()` interactive breakpoint: timeout handling and resume signaling |
+| `test_custom_devices_impl.py` | Custom-device backend for `lager nets assign` list/assign/remove operations |
+| `test_custom_store.py` | Custom-device JSON persistence: USB cable → catalog instrument mapping |
+| `test_da1469x_loader.py` | DA1469x ELF symbol reading, loader path resolution, flash/erase/timeout paths |
+| `test_debug_defmt_rtt.py` | Defmt RTT decoding wrapper threading and piping logic |
+| `test_debug_net_self_heal.py` | DebugNet self-heal retry and session endpoints |
+| `test_debug_net_user_scripts.py` | User-script/slot helpers: OpenOCD/J-Link base64 fields and serial in debug_net.py |
+| `test_debug_rtt_reconnect.py` | J-Link RTT reader reconnect-aware socket handling across J-Link restart |
+| `test_detect_and_configure_rtt.py` | RTT control-block RAM scan doesn't leave core halted in all-stop mode |
+| `test_device_lock.py` | Cross-process advisory fcntl lock preventing USB-TMC pyvisa race |
+| `test_gdb_controller_leak.py` | GdbController close on failed attempts to prevent fd leak |
+| `test_hardware_service_retry.py` | Close-then-recreate retry path for concurrent Keithley resource collisions |
+| `test_host_ops.py` | apt_install and sysctl_apply SSH execution branches |
+| `test_jlink_commander_use_poll.py` | JLinkExe spawned with use_poll=True to avoid fd >= 1024 select() failure |
+| `test_jlink_multi.py` | Multi-probe start_jlink_gdbserver with per-probe serial/port/RTT configuration |
+| `test_jlink_multi_gdbserver_select.py` | Multi-probe GDB slot dispatch |
+| `test_jlink_uncached_verify.py` | DA1469x opt-in uncached QSPI post-program verify to detect false XIP failures |
+| `test_lock_state.py` | lock_state.py single source of truth for box-side lock behavior |
+| `test_monitor_state.py` | SupplyNet/KeithleyBattery single-call monitor-state helpers reducing per-device lock contention |
+| `test_mount_prep.py` | Mount preparation SSH operations via mocked runner |
+| `test_nets_display.py` | `lager nets` table no-truncation for long UART pins and VISA addresses |
+| `test_net_command_handler.py` | Generic POST /net/command Flask handler dispatch by role and error handling |
+| `test_openocd_dispatch.py` | OpenOCD interface .cfg dispatch and user-cfg override behavior |
+| `test_probes_visa_parsing.py` | VISA address parsing for empty-serial FTDI probes |
+| `test_python_service_breakpoint.py` | Breakpoint endpoints on box python/service.py POST routes |
+| `test_python_service_nets_list.py` | GET /nets/list handler returning saved net array or empty on missing/invalid JSON |
+| `test_query_instruments_custom.py` | Custom-device surfacing in query_instruments.py cable assignment |
+| `test_render_docker_args.py` | Sourceable bash output preserves docker-run args through array expansion |
+| `test_render_packages.py` | pip/cargo/npm renderers preserve only their own config fields and soft-fail gracefully |
+| `test_serial_id_cables.py` | tty enumeration and resolution via fake /sys tree lookup |
+| `test_ssh_runner.py` | SSH key selection and auth fallback logic |
+| `test_usb_scanner_custom.py` | Custom-device surfacing in box HTTP scanner GET /instruments/list |
+| `test_usb_scanner_uart_fallback.py` | UART enumeration without USB serial by matching sysfs path |
+
+##### CLI Unit Tests (`test/unit/cli/` -- 20 files)
+
+| File | What it tests |
+|------|---------------|
+| `test_address_utils.py` | IPv4/IPv6/Tailscale/hostname validation rejecting schemes, ports, and paths |
+| `test_battery_tui.py` | BatteryTUI render output, command parsing, and worker thread offloading |
+| `test_box_lock_helpers.py` | Lock holder resolution, acquire/release/heartbeat, and format_lock_user CI support |
+| `test_diagnose_classify.py` | `lager diagnose` classification decision tree for one-line user diagnosis |
+| `test_error_mapping.py` | map_system_error errno mapping [16/19/110] to actionable headlines and actions |
+| `test_nets_add_labjack_pins.py` | LabJack I2C/SPI arbitrary pin selection via --sda/--scl/--cs/--sck/--mosi/--miso |
+| `test_nets_add_roles.py` | Role-token normalization converting legacy supply/batt to power-supply/battery |
+| `test_nets_assign.py` | `lager nets assign` flow with custom-device backend and net creation |
+| `test_nets_debug_scripts.py` | Smart `lager nets set-script` auto-detection and probe/file reconciliation |
+| `test_net_tui_assign.py` | Custom-device assignment TUI helpers (_assign_payload, _cable_ident, _run_custom_devices) |
+| `test_net_tui_labjack_pins.py` | TUI LabJack pin dialog preserving legacy channels or persisting custom params |
+| `test_net_tui_uart_guard.py` | UART net save validation rejecting bare interface indices and empty pins |
+| `test_performance_improvements.py` | Config caching, connection pooling |
+| `test_python_auto_lock.py` | `lager python` auto-lock wrapper idempotency, atexit, and heartbeat thread |
+| `test_python_breakpoint_session.py` | Breakpoint client request shapes for continue_python/breakpoint_status endpoints |
+| `test_ssh.py` | SSH ensure_lager_box_keypair and key_auth_works helpers |
+| `test_supply_tui.py` | SupplyTUI render output, command parsing, worker thread offloading, connection failure |
+| `test_update_probe.py` | `lager box update` probe script modprobe/usbtmc detection and output parsing |
+| `test_version_skew.py` | Version skew warning when CLI minor > box minor with per-process caching |
+| `test_ws_diagnose.py` | WebSocket failure message generation pointing to instrument vs. box based on health |
+
+##### BluFi Unit Tests (`test/unit/blufi/` -- 1 file)
 
 | File | What it tests |
 |------|---------------|
 | `blufi/test_blufi_unit.py` | BluFi protocol parsing (696-line pytest suite) |
-| `cli/test_keithley_locking.py` | VISA lock state diagnostic |
-| `cli/test_performance_improvements.py` | Config caching, connection pooling |
+
+##### Measurement Unit Tests (`test/unit/measurement/` -- 1 file)
+
+| File | What it tests |
+|------|---------------|
+| `measurement/test_ppk2_unit.py` | PPK2 pure-logic: _parse_location, dispatcher routing, singleton caching, read math (current/voltage/power/raw), energy calculations, error handling — no hardware |
+
+##### Root Unit Tests (`test/unit/` -- 4 files)
+
+| File | What it tests |
+|------|---------------|
+| `test_group_usage.py` | Usage-line formatting for CLI command groups (CommandFirstUsageMixin / LagerGroup) |
+| `test_install_wheel.py` | install-wheel command: wheel filename → package name parsing |
+| `test_pdf_pages.py` | pdf_pages.py helper: PNG and text extraction from PDF pages (pymupdf) |
+| `test_update_version_ref.py` | Version reference resolution for git checkouts (semver tags vs. named branches) |
 
 #### Test Framework (`test/framework/` -- 4 files)
 
