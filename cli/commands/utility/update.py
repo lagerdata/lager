@@ -606,6 +606,10 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             click.secho('SSH key not configured for this box', fg='yellow')
             click.echo()
 
+            if check:
+                click.secho("Run 'lager update --box ...' (without --check) to set up the SSH key first.", fg='yellow')
+                ctx.exit(2)
+
             if yes or click.confirm('Set up SSH key for this box? (requires password once, then never again)'):
                 if setup_ssh_key():
                     # Key setup successful, reinitialize progress bar

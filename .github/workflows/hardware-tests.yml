@@ -39,6 +39,15 @@ jobs:
             --yes
         shell: bash
 
+      - name: Set up lager SSH key
+        run: |
+          if [ ! -f ~/.ssh/lager_box ]; then
+            ssh-keygen -t ed25519 -f ~/.ssh/lager_box -N "" -C "lager-box-access"
+          fi
+          grep -qF "$(cat ~/.ssh/lager_box.pub)" ~/.ssh/authorized_keys 2>/dev/null || \
+            cat ~/.ssh/lager_box.pub >> ~/.ssh/authorized_keys
+        shell: bash
+
       - name: Verify box connectivity
         run: lager hello --box "$LAGER_BOX_NAME"
         shell: bash
