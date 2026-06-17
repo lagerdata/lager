@@ -15,7 +15,7 @@ import subprocess
 import platform
 from pathlib import Path
 import click
-from ...config import get_devenv_json, write_lager_json, LAGER_CONFIG_FILE_NAME, get_global_config_file_path, devenv_config_list
+from ...config import get_devenv_json, write_lager_json, LAGER_CONFIG_FILE_NAME, get_global_config_file_path, devenv_config_list, expand_devenv_path
 from ...core.param_types import EnvVarType
 
 
@@ -94,9 +94,21 @@ def _run_command_local(section, path, cmd_to_run, mount, extra_args, debug, inte
     if hostname:
         base_command.append(f'--hostname={hostname}')
 
+    # Network / platform / ports from config (no CLI flags on exec for these).
+    network = section.get('network')
+    if network:
+        base_command.append(f'--network={network}')
+    for port in devenv_config_list(section.get('ports')):
+        base_command.extend(['-p', port])
+    platform = section.get('platform')
+    if platform:
+        base_command.extend(['--platform', platform])
+
     # Custom bind mounts: config-defined first, then any passed on the command line.
+    # Specs may use ~, environment variables, and ${PROJECT_ROOT} for portability.
+    project_root = os.path.dirname(path)
     for vol in (*devenv_config_list(section.get('volumes')), *volumes):
-        base_command.extend(['-v', vol])
+        base_command.extend(['-v', expand_devenv_path(vol, project_root)])
 
     # Add custom environment variables: config-defined first, then --env.
     for env_var in (*devenv_config_list(section.get('environment')), *env):
@@ -170,19 +182,6 @@ def exec_(ctx, cmd_name, extra_args, command, save_as, warn, env, passenv, mount
         click.echo(exec_.get_help(ctx))
         ctx.exit(0)
 
-    # Default user and group to current user if not specified
-    if user is None:
-        try:
-            user = str(os.getuid())
-        except AttributeError:
-            pass
-
-    if group is None:
-        try:
-            group = str(os.getgid())
-        except AttributeError:
-            pass
-
     # Get DEVENV configuration
     path, data = get_devenv_json()
 
@@ -193,11 +192,21 @@ def exec_(ctx, cmd_name, extra_args, command, save_as, warn, env, passenv, mount
 
     section = data['DEVENV']
 
-    # Override user/group from config if specified
-    if 'user' in section:
-        user = section['user']
-    if 'group' in section:
-        group = section['group']
+    # Precedence: CLI flag wins, then .lager config, then the current uid/gid.
+    if user is None:
+        user = section.get('user')
+    if group is None:
+        group = section.get('group')
+    if user is None:
+        try:
+            user = str(os.getuid())
+        except AttributeError:
+            pass
+    if group is None:
+        try:
+            group = str(os.getgid())
+        except AttributeError:
+            pass
 
     # Check for both command name and command string
     if cmd_name and command:

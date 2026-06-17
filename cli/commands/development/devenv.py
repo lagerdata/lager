@@ -27,6 +27,7 @@ from ...config import (
     LAGER_CONFIG_FILE_NAME,
     get_global_config_file_path,
     devenv_config_list,
+    expand_devenv_path,
 )
 
 
@@ -69,6 +70,50 @@ def _validate_docker_image_name(image):
     if '//' in image:
         return False
     return True
+
+
+def _print_terminal_info(config_path, args):
+    """Print the resolved docker command and a readable breakdown of it."""
+    def collect(*flags):
+        out = []
+        for i, tok in enumerate(args[:-1]):
+            if tok in flags:
+                out.append(args[i + 1])
+        return out
+
+    click.secho('Resolved docker command:', fg='green')
+    click.echo(f'  {" ".join(args)}')
+    click.echo()
+    click.echo(f'Config:   {config_path}')
+    click.echo(f'Image:    {args[-1] if args else ""}')
+
+    mounts = collect('-v')
+    if mounts:
+        click.echo('Mounts:')
+        for item in mounts:
+            click.echo(f'  {item}')
+
+    envs = collect('-e', '--env') + [t.split('=', 1)[1] for t in args if t.startswith('--env=')]
+    if envs:
+        click.echo('Environment:')
+        for item in envs:
+            click.echo(f'  {item}')
+
+    ports = collect('-p')
+    if ports:
+        click.echo('Ports:')
+        for item in ports:
+            click.echo(f'  {item}')
+
+    networks = [t.split('=', 1)[1] for t in args if t.startswith('--network=')]
+    if networks:
+        click.echo(f'Network:  {networks[0]}')
+    platforms = collect('--platform')
+    if platforms:
+        click.echo(f'Platform: {platforms[0]}')
+
+    click.echo()
+    click.secho('(--info: nothing was launched)', fg='yellow')
 
 
 @devenv.command()
@@ -148,7 +193,8 @@ def create(ctx, image, mount_dir, shell):
 @click.option('--volume', '-v', 'volumes', help='Bind-mount a host path into the container (HOST:CONTAINER[:ro]). Repeatable.', required=False, multiple=True)
 @click.option('--env', '-e', help='Set an environment variable in the container (FOO=BAR). Repeatable.', required=False, multiple=True, type=EnvVarType())
 @click.option('--passenv', help='Pass an environment variable through from the current environment. Repeatable.', required=False, multiple=True)
-def terminal(ctx, mount, user, group, name, detach, port, entrypoint, network, platform, attach_container, shell, volumes, env, passenv):
+@click.option('--info', is_flag=True, default=False, help='Show the resolved docker command and config, then exit without launching.')
+def terminal(ctx, mount, user, group, name, detach, port, entrypoint, network, platform, attach_container, shell, volumes, env, passenv, info):
     """
     Start interactive terminal
     """
@@ -193,18 +239,15 @@ def terminal(ctx, mount, user, group, name, detach, port, entrypoint, network, p
 
     repo_root_relative_path = devenv_config.get('repo_root_relative_path')
 
-    if 'user' in devenv_config:
-        user = devenv_config['user']
-    if 'group' in devenv_config:
-        group = devenv_config['group']
-    macaddr = None
-    if 'macaddr' in devenv_config:
-        macaddr = devenv_config['macaddr']
+    # Precedence: CLI flag wins, else fall back to the .lager value.
+    if user is None:
+        user = devenv_config.get('user')
+    if group is None:
+        group = devenv_config.get('group')
+    macaddr = devenv_config.get('macaddr')
+    hostname = devenv_config.get('hostname')
 
-    hostname = None
-    if 'hostname' in devenv_config:
-        hostname = devenv_config['hostname']
-
+    entrypoint = entrypoint or devenv_config.get('entrypoint')
     if entrypoint:
         args.extend(['--entrypoint', entrypoint])
 
@@ -239,11 +282,16 @@ def terminal(ctx, mount, user, group, name, detach, port, entrypoint, network, p
     if name:
         args.extend(['--name', name])
 
+    # network / platform: CLI flag wins, else fall back to the .lager value.
+    network = network or devenv_config.get('network')
     if network:
         args.append(f'--network={network}')
 
-    args.extend(itertools.chain(*zip(itertools.repeat('-p'), port)))
+    # ports: config-defined first, then any -p passed on the command line.
+    all_ports = [*devenv_config_list(devenv_config.get('ports')), *port]
+    args.extend(itertools.chain(*zip(itertools.repeat('-p'), all_ports)))
 
+    platform = platform or devenv_config.get('platform')
     if platform:
         args.extend(['--platform', platform])
 
@@ -261,8 +309,10 @@ def terminal(ctx, mount, user, group, name, detach, port, entrypoint, network, p
         ])
 
     # Custom bind mounts: config-defined first, then any passed on the command line.
+    # Specs may use ~, environment variables, and ${PROJECT_ROOT} for portability.
+    project_root = os.path.dirname(path)
     for vol in (*devenv_config_list(devenv_config.get('volumes')), *volumes):
-        args.extend(['-v', vol])
+        args.extend(['-v', expand_devenv_path(vol, project_root)])
 
     # Environment variables: config-defined, then --env, then --passenv passthrough.
     for var in (*devenv_config_list(devenv_config.get('environment')), *env):
@@ -275,8 +325,9 @@ def terminal(ctx, mount, user, group, name, detach, port, entrypoint, network, p
 
     args.append(image)
 
-    if ctx.obj.debug:
-        click.echo(f'Docker command: {" ".join(args)}', err=True)
+    if info:
+        _print_terminal_info(path, args)
+        ctx.exit(0)
 
     try:
         proc = subprocess.run(args, check=False)
@@ -570,3 +621,102 @@ def env_list():
         return
     for entry in environment:
         click.echo(entry)
+
+
+# Scalar DEVENV keys settable via `lager devenv set` (replace semantics).
+SETTABLE_SCALAR_KEYS = (
+    'image', 'mount_dir', 'shell', 'user', 'group', 'entrypoint',
+    'hostname', 'macaddr', 'network', 'platform', 'repo_root_relative_path',
+)
+# List keys with no dedicated editor; `set` appends to these.
+SETTABLE_APPEND_KEYS = ('ports',)
+# Convenience singular aliases accepted on the command line.
+DEVENV_KEY_ALIASES = {'port': 'ports'}
+# List keys that have richer dedicated editors.
+LIST_KEYS_WITH_EDITORS = {
+    'volumes': 'lager devenv mount',
+    'environment': 'lager devenv env',
+}
+
+
+@devenv.command(name='set')
+@click.argument('key')
+@click.argument('value')
+def set_(key, value):
+    """
+    Set a DEVENV configuration KEY to VALUE.
+
+    Scalar keys (image, mount_dir, shell, user, group, hostname, macaddr,
+    network, platform, repo_root_relative_path) are replaced. The `ports`
+    list key is appended to. Use `lager devenv mount` / `lager devenv env`
+    for volumes / environment.
+    """
+    ctx = click.get_current_context()
+    key = DEVENV_KEY_ALIASES.get(key, key)
+    if key in LIST_KEYS_WITH_EDITORS:
+        click.secho(
+            f'Error: edit `{key}` with `{LIST_KEYS_WITH_EDITORS[key]}`.',
+            fg='red', err=True)
+        ctx.exit(1)
+    if key not in SETTABLE_SCALAR_KEYS and key not in SETTABLE_APPEND_KEYS:
+        valid = ', '.join(SETTABLE_SCALAR_KEYS + SETTABLE_APPEND_KEYS)
+        click.secho(f'Error: unknown devenv key "{key}". Valid keys: {valid}.', fg='red', err=True)
+        ctx.exit(1)
+    if key == 'image' and not _validate_docker_image_name(value):
+        click.secho(f"Error: Invalid Docker image name: '{value}'", fg='red', err=True)
+        ctx.exit(1)
+
+    path, data, section = _load_devenv_section()
+    if key in SETTABLE_APPEND_KEYS:
+        values = devenv_config_list(section.get(key))
+        if value in values:
+            click.echo(f'{key} already contains: {value}')
+            return
+        values.append(value)
+        section[key] = values
+        _save_devenv(path, data)
+        click.echo(f'Added {key}: {value}')
+    else:
+        section[key] = value
+        _save_devenv(path, data)
+        click.echo(f'Set {key} = {value}')
+
+
+@devenv.command(name='unset')
+@click.argument('key')
+def unset(key):
+    """
+    Remove a DEVENV configuration KEY entirely (scalar or list).
+    """
+    key = DEVENV_KEY_ALIASES.get(key, key)
+    path, data, section = _load_devenv_section()
+    if key not in section:
+        click.secho(f'devenv key not set: {key}', fg='red', err=True)
+        click.get_current_context().exit(1)
+    del section[key]
+    _save_devenv(path, data)
+    click.echo(f'Unset {key}')
+
+
+@devenv.command(name='show')
+def show():
+    """
+    Print the resolved DEVENV configuration.
+    """
+    path, _, section = _load_devenv_section()
+    scalars = {k: v for k, v in section.items()
+               if not k.startswith('cmd.') and not isinstance(v, (list, tuple))}
+    lists = {k: v for k, v in section.items() if isinstance(v, (list, tuple))}
+    cmds = {k.split('.', 1)[1]: v for k, v in section.items() if k.startswith('cmd.')}
+
+    click.secho(f'DEVENV ({path})', fg='green')
+    for key in sorted(scalars):
+        click.echo(f'  {key}: {scalars[key]}')
+    for key in sorted(lists):
+        click.echo(f'  {key}:')
+        for item in devenv_config_list(lists[key]):
+            click.echo(f'    - {item}')
+    if cmds:
+        click.echo('  commands:')
+        for name in sorted(cmds, key=natural_sort_key):
+            click.echo(f'    {name}: {cmds[name]}')
