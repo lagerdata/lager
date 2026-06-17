@@ -31,6 +31,15 @@ jobs:
         run: pip install -e cli/
         shell: bash
 
+      - name: Run CLI unit tests
+        id: unit-test
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          pip install pytest
+          pytest test/unit/cli/ -v
+        shell: bash
+
       - name: Register lager box
         run: |
           lager boxes add \
@@ -85,7 +94,10 @@ jobs:
         shell: bash
 
       - name: Fail job if any test failed
-        if: steps.rigol-test.outcome == 'failure' || steps.labjack-test.outcome == 'failure'
+        if: >
+          steps.rigol-test.outcome == 'failure' ||
+          steps.labjack-test.outcome == 'failure' ||
+          steps.unit-test.outcome == 'failure'
         run: |
           echo "One or more hardware tests failed:"
           echo "  rigol-test:   ${{ steps.rigol-test.outcome }}"
