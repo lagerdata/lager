@@ -65,6 +65,17 @@ def mem8_text(addr, data):
     return '\n'.join(lines)
 
 
+def mem32_text(addr, data):
+    """Format the way J-Link Commander prints mem32: one 8-hex-digit word VALUE
+    per address. *data* is little-endian bytes (memory order)."""
+    lines = [f'mem32 {hex(addr)} {len(data) // 4}\r']
+    for off in range(0, len(data), 4):
+        v = int.from_bytes(data[off:off + 4], 'little')
+        lines.append('{:08X} = {:08X} \r'.format(addr + off, v))
+    lines.append('J-Link>')
+    return '\n'.join(lines)
+
+
 def make_jlink(device):
     """JLink instance without __init__ (avoids exe discovery)."""
     jl = jlink.JLink.__new__(jlink.JLink)
@@ -75,8 +86,16 @@ def make_jlink(device):
 
 
 def run_read(device, data, address=0xE000ED00, length=4, **kwargs):
-    """Drive JLink.read_memory() against a FakeRepl; return (result, commands)."""
+    """Drive JLink.read_memory() against a FakeRepl; return (result, commands).
+
+    *data* is the little-endian byte sequence the device would expose at
+    *address*; the responder serves it back through whichever of mem8/mem32
+    read_memory chooses for the alignment.
+    """
     def responder(cmd):
+        if cmd.startswith('mem32 '):
+            _, addr_s, n_s = cmd.split()
+            return mem32_text(int(addr_s, 16), data[:int(n_s) * 4])
         if cmd.startswith('mem8 '):
             _, addr_s, n_s = cmd.split()
             return mem8_text(int(addr_s, 16), data[:int(n_s)])
@@ -113,14 +132,15 @@ class Da1469ResetHaltTests(unittest.TestCase):
             result, commands = run_read('DA14695', CPUID_BYTES)
         self.assertEqual(result, CPUID_BYTES)
         self.assertEqual(commands[0], 'connect')
-        # r (reset+halt) and h must precede the mem8 read; rnh must NOT be used
+        # r (reset+halt) and h must precede the read; rnh must NOT be used
         # (it would let firmware run and disable SWD before the halt).
         self.assertNotIn('rnh', commands)
         r_i = commands.index('r')
         h_i = commands.index('h')
-        mem8_i = next(i for i, c in enumerate(commands) if c.startswith('mem8 '))
+        read_i = next(i for i, c in enumerate(commands)
+                      if c.startswith('mem8 ') or c.startswith('mem32 '))
         self.assertLess(r_i, h_i)
-        self.assertLess(h_i, mem8_i)
+        self.assertLess(h_i, read_i)
 
     def test_non_da1469_does_not_reset_or_halt(self):
         with env():
@@ -129,7 +149,8 @@ class Da1469ResetHaltTests(unittest.TestCase):
         self.assertNotIn('r', commands)
         self.assertNotIn('rnh', commands)
         self.assertNotIn('h', commands)
-        self.assertEqual(commands, ['connect', f'mem8 {hex(0xE000ED00)} 4'])
+        # 0xE000ED00/4 is word-aligned -> mem32 (one word).
+        self.assertEqual(commands, ['connect', f'mem32 {hex(0xE000ED00)} 1'])
 
     def test_env_optout_skips_reset_halt_on_da1469(self):
         for value in ('0', 'false', 'no', 'off'):
@@ -166,6 +187,86 @@ class Da1469ResetHaltTests(unittest.TestCase):
         self.assertNotIn('r', commands)
         self.assertNotIn('rnh', commands)
         self.assertNotIn('h', commands)
+
+
+# Cortex-M0+ SCB CPUID, little-endian: reads back 0x410CC601.
+KUMO_CPUID_BYTES = bytes([0x01, 0xC6, 0x0C, 0x41])
+
+
+class WordVsByteAccessTests(unittest.TestCase):
+    """SCS (e.g. CPUID @ 0xE000ED00) is word-access-only on ARMv6-M, so
+    read_memory must use mem32 for word-aligned/whole-word reads and fall back
+    to mem8 otherwise."""
+
+    def _read_cmd(self, commands):
+        return next(c for c in commands
+                    if c.startswith('mem8 ') or c.startswith('mem32 '))
+
+    def test_word_aligned_read_uses_mem32_little_endian(self):
+        # KUMO (Cortex-M0+): mem8 here would read 0; mem32 returns the CPUID.
+        with env():
+            result, commands = run_read('ATSAMD21', KUMO_CPUID_BYTES,
+                                        address=0xE000ED00, length=4)
+        self.assertEqual(result, KUMO_CPUID_BYTES)               # 01 c6 0c 41
+        self.assertEqual(int.from_bytes(result, 'little'), 0x410CC601)
+        self.assertEqual(self._read_cmd(commands), f'mem32 {hex(0xE000ED00)} 1')
+
+    def test_multiword_read_uses_mem32_with_word_count(self):
+        data = bytes(range(16))  # 4 words
+        with env():
+            result, commands = run_read('ATSAMD21', data,
+                                        address=0x20000000, length=16)
+        self.assertEqual(result, data)
+        self.assertEqual(self._read_cmd(commands), f'mem32 {hex(0x20000000)} 4')
+
+    def test_unaligned_address_falls_back_to_mem8(self):
+        data = b'\xAA\xBB\xCC'
+        with env():
+            result, commands = run_read('ATSAMD21', data,
+                                        address=0x20000001, length=3)
+        self.assertEqual(result, data)
+        self.assertEqual(self._read_cmd(commands), f'mem8 {hex(0x20000001)} 3')
+
+    def test_partial_word_length_falls_back_to_mem8(self):
+        data = b'\x01\x02\x03'
+        with env():
+            result, commands = run_read('ATSAMD21', data,
+                                        address=0x20000000, length=3)
+        self.assertEqual(result, data)
+        self.assertEqual(self._read_cmd(commands), f'mem8 {hex(0x20000000)} 3')
+
+    def test_word_read_composes_with_da1469_reset_halt(self):
+        # DA1469x word read must still reset+halt, THEN use mem32.
+        with env():
+            result, commands = run_read('DA14695', CPUID_BYTES,
+                                        address=0xE000ED00, length=4)
+        self.assertEqual(result, CPUID_BYTES)
+        r_i, h_i = commands.index('r'), commands.index('h')
+        mem32_i = next(i for i, c in enumerate(commands) if c.startswith('mem32 '))
+        self.assertLess(r_i, h_i)
+        self.assertLess(h_i, mem32_i)
+
+
+class ParseMem32BytesTests(unittest.TestCase):
+    def test_single_word_is_little_endian(self):
+        out = mem32_text(0xE000ED00, bytes([0x01, 0xC6, 0x0C, 0x41]))
+        self.assertEqual(jlink._parse_mem32_bytes(out, 4),
+                         bytes([0x01, 0xC6, 0x0C, 0x41]))
+
+    def test_address_column_not_parsed_as_data(self):
+        # Left-of-'=' address (also 8 hex digits) must be ignored.
+        out = mem32_text(0xE000ED00, bytes([0xDE, 0xAD, 0xBE, 0xEF]))
+        self.assertEqual(jlink._parse_mem32_bytes(out, 4),
+                         bytes([0xDE, 0xAD, 0xBE, 0xEF]))
+
+    def test_multiple_words_and_length_trim(self):
+        data = bytes(range(12))  # 3 words
+        out = mem32_text(0x20000000, data)
+        self.assertEqual(jlink._parse_mem32_bytes(out, 12), data)
+        self.assertEqual(jlink._parse_mem32_bytes(out, 4), data[:4])
+
+    def test_garbled_returns_empty(self):
+        self.assertEqual(jlink._parse_mem32_bytes('no equals sign', 4), b'')
 
 
 if __name__ == '__main__':
