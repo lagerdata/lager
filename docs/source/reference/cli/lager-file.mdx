@@ -236,6 +236,8 @@ When you run `lager devenv terminal`, the CLI reads this section to determine wh
 | `macaddr` | No | MAC address to assign to the container |
 | `hostname` | No | Hostname to assign to the container |
 | `repo_root_relative_path` | No | Relative path from the `.lager` file to the repo root. Used when the `.lager` file is in a subdirectory -- the CLI mounts the repo root and sets the working directory to the correct subdirectory. |
+| `volumes` | No | List of additional host paths to bind-mount into the container, each in Docker `-v` form (`"HOST:CONTAINER"`, optionally with `:ro`). Applied to both `lager devenv terminal` and `lager exec`. |
+| `environment` | No | List of environment variables (`"FOO=bar"`) to set inside the container. Applied to both `lager devenv terminal` and `lager exec`. |
 | `cmd.<name>` | No | Custom named commands that can be executed with `lager exec <name>` |
 
 **Example:**
@@ -250,6 +252,14 @@ When you run `lager devenv terminal`, the CLI reads this section to determine wh
     "group": "1000",
     "hostname": "devbox",
     "repo_root_relative_path": "..",
+    "volumes": [
+      "/home/me/shared-libs:/opt/libs:ro",
+      "/home/me/build-cache:/root/.cache"
+    ],
+    "environment": [
+      "TOOLCHAIN=arm-none-eabi",
+      "VERBOSE=1"
+    ],
     "cmd.build": "make -j$(nproc)",
     "cmd.flash": "openocd -f board.cfg -c 'program build/fw.elf verify reset exit'",
     "cmd.test": "ctest --output-on-failure"
@@ -262,6 +272,9 @@ When you run `lager devenv terminal`, the CLI reads this section to determine wh
 ```bash
 lager devenv create                       # Interactive setup (creates DEVENV section)
 lager devenv terminal                     # Start interactive Docker shell
+lager devenv terminal -v /data:/data      # ...with an extra host bind-mount (repeatable)
+lager devenv terminal -e API_KEY=xyz      # ...with an extra env var (repeatable)
+lager --debug devenv terminal             # print the full `docker run` command, then launch
 lager devenv add build "make -j4"         # Add a named command
 lager devenv delete build                 # Remove a named command
 lager devenv commands                     # List all named commands
