@@ -441,20 +441,24 @@ class JLink:
         **DA1469x:** real firmware disables the SWD debug interface and
         deep-sleeps ~2s after boot, so a plain ``connect`` / ``mem8`` against a
         *running* DA1469x fails (a blank part stays awake, which masks the bug).
-        Mirroring ``flash()``, we ``rnh`` / settle / ``h`` to catch the core
-        before reading. This **reboots the target**, which is acceptable because
-        a plain read of a sleeping DA1469x fails anyway. Opt out with
-        ``LAGER_DA1469_MEMRD_RESET_HALT=0`` or ``reset_halt=False``.
+        Unlike ``flash()`` — which uses ``rnh`` because the bootrom must run to
+        init QSPI — a read must catch the core at the reset vector *before*
+        firmware runs and disables SWD, so we reset-AND-halt (``r`` then ``h``,
+        same as ``reset(halt=True)``). ``rnh`` would let firmware run and kill
+        the debug interface before the ``h`` lands. This **reboots the target**,
+        which is acceptable because a plain read of a sleeping DA1469x fails
+        anyway. Opt out with ``LAGER_DA1469_MEMRD_RESET_HALT=0`` or
+        ``reset_halt=False``.
         """
         with commander(self.args, script_file=self.script_file, serial=self.serial) as jl:
             jl.run_command('connect')
             # DA1469x: a running target has SWD disabled / is deep-sleeping, so
-            # catch the core via reset+halt before the read. Same sequence as
-            # flash()'s pre-loadfile run/halt.
+            # catch the core at the reset vector via reset-AND-halt before the
+            # read. ``r`` halts at reset; ``rnh`` (as in flash()) would let
+            # firmware run and disable SWD before ``h`` could halt it.
             if self._is_da1469() and self._should_memrd_reset_halt(reset_halt):
-                logger.info('DA1469x: rnh, settle, h before mem8 read')
-                jl.run_command('rnh')
-                time.sleep(0.1)
+                logger.info('DA1469x: r (reset+halt), h before mem8 read')
+                jl.run_command('r')
                 jl.run_command('h')
             # J-Link Commander mem8 syntax: mem8 address count
             output = jl.run_command(f'mem8 {hex(address)} {length}')
