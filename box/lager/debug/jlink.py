@@ -107,6 +107,31 @@ def _parse_mem8_bytes(output, length):
     return bytes(memory_data[:length])
 
 
+def _parse_mem32_bytes(output, length):
+    """Parse J-Link Commander ``mem32`` output into little-endian bytes.
+
+    ``mem32`` prints each 32-bit word as a single 8-hex-digit VALUE on the right
+    of '=' (e.g. ``E000ED00 = 410CC601``), not as separate bytes. Memory is
+    little-endian, so each word value is emitted low-byte-first
+    (0x410CC601 -> 01 C6 0C 41) to match the mem8 path and what callers expect.
+    The 8-hex grouping side-steps the mem8 byte regex, which would otherwise
+    read the word back big-endian. Returns at most *length* bytes.
+    """
+    memory_data = []
+    for line in output.split('\n'):
+        if '=' in line:
+            # Right side of '=' only — the left side is the address (also hex).
+            parts = line.split('=', 1)
+            if len(parts) == 2:
+                for word_hex in re.findall(r'([0-9A-Fa-f]{8})', parts[1]):
+                    v = int(word_hex, 16)
+                    memory_data.extend((
+                        v & 0xFF, (v >> 8) & 0xFF,
+                        (v >> 16) & 0xFF, (v >> 24) & 0xFF,
+                    ))
+    return bytes(memory_data[:length])
+
+
 def _iter_loadfile_cmds(hexfiles, binfiles, elffiles):
     """Yield (command, bin_address_or_None, path) in hex -> bin -> elf order."""
     for file in hexfiles:
@@ -436,7 +461,14 @@ class JLink:
             close: Whether to close connection after operation (unused for J-Link)
 
         Returns:
-            bytes object containing the memory data
+            bytes object containing the memory data (little-endian)
+
+        **Word vs byte access:** word-aligned, whole-word reads
+        (``address % 4 == 0 and length % 4 == 0``) use ``mem32``; everything
+        else uses ``mem8``. ARMv6-M (Cortex-M0/M0+) System Control Space — incl.
+        CPUID @ 0xE000ED00 — only supports 32-bit access, so a byte read there
+        returns 0; ``mem32`` reads it correctly. RAM tolerates byte access, so
+        unaligned/partial reads still work via the ``mem8`` fallback.
 
         **DA1469x:** real firmware disables the SWD debug interface and
         deep-sleeps ~2s after boot, so a plain ``connect`` / ``mem8`` against a
@@ -457,12 +489,24 @@ class JLink:
             # read. ``r`` halts at reset; ``rnh`` (as in flash()) would let
             # firmware run and disable SWD before ``h`` could halt it.
             if self._is_da1469() and self._should_memrd_reset_halt(reset_halt):
-                logger.info('DA1469x: r (reset+halt), h before mem8 read')
+                logger.info('DA1469x: r (reset+halt), h before memory read')
                 jl.run_command('r')
                 jl.run_command('h')
-            # J-Link Commander mem8 syntax: mem8 address count
-            output = jl.run_command(f'mem8 {hex(address)} {length}')
-        return _parse_mem8_bytes(output, length)
+            # SCS registers (e.g. CPUID @ 0xE000ED00) on ARMv6-M (Cortex-M0/M0+)
+            # support 32-bit access ONLY — byte/halfword reads there return 0.
+            # Use word reads (mem32) when the request is word-aligned and a whole
+            # number of words; fall back to mem8 for unaligned/partial reads
+            # (e.g. RAM, which tolerates byte access). ARMv8-M (M33) tolerates
+            # byte access, so mem8 happened to work there; mem32 is correct for both.
+            if address % 4 == 0 and length % 4 == 0:
+                # mem32 syntax: mem32 address nwords (one 32-bit word per count)
+                output = jl.run_command(f'mem32 {hex(address)} {length // 4}')
+                parser = _parse_mem32_bytes
+            else:
+                # mem8 syntax: mem8 address count
+                output = jl.run_command(f'mem8 {hex(address)} {length}')
+                parser = _parse_mem8_bytes
+        return parser(output, length)
 
     @staticmethod
     def _should_memrd_reset_halt(override):
