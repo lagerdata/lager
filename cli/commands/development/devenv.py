@@ -16,6 +16,7 @@ from pathlib import Path
 import click
 
 from ...core.group_usage import LagerGroup
+from ...core.param_types import EnvVarType
 from ...sort_utils import natural_sort_key
 from ...config import (
     read_lager_json,
@@ -25,6 +26,7 @@ from ...config import (
     make_config_path,
     LAGER_CONFIG_FILE_NAME,
     get_global_config_file_path,
+    devenv_config_list,
 )
 
 
@@ -143,7 +145,10 @@ def create(ctx, image, mount_dir, shell):
 @click.option('--platform', help='Platform', required=False)
 @click.option('--attach', '-a', 'attach_container', help='Attach to a running container by name', required=False, default=None)
 @click.option('--shell', '-s', help='Shell to use when attaching (default: config shell or /bin/bash)', required=False, default=None)
-def terminal(ctx, mount, user, group, name, detach, port, entrypoint, network, platform, attach_container, shell):
+@click.option('--volume', '-v', 'volumes', help='Bind-mount a host path into the container (HOST:CONTAINER[:ro]). Repeatable.', required=False, multiple=True)
+@click.option('--env', '-e', help='Set an environment variable in the container (FOO=BAR). Repeatable.', required=False, multiple=True, type=EnvVarType())
+@click.option('--passenv', help='Pass an environment variable through from the current environment. Repeatable.', required=False, multiple=True)
+def terminal(ctx, mount, user, group, name, detach, port, entrypoint, network, platform, attach_container, shell, volumes, env, passenv):
     """
     Start interactive terminal
     """
@@ -203,10 +208,15 @@ def terminal(ctx, mount, user, group, name, detach, port, entrypoint, network, p
     if entrypoint:
         args.extend(['--entrypoint', entrypoint])
 
+    # docker run has no `--group` flag; user and group are combined into `--user user:group`
+    # (matching `lager exec`). A group with no user yields `--user :group`.
+    user_group = ''
     if user:
-        args.extend(['--user', user])
+        user_group += user
     if group:
-        args.extend(['--group', group])
+        user_group += f':{group}'
+    if user_group:
+        args.extend(['--user', user_group])
     if macaddr:
         args.extend(['--mac-address', macaddr])
     if hostname:
@@ -250,9 +260,23 @@ def terminal(ctx, mount, user, group, name, detach, port, entrypoint, network, p
             f'{global_config_path}:/lager/{LAGER_CONFIG_FILE_NAME}'
         ])
 
+    # Custom bind mounts: config-defined first, then any passed on the command line.
+    for vol in (*devenv_config_list(devenv_config.get('volumes')), *volumes):
+        args.extend(['-v', vol])
+
+    # Environment variables: config-defined, then --env, then --passenv passthrough.
+    for var in (*devenv_config_list(devenv_config.get('environment')), *env):
+        args.extend(['--env', var])
+    for var_name in passenv:
+        if var_name in os.environ:
+            args.extend(['--env', f'{var_name}={os.environ[var_name]}'])
+
     args.extend(['-w', working_dir])
 
     args.append(image)
+
+    if ctx.obj.debug:
+        click.echo(f'Docker command: {" ".join(args)}', err=True)
 
     try:
         proc = subprocess.run(args, check=False)

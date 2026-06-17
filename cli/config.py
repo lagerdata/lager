@@ -266,6 +266,21 @@ def write_lager_json(data, path=None):
     with open(path, 'w') as f:
         json.dump(data, f, indent=2)
 
+def devenv_config_list(value):
+    """
+        Normalize a DEVENV config value into a list of strings.
+
+        Accepts a JSON array (the canonical form), a single string, or None.
+        A string is split on newlines so newline-separated values also work.
+        Used for the `volumes` and `environment` DEVENV keys.
+    """
+    if not value:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [line.strip() for line in str(value).splitlines() if line.strip()]
+
+
 def get_devenv_json():
     """
         Return a path and JSON data for devenv.
