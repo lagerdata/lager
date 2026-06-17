@@ -281,6 +281,24 @@ def devenv_config_list(value):
     return [line.strip() for line in str(value).splitlines() if line.strip()]
 
 
+def expand_devenv_path(spec, project_root):
+    """
+        Expand ~, environment variables, and the ${PROJECT_ROOT} /
+        ${LAGER_PROJECT_ROOT} tokens in a volume/path spec.
+
+        Lets persisted .lager mounts stay portable across machines and
+        reference the project root (the directory containing .lager).
+    """
+    if not spec:
+        return spec
+    for token in ('${LAGER_PROJECT_ROOT}', '$LAGER_PROJECT_ROOT',
+                  '${PROJECT_ROOT}', '$PROJECT_ROOT'):
+        spec = spec.replace(token, project_root)
+    spec = os.path.expandvars(spec)
+    spec = os.path.expanduser(spec)
+    return spec
+
+
 def get_devenv_json():
     """
         Return a path and JSON data for devenv.

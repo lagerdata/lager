@@ -137,3 +137,77 @@ def test_env_list(tmp_path):
     result = _invoke(path, ['env', 'list'])
     assert result.exit_code == 0, result.output
     assert 'FOO=bar' in result.output
+
+
+def test_set_scalar_replaces(tmp_path):
+    path = _write_cfg(tmp_path, dict(BASE_CFG))
+    result = _invoke(path, ['set', 'network', 'host'])
+    assert result.exit_code == 0, result.output
+    assert _read(path)['network'] == 'host'
+
+
+def test_set_entrypoint(tmp_path):
+    path = _write_cfg(tmp_path, dict(BASE_CFG))
+    result = _invoke(path, ['set', 'entrypoint', '/bin/bash'])
+    assert result.exit_code == 0, result.output
+    assert _read(path)['entrypoint'] == '/bin/bash'
+
+
+def test_set_image_validates(tmp_path):
+    path = _write_cfg(tmp_path, dict(BASE_CFG))
+    result = _invoke(path, ['set', 'image', 'Bad Image!!'])
+    assert result.exit_code != 0
+    assert _read(path)['image'] == 'example/img'
+
+
+def test_set_unknown_key_rejected(tmp_path):
+    path = _write_cfg(tmp_path, dict(BASE_CFG))
+    result = _invoke(path, ['set', 'imagee', 'x'])
+    assert result.exit_code != 0
+    assert 'unknown devenv key' in result.output
+    assert 'imagee' not in _read(path)
+
+
+def test_set_volumes_redirects_to_mount(tmp_path):
+    path = _write_cfg(tmp_path, dict(BASE_CFG))
+    result = _invoke(path, ['set', 'volumes', 'a:/b'])
+    assert result.exit_code != 0
+    assert 'lager devenv mount' in result.output
+
+
+def test_set_port_alias_appends_to_ports(tmp_path):
+    path = _write_cfg(tmp_path, dict(BASE_CFG))
+    assert _invoke(path, ['set', 'port', '8080:8080']).exit_code == 0
+    assert _invoke(path, ['set', 'port', '9090:9090']).exit_code == 0
+    assert _read(path)['ports'] == ['8080:8080', '9090:9090']
+
+
+def test_unset_scalar(tmp_path):
+    path = _write_cfg(tmp_path, {**BASE_CFG, 'network': 'host'})
+    result = _invoke(path, ['unset', 'network'])
+    assert result.exit_code == 0, result.output
+    assert 'network' not in _read(path)
+
+
+def test_unset_port_alias(tmp_path):
+    path = _write_cfg(tmp_path, {**BASE_CFG, 'ports': ['8080:8080']})
+    result = _invoke(path, ['unset', 'port'])
+    assert result.exit_code == 0, result.output
+    assert 'ports' not in _read(path)
+
+
+def test_unset_missing_errors(tmp_path):
+    path = _write_cfg(tmp_path, dict(BASE_CFG))
+    result = _invoke(path, ['unset', 'network'])
+    assert result.exit_code != 0
+    assert 'not set' in result.output
+
+
+def test_show_lists_scalars_and_lists(tmp_path):
+    path = _write_cfg(tmp_path, {**BASE_CFG, 'network': 'host',
+                                 'volumes': ['a:/b'], 'cmd.build': 'make'})
+    result = _invoke(path, ['show'])
+    assert result.exit_code == 0, result.output
+    assert 'network: host' in result.output
+    assert 'a:/b' in result.output
+    assert 'build' in result.output

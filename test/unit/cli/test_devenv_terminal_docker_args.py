@@ -46,8 +46,10 @@ def _values_for(args, flag):
     return [args[i + 1] for i, tok in enumerate(args[:-1]) if tok == flag]
 
 
-def _run_terminal(tmp_path, monkeypatch, cli_args, devenv_config, debug=False):
-    """Invoke ``terminal`` in a controlled environment; return (result, argv)."""
+def _run_terminal(tmp_path, monkeypatch, cli_args, devenv_config):
+    """Invoke ``terminal`` in a controlled environment; return (result, argv).
+
+    ``argv`` is empty when the command exits before launching (e.g. --info)."""
     # Deterministic environment: no SSH agent, empty HOME (so no ssh-key mounts).
     monkeypatch.delenv('SSH_AUTH_SOCK', raising=False)
     monkeypatch.setenv('HOME', str(tmp_path))
@@ -67,7 +69,7 @@ def _run_terminal(tmp_path, monkeypatch, cli_args, devenv_config, debug=False):
             patch.object(devenv_mod, 'get_global_config_file_path', return_value=missing_global), \
             patch.object(devenv_mod.subprocess, 'run', side_effect=fake_run):
         runner = CliRunner()
-        result = runner.invoke(terminal, cli_args, obj=SimpleNamespace(debug=debug))
+        result = runner.invoke(terminal, cli_args, obj=SimpleNamespace(debug=False))
 
     return result, captured.get('argv', [])
 
@@ -153,11 +155,82 @@ def test_group_only_yields_user_colon_group(tmp_path, monkeypatch):
     assert '--group' not in argv
 
 
-def test_debug_prints_docker_command(tmp_path, monkeypatch):
-    result, _ = _run_terminal(tmp_path, monkeypatch, [], BASE_CFG, debug=True)
+def test_network_platform_ports_from_config(tmp_path, monkeypatch):
+    cfg = {**BASE_CFG, 'network': 'host', 'platform': 'linux/amd64',
+           'ports': ['8080:8080', '9090:9090']}
+    result, argv = _run_terminal(tmp_path, monkeypatch, [], cfg)
 
     assert result.exit_code == 0, result.output
-    assert 'Docker command:' in result.output
+    assert '--network=host' in argv
+    assert 'linux/amd64' in _values_for(argv, '--platform')
+    ports = _values_for(argv, '-p')
+    assert '8080:8080' in ports
+    assert '9090:9090' in ports
+
+
+def test_cli_network_overrides_config(tmp_path, monkeypatch):
+    cfg = {**BASE_CFG, 'network': 'host'}
+    result, argv = _run_terminal(tmp_path, monkeypatch, ['--network', 'bridge'], cfg)
+
+    assert result.exit_code == 0, result.output
+    assert '--network=bridge' in argv
+    assert '--network=host' not in argv
+
+
+def test_config_and_cli_ports_combined(tmp_path, monkeypatch):
+    cfg = {**BASE_CFG, 'ports': ['8080:8080']}
+    result, argv = _run_terminal(tmp_path, monkeypatch, ['-p', '7000:7000'], cfg)
+
+    assert result.exit_code == 0, result.output
+    ports = _values_for(argv, '-p')
+    assert '8080:8080' in ports
+    assert '7000:7000' in ports
+
+
+def test_info_prints_command_and_does_not_launch(tmp_path, monkeypatch):
+    result, argv = _run_terminal(tmp_path, monkeypatch, ['--info'], BASE_CFG)
+
+    assert result.exit_code == 0, result.output
+    assert 'Resolved docker command:' in result.output
+    assert 'nothing was launched' in result.output
+    # subprocess.run must not have been called.
+    assert argv == []
+
+
+def test_entrypoint_from_config(tmp_path, monkeypatch):
+    cfg = {**BASE_CFG, 'entrypoint': '/bin/bash'}
+    result, argv = _run_terminal(tmp_path, monkeypatch, [], cfg)
+
+    assert result.exit_code == 0, result.output
+    assert '/bin/bash' in _values_for(argv, '--entrypoint')
+
+
+def test_cli_entrypoint_overrides_config(tmp_path, monkeypatch):
+    cfg = {**BASE_CFG, 'entrypoint': '/bin/bash'}
+    result, argv = _run_terminal(tmp_path, monkeypatch, ['--entrypoint', '/bin/sh'], cfg)
+
+    assert result.exit_code == 0, result.output
+    assert _values_for(argv, '--entrypoint') == ['/bin/sh']
+
+
+def test_cli_user_overrides_config(tmp_path, monkeypatch):
+    cfg = {**BASE_CFG, 'user': 'root'}
+    result, argv = _run_terminal(tmp_path, monkeypatch, ['--user', '1000'], cfg)
+
+    assert result.exit_code == 0, result.output
+    assert '1000' in _values_for(argv, '--user')
+    assert 'root' not in _values_for(argv, '--user')
+
+
+def test_volume_expands_project_root_and_home(tmp_path, monkeypatch):
+    cfg = {**BASE_CFG, 'volumes': ['${PROJECT_ROOT}:/workspace', '~/data:/data']}
+    result, argv = _run_terminal(tmp_path, monkeypatch, [], cfg)
+
+    assert result.exit_code == 0, result.output
+    vols = _values_for(argv, '-v')
+    # ${PROJECT_ROOT} -> dir containing .lager (tmp_path); ~ -> HOME (tmp_path).
+    assert f'{tmp_path}:/workspace' in vols
+    assert f'{tmp_path}/data:/data' in vols
 
 
 def test_exec_volumes_and_environment(tmp_path, monkeypatch):
