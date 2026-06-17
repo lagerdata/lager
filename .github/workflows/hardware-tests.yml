@@ -93,14 +93,28 @@ jobs:
             --box "$LAGER_BOX_NAME"
         shell: bash
 
+      - name: Test Acroname USB Hub
+        id: acroname-test
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          USB_NET: ${{ vars.USB_NET || 'usb1' }}
+          USB_NETS: ${{ vars.USB_NETS || 'usb1' }}
+        run: |
+          lager python test/api/usb/test_Acroname.py \
+            --box "$LAGER_BOX_NAME"
+        shell: bash
+
       - name: Fail job if any test failed
         if: >
           steps.rigol-test.outcome == 'failure' ||
           steps.labjack-test.outcome == 'failure' ||
-          steps.unit-test.outcome == 'failure'
+          steps.unit-test.outcome == 'failure' ||
+          steps.acroname-test.outcome == 'failure'
         run: |
           echo "One or more hardware tests failed:"
-          echo "  rigol-test:   ${{ steps.rigol-test.outcome }}"
-          echo "  labjack-test: ${{ steps.labjack-test.outcome }}"
+          echo "  rigol-test:    ${{ steps.rigol-test.outcome }}"
+          echo "  labjack-test:  ${{ steps.labjack-test.outcome }}"
+          echo "  acroname-test: ${{ steps.acroname-test.outcome }}"
           exit 1
         shell: bash
