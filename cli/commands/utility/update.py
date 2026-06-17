@@ -2004,7 +2004,17 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     if container_lines:
         log_status('OK', 'green')
     else:
-        log_status('WARNING (lager container not detected)', 'yellow')
+        if progress:
+            progress.finish(success=False)
+        log_status('FAILED', 'red')
+        log_error('Error: lager container is not running after startup')
+        click.secho(
+            'The container may have crashed immediately after starting. Check logs on the box:',
+            fg='yellow', err=True
+        )
+        click.echo(f'  ssh {ssh_host} "docker logs lager --tail 50"', err=True)
+        click.echo(f'  ssh {ssh_host} "docker ps -a | grep lager"', err=True)
+        ctx.exit(1)
 
     if verbose and container_lines:
         click.echo()
