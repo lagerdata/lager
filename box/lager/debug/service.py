@@ -1164,6 +1164,7 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
         try:
             start_addr = data.get('start_addr')
             length = data.get('length', 256)
+            no_reset = bool(data.get('no_reset', False))
 
             if start_addr is None:
                 self.send_error_response(400, 'Missing start_addr parameter')
@@ -1224,8 +1225,12 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 self.send_error_response(500, f"Failed to initialize J-Link: {e}")
                 return
 
-            # Read memory using J-Link Commander (bypasses GDB entirely)
-            memory_data = jlink.read_memory(start_addr, length)
+            # Read memory using J-Link Commander (bypasses GDB entirely).
+            # --no-reset maps to reset_halt=False so the DA1469x reset+halt is
+            # skipped; None lets jlink honour LAGER_DA1469_MEMRD_RESET_HALT.
+            memory_data = jlink.read_memory(
+                start_addr, length, reset_halt=(False if no_reset else None)
+            )
 
             if not memory_data:
                 self.send_error_response(500, "Memory read returned no data")

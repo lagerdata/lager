@@ -346,6 +346,18 @@ class JLink:
             serial = _serial_from_gdbserver_cmdline(cmdline)
         self.serial = serial
 
+    def _device(self):
+        """Return the ``-device`` value from self.args, or '' if absent."""
+        try:
+            di = self.args.index('-device')
+            return self.args[di + 1] or ''
+        except (ValueError, IndexError):
+            return ''
+
+    def _is_da1469(self):
+        """True if this J-Link target is a Dialog DA1469x device."""
+        return 'DA1469' in self._device().upper()
+
     def erase(self, start_addr, length, *, close=True):
         """
         Erase flash memory
@@ -384,14 +396,7 @@ class JLink:
         """
         with commander(self.args, script_file=self.script_file, serial=self.serial) as jl:
             yield jl.run_command('connect')
-            dev = ''
-            try:
-                di = self.args.index('-device')
-                dev = self.args[di + 1]
-            except (ValueError, IndexError):
-                pass
-            is_da1469 = 'DA1469' in (dev or '').upper()
-            if is_da1469:
+            if self._is_da1469():
                 # Address-range erase only — never Commander ``erase`` without addresses
                 # (that would be full chip erase on this device family).
                 logger.info('DA1469x: address-range erase only (no full chip erase)')
@@ -416,23 +421,57 @@ class JLink:
             else:
                 yield jl.run_command('erase')
 
-    def read_memory(self, address, length, *, close=True):
+    def read_memory(self, address, length, *, reset_halt=None, close=True):
         """
         Read memory from device
 
         Args:
             address: Starting memory address (int)
             length: Number of bytes to read
+            reset_halt: Tri-state override for the DA1469x reset+halt step
+                performed before the read. ``None`` (default) honours the
+                ``LAGER_DA1469_MEMRD_RESET_HALT`` env var (default on for
+                DA1469x); ``True``/``False`` force it on/off regardless of the
+                env var. Ignored for non-DA1469x devices.
             close: Whether to close connection after operation (unused for J-Link)
 
         Returns:
             bytes object containing the memory data
+
+        **DA1469x:** real firmware disables the SWD debug interface and
+        deep-sleeps ~2s after boot, so a plain ``connect`` / ``mem8`` against a
+        *running* DA1469x fails (a blank part stays awake, which masks the bug).
+        Mirroring ``flash()``, we ``rnh`` / settle / ``h`` to catch the core
+        before reading. This **reboots the target**, which is acceptable because
+        a plain read of a sleeping DA1469x fails anyway. Opt out with
+        ``LAGER_DA1469_MEMRD_RESET_HALT=0`` or ``reset_halt=False``.
         """
         with commander(self.args, script_file=self.script_file, serial=self.serial) as jl:
             jl.run_command('connect')
+            # DA1469x: a running target has SWD disabled / is deep-sleeping, so
+            # catch the core via reset+halt before the read. Same sequence as
+            # flash()'s pre-loadfile run/halt.
+            if self._is_da1469() and self._should_memrd_reset_halt(reset_halt):
+                logger.info('DA1469x: rnh, settle, h before mem8 read')
+                jl.run_command('rnh')
+                time.sleep(0.1)
+                jl.run_command('h')
             # J-Link Commander mem8 syntax: mem8 address count
             output = jl.run_command(f'mem8 {hex(address)} {length}')
         return _parse_mem8_bytes(output, length)
+
+    @staticmethod
+    def _should_memrd_reset_halt(override):
+        """Resolve the DA1469x memrd reset+halt gate.
+
+        ``override`` (the ``reset_halt`` arg) wins when not None; otherwise the
+        ``LAGER_DA1469_MEMRD_RESET_HALT`` env var decides (default on, matching
+        the ``LAGER_DA1469_PRE_FLASH_RUN_HALT`` flash gate's style).
+        """
+        if override is not None:
+            return bool(override)
+        val = os.environ.get('LAGER_DA1469_MEMRD_RESET_HALT', '1').strip().lower()
+        return val not in ('0', 'false', 'no', 'off')
 
     def flash(self, files, preverify=False, verify=False, *, close=True):
         """
@@ -462,13 +501,7 @@ class JLink:
             # DA1469x: after erase, programming from a cold halted attach can fail even though
             # QSPI itself still reads erased data. Run briefly, then halt before loadfile so the
             # first flash starts from a known-good controller/boot state.
-            dev = ''
-            try:
-                di = self.args.index('-device')
-                dev = self.args[di + 1]
-            except (ValueError, IndexError):
-                pass
-            if 'DA1469' in (dev or '').upper():
+            if self._is_da1469():
                 pre = os.environ.get('LAGER_DA1469_PRE_FLASH_RUN_HALT', '1').strip().lower()
                 if pre not in ('0', 'false', 'no', 'off'):
                     logger.info('DA1469x: rnh, settle, h before loadfile')
