@@ -705,7 +705,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         ssh_cmd.extend(_ssh_mux_opts)
         ssh_cmd.append(ssh_host)
         ssh_cmd.append(cmd)
-        return subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=timeout_secs)
+        return subprocess.run(ssh_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout_secs)
 
     def run_ssh_command_interactive(cmd, timeout_secs=300, allow_sudo_prompt=False):
         """Run an SSH command that may require sudo password input.
@@ -1739,6 +1739,8 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             bufsize=1
         )
         if process.stdout:
@@ -1752,7 +1754,9 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             ssh_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True
+            text=True,
+            encoding='utf-8',
+            errors='replace',
         )
         # Read and store output for potential error reporting
         if process.stdout:
