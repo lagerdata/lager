@@ -1274,8 +1274,18 @@ def reset(ctx, box, halt, force_reconnect):
               help='Halt the device during memory read (keeps debugger connected).')
 @click.option('--no-halt', 'no_halt', is_flag=True, default=False,
               help='Leave the target running; overrides auto-halt for DA1469 QSPI XIP.')
-def memrd(ctx, start_addr, length, box, json_output, halt, no_halt):
-    """Read memory from target (DA1469x QSPI XIP: auto-halts unless --no-halt)."""
+@click.option('--no-reset', 'no_reset', is_flag=True, default=False,
+              help='DA1469x only: skip the reset+halt the box performs before the read. '
+                   'A running DA1469x has SWD disabled, so without reset the read fails; '
+                   'use this only on a blank/awake part to avoid rebooting it.')
+def memrd(ctx, start_addr, length, box, json_output, halt, no_halt, no_reset):
+    """Read memory from target.
+
+    DA1469x QSPI XIP auto-halts unless --no-halt. For any DA1469x device the box
+    also resets+halts the target before reading (real firmware disables SWD and
+    deep-sleeps, so a plain read fails) — this REBOOTS the DUT. Pass --no-reset
+    to skip that step (only safe on a blank/awake part).
+    """
 
     target_box = box
 
@@ -1361,7 +1371,7 @@ def memrd(ctx, start_addr, length, box, json_output, halt, no_halt):
             ctx.exit(0)
 
     try:
-        memory_data = client.read_memory(debug_net, start_addr, length)
+        memory_data = client.read_memory(debug_net, start_addr, length, no_reset=no_reset)
     except Exception as e:
         error_msg = str(e)
         if "400" in error_msg or "No debugger connection" in error_msg:

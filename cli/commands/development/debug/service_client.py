@@ -196,13 +196,18 @@ class DebugServiceClient:
         return response.json()
 
     def read_memory(self, net: Dict[str, Any], start_addr: int,
-                    length: int = 256) -> bytes:
-        """Read memory from target."""
+                    length: int = 256, no_reset: bool = False) -> bytes:
+        """Read memory from target.
+
+        no_reset: DA1469x only — skip the box-side reset+halt before the read.
+        """
         data = {
             'net': net,
             'start_addr': start_addr,
             'length': length,
         }
+        if no_reset:
+            data['no_reset'] = True
 
         response = self.session.post(
             f'{self.base_url}/debug/memrd',
