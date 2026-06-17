@@ -236,8 +236,8 @@ When you run `lager devenv terminal`, the CLI reads this section to determine wh
 | `macaddr` | No | MAC address to assign to the container |
 | `hostname` | No | Hostname to assign to the container |
 | `repo_root_relative_path` | No | Relative path from the `.lager` file to the repo root. Used when the `.lager` file is in a subdirectory -- the CLI mounts the repo root and sets the working directory to the correct subdirectory. |
-| `volumes` | No | List of additional host paths to bind-mount into the container, each in Docker `-v` form (`"HOST:CONTAINER"`, optionally with `:ro`). Applied to both `lager devenv terminal` and `lager exec`. |
-| `environment` | No | List of environment variables (`"FOO=bar"`) to set inside the container. Applied to both `lager devenv terminal` and `lager exec`. |
+| `volumes` | No | List of additional host paths to bind-mount into the container, each in Docker `-v` form (`"HOST:CONTAINER"`, optionally with `:ro`). Applied to both `lager devenv terminal` and `lager exec`. Managed with `lager devenv mount add/remove/list`. |
+| `environment` | No | List of environment variables (`"FOO=bar"`) to set inside the container. Applied to both `lager devenv terminal` and `lager exec`. Managed with `lager devenv env set/unset/list`. |
 | `cmd.<name>` | No | Custom named commands that can be executed with `lager exec <name>` |
 
 **Example:**
@@ -278,6 +278,14 @@ lager --debug devenv terminal             # print the full `docker run` command,
 lager devenv add build "make -j4"         # Add a named command
 lager devenv delete build                 # Remove a named command
 lager devenv commands                     # List all named commands
+
+# Persist mounts/env in .lager so `lager devenv terminal` needs no flags:
+lager devenv mount add cursor-data:/root/.cursor   # Add a volume to `volumes`
+lager devenv mount remove cursor-data:/root/.cursor
+lager devenv mount list
+lager devenv env set HISTFILE=/root/.local/state/bash/history  # Add/replace in `environment`
+lager devenv env unset HISTFILE
+lager devenv env list
 lager exec build                          # Run a named command in Docker
 lager exec --command 'make clean'         # Run an ad-hoc command in Docker
 lager exec --command 'make' --save-as mk  # Run and save for later

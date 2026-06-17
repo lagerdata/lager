@@ -405,3 +405,168 @@ def commands():
     for name, command in sorted(cmds.items(), key=lambda x: natural_sort_key(x[0])):
         click.secho(name, fg='green', nl=False)
         click.echo(f': {command}')
+
+
+def _load_devenv_section():
+    """Return (path, data, section) for the project DEVENV config, or exit."""
+    path, data = get_devenv_json()
+    if 'DEVENV' not in data:
+        click.secho(f'No devenv configuration found in {path}', fg='red', err=True)
+        click.echo('Please run `lager devenv create` first to set up your development environment.', err=True)
+        click.get_current_context().exit(1)
+    return path, data, data['DEVENV']
+
+
+def _save_devenv(path, data):
+    """Write devenv config back to disk with consistent error handling."""
+    try:
+        write_lager_json(data, path)
+    except PermissionError:
+        click.secho(f'Error: Permission denied writing to {path}', fg='red', err=True)
+        click.echo('Make sure the file is writable.', err=True)
+        click.get_current_context().exit(1)
+    except Exception as e:
+        click.secho(f'Error writing to {path}: {e}', fg='red', err=True)
+        click.get_current_context().exit(1)
+
+
+@devenv.group(name='mount')
+def mount_group():
+    """
+    Manage persistent bind-mounts / volumes for the devenv container
+    """
+    pass
+
+
+@mount_group.command(name='add')
+@click.argument('spec')
+def mount_add(spec):
+    """
+    Add a volume SPEC to the DEVENV `volumes` list.
+
+    SPEC is in Docker `-v` form: HOST:CONTAINER[:ro] for a host bind-mount,
+    or NAME:CONTAINER for a named volume.
+    """
+    spec = spec.strip()
+    if ':' not in spec:
+        click.secho(
+            f'Error: invalid volume "{spec}". Expected HOST:CONTAINER[:ro] '
+            '(e.g. /host/path:/container/path or myvol:/data).',
+            fg='red', err=True)
+        click.get_current_context().exit(1)
+
+    path, data, section = _load_devenv_section()
+    volumes = devenv_config_list(section.get('volumes'))
+    if spec in volumes:
+        click.echo(f'Volume already configured: {spec}')
+        return
+    volumes.append(spec)
+    section['volumes'] = volumes
+    _save_devenv(path, data)
+    click.echo(f'Added volume: {spec}')
+
+
+@mount_group.command(name='remove')
+@click.argument('spec')
+def mount_remove(spec):
+    """
+    Remove a volume SPEC from the DEVENV `volumes` list.
+    """
+    spec = spec.strip()
+    path, data, section = _load_devenv_section()
+    volumes = devenv_config_list(section.get('volumes'))
+    if spec not in volumes:
+        click.secho(f'Volume not found: {spec}', fg='red', err=True)
+        click.get_current_context().exit(1)
+    volumes = [v for v in volumes if v != spec]
+    if volumes:
+        section['volumes'] = volumes
+    else:
+        section.pop('volumes', None)
+    _save_devenv(path, data)
+    click.echo(f'Removed volume: {spec}')
+
+
+@mount_group.command(name='list')
+def mount_list():
+    """
+    List configured volumes.
+    """
+    _, _, section = _load_devenv_section()
+    volumes = devenv_config_list(section.get('volumes'))
+    if not volumes:
+        click.echo('No volumes configured')
+        return
+    for vol in volumes:
+        click.echo(vol)
+
+
+@devenv.group(name='env')
+def env_group():
+    """
+    Manage persistent environment variables for the devenv container
+    """
+    pass
+
+
+@env_group.command(name='set')
+@click.argument('assignment', type=EnvVarType())
+def env_set(assignment):
+    """
+    Set an environment variable ASSIGNMENT (FOO=BAR) in the DEVENV
+    `environment` list. Replaces any existing value for the same variable.
+    """
+    name = assignment.split('=', 1)[0]
+    path, data, section = _load_devenv_section()
+    environment = devenv_config_list(section.get('environment'))
+
+    new_env = []
+    replaced = False
+    for entry in environment:
+        if entry.split('=', 1)[0] == name:
+            if not replaced:
+                new_env.append(assignment)
+                replaced = True
+            # drop any duplicate entries for the same variable
+        else:
+            new_env.append(entry)
+    if not replaced:
+        new_env.append(assignment)
+
+    section['environment'] = new_env
+    _save_devenv(path, data)
+    click.echo(f'Set environment variable: {assignment}')
+
+
+@env_group.command(name='unset')
+@click.argument('name')
+def env_unset(name):
+    """
+    Remove environment variable NAME from the DEVENV `environment` list.
+    """
+    path, data, section = _load_devenv_section()
+    environment = devenv_config_list(section.get('environment'))
+    remaining = [e for e in environment if e.split('=', 1)[0] != name]
+    if len(remaining) == len(environment):
+        click.secho(f'Environment variable not found: {name}', fg='red', err=True)
+        click.get_current_context().exit(1)
+    if remaining:
+        section['environment'] = remaining
+    else:
+        section.pop('environment', None)
+    _save_devenv(path, data)
+    click.echo(f'Unset environment variable: {name}')
+
+
+@env_group.command(name='list')
+def env_list():
+    """
+    List configured environment variables.
+    """
+    _, _, section = _load_devenv_section()
+    environment = devenv_config_list(section.get('environment'))
+    if not environment:
+        click.echo('No environment variables configured')
+        return
+    for entry in environment:
+        click.echo(entry)
