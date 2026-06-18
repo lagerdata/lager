@@ -198,6 +198,191 @@ def _classify(usb_info: dict, visa_info: dict, disp_info: dict) -> tuple[str, st
     return ('yellow', 'UNCLEAR — review the per-section output above and rerun if needed.')
 
 
+def _fmt_usb_lines(d: dict):
+    """Render the host-side USB section. Shared by the USB-TMC and debug
+    (J-Link) paths — the `/diagnose/usb` endpoint is instrument-agnostic."""
+    return [
+        f'enumerated:   {d.get("enumerated")}',
+        f'sysfs:        {d.get("sysfs_path") or "—"}',
+        f'device:       {d.get("device_path") or "—"}',
+        f'usb-tmc class:{" yes" if d.get("is_usbtmc") else " no" if "is_usbtmc" in d else " —"}',
+        f'usbtmc kmod:  {"LOADED (problem)" if d.get("usbtmc_loaded") else "not loaded (good)"}',
+        f"lsof:         {', '.join(h.get('command', '?') + '(' + h.get('pid', '?') + ')' for h in (d.get('lsof') or [])) or 'no holders'}",
+        f'dmesg tail:   {d.get("dmesg_tail", "")[:300] or "(empty)"}',
+    ]
+
+
+def _holders_str(d: dict) -> str:
+    """Comma-joined `command(pid)` for the probe's USB holders, or 'none'."""
+    holders = d.get('holders') or []
+    return ', '.join(f"{h.get('command', '?')}({h.get('pid', '?')})" for h in holders) or 'none'
+
+
+def _vtref_str(connect: dict) -> str:
+    """Format VTref (stored in mV) as 'X.XXXV', or 'unknown'."""
+    vt = (connect or {}).get('vtref_mv')
+    return f'{vt / 1000:.3f}V' if isinstance(vt, (int, float)) else 'unknown'
+
+
+def _fmt_jlink_lines(d: dict):
+    """Render the J-Link / debug-probe section from `/diagnose/jlink`."""
+    if d.get('mode') == 'openocd-basic':
+        oo = d.get('openocd_gdbserver') or {}
+        return [
+            f"backend:        {d.get('backend')}",
+            f"probe enum:     {d.get('probe_enumerated')}",
+            f"holders:        {_holders_str(d)}",
+            f"openocd server: running={oo.get('running')} pid={oo.get('pid')}",
+            "note:           deep target diagnosis is J-Link-only for now",
+        ]
+    emu = d.get('emu_list') or []
+    visible_str = ', '.join(
+        f"{p.get('product', '?')}/{p.get('serial') or '?'}" for p in emu
+    ) or 'none'
+    g = d.get('gdbserver') or {}
+    lines = [
+        f"backend:        {d.get('backend')}",
+        f"jlink software: {'installed' if d.get('jlink_installed') else 'NOT INSTALLED'}",
+        f"probe enum:     {d.get('probe_enumerated')}",
+        f"probe visible:  {d.get('probe_visible')}  (emus: {visible_str})",
+        f"holders:        {_holders_str(d)}",
+        f"gdbserver:      running={g.get('running')} pid={g.get('pid')} log_ok={g.get('logfile_ok')}",
+    ]
+    if d.get('connect_skipped'):
+        lines.append(f"connect:        skipped ({d.get('connect_skip_reason')})")
+    elif d.get('connect'):
+        c = d['connect']
+        lines.append(
+            f"connect:        ok={c.get('connect_ok')} class={c.get('connect_error_class')} "
+            f"VTref={_vtref_str(c)} core={c.get('core') or '—'}"
+        )
+    if d.get('connect_error'):
+        lines.append(f"connect error:  {str(d.get('connect_error'))[:200]}")
+    return lines
+
+
+def _classify_jlink(usb_info: dict, jlink_info: dict) -> tuple[str, str]:
+    """Return (color, headline) for a debug net from the USB + J-Link payloads.
+
+    Walks the J-Link stack outside-in (software → USB → probe-visible →
+    gdbserver → target connect) so the most specific actionable fault wins."""
+    # Endpoint reachability first — an old box won't have /diagnose/jlink.
+    if 'unavailable' in jlink_info:
+        return ('yellow',
+                'J-Link diagnose endpoint not on this box — deploy this build '
+                '(`lager update --box <box> --version <branch>`) to enable it.')
+    if 'transport_error' in jlink_info:
+        return ('red', f'Could not reach the J-Link diagnose endpoint: {jlink_info["transport_error"]}')
+    if jlink_info.get('error'):
+        return ('red', f'J-Link diagnose error on box: {jlink_info["error"]}')
+
+    if jlink_info.get('mode') == 'openocd-basic':
+        if jlink_info.get('probe_enumerated') is False:
+            return ('red',
+                    'PROBE NOT ON USB: OpenOCD/ST-Link probe not enumerated. '
+                    'Check cable, probe power, and (behind a hub) the upstream port.')
+        oo = jlink_info.get('openocd_gdbserver') or {}
+        return ('yellow',
+                f'OPENOCD ({jlink_info.get("backend")}): probe enumerated, gdbserver '
+                f'{"running" if oo.get("running") else "idle"}. Deep target diagnosis is '
+                'J-Link-only for now — use `lager debug <net> status` and the gdbserver log.')
+
+    if jlink_info.get('jlink_installed') is False:
+        return ('red',
+                'J-LINK SOFTWARE MISSING on box — install the SEGGER J-Link tools '
+                '(`lager update --box <box>` installs them).')
+
+    if jlink_info.get('probe_enumerated') is False:
+        return ('red',
+                'PROBE NOT ON USB: J-Link not enumerated. Check the USB cable, probe '
+                'power, and (behind an Acroname hub) the upstream port.')
+
+    if jlink_info.get('probe_visible') is False:
+        holders = jlink_info.get('holders') or usb_info.get('lsof') or []
+        if holders:
+            who = ', '.join(f"{h.get('command')}({h.get('pid')})" for h in holders[:4])
+            return ('red',
+                    f'PROBE CLAIMED: J-Link is on USB but JLinkExe can\'t see it — another '
+                    f'process holds it ({who}). Usually a stale gdbserver: '
+                    '`lager debug <net> disconnect`, or restart the debug service.')
+        return ('red',
+                'PROBE WEDGED: J-Link is on USB but JLinkExe enumeration is empty — the '
+                'probe firmware is likely stuck. USB power-cycle the probe (unplug/replug it).')
+
+    g = jlink_info.get('gdbserver') or {}
+    if g.get('running'):
+        if g.get('logfile_ok'):
+            return ('green',
+                    f'HEALTHY: J-Link gdbserver running (PID {g.get("pid")}) and listening — '
+                    'active debug session.')
+        return ('red',
+                'GDBSERVER WEDGED: server process is up but its log shows a target-connection '
+                'failure. `lager debug <net> disconnect` then reconnect; if it persists, '
+                'restart the debug service.')
+
+    if jlink_info.get('connect_skipped'):
+        return ('yellow',
+                f'INCONCLUSIVE: connect probe skipped ({jlink_info.get("connect_skip_reason")}). '
+                'Probe is visible and idle — rerun, or `lager debug <net> gdbserver` to attach.')
+
+    c = jlink_info.get('connect')
+    if c:
+        klass = c.get('connect_error_class')
+        vt = _vtref_str(c)
+        device = jlink_info.get('device') or '<device>'
+        if klass == 'ok':
+            return ('green',
+                    f'HEALTHY: J-Link connected to {device} (VTref={vt}, '
+                    f'{c.get("core") or "core identified"}).')
+        if klass == 'no_target_power':
+            return ('red',
+                    f'TARGET UNPOWERED: probe is fine but VTref={vt} — the target board has no '
+                    'power on the debug header. Check target power and the VTref pin.')
+        if klass == 'locked':
+            return ('red',
+                    'TARGET LOCKED: debug access is blocked by readout/IDCODE/AP protection. '
+                    'A mass-erase/unlock is required (e.g. `nrfjprog --recover` for nRF, or the '
+                    'vendor unlock flow).')
+        if klass == 'wrong_device':
+            return ('yellow',
+                    f'DEVICE NAME: J-Link rejected device {device!r}. Fix the net\'s device/MCU '
+                    'field (e.g. NRF5340_XXAA_APP for an nRF7002-DK).')
+        if klass == 'no_target_comms':
+            return ('red',
+                    f'NO TARGET COMMS: probe + target power OK (VTref={vt}) but SWD/JTAG connect '
+                    'failed. Check SWDIO/SWCLK wiring, nRST pull-up (not held low), SWD-vs-JTAG, '
+                    'and try a lower speed.')
+        return ('yellow',
+                f'UNCLEAR: connect returned class={klass}. See the J-Link section and connect '
+                'output above.')
+
+    return ('yellow', 'UNCLEAR — review the J-Link section above and rerun if needed.')
+
+
+def _diagnose_debug(box_ip: str, net: str, address: str, display_name: str) -> None:
+    """Debug-net (J-Link) branch of `lager diagnose`.
+
+    Fetches the instrument-agnostic host-side USB section plus the new
+    `/diagnose/jlink` endpoint (both on box_http_server, port 9000) in
+    parallel, renders them, and prints the J-Link classification."""
+    urls = {
+        'usb': f'http://{box_ip}:9000/diagnose/usb?address={address}',
+        'jlink': f'http://{box_ip}:9000/diagnose/jlink?net={net}',
+    }
+    results: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {pool.submit(_call, url): name for name, url in urls.items()}
+        for fut in as_completed(futures):
+            results[futures[fut]] = fut.result()
+
+    _print_section('USB (host-side)', results['usb'], _fmt_usb_lines)
+    _print_section('J-Link / debug probe', results['jlink'], _fmt_jlink_lines)
+
+    color, headline = _classify_jlink(results['usb'], results['jlink'])
+    click.echo()
+    click.echo(click.style(f'Classification: {headline}', fg=color, bold=True))
+
+
 def _print_section(title: str, data: dict, fmt_lines):
     click.echo()
     click.echo(click.style(f'== {title} ==', bold=True))
@@ -241,6 +426,12 @@ def diagnose(ctx, net, box, net_type):
     click.echo(click.style(f'lager diagnose — {display_name} → {net}', bold=True))
     click.echo(f'  NetType: {role}    address: {address}')
 
+    # Debug nets (J-Link / OpenOCD) are not USB-TMC — the pyvisa *IDN? probe
+    # below can't reach them. Route them to the J-Link-aware path instead.
+    if role == 'debug':
+        _diagnose_debug(resolved_box, net, address, display_name)
+        return
+
     # Fire the three endpoints in parallel.
     # Port mapping inside the box container:
     #   5000 — lager.python.service (legacy /cli-version, /status, /nets/list)
@@ -257,15 +448,7 @@ def diagnose(ctx, net, box, net_type):
         for fut in as_completed(futures):
             results[futures[fut]] = fut.result()
 
-    _print_section('USB (host-side)', results['usb'], lambda d: [
-        f'enumerated:   {d.get("enumerated")}',
-        f'sysfs:        {d.get("sysfs_path") or "—"}',
-        f'device:       {d.get("device_path") or "—"}',
-        f'usb-tmc class:{" yes" if d.get("is_usbtmc") else " no" if "is_usbtmc" in d else " —"}',
-        f'usbtmc kmod:  {"LOADED (problem)" if d.get("usbtmc_loaded") else "not loaded (good)"}',
-        f"lsof:         {', '.join(h.get('command', '?') + '(' + h.get('pid', '?') + ')' for h in (d.get('lsof') or [])) or 'no holders'}",
-        f'dmesg tail:   {d.get("dmesg_tail", "")[:300] or "(empty)"}',
-    ])
+    _print_section('USB (host-side)', results['usb'], _fmt_usb_lines)
 
     _print_section('VISA (instrument-side)', results['visa'], lambda d: [
         f'idn:         {d.get("idn") or "—"}',
