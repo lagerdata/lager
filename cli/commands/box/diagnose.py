@@ -336,9 +336,12 @@ def _classify_jlink(usb_info: dict, jlink_info: dict) -> tuple[str, str]:
         vt = _vtref_str(c)
         device = jlink_info.get('device') or '<device>'
         if klass == 'ok':
+            # JLinkExe doesn't emit a parseable VTref on every firmware/REPL
+            # path, so only surface it when we actually got a number.
+            vt_part = f', VTref={vt}' if vt != 'unknown' else ''
             return ('green',
-                    f'HEALTHY: J-Link connected to {device} (VTref={vt}, '
-                    f'{c.get("core") or "core identified"}).')
+                    f'HEALTHY: J-Link connected to {device} '
+                    f'({c.get("core") or "core identified"}{vt_part}).')
         if klass == 'no_target_power':
             vt_part = f'VTref={vt}' if vt != 'unknown' else 'J-Link reports target voltage too low'
             return ('red',
