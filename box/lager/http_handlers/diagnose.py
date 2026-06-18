@@ -525,7 +525,9 @@ def _compute_debug_slot(serial):
 
 
 _EMU_RE = re.compile(
-    r'Serial number:\s*(\w+).*?ProductName:\s*(.+?)\s*$', re.IGNORECASE
+    # Stop ProductName at the next comma so a trailing ", Nickname: <not set>"
+    # field (newer JLinkExe) doesn't get swallowed into the product string.
+    r'Serial number:\s*(\w+).*?ProductName:\s*([^,\r\n]+)', re.IGNORECASE
 )
 
 
@@ -570,7 +572,12 @@ def _serial_in_emu_list(serial, emu_list):
     return False
 
 
-_VTREF_RE = re.compile(r'VTref[=:]\s*([0-9]+\.?[0-9]*)\s*V', re.IGNORECASE)
+# VTref appears as "VTref=3.300V" on some firmwares and "VTarget = 3.300 V" on
+# others; tolerate either name and arbitrary spacing around the separator. Note
+# that a *failed* connect on this (non-interactive REPL) path typically prints
+# no number at all — just "Target voltage too low." — so the phrase-based
+# `no_target_power` signal below is what actually catches an unpowered target.
+_VTREF_RE = re.compile(r'V(?:Tref|Target)\s*[=:]\s*([0-9]+\.?[0-9]*)\s*V', re.IGNORECASE)
 _CORE_RE = re.compile(r'(Cortex-\S+)\s+identified', re.IGNORECASE)
 
 
@@ -580,7 +587,9 @@ def _parse_connect_output(text):
     Returns ``{vtref_mv, connect_ok, connect_error_class, core}`` where
     ``connect_error_class`` is one of ``ok``, ``no_target_power``,
     ``no_target_comms``, ``locked``, ``wrong_device``, ``other``. The signal
-    vocabulary matches the error text J-Link/the existing ``api.py`` produce.
+    strings are taken from observed JLinkExe output (e.g. an unpowered nRF7002-DK
+    prints "Target voltage too low." then "Could not connect to the target
+    device."), not guessed.
     """
     out = {'vtref_mv': None, 'connect_ok': False, 'connect_error_class': 'other', 'core': None}
     if not text:
@@ -606,8 +615,14 @@ def _parse_connect_output(text):
         'is locked', 'device is locked', 'idcode', 'access port protection',
         'approtect', 'read protection', 'readout protection', 'is protected',
     )
+    # "Target voltage too low" is JLinkExe's no-power message; a parsed VTref
+    # below ~0.3V means the same thing.
+    no_power_signs = ('target voltage too low', 'no target voltage', 'vtref too low')
+    # Match with and without the article ("could not connect to [the] target
+    # [device]") — real output says "the target device".
     comms_fail_signs = (
-        'cannot connect to target', 'could not connect to target',
+        'could not connect to the target', 'could not connect to target',
+        'cannot connect to target', 'could not connect to the cpu',
         'could not find core', 'could not find coresight',
         'communication timed out', 'failed to connect',
     )
@@ -616,13 +631,16 @@ def _parse_connect_output(text):
         'found swd-dp', 'identified',
     )
 
-    # Order matters — most specific failure first; VTref≈0 outranks a generic
-    # comms failure so "target unpowered" wins over "can't connect".
+    # Order matters — most specific failure first; no-power outranks a generic
+    # comms failure so "target unpowered" wins over "can't connect" (the
+    # unpowered output contains both).
     if any(s in low for s in wrong_dev_signs):
         out['connect_error_class'] = 'wrong_device'
     elif any(s in low for s in locked_signs):
         out['connect_error_class'] = 'locked'
-    elif out['vtref_mv'] is not None and out['vtref_mv'] < 300:
+    elif any(s in low for s in no_power_signs) or (
+        out['vtref_mv'] is not None and out['vtref_mv'] < 300
+    ):
         out['connect_error_class'] = 'no_target_power'
     elif any(s in low for s in comms_fail_signs):
         out['connect_error_class'] = 'no_target_comms'

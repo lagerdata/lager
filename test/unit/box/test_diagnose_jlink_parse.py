@@ -28,6 +28,18 @@ diag = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(diag)
 
 
+# Real JLinkExe output captured from PRD-1 (unpowered nRF7002-DK on a J-Link
+# ULTRA+). No "VTref=" number is printed on this REPL path — just the phrase.
+UNPOWERED_CONNECT = (
+    'Device "NRF5340_XXAA_APP" selected.\r\n\r\n\r\n'
+    'Connecting to target via SWD\r\n'
+    'Target voltage too low. Please check '
+    'https://kb.segger.com/J-Link_cannot_connect_to_the_CPU#Target_connection.\r\n'
+    'Error occurred: Could not connect to the target device.\r\n'
+    'For troubleshooting steps visit: https://kb.segger.com/J-Link_Troubleshooting\r\n'
+)
+
+
 class ParseEmuListTests(unittest.TestCase):
 
     def test_parses_multiple_probes(self):
@@ -39,6 +51,14 @@ class ParseEmuListTests(unittest.TestCase):
         self.assertEqual(len(probes), 2)
         self.assertEqual(probes[0], {'serial': '000504402175', 'product': 'J-Link Plus'})
         self.assertEqual(probes[1]['serial'], '51014439')
+
+    def test_trims_trailing_nickname_field(self):
+        # Newer JLinkExe appends ", Nickname: <not set>" — it must not leak into
+        # the product string (captured verbatim from PRD-1).
+        text = ("J-Link[0]: Connection: USB, Serial number: 504402175, "
+                "ProductName: J-Link ULTRA+, Nickname: <not set>")
+        probes = diag._parse_emu_list(text)
+        self.assertEqual(probes[0], {'serial': '504402175', 'product': 'J-Link ULTRA+'})
 
     def test_empty_and_none(self):
         self.assertEqual(diag._parse_emu_list(""), [])
@@ -89,15 +109,24 @@ class ParseConnectOutputTests(unittest.TestCase):
         self.assertEqual(out['vtref_mv'], 3300)
         self.assertEqual(out['core'], 'Cortex-M33')
 
-    def test_no_target_power_when_vtref_zero(self):
-        out = diag._parse_connect_output("VTref=0.000V\nCannot connect to target.")
+    def test_real_unpowered_dk_is_no_target_power(self):
+        # The captured PRD-1 unpowered output: "Target voltage too low" + "Could
+        # not connect to the target device". No-power must win over the comms line.
+        out = diag._parse_connect_output(UNPOWERED_CONNECT)
         self.assertFalse(out['connect_ok'])
         self.assertEqual(out['connect_error_class'], 'no_target_power')
-        self.assertEqual(out['vtref_mv'], 0)
+
+    def test_vtarget_alt_format_and_low_voltage(self):
+        # Some firmwares print "VTarget = 0.10 V" with spaces; <0.3V → no power.
+        out = diag._parse_connect_output("VTarget = 0.10 V\nCould not connect to the target device")
+        self.assertEqual(out['vtref_mv'], 100)
+        self.assertEqual(out['connect_error_class'], 'no_target_power')
 
     def test_no_target_comms_with_power_present(self):
+        # Powered (good VTref) but no core found → comms/wiring, not power.
         out = diag._parse_connect_output(
-            "VTref=3.300V\nCannot connect to target.\nCould not find core in Coresight setup"
+            "VTref=3.300V\nCould not connect to the target device.\n"
+            "Could not find core in Coresight setup"
         )
         self.assertEqual(out['connect_error_class'], 'no_target_comms')
 

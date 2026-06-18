@@ -256,6 +256,11 @@ def _fmt_jlink_lines(d: dict):
             f"connect:        ok={c.get('connect_ok')} class={c.get('connect_error_class')} "
             f"VTref={_vtref_str(c)} core={c.get('core') or '—'}"
         )
+        # When we couldn't classify the connect, show the raw JLinkExe text so
+        # an unrecognized failure is debuggable instead of a dead-end.
+        if c.get('connect_error_class') == 'other' and d.get('connect_output'):
+            raw = ' / '.join(s for s in str(d['connect_output']).splitlines() if s.strip())
+            lines.append(f"connect output: {raw[:400]}")
     if d.get('connect_error'):
         lines.append(f"connect error:  {str(d.get('connect_error'))[:200]}")
     return lines
@@ -335,9 +340,11 @@ def _classify_jlink(usb_info: dict, jlink_info: dict) -> tuple[str, str]:
                     f'HEALTHY: J-Link connected to {device} (VTref={vt}, '
                     f'{c.get("core") or "core identified"}).')
         if klass == 'no_target_power':
+            vt_part = f'VTref={vt}' if vt != 'unknown' else 'J-Link reports target voltage too low'
             return ('red',
-                    f'TARGET UNPOWERED: probe is fine but VTref={vt} — the target board has no '
-                    'power on the debug header. Check target power and the VTref pin.')
+                    f'TARGET UNPOWERED: probe is fine but {vt_part} — the target board has no '
+                    'power on the debug header (or VTref isn\'t wired). Check target power and '
+                    'the VTref pin.')
         if klass == 'locked':
             return ('red',
                     'TARGET LOCKED: debug access is blocked by readout/IDCODE/AP protection. '
