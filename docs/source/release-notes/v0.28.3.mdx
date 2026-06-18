@@ -1,0 +1,26 @@
+---
+title: "Version 0.28.3"
+description: "June 18, 2026"
+---
+
+## <u>Features</u>
+
+- **`lager diagnose` now works on J-Link debug nets.** Point it at a `debug` net — `lager diagnose <net> --box <BOX>` — and it walks the whole debug-probe stack and tells you exactly what's wrong and what to do about it: the probe isn't on USB (cable/power/hub), the J-Link software isn't installed on the Lager Box, the probe is held by another process or its firmware is wedged (power-cycle it), a debug server is wedged, the target board is unpowered, the target is locked by readout/IDCODE protection, the net's device/MCU name is wrong, or the probe is fine but can't reach the target over SWD/JTAG (wiring, reset, or speed). When a debug session is already running for the probe, diagnose reports from that session instead of interrupting it. OpenOCD/ST-Link probes get basic coverage (probe detection and debug-server state). Previously `lager diagnose` only covered USB-TMC instruments such as power supplies, electronic loads, and scopes.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.28.3
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.28.3/)
