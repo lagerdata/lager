@@ -564,10 +564,15 @@ def _serial_in_emu_list(serial, emu_list):
         # No serial parseable from the address (e.g. unprogrammed EEPROM): a
         # single visible probe is, by elimination, the one this net points at.
         return len(emu_list) >= 1
+    # _norm_serial already strips leading zeros, so an exact compare is both
+    # sufficient and safe. A substring/endswith match here would false-positive:
+    # serial "0" normalises to "" (matches every probe), and "1" would match any
+    # serial ending in 1.
     target = _norm_serial(serial)
+    if not target:
+        return False
     for p in emu_list:
-        es = _norm_serial(p.get('serial'))
-        if es and (es == target or es.endswith(target) or target.endswith(es)):
+        if _norm_serial(p.get('serial')) == target:
             return True
     return False
 
