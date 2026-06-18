@@ -1138,7 +1138,7 @@ class Keithley2281S(SupplyNet):
         """
         mode = self._safe_query(":ENTR:FUNC?", default="")
         up = mode.upper()
-        if "POW" in up or "SUPPLY" in up:
+        if "POW" in up or "SUPPLY" in up or up == "PSS":
             return
 
         # Check if output is enabled to avoid disrupting it
@@ -1160,7 +1160,7 @@ class Keithley2281S(SupplyNet):
                 self._write(f":ENTR:FUNC {tok}", check_errors=False)
                 time.sleep(0.1)  # Increased delay for mode switching
                 now = self._safe_query(":ENTR:FUNC?", default="")
-                if "POW" in now.upper() or "SUPPLY" in now.upper():
+                if "POW" in now.upper() or "SUPPLY" in now.upper() or "PSS" in now.upper():
                     # Clear any errors that may have accumulated during mode switching
                     try:
                         self._drain_error_queue(ignore_codes=(-104, -222))
