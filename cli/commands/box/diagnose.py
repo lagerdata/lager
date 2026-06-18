@@ -369,7 +369,7 @@ def _classify_jlink(usb_info: dict, jlink_info: dict) -> tuple[str, str]:
     return ('yellow', 'UNCLEAR — review the J-Link section above and rerun if needed.')
 
 
-def _diagnose_debug(box_ip: str, net: str, address: str, display_name: str) -> None:
+def _diagnose_debug(box_ip: str, net: str, address: str) -> None:
     """Debug-net (J-Link) branch of `lager diagnose`.
 
     Fetches the instrument-agnostic host-side USB section plus the new
@@ -439,7 +439,7 @@ def diagnose(ctx, net, box, net_type):
     # Debug nets (J-Link / OpenOCD) are not USB-TMC — the pyvisa *IDN? probe
     # below can't reach them. Route them to the J-Link-aware path instead.
     if role == 'debug':
-        _diagnose_debug(resolved_box, net, address, display_name)
+        _diagnose_debug(resolved_box, net, address)
         return
 
     # Fire the three endpoints in parallel.

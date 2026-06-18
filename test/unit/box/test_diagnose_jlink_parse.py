@@ -88,6 +88,17 @@ class SerialMatchTests(unittest.TestCase):
     def test_absent_serial(self):
         self.assertFalse(diag._serial_in_emu_list('999999', self.emus))
 
+    def test_no_substring_false_positive(self):
+        # Exact match only — a short serial must NOT match a longer one that
+        # merely ends with it (the old endswith logic false-positived here).
+        emus = [{'serial': '51014431', 'product': 'J-Link'}]
+        self.assertFalse(diag._serial_in_emu_list('1', emus))
+        self.assertFalse(diag._serial_in_emu_list('431', emus))
+
+    def test_zero_serial_does_not_match_everything(self):
+        # serial "0" normalises to "" — must NOT match every visible probe.
+        self.assertFalse(diag._serial_in_emu_list('0', self.emus))
+
     def test_no_emus_is_false(self):
         self.assertFalse(diag._serial_in_emu_list('51014439', []))
 
