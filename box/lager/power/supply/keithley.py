@@ -393,7 +393,8 @@ class Keithley2281S(SupplyNet):
 
         if enabled:
             # Use actual measurements when output is enabled
-            v = self._safe_query_no_mode(":MEAS:VOLT?", default=v_set)
+            v_raw = self._safe_query_no_mode(":MEAS:VOLT?", default=v_set)
+            v = self._parse_voltage_from_response(v_raw)
             i = self._safe_query_no_mode(":MEAS:CURR?", default=i_set)
             # Determine if in CV or CC mode by checking QIE register
             mode = self._determine_operating_mode_no_mode()
@@ -445,7 +446,8 @@ class Keithley2281S(SupplyNet):
 
         # Get measurements or use setpoints if disabled
         if enabled:
-            v = self._safe_query_no_mode(":MEAS:VOLT?", default=v_set)
+            v_raw = self._safe_query_no_mode(":MEAS:VOLT?", default=v_set)
+            v = self._parse_voltage_from_response(v_raw)
             i = self._safe_query_no_mode(":MEAS:CURR?", default=i_set)
             mode = self._determine_operating_mode_no_mode()
         else:
@@ -522,7 +524,8 @@ class Keithley2281S(SupplyNet):
         v_set = self._safe_float(self._safe_query_no_mode(":SOUR1:VOLT?", default="0.0"))
         i_set = self._safe_float(self._safe_query_no_mode(":SOUR1:CURR?", default="0.0"))
         if enabled:
-            v = self._safe_float(self._safe_query_no_mode(":MEAS:VOLT?", default=str(v_set)))
+            v_raw = self._safe_query_no_mode(":MEAS:VOLT?", default=str(v_set))
+            v = self._safe_float(self._parse_voltage_from_response(v_raw))
             i = self._safe_float(self._safe_query_no_mode(":MEAS:CURR?", default=str(i_set)))
             mode = self._determine_operating_mode_no_mode()
         else:
@@ -722,7 +725,8 @@ class Keithley2281S(SupplyNet):
             pass
 
     def _meas_v(self) -> str:
-        return self._safe_query(":MEAS:VOLT?", default=self._get_vset())
+        raw = self._safe_query(":MEAS:VOLT?", default=self._get_vset())
+        return self._parse_voltage_from_response(raw)
 
     def _meas_i(self) -> str:
         return self._safe_query(":MEAS:CURR?", default=self._get_iset())

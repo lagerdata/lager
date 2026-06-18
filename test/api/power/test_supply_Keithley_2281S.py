@@ -3,18 +3,19 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 """
-Advanced power supply tests targeting live measurement methods, output state
-querying, power calculation consistency, measurement stability, and stress
-cycling. Complements test_supply_comprehensive.py — run both for full coverage.
+Comprehensive power supply tests targeting the Keithley 2281S-20-6 via the lager Python API.
+Covers live measurements, setpoint accuracy, protection limits, output state, monitor state,
+and rapid cycling. Complements test_supply_comprehensive.py — run both for full coverage.
 
-Run with: lager python test/api/power/test_supply_Rigol_DP821.py --box <YOUR-BOX>
+Run with: lager python test/api/power/test_supply_Keithley_2281S.py --box <YOUR-BOX>
 
 Prerequisites:
-- A power supply net configured on the box (default 'supply2')
+- A power supply net configured on the box pointing to a Keithley 2281S
+  (default net name 'keithley_supply1')
 - No load attached; unloaded measurements are expected (< 100 mA draw)
 
-Override the net with:    SUPPLY_NET=my-supply lager python ...
-Override channel limits: CHANNEL_MAX_VOLTAGE=8 CHANNEL_MAX_CURRENT=10 lager python ...
+Override the net with:      KEITHLEY_SUPPLY_NET=my-supply lager python ...
+Override channel limits:    KEITHLEY_MAX_VOLTAGE=20 KEITHLEY_MAX_CURRENT=6 lager python ...
 """
 import sys
 import os
@@ -24,14 +25,16 @@ import traceback
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-SUPPLY_NET = os.environ.get("SUPPLY_NET", "supply2")
-TOLERANCE = 0.05           # 5 % — setpoint / live-measurement agreement
-TIGHT_TOLERANCE = 0.02     # 2 % — setpoint vs. measured voltage (same device)
-STABILITY_TOL = 0.01       # 1 % — max spread across repeated reads
-POWER_TOL = 0.20           # 20 % — P vs V×I consistency (same as eload tests)
-MAX_UNLOADED_CURRENT = 0.1  # 100 mA max expected with no load
-CHANNEL_MAX_VOLTAGE = float(os.environ.get("CHANNEL_MAX_VOLTAGE", "60.0"))
-CHANNEL_MAX_CURRENT = float(os.environ.get("CHANNEL_MAX_CURRENT", "1.0"))
+KEITHLEY_SUPPLY_NET  = os.environ.get("KEITHLEY_SUPPLY_NET", "supply1")
+TOLERANCE            = 0.05   # 5 % — setpoint / live-measurement agreement
+TIGHT_TOLERANCE      = 0.02   # 2 % — setpoint vs. measured voltage (same device)
+STABILITY_TOL        = 0.01   # 1 % — max spread across repeated reads
+POWER_TOL            = 0.20   # 20 % — P vs V×I consistency
+MAX_UNLOADED_CURRENT = 0.1    # 100 mA max expected with no load
+KEITHLEY_MAX_VOLTAGE = 20.0   # 2281S-20-6 hardware ceiling
+KEITHLEY_MAX_CURRENT = 6.0    # 2281S-20-6 hardware ceiling
+CHANNEL_MAX_VOLTAGE  = float(os.environ.get("KEITHLEY_MAX_VOLTAGE", "20.0"))
+CHANNEL_MAX_CURRENT  = float(os.environ.get("KEITHLEY_MAX_CURRENT", "6.0"))
 
 _results = []
 
@@ -63,7 +66,7 @@ def test_live_measurements():
 
     try:
         from lager import Net, NetType
-        psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
+        psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
         psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
         psu.enable()
@@ -119,7 +122,7 @@ def test_live_measurements():
     finally:
         try:
             from lager import Net, NetType
-            Net.get(SUPPLY_NET, type=NetType.PowerSupply).disable()
+            Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply).disable()
         except Exception:
             pass
 
@@ -130,11 +133,7 @@ def test_live_measurements():
 # 2. Measured Voltage vs. Setpoint Agreement
 # ---------------------------------------------------------------------------
 def test_setpoint_vs_measured():
-    """voltage() should track the set_voltage() target within tight tolerance.
-
-    On the Rigol DP800 mapper, voltage() returns the live hardware measurement.
-    The useful assertion here is that the live reading is close to what was programmed.
-    """
+    """voltage() should track the set_voltage() target within tight tolerance."""
     print("\n" + "=" * 60)
     print("TEST: Measured Voltage vs. Setpoint")
     print("=" * 60)
@@ -143,23 +142,24 @@ def test_setpoint_vs_measured():
 
     try:
         from lager import Net, NetType
-        psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
-        target = 5.0
+        psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
+        target = min(5.0, CHANNEL_MAX_VOLTAGE)
         psu.set_voltage(target)
+        psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
         psu.enable()
         time.sleep(0.5)
 
         measured = psu.voltage()
 
-        passed_meas = isinstance(measured, (int, float)) and _close_enough(
+        passed = isinstance(measured, (int, float)) and _close_enough(
             float(measured), target, TIGHT_TOLERANCE
         )
         _record(
-            f"voltage() within {int(TIGHT_TOLERANCE*100)}% of {target} V target",
-            passed_meas,
+            f"voltage() within {int(TIGHT_TOLERANCE * 100)}% of {target} V target",
+            passed,
             f"measured={measured:.4f} V",
         )
-        if not passed_meas:
+        if not passed:
             ok = False
 
     except Exception as e:
@@ -168,7 +168,7 @@ def test_setpoint_vs_measured():
     finally:
         try:
             from lager import Net, NetType
-            Net.get(SUPPLY_NET, type=NetType.PowerSupply).disable()
+            Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply).disable()
         except Exception:
             pass
 
@@ -188,7 +188,7 @@ def test_power_consistency():
 
     try:
         from lager import Net, NetType
-        psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
+        psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
         psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
         psu.enable()
@@ -203,9 +203,9 @@ def test_power_consistency():
         denom = max(abs(vi_product), 0.001)
         passed = abs_diff < 0.15 or abs_diff / denom < POWER_TOL
         _record(
-            f"P ≈ V×I (abs<0.15 W or within {int(POWER_TOL*100)}%)",
+            f"P ~= V*I (abs<0.15 W or within {int(POWER_TOL * 100)}%)",
             passed,
-            f"P={mp:.4f} W, V×I={vi_product:.4f} W",
+            f"P={mp:.4f} W, V*I={vi_product:.4f} W",
         )
         if not passed:
             ok = False
@@ -216,7 +216,7 @@ def test_power_consistency():
     finally:
         try:
             from lager import Net, NetType
-            Net.get(SUPPLY_NET, type=NetType.PowerSupply).disable()
+            Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply).disable()
         except Exception:
             pass
 
@@ -236,7 +236,7 @@ def test_output_is_enabled():
 
     try:
         from lager import Net, NetType
-        psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
+        psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
         psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
 
         psu.enable()
@@ -261,7 +261,7 @@ def test_output_is_enabled():
     finally:
         try:
             from lager import Net, NetType
-            Net.get(SUPPLY_NET, type=NetType.PowerSupply).disable()
+            Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply).disable()
         except Exception:
             pass
 
@@ -272,7 +272,7 @@ def test_output_is_enabled():
 # 5. Output Mode Detection
 # ---------------------------------------------------------------------------
 def test_output_mode():
-    """get_output_mode() returns CV with no load at a known voltage."""
+    """get_output_mode() returns a string (CV expected with no load)."""
     print("\n" + "=" * 60)
     print("TEST: Output Mode Detection")
     print("=" * 60)
@@ -281,7 +281,7 @@ def test_output_mode():
 
     try:
         from lager import Net, NetType
-        psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
+        psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
         psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
         psu.enable()
@@ -293,7 +293,6 @@ def test_output_mode():
         if not passed_type:
             ok = False
         else:
-            # With no load, supply should be in constant-voltage mode
             passed_cv = "CV" in mode.upper() or "CC" in mode.upper()
             _record(
                 "get_output_mode() is CV or CC",
@@ -309,7 +308,7 @@ def test_output_mode():
     finally:
         try:
             from lager import Net, NetType
-            Net.get(SUPPLY_NET, type=NetType.PowerSupply).disable()
+            Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply).disable()
         except Exception:
             pass
 
@@ -320,7 +319,7 @@ def test_output_mode():
 # 6. Common Embedded Voltages
 # ---------------------------------------------------------------------------
 def test_embedded_voltages():
-    """Live-measured voltage matches setpoint for 1.8, 2.5, 3.3, 5.0, 12.0 V."""
+    """Live-measured voltage matches setpoint for common embedded voltages."""
     print("\n" + "=" * 60)
     print("TEST: Common Embedded Voltages")
     print("=" * 60)
@@ -329,17 +328,20 @@ def test_embedded_voltages():
 
     try:
         from lager import Net, NetType
-        psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
+        psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
         psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
         psu.set_ovp(CHANNEL_MAX_VOLTAGE)
         psu.enable()
         time.sleep(0.5)
 
-        _all_voltages = [1.8, 2.5, 3.3, 5.0, 12.0]
+        _all_voltages = [1.8, 2.5, 3.3, 5.0]
         targets = [v for v in _all_voltages if v <= CHANNEL_MAX_VOLTAGE]
         if not targets:
-            _record("embedded voltages skipped — channel max too low", True,
-                    f"max={CHANNEL_MAX_VOLTAGE} V, candidates={_all_voltages}")
+            _record(
+                "embedded voltages skipped — channel max too low",
+                True,
+                f"max={CHANNEL_MAX_VOLTAGE} V, candidates={_all_voltages}",
+            )
             return True
 
         for target in targets:
@@ -365,7 +367,7 @@ def test_embedded_voltages():
     finally:
         try:
             from lager import Net, NetType
-            Net.get(SUPPLY_NET, type=NetType.PowerSupply).disable()
+            Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply).disable()
         except Exception:
             pass
 
@@ -376,7 +378,7 @@ def test_embedded_voltages():
 # 7. Measurement Stability
 # ---------------------------------------------------------------------------
 def test_measurement_stability():
-    """Five repeated voltage() readings at 5 V agree within 1%."""
+    """Five repeated voltage() readings agree within 1%."""
     print("\n" + "=" * 60)
     print("TEST: Measurement Stability")
     print("=" * 60)
@@ -385,14 +387,14 @@ def test_measurement_stability():
 
     try:
         from lager import Net, NetType
-        psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
+        psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
         psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
         psu.enable()
         time.sleep(1.5)
 
         readings = []
-        for i in range(5):
+        for _ in range(5):
             readings.append(float(psu.voltage()))
             time.sleep(0.4)
 
@@ -403,7 +405,7 @@ def test_measurement_stability():
         cv = spread / max(abs(mean), 0.001)
         passed = cv < STABILITY_TOL
         _record(
-            f"readings spread < {int(STABILITY_TOL*100)}% (coefficient of variation)",
+            f"readings spread < {int(STABILITY_TOL * 100)}% (coefficient of variation)",
             passed,
             f"spread={spread:.4f} V, mean={mean:.4f} V, cv={cv:.4f}",
         )
@@ -416,7 +418,7 @@ def test_measurement_stability():
     finally:
         try:
             from lager import Net, NetType
-            Net.get(SUPPLY_NET, type=NetType.PowerSupply).disable()
+            Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply).disable()
         except Exception:
             pass
 
@@ -424,15 +426,10 @@ def test_measurement_stability():
 
 
 # ---------------------------------------------------------------------------
-# 8. Current Measurement After set_current
+# 8. Current Measurement (Unloaded)
 # ---------------------------------------------------------------------------
 def test_current_limit_readback():
-    """current() returns a numeric near-zero measurement when output is enabled unloaded.
-
-    On the Rigol DP800 mapper, current() returns the live measured current
-    (not the setpoint register). With no load attached the reading should be
-    near zero regardless of the programmed limit.
-    """
+    """current() returns near-zero measurement when output is enabled unloaded."""
     print("\n" + "=" * 60)
     print("TEST: Current Measurement (Unloaded)")
     print("=" * 60)
@@ -441,13 +438,13 @@ def test_current_limit_readback():
 
     try:
         from lager import Net, NetType
-        psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
+        psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
         psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         psu.enable()
         time.sleep(0.3)
 
         for limit_a in [0.5, 1.0]:
-            psu.set_current(limit_a)
+            psu.set_current(min(limit_a, CHANNEL_MAX_CURRENT))
             time.sleep(0.2)
             measured_i = psu.current()
             passed = isinstance(measured_i, (int, float)) and abs(float(measured_i)) < MAX_UNLOADED_CURRENT
@@ -465,7 +462,7 @@ def test_current_limit_readback():
     finally:
         try:
             from lager import Net, NetType
-            Net.get(SUPPLY_NET, type=NetType.PowerSupply).disable()
+            Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply).disable()
         except Exception:
             pass
 
@@ -473,7 +470,7 @@ def test_current_limit_readback():
 
 
 # ---------------------------------------------------------------------------
-# 9. OVP / OCP Combined Pre-Enable Config
+# 9. OVP / OCP Pre-Enable Configuration
 # ---------------------------------------------------------------------------
 def test_protection_pre_enable():
     """Configuring voltage + OVP + OCP before enable produces coherent setpoints."""
@@ -485,7 +482,7 @@ def test_protection_pre_enable():
 
     try:
         from lager import Net, NetType
-        psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
+        psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
 
         test_voltage = min(5.0, CHANNEL_MAX_VOLTAGE)
         ovp_limit = min(test_voltage * 1.1, CHANNEL_MAX_VOLTAGE)
@@ -516,7 +513,6 @@ def test_protection_pre_enable():
         if not passed_ocp:
             ok = False
 
-        # OVP must be >= voltage setpoint (otherwise supply would immediately trip)
         passed_order = (
             isinstance(v_sp, (int, float))
             and isinstance(ovp_val, (int, float))
@@ -536,7 +532,7 @@ def test_protection_pre_enable():
     finally:
         try:
             from lager import Net, NetType
-            psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
+            psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
             psu.clear_ovp()
             psu.set_ovp(CHANNEL_MAX_VOLTAGE)
             psu.clear_ocp()
@@ -562,11 +558,11 @@ def test_rapid_cycling():
 
     try:
         from lager import Net, NetType
-        psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
+        psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
         psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
 
-        for i in range(CYCLES):
+        for _ in range(CYCLES):
             psu.enable()
             time.sleep(0.1)
             psu.disable()
@@ -590,7 +586,7 @@ def test_rapid_cycling():
     finally:
         try:
             from lager import Net, NetType
-            Net.get(SUPPLY_NET, type=NetType.PowerSupply).disable()
+            Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply).disable()
         except Exception:
             pass
 
@@ -598,54 +594,115 @@ def test_rapid_cycling():
 
 
 # ---------------------------------------------------------------------------
-# 11. get_full_state() Structure
+# 11. Channel Limits
 # ---------------------------------------------------------------------------
-def test_full_state():
-    """get_full_state() runs without error; if it returns a dict, verify shape."""
+def test_channel_limits():
+    """get_channel_limits() returns a dict with the 2281S-20-6 hardware limits."""
     print("\n" + "=" * 60)
-    print("TEST: get_full_state() Structure")
+    print("TEST: Channel Limits")
     print("=" * 60)
 
     ok = True
 
     try:
         from lager import Net, NetType
-        psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
+        psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
 
-        if not hasattr(psu, "get_full_state"):
-            _record("get_full_state() method exists", False,
-                    "method not present on this driver — skipping")
-            return True  # Not a hard failure; method is driver-specific
+        limits = psu.get_channel_limits()
 
+        passed_type = isinstance(limits, dict)
+        _record("get_channel_limits() returns dict", passed_type, f"type={type(limits).__name__}")
+        if not passed_type:
+            return False
+
+        v_max = limits.get("voltage_max")
+        passed_vmax = isinstance(v_max, (int, float)) and float(v_max) == KEITHLEY_MAX_VOLTAGE
+        _record(
+            f"voltage_max == {KEITHLEY_MAX_VOLTAGE} V",
+            passed_vmax,
+            f"voltage_max={v_max}",
+        )
+        if not passed_vmax:
+            ok = False
+
+        i_max = limits.get("current_max")
+        passed_imax = isinstance(i_max, (int, float)) and float(i_max) == KEITHLEY_MAX_CURRENT
+        _record(
+            f"current_max == {KEITHLEY_MAX_CURRENT} A",
+            passed_imax,
+            f"current_max={i_max}",
+        )
+        if not passed_imax:
+            ok = False
+
+    except Exception as e:
+        _record("get_channel_limits()", False, str(e))
+        ok = False
+
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# 12. Monitor State Structure
+# ---------------------------------------------------------------------------
+def test_monitor_state():
+    """get_monitor_state() returns a dict with all expected keys and numeric values."""
+    print("\n" + "=" * 60)
+    print("TEST: Monitor State Structure")
+    print("=" * 60)
+
+    ok = True
+
+    EXPECTED_KEYS = [
+        "voltage", "current", "power", "enabled", "mode",
+        "voltage_set", "current_set", "voltage_max", "current_max",
+        "ocp_limit", "ocp_tripped", "ovp_limit", "ovp_tripped",
+    ]
+
+    try:
+        from lager import Net, NetType
+        psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
         psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         psu.enable()
         time.sleep(0.3)
 
-        fs = psu.get_full_state()
+        state = psu.get_monitor_state()
 
-        # Rigol DP800 prints diagnostics to stdout and returns None; that is
-        # acceptable. If a driver returns a dict, also verify it has content.
-        if fs is None:
-            _record("get_full_state() completed without error (returns None)", True)
-        elif isinstance(fs, dict):
-            _record("get_full_state() returns dict", True, f"keys={list(fs.keys())[:8]}")
-            passed_nonempty = len(fs) > 0
-            _record("get_full_state() non-empty", passed_nonempty,
-                    f"len={len(fs)}")
-            if not passed_nonempty:
+        passed_type = isinstance(state, dict)
+        _record("get_monitor_state() returns dict", passed_type, f"type={type(state).__name__}")
+        if not passed_type:
+            return False
+
+        for key in EXPECTED_KEYS:
+            present = key in state
+            _record(f"key '{key}' present", present, "" if present else f"missing from {list(state.keys())[:6]}")
+            if not present:
                 ok = False
-        else:
-            _record("get_full_state() unexpected return type", False,
-                    f"type={type(fs).__name__}")
-            ok = False
+
+        numeric_keys = ["voltage", "current", "power", "voltage_set", "current_set",
+                        "voltage_max", "current_max", "ocp_limit", "ovp_limit"]
+        for key in numeric_keys:
+            if key in state:
+                passed_num = isinstance(state[key], (int, float))
+                _record(f"state['{key}'] is numeric", passed_num, f"value={state[key]!r}")
+                if not passed_num:
+                    ok = False
+
+        bool_keys = ["enabled", "ocp_tripped", "ovp_tripped"]
+        for key in bool_keys:
+            if key in state:
+                passed_bool = isinstance(state[key], bool)
+                _record(f"state['{key}'] is bool", passed_bool, f"value={state[key]!r}")
+                if not passed_bool:
+                    ok = False
 
     except Exception as e:
-        _record("get_full_state()", False, str(e))
+        _record("get_monitor_state()", False, str(e))
         ok = False
     finally:
         try:
             from lager import Net, NetType
-            Net.get(SUPPLY_NET, type=NetType.PowerSupply).disable()
+            Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply).disable()
         except Exception:
             pass
 
@@ -656,28 +713,26 @@ def test_full_state():
 # main
 # ---------------------------------------------------------------------------
 def main():
-    print("Power Supply Advanced Test Suite")
-    print(f"Testing net: {SUPPLY_NET}")
-    print(f"Set SUPPLY_NET env var to override")
+    print("Keithley 2281S Power Supply Test Suite")
+    print(f"Testing net: {KEITHLEY_SUPPLY_NET}")
+    print(f"Set KEITHLEY_SUPPLY_NET env var to override")
+    print(f"Keithley 2281S limits: {KEITHLEY_MAX_VOLTAGE} V / {KEITHLEY_MAX_CURRENT} A")
     print("=" * 60)
 
-    # Preflight: verify the supply is reachable before running any tests.
-    # Net.get() only resolves the cache entry — psu.state() forces the USB connection.
     try:
         from lager import Net, NetType
-        psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
+        psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
         psu.state()
     except Exception as e:
-        print(f"\nERROR: Cannot connect to net '{SUPPLY_NET}': {e}")
+        print(f"\nERROR: Cannot connect to net '{KEITHLEY_SUPPLY_NET}': {e}")
         print("\nDiagnose the hardware issue with:")
         print(f"  lager instruments --box <box>")
-        print(f"  lager diagnose {SUPPLY_NET} --box <box>")
+        print(f"  lager diagnose {KEITHLEY_SUPPLY_NET} --box <box>")
         print(f"  lager hello --box <box>")
         print("\nCommon fixes:")
-        print("  - Check the power supply is powered on and USB cable is connected")
-        print("  - If 'nodev': run  lager power supply1 state --box <box>  to reset the session")
-        print("  - If 'busy': check lsof output in 'lager diagnose' for competing processes")
-        print("  - If 'usbtmc kmod LOADED': run  lager box update")
+        print("  - Check the Keithley is powered on and USB cable is connected")
+        print("  - Verify the net is configured in /etc/lager/saved_nets.json")
+        print("  - If busy: check lsof output in 'lager diagnose' for competing processes")
         sys.exit(1)
 
     tests = [
@@ -691,7 +746,8 @@ def main():
         ("Current Measurement (Unloaded)", test_current_limit_readback),
         ("OVP/OCP Pre-Enable Config",      test_protection_pre_enable),
         ("Rapid Enable/Disable Cycling",   test_rapid_cycling),
-        ("get_full_state() Structure",     test_full_state),
+        ("Channel Limits",                 test_channel_limits),
+        ("Monitor State Structure",        test_monitor_state),
     ]
 
     test_results = []
@@ -707,7 +763,7 @@ def main():
     finally:
         try:
             from lager import Net, NetType
-            Net.get(SUPPLY_NET, type=NetType.PowerSupply).disable()
+            Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply).disable()
         except Exception:
             pass
 

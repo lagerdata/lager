@@ -18,7 +18,7 @@ jobs:
   hardware-tests:
     name: Run hardware tests on lager box
     runs-on: [self-hosted, lager-hardware]
-    timeout-minutes: 20
+    timeout-minutes: 40
 
     env:
       LAGER_BOX_NAME: ${{ inputs.box_name || secrets.LAGER_BOX_NAME }}
@@ -70,7 +70,7 @@ jobs:
         continue-on-error: true
         timeout-minutes: 8
         env:
-          SUPPLY_NET: ${{ vars.SUPPLY_NET || 'supply1' }}
+          SUPPLY_NET: ${{ vars.SUPPLY_NET || 'supply2' }}
           CHANNEL_MAX_VOLTAGE: ${{ vars.CHANNEL_MAX_VOLTAGE || '60.0' }}
           CHANNEL_MAX_CURRENT: ${{ vars.CHANNEL_MAX_CURRENT || '1.0' }}
         run: |
@@ -105,16 +105,44 @@ jobs:
             --box "$LAGER_BOX_NAME"
         shell: bash
 
+      - name: Test Keithley 2281S power supply
+        id: keithley-supply-test
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          KEITHLEY_SUPPLY_NET: ${{ vars.KEITHLEY_SUPPLY_NET || 'supply1' }}
+          KEITHLEY_MAX_VOLTAGE: ${{ vars.KEITHLEY_MAX_VOLTAGE || '20.0' }}
+          KEITHLEY_MAX_CURRENT: ${{ vars.KEITHLEY_MAX_CURRENT || '6.0' }}
+        run: |
+          lager python test/api/power/test_supply_Keithley_2281S.py \
+            --box "$LAGER_BOX_NAME"
+        shell: bash
+
+      - name: Test Keithley 2281S battery simulator
+        id: keithley-battery-test
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          KEITHLEY_BATTERY_NET: ${{ vars.KEITHLEY_BATTERY_NET || 'battery1' }}
+        run: |
+          lager python test/api/power/test_battery_Keithley_2281S.py \
+            --box "$LAGER_BOX_NAME"
+        shell: bash
+
       - name: Fail job if any test failed
         if: >
           steps.rigol-test.outcome == 'failure' ||
           steps.labjack-test.outcome == 'failure' ||
           steps.unit-test.outcome == 'failure' ||
-          steps.acroname-test.outcome == 'failure'
+          steps.acroname-test.outcome == 'failure' ||
+          steps.keithley-supply-test.outcome == 'failure' ||
+          steps.keithley-battery-test.outcome == 'failure'
         run: |
           echo "One or more hardware tests failed:"
-          echo "  rigol-test:    ${{ steps.rigol-test.outcome }}"
-          echo "  labjack-test:  ${{ steps.labjack-test.outcome }}"
-          echo "  acroname-test: ${{ steps.acroname-test.outcome }}"
+          echo "  rigol-test:           ${{ steps.rigol-test.outcome }}"
+          echo "  labjack-test:         ${{ steps.labjack-test.outcome }}"
+          echo "  acroname-test:        ${{ steps.acroname-test.outcome }}"
+          echo "  keithley-supply-test: ${{ steps.keithley-supply-test.outcome }}"
+          echo "  keithley-battery-test:${{ steps.keithley-battery-test.outcome }}"
           exit 1
         shell: bash
