@@ -2,6 +2,13 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.28.3] - 2026-06-18
+
+`lager diagnose` now covers debug nets. Pointed at a J-Link / debug net it localizes the fault across the whole probe stack and prints the specific fix, instead of dead-ending at "only covers USB-TMC instruments today".
+
+### Added
+- **`lager diagnose <debug-net>` diagnoses J-Link probes.** For a `debug` net it runs J-Link-aware checks via a new box endpoint and classifies the fault: probe not enumerated on USB, J-Link software missing on the box, probe claimed by another process or firmware-wedged, a wedged gdbserver, target unpowered (J-Link reports target voltage too low), target locked (readout/IDCODE/AP protection), wrong device/MCU name on the net, or no SWD/JTAG comms to a powered target — each with the concrete next action. When a debug session (gdbserver) is already running for the probe, diagnose reports from its log instead of disturbing the live session. OpenOCD/ST-Link debug nets get basic coverage (probe enumeration + gdbserver state). The USB-TMC path (power supplies, DMMs, scopes) is unchanged.
+
 ## [0.28.2] - 2026-06-17
 
 `lager devenv` can now remember your container setup, and memory reads on DA1469x chips are fixed.
