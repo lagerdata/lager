@@ -722,6 +722,19 @@ def main():
     try:
         from lager import Net, NetType
         psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
+    except Exception as e:
+        print(f"\nERROR: Failed to load net '{KEITHLEY_SUPPLY_NET}': {e}")
+        print("Fix: check the net's instrument type in saved_nets.json (e.g. 'Keithley_2281S').")
+        print(f"  lager nets list --box <box>")
+        print(f"  lager nets tui --box <box>")
+        sys.exit(1)
+
+    if psu is None:
+        print(f"\nSKIP: Net '{KEITHLEY_SUPPLY_NET}' not found in net configuration.")
+        print("Skipping all tests for this device.")
+        sys.exit(0)
+
+    try:
         psu.state()
     except Exception as e:
         print(f"\nSKIP: Cannot connect to net '{KEITHLEY_SUPPLY_NET}' — device not reachable: {e}")

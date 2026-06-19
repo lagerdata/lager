@@ -439,8 +439,9 @@ def main():
         if GPIO_NETS:
             Net.get(GPIO_NETS[0], type=NetType.GPIO).input()
     except Exception as e:
-        print(f"\nERROR: Cannot connect to USB-202: {e}")
-        sys.exit(1)
+        print(f"\nSKIP: Cannot connect to USB-202 — device not reachable: {e}")
+        print("\nSkipping all tests for this device.")
+        sys.exit(0)
 
     tests = [
         ("ADC Basic",            test_adc_basic),

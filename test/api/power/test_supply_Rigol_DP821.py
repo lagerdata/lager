@@ -662,10 +662,24 @@ def main():
     print("=" * 60)
 
     # Preflight: verify the supply is reachable before running any tests.
-    # Net.get() only resolves the cache entry — psu.state() forces the USB connection.
+    # Split into two blocks: Net.get() failures are config errors (exit 1);
+    # state() failures are connectivity errors (exit 0 = skip).
     try:
         from lager import Net, NetType
         psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
+    except Exception as e:
+        print(f"\nERROR: Failed to load net '{SUPPLY_NET}': {e}")
+        print("Fix: check the net's instrument type in saved_nets.json (e.g. 'Rigol_DP821').")
+        print(f"  lager nets list --box <box>")
+        print(f"  lager nets tui --box <box>")
+        sys.exit(1)
+
+    if psu is None:
+        print(f"\nSKIP: Net '{SUPPLY_NET}' not found in net configuration.")
+        print("Skipping all tests for this device.")
+        sys.exit(0)
+
+    try:
         psu.state()
     except Exception as e:
         print(f"\nSKIP: Cannot connect to net '{SUPPLY_NET}' — device not reachable: {e}")

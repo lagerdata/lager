@@ -799,6 +799,19 @@ def main():
     try:
         from lager import Net, NetType
         batt = Net.get(KEITHLEY_BATTERY_NET, type=NetType.Battery)
+    except Exception as e:
+        print(f"\nERROR: Failed to load net '{KEITHLEY_BATTERY_NET}': {e}")
+        print("Fix: check the net's instrument type in saved_nets.json (e.g. 'Keithley_2281S').")
+        print(f"  lager nets list --box <box>")
+        print(f"  lager nets tui --box <box>")
+        sys.exit(1)
+
+    if batt is None:
+        print(f"\nSKIP: Net '{KEITHLEY_BATTERY_NET}' not found in net configuration.")
+        print("Skipping all tests for this device.")
+        sys.exit(0)
+
+    try:
         batt.print_state()
     except Exception as e:
         print(f"\nSKIP: Cannot connect to net '{KEITHLEY_BATTERY_NET}' — device not reachable: {e}")
