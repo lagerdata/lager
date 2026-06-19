@@ -28,6 +28,12 @@ import time
 # device fully de-enumerates before it is re-powered.
 _HUB_SETTLE_SECONDS = 1.0
 
+# How long to wait AFTER re-enabling before returning, so the downstream device
+# has time to re-enumerate on the USB bus. A J-Link takes ~2-3s to reappear; if
+# we returned immediately a caller that re-checks probe presence right away would
+# still see it absent and wrongly conclude the power-cycle failed.
+_HUB_REENUM_SECONDS = 4.0
+
 
 def _find_local_net(name: str) -> dict | None:
     """Return the raw saved-net dict for *name*, or None.
@@ -157,6 +163,10 @@ def power_cycle_hub(hub: str) -> str:
         dispatcher.disable(hub)
         time.sleep(_HUB_SETTLE_SECONDS)
         dispatcher.enable(hub)
+        # Wait for the downstream device to re-enumerate before returning, so a
+        # caller that re-checks probe presence immediately sees the recovered
+        # device rather than a still-absent one.
+        time.sleep(_HUB_REENUM_SECONDS)
     except (KeyError, FileNotFoundError, RuntimeError) as exc:
         return json.dumps({"error": f"Cannot power-cycle '{hub}': {exc}"})
     except Exception as exc:  # hub/library errors surface as data, not a crash
@@ -166,6 +176,7 @@ def power_cycle_hub(hub: str) -> str:
         "hub": hub,
         "actions": ["disable", "enable"],
         "settled_ms": int(_HUB_SETTLE_SECONDS * 1000),
+        "reenum_wait_ms": int(_HUB_REENUM_SECONDS * 1000),
         "ok": True,
     })
 

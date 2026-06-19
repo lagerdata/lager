@@ -127,10 +127,12 @@ class TestPowerCycleHub:
 
             result = json.loads(control.power_cycle_hub("usb0"))
         assert manager.mock_calls == [call.disable("usb0"), call.enable("usb0")]
-        mock_sleep.assert_called_once()
+        # Two sleeps: de-enumerate settle (before enable) + re-enumerate wait (after).
+        assert mock_sleep.call_count == 2
         assert result["ok"] is True
         assert result["actions"] == ["disable", "enable"]
         assert result["hub"] == "usb0"
+        assert result["reenum_wait_ms"] > 0
 
     def test_unknown_hub_returns_error(self):
         with patch(
