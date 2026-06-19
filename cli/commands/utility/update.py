@@ -1523,6 +1523,42 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         )
         log_status('OK', 'green')
 
+    # BuildKit preflight. box.Dockerfile uses a `# syntax=` directive and
+    # `RUN --mount=type=cache` cache mounts that keep the cargo (defmt-print)
+    # compile and pip wheel work warm across rebuilds — turning a from-scratch
+    # rebuild from ~20 min into a few minutes. These require BuildKit: Docker
+    # >= 23 enables it by default and 18.09+ honors DOCKER_BUILDKIT=1, while a
+    # legacy builder errors on `--mount`. Probe once and fail fast with an
+    # actionable message rather than wasting a long build that dies on a
+    # confusing parse error minutes in.
+    def _docker_supports_buildkit():
+        probe = run_ssh_command_with_output(
+            "docker buildx version >/dev/null 2>&1 && echo BUILDX || "
+            "docker version --format '{{.Server.Version}}' 2>/dev/null",
+            timeout_secs=20,
+        )
+        out = (probe.stdout or '').strip()
+        if 'BUILDX' in out:
+            return True, out
+        try:
+            parts = out.split('-')[0].split('.')
+            ver = (int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
+            return ver >= (18, 9), out
+        except (ValueError, IndexError):
+            return False, out
+
+    buildkit_ok, docker_ver = _docker_supports_buildkit()
+    if not buildkit_ok:
+        if progress:
+            progress.finish(success=False)
+        log_error(
+            "Error: this box's Docker does not support BuildKit, which the box "
+            "image now requires (RUN --mount cache mounts). Detected: "
+            f"{docker_ver or 'unknown'}. Upgrade Docker to >= 23 (or install the "
+            "docker-buildx-plugin) on the box, then re-run `lager update`."
+        )
+        ctx.exit(1)
+
     # Step 9: Rebuild Docker container (the slow part)
     if progress:
         progress.update("Building container...")
@@ -1536,7 +1572,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     ssh_cmd.extend(_ssh_mux_opts)
     ssh_cmd.extend([ssh_host,
          'cd ~/box/lager && '
-         'docker build -f docker/box.Dockerfile -t lager .'])
+         'DOCKER_BUILDKIT=1 docker build -f docker/box.Dockerfile -t lager .'])
 
     build_output_lines = []
     if verbose:

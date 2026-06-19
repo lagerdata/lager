@@ -88,7 +88,11 @@ if [ -n "${LAGER_SKIP_BUILD:-}" ]; then
 else
     echo "[1/1] Building Lager Box container..."
     cd "${SCRIPT_DIR}/lager"
-    docker build -f docker/box.Dockerfile -t lager .
+    # box.Dockerfile uses `# syntax=` + `RUN --mount=type=cache` (build cache for
+    # the cargo/pip layers), which require BuildKit. Docker >= 23 enables it by
+    # default; force it on so this path also works on 18.09–22 boxes and never
+    # falls back to the legacy builder (which errors on `--mount`).
+    DOCKER_BUILDKIT=1 docker build -f docker/box.Dockerfile -t lager .
     echo "Lager Box container built successfully!"
 fi
 echo ""
