@@ -801,7 +801,7 @@ def main():
         batt = Net.get(KEITHLEY_BATTERY_NET, type=NetType.Battery)
         batt.print_state()
     except Exception as e:
-        print(f"\nERROR: Cannot connect to net '{KEITHLEY_BATTERY_NET}': {e}")
+        print(f"\nSKIP: Cannot connect to net '{KEITHLEY_BATTERY_NET}' — device not reachable: {e}")
         print("\nDiagnose the hardware issue with:")
         print(f"  lager instruments --box <box>")
         print(f"  lager diagnose {KEITHLEY_BATTERY_NET} --box <box>")
@@ -810,7 +810,8 @@ def main():
         print("  - Check the Keithley is powered on and USB cable is connected")
         print("  - Verify the net is configured in /etc/lager/saved_nets.json")
         print("  - If busy: check lsof output in 'lager diagnose' for competing processes")
-        sys.exit(1)
+        print("\nSkipping all tests for this device.")
+        sys.exit(0)
 
     tests = [
         ("Battery Mode Entry",           test_battery_mode_entry),

@@ -65,14 +65,27 @@ jobs:
         run: lager update --check --box "$LAGER_BOX_NAME"
         shell: bash
 
-      - name: Test Rigol DP821 power supply
-        id: rigol-test
+      - name: Test Rigol DP821 CH1 (60V / 1A)
+        id: rigol-ch1-test
         continue-on-error: true
         timeout-minutes: 8
         env:
-          SUPPLY_NET: ${{ vars.SUPPLY_NET || 'supply2' }}
-          CHANNEL_MAX_VOLTAGE: ${{ vars.CHANNEL_MAX_VOLTAGE || '60.0' }}
-          CHANNEL_MAX_CURRENT: ${{ vars.CHANNEL_MAX_CURRENT || '1.0' }}
+          SUPPLY_NET: ${{ vars.RIGOL_CH1_NET || 'rigol1' }}
+          CHANNEL_MAX_VOLTAGE: ${{ vars.RIGOL_CH1_MAX_VOLTAGE || '60.0' }}
+          CHANNEL_MAX_CURRENT: ${{ vars.RIGOL_CH1_MAX_CURRENT || '1.0' }}
+        run: |
+          lager python test/api/power/test_supply_Rigol_DP821.py \
+            --box "$LAGER_BOX_NAME"
+        shell: bash
+
+      - name: Test Rigol DP821 CH2 (8V / 10A)
+        id: rigol-ch2-test
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          SUPPLY_NET: ${{ vars.RIGOL_CH2_NET || 'rigol2' }}
+          CHANNEL_MAX_VOLTAGE: ${{ vars.RIGOL_CH2_MAX_VOLTAGE || '8.0' }}
+          CHANNEL_MAX_CURRENT: ${{ vars.RIGOL_CH2_MAX_CURRENT || '10.0' }}
         run: |
           lager python test/api/power/test_supply_Rigol_DP821.py \
             --box "$LAGER_BOX_NAME"
@@ -110,7 +123,7 @@ jobs:
         continue-on-error: true
         timeout-minutes: 8
         env:
-          KEITHLEY_SUPPLY_NET: ${{ vars.KEITHLEY_SUPPLY_NET || 'supply1' }}
+          KEITHLEY_SUPPLY_NET: ${{ vars.KEITHLEY_SUPPLY_NET || 'keithley1' }}
           KEITHLEY_MAX_VOLTAGE: ${{ vars.KEITHLEY_MAX_VOLTAGE || '20.0' }}
           KEITHLEY_MAX_CURRENT: ${{ vars.KEITHLEY_MAX_CURRENT || '6.0' }}
         run: |
@@ -150,7 +163,8 @@ jobs:
 
       - name: Fail job if any test failed
         if: >
-          steps.rigol-test.outcome == 'failure' ||
+          steps.rigol-ch1-test.outcome == 'failure' ||
+          steps.rigol-ch2-test.outcome == 'failure' ||
           steps.labjack-test.outcome == 'failure' ||
           steps.unit-test.outcome == 'failure' ||
           steps.acroname-test.outcome == 'failure' ||
@@ -159,7 +173,8 @@ jobs:
           steps.usb202-test.outcome == 'failure'
         run: |
           echo "One or more hardware tests failed:"
-          echo "  rigol-test:           ${{ steps.rigol-test.outcome }}"
+          echo "  rigol-ch1-test:       ${{ steps.rigol-ch1-test.outcome }}"
+          echo "  rigol-ch2-test:       ${{ steps.rigol-ch2-test.outcome }}"
           echo "  labjack-test:         ${{ steps.labjack-test.outcome }}"
           echo "  acroname-test:        ${{ steps.acroname-test.outcome }}"
           echo "  keithley-supply-test: ${{ steps.keithley-supply-test.outcome }}"

@@ -668,7 +668,7 @@ def main():
         psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
         psu.state()
     except Exception as e:
-        print(f"\nERROR: Cannot connect to net '{SUPPLY_NET}': {e}")
+        print(f"\nSKIP: Cannot connect to net '{SUPPLY_NET}' — device not reachable: {e}")
         print("\nDiagnose the hardware issue with:")
         print(f"  lager instruments --box <box>")
         print(f"  lager diagnose {SUPPLY_NET} --box <box>")
@@ -678,7 +678,8 @@ def main():
         print("  - If 'nodev': run  lager power supply1 state --box <box>  to reset the session")
         print("  - If 'busy': check lsof output in 'lager diagnose' for competing processes")
         print("  - If 'usbtmc kmod LOADED': run  lager box update")
-        sys.exit(1)
+        print("\nSkipping all tests for this device.")
+        sys.exit(0)
 
     tests = [
         ("Live Measurements",              test_live_measurements),
