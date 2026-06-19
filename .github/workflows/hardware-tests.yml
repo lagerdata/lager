@@ -129,6 +129,25 @@ jobs:
             --box "$LAGER_BOX_NAME"
         shell: bash
 
+      - name: Test MCC USB-202 (ADC / DAC / GPIO)
+        id: usb202-test
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          ADC_NETS: ${{ vars.USB202_ADC_NETS || 'adc15,adc16,adc17,adc18,adc19,adc20,adc21,adc22' }}
+          DAC_NETS: ${{ vars.USB202_DAC_NETS || 'dac3,dac4' }}
+          GPIO_NETS: ${{ vars.USB202_GPIO_NETS || 'gpio24,gpio25,gpio26,gpio27,gpio28,gpio29,gpio30,gpio31' }}
+          SUPPLY_NET: ${{ vars.USB202_SUPPLY_NET || '' }}
+          SUPPLY_VOLTAGE: ${{ vars.USB202_SUPPLY_VOLTAGE || '3.3' }}
+          SUPPLY_ADC_NET: ${{ vars.USB202_SUPPLY_ADC_NET || '' }}
+          LABJACK_ADC_NET: ${{ vars.USB202_LABJACK_ADC_NET || '' }}
+          GPIO_LOOPBACK_OUT: ${{ vars.USB202_GPIO_LOOPBACK_OUT || '' }}
+          GPIO_LOOPBACK_IN: ${{ vars.USB202_GPIO_LOOPBACK_IN || '' }}
+        run: |
+          lager python test/api/io/test_usb202.py \
+            --box "$LAGER_BOX_NAME"
+        shell: bash
+
       - name: Fail job if any test failed
         if: >
           steps.rigol-test.outcome == 'failure' ||
@@ -136,7 +155,8 @@ jobs:
           steps.unit-test.outcome == 'failure' ||
           steps.acroname-test.outcome == 'failure' ||
           steps.keithley-supply-test.outcome == 'failure' ||
-          steps.keithley-battery-test.outcome == 'failure'
+          steps.keithley-battery-test.outcome == 'failure' ||
+          steps.usb202-test.outcome == 'failure'
         run: |
           echo "One or more hardware tests failed:"
           echo "  rigol-test:           ${{ steps.rigol-test.outcome }}"
@@ -144,5 +164,6 @@ jobs:
           echo "  acroname-test:        ${{ steps.acroname-test.outcome }}"
           echo "  keithley-supply-test: ${{ steps.keithley-supply-test.outcome }}"
           echo "  keithley-battery-test:${{ steps.keithley-battery-test.outcome }}"
+          echo "  usb202-test:          ${{ steps.usb202-test.outcome }}"
           exit 1
         shell: bash
