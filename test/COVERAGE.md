@@ -49,9 +49,10 @@ This document tracks what test coverage exists across all Lager features and the
 | Category | Device | Python API | Bash Integration | MCP |
 |----------|--------|:----------:|:----------------:|:---:|
 | **Power Supply** | Rigol DP821 | 2 files | `supply.sh` | Yes |
+| **Power Supply** | Keithley 2281S | 2 files | — | Yes |
 | **Power Supply** | Keysight E36xxx | — | `keysight_supply.sh` | — |
 | **Power Supply** | Multi-channel (generic) | — | `multichannel_supply.sh` | — |
-| **Battery Simulator** | Keithley 2281S | 1 file | `battery.sh` | Yes |
+| **Battery Simulator** | Keithley 2281S | 2 files | `battery.sh` | Yes |
 | **Solar Simulator** | EA PSB series | 1 file | `solar.sh` | Yes |
 | **Electronic Load** | Rigol DL3021 | 1 file | `eload.sh` | Yes |
 | **I2C** | Aardvark I2C/SPI adapter | 2 files | `i2c_aardvark.sh` | Yes |
@@ -104,7 +105,7 @@ This document tracks what test coverage exists across all Lager features and the
 ## Coverage Strengths
 
 - **Communication protocols**: I2C and SPI have 18+ test files across three hardware backends (Aardvark, LabJack, FT232H) with full 3-suite coverage.
-- **Power management**: Supply, Battery, Solar, and ELoad all have full 3-suite coverage with tolerance checks, boundary tests, and safety teardown. Power supply has an additional Rigol DP821-specific suite (`test_supply_Rigol_DP821.py`) covering live measurements, output modes, voltage sweeps across embedded rail voltages, measurement stability, and per-channel OVP/OCP state management.
+- **Power management**: Supply, Battery, Solar, and ELoad all have full 3-suite coverage with tolerance checks, boundary tests, and safety teardown. Power supply has device-specific suites for the Rigol DP821 (`test_supply_Rigol_DP821.py`: live measurements, output modes, voltage sweeps, measurement stability, per-channel OVP/OCP) and the Keithley 2281S (`test_supply_Keithley_2281S.py`: setpoint accuracy, power consistency, embedded voltages, protection limits, monitor state; `test_battery_Keithley_2281S.py`: mode switching, SOC/VOC/capacity/ESR parameters, terminal voltage, current/ESR measurements, protection lifecycle).
 - **I/O domain**: 18 Python API tests covering ADC, DAC, GPIO, and PWM with real value assertions and safety teardown. `test_LabJack_T7.py` is a comprehensive 11-group suite with env var configuration, preflight check, DAC boundary enforcement, stability analysis, optional loopback, and rapid stress testing. 3 FT232H/Aardvark API tests are gold standard with 100+ assertions each.
 - **MCP server**: 384 unit tests (mocked, no hardware) plus 64+ integration tests covering 165+ tools across 25 unit and 11 integration test files.
 
@@ -112,11 +113,11 @@ This document tracks what test coverage exists across all Lager features and the
 
 ```
 test/
-├── api/                  # Python API tests (77 files, run on box via `lager python`)
+├── api/                  # Python API tests (79 files, run on box via `lager python`)
 │   ├── communication/    # 28 files: I2C, SPI, UART, BLE, BluFi, WiFi, debug
 │   ├── io/               # 17 files: ADC, DAC, GPIO, PWM, pin conflict, USB-202
 │   ├── peripherals/      # 9 files: scope, arm, webcam, rotation, actuate
-│   ├── power/            # 5 files: supply (2 files), battery, solar, eload
+│   ├── power/            # 7 files: supply (3 files), battery (2 files), solar, eload
 │   ├── sensors/          # 9 files: thermocouple, watt, energy, joulescope, PPK2
 │   ├── usb/              # 7 files: USB hub enable/disable/toggle/stress, Acroname
 │   └── utility/          # 2 files: binaries, net listing
@@ -146,12 +147,14 @@ test/
 
 ### Python API Tests (`test/api/`)
 
-#### Power (5 files)
+#### Power (7 files)
 
 | File | What it tests |
 |------|---------------|
 | `test_supply_comprehensive.py` | Voltage/current set, readback, enable/disable, OVP/OCP, limits |
 | `test_supply_Rigol_DP821.py` | Live measurements, output mode, voltage sweep across embedded rail voltages (channel-filtered), measurement stability, OVP/OCP state management, rapid cycling; channel limits configurable via `CHANNEL_MAX_VOLTAGE` / `CHANNEL_MAX_CURRENT` env vars |
+| `test_supply_Keithley_2281S.py` | Keithley 2281S as power supply: live measurements, setpoint vs. measured accuracy, power consistency, output state, output mode, embedded voltages, measurement stability, current limit readback, protection limits, rapid cycling, channel limits, monitor state |
+| `test_battery_Keithley_2281S.py` | Keithley 2281S as battery simulator: mode entry, static/dynamic mode, SOC/VOC/voltage-full-empty/capacity/ESR/battery-model parameters, enable/disable, terminal voltage, current/ESR measurement, protection limits+clearing, monitor state, print_state, rapid cycling |
 | `test_battery_comprehensive.py` | SOC, VOC, capacity, mode, enable/disable, OVP/OCP, clear |
 | `test_eload_comprehensive.py` | CC, CV, CR, CP modes, enable/disable, state verification |
 | `test_solar_comprehensive.py` | Set, stop, irradiance, resistance, temperature, VOC, MPP |
@@ -209,7 +212,7 @@ test/
 | `test_pin_conflict.py` | Pin conflict detection |
 | `test_pwm_measurement.py` | PWM frequency, Vpp, duty cycle |
 | `test_LabJack_T7.py` | Comprehensive LabJack T7 suite: 11 groups — ADC (single, multi-channel, stability), DAC (output/readback, ramp, boundary enforcement), GPIO (output, input, pulse), optional DAC→ADC loopback, rapid stress |
-| `test_usb202.py` | MCC USB-202 DAQ: ADC reads on 8 channels (±10V range), DAC output sweep on 2 channels (0-5V), GPIO output/readback on 8 digital I/O pins |
+| `test_usb202.py` | MCC USB-202 DAQ: ADC reads on 8 channels (±10V range), DAC output sweep on 2 channels (0-5V), GPIO output/readback on 8 digital I/O pins; optional cross-instrument accuracy tests (supply-driven ADC, LabJack-verified DAC output, GPIO loopback) enabled via env vars |
 
 #### Sensors (9 files)
 
