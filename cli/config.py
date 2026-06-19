@@ -266,6 +266,39 @@ def write_lager_json(data, path=None):
     with open(path, 'w') as f:
         json.dump(data, f, indent=2)
 
+def devenv_config_list(value):
+    """
+        Normalize a DEVENV config value into a list of strings.
+
+        Accepts a JSON array (the canonical form), a single string, or None.
+        A string is split on newlines so newline-separated values also work.
+        Used for the `volumes` and `environment` DEVENV keys.
+    """
+    if not value:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [line.strip() for line in str(value).splitlines() if line.strip()]
+
+
+def expand_devenv_path(spec, project_root):
+    """
+        Expand ~, environment variables, and the ${PROJECT_ROOT} /
+        ${LAGER_PROJECT_ROOT} tokens in a volume/path spec.
+
+        Lets persisted .lager mounts stay portable across machines and
+        reference the project root (the directory containing .lager).
+    """
+    if not spec:
+        return spec
+    for token in ('${LAGER_PROJECT_ROOT}', '$LAGER_PROJECT_ROOT',
+                  '${PROJECT_ROOT}', '$PROJECT_ROOT'):
+        spec = spec.replace(token, project_root)
+    spec = os.path.expandvars(spec)
+    spec = os.path.expanduser(spec)
+    return spec
+
+
 def get_devenv_json():
     """
         Return a path and JSON data for devenv.

@@ -15,11 +15,11 @@ import subprocess
 import platform
 from pathlib import Path
 import click
-from ...config import get_devenv_json, write_lager_json, LAGER_CONFIG_FILE_NAME, get_global_config_file_path
+from ...config import get_devenv_json, write_lager_json, LAGER_CONFIG_FILE_NAME, get_global_config_file_path, devenv_config_list, expand_devenv_path
 from ...core.param_types import EnvVarType
 
 
-def _run_command_local(section, path, cmd_to_run, mount, extra_args, debug, interactive, tty, user, group, env, passenv):
+def _run_command_local(section, path, cmd_to_run, mount, extra_args, debug, interactive, tty, user, group, env, passenv, volumes=()):
     """
     Run a command locally in a Docker container
     """
@@ -94,8 +94,24 @@ def _run_command_local(section, path, cmd_to_run, mount, extra_args, debug, inte
     if hostname:
         base_command.append(f'--hostname={hostname}')
 
-    # Add custom environment variables
-    for env_var in env:
+    # Network / platform / ports from config (no CLI flags on exec for these).
+    network = section.get('network')
+    if network:
+        base_command.append(f'--network={network}')
+    for port in devenv_config_list(section.get('ports')):
+        base_command.extend(['-p', port])
+    platform = section.get('platform')
+    if platform:
+        base_command.extend(['--platform', platform])
+
+    # Custom bind mounts: config-defined first, then any passed on the command line.
+    # Specs may use ~, environment variables, and ${PROJECT_ROOT} for portability.
+    project_root = os.path.dirname(path)
+    for vol in (*devenv_config_list(section.get('volumes')), *volumes):
+        base_command.extend(['-v', expand_devenv_path(vol, project_root)])
+
+    # Add custom environment variables: config-defined first, then --env.
+    for env_var in (*devenv_config_list(section.get('environment')), *env):
         base_command.append(f'--env={env_var}')
 
     # Pass through environment variables
@@ -149,12 +165,13 @@ def _run_command_local(section, path, cmd_to_run, mount, extra_args, debug, inte
     '--passenv',
     multiple=True, help='Environment variable to inherit from current environment')
 @click.option('--mount', '-m', help='Name of volume to mount', required=False)
+@click.option('--volume', 'volumes', help='Bind-mount a host path into the container (HOST:CONTAINER[:ro]). Repeatable.', required=False, multiple=True)
 @click.option('--interactive/--no-interactive', '-i', is_flag=True, help='Keep STDIN open even if not attached', default=True, show_default=True)
 @click.option('--tty/--no-tty', '-t', is_flag=True, help='Allocate a pseudo-TTY', default=True, show_default=True)
 @click.option('--user', '-u', help='User to run as in container', default=None)
 @click.option('--group', '-g', help='Group to run as in container', default=None)
 @click.option('--verbose', '-v', is_flag=True, help='Show verbose output including the full docker command')
-def exec_(ctx, cmd_name, extra_args, command, save_as, warn, env, passenv, mount, interactive, tty, user, group, verbose):
+def exec_(ctx, cmd_name, extra_args, command, save_as, warn, env, passenv, mount, volumes, interactive, tty, user, group, verbose):
     """
     Execute COMMAND in a docker container locally. COMMAND is a named command which was previously saved using `--save-as`.
     If COMMAND is not provided, execute the command specified by --command. If --save-as is also provided,
@@ -164,19 +181,6 @@ def exec_(ctx, cmd_name, extra_args, command, save_as, warn, env, passenv, mount
     if not cmd_name and not command:
         click.echo(exec_.get_help(ctx))
         ctx.exit(0)
-
-    # Default user and group to current user if not specified
-    if user is None:
-        try:
-            user = str(os.getuid())
-        except AttributeError:
-            pass
-
-    if group is None:
-        try:
-            group = str(os.getgid())
-        except AttributeError:
-            pass
 
     # Get DEVENV configuration
     path, data = get_devenv_json()
@@ -188,11 +192,21 @@ def exec_(ctx, cmd_name, extra_args, command, save_as, warn, env, passenv, mount
 
     section = data['DEVENV']
 
-    # Override user/group from config if specified
-    if 'user' in section:
-        user = section['user']
-    if 'group' in section:
-        group = section['group']
+    # Precedence: CLI flag wins, then .lager config, then the current uid/gid.
+    if user is None:
+        user = section.get('user')
+    if group is None:
+        group = section.get('group')
+    if user is None:
+        try:
+            user = str(os.getuid())
+        except AttributeError:
+            pass
+    if group is None:
+        try:
+            group = str(os.getgid())
+        except AttributeError:
+            pass
 
     # Check for both command name and command string
     if cmd_name and command:
@@ -237,6 +251,6 @@ def exec_(ctx, cmd_name, extra_args, command, save_as, warn, env, passenv, mount
     # Run the command locally in Docker
     returncode = _run_command_local(
         section, path, cmd_to_run, mount, extra_args,
-        ctx.obj.debug or verbose, interactive, tty, user, group, env, passenv
+        ctx.obj.debug or verbose, interactive, tty, user, group, env, passenv, volumes
     )
     ctx.exit(returncode)

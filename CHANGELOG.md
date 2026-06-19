@@ -2,6 +2,43 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.28.3] - 2026-06-18
+
+`lager diagnose` now covers debug nets. Pointed at a J-Link / debug net it localizes the fault across the whole probe stack and prints the specific fix, instead of dead-ending at "only covers USB-TMC instruments today".
+
+### Added
+- **`lager diagnose <debug-net>` diagnoses J-Link probes.** For a `debug` net it runs J-Link-aware checks via a new box endpoint and classifies the fault: probe not enumerated on USB, J-Link software missing on the box, probe claimed by another process or firmware-wedged, a wedged gdbserver, target unpowered (J-Link reports target voltage too low), target locked (readout/IDCODE/AP protection), wrong device/MCU name on the net, or no SWD/JTAG comms to a powered target — each with the concrete next action. When a debug session (gdbserver) is already running for the probe, diagnose reports from its log instead of disturbing the live session. OpenOCD/ST-Link debug nets get basic coverage (probe enumeration + gdbserver state). The USB-TMC path (power supplies, DMMs, scopes) is unchanged.
+
+## [0.28.2] - 2026-06-17
+
+`lager devenv` can now remember your container setup, and memory reads on DA1469x chips are fixed.
+
+### Added
+- **Save your devenv container setup in the project.** Container settings now live in the project's `.lager` file instead of needing to be retyped or kept in shell aliases. Use `devenv set`/`unset`/`show` for basic settings (image, shell, user, group, ports, and more), `devenv mount add`/`remove`/`list` for folders to share into the container, and `devenv env set`/`unset`/`list` for environment variables. `devenv terminal` and `lager exec` use these automatically, so they travel with the repo.
+- **Add settings for a single run.** `devenv terminal` and `lager exec` take `-v HOST:CONTAINER` to share a folder; `devenv terminal` also takes `-e FOO=BAR` to set a variable and `--passenv NAME` to forward one from your shell. Paths can use `~` and `${PROJECT_ROOT}`, so saved settings work on any machine.
+- **Preview a session without launching it.** `devenv terminal --info` prints the exact `docker` command it would run, then exits.
+- **`lager debug memrd --no-reset`** skips the reset-and-halt before a DA1469x read — useful on a blank chip where you don't want to reboot it.
+
+### Changed
+- **More predictable devenv settings.** When a setting is given both on the command line and in `.lager`, the command line now wins. The container entrypoint can also be saved in `.lager`.
+
+### Fixed
+- **Reading memory from a running DA1469x now works.** Live firmware turns off the debug port, so reads used to fail. The box now resets and halts the chip first. This reboots the device under test — pass `--no-reset` to skip it.
+- **Some memory reads returned wrong values** on certain chip registers; they now read correctly.
+- **`devenv terminal --group` now works** — the group setting was being ignored before.
+
+## [0.28.1] - 2026-06-15
+
+Warm-path Workbench support for bus and energy instruments, plus UART hardening on the box.
+
+### Added
+- **`spi`, `i2c`, and `energy-analyzer` nets are served by the box's `/net/command` endpoint.** Stout's Workbench drives these roles, which previously round-tripped through the `/python` executor — paying an interpreter spawn + device re-open on every command. They now run in the long-lived box HTTP server like the existing gpio/adc/dac/eload/thermocouple/watt-meter roles, matching Stout's actions and params exactly (spi `transfer`/`read`, i2c `scan`/`read`/`write`/`transfer`, energy-analyzer `read_stats`/`read_energy`). Message formats match the previous `/python` fallback so the dashboard log is identical on either path, and energy-analyzer durations are clamped to 0.1–30s. Each net's transactions are serialized per netname so concurrent requests can't interleave on one device. Rollout is back-compatible: a box without this build returns 501 and Stout falls back to `/python`, with no Stout deploy needed.
+- **`simple-websocket` added to the box image** so Flask-SocketIO (threading mode) can serve the WebSocket transport instead of long-polling only. Clients negotiate transport automatically.
+
+### Fixed
+- **`lager ssh` now offers the `lager authorize` key (`~/.ssh/lager_box`).** The key isn't one of ssh's default identity filenames, so `lager ssh` ran bare `ssh user@ip` and authorized boxes still dropped to a password prompt. It now passes `-i ~/.ssh/lager_box` when the key exists (mirroring the other SSH paths); without `IdentitiesOnly`, default keys and the password fallback still work for unauthorized boxes.
+- **UART devices are opened exclusively and arbitrated against double-use.** A second opener — another dashboard socket.io session, or `lager uart` from the CLI while a Workbench session is live — now fails fast with a clear "device in use" message instead of silently interleaving reads on the same `/dev/tty*`. `start_uart` rejects a second session for a net (or for a different net mapping to the same device) before opening, and an exclusive-open failure is reported readably rather than as a raw errno.
+
 ## [0.28.0] - 2026-06-13
 
 Two themes: `lager python` (and the box-mutating admin commands) now reserve the box automatically — with CI-aware identity, heartbeat keepalive, and TTL reap of stale locks — and the supply/battery TUIs work reliably on slow or mode-shared instruments (Keithley 2281S), with honest diagnostics when they can't.

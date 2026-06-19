@@ -22,6 +22,26 @@ active_uart_sessions = {}
 active_uart_sessions_lock = threading.Lock()
 
 
+def _readable_open_error(netname: str, driver, exc: Exception) -> str:
+    """Turn a serial-open failure into a human message.
+
+    The UART bridge opens the port with exclusive=True (pyserial flock), so a
+    second opener — another dashboard socket.io session or `lager uart` from the
+    CLI while a Workbench session is live — fails the lock instead of silently
+    interleaving reads. pyserial surfaces that as a SerialException whose text
+    carries a raw errno (EAGAIN/EWOULDBLOCK = 11, EBUSY = 16); detect those and
+    return a clear "in use" message rather than leaking the errno to the UI.
+    """
+    target = getattr(driver, 'device_path', None) or f"net '{netname}'"
+    text = str(exc)
+    low = text.lower()
+    if ('lock' in low or 'errno 11' in low or 'errno 16' in low
+            or 'resource temporarily unavailable' in low or 'busy' in low):
+        return (f"UART device {target} is already in use "
+                f"(locked by another session or the `lager uart` CLI)")
+    return f"Failed to open UART {target}: {text}"
+
+
 def register_uart_routes(app: Flask) -> None:
     """
     Register UART HTTP routes with the Flask app.
@@ -138,15 +158,36 @@ def register_uart_socketio(socketio: SocketIO) -> None:
                 emit('error', {'message': 'netname is required'})
                 return
 
-            # Check if session already exists
+            # Per-connection + per-net guard. Sessions are keyed by request.sid
+            # (one socket.io connection), so the sid check only stops the same
+            # connection from starting twice; the netname scan stops a *second*
+            # connection from grabbing a net another session already holds, and
+            # gives a clear error instead of letting the exclusive open race.
             with active_uart_sessions_lock:
                 if request.sid in active_uart_sessions:
                     emit('error', {'message': 'UART session already active'})
                     return
+                for sess in active_uart_sessions.values():
+                    if sess.get('netname') == netname:
+                        emit('error', {'message': f"UART net '{netname}' is already in use by another session"})
+                        return
 
             # Resolve net and create driver
             try:
                 driver = _resolve_net_and_driver(netname, overrides)
+
+                # Per-device guard: two different nets can map to the same
+                # /dev/tty*. Reject before the exclusive open so the error names
+                # the conflict instead of surfacing a lock errno.
+                device_path = getattr(driver, 'device_path', None)
+                if device_path:
+                    with active_uart_sessions_lock:
+                        for sess in active_uart_sessions.values():
+                            other = sess.get('driver')
+                            if other is not None and getattr(other, 'device_path', None) == device_path:
+                                emit('error', {'message': f"UART device {device_path} is already in use by another session"})
+                                return
+
                 driver._connect()
             except UARTBackendError as e:
                 emit('error', {'message': str(e)})
@@ -155,7 +196,7 @@ def register_uart_socketio(socketio: SocketIO) -> None:
                 emit('error', {'message': f'UART device not found: {str(e)}'})
                 return
             except Exception as e:
-                emit('error', {'message': f'Failed to connect: {str(e)}'})
+                emit('error', {'message': _readable_open_error(netname, locals().get('driver'), e)})
                 return
 
             # Create stop event for thread control

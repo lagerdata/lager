@@ -1,0 +1,173 @@
+---
+title: Router
+description: Manage routers as Lager nets
+---
+
+Register and control network routers as Lager nets. A router net wraps a router's
+REST API (e.g. a MikroTik hAP) so you can inspect interfaces, list wireless
+clients and DHCP leases, toggle interfaces, block internet access, and reset the
+router to a clean baseline — useful for connectivity and network-resilience tests.
+
+<Note>Introduced in **lager 0.10.0**. The default instrument type is `MikroTik_hAP`.</Note>
+
+## Syntax
+
+```bash
+lager router COMMAND [ARGS] [OPTIONS]
+```
+
+Every subcommand accepts `--box BOX` (Lagerbox name or IP; uses the default box if
+omitted). Most operate on a `NETNAME` — the name of a router net previously
+registered with `add-net`.
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `add-net` | Register a router as a net on the box |
+| `connect` | Verify connectivity to a router net |
+| `interfaces` | List network interfaces |
+| `wireless-interfaces` | List wireless interfaces and their configuration |
+| `wireless-clients` | List connected wireless clients |
+| `dhcp-leases` | List DHCP leases (devices that received IP addresses) |
+| `system-info` | Get system resource information |
+| `reboot` | Reboot the router |
+| `enable-interface` | Enable a wireless interface |
+| `disable-interface` | Disable a wireless interface |
+| `block-internet` | Block all internet access (drops forwarded traffic) |
+| `reset` | Reset the router net to a clean baseline state |
+| `run` | Run an arbitrary router REST API GET call |
+
+---
+
+## Command Reference
+
+### `add-net`
+
+Register a router as a net on the box.
+
+```bash
+lager router add-net NAME --address IP [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--address` | (required) | IP address of the router |
+| `--username` | `admin` | Router username |
+| `--password` | (empty) | Router password |
+| `--instrument` | `MikroTik_hAP` | Router instrument type |
+| `--use-ssl` | off | Use HTTPS instead of HTTP |
+| `--box` | | Lagerbox name or IP |
+
+```bash
+lager router add-net router1 --address 192.168.88.1 --username admin --password secret --box my-lager-box
+```
+
+### `connect`
+
+Verify connectivity to a router net.
+
+```bash
+lager router connect router1 --box my-lager-box
+```
+
+### `interfaces`
+
+List network interfaces on a router net.
+
+```bash
+lager router interfaces router1 --box my-lager-box
+```
+
+### `wireless-interfaces`
+
+List wireless interfaces and their configuration.
+
+```bash
+lager router wireless-interfaces router1 --box my-lager-box
+```
+
+### `wireless-clients`
+
+List currently connected wireless clients.
+
+```bash
+lager router wireless-clients router1 --box my-lager-box
+```
+
+### `dhcp-leases`
+
+List DHCP leases — devices that have received IP addresses.
+
+```bash
+lager router dhcp-leases router1 --box my-lager-box
+```
+
+### `system-info`
+
+Get system resource information from a router net.
+
+```bash
+lager router system-info router1 --box my-lager-box
+```
+
+### `reboot`
+
+Reboot a router net. Prompts for confirmation unless `--yes` is passed.
+
+```bash
+lager router reboot router1 --box my-lager-box
+lager router reboot router1 --yes --box my-lager-box
+```
+
+### `enable-interface` / `disable-interface`
+
+Enable or disable a wireless interface by name.
+
+```bash
+lager router enable-interface router1 wlan1 --box my-lager-box
+lager router disable-interface router1 wlan1 --box my-lager-box
+```
+
+### `block-internet`
+
+Block all internet access on a router net (drops forwarded traffic). Use `reset`
+to restore access.
+
+```bash
+lager router block-internet router1 --box my-lager-box
+```
+
+### `reset`
+
+Reset a router net to a clean baseline state: removes all test-tagged firewall
+rules, bandwidth limits, and access-list entries; re-enables DHCP and all wireless
+interfaces. If `--ssid` and `--password` are provided, a fresh baseline WPA2
+network is applied. Prompts for confirmation unless `--yes` is passed.
+
+| Option | Description |
+|--------|-------------|
+| `--ssid` | Baseline SSID to restore on wireless interfaces |
+| `--password` | Baseline WPA2 password |
+| `--yes` | Skip the confirmation prompt |
+
+```bash
+lager router reset router1 --box my-lager-box
+lager router reset router1 --ssid HomeNet --password secret123 --box my-lager-box
+```
+
+### `run`
+
+Run an arbitrary router REST API GET call. `PATH` is the API path relative to
+`/rest`, e.g. `/ip/address`.
+
+```bash
+lager router run router1 /ip/address --box my-lager-box
+```
+
+---
+
+## See Also
+
+- [Nets](/source/reference/cli/nets) — manage instrument and device nets
+- [WiFi](/source/reference/cli/wifi) — manage the Lager Box's own WiFi settings

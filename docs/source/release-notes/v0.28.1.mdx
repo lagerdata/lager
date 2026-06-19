@@ -1,0 +1,32 @@
+---
+title: "Version 0.28.1"
+description: "June 15, 2026"
+---
+
+## <u>Features</u>
+
+- **`spi`, `i2c`, and `energy-analyzer` instruments now run on the Lager Box's warm path.** These roles previously went through the box's per-command Python executor; they now run in the long-lived box server alongside gpio/adc/dac/eload/thermocouple/watt-meter, removing an interpreter spawn and device re-open on every command. Behavior and dashboard logs are unchanged, and energy-analyzer read durations are clamped to 0.1–30s. The rollout is back-compatible — an older Lager Box automatically falls back to the previous path.
+- **WebSocket transport support added to the Lager Box.** The box image now bundles `simple-websocket`, so clients can use a native WebSocket connection instead of long-polling, negotiated automatically.
+
+## <u>Bug Fixes</u>
+
+- **`lager ssh` now uses the key set up by `lager authorize`.** Authorized Lager Boxes were still dropping to a password prompt because `lager ssh` didn't offer `~/.ssh/lager_box`; it now does when that key exists, while leaving the password fallback intact for boxes that haven't been authorized.
+- **UART devices are now opened exclusively.** A second user of a serial port — another dashboard session, or `lager uart` while a Workbench session is live — now fails fast with a clear "device in use" message instead of silently interleaving reads on the same port.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.28.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.28.1/)

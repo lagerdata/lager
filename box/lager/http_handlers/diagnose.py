@@ -228,6 +228,168 @@ def register_diagnose_routes(app: Flask) -> None:
             except Exception:
                 pass
 
+    @app.route('/diagnose/jlink', methods=['GET'])
+    def diagnose_jlink():
+        """Diagnose a debug-probe net (J-Link, or basic OpenOCD/ST-Link).
+
+        Localises a fault across the J-Link stack and reports it as structured
+        JSON for the CLI's ``_classify_jlink`` to turn into a one-line action:
+
+          - probe USB enumeration + competing-process holders (reuses the
+            instrument-agnostic USB helpers below),
+          - J-Link software presence on the box,
+          - probe visibility to ``JLinkExe`` via ``ShowEmuList`` (harmless —
+            never touches a target),
+          - the per-probe gdbserver's run state + logfile health, and
+          - when the probe is *idle* (no gdbserver holding it), a real SWD
+            ``connect`` that reads VTref (target power) and confirms comms.
+
+        The intrusive connect is gated exactly like ``/diagnose/visa`` skips a
+        fresh pyvisa open when hw_service already holds a session: if a
+        gdbserver is live for this probe we report from its log instead of
+        colliding with it. OpenOCD/ST-Link nets get a basic (backend +
+        enumeration + gdbserver) report; deep connect-probing is J-Link-only.
+        """
+        net_name = (request.args.get('net') or '').strip()
+        address = (request.args.get('address') or '').strip()
+        device = (request.args.get('device') or '').strip()
+
+        # Resolve the net from the box's saved-nets cache when a name is given;
+        # fall back to explicit address/device query args otherwise.
+        net = _lookup_debug_net(net_name) if net_name else None
+        if net:
+            address = address or (net.get('address') or '')
+            device = device or (net.get('channel') or net.get('pin') or '')
+
+        if not address:
+            return jsonify({'error': 'net or address parameter required'}), 400
+
+        try:
+            from lager.debug.probes import (
+                parse_probe_address, resolve_backend, gdb_port_for_slot,
+            )
+        except Exception as e:  # pragma: no cover — debug pkg ships on every box
+            return jsonify({'address': address, 'error': f'debug package unavailable: {e}'}), 500
+
+        vid, pid, serial = parse_probe_address(address)
+        backend = resolve_backend(net if isinstance(net, dict) else {'address': address})
+
+        # USB enumeration + competing holders. The USB-TMC helpers are keyed
+        # only on VID/PID, so they work for a J-Link probe unchanged.
+        sysfs = _find_usb_sysfs(vid, pid) if vid and pid else None
+        device_path = _usbfs_path_for_sysfs(sysfs) if sysfs else None
+        holders = _holders_via_proc(device_path) if device_path else []
+
+        # Deterministic slot/port so we read the *right* gdbserver pid/log when
+        # several probes share the box (mirrors debug.service._resolve_probe).
+        slot = _compute_debug_slot(serial)
+        gdb_port = gdb_port_for_slot(slot)
+
+        result = {
+            'address': address,
+            'device': device or None,
+            'backend': backend,
+            'serial': serial,
+            'probe_enumerated': bool(sysfs),
+            'sysfs_path': sysfs,
+            'device_path': device_path,
+            'holders': holders,
+        }
+
+        if backend == 'openocd':
+            result['mode'] = 'openocd-basic'
+            try:
+                from lager.debug.openocd import get_openocd_status
+                from lager.debug.probes import openocd_logfile
+                from lager.debug.mappings import readfile
+                st = get_openocd_status(serial=serial)
+                result['openocd_gdbserver'] = {
+                    'running': bool(st.get('running')), 'pid': st.get('pid'),
+                }
+                result['logfile_tail'] = _tail(readfile(openocd_logfile(serial)), 25)
+            except Exception as e:
+                result['openocd_error'] = str(e)
+            return jsonify(result)
+
+        result['mode'] = 'jlink'
+
+        try:
+            from lager.debug.jlink import get_jlink_exe_path, commander
+        except Exception as e:
+            return jsonify({**result, 'error': f'jlink module unavailable: {e}'}), 500
+        jlink_exe = get_jlink_exe_path()
+        result['jlink_installed'] = bool(jlink_exe)
+        result['jlink_exe_path'] = jlink_exe
+
+        # gdbserver state for this probe (+ logfile health when running).
+        gdbserver = {'running': False, 'pid': None}
+        try:
+            from lager.debug.gdbserver import get_jlink_gdbserver_status
+            from lager.debug.probes import jlink_gdbserver_logfile
+            from lager.debug.mappings import check_logfile
+            gstat = get_jlink_gdbserver_status(serial=serial)
+            gdbserver = {'running': bool(gstat.get('running')), 'pid': gstat.get('pid')}
+            if gdbserver['running']:
+                ok, log = check_logfile(
+                    jlink_gdbserver_logfile(serial), max_tries=1, target_port=gdb_port
+                )
+                gdbserver['logfile_ok'] = bool(ok)
+                gdbserver['logfile_tail'] = _tail(log, 25)
+        except Exception as e:
+            gdbserver = {'running': False, 'error': str(e)}
+        result['gdbserver'] = gdbserver
+
+        if not jlink_exe:
+            # No J-Link tools — can't enumerate or connect. The CLI flags this
+            # as the root cause (install via `lager box update`).
+            return jsonify(result)
+
+        # ShowEmuList — harmless probe enumeration. Don't bind a serial so we
+        # see every probe on the box (and can tell "wrong/no probe" apart).
+        emu_list = []
+        try:
+            with commander([]) as jl:
+                out = jl.run_command('ShowEmuList', timeout=10)
+            emu_list = _parse_emu_list(out)
+        except Exception as e:
+            result['emu_list_error'] = str(e)
+        result['emu_list'] = emu_list
+        result['probe_visible'] = _serial_in_emu_list(serial, emu_list)
+
+        # Intrusive connect — only when the probe is idle, visible, and we know
+        # which device to connect as. Same "don't collide with a live session"
+        # rule the visa endpoint uses.
+        if gdbserver.get('running'):
+            result['connect_skipped'] = True
+            result['connect_skip_reason'] = (
+                'gdbserver running for this probe; not disturbing the live session'
+            )
+        elif not result['probe_visible']:
+            result['connect_skipped'] = True
+            result['connect_skip_reason'] = 'probe not visible to JLinkExe; connect would fail'
+        elif not device:
+            result['connect_skipped'] = True
+            result['connect_skip_reason'] = 'no device/MCU configured on net; cannot connect'
+        else:
+            from lager.debug.probes import parse_device_field
+            jl_device, _channel = parse_device_field(device)  # strip @channel (FTDI-only)
+            try:
+                args = ['-device', jl_device, '-if', 'SWD', '-speed', '4000']
+                with commander(args, serial=serial) as jl:
+                    out = jl.run_command('connect', timeout=20)
+                    # Best-effort resume so we leave the core running, not halted.
+                    try:
+                        jl.run_command('g', timeout=5)
+                    except Exception:
+                        pass
+                result['connect'] = _parse_connect_output(out)
+                result['connect_output'] = (out or '')[-2000:]
+            except Exception as e:
+                result['connect'] = {'connect_ok': False, 'connect_error_class': 'other'}
+                result['connect_error'] = str(e)
+
+        return jsonify(result)
+
 
 def _device_is_usbtmc(sysfs: str) -> bool:
     """True if any USB interface of the device at sysfs declares
@@ -307,3 +469,187 @@ def _dmesg_usb_tail() -> str:
         if 'usb' in line.lower() or 'usbtmc' in line.lower()
     ]
     return '\n'.join(matches[-20:])
+
+
+# ---- J-Link diagnose helpers --------------------------------------------------
+#
+# Pure parsers and small cache lookups for `/diagnose/jlink`. The parsers are
+# deliberately free of any hardware/import dependency so they can be unit-tested
+# against captured `ShowEmuList` / `connect` text without a box.
+
+def _tail(text, n):
+    """Last *n* lines of *text* (empty string for None/empty)."""
+    if not text:
+        return ''
+    return '\n'.join(text.splitlines()[-n:])
+
+
+def _lookup_debug_net(name):
+    """Return the saved debug net dict named *name*, or None.
+
+    Reads the box's nets cache; swallows any cache error so diagnose still
+    works from an explicit ?address=/&device= when the cache is unavailable.
+    """
+    try:
+        from lager.cache import get_nets_cache
+        for n in get_nets_cache().get_nets():
+            if n.get('name') == name and n.get('role') == 'debug':
+                return n
+    except Exception:
+        return None
+    return None
+
+
+def _compute_debug_slot(serial):
+    """Deterministic slot for *serial* across all debug probes in the cache.
+
+    Mirrors ``debug.service._resolve_probe`` so we read the gdbserver pid/log
+    for the correct slot when multiple probes share the box. Falls back to slot
+    0 (legacy single-probe paths) on any failure.
+    """
+    if not serial:
+        return 0
+    try:
+        from lager.cache import get_nets_cache
+        from lager.debug.probes import parse_probe_serial, compute_slot
+        all_serials = []
+        for n in get_nets_cache().get_nets():
+            if n.get('role') != 'debug':
+                continue
+            s = parse_probe_serial(n.get('address'))
+            if s:
+                all_serials.append(s)
+        return compute_slot(serial, all_serials)
+    except Exception:
+        return 0
+
+
+_EMU_RE = re.compile(
+    # Stop ProductName at the next comma so a trailing ", Nickname: <not set>"
+    # field (newer JLinkExe) doesn't get swallowed into the product string.
+    r'Serial number:\s*(\w+).*?ProductName:\s*([^,\r\n]+)', re.IGNORECASE
+)
+
+
+def _parse_emu_list(text):
+    """Parse ``ShowEmuList`` output into ``[{'serial', 'product'}, ...]``.
+
+    JLinkExe prints one line per connected probe, e.g.::
+
+        J-Link[0]: Connection: USB, Serial number: 000504402175, ProductName: J-Link Plus
+
+    Serial numbers may or may not carry leading zeros depending on firmware;
+    ``_serial_in_emu_list`` normalises before comparing.
+    """
+    probes = []
+    if not text:
+        return probes
+    for line in text.splitlines():
+        m = _EMU_RE.search(line)
+        if m:
+            probes.append({'serial': m.group(1).strip(), 'product': m.group(2).strip()})
+    return probes
+
+
+def _norm_serial(s):
+    """Normalise a probe serial for comparison (drop leading zeros, lowercase)."""
+    return (s or '').lstrip('0').lower()
+
+
+def _serial_in_emu_list(serial, emu_list):
+    """True if *serial* matches a probe in *emu_list* (zero-pad tolerant)."""
+    if not emu_list:
+        return False
+    if not serial:
+        # No serial parseable from the address (e.g. unprogrammed EEPROM): a
+        # single visible probe is, by elimination, the one this net points at.
+        return len(emu_list) >= 1
+    # _norm_serial already strips leading zeros, so an exact compare is both
+    # sufficient and safe. A substring/endswith match here would false-positive:
+    # serial "0" normalises to "" (matches every probe), and "1" would match any
+    # serial ending in 1.
+    target = _norm_serial(serial)
+    if not target:
+        return False
+    for p in emu_list:
+        if _norm_serial(p.get('serial')) == target:
+            return True
+    return False
+
+
+# VTref appears as "VTref=3.300V" on some firmwares and "VTarget = 3.300 V" on
+# others; tolerate either name and arbitrary spacing around the separator. Note
+# that a *failed* connect on this (non-interactive REPL) path typically prints
+# no number at all — just "Target voltage too low." — so the phrase-based
+# `no_target_power` signal below is what actually catches an unpowered target.
+_VTREF_RE = re.compile(r'V(?:Tref|Target)\s*[=:]\s*([0-9]+\.?[0-9]*)\s*V', re.IGNORECASE)
+_CORE_RE = re.compile(r'(Cortex-\S+)\s+identified', re.IGNORECASE)
+
+
+def _parse_connect_output(text):
+    """Classify JLinkExe ``connect`` output.
+
+    Returns ``{vtref_mv, connect_ok, connect_error_class, core}`` where
+    ``connect_error_class`` is one of ``ok``, ``no_target_power``,
+    ``no_target_comms``, ``locked``, ``wrong_device``, ``other``. The signal
+    strings are taken from observed JLinkExe output (e.g. an unpowered nRF7002-DK
+    prints "Target voltage too low." then "Could not connect to the target
+    device."), not guessed.
+    """
+    out = {'vtref_mv': None, 'connect_ok': False, 'connect_error_class': 'other', 'core': None}
+    if not text:
+        return out
+    low = text.lower()
+
+    m = _VTREF_RE.search(text)
+    if m:
+        try:
+            out['vtref_mv'] = int(round(float(m.group(1)) * 1000))
+        except ValueError:
+            pass
+
+    cm = _CORE_RE.search(text)
+    if cm:
+        out['core'] = cm.group(1).strip()
+
+    wrong_dev_signs = (
+        'unknown device selected', 'is not supported',
+        'not in the list of supported', 'no valid device',
+    )
+    locked_signs = (
+        'is locked', 'device is locked', 'idcode', 'access port protection',
+        'approtect', 'read protection', 'readout protection', 'is protected',
+    )
+    # "Target voltage too low" is JLinkExe's no-power message; a parsed VTref
+    # below ~0.3V means the same thing.
+    no_power_signs = ('target voltage too low', 'no target voltage', 'vtref too low')
+    # Match with and without the article ("could not connect to [the] target
+    # [device]") — real output says "the target device".
+    comms_fail_signs = (
+        'could not connect to the target', 'could not connect to target',
+        'cannot connect to target', 'could not connect to the cpu',
+        'could not find core', 'could not find coresight',
+        'communication timed out', 'failed to connect',
+    )
+    success_signs = (
+        'connected to target', 'j-link is connected', 'found sw-dp',
+        'found swd-dp', 'identified',
+    )
+
+    # Order matters — most specific failure first; no-power outranks a generic
+    # comms failure so "target unpowered" wins over "can't connect" (the
+    # unpowered output contains both).
+    if any(s in low for s in wrong_dev_signs):
+        out['connect_error_class'] = 'wrong_device'
+    elif any(s in low for s in locked_signs):
+        out['connect_error_class'] = 'locked'
+    elif any(s in low for s in no_power_signs) or (
+        out['vtref_mv'] is not None and out['vtref_mv'] < 300
+    ):
+        out['connect_error_class'] = 'no_target_power'
+    elif any(s in low for s in comms_fail_signs):
+        out['connect_error_class'] = 'no_target_comms'
+    elif out['core'] or any(s in low for s in success_signs):
+        out['connect_ok'] = True
+        out['connect_error_class'] = 'ok'
+    return out
