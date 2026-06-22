@@ -16,6 +16,7 @@ import subprocess
 import threading
 import time
 import sys
+import uuid
 from ...box_storage import (
     auto_lock_acquire_for_command,
     get_box_user,
@@ -1186,7 +1187,11 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     # once per run instead of once per step (each used to open its own `ssh -t`
     # session, and sudo's per-tty credential cache doesn't carry across them).
     # A run that needs no privileged work never opens the session -> 0 prompts.
-    _priv_results_path = '/tmp/lager_priv_results'
+    # Per-run unique results path: a static /tmp name could be left behind by a
+    # crashed run (or another user) and, since /tmp is sticky, our `rm -f` then
+    # fails and the append is denied — making every job misreport as FAILED. A
+    # uuid suffix also avoids the predictable-path risk on a shared box.
+    _priv_results_path = f'/tmp/lager_priv_results_{uuid.uuid4().hex}'
     priv_jobs = []  # each: {'name': str, 'snippet': shell str, 'render': fn(ok)}
 
     def enqueue_priv(name, snippet, render):
