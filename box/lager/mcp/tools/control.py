@@ -50,6 +50,52 @@ def _find_local_net(name: str) -> dict | None:
     return None
 
 
+_SYSFS_USB_ROOT = "/sys/bus/usb/devices"
+
+
+def _probe_present_via_sysfs(vid: str, pid: str, serial: str | None,
+                             root: str = _SYSFS_USB_ROOT) -> bool | None:
+    """Check probe presence by scanning sysfs, the live USB topology.
+
+    sysfs is re-read on every call, so a probe that just re-enumerated (e.g.
+    right after ``power_cycle_hub``) is seen immediately. An in-process
+    ``usb.core.find`` cannot be trusted here: the long-running MCP server holds
+    a libusb device cache that goes stale across a hub power-cycle, producing a
+    false "probe not found" even though the device is back on the bus.
+
+    Returns True/False on Linux, or None when sysfs is absent (non-Linux host)
+    so the caller can fall back to pyusb.
+    """
+    import os
+
+    if not os.path.isdir(root):
+        return None
+
+    def _norm(value: str | None) -> str:
+        return (value or "").strip().lower().lstrip("0")
+
+    want_vid, want_pid = _norm(vid), _norm(pid)
+    want_serial = _norm(serial) if serial else None
+
+    def _read(path: str) -> str | None:
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                return handle.read().strip()
+        except OSError:
+            return None
+
+    for entry in os.listdir(root):
+        dev = os.path.join(root, entry)
+        if _norm(_read(os.path.join(dev, "idVendor"))) != want_vid:
+            continue
+        if _norm(_read(os.path.join(dev, "idProduct"))) != want_pid:
+            continue
+        if want_serial and _norm(_read(os.path.join(dev, "serial"))) != want_serial:
+            continue
+        return True
+    return False
+
+
 def debug_probe_status(net: str) -> str:
     """Report whether a debug net's probe is present on the USB bus.
 
@@ -83,14 +129,23 @@ def debug_probe_status(net: str) -> str:
         })
 
     try:
-        import usb.core
+        # Prefer sysfs (always current). Only fall back to an in-process pyusb
+        # scan on a non-Linux host, where pyusb's freshness caveat doesn't bite
+        # the way it does for the long-running server after a power-cycle.
+        present = _probe_present_via_sysfs(vid, pid, serial)
+        source = "sysfs"
+        if present is None:
+            import usb.core
 
-        kwargs = {"idVendor": int(vid, 16), "idProduct": int(pid, 16)}
-        if serial:
-            kwargs["serial_number"] = serial
-        device = usb.core.find(**kwargs)
-        present = device is not None
-        detail = "probe enumerated on USB bus" if present else "probe not found on USB bus"
+            kwargs = {"idVendor": int(vid, 16), "idProduct": int(pid, 16)}
+            if serial:
+                kwargs["serial_number"] = serial
+            present = usb.core.find(**kwargs) is not None
+            source = "pyusb"
+        detail = (
+            f"probe enumerated on USB bus ({source})" if present
+            else f"probe not found on USB bus ({source})"
+        )
     except Exception as exc:  # pragma: no cover - environment/permission dependent
         return json.dumps({
             "net": net,

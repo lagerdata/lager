@@ -51,7 +51,10 @@ class TestDebugProbeStatus:
     def test_probe_present(self):
         usb_mod, core_mod = _fake_usb(find_result=object())
         net = {"name": "debug", "role": "debug", "address": _JLINK_ADDRESS}
+        # Force the pyusb fallback (sysfs absent) so this exercises that path
+        # deterministically regardless of the host OS.
         with patch("lager.nets.net.Net.get_local_nets", return_value=[net]), \
+                patch("lager.mcp.tools.control._probe_present_via_sysfs", return_value=None), \
                 patch.dict(sys.modules, {"usb": usb_mod, "usb.core": core_mod}):
             import json
 
@@ -69,12 +72,29 @@ class TestDebugProbeStatus:
         usb_mod, core_mod = _fake_usb(find_result=None)
         net = {"name": "debug", "role": "debug", "address": _JLINK_ADDRESS}
         with patch("lager.nets.net.Net.get_local_nets", return_value=[net]), \
+                patch("lager.mcp.tools.control._probe_present_via_sysfs", return_value=None), \
                 patch.dict(sys.modules, {"usb": usb_mod, "usb.core": core_mod}):
             import json
 
             result = json.loads(control.debug_probe_status("debug"))
         assert result["present"] is False
         assert "not found" in result["detail"]
+
+    def test_probe_present_via_sysfs(self, tmp_path):
+        # Regression guard for the stale-libusb false-negative: a probe that has
+        # (re-)enumerated must be seen via sysfs even when an in-process pyusb
+        # cache would miss it after a power-cycle.
+        dev = tmp_path / "1-5.4.3"
+        dev.mkdir()
+        (dev / "idVendor").write_text("1366\n")
+        (dev / "idProduct").write_text("0101\n")
+        (dev / "serial").write_text("000051014439\n")
+        root = str(tmp_path)
+        assert control._probe_present_via_sysfs("1366", "0101", "000051014439", root=root) is True
+        # Wrong serial -> not present.
+        assert control._probe_present_via_sysfs("1366", "0101", "deadbeef", root=root) is False
+        # Missing sysfs root -> None so the caller falls back to pyusb.
+        assert control._probe_present_via_sysfs("1366", "0101", None, root=str(tmp_path / "absent")) is None
 
     def test_unknown_net(self):
         with patch("lager.nets.net.Net.get_local_nets", return_value=[]):
