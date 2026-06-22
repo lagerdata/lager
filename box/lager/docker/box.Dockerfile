@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.4
 FROM python:3.12-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -57,10 +58,16 @@ RUN apt-get update && apt-get install -y unzip && rm -rf /var/lib/apt/lists/* \
 	&& rm -f LabJack-LJM_2024-06-10.zip labjack_ljm_installer.run \
 	&& test -f /usr/local/lib/libLabJackM.so
 
-RUN /usr/local/bin/python -m pip install --upgrade pip \
+# BuildKit pip download/wheel cache mount: a from-scratch rebuild reuses
+# downloaded sdists and locally-built wheels (opencv, cryptography, psycopg2,
+# hidapi, ...) instead of re-downloading and recompiling every time. The cache
+# lives in the BuildKit mount (not the image), so `--no-cache-dir` is dropped to
+# let it populate while image size stays unchanged.
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+	/usr/local/bin/python -m pip install --upgrade pip \
 && pip3 install --upgrade setuptools \
 && pip3 install wheel \
-&& pip3 install --no-cache-dir \
+&& pip3 install \
 	'bleak==0.22.2' \
 	'requests==2.31.0' \
 	'pyserial==3.5' \
@@ -130,11 +137,25 @@ RUN mkdir -p /opt/rust \
 # embedded debug workflow, and the on-box Python API (DebugNet.rtt_defmt) and
 # the `lager debug ... --rtt | defmt-print` pipe both rely on it being present.
 # Installed into the image (not user box_config cargo_packages) so it's always
-# available regardless of operator config. We intentionally track the latest
-# published release rather than hard-pinning: the defmt wire format evolves
-# across minor versions, and a stale decoder can't read newer firmware. Operators
-# who need a specific version can still add `defmt-print@X.Y.Z` to cargo_packages.
-RUN cargo install defmt-print --locked \
+# available regardless of operator config. The version is pinned deliberately —
+# `--locked` only pins defmt-print's own Cargo.lock, NOT which release cargo
+# selects, so an unpinned `cargo install` silently tracks "latest", recompiling
+# (minutes) and changing decode behavior on every new release with no review.
+# Bump this pin in lockstep with the defmt wire format (see crates.io/crates/
+# defmt-print); operators needing a different version can still add
+# `defmt-print@X.Y.Z` to box_config cargo_packages.
+#
+# BuildKit cache mounts persist the crate registry/git and the compiled target
+# dir across rebuilds, so a from-scratch image rebuild relinks instead of
+# recompiling defmt-print + its deps. The cargo *target* uses a separate dir
+# (CARGO_TARGET_DIR) so only build artifacts are cached; `--root /opt/rust/cargo`
+# keeps the installed binary in the real image layer (a cache mount is not part
+# of the image — anything left only in the mount would vanish from the result).
+RUN --mount=type=cache,target=/opt/rust/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/opt/rust/cargo/git,sharing=locked \
+    --mount=type=cache,target=/root/.cargo-target,sharing=locked \
+    CARGO_TARGET_DIR=/root/.cargo-target \
+    cargo install defmt-print@1.1.0 --locked --root /opt/rust/cargo \
     && chown -R www-data:www-data /opt/rust \
     && chmod -R 755 /opt/rust
 
@@ -153,7 +174,14 @@ RUN mkdir -p /opt/tools /opt/nrfutil \
 
 # Install user-specified packages from user_requirements.txt
 COPY docker/user_requirements.txt /tmp/user_requirements.txt
-RUN pip3 install -r /tmp/user_requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    pip3 install -r /tmp/user_requirements.txt
+
+# Acroname BrainStem SDK (USB hub control). No source dependency, so it lives
+# above the source COPY block — a code change must not re-run this pip install.
+# See: https://pypi.org/project/brainstem/
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    pip3 install brainstem --upgrade
 
 # Copy Python lager package modules (grouped structure)
 # Copy Python files at root level
@@ -197,9 +225,6 @@ COPY blufi /app/lager/lager/blufi
 COPY automation /app/lager/lager/automation
 
 COPY run.sh /app
-# Acroname BrainStem SDK (USB hub control)
-# See: https://pypi.org/project/brainstem/
-RUN pip3 install brainstem --upgrade
 
 # Smoke-check: api_reference must successfully introspect every driver in
 # _DRIVER_CLASSES. If a driver is renamed/moved without updating

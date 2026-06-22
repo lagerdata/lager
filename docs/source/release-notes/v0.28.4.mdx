@@ -1,0 +1,31 @@
+---
+title: "Version 0.28.4"
+description: "June 22, 2026"
+---
+
+## <u>Improvements</u>
+
+- **`lager update` is much faster.** Box image rebuilds now reuse a build cache for the Rust (`defmt-print`) and Python package layers, so a from-scratch rebuild reuses already-downloaded packages and compiled artifacts instead of redoing them — a cold rebuild that used to take around 20 minutes now finishes in a few minutes, and a warm rebuild takes seconds. `lager update` also checks up front that the box's Docker supports BuildKit and tells you how to upgrade if it doesn't.
+- **`lager update` asks for the sudo password at most once.** The udev, modprobe, sudoers, and box-config setup steps used to each prompt separately, so a box that needed several of them could ask for the password multiple times in one run. They now run in a single step — at most one prompt, and none at all on a fully set-up Lager Box.
+
+## <u>Bug Fixes</u>
+
+- **A repeat `lager update` no longer rebuilds when nothing changed.** The box keeps a record of its build inputs so it can skip an unnecessary rebuild, but that record couldn't be updated and went stale, so every update rebuilt the image and restarted the box (about 30 seconds). It is now written reliably, so an unchanged box finishes in about a second.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.28.4
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.28.4/)

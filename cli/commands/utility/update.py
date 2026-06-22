@@ -16,6 +16,7 @@ import subprocess
 import threading
 import time
 import sys
+import uuid
 from ...box_storage import (
     auto_lock_acquire_for_command,
     get_box_user,
@@ -698,6 +699,40 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
                 time.sleep(5)
         return False
 
+    def store_build_hash(hash_value):
+        """Persist the docker-build-inputs hash to /etc/lager/build-hash.
+
+        Returns True on success, False on failure (caller decides whether to
+        warn). Retries up to 3 times with backoff, like write_box_version_file.
+
+        The file is bind-mounted from the host into the container and can end up
+        owned by www-data (the container's runtime user); the SSH user
+        (lagerdata) is not in that group, so a plain `echo > /etc/lager/build-hash`
+        fails with EACCES and — when the write was unchecked — left a stale hash
+        that made every subsequent `lager update` rebuild needlessly. Step 10 has
+        already `chmod 777`'d /etc/lager, so we write a temp file in that dir and
+        `mv -f` it over the target: unlinking the old file needs only
+        directory-write (granted by 777), and the replacement is owned by
+        lagerdata, so future runs can overwrite it directly. Same-filesystem mv
+        is an atomic rename. The mktemp template's trailing X's must stay at the
+        end of the name.
+        """
+        if not hash_value:
+            return True
+        write_cmd = (
+            'tmp=$(mktemp /etc/lager/.build-hash.XXXXXX) && '
+            f'printf "%s\\n" "{hash_value}" > "$tmp" && '
+            'chmod 644 "$tmp" && '
+            'mv -f "$tmp" /etc/lager/build-hash'
+        )
+        for attempt in range(3):
+            result = run_ssh_command_with_output(write_cmd, timeout_secs=30)
+            if result.returncode == 0:
+                return True
+            if attempt < 2:
+                time.sleep(5)
+        return False
+
     # Step 2: Inspect box state — one SSH round-trip gathers every read-only
     # fact the rest of the flow needs (git-repo check, remote URL, layout,
     # current commit, docker-build cache inputs, udev/sudoers state, on-box
@@ -1143,6 +1178,25 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     # or half-installed toolchain behind on the retry.
     must_wipe_image = hash_mismatch or force
 
+    # Privileged box-state operations (udev rules, modprobe blacklist,
+    # sudoers-owner fix, box-config sudoers bootstrap) are COLLECTED here and
+    # applied together in a single interactive `ssh -t` session further down.
+    # Each is a no-op on a correctly-provisioned box (the probe already told us
+    # what's in sync); when one IS needed and the box lacks the passwordless
+    # sudoers grant, batching them means the sudo password is requested at most
+    # once per run instead of once per step (each used to open its own `ssh -t`
+    # session, and sudo's per-tty credential cache doesn't carry across them).
+    # A run that needs no privileged work never opens the session -> 0 prompts.
+    # Per-run unique results path: a static /tmp name could be left behind by a
+    # crashed run (or another user) and, since /tmp is sticky, our `rm -f` then
+    # fails and the append is denied — making every job misreport as FAILED. A
+    # uuid suffix also avoids the predictable-path risk on a shared box.
+    _priv_results_path = f'/tmp/lager_priv_results_{uuid.uuid4().hex}'
+    priv_jobs = []  # each: {'name': str, 'snippet': shell str, 'render': fn(ok)}
+
+    def enqueue_priv(name, snippet, render):
+        priv_jobs.append({'name': name, 'snippet': snippet, 'render': render})
+
     # Step 5: udev rules. The probe already located the source dir and diffed
     # its 99-instrument.rules against the installed copy, so we only touch the
     # box when an install/update is actually needed.
@@ -1170,6 +1224,12 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         # to (GROUP="lager"); the getent guard keeps the groupadd off the
         # common path so provisioned boxes stay within the passwordless
         # sudoers grant and see no password prompt.
+        # The `&&` chain means a non-zero exit already implies one of the
+        # sudo steps failed, so no separate post-install verify is needed.
+        # The "lager" group is what the instrument rules grant device access
+        # to (GROUP="lager"); the getent guard keeps the groupadd off the
+        # common path so provisioned boxes stay within the passwordless
+        # sudoers grant. Queued for the single privileged session below.
         install_cmd = (
             f'cp {udev_src_path}/99-instrument.rules /tmp/ && '
             '{ getent group lager >/dev/null || sudo /usr/sbin/groupadd lager; } && '
@@ -1180,32 +1240,20 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             'sudo /bin/rm -f /tmp/99-instrument.rules'
         )
 
-        # Interactive mode so a sudo password prompt can appear. pause()/
-        # resume() stop the 1s progress re-render from overwriting the prompt.
-        if not verbose and progress:
-            progress.pause()
-            click.echo('Installing udev rules (may require sudo password)...')
-        elif verbose:
-            click.echo()
+        def _render_udev(ok, _src=udev_src_path):
+            log('Installing udev rules...', nl=False)
+            if ok:
+                log_status('OK', 'green')
+            else:
+                log_status('FAILED', 'red')
+                if verbose:
+                    click.echo('  Could not install udev rules — likely a sudoers permission issue.', err=True)
+                    click.echo(f'  Manual fix: ssh {ssh_host}, then:', err=True)
+                    click.echo('    sudo groupadd -f lager', err=True)
+                    click.echo(f'    sudo cp {_src}/99-instrument.rules /etc/udev/rules.d/', err=True)
+                    click.echo('    sudo udevadm control --reload-rules && sudo udevadm trigger', err=True)
 
-        result = run_ssh_command_interactive(install_cmd, allow_sudo_prompt=True)
-
-        if not verbose and progress:
-            progress.resume()
-        elif verbose:
-            click.echo()
-
-        log('Installing udev rules...', nl=False)
-        if result.returncode == 0:
-            log_status('OK', 'green')
-        else:
-            log_status('FAILED', 'red')
-            if verbose:
-                click.echo('  Could not install udev rules — likely a sudoers permission issue.', err=True)
-                click.echo(f'  Manual fix: ssh {ssh_host}, then:', err=True)
-                click.echo('    sudo groupadd -f lager', err=True)
-                click.echo(f'    sudo cp {udev_src_path}/99-instrument.rules /etc/udev/rules.d/', err=True)
-                click.echo('    sudo udevadm control --reload-rules && sudo udevadm trigger', err=True)
+        enqueue_priv('udev', install_cmd, _render_udev)
 
     # Step 5b: modprobe.d blacklists (0.20.0+: usbtmc blacklist for USB-TMC
     # instrument drivers). Same shape as the udev step above — probe diffed
@@ -1260,48 +1308,31 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     else:
         log_status('update needed', 'yellow')
 
+        # Install, then best-effort unload so the blacklist takes effect
+        # without a reboot (EBUSY if a USB-TMC instrument is in use — tolerated
+        # via `|| true`, so the job's success reflects the cp/chmod, not the
+        # unload). Queued for the single privileged session below.
         install_cmd = (
             f'cp {mp_src_path}/blacklist-usbtmc.conf /tmp/ && '
             'sudo /bin/cp /tmp/blacklist-usbtmc.conf /etc/modprobe.d/ && '
             'sudo /bin/chmod 644 /etc/modprobe.d/blacklist-usbtmc.conf && '
-            'sudo /bin/rm -f /tmp/blacklist-usbtmc.conf; '
-            # Try to unload immediately so the change takes effect without a
-            # reboot. Fails with EBUSY if a USB-TMC instrument is in use; we
-            # tolerate that and note a reboot is needed.
-            'if lsmod | grep -q "^usbtmc"; then '
-            '  sudo /sbin/modprobe -r usbtmc 2>/dev/null && '
-            '  echo "LAGER_MP_UNLOAD=OK" || echo "LAGER_MP_UNLOAD=BUSY"; '
-            'else echo "LAGER_MP_UNLOAD=NOT_LOADED"; fi'
+            'sudo /bin/rm -f /tmp/blacklist-usbtmc.conf && '
+            '{ ! lsmod | grep -q "^usbtmc" || sudo /sbin/modprobe -r usbtmc 2>/dev/null || true; }'
         )
 
-        if not verbose and progress:
-            progress.pause()
-            click.echo('Installing modprobe.d blacklists (may require sudo password)...')
-        elif verbose:
-            click.echo()
+        def _render_modprobe(ok, _src=mp_src_path):
+            log('Installing modprobe.d blacklists...', nl=False)
+            if ok:
+                log_status('OK', 'green')
+            else:
+                log_status('FAILED', 'red')
+                if verbose:
+                    click.echo('  Could not install modprobe.d blacklist — likely a sudoers permission issue.', err=True)
+                    click.echo(f'  Manual fix: ssh {ssh_host}, then:', err=True)
+                    click.echo(f'    sudo cp {_src}/blacklist-usbtmc.conf /etc/modprobe.d/', err=True)
+                    click.echo('    sudo modprobe -r usbtmc  # optional: takes effect immediately', err=True)
 
-        result = run_ssh_command_interactive(install_cmd, allow_sudo_prompt=True)
-
-        if not verbose and progress:
-            progress.resume()
-        elif verbose:
-            click.echo()
-
-        log('Installing modprobe.d blacklists...', nl=False)
-        if result.returncode == 0:
-            log_status('OK', 'green')
-            if verbose:
-                if 'LAGER_MP_UNLOAD=BUSY' in (result.stdout or ''):
-                    click.echo('  Note: usbtmc still loaded (instrument in use); reboot the box to fully apply.', err=True)
-                elif 'LAGER_MP_UNLOAD=OK' in (result.stdout or ''):
-                    click.echo('  usbtmc kernel module unloaded; blacklist now in effect.')
-        else:
-            log_status('FAILED', 'red')
-            if verbose:
-                click.echo('  Could not install modprobe.d blacklist — likely a sudoers permission issue.', err=True)
-                click.echo(f'  Manual fix: ssh {ssh_host}, then:', err=True)
-                click.echo(f'    sudo cp {mp_src_path}/blacklist-usbtmc.conf /etc/modprobe.d/', err=True)
-                click.echo('    sudo modprobe -r usbtmc  # optional: takes effect immediately', err=True)
+        enqueue_priv('modprobe', install_cmd, _render_modprobe)
 
     # Step 6: sudoers ownership. /etc/sudoers.d/lagerdata-udev must be
     # root-owned or sudo refuses it; the probe gave us the owner uid.
@@ -1317,29 +1348,20 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     else:
         log_status(f'fixing (owned by uid {sudoers_owner})', 'yellow')
 
-        if not verbose and progress:
-            progress.pause()
-            click.echo('Fixing sudoers ownership (may require sudo password)...')
-        elif verbose:
-            click.echo()
+        def _render_sudoers(ok):
+            log('Fixing sudoers ownership...', nl=False)
+            if ok:
+                log_status('OK', 'green')
+            else:
+                log_status('FAILED', 'red')
+                if verbose:
+                    click.echo('  Warning: could not fix sudoers ownership; sudo may not work correctly.', err=True)
 
-        fix_result = run_ssh_command_interactive(
+        enqueue_priv(
+            'sudoers_owner',
             'sudo chown root:root /etc/sudoers.d/lagerdata-udev',
-            allow_sudo_prompt=True
+            _render_sudoers,
         )
-
-        if not verbose and progress:
-            progress.resume()
-        elif verbose:
-            click.echo()
-
-        log('Fixing sudoers ownership...', nl=False)
-        if fix_result.returncode == 0:
-            log_status('OK', 'green')
-        else:
-            log_status('FAILED', 'red')
-            if verbose:
-                click.echo('  Warning: could not fix sudoers ownership; sudo may not work correctly.', err=True)
 
     # Step 7: passwordless sudo for `lager box config apply`.
     #
@@ -1359,12 +1381,6 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     else:
         log_status('needs bootstrap', 'yellow')
 
-        if not verbose and progress:
-            progress.pause()
-            click.echo('Installing box-config sudoers rule (may require sudo password)...')
-        elif verbose:
-            click.echo()
-
         boxcfg_sudoers_cmd = (
             "printf '%s\\n' "
             "'lagerdata ALL=(root) NOPASSWD: SETENV: /usr/bin/apt-get' "
@@ -1379,18 +1395,17 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             "&& sudo chmod 644 /etc/lager/.boxcfg-sudoers-v2"
         )
 
-        boxcfg_install_result = run_ssh_command_interactive(
-            boxcfg_sudoers_cmd,
-            allow_sudo_prompt=True,
-        )
-
-        if not verbose and progress:
-            progress.resume()
-        elif verbose:
-            click.echo()
-
-        log('Installing box-config sudoers...', nl=False)
-        if boxcfg_install_result.returncode == 0:
+        def _render_boxcfg(ok):
+            log('Installing box-config sudoers...', nl=False)
+            if not ok:
+                log_status('FAILED', 'yellow')
+                if verbose:
+                    click.echo(
+                        '  Warning: box-config sudoers rule could not be installed. '
+                        '`lager box config apply` will need manual sudoers setup on this box.',
+                        err=True,
+                    )
+                return
             # `sudo tee` succeeds even if the sudoers content is malformed,
             # so this functional re-check is genuinely needed (unlike the
             # udev path above, where the `&&` chain is self-verifying).
@@ -1407,14 +1422,55 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
                         'Check /etc/sudoers.d/lager-box-config syntax on the box.',
                         err=True,
                     )
-        else:
-            log_status('FAILED', 'yellow')
-            if verbose:
-                click.echo(
-                    '  Warning: box-config sudoers rule could not be installed. '
-                    '`lager box config apply` will need manual sudoers setup on this box.',
-                    err=True,
-                )
+
+        enqueue_priv('boxcfg', boxcfg_sudoers_cmd, _render_boxcfg)
+
+    # Apply all queued privileged operations in ONE interactive `ssh -t`
+    # session, so the sudo password (on a box without the passwordless grant)
+    # is requested at most once for the whole run. We can't read the interactive
+    # session's stdout (it streams to the terminal so the prompt is visible), so
+    # each job records `<name>=OK|FAIL` to a results file that we read back over
+    # the normal captured channel and hand to each job's render() for the same
+    # per-step status output as before. A box that needs nothing skips this
+    # entirely and never prompts.
+    if priv_jobs:
+        wrapped = [f'rm -f {_priv_results_path}']
+        for job in priv_jobs:
+            # Subshell so one job's failure doesn't abort the rest; record the
+            # outcome regardless. The first sudo in this single tty prompts (if
+            # needed); subsequent sudos reuse the cached credential.
+            wrapped.append(
+                f'if ( {job["snippet"]} ); then '
+                f'echo "{job["name"]}=OK" >> {_priv_results_path}; '
+                f'else echo "{job["name"]}=FAIL" >> {_priv_results_path}; fi'
+            )
+        combined_priv_cmd = '\n'.join(wrapped)
+
+        if not verbose and progress:
+            progress.pause()
+            click.echo('Applying box settings (may require the sudo password once)...')
+        elif verbose:
+            click.echo()
+
+        run_ssh_command_interactive(combined_priv_cmd, allow_sudo_prompt=True)
+
+        if not verbose and progress:
+            progress.resume()
+        elif verbose:
+            click.echo()
+
+        # Read back per-job results over the captured channel, then clean up.
+        priv_read = run_ssh_command_with_output(
+            f'cat {_priv_results_path} 2>/dev/null; rm -f {_priv_results_path}'
+        )
+        priv_results = {}
+        for line in (priv_read.stdout or '').splitlines():
+            if '=' in line:
+                k, _, v = line.partition('=')
+                priv_results[k.strip()] = v.strip()
+
+        for job in priv_jobs:
+            job['render'](priv_results.get(job['name']) == 'OK')
 
     # No git updates, no box/→root flatten work, and the docker-build inputs
     # match what's already cached: a second consecutive `lager update` would
@@ -1523,6 +1579,42 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         )
         log_status('OK', 'green')
 
+    # BuildKit preflight. box.Dockerfile uses a `# syntax=` directive and
+    # `RUN --mount=type=cache` cache mounts that keep the cargo (defmt-print)
+    # compile and pip wheel work warm across rebuilds — turning a from-scratch
+    # rebuild from ~20 min into a few minutes. These require BuildKit: Docker
+    # >= 23 enables it by default and 18.09+ honors DOCKER_BUILDKIT=1, while a
+    # legacy builder errors on `--mount`. Probe once and fail fast with an
+    # actionable message rather than wasting a long build that dies on a
+    # confusing parse error minutes in.
+    def _docker_supports_buildkit():
+        probe = run_ssh_command_with_output(
+            "docker buildx version >/dev/null 2>&1 && echo BUILDX || "
+            "docker version --format '{{.Server.Version}}' 2>/dev/null",
+            timeout_secs=20,
+        )
+        out = (probe.stdout or '').strip()
+        if 'BUILDX' in out:
+            return True, out
+        try:
+            parts = out.split('-')[0].split('.')
+            ver = (int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
+            return ver >= (18, 9), out
+        except (ValueError, IndexError):
+            return False, out
+
+    buildkit_ok, docker_ver = _docker_supports_buildkit()
+    if not buildkit_ok:
+        if progress:
+            progress.finish(success=False)
+        log_error(
+            "Error: this box's Docker does not support BuildKit, which the box "
+            "image now requires (RUN --mount cache mounts). Detected: "
+            f"{docker_ver or 'unknown'}. Upgrade Docker to >= 23 (or install the "
+            "docker-buildx-plugin) on the box, then re-run `lager update`."
+        )
+        ctx.exit(1)
+
     # Step 9: Rebuild Docker container (the slow part)
     if progress:
         progress.update("Building container...")
@@ -1536,7 +1628,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     ssh_cmd.extend(_ssh_mux_opts)
     ssh_cmd.extend([ssh_host,
          'cd ~/box/lager && '
-         'docker build -f docker/box.Dockerfile -t lager .'])
+         'DOCKER_BUILDKIT=1 docker build -f docker/box.Dockerfile -t lager .'])
 
     build_output_lines = []
     if verbose:
@@ -1590,14 +1682,10 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     if verbose:
         click.secho('  Build complete', fg='green')
 
-    # Record the build-inputs hash so the next run can decide whether to
-    # invalidate the cache automatically. Best-effort — a failure here just
-    # means the next update may rebuild unnecessarily.
-    if new_build_hash:
-        run_ssh_command_with_output(
-            f'echo "{new_build_hash}" > /etc/lager/build-hash',
-            timeout_secs=15,
-        )
+    # The build-inputs hash is persisted later (after Step 10 ensures
+    # /etc/lager is world-writable) via store_build_hash — writing it here, to a
+    # possibly www-data-owned file, failed silently and left a stale hash that
+    # forced a rebuild on every subsequent run.
 
     # Reclaim disk from *superseded* images while preserving the build cache.
     #
@@ -1654,6 +1742,18 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         click.echo('Then run `lager box update` again.', err=True)
         ctx.exit(1)
     log_status('OK', 'green')
+
+    # Persist the build-inputs hash now that /etc/lager is world-writable (Step
+    # 10). This is what lets the next run's cache-validity check short-circuit to
+    # the no-op fast path instead of rebuilding; a stale hash defeats it. Unlike
+    # the old unchecked write, store_build_hash verifies success and we surface a
+    # visible warning on failure rather than silently leaving a stale hash.
+    if new_build_hash and not store_build_hash(new_build_hash):
+        click.secho(
+            'Warning: could not persist build hash to /etc/lager/build-hash; '
+            'the next `lager update` may rebuild even when nothing changed.',
+            fg='yellow', err=True,
+        )
 
     # Write the version file BEFORE the container restart (SSH is stable here).
     # A version tag (v0.3.14 / 0.3.14) is used directly. For a branch target
