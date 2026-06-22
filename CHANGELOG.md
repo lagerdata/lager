@@ -2,6 +2,17 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.28.4] - 2026-06-22
+
+`lager update` is faster and smoother: box image rebuilds reuse a build cache (a cold rebuild drops from ~20 minutes to a few minutes), a repeat update with nothing to change finishes in about a second instead of rebuilding, and an update asks for the sudo password at most once.
+
+### Changed
+- **Box image rebuilds are much faster.** The box Dockerfile now uses BuildKit cache mounts for the Rust (`defmt-print`) and pip layers, so a from-scratch rebuild reuses already-downloaded packages and compiled artifacts instead of redoing them — a cold, cache-invalidating rebuild drops from roughly 20 minutes to a few minutes, and a warm rebuild is seconds. `defmt-print` is now pinned to 1.1.0 so an unrelated upstream release can't silently trigger a multi-minute recompile. `lager update` also checks up front that the box's Docker supports BuildKit and fails fast with an upgrade hint if it doesn't.
+
+### Fixed
+- **A repeat `lager update` no longer rebuilds when nothing changed.** The box records a hash of its build inputs to decide whether a rebuild is needed, but that record was owned by the container user and the update (running as the login user) couldn't overwrite it — so it went stale and every update rebuilt the image and restarted the container (~30s). The record is now written reliably, so an unchanged box finishes in about a second.
+- **`lager update` now asks for the sudo password at most once.** The udev, modprobe, sudoers, and box-config setup steps each used to open their own privileged session, so a box needing several of them could prompt for the password multiple times in a single update. They now run together in one session — at most one prompt, and none at all on a fully provisioned box.
+
 ## [0.28.3] - 2026-06-18
 
 `lager diagnose` now covers debug nets. Pointed at a J-Link / debug net it localizes the fault across the whole probe stack and prints the specific fix, instead of dead-ending at "only covers USB-TMC instruments today".
