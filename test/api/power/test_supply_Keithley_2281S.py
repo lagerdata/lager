@@ -729,15 +729,10 @@ def main():
         print(f"  lager nets tui --box <box>")
         sys.exit(1)
 
-    if psu is None:
-        print(f"\nSKIP: Net '{KEITHLEY_SUPPLY_NET}' not found in net configuration.")
-        print("Skipping all tests for this device.")
-        sys.exit(0)
-
     try:
         psu.state()
     except Exception as e:
-        print(f"\nSKIP: Cannot connect to net '{KEITHLEY_SUPPLY_NET}' — device not reachable: {e}")
+        print(f"\nERROR: Cannot connect to net '{KEITHLEY_SUPPLY_NET}' — device not reachable: {e}")
         print("\nDiagnose the hardware issue with:")
         print(f"  lager instruments --box <box>")
         print(f"  lager diagnose {KEITHLEY_SUPPLY_NET} --box <box>")
@@ -746,8 +741,7 @@ def main():
         print("  - Check the Keithley is powered on and USB cable is connected")
         print("  - Verify the net is configured in /etc/lager/saved_nets.json")
         print("  - If busy: check lsof output in 'lager diagnose' for competing processes")
-        print("\nSkipping all tests for this device.")
-        sys.exit(0)
+        sys.exit(1)
 
     tests = [
         ("Live Measurements",              test_live_measurements),

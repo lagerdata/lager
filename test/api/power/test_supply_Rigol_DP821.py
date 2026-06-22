@@ -674,15 +674,10 @@ def main():
         print(f"  lager nets tui --box <box>")
         sys.exit(1)
 
-    if psu is None:
-        print(f"\nSKIP: Net '{SUPPLY_NET}' not found in net configuration.")
-        print("Skipping all tests for this device.")
-        sys.exit(0)
-
     try:
         psu.state()
     except Exception as e:
-        print(f"\nSKIP: Cannot connect to net '{SUPPLY_NET}' — device not reachable: {e}")
+        print(f"\nERROR: Cannot connect to net '{SUPPLY_NET}' — device not reachable: {e}")
         print("\nDiagnose the hardware issue with:")
         print(f"  lager instruments --box <box>")
         print(f"  lager diagnose {SUPPLY_NET} --box <box>")
@@ -692,8 +687,7 @@ def main():
         print("  - If 'nodev': run  lager power supply1 state --box <box>  to reset the session")
         print("  - If 'busy': check lsof output in 'lager diagnose' for competing processes")
         print("  - If 'usbtmc kmod LOADED': run  lager box update")
-        print("\nSkipping all tests for this device.")
-        sys.exit(0)
+        sys.exit(1)
 
     tests = [
         ("Live Measurements",              test_live_measurements),
