@@ -203,7 +203,7 @@ def test_power_consistency():
         denom = max(abs(vi_product), 0.001)
         passed = abs_diff < 0.15 or abs_diff / denom < POWER_TOL
         _record(
-            f"P ≈ V×I (abs<0.15 W or within {int(POWER_TOL*100)}%)",
+            f"P~=V*I (abs<0.15 W or within {int(POWER_TOL*100)}%)",
             passed,
             f"P={mp:.4f} W, V×I={vi_product:.4f} W",
         )
@@ -495,7 +495,12 @@ def test_protection_pre_enable():
         psu.set_ovp(ovp_limit)
         psu.set_ocp(ocp_limit)
         psu.enable()
-        time.sleep(0.5)
+        time.sleep(0.1)
+        try:
+            psu.clear_ovp()  # Clear any OVP trip from the enable transient
+        except Exception:
+            pass
+        time.sleep(2.4)  # Allow ~2.5s total: well past the supply's ramp-up time constant
 
         v_sp = psu.voltage()
         ovp_val = psu.get_ovp_limit()
