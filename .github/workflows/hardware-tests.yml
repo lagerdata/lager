@@ -70,7 +70,7 @@ jobs:
         continue-on-error: true
         timeout-minutes: 8
         env:
-          SUPPLY_NET: ${{ vars.RIGOL_CH1_NET || 'rigol1' }}
+          SUPPLY_NET: ${{ vars.RIGOL_CH1_NET || 'supply2' }}
           CHANNEL_MAX_VOLTAGE: ${{ vars.RIGOL_CH1_MAX_VOLTAGE || '60.0' }}
           CHANNEL_MAX_CURRENT: ${{ vars.RIGOL_CH1_MAX_CURRENT || '1.0' }}
         run: |
@@ -83,7 +83,7 @@ jobs:
         continue-on-error: true
         timeout-minutes: 8
         env:
-          SUPPLY_NET: ${{ vars.RIGOL_CH2_NET || 'rigol2' }}
+          SUPPLY_NET: ${{ vars.RIGOL_CH2_NET || 'supply3' }}
           CHANNEL_MAX_VOLTAGE: ${{ vars.RIGOL_CH2_MAX_VOLTAGE || '8.0' }}
           CHANNEL_MAX_CURRENT: ${{ vars.RIGOL_CH2_MAX_CURRENT || '10.0' }}
         run: |
@@ -123,7 +123,7 @@ jobs:
         continue-on-error: true
         timeout-minutes: 8
         env:
-          KEITHLEY_SUPPLY_NET: ${{ vars.KEITHLEY_SUPPLY_NET || 'keithley1' }}
+          KEITHLEY_SUPPLY_NET: ${{ vars.KEITHLEY_SUPPLY_NET || 'supply1' }}
           KEITHLEY_MAX_VOLTAGE: ${{ vars.KEITHLEY_MAX_VOLTAGE || '20.0' }}
           KEITHLEY_MAX_CURRENT: ${{ vars.KEITHLEY_MAX_CURRENT || '6.0' }}
         run: |
