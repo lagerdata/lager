@@ -9,7 +9,9 @@ a misbehaving instrument net. It collapses the manual debug workflow (`lsof`,
 that returns an actionable classification — host-side, instrument-wedged, or
 healthy.
 
-<Note>Introduced in **lager 0.20.0**. Covers USB-TMC (pyvisa) instruments.</Note>
+<Note>Introduced in **lager 0.20.0** for USB-TMC (pyvisa) instruments. Extended in
+**0.28.3** to diagnose `debug` nets (SEGGER J-Link, and a basic OpenOCD/ST-Link
+path) — see [Debug nets (J-Link)](#debug-nets-j-link) below.</Note>
 
 ## Syntax
 
@@ -22,7 +24,7 @@ lager diagnose NET [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--box BOX` | Lagerbox name or IP address (uses the default box if omitted) |
-| `--type ROLE` | Net role. Defaults to `auto`, which looks up the net's role from the box's saved nets. Pass an explicit role (`battery`, `power-supply`, `scope`, `usb`, `adc`, …) to override, or to diagnose a net that isn't saved. |
+| `--type ROLE` | Net role. Defaults to `auto`, which looks up the net's role from the box's saved nets. Pass an explicit role (`battery`, `power-supply`, `scope`, `debug`, `usb`, `adc`, …) to override, or to diagnose a net that isn't saved. A `debug` net routes to the [J-Link path](#debug-nets-j-link). |
 
 `NET` is the name of the net to diagnose (e.g. `battery1`, `supply1`).
 
@@ -137,6 +139,93 @@ misleading `UNCLEAR`.
 
 ---
 
+## Debug nets (J-Link)
+
+A `debug` net isn't USB-TMC, so the pyvisa `*IDN?` probe above can't reach it.
+When the net's role is `debug` (auto-detected, or forced with `--type debug`),
+`lager diagnose` takes a J-Link-aware path instead: it fetches the same
+host-side **USB** section plus a dedicated `/diagnose/jlink` endpoint and walks
+the debug stack outside-in — software → USB → probe-visible → gdbserver →
+target connect — so the most specific actionable fault wins.
+
+```bash
+lager diagnose swd1 --box lab-lager-box            # auto-detects the debug role
+lager diagnose swd1 --box lab-lager-box --type debug
+```
+
+### J-Link / debug probe section
+
+In addition to the **USB (host-side)** section, a debug net prints a
+**J-Link / debug probe** section reporting:
+
+- `backend` — the probe backend (`jlink`, or an OpenOCD/ST-Link backend).
+- `jlink software` — whether the SEGGER J-Link tools are installed on the box.
+- `probe enum` — does the probe show up on the host's USB bus?
+- `probe visible` — does `JLinkExe` actually enumerate the probe (with the
+  emulator product/serial list)?
+- `holders` — `command(pid)` of any process holding the probe (usually a stale
+  gdbserver).
+- `gdbserver` — whether a J-Link gdbserver is running, its PID, and whether its
+  logfile looks healthy.
+- `connect` — the result of a target-connect probe: `connect_ok`, an error
+  class, `VTref` (target reference voltage), and the detected `core`. The raw
+  `JLinkExe` output is shown when the failure can't be classified.
+
+A SEGGER probe gets the full stack above. A non-J-Link OpenOCD/ST-Link probe
+reports a lighter `openocd-basic` section (backend, probe enumeration, and
+gdbserver state) — deep target diagnosis is J-Link-only for now.
+
+### Debug classifications
+
+| Classification | Trigger |
+|----------------|---------|
+| `HEALTHY: J-Link connected to <device>` | target connect succeeded (core, and VTref when J-Link reports it) |
+| `HEALTHY: J-Link gdbserver running` | a gdbserver is up, listening, and its log is clean (active debug session) |
+| `J-LINK SOFTWARE MISSING on box` | the SEGGER J-Link tools aren't installed (`lager update` installs them) |
+| `PROBE NOT ON USB` | the probe isn't enumerated — check cable, probe power, upstream hub port |
+| `PROBE CLAIMED` | probe is on USB but `JLinkExe` can't see it because another process holds it (usually a stale gdbserver — `lager debug <net> disconnect`) |
+| `PROBE WEDGED` | probe is on USB but `JLinkExe` enumeration is empty — power-cycle the probe |
+| `GDBSERVER WEDGED` | server process is up but its log shows a target-connection failure |
+| `TARGET UNPOWERED` | probe is fine but VTref is too low — the target board has no power on the debug header (or VTref isn't wired) |
+| `TARGET LOCKED` | debug access is blocked by readout/IDCODE/AP protection — a mass-erase/unlock is required (e.g. `nrfjprog --recover`) |
+| `DEVICE NAME` | `JLinkExe` rejected the configured device — fix the net's device/MCU field |
+| `NO TARGET COMMS` | probe + target power OK but SWD/JTAG connect failed — check SWDIO/SWCLK wiring, nRST pull-up, SWD-vs-JTAG, try a lower speed |
+| `INCONCLUSIVE` / `UNCLEAR` | connect probe was skipped or returned an unrecognized class — review the section output and rerun |
+
+### Sample debug session
+
+```
+$ lager diagnose swd1 --box lab-lager-box --type debug
+lager diagnose — lab-lager-box → swd1
+  NetType: debug    address: 50105878
+
+== USB (host-side) ==
+   enumerated:   True
+   usbtmc kmod:  not loaded (good)
+   lsof:         no holders
+
+== J-Link / debug probe ==
+   backend:        jlink
+   jlink software: installed
+   probe enum:     True
+   probe visible:  True  (emus: J-Link/50105878)
+   holders:        none
+   gdbserver:      running=False pid=None log_ok=None
+   connect:        ok=True class=ok VTref=3.300V core=Cortex-M4
+
+Classification: HEALTHY: J-Link connected to NRF52840_XXAA (Cortex-M4, VTref=3.300V).
+```
+
+A locked target surfaces clearly so you reach for the right recovery:
+
+```
+Classification: TARGET LOCKED: debug access is blocked by readout/IDCODE/AP
+protection. A mass-erase/unlock is required (e.g. `nrfjprog --recover` for nRF,
+or the vendor unlock flow).
+```
+
+---
+
 ## Backwards compatibility
 
 Against a pre-0.20 box, each endpoint returns 404 and the CLI notes that the
@@ -150,4 +239,5 @@ informative.
 
 - [Instruments](/source/reference/cli/instruments) — list attached instruments and their VISA addresses
 - [Nets](/source/reference/cli/nets) — list saved nets and their roles
+- [Debug](/source/reference/cli/debug) — connect, flash, and gdbserver control for debug nets
 - [Hello](/source/reference/cli/hello) — basic box-side connectivity and version check

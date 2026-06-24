@@ -119,8 +119,13 @@ lager debug [NET_NAME] flash [OPTIONS]
 - `--bin ADDRESS FILE` - Path to binary file with load address
 - `--verbose` - Show detailed J-Link output
 - `--force-reconnect` - Force clean reconnect before flash
-- `--erase` - Erase all flash before flashing (ensures clean state)
+- `--no-erase` - Skip the erase step (by default `flash` erases before programming for a clean state)
 - `--halt / --no-halt` - Halt device after flashing (default: no-halt)
+
+<Note>`flash` erases before programming **by default**, so no flag is needed for a
+clean state (this is what RTT initialization wants). Pass `--no-erase` only when
+you intentionally want to preserve existing flash contents. The older `--erase`
+flag is now a no-op kept for backward compatibility.</Note>
 
 **Examples:**
 
@@ -134,8 +139,8 @@ lager debug flash --elf build/firmware.elf --box my-lager-box
 # Flash binary with base address
 lager debug flash --bin 0x08000000 build/firmware.bin --box my-lager-box
 
-# Flash with full erase first (recommended for RTT)
-lager debug flash --hex build/firmware.hex --erase --box my-lager-box
+# Flash while preserving existing flash contents (skip the default erase)
+lager debug flash --hex build/firmware.hex --no-erase --box my-lager-box
 
 # Flash and halt for debugging
 lager debug flash --elf build/firmware.elf --halt --box my-lager-box
@@ -214,7 +219,8 @@ lager debug [NET_NAME] memrd START_ADDR LENGTH [OPTIONS]
 **Options:**
 - `--box TEXT` - Lagerbox name or IP
 - `--json` - Output results in JSON format
-- `--halt / --no-halt` - Halt device during read (default: no-halt)
+- `--halt / --no-halt` - Halt device during read (default: no-halt). `--no-halt` overrides the auto-halt for DA1469x QSPI XIP
+- `--no-reset` - **DA1469x only.** Skip the reset+halt the box performs before the read. A running DA1469x has SWD disabled, so without the reset the read fails — use this only on a blank/awake part to avoid rebooting it
 
 **Examples:**
 
@@ -227,6 +233,9 @@ lager debug memrd 0x20000000 64 --halt --box my-lager-box
 
 # Output as JSON
 lager debug memrd 0x08000000 32 --json --box my-lager-box
+
+# DA1469x: read a blank/awake part without rebooting it
+lager debug memrd 0x20000000 16 --no-reset --box my-lager-box
 ```
 
 **Output:**
@@ -365,8 +374,8 @@ arm-none-eabi-gdb build/app.elf -ex 'target remote <BOX_IP>:2331'
 ### RTT Debugging
 
 ```bash
-# Flash with erase for clean RTT state
-lager debug flash --elf build/app.elf --erase --box my-lager-box
+# Flash for a clean RTT state (erase happens by default)
+lager debug flash --elf build/app.elf --box my-lager-box
 
 # Start GDB server and stream RTT with boot capture
 lager debug gdbserver --box my-lager-box --rtt-reset
@@ -530,7 +539,7 @@ Devices not in the table above default to Cortex-M4 (ARMv7E-M) architecture. If 
 
 - Debug nets are created with `lager nets add <name> debug <device_type> <address>`
 - The system auto-connects when needed for commands like `flash` and `reset`
-- Use `--erase` before flashing for clean RTT initialization
+- `flash` erases before programming by default, giving a clean state for RTT initialization (use `--no-erase` to opt out)
 - RTT streaming requires the device to have RTT support in firmware
 - Memory reads are more reliable with `--halt` to pause the CPU
 - Use `lager debug health --verbose` to diagnose connection issues

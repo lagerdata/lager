@@ -1,0 +1,228 @@
+---
+title: Devenv
+description: Manage a local Docker-based development environment for your project
+---
+
+`lager devenv` manages a reproducible, Docker-based development environment for
+a project. It records the image, mount directory, shell, saved commands, bind
+mounts, and environment variables in the `DEVENV` section of your project's
+`.lager` config file, so every engineer (and your CI) builds and tests in the
+same container.
+
+The environment is consumed by [`lager exec`](/source/reference/cli/exec)
+(run a command in the container) and `lager devenv terminal` (open an
+interactive shell in the container).
+
+## Syntax
+
+```bash
+lager devenv COMMAND [ARGS]...
+```
+
+## Subcommands
+
+| Command | Description |
+|---------|-------------|
+| `create` | Create the `DEVENV` config (image, mount dir, shell) |
+| `terminal` | Open an interactive shell in the container |
+| `show` | Print the resolved `DEVENV` configuration |
+| `set` | Set a scalar config key (or append to `ports`) |
+| `unset` | Remove a config key entirely |
+| `add` | Save a named command |
+| `delete` | Remove a saved command |
+| `commands` | List saved commands |
+| `mount add/remove/list` | Manage persistent bind-mounts / volumes |
+| `env set/unset/list` | Manage persistent environment variables |
+
+## Prerequisites
+
+Docker must be installed and on your `PATH`. Install it from
+[docker.com](https://docs.docker.com/get-docker/). On Linux, add your user to
+the `docker` group so you don't need `sudo`:
+
+```bash
+sudo usermod -aG docker $USER   # then log out/in, or run: newgrp docker
+```
+
+---
+
+## create
+
+Create the `DEVENV` section in your project's `.lager` config. Run this once
+per project before using `lager exec` or `lager devenv terminal`.
+
+```bash
+lager devenv create
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--image TEXT` | `lagerdata/devenv-cortexm` | Docker image to use |
+| `--mount-dir TEXT` | `/app` | Where your source code is mounted inside the container |
+| `--shell TEXT` | `/bin/bash` | Shell executable inside the image |
+
+The image name is validated against standard Docker naming (`name`,
+`name:tag`, `registry/name`, `registry/name:tag`). For `lagerdata/*` images the
+shell defaults to `/bin/bash`; for other images you'll be prompted. If a
+`DEVENV` section already exists you'll be asked before overwriting it.
+
+---
+
+## terminal
+
+Open an interactive shell inside the development container. Your project
+directory is bind-mounted at the configured `mount_dir`, and the container is
+removed on exit (unless `--detach` is used).
+
+```bash
+lager devenv terminal
+```
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--mount TEXT` | `-m` | Mount a named Docker volume at `mount_dir` instead of the source dir |
+| `--user TEXT` | `-u` | User to run as (overrides the `user` config key) |
+| `--group TEXT` | `-g` | Group to run as (overrides the `group` config key) |
+| `--name TEXT` | `-n` | Set the container name |
+| `--detach / --no-detach` | `-d` | Run the container detached |
+| `--port TEXT` | `-p` | Publish a port (`HOST:CONTAINER`). Repeatable |
+| `--entrypoint TEXT` | | Override the container entrypoint |
+| `--network TEXT` | | Docker network mode |
+| `--platform TEXT` | | Target platform (e.g. `linux/amd64`) |
+| `--attach TEXT` | `-a` | Attach a shell to an already-running container by name |
+| `--shell TEXT` | `-s` | Shell to use when attaching (default: config shell or `/bin/bash`) |
+| `--volume TEXT` | `-v` | Bind-mount a host path (`HOST:CONTAINER[:ro]`). Repeatable |
+| `--env FOO=BAR` | `-e` | Set an environment variable. Repeatable |
+| `--passenv NAME` | | Pass a variable through from your current shell. Repeatable |
+| `--info` | | Print the resolved `docker` command and config, then exit without launching |
+
+CLI flags take precedence over the matching keys stored in the `DEVENV`
+config; config-defined `ports`, `volumes`, and `environment` are applied
+first, then anything passed on the command line is appended.
+
+`terminal` also wires up SSH for you automatically: it forwards your
+`SSH_AUTH_SOCK` agent socket and mounts `~/.ssh/id_ed25519` and
+`~/.ssh/known_hosts` (read-only) when they exist, and it mounts your global
+`.lager` config into the container so nested `lager` calls are authenticated.
+
+Use `--info` to debug what would run without launching anything:
+
+```bash
+lager devenv terminal --info
+```
+
+### Attach to a running container
+
+```bash
+# Open a second shell in a container started with --detach --name build
+lager devenv terminal --attach build --shell /bin/bash
+```
+
+---
+
+## show
+
+Print the resolved `DEVENV` configuration — scalar keys, list keys (ports,
+volumes, environment), and saved commands.
+
+```bash
+lager devenv show
+```
+
+---
+
+## set / unset
+
+Set or remove individual configuration keys without re-running `create`.
+
+```bash
+lager devenv set image lagerdata/devenv-cortexm:latest
+lager devenv set mount_dir /workspace
+lager devenv set port 8080:8080      # appends to the ports list
+lager devenv unset platform
+```
+
+Scalar keys (replaced on `set`): `image`, `mount_dir`, `shell`, `user`,
+`group`, `entrypoint`, `hostname`, `macaddr`, `network`, `platform`,
+`repo_root_relative_path`.
+
+The `ports` key is a list and is **appended** to (the singular alias `port`
+is accepted). Edit `volumes` and `environment` with `lager devenv mount` and
+`lager devenv env` respectively — `set` will refuse them and point you at the
+right command.
+
+---
+
+## Saved commands: add / delete / commands
+
+Save shell commands under a name so they can be run with
+[`lager exec <name>`](/source/reference/cli/exec). Commands are stored as
+`cmd.<name>` keys in the `DEVENV` section.
+
+```bash
+lager devenv add build "make -j4"
+lager devenv add test "pytest tests/ --tb=short"
+lager devenv commands          # list saved commands
+lager devenv delete build      # remove one
+```
+
+Command names may contain only letters, numbers, dashes, and underscores. If
+you omit the command string, `add` prompts for it. By default `add` warns when
+overwriting an existing command; pass `--no-warn` to suppress that.
+
+---
+
+## Persistent bind-mounts: mount
+
+Persist host bind-mounts / named volumes in the config so they're applied on
+every `lager devenv terminal` and `lager exec` run.
+
+```bash
+lager devenv mount add /host/cache:/root/.cache       # host bind-mount
+lager devenv mount add toolchain:/opt/toolchain       # named volume
+lager devenv mount add /etc/ssl/certs:/etc/ssl/certs:ro
+lager devenv mount list
+lager devenv mount remove /host/cache:/root/.cache
+```
+
+Specs use Docker `-v` form: `HOST:CONTAINER[:ro]` for a bind-mount or
+`NAME:CONTAINER` for a named volume. For portability across machines, specs may
+use `~`, environment variables, and `${PROJECT_ROOT}` (which expands to your
+project's `.lager` directory).
+
+---
+
+## Persistent environment variables: env
+
+Persist environment variables in the config so they're set on every run.
+
+```bash
+lager devenv env set CFLAGS=-O2
+lager devenv env set DEBUG=0
+lager devenv env list
+lager devenv env unset DEBUG
+```
+
+`env set` replaces any existing value for the same variable.
+
+---
+
+## How it relates to `lager exec`
+
+| Command | Purpose |
+|---------|---------|
+| `lager devenv ...` | Configure the local container (image, mounts, env, saved commands) |
+| `lager devenv terminal` | Open an interactive shell in that container |
+| [`lager exec`](/source/reference/cli/exec) | Run a one-off or saved command in that container |
+
+All three read the same `DEVENV` section, so a command saved with
+`lager devenv add` is runnable with `lager exec`, and a mount added with
+`lager devenv mount add` applies to both `terminal` and `exec`.
+
+## Notes
+
+- Configuration is stored in the `DEVENV` section of the nearest `.lager`
+  config file, discovered by walking up from the current directory.
+- `terminal` launches the container with `--rm` by default, so it's removed on
+  exit unless you pass `--detach`.
+- Exit codes from the container are propagated to the CLI.

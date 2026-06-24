@@ -298,41 +298,30 @@ psu.disable()
 
 ---
 
-## pip Command
+## Installing Python packages
 
-Run pip commands in the Python container on the box. Useful for installing packages that your scripts depend on.
-
-### Syntax
-
-```bash
-lager pip [OPTIONS] [ARGS]...
-```
-
-### Options
-
-| Option | Description |
-|--------|-------------|
-| `--box BOX` | Lagerbox name or IP address |
-| `--help` | Show help message and exit |
-
-### Examples
+Scripts run inside the Lager Python container on the box. To install packages
+your scripts depend on, use the declarative `lager box config pip` commands,
+which record the packages in the box config and rebuild the container so they
+persist across `lager python` runs and box updates.
 
 ```bash
-# Install a package
-lager pip install pandas --box my-lager-box
+# Add one or more packages
+lager box config pip add pandas requests --box my-box
 
-# List installed packages
-lager pip list --box my-lager-box
+# List configured packages
+lager box config pip list --box my-box
 
-# Uninstall a package
-lager pip uninstall numpy --box my-lager-box
+# Remove a package
+lager box config pip remove numpy --box my-box
 
-# Install from requirements file
-lager pip install -r requirements.txt --box my-lager-box
+# Apply the changes (rebuild the container)
+lager box config apply --box my-box
 ```
 
-### Notes
+See the [Box Config reference](/source/reference/cli/box-config) for the full
+declarative provisioning workflow (pip/cargo/npm packages, apt, udev, mounts,
+env, and more).
 
-- Runs pip in the Lager Python container, not on your local machine
-- Installed packages persist across `lager python` invocations on the same box
-- All standard pip commands and arguments are supported
+<Note>The standalone `lager pip` command was removed and folded into
+`lager box config pip`.</Note>

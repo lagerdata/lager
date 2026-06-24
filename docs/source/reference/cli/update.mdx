@@ -155,11 +155,13 @@ The update command performs the following steps (shown in progress bar):
 
 ## Version Tracking
 
-The Lager Box tracks its current version in `/etc/lager/version`. You can sync versions from all Lager Boxes:
+The Lager Box tracks its current version in `/etc/lager/version`. The
+`lager boxes` listing queries each configured box and shows its current version
+in the `version` column:
 
 ```bash
-# Sync versions from all configured boxes
-lager boxes sync
+# List all boxes with their current versions
+lager boxes
 ```
 
 ---
