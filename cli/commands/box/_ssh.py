@@ -70,7 +70,7 @@ def key_auth_works(
     dest: str,
     *,
     key_path: str = _LAGER_BOX_KEY,
-    connect_timeout: int = 5,
+    connect_timeout: int = 15,
 ) -> bool:
     """Return True if ``dest`` (user@host) accepts the lager_box key unattended.
 
@@ -78,6 +78,12 @@ def key_auth_works(
     a box that hasn't authorized the key fails fast instead of blocking on
     a prompt. accept-new auto-trusts a first-seen host key so a brand-new
     box doesn't wedge on the interactive host-key question either.
+
+    The connect timeout is generous (15s) because this is the first, coldest
+    connection to the box and a slow first hop — Tailscale/VPN establishing the
+    path — can take several seconds. A too-short timeout here yields a false
+    "key not authorized", which makes `lager update` spuriously re-prompt
+    "SSH key not configured" on every run for a box that is in fact set up.
     """
     proc = subprocess.run(
         [

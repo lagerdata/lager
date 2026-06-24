@@ -623,13 +623,42 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     # follow-up `lager hello` reuses it for free.
     _ssh_pool = get_ssh_connection_pool()
     _ssh_control_path = _ssh_pool.get_control_path(ssh_host)
+    # StrictHostKeyChecking=accept-new auto-trusts a first-seen host key (matching
+    # the ssh-copy-id / key_auth_works setup phases) so a box that isn't yet in
+    # known_hosts doesn't fail these BatchMode calls with "Host key verification
+    # failed". It also survives environments where known_hosts can't be persisted
+    # (e.g. a devenv where it's a single-file bind mount and ssh's atomic replace
+    # errors with "Invalid cross-device link"): accept-new lets the connection
+    # proceed despite the write failure.
     _ssh_mux_opts = [
+        '-o', 'StrictHostKeyChecking=accept-new',
+        '-o', 'ConnectTimeout=30',
         '-o', 'ControlMaster=auto',
         '-o', f'ControlPath={_ssh_control_path}',
         '-o', 'ControlPersist=10m',
         '-o', 'ServerAliveInterval=30',
         '-o', 'ServerAliveCountMax=3',
     ]
+
+    # Tear down any leftover control master for this host before the first
+    # probe. A socket orphaned by an earlier interrupted/failed run (or one
+    # whose auth state is stale) gets silently reused by ControlMaster=auto,
+    # and the multiplexed session inherits its broken state — surfacing as a
+    # confusing "Permission denied (publickey,password)" on the probe even
+    # though the key authenticates fine on a fresh connection. Ask the master
+    # to exit, then unlink the socket if it lingers; both are best-effort.
+    try:
+        subprocess.run(
+            ['ssh', '-o', f'ControlPath={_ssh_control_path}', '-O', 'exit', ssh_host],
+            capture_output=True, timeout=10,
+        )
+    except (subprocess.SubprocessError, OSError):
+        pass
+    try:
+        if os.path.exists(_ssh_control_path):
+            os.remove(_ssh_control_path)
+    except OSError:
+        pass
 
     # Helper function to run SSH commands
     def run_ssh_command_with_output(cmd, timeout_secs=120):
@@ -1532,6 +1561,80 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         click.echo()
         ctx.exit(0)
 
+    # BuildKit preflight — run BEFORE the lock and the container stop below so a
+    # box whose Docker can't build the image fails fast WITHOUT being taken
+    # offline. box.Dockerfile uses a `# syntax=` directive and `RUN
+    # --mount=type=cache` cache mounts that require BuildKit; Docker >= 23 routes
+    # `docker build` through the buildx plugin, so a missing buildx is fatal
+    # there. Reaching this point means the update is going to rebuild (the no-op
+    # fast path already exited above), so a working buildx is required — probe
+    # once and fail with an actionable message instead of stopping the container
+    # and then dying minutes into a doomed build.
+    def _docker_supports_buildkit():
+        # The box image is built with `DOCKER_BUILDKIT=1 docker build`, and on
+        # modern Docker (>= 23) that path delegates to the buildx plugin. A
+        # plain `docker.io` install (e.g. Ubuntu) reports a recent server
+        # version but does NOT bundle buildx, so checking the version alone
+        # wrongly passes and the build then dies minutes in with "BuildKit is
+        # enabled but the buildx component is missing or broken". So require
+        # buildx to actually be present on a modern daemon.
+        #
+        # FAIL OPEN on anything indeterminate — a probe timeout/transport error,
+        # a non-zero rc, or empty/unparseable output. In those cases we return
+        # `(True, ...)` so the update proceeds to the build exactly as it did
+        # before this preflight existed. This preflight is an optimization for
+        # the common, clearly-detectable missing-buildx case (fast, and before
+        # the container is stopped); it must never turn a transient SSH/daemon
+        # hiccup into a failed update on a box that actually builds fine. A
+        # genuine missing buildx that slips through is still caught after the
+        # build by the post-build detector, with the same actionable hint.
+        try:
+            probe = run_ssh_command_with_output(
+                "docker buildx version >/dev/null 2>&1 && echo BUILDX; "
+                "docker version --format '{{.Server.Version}}' 2>/dev/null",
+                timeout_secs=20,
+            )
+        except subprocess.SubprocessError:
+            return True, 'unverified (probe failed)'
+        out = (probe.stdout or '').strip()
+        if 'BUILDX' in out:
+            return True, 'buildx'
+        # No buildx token. Only BLOCK on positive evidence of a modern daemon;
+        # a failed/empty/unparseable probe is treated as "couldn't determine".
+        if probe.returncode != 0:
+            return True, f'unverified (docker probe rc={probe.returncode})'
+        ver_line = next(
+            (ln.strip() for ln in out.splitlines() if ln.strip() != 'BUILDX'),
+            '',
+        )
+        if not ver_line:
+            return True, 'unverified (no docker version)'
+        try:
+            major = int(ver_line.split('-')[0].split('.')[0])
+        except (ValueError, IndexError):
+            return True, f'unverified ({ver_line})'
+        # Docker >= 23 enables BuildKit by default and routes `docker build`
+        # through buildx, so a missing buildx plugin is fatal there — the one
+        # case we block. Older daemons (< 23) honor DOCKER_BUILDKIT=1 without
+        # buildx, so let them through.
+        if major >= 23:
+            return False, ver_line
+        return True, ver_line
+
+    buildkit_ok, docker_ver = _docker_supports_buildkit()
+    if not buildkit_ok:
+        if progress:
+            progress.finish(success=False)
+        log_error(
+            "Error: this box's Docker can't build the box image, which now "
+            "requires BuildKit with the buildx plugin (box.Dockerfile uses "
+            f"RUN --mount cache mounts). Detected: {docker_ver}. Install the "
+            "buildx plugin on the box (Ubuntu/Debian: "
+            "`sudo apt-get install -y docker-buildx`, or Docker's "
+            "`docker-buildx-plugin`), then re-run `lager update`."
+        )
+        ctx.exit(1)
+
     # Acquire the auto-lock now — the first action below stops the lager
     # docker container, which would clobber a `lager python` test that's
     # mid-run. Held through the rest of `_update_logic` (container
@@ -1578,42 +1681,6 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             timeout_secs=30
         )
         log_status('OK', 'green')
-
-    # BuildKit preflight. box.Dockerfile uses a `# syntax=` directive and
-    # `RUN --mount=type=cache` cache mounts that keep the cargo (defmt-print)
-    # compile and pip wheel work warm across rebuilds — turning a from-scratch
-    # rebuild from ~20 min into a few minutes. These require BuildKit: Docker
-    # >= 23 enables it by default and 18.09+ honors DOCKER_BUILDKIT=1, while a
-    # legacy builder errors on `--mount`. Probe once and fail fast with an
-    # actionable message rather than wasting a long build that dies on a
-    # confusing parse error minutes in.
-    def _docker_supports_buildkit():
-        probe = run_ssh_command_with_output(
-            "docker buildx version >/dev/null 2>&1 && echo BUILDX || "
-            "docker version --format '{{.Server.Version}}' 2>/dev/null",
-            timeout_secs=20,
-        )
-        out = (probe.stdout or '').strip()
-        if 'BUILDX' in out:
-            return True, out
-        try:
-            parts = out.split('-')[0].split('.')
-            ver = (int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
-            return ver >= (18, 9), out
-        except (ValueError, IndexError):
-            return False, out
-
-    buildkit_ok, docker_ver = _docker_supports_buildkit()
-    if not buildkit_ok:
-        if progress:
-            progress.finish(success=False)
-        log_error(
-            "Error: this box's Docker does not support BuildKit, which the box "
-            "image now requires (RUN --mount cache mounts). Detected: "
-            f"{docker_ver or 'unknown'}. Upgrade Docker to >= 23 (or install the "
-            "docker-buildx-plugin) on the box, then re-run `lager update`."
-        )
-        ctx.exit(1)
 
     # Step 9: Rebuild Docker container (the slow part)
     if progress:
@@ -1672,7 +1739,14 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             click.echo()
             # Detect common Docker build errors
             full_output = "\n".join(build_output_lines)
-            if "No space left on device" in full_output:
+            if "buildx component is missing" in full_output or "install the buildx" in full_output.lower():
+                click.secho(
+                    "Hint: the box's Docker is missing a working buildx plugin, which the "
+                    "box image requires. Install it on the box (Ubuntu/Debian: "
+                    "`sudo apt-get install -y docker-buildx`), then re-run `lager update`.",
+                    fg='yellow', err=True,
+                )
+            elif "No space left on device" in full_output:
                 click.secho("Hint: Disk space is full on the box. Run: ssh lagerdata@[BOX_NAME] 'docker system prune -af'", fg='yellow', err=True)
             elif "network" in full_output.lower() and ("timeout" in full_output.lower() or "error" in full_output.lower()):
                 click.secho("Hint: Network issue during build. Check box internet connectivity.", fg='yellow', err=True)
