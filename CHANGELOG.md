@@ -2,6 +2,19 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.28.5] - 2026-06-24
+
+`lager update` brings up a brand-new box reliably. The BuildKit work in 0.28.4 made the box image require the Docker `buildx` plugin, which a stock `docker.io` install (e.g. Ubuntu) doesn't bundle — so a fresh box failed mid-build with a confusing "buildx component is missing or broken". Update now catches that up front, provisioning installs buildx, and a stale SSH control socket no longer masquerades as an auth failure.
+
+### Fixed
+- **`lager update` fails fast with a clear fix when the box lacks buildx.** The BuildKit preflight previously accepted any Docker >= 18.9 by version alone, so a modern `docker.io` box with no `buildx` plugin sailed through and then died minutes later in the build. The preflight now requires `buildx` to actually be present on Docker >= 23 (where `docker build` delegates to it) and points at the exact install command, instead of dead-ending in the build output. It also runs *before* the box's container is stopped, so a box that can't build the image is never taken offline by a doomed update.
+- **A stale SSH control socket no longer breaks the update probe.** A control-master socket orphaned by an earlier interrupted run was silently reused by connection multiplexing, and the inherited broken state surfaced as "Permission denied (publickey,password)" on the state probe — even though the key authenticated fine on a fresh connection. Update now tears down any leftover master for the box before the first probe.
+- **`lager update`'s SSH calls accept a first-seen host key.** The probe/build SSH calls ran in `BatchMode` without `StrictHostKeyChecking=accept-new` (unlike the key-setup phase), so a box not yet in `known_hosts` — or an environment where `known_hosts` can't be persisted — failed with "Host key verification failed". They now match the setup phase and auto-trust a first-seen key.
+- **`lager update` no longer falsely re-prompts "SSH key not configured" on slow-connecting boxes.** The first key-auth probe used a 5-second connect timeout, which a cold Tailscale/VPN first hop can exceed — so an already-authorized box timed out, was treated as not set up, and re-ran the key-copy prompt on every update. The probe's connect timeout is now 15 seconds.
+
+### Changed
+- **Box provisioning installs the buildx plugin.** `setup_and_deploy_box.sh` now installs `docker-buildx` (falling back to `docker-buildx-plugin`, then to the official static buildx binary if neither distro package yields a working plugin) so a freshly provisioned box is BuildKit-ready and never reaches the update preflight error.
+
 ## [0.28.4] - 2026-06-22
 
 `lager update` is faster and smoother: box image rebuilds reuse a build cache (a cold rebuild drops from ~20 minutes to a few minutes), a repeat update with nothing to change finishes in about a second instead of rebuilding, and an update asks for the sudo password at most once.

@@ -1,0 +1,32 @@
+---
+title: "Version 0.28.5"
+description: "June 24, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **`lager update` fails fast with a clear fix when a box is missing buildx.** The BuildKit work in 0.28.4 made the box image require Docker's `buildx` plugin, which a stock `docker.io` install (for example on Ubuntu) doesn't bundle. The up-front check used to pass on the Docker version alone and then the build died minutes later with a confusing "buildx component is missing or broken". `lager update` now verifies buildx is actually present, checks it before stopping the box's container (so a box that can't build is never taken offline), and tells you the exact command to install it.
+- **A stale SSH connection no longer breaks `lager update`.** A leftover SSH control socket from an earlier interrupted run could be silently reused and surface as "Permission denied (publickey,password)" on the box state check, even when the key worked fine. `lager update` now clears any leftover connection before it starts.
+- **`lager update` accepts a first-seen box host key.** Its SSH calls now auto-trust a brand-new box's host key the same way the key-setup step does, so updating a box that isn't yet in `known_hosts` no longer fails with "Host key verification failed".
+
+## <u>Improvements</u>
+
+- **Provisioning a box installs buildx automatically.** New box setup now installs the Docker `buildx` plugin (falling back to the official buildx binary when distro packages don't provide a working one), so a freshly provisioned box is ready to build the box image and never hits the update preflight error.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.28.5
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.28.5/)

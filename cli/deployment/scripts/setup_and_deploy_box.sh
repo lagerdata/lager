@@ -57,6 +57,11 @@ GIT_VERSION="main"
 # ``JLink_Linux_<VERSION>_<arch>.deb`` instead.
 JLINK_VERSION=""
 
+# Pinned buildx version for the official-binary fallback when the box's distro
+# packages don't provide a working `docker buildx` (the box image is built with
+# BuildKit, which requires the buildx plugin).
+BUILDX_VERSION="v0.35.0"
+
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -304,6 +309,7 @@ else
         ssh_t "${BOX_USER}@${BOX_IP}" "
             sudo apt-get update && \
             sudo apt-get install -y docker.io docker-compose-v2 && \
+            { sudo apt-get install -y docker-buildx || sudo apt-get install -y docker-buildx-plugin || true; } && \
             sudo systemctl enable docker && \
             sudo systemctl start docker && \
             sudo usermod -aG docker \$USER
@@ -338,6 +344,65 @@ if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker info >/dev/null 2>&1"; then
 else
     print_warning "Docker group membership may require re-login"
     print_info "If Docker commands fail, log out and back in to the box, then re-run install"
+fi
+
+# Ensure the Docker buildx plugin is present. `lager update` builds the box image
+# with BuildKit (box.Dockerfile uses a `# syntax=` directive and RUN --mount=type=cache
+# cache mounts), which a plain `docker.io` install does NOT bundle on Ubuntu/Debian.
+# Without buildx the build dies with "BuildKit is enabled but the buildx component is
+# missing or broken". This runs unconditionally so it also covers boxes that already
+# had Docker installed before buildx was added to the install above.
+print_info "Checking for the Docker buildx plugin on box..."
+if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker buildx version >/dev/null 2>&1"; then
+    print_success "Docker buildx plugin is installed on box"
+else
+    print_warning "Docker buildx plugin missing - installing it now"
+    # Try distro packages first (docker-buildx on Ubuntu universe, then the
+    # docker-buildx-plugin from Docker's own apt repo if that's configured).
+    ssh_t "${BOX_USER}@${BOX_IP}" "
+        sudo apt-get update && \
+        { sudo apt-get install -y docker-buildx || sudo apt-get install -y docker-buildx-plugin || true; }
+    "
+    # The apt packages can be absent or install a plugin the docker CLI doesn't
+    # pick up (seen in the field). If buildx still doesn't actually run, drop the
+    # official static binary into the CLI plugins dir, which docker searches first.
+    if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker buildx version >/dev/null 2>&1"; then
+        print_warning "Distro buildx not usable - installing the official buildx binary"
+        ssh_t "${BOX_USER}@${BOX_IP}" "
+            set -e
+            sudo mkdir -p /usr/local/lib/docker/cli-plugins
+            arch=\$(uname -m)
+            case \"\$arch\" in
+                x86_64) barch=amd64;;
+                aarch64|arm64) barch=arm64;;
+                armv7l|armhf) barch=arm-v7;;
+                armv6l) barch=arm-v6;;
+                *) barch=amd64;;
+            esac
+            url=\"https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-\${barch}\"
+            if command -v curl >/dev/null 2>&1; then
+                sudo curl -fSL \"\$url\" -o /usr/local/lib/docker/cli-plugins/docker-buildx
+            elif command -v wget >/dev/null 2>&1; then
+                sudo wget -qO /usr/local/lib/docker/cli-plugins/docker-buildx \"\$url\"
+            else
+                echo \"Error: neither curl nor wget found on the box\" && exit 1
+            fi
+            sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
+        "
+    fi
+    if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker buildx version >/dev/null 2>&1"; then
+        print_success "Docker buildx plugin installed successfully"
+    else
+        print_error "Failed to install the Docker buildx plugin"
+        echo ""
+        echo "Please install it manually on the box, then re-run this script:"
+        echo "  ssh ${BOX_USER}@${BOX_IP}"
+        echo "  sudo mkdir -p /usr/local/lib/docker/cli-plugins"
+        echo "  sudo curl -fSL https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-amd64 -o /usr/local/lib/docker/cli-plugins/docker-buildx"
+        echo "  sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx"
+        echo "  docker buildx version"
+        exit 1
+    fi
 fi
 
 # Configure Docker's container DNS. On boxes running systemd-resolved,
