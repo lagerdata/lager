@@ -66,28 +66,28 @@ def _controller_for(net_info: Dict) -> USBNet:
 # --------------------------------------------------------------------------- #
 # public API
 # --------------------------------------------------------------------------- #
-def enable(net_name: str) -> None:
+def enable(net_name: str, settle=None) -> None:
     nets = _load_net_definitions()
     if net_name not in nets:
         raise KeyError(f"USB net '{net_name}' not found")
     info = nets[net_name]
-    _controller_for(info).enable(net_name, info["port"])
+    _controller_for(info).enable(net_name, info["port"], settle=settle)
     print(f"{GREEN}USB port '{net_name}' enabled{RESET}")
 
 
-def disable(net_name: str) -> None:
+def disable(net_name: str, settle=None) -> None:
     nets = _load_net_definitions()
     if net_name not in nets:
         raise KeyError(f"USB net '{net_name}' not found")
     info = nets[net_name]
-    _controller_for(info).disable(net_name, info["port"])
+    _controller_for(info).disable(net_name, info["port"], settle=settle)
     print(f"{GREEN}USB port '{net_name}' disabled{RESET}")
 
 
-def toggle(net_name: str) -> None:
+def toggle(net_name: str, settle=None) -> None:
     nets = _load_net_definitions()
     if net_name not in nets:
         raise KeyError(f"USB net '{net_name}' not found")
     info = nets[net_name]
-    _controller_for(info).toggle(net_name, info["port"])
+    _controller_for(info).toggle(net_name, info["port"], settle=settle)
     print(f"{GREEN}USB port '{net_name}' toggled{RESET}")

@@ -795,6 +795,13 @@ try:
             speed = speed or self.speed
             transport = transport or self.transport
 
+            # Opt-in: record this net so an aborted/Ctrl-C'd job reaps its
+            # gdbserver on exit (no-op unless LAGER_DEBUG_AUTOTEARDOWN is set).
+            # Registered before the attempt so every success path is covered;
+            # a failed connect is harmless since teardown's disconnect() is
+            # best-effort.
+            self._register_for_teardown()
+
             new_script = _repoint_jlink_script(script)
             if new_script:
                 self._jlink_script_path = new_script
@@ -863,8 +870,26 @@ try:
                 ignore_if_connected=ignore_if_connected,
             )
 
+        def _register_for_teardown(self):
+            """Record this net for opt-in auto-teardown at process exit.
+
+            No-op unless ``LAGER_DEBUG_AUTOTEARDOWN`` is enabled; never raises,
+            so auto-teardown can never break a ``connect``.
+            """
+            try:
+                from ..debug.teardown_registry import install_handlers, register
+                install_handlers()
+                register(self)
+            except Exception:  # noqa: BLE001 — auto-teardown is best-effort
+                pass
+
         def disconnect(self):
             """Stop the gdbserver for this probe."""
+            try:
+                from ..debug.teardown_registry import unregister
+                unregister(self)
+            except Exception:  # noqa: BLE001 — bookkeeping must not break disconnect
+                pass
             if self.backend == BACKEND_OPENOCD:
                 return stop_openocd(serial=self.serial, tcl_port=self.openocd_tcl_port)
             return disconnect(serial=self.serial, gdb_port=self.gdb_port)

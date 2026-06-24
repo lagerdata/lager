@@ -144,17 +144,19 @@ class YKUSHUSBNet(USBNet):
     # ----------------------------------------------------------------
     #  USBNet interface
     # ----------------------------------------------------------------
-    def enable(self, net_name: str, port: int) -> None:        # type: ignore[override]
+    def enable(self, net_name: str, port: int, settle=None) -> None:        # type: ignore[override]
         self._validate_port(port)
         _ensure_library()
         self._set_state(port, _PORT_UP)
+        self._apply_settle(settle)
 
-    def disable(self, net_name: str, port: int) -> None:       # type: ignore[override]
+    def disable(self, net_name: str, port: int, settle=None) -> None:       # type: ignore[override]
         self._validate_port(port)
         _ensure_library()
         self._set_state(port, _PORT_DOWN)
+        self._apply_settle(settle)
 
-    def toggle(self, net_name: str, port: int) -> None:        # type: ignore[override]
+    def toggle(self, net_name: str, port: int, settle=None) -> None:        # type: ignore[override]
         self._validate_port(port)
         _ensure_library()
         dev = self._device_for(self.serial)
@@ -166,4 +168,5 @@ class YKUSHUSBNet(USBNet):
 
         target = _PORT_DOWN if currently_on else _PORT_UP
         self._set_state(port, target)
+        self._apply_settle(settle)
 

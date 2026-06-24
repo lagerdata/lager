@@ -83,123 +83,161 @@ def _gdbserver_pkill_pattern(serial):
     return 'JLinkGDBServerCLExe'
 
 
+def _proc_cmdline(pid):
+    """Return *pid*'s cmdline (NULs -> spaces), or '' if it can't be read.
+
+    Guards ``os.killpg`` against a stale pidfile whose PID has been recycled by
+    an unrelated process. Linux-only (``/proc``); returns '' on any other
+    platform or on error, in which case callers proceed with the killpg path
+    only when nothing contradicts it (an empty string never matches the
+    "different process" check below).
+    """
+    try:
+        with open(f'/proc/{pid}/cmdline', 'rb') as f:
+            return f.read().replace(b'\x00', b' ').decode('utf-8', 'replace').strip()
+    except (OSError, ValueError):
+        return ''
+
+
+def _gdbserver_killpg_and_reap(pid, max_wait=2.0):
+    """SIGTERM -> SIGKILL the gdbserver's process group, then reap zombies.
+
+    The server is started with ``preexec_fn=os.setpgrp`` so its PGID equals
+    *pid*. Killing the whole group is robust to a ``-select USB=<serial>``
+    cmdline whose serial does not match the one we were asked to stop — the
+    failure mode the serial-scoped ``pkill`` alone could miss. Mirrors
+    ``stop_jlink`` in process.py. ``os.waitpid(-pid, WNOHANG)`` only reaps when
+    we are the parent; otherwise ``ChildProcessError`` is caught and init reaps.
+    """
+    try:
+        os.killpg(pid, signal.SIGTERM)
+        logger.debug(f'Sent SIGTERM to JLinkGDBServer process group {pid}')
+    except ProcessLookupError:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return  # already gone
+    except PermissionError:
+        logger.error(f'Permission denied signalling JLinkGDBServer group {pid}')
+        return
+
+    # Wait for graceful exit.
+    waited = 0.0
+    while waited < max_wait:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)
+        waited += 0.1
+
+    # Force-kill the group if still alive.
+    try:
+        os.kill(pid, 0)
+        logger.debug(f'JLinkGDBServer {pid} did not exit in {max_wait}s; sending SIGKILL')
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            os.kill(pid, signal.SIGKILL)
+        time.sleep(0.2)
+    except ProcessLookupError:
+        pass
+
+    # Reap zombies in our process group (no-op when we are not the parent).
+    reap_start = time.time()
+    while time.time() - reap_start < 2.0:
+        try:
+            dead_pid, _ = os.waitpid(-pid, os.WNOHANG)
+            if dead_pid == 0:
+                break
+        except (ChildProcessError, ProcessLookupError):
+            break
+        except OSError as exc:
+            logger.debug(f'Error reaping JLinkGDBServer zombies: {exc}')
+            break
+
+
+def _gdbserver_pkill(pkill_pattern):
+    """Serial-scoped ``pkill`` (TERM then KILL), only when ``pgrep`` matches.
+
+    Belt-and-suspenders for orphans the pidfile PID did not cover (stale PID, a
+    server started outside our bookkeeping, or a PID that differs from the
+    pidfile). Scoped to the serial when known so a sibling probe's gdbserver is
+    never touched. A no-op when nothing matches (so no extra latency on the
+    common success path where killpg already reaped the server).
+    """
+    try:
+        check = subprocess.run(
+            ['pgrep', '-f', pkill_pattern],
+            capture_output=True,
+            timeout=2.0,
+            check=False,
+        )
+        if check.returncode != 0:
+            return
+    except FileNotFoundError:
+        # No pgrep available: fall through to a best-effort pkill.
+        pass
+    except subprocess.TimeoutExpired:
+        return
+
+    logger.info('JLinkGDBServer orphan still matched; sweeping with pkill')
+    try:
+        subprocess.run(['pkill', '-TERM', '-f', pkill_pattern], timeout=1.0, check=False)
+        time.sleep(0.5)
+        subprocess.run(['pkill', '-KILL', '-f', pkill_pattern], timeout=1.0, check=False)
+        time.sleep(0.2)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+
 def stop_jlink_gdbserver(serial=None):
-    """Stop JLinkGDBServer process.
+    """Stop the JLinkGDBServer for *serial* (or the legacy single-probe).
 
-    Uses pkill to terminate the process and all its children, avoiding zombies.
-    When *serial* is provided, the pkill pattern is anchored on
-    ``USB=<serial>`` so a sibling probe's gdbserver is not killed. When *serial*
-    is None, the legacy broad ``JLinkGDBServerCLExe`` pattern is used.
-
-    If the PID file is missing, an orphan gdbserver may still be holding the
-    GDB port — try pkill when pgrep finds a matching process.
+    Primary mechanism: read the pidfile PID and kill its whole process group
+    via ``os.killpg`` (+ reap zombies). Because the server runs in its own
+    group (``preexec_fn=os.setpgrp``), this reliably tears it down even when the
+    ``-select USB=<serial>`` cmdline does not match *serial* — the case the old
+    serial-scoped ``pkill`` could silently miss (the flash-path reap in
+    ``api.py``). A serial-scoped ``pkill`` still runs afterwards to sweep any
+    orphan whose PID is absent from (or differs from) the pidfile.
 
     Args:
         serial: J-Link USB serial. None operates on the legacy single-probe path.
     """
     pidfile = jlink_gdbserver_pidfile(serial)
     pkill_pattern = _gdbserver_pkill_pattern(serial)
-    if not os.path.exists(pidfile):
-        should_pkill = False
-        try:
-            check = subprocess.run(
-                ['pgrep', '-f', pkill_pattern],
-                capture_output=True,
-                timeout=2.0,
-                check=False,
-            )
-            should_pkill = check.returncode == 0
-        except FileNotFoundError:
-            should_pkill = True  # no pgrep: best-effort pkill only
-        if not should_pkill:
-            logger.debug('JLinkGDBServer PID file missing and no matching process')
-            return
-        logger.info('JLinkGDBServer has no PID file but process exists; stopping orphan')
-        try:
-            subprocess.run(
-                ['pkill', '-TERM', '-f', pkill_pattern],
-                timeout=1.0,
-                check=False,
-            )
-            time.sleep(0.5)
-            subprocess.run(
-                ['pkill', '-KILL', '-f', pkill_pattern],
-                timeout=1.0,
-                check=False,
-            )
-            time.sleep(0.2)
-        except FileNotFoundError:
-            pass
-        return
 
+    pid = None
+    if os.path.exists(pidfile):
+        try:
+            with open(pidfile, 'r') as f:
+                pid = int(f.read().strip())
+        except (OSError, ValueError) as exc:
+            logger.warning(f'Could not read JLinkGDBServer pidfile {pidfile}: {exc}')
+
+    if pid is not None:
+        cmdline = _proc_cmdline(pid)
+        if cmdline and 'JLinkGDBServerCLExe' not in cmdline:
+            # PID recycled by an unrelated process — never killpg it; let the
+            # serial-scoped pkill below handle any real orphan instead.
+            logger.warning(
+                f'JLinkGDBServer pidfile PID {pid} now belongs to a different '
+                f'process; skipping killpg and using serial-scoped pkill only'
+            )
+        else:
+            _gdbserver_killpg_and_reap(pid)
+
+    # Fallback sweep for orphans not covered by the pidfile PID.
+    _gdbserver_pkill(pkill_pattern)
+
+    # Remove the (now stale) PID file.
     try:
-        with open(pidfile, 'r') as f:
-            pid = int(f.read().strip())
-
-        # Use pkill to kill by name - this avoids zombie issues
-        # and ensures all children are terminated. Pattern is per-serial when
-        # known so we don't kill a sibling probe's gdbserver.
-        try:
-            subprocess.run(
-                ['pkill', '-TERM', '-f', pkill_pattern],
-                timeout=1.0,
-                check=False
-            )
-            logger.debug('Sent SIGTERM to JLinkGDBServer via pkill')
-        except subprocess.TimeoutExpired:
-            logger.warning('pkill timed out')
-        except FileNotFoundError:
-            # pkill not available, fall back to kill
-            logger.debug('pkill not available, using kill')
-            try:
-                os.kill(pid, signal.SIGTERM)
-                logger.debug(f'Sent SIGTERM to JLinkGDBServer process {pid}')
-            except ProcessLookupError:
-                logger.debug(f'JLinkGDBServer process {pid} not found')
-                os.remove(pidfile)
-                return
-
-        # Wait for the process to exit gracefully
-        max_wait = 2.0  # seconds
-        wait_interval = 0.1
-        waited = 0.0
-
-        while waited < max_wait:
-            try:
-                os.kill(pid, 0)  # Check if still alive
-                time.sleep(wait_interval)
-                waited += wait_interval
-            except ProcessLookupError:
-                logger.debug(f'JLinkGDBServer process {pid} exited gracefully')
-                break
-
-        # Force kill if still running after graceful period
-        try:
-            os.kill(pid, 0)  # Check if still alive
-            logger.debug(f'JLinkGDBServer process {pid} did not exit after {max_wait}s, forcing SIGKILL')
-            subprocess.run(
-                ['pkill', '-KILL', '-f', pkill_pattern],
-                timeout=1.0,
-                check=False
-            )
-            time.sleep(0.2)
-        except ProcessLookupError:
-            logger.debug(f'JLinkGDBServer process {pid} successfully terminated')
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            # Fallback to direct kill
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-
-        # Remove PID file
-        try:
-            os.remove(pidfile)
-        except FileNotFoundError:
-            pass
-
-    except Exception as exc:
-        logger.error(f'Failed to stop JLinkGDBServer: {exc}')
+        os.remove(pidfile)
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.debug(f'Could not remove pidfile {pidfile}: {exc}')
 
 
 def start_jlink_gdbserver(device, speed='adaptive', transport='SWD', halt=False,

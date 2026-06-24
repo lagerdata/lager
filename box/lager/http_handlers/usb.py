@@ -47,7 +47,9 @@ def register_usb_routes(app: Flask) -> None:
         Request body:
         {
             "netname": "usb1",
-            "action": "enable" | "disable" | "toggle"
+            "action": "enable" | "disable" | "toggle",
+            "settle": 1.5            # optional: seconds to block after the
+                                     # toggle so the port state takes effect
         }
 
         Returns:
@@ -61,6 +63,7 @@ def register_usb_routes(app: Flask) -> None:
             data = request.get_json() or {}
             netname = data.get('netname')
             action = data.get('action')
+            settle = data.get('settle')  # None -> backend default (no wait)
 
             if not netname or action not in _VALID_ACTIONS:
                 return jsonify({
@@ -70,7 +73,7 @@ def register_usb_routes(app: Flask) -> None:
 
             try:
                 with _usb_lock:
-                    getattr(usb_hub, action)(netname)
+                    getattr(usb_hub, action)(netname, settle=settle)
             except LibraryMissingError as e:
                 logger.warning("[HTTP] /usb/command library missing: %s", e)
                 return jsonify({'success': False, 'error': f'library-missing: {e}'}), 500

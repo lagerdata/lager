@@ -54,9 +54,14 @@ class UARTNet:
         # Cache the device path (lazy loaded)
         self._device_path: Optional[str] = None
 
-    def get_path(self) -> str:
+    def get_path(self, force: bool = False) -> str:
         """
         Get the device path for this UART net.
+
+        Args:
+            force: Re-resolve the serial->tty mapping even if a path was cached.
+                Use after a replug where the CP210x renumbered so a Python-API
+                caller doesn't keep handing back a stale ``/dev/ttyUSB*`` node.
 
         Returns:
             Device path like "/dev/ttyUSB0"
@@ -64,7 +69,7 @@ class UARTNet:
         Raises:
             FileNotFoundError: If the UART device is not connected
         """
-        if self._device_path is None:
+        if self._device_path is None or force:
             # Use the dispatcher to resolve the device path
             from .uart_bridge import UARTBridge
 

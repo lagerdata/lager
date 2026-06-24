@@ -52,6 +52,7 @@ def _try_fast_path(
     box_ip: str,
     net_name: str,
     command: str,
+    settle: float | None = None,
 ) -> tuple[bool, str | None]:
     """
     POST to the box server's /usb/command on :9000.
@@ -71,11 +72,19 @@ def _try_fast_path(
     import requests
 
     url = f"http://{box_ip}:9000/usb/command"
+    body = {"netname": net_name, "action": command}
+    # Wait long enough for the server-side settle plus normal RTT, otherwise a
+    # large --settle would trip the client timeout and bounce to the slow path
+    # (which would then settle a second time).
+    timeout = 10.0
+    if settle is not None:
+        body["settle"] = settle
+        timeout = max(timeout, float(settle) + 5.0)
     try:
         resp = requests.post(
             url,
-            json={"netname": net_name, "action": command},
-            timeout=10,
+            json=body,
+            timeout=timeout,
         )
     except (requests.ConnectionError, requests.Timeout):
         return False, None
@@ -115,6 +124,7 @@ def _invoke_remote(
     net_name: str,
     target_box: str,
     command: str,
+    settle: float | None = None,
 ) -> None:
     """
     Send a USB hub command to the box.
@@ -126,7 +136,7 @@ def _invoke_remote(
     error, since the slow path would just reproduce it.
     """
     # target_box is already the resolved IP (see usb() below); no re-resolve.
-    handled, message = _try_fast_path(target_box, net_name, command)
+    handled, message = _try_fast_path(target_box, net_name, command, settle)
     if handled:
         click.echo(f"[OK] {message}")
         return
@@ -135,12 +145,15 @@ def _invoke_remote(
         ctx.exit(1)
 
     # Fall back to the slow path: upload impl/usb.py and run via :5000/python.
+    # Pass settle as an optional 4th arg only when set, so the impl script stays
+    # compatible with older 3-arg invocations.
+    slow_args = (command, net_name) if settle is None else (command, net_name, str(settle))
     try:
         run_impl_script(
             ctx,
             target_box,
             "usb.py",
-            args=(command, net_name),
+            args=slow_args,
         )
     except SystemExit as e:
         # Re-raise non-zero exits to preserve exit code
@@ -178,7 +191,7 @@ def usb(ctx, netname, box):
         _display_usb_nets(ctx, resolved_box)
 
 
-def _run_usb_action(ctx, box, action: str) -> None:
+def _run_usb_action(ctx, box, action: str, settle: float | None = None) -> None:
     """Shared body for the enable/disable/toggle subcommands."""
     netname = require_netname(ctx, "usb")
     resolved_box = resolve_box(ctx, box)
@@ -187,31 +200,43 @@ def _run_usb_action(ctx, box, action: str) -> None:
     if _validate_usb_net(ctx, resolved_box, netname) is None:
         return  # Error already displayed
 
-    _invoke_remote(ctx, netname, resolved_box, action)
+    _invoke_remote(ctx, netname, resolved_box, action, settle)
+
+
+_SETTLE_OPTION = click.option(
+    "--settle",
+    type=click.FloatRange(min=0),
+    default=None,
+    help="Block this many seconds after the toggle so the port state takes "
+         "effect (device powers down / re-enumerates) before returning.",
+)
 
 
 @usb.command()
 @click.option("--box", required=False, help="Lagerbox name or IP")
+@_SETTLE_OPTION
 @click.pass_context
-def enable(ctx, box):
+def enable(ctx, box, settle):
     """Enable USB port (power on)"""
-    _run_usb_action(ctx, box, "enable")
+    _run_usb_action(ctx, box, "enable", settle)
 
 
 @usb.command()
 @click.option("--box", required=False, help="Lagerbox name or IP")
+@_SETTLE_OPTION
 @click.pass_context
-def disable(ctx, box):
+def disable(ctx, box, settle):
     """Disable USB port (power off)"""
-    _run_usb_action(ctx, box, "disable")
+    _run_usb_action(ctx, box, "disable", settle)
 
 
 @usb.command()
 @click.option("--box", required=False, help="Lagerbox name or IP")
+@_SETTLE_OPTION
 @click.pass_context
-def toggle(ctx, box):
+def toggle(ctx, box, settle):
     """Toggle USB port power on/off"""
-    _run_usb_action(ctx, box, "toggle")
+    _run_usb_action(ctx, box, "toggle", settle)
 
 
 usb.net_examples = [

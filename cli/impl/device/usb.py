@@ -30,22 +30,41 @@ def die(message: str, code: int = 0) -> None:
         print(f"{_RED}{message}{_RESET}", file=sys.stderr)
     sys.exit(code)
 
+def _call(fn, net_name, settle):
+    """Invoke a dispatcher fn with optional settle, tolerating older boxes.
+
+    A box that predates the settle support exposes ``fn(net_name)`` only, so
+    fall back to the no-settle call rather than crashing with a TypeError.
+    """
+    if settle is None:
+        return fn(net_name)
+    try:
+        return fn(net_name, settle=settle)
+    except TypeError:
+        return fn(net_name)
+
+
 def main(argv: list[str]) -> None:  # pragma: no cover
-    if len(argv) != 3:
-        die("Usage: usb.py <enable|disable|toggle> <net_name>")
+    if len(argv) not in (3, 4):
+        die("Usage: usb.py <enable|disable|toggle> <net_name> [settle_seconds]")
 
     command, net_name = argv[1], argv[2]
-
+    settle = None
+    if len(argv) == 4:
+        try:
+            settle = float(argv[3])
+        except ValueError:
+            settle = None
 
     try:
         usb_pkg = importlib.import_module("lager.automation.usb_hub")
 
         if command == "enable":
-            usb_pkg.enable(net_name)
+            _call(usb_pkg.enable, net_name, settle)
         elif command == "disable":
-            usb_pkg.disable(net_name)
+            _call(usb_pkg.disable, net_name, settle)
         elif command == "toggle":
-            usb_pkg.toggle(net_name)
+            _call(usb_pkg.toggle, net_name, settle)
         else:
             die(f"ERROR [unexpected] Unknown USB command: {command}", code=1)
 

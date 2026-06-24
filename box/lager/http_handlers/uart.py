@@ -11,6 +11,8 @@ import logging
 import threading
 import time
 
+import serial
+
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit
 
@@ -297,6 +299,18 @@ def register_uart_socketio(socketio: SocketIO) -> None:
                                 read_buffer.clear()
                                 last_emit_time = current_time
 
+                        except (serial.SerialException, OSError) as e:
+                            # tty renumbered / transient I/O error: try a bounded
+                            # re-resolve+reopen before declaring the session dead.
+                            if driver._reopen_with_backoff():
+                                logger.info("UART reconnected to %s", driver.device_path)
+                                continue
+                            logger.error(f"UART read error, reconnect failed: {e}")
+                            socketio.emit('error',
+                                        {'message': f'Read error: {str(e)}'},
+                                        namespace='/uart',
+                                        room=session_id)
+                            break
                         except Exception as e:
                             logger.error(f"Error reading UART: {e}")
                             socketio.emit('error',

@@ -104,15 +104,17 @@ class AcronameUSBNet(USBNet):
     # ------------------------------------------------------------------ #
     # USBNet interface
     # ------------------------------------------------------------------ #
-    def enable(self, net_name: str, port: int) -> None:  # type: ignore[override]
+    def enable(self, net_name: str, port: int, settle=None) -> None:  # type: ignore[override]
         hub = self._connect_hub()
         hub.usb.setPortEnable(port)
+        self._apply_settle(settle)
 
-    def disable(self, net_name: str, port: int) -> None:  # type: ignore[override]
+    def disable(self, net_name: str, port: int, settle=None) -> None:  # type: ignore[override]
         hub = self._connect_hub()
         hub.usb.setPortDisable(port)
+        self._apply_settle(settle)
 
-    def toggle(self, net_name: str, port: int) -> None:  # type: ignore[override]
+    def toggle(self, net_name: str, port: int, settle=None) -> None:  # type: ignore[override]
         hub = self._connect_hub()
         res = hub.usb.getPortState(port)
         if res.error != self._Result.NO_ERROR:
@@ -123,3 +125,4 @@ class AcronameUSBNet(USBNet):
             hub.usb.setPortDisable(port)
         else:
             hub.usb.setPortEnable(port)
+        self._apply_settle(settle)

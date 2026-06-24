@@ -22,6 +22,34 @@ from typing import Optional
 import serial
 
 
+_ON_VALUES = {"1", "true", "yes", "on"}
+
+
+def _autoreconnect_enabled() -> bool:
+    """UART read-loop auto-reconnect, opt-in via ``LAGER_UART_AUTORECONNECT``.
+
+    Default OFF: a read I/O error ends the session exactly as before unless the
+    operator turns this on for a flaky bench where the CP210x renumbers.
+    """
+    return os.environ.get("LAGER_UART_AUTORECONNECT", "").strip().lower() in _ON_VALUES
+
+
+def _reopen_timeout(default: float = 5.0) -> float:
+    """Bounded re-resolve+reopen budget (seconds) — ``LAGER_UART_REOPEN_TIMEOUT``."""
+    try:
+        return max(0.0, float(os.environ.get("LAGER_UART_REOPEN_TIMEOUT", default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _reopen_interval(default: float = 0.25) -> float:
+    """Poll/backoff base between reopen attempts — ``LAGER_UART_REOPEN_INTERVAL``."""
+    try:
+        return max(0.01, float(os.environ.get("LAGER_UART_REOPEN_INTERVAL", default)))
+    except (TypeError, ValueError):
+        return default
+
+
 class UARTBridge:
     """Driver for UART bridge devices."""
 
@@ -97,6 +125,12 @@ class UARTBridge:
             )
 
         self.serial_conn = None
+
+        # Whether we can re-resolve the tty from a USB serial after a replug.
+        # Only possible when we were given a real serial (a "/dev/*" literal
+        # clears bridge_serial above) and no explicit device_path override — a
+        # fixed path can't be re-pointed to a renumbered node.
+        self._resolvable = bool(self.bridge_serial) and not self.device_path_override
 
     def _find_device_by_serial(self, serial_number: str) -> Optional[str]:
         """
@@ -189,6 +223,46 @@ class UARTBridge:
             except Exception:
                 pass
 
+    def _reopen(self) -> bool:
+        """Re-resolve the tty by serial and reopen the connection.
+
+        Returns True on success. Returns False (no recovery possible) when the
+        device isn't serial-resolvable, the serial isn't currently enumerated,
+        or the reopen itself fails. Closes the old handle first so a renumbered
+        node (CP210x replug -> ttyUSB0 becomes ttyUSB1) is picked up cleanly.
+        """
+        if not self._resolvable:
+            return False
+        self._cleanup()
+        new_path = self._find_device_by_serial(self.bridge_serial)
+        if not new_path:
+            return False
+        self.device_path = new_path
+        try:
+            self._connect()
+            return True
+        except (serial.SerialException, OSError):
+            return False
+
+    def _reopen_with_backoff(self) -> bool:
+        """Bounded re-resolve+reopen loop, gated by ``LAGER_UART_AUTORECONNECT``.
+
+        Returns False immediately when auto-reconnect is disabled (or the device
+        isn't resolvable), so every read loop falls straight through to its
+        existing "Disconnected" path — preserving today's behaviour by default.
+        When enabled, retries until ``LAGER_UART_REOPEN_TIMEOUT`` elapses.
+        """
+        if not _autoreconnect_enabled() or not self._resolvable:
+            return False
+        deadline = time.monotonic() + _reopen_timeout()
+        interval = _reopen_interval()
+        while True:
+            if self._reopen():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(interval)
+
     def monitor(self):
         """
         Monitor UART output (read-only mode).
@@ -225,7 +299,19 @@ class UARTBridge:
 
         try:
             while True:
-                data = self.serial_conn.read(self.serial_conn.in_waiting or 1)
+                try:
+                    data = self.serial_conn.read(self.serial_conn.in_waiting or 1)
+                except (serial.SerialException, OSError):
+                    # Transient I/O error (e.g. the CP210x re-enumerated). Try a
+                    # bounded re-resolve+reopen before giving up; if disabled or
+                    # exhausted, re-raise so the session ends as it did before.
+                    if not self._reopen_with_backoff():
+                        raise
+                    sys.stderr.buffer.write(
+                        f"\r\n\033[33mReconnected to {self.device_path}\033[0m\r\n".encode()
+                    )
+                    sys.stderr.buffer.flush()
+                    continue
                 if data:
                     # Apply output post-processing if enabled
                     if self.opost:
@@ -317,7 +403,17 @@ class UARTBridge:
 
             while not stop_event.is_set():
                 try:
-                    data = self.serial_conn.read(self.serial_conn.in_waiting or 1)
+                    try:
+                        data = self.serial_conn.read(self.serial_conn.in_waiting or 1)
+                    except (serial.SerialException, OSError):
+                        # tty renumbered / transient I/O error: try to recover.
+                        if self._reopen_with_backoff():
+                            sys.stderr.buffer.write(
+                                f"\r\n\033[33mReconnected to {self.device_path}\033[0m\r\n".encode()
+                            )
+                            sys.stderr.buffer.flush()
+                            continue
+                        break
                     if not data:
                         # No data available - if we're waiting after a newline, show prompt
                         with current_line_lock:

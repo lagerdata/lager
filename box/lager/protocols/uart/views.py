@@ -12,6 +12,8 @@ import json
 import time
 from typing import Generator
 
+import serial
+
 from flask import Response, stream_with_context, Request, jsonify
 
 from .dispatcher import _resolve_net_and_driver, UARTBackendError
@@ -92,28 +94,31 @@ def stream_uart_net(netname: str, overrides: dict, interactive: bool) -> Respons
 
                 while connection_active:
                     try:
-                        # Read available data (non-blocking with timeout)
-                        # Limit read size to prevent memory issues
-                        waiting = driver.serial_conn.in_waiting
-                        if waiting > 0:
-                            # Read at most MAX_CHUNK_SIZE bytes at a time
-                            read_size = min(waiting, MAX_CHUNK_SIZE)
-                            data = driver.serial_conn.read(read_size)
-                            if data:
-                                # Apply output post-processing if enabled
-                                if driver.opost:
-                                    data = data.replace(b'\n', b'\r\n')
-                                yield data
-                        else:
-                            # Read with timeout to avoid tight loop
-                            # This is gevent-friendly and prevents CPU spinning
-                            data = driver.serial_conn.read(1)
-                            if data:
-                                # Apply output post-processing if enabled
-                                if driver.opost:
-                                    data = data.replace(b'\n', b'\r\n')
-                                yield data
-                    except (BrokenPipeError, ConnectionResetError, OSError):
+                        # Read available data (non-blocking with timeout). The
+                        # serial read is wrapped separately so a tty renumber /
+                        # transient I/O error triggers a bounded reopen instead
+                        # of being mistaken for a client disconnect.
+                        try:
+                            waiting = driver.serial_conn.in_waiting
+                            if waiting > 0:
+                                read_size = min(waiting, MAX_CHUNK_SIZE)
+                                data = driver.serial_conn.read(read_size)
+                            else:
+                                # Read with timeout to avoid tight loop
+                                # (gevent-friendly, prevents CPU spinning)
+                                data = driver.serial_conn.read(1)
+                        except (serial.SerialException, OSError):
+                            if driver._reopen_with_backoff():
+                                yield b"\r\n\033[33mReconnected\033[0m\r\n"
+                                continue
+                            connection_active = False
+                            break
+                        if data:
+                            # Apply output post-processing if enabled
+                            if driver.opost:
+                                data = data.replace(b'\n', b'\r\n')
+                            yield data
+                    except (BrokenPipeError, ConnectionResetError):
                         # Client disconnected abruptly
                         connection_active = False
                         break
