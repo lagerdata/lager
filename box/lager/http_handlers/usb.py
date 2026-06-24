@@ -53,8 +53,9 @@ def register_usb_routes(app: Flask) -> None:
         Returns:
         {
             "success": true,
-            "action": "enable",
-            "message": "USB port 'usb1' enabled"
+            "action": "toggle",
+            "state": "enabled" | "disabled",   # resulting port state
+            "message": "USB port 'usb1' toggled → disabled"
         }
         """
         try:
@@ -70,7 +71,7 @@ def register_usb_routes(app: Flask) -> None:
 
             try:
                 with _usb_lock:
-                    getattr(usb_hub, action)(netname)
+                    result = getattr(usb_hub, action)(netname)
             except LibraryMissingError as e:
                 logger.warning("[HTTP] /usb/command library missing: %s", e)
                 return jsonify({'success': False, 'error': f'library-missing: {e}'}), 500
@@ -91,10 +92,21 @@ def register_usb_routes(app: Flask) -> None:
                 logger.exception("[HTTP] /usb/command dispatcher error")
                 return jsonify({'success': False, 'error': str(e)}), 502
 
+            # For toggle, the dispatcher returns the resulting port state so we
+            # can tell the user which way it flipped. enable/disable are
+            # unambiguous from the action itself.
+            if action == "toggle":
+                state = "enabled" if result else "disabled"
+                message = f"USB port '{netname}' toggled → {state}"
+            else:
+                state = "enabled" if action == "enable" else "disabled"
+                message = f"USB port '{netname}' {action}d"
+
             return jsonify({
                 'success': True,
                 'action': action,
-                'message': f"USB port '{netname}' {action}d",
+                'state': state,
+                'message': message,
             })
         except Exception as e:
             logger.exception("[HTTP] /usb/command unexpected error")

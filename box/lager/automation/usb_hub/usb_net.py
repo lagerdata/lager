@@ -17,7 +17,12 @@ class USBNet(ABC):
 
     @abstractmethod
     def toggle(self, net_name, port):
-        """Toggle the power state of the specified port on the given USB net."""
+        """Toggle the power state of the specified port on the given USB net.
+
+        Returns:
+            bool: the resulting port state — True if the port is now enabled
+            (powered on), False if it is now disabled (powered off).
+        """
         raise NotImplementedError()
     
     # ─────────────  Common backend exceptions  ─────────────
