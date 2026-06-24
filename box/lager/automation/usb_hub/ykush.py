@@ -154,7 +154,7 @@ class YKUSHUSBNet(USBNet):
         _ensure_library()
         self._set_state(port, _PORT_DOWN)
 
-    def toggle(self, net_name: str, port: int) -> None:        # type: ignore[override]
+    def toggle(self, net_name: str, port: int) -> bool:        # type: ignore[override]
         self._validate_port(port)
         _ensure_library()
         dev = self._device_for(self.serial)
@@ -166,4 +166,5 @@ class YKUSHUSBNet(USBNet):
 
         target = _PORT_DOWN if currently_on else _PORT_UP
         self._set_state(port, target)
+        return target == _PORT_UP
 

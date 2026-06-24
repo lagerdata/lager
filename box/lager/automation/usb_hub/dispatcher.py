@@ -84,10 +84,12 @@ def disable(net_name: str) -> None:
     print(f"{GREEN}USB port '{net_name}' disabled{RESET}")
 
 
-def toggle(net_name: str) -> None:
+def toggle(net_name: str) -> bool:
     nets = _load_net_definitions()
     if net_name not in nets:
         raise KeyError(f"USB net '{net_name}' not found")
     info = nets[net_name]
-    _controller_for(info).toggle(net_name, info["port"])
-    print(f"{GREEN}USB port '{net_name}' toggled{RESET}")
+    new_state = _controller_for(info).toggle(net_name, info["port"])
+    label = "enabled" if new_state else "disabled"
+    print(f"{GREEN}USB port '{net_name}' toggled → {label}{RESET}")
+    return new_state
