@@ -309,7 +309,7 @@ else
         ssh_t "${BOX_USER}@${BOX_IP}" "
             sudo apt-get update && \
             sudo apt-get install -y docker.io docker-compose-v2 && \
-            { sudo apt-get install -y docker-buildx || sudo apt-get install -y docker-buildx-plugin; } && \
+            { sudo apt-get install -y docker-buildx || sudo apt-get install -y docker-buildx-plugin || true; } && \
             sudo systemctl enable docker && \
             sudo systemctl start docker && \
             sudo usermod -aG docker \$USER
@@ -371,9 +371,22 @@ else
         ssh_t "${BOX_USER}@${BOX_IP}" "
             set -e
             sudo mkdir -p /usr/local/lib/docker/cli-plugins
-            arch=\$(uname -m); case \"\$arch\" in x86_64) barch=amd64;; aarch64|arm64) barch=arm64;; *) barch=amd64;; esac
-            sudo curl -fSL \"https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-\${barch}\" \
-                -o /usr/local/lib/docker/cli-plugins/docker-buildx
+            arch=\$(uname -m)
+            case \"\$arch\" in
+                x86_64) barch=amd64;;
+                aarch64|arm64) barch=arm64;;
+                armv7l|armhf) barch=arm-v7;;
+                armv6l) barch=arm-v6;;
+                *) barch=amd64;;
+            esac
+            url=\"https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-\${barch}\"
+            if command -v curl >/dev/null 2>&1; then
+                sudo curl -fSL \"\$url\" -o /usr/local/lib/docker/cli-plugins/docker-buildx
+            elif command -v wget >/dev/null 2>&1; then
+                sudo wget -qO /usr/local/lib/docker/cli-plugins/docker-buildx \"\$url\"
+            else
+                echo \"Error: neither curl nor wget found on the box\" && exit 1
+            fi
             sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-buildx
         "
     fi
