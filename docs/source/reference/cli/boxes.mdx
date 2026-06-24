@@ -23,7 +23,6 @@ lager boxes COMMAND [OPTIONS]
 | `delete-all` | Delete all box configurations |
 | `export` | Export box configuration to JSON |
 | `import` | Import box configuration from JSON |
-| `sync` | Sync Lager Box versions from all boxes |
 | `lock` | Lock a box to prevent others from using it |
 | `unlock` | Unlock a box |
 
@@ -244,20 +243,6 @@ lager boxes import boxes.json --yes
 lager boxes import new-boxes.json --merge --yes
 ```
 
-### `sync`
-
-Sync Lager Box versions from all configured boxes.
-
-```bash
-lager boxes sync [--port PORT] [--timeout SECONDS]
-```
-
-**Options:**
-- `--port` - Lager Box HTTP port (default: 5000)
-- `--timeout` - HTTP request timeout in seconds (default: 5)
-
-This command queries each Lager Box's current version and updates the local configuration.
-
 ### `lock`
 
 Lock a box to prevent other users from using it. See [Box Locking](/source/reference/cli/locking) for full details.
@@ -343,9 +328,6 @@ lager boxes export -o bench-config.json
 
 # Import on another machine
 lager boxes import bench-config.json --yes
-
-# Sync versions after updates
-lager boxes sync
 
 # Clean up
 lager boxes delete-all --yes

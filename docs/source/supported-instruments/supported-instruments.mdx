@@ -41,7 +41,11 @@ validation.
 
 \* RS-232 only — connects through a USB-serial adapter and requires a one-time
 manual assignment with
-[`lager nets assign`](/source/reference/cli/nets#assign).
+[`lager nets assign`](/source/reference/cli/nets#assign). The DP711 also
+requires a **null-modem (crossover) cable** between the supply and the
+RS232-to-USB adapter — both ends are wired as DTE, so a straight-through
+connection will not communicate. See
+[RS-232 Instruments](/source/getting-started/setting-up-instruments#rs-232-instruments-manual-assignment).
 
 **Enables:**
 - Automated voltage/current control

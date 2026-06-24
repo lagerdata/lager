@@ -101,6 +101,14 @@ adapter — for example, a Rigol DP711 power supply on its RS-232 port. The
 Lager Box sees only the adapter cable, so it can't tell what instrument is
 behind it, and nothing appears automatically.
 
+> **Rigol DP711 — crossover cable required.** The DP711's RS-232 port is
+> wired as DTE, the same as the RS232-to-USB adapter Rigol ships with it.
+> Connecting the two directly will **not** work — TX talks to TX and nothing
+> gets through. You must insert a **null-modem (crossover) cable or adapter**
+> between the DP711 and the USB-serial adapter so the TX/RX lines are
+> swapped. Without it the cable shows up in `lager nets assign --list` but the
+> supply never responds to commands.
+
 Tell the box what the cable is connected to, once per cable:
 
 ```bash

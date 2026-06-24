@@ -51,8 +51,7 @@
               "source/reference/cli/update",
               "source/reference/cli/ssh",
               "source/reference/cli/authorize",
-              "source/reference/cli/logs",
-              "source/reference/cli/pip"
+              "source/reference/cli/logs"
             ]
           },
           {
@@ -109,16 +108,15 @@
               "source/reference/cli/debug",
               "source/reference/cli/python",
               "source/reference/cli/exec",
-              "source/reference/cli/binaries",
-              "source/reference/cli/docker-helper"
+              "source/reference/cli/devenv",
+              "source/reference/cli/binaries"
             ]
           },
           {
             "group": "Utilities",
             "pages": [
               "source/reference/cli/webcam",
-              "source/reference/cli/arm",
-              "source/reference/cli/web-apps"
+              "source/reference/cli/arm"
             ]
           }
         ]
