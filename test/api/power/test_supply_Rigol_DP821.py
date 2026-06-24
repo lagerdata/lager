@@ -146,8 +146,9 @@ def test_setpoint_vs_measured():
         psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
         target = 5.0
         psu.set_voltage(target)
+        psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
         psu.enable()
-        time.sleep(0.5)
+        time.sleep(1.5)
 
         measured = psu.voltage()
 
