@@ -6,7 +6,6 @@ from __future__ import annotations
 import importlib
 import re
 import subprocess
-from functools import lru_cache
 from typing import Any, Callable, Sequence
 
 from .usb_net import LibraryMissingError, USBNet
@@ -87,12 +86,48 @@ def _ensure_library() -> None:
 class YKUSHUSBNet(USBNet):
     """USBNet implementation for Yepkit YKUSH hubs."""
 
-    # Simple LRU cache: key → YKUSH instance (max 16 hubs)
-    @staticmethod
-    @lru_cache(maxsize=16)
-    def _device_for(serial: str | None):
+    # Live YKUSH handles, keyed by serial. A handle is dropped and rebuilt on
+    # first failure (see _with_device), so a power-cycled hub or a transient
+    # USB/HID read error self-heals instead of staying wedged until a restart.
+    _devices: dict = {}
+
+    @classmethod
+    def _device_for(cls, serial: str | None):
+        dev = cls._devices.get(serial)
+        if dev is None:
+            _ensure_library()
+            dev = _YKUSH_CLS(serial=serial) if serial else _YKUSH_CLS()
+            cls._devices[serial] = dev
+        return dev
+
+    @classmethod
+    def _invalidate(cls, serial: str | None) -> None:
+        """Drop the cached handle for *serial*, closing it best-effort."""
+        dev = cls._devices.pop(serial, None)
+        if dev is None:
+            return
+        for closer in ("close", "disconnect"):
+            fn = getattr(dev, closer, None)
+            if callable(fn):
+                try:
+                    fn()
+                except Exception:
+                    pass
+
+    def _with_device(self, fn):
+        """Run ``fn(dev)``, retrying once with a fresh handle if the cached one
+        fails. This recovers a YKUSH that was power-cycled or hit a transient
+        USB/HID read error without needing a hardware-service restart."""
         _ensure_library()
-        return _YKUSH_CLS(serial=serial) if serial else _YKUSH_CLS()
+        try:
+            return fn(self._device_for(self.serial))
+        except LibraryMissingError:
+            raise
+        except Exception:
+            # Cached handle is likely stale (device re-enumerated). Drop it and
+            # try once more with a fresh connection.
+            self._invalidate(self.serial)
+            return fn(self._device_for(self.serial))
 
     # ----------------------------------------------------------------
     def __init__(self, net_info: dict | None = None) -> None:
@@ -112,10 +147,7 @@ class YKUSHUSBNet(USBNet):
             raise ValueError("Port number must be ≥ 1")
 
     # ----------------------------------------------------------------
-    def _set_state(self, port: int, state: int) -> None:
-        _ensure_library()
-        dev = self._device_for(self.serial)
-
+    def _set_state(self, dev, port: int, state: int) -> None:
         # New API
         if hasattr(dev, "set_port_state"):
             if not dev.set_port_state(port, state):
@@ -146,13 +178,11 @@ class YKUSHUSBNet(USBNet):
     # ----------------------------------------------------------------
     def enable(self, net_name: str, port: int) -> None:        # type: ignore[override]
         self._validate_port(port)
-        _ensure_library()
-        self._set_state(port, _PORT_UP)
+        self._with_device(lambda dev: self._set_state(dev, port, _PORT_UP))
 
     def disable(self, net_name: str, port: int) -> None:       # type: ignore[override]
         self._validate_port(port)
-        _ensure_library()
-        self._set_state(port, _PORT_DOWN)
+        self._with_device(lambda dev: self._set_state(dev, port, _PORT_DOWN))
 
     @staticmethod
     def _read_enabled(dev, port: int) -> bool:
@@ -164,17 +194,16 @@ class YKUSHUSBNet(USBNet):
 
     def state(self, net_name: str, port: int) -> bool:        # type: ignore[override]
         self._validate_port(port)
-        _ensure_library()
-        dev = self._device_for(self.serial)
-        return self._read_enabled(dev, port)
+        return self._with_device(lambda dev: self._read_enabled(dev, port))
 
     def toggle(self, net_name: str, port: int) -> bool:        # type: ignore[override]
         self._validate_port(port)
-        _ensure_library()
-        dev = self._device_for(self.serial)
 
-        currently_on = self._read_enabled(dev, port)
-        target = _PORT_DOWN if currently_on else _PORT_UP
-        self._set_state(port, target)
-        return target == _PORT_UP
+        def _do(dev):
+            currently_on = self._read_enabled(dev, port)
+            target = _PORT_DOWN if currently_on else _PORT_UP
+            self._set_state(dev, port, target)
+            return target == _PORT_UP
+
+        return self._with_device(_do)
 
