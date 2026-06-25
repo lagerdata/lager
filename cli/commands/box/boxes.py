@@ -216,7 +216,7 @@ def boxes(ctx):
 @boxes.command()
 @click.option('--name', required=True, help='Name to assign to the box')
 @click.option('--ip', required=True, help='IP address or DNS hostname of the box')
-@click.option('--user', required=False, help='Username for SSH connection (defaults to lagerdata)')
+@click.option('--user', required=True, help='Username for SSH connection to the box (e.g. the account you log in as)')
 @click.option('--version', required=False, help='Box version/branch (e.g., staging, main)')
 @click.option('--yes', is_flag=True, help='Confirm the action without prompting.')
 def add(name, ip, user, version, yes):
