@@ -3,12 +3,13 @@ title: SSH
 description: SSH into a Lager Box
 ---
 
-Open an interactive SSH session to a Lagerbox.
+Open an interactive SSH session to a Lagerbox, or run a single command on it
+and return.
 
 ## Syntax
 
 ```bash
-lager ssh [OPTIONS]
+lager ssh [OPTIONS] [COMMAND]...
 ```
 
 ## Options
@@ -17,17 +18,46 @@ lager ssh [OPTIONS]
 |--------|-------------|
 | `--box BOX` | Lagerbox name or IP address |
 
+## Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `COMMAND` | Optional command to run on the box. If omitted, an interactive shell is opened. |
+
 ---
 
 ## Usage
 
 ```bash
-# SSH to specific Lager Box
+# SSH to specific Lager Box (interactive shell)
 lager ssh --box my-lager-box
 
 # SSH to default Lager Box
 lager ssh
 ```
+
+### Run a command on the box
+
+With a `COMMAND`, `lager ssh` behaves like `ssh user@host <command>`: it runs
+the command on the box, streams its output back, and exits with the command's
+exit code — no interactive shell. This is handy for scripting and one-off
+checks.
+
+```bash
+# Run a single command and return
+lager ssh --box lab-lager-box -- cat /etc/lager/version
+
+# Flags pass through; use `--` to separate them from lager's own options
+lager ssh --box lab-lager-box -- ls -la /etc/lager
+
+# Inspect the running containers
+lager ssh --box lab-lager-box -- sudo docker ps
+```
+
+<Note>Use `--` to separate lager's options from the remote command whenever the
+command contains its own dashed flags, so they aren't parsed as `lager`
+options. The remote command's exit code is propagated as `lager ssh`'s exit
+code, so it composes cleanly in scripts.</Note>
 
 ---
 
@@ -74,61 +104,48 @@ ssh-copy-id lagerdata@<box-ip>
 ## Examples
 
 ```bash
-# Quick SSH access
+# Quick interactive SSH access
 lager ssh --box my-lager-box
 
-# Debug container issues
-lager ssh --box my-lager-box
-docker ps
-docker logs controller
-
-# Check Lager Box status
-lager ssh --box my-lager-box
-cat /etc/lager/version
-sudo ufw status
+# One-off commands (no interactive shell)
+lager ssh --box my-lager-box -- cat /etc/lager/version
+lager ssh --box my-lager-box -- sudo docker ps
+lager ssh --box my-lager-box -- sudo ufw status
 ```
 
 ---
 
 ## Common Tasks via SSH
 
+Each of these can be run as a one-liner with `lager ssh --box <box> -- <command>`,
+or interactively after `lager ssh --box <box>`.
+
 ### Check Container Status
 ```bash
-lager ssh --box my-lager-box
-docker ps -a
-docker logs controller --tail 100
+lager ssh --box my-lager-box -- sudo docker ps -a
+lager ssh --box my-lager-box -- sudo docker logs controller --tail 100
 ```
 
 ### View Lager Box Version
 ```bash
-lager ssh --box my-lager-box
-cat /etc/lager/version
+lager ssh --box my-lager-box -- cat /etc/lager/version
 ```
 
 ### Check Disk Space
 ```bash
-lager ssh --box my-lager-box
-df -h
-```
-
-### Restart Containers
-```bash
-lager ssh --box my-lager-box
-cd ~/box
-./start_box.sh
+lager ssh --box my-lager-box -- df -h
 ```
 
 ### View Firewall Status
 ```bash
-lager ssh --box my-lager-box
-sudo ufw status verbose
+lager ssh --box my-lager-box -- sudo ufw status verbose
 ```
 
 ---
 
 ## Notes
 
-- Opens a fully interactive shell session
-- Uses `os.execvp` for process replacement (full TTY support)
+- With no `COMMAND`, opens a fully interactive shell session (exit with `exit` or Ctrl+D)
+- With a `COMMAND`, runs it on the box and exits with the command's exit code
+- The session runs as a child process so Lager's cleanup hooks still fire
 - Default Lager Box is used if `--box` not specified
-- Exit with `exit` or Ctrl+D
