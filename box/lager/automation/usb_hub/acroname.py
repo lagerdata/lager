@@ -17,11 +17,17 @@ from .usb_net import USBNet, LibraryMissingError, DeviceNotFoundError, PortState
 
 
 class AcronameUSBNet(USBNet):
-    """USBNet driver for Acroname STEM hubs (0-based port numbers)."""
+    """USBNet driver for Acroname STEM hubs (0-based port numbers).
 
-    _cached_hub = None  # singleton connection
-    _brainstem = None   # cached vendor module
-    _Result = None      # brainstem.result.Result alias
+    Each net binds the *specific* hub named by its address serial, so a box
+    with more than one Acroname hub routes every net to the right hardware.
+    Connections are cached per-serial (not one global hub).
+    """
+
+    _cached_hubs: dict = {}   # serial (int) | None  ->  connected hub
+    _brainstem = None         # cached vendor module
+    _Result = None            # brainstem.result.Result alias
+    _cleanup_registered = False
 
     # ------------------------------------------------------------------ #
     # helper: import BrainStem only when needed
@@ -47,52 +53,97 @@ class AcronameUSBNet(USBNet):
     # ------------------------------------------------------------------ #
     @classmethod
     def disconnect(cls):
-        """Disconnect the cached hub so the USB device is released."""
-        if cls._cached_hub is not None:
+        """Disconnect every cached hub so the USB devices are released."""
+        for hub in cls._cached_hubs.values():
             try:
-                cls._cached_hub.disconnect()
+                hub.disconnect()
             except Exception:
                 pass
-            cls._cached_hub = None
+        cls._cached_hubs = {}
+
+    @classmethod
+    def _register_cleanup(cls):
+        """Install atexit/SIGTERM cleanup exactly once."""
+        if cls._cleanup_registered:
+            return
+        cls._cleanup_registered = True
+        atexit.register(cls.disconnect)
+        # SIGTERM doesn't run atexit by default — install a handler that calls
+        # sys.exit() so atexit handlers fire, but only if no custom handler has
+        # been installed already.
+        current = signal.getsignal(signal.SIGTERM)
+        if current in (signal.SIG_DFL, None):
+            def _sigterm_exit(signum, frame):
+                raise SystemExit(1)
+            signal.signal(signal.SIGTERM, _sigterm_exit)
 
     # ------------------------------------------------------------------ #
-    # lazy hub discovery (singleton)
+    # address parsing
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _parse_address(address):
+        """Pull (serial, pid) out of a VISA-style address.
+
+        e.g. 'USB0::0x24FF::0x0013::BFABDDC4::INSTR' -> (0xBFABDDC4, 0x0013).
+        Returns (None, None) for anything that doesn't match.
+        """
+        if not address:
+            return (None, None)
+        parts = str(address).split("::")
+        serial = pid = None
+        if len(parts) >= 4:
+            try:
+                serial = int(parts[3], 16)
+            except ValueError:
+                serial = None
+        if len(parts) >= 3:
+            try:
+                pid = int(parts[2], 16)
+            except ValueError:
+                pid = None
+        return (serial, pid)
+
+    # ------------------------------------------------------------------ #
+    # lazy hub discovery (cached per serial)
     # ------------------------------------------------------------------ #
     def _connect_hub(self):
         self._require_library()
-        if AcronameUSBNet._cached_hub:
-            return AcronameUSBNet._cached_hub
+        serial = self._serial
+        hub = AcronameUSBNet._cached_hubs.get(serial)
+        if hub is not None:
+            return hub
 
-        for cls in (
-            self._brainstem.stem.USBHub2x4,
-            self._brainstem.stem.USBHub3p,
-            self._brainstem.stem.USBHub3c,
-        ):
-            hub = cls()
-            if hub.discoverAndConnect(self._brainstem.link.Spec.USB) == self._Result.NO_ERROR:
-                AcronameUSBNet._cached_hub = hub
+        stem = self._brainstem.stem
+        spec = self._brainstem.link.Spec.USB
 
-                # Ensure hub is disconnected on exit
-                atexit.register(AcronameUSBNet.disconnect)
+        # Order the hub classes so a port-capable class is tried first: binding
+        # an 8-port hub with the 4-port class would truncate ports 4-7. The PID
+        # from the address picks the best starting class; the rest are tried as
+        # a fallback. Connecting by serial guarantees we bind THIS net's hub.
+        hub3 = (stem.USBHub3p, stem.USBHub3c)   # 8-port families
+        hub2 = (stem.USBHub2x4,)                # 4-port family
+        classes = (hub2 + hub3) if self._pid == 0x0011 else (hub3 + hub2)
 
-                # SIGTERM doesn't run atexit by default — install a handler
-                # that calls sys.exit() so atexit handlers fire, but only if
-                # no custom handler has been installed already.
-                current = signal.getsignal(signal.SIGTERM)
-                if current in (signal.SIG_DFL, None):
-                    def _sigterm_exit(signum, frame):
-                        raise SystemExit(1)
-                    signal.signal(signal.SIGTERM, _sigterm_exit)
+        for cls in classes:
+            candidate = cls()
+            if serial is not None:
+                rc = candidate.discoverAndConnect(spec, serial)
+            else:
+                rc = candidate.discoverAndConnect(spec)
+            if rc == self._Result.NO_ERROR:
+                AcronameUSBNet._cached_hubs[serial] = candidate
+                self._register_cleanup()
+                return candidate
 
-                return hub
-
-        raise DeviceNotFoundError("No Acroname hub detected on USB")
+        where = f" with serial 0x{serial:08X}" if serial is not None else ""
+        raise DeviceNotFoundError(f"No Acroname hub detected on USB{where}")
 
     # ------------------------------------------------------------------ #
-    # constructor (argument ignored, kept for signature compatibility)
+    # constructor — remembers which physical hub this net belongs to
     # ------------------------------------------------------------------ #
-    def __init__(self, _net_info: dict | None = None) -> None:
-        pass
+    def __init__(self, net_info: dict | None = None) -> None:
+        self._serial, self._pid = self._parse_address(
+            (net_info or {}).get("address"))
 
     # ------------------------------------------------------------------ #
     # internal – decode enable+power bits
