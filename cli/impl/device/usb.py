@@ -32,7 +32,7 @@ def die(message: str, code: int = 0) -> None:
 
 def main(argv: list[str]) -> None:  # pragma: no cover
     if len(argv) != 3:
-        die("Usage: usb.py <enable|disable|toggle> <net_name>")
+        die("Usage: usb.py <enable|disable|toggle|state> <net_name>")
 
     command, net_name = argv[1], argv[2]
 
@@ -46,6 +46,8 @@ def main(argv: list[str]) -> None:  # pragma: no cover
             usb_pkg.disable(net_name)
         elif command == "toggle":
             usb_pkg.toggle(net_name)
+        elif command == "state":
+            usb_pkg.state(net_name)
         else:
             die(f"ERROR [unexpected] Unknown USB command: {command}", code=1)
 

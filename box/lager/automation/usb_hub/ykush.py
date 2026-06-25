@@ -154,16 +154,26 @@ class YKUSHUSBNet(USBNet):
         _ensure_library()
         self._set_state(port, _PORT_DOWN)
 
+    @staticmethod
+    def _read_enabled(dev, port: int) -> bool:
+        """Read the live enabled/disabled state of a port from the device."""
+        try:
+            return bool(dev.get_port_state(port))
+        except AttributeError:
+            return bool(getattr(dev, "switch_port_state_get", lambda p: 0)(port))
+
+    def state(self, net_name: str, port: int) -> bool:        # type: ignore[override]
+        self._validate_port(port)
+        _ensure_library()
+        dev = self._device_for(self.serial)
+        return self._read_enabled(dev, port)
+
     def toggle(self, net_name: str, port: int) -> bool:        # type: ignore[override]
         self._validate_port(port)
         _ensure_library()
         dev = self._device_for(self.serial)
 
-        try:
-            currently_on = bool(dev.get_port_state(port))
-        except AttributeError:
-            currently_on = bool(getattr(dev, "switch_port_state_get", lambda p: 0)(port))
-
+        currently_on = self._read_enabled(dev, port)
         target = _PORT_DOWN if currently_on else _PORT_UP
         self._set_state(port, target)
         return target == _PORT_UP

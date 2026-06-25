@@ -28,7 +28,7 @@ from lager.automation import usb_hub
 
 logger = logging.getLogger(__name__)
 
-_VALID_ACTIONS = ("enable", "disable", "toggle")
+_VALID_ACTIONS = ("enable", "disable", "toggle", "state")
 
 # Serialize hub calls within this process. The underlying Acroname/YKUSH
 # drivers share cached hardware handles across requests; back-to-back
@@ -66,7 +66,7 @@ def register_usb_routes(app: Flask) -> None:
             if not netname or action not in _VALID_ACTIONS:
                 return jsonify({
                     'success': False,
-                    'error': 'netname and action (enable|disable|toggle) are required',
+                    'error': 'netname and action (enable|disable|toggle|state) are required',
                 }), 400
 
             try:
@@ -92,12 +92,14 @@ def register_usb_routes(app: Flask) -> None:
                 logger.exception("[HTTP] /usb/command dispatcher error")
                 return jsonify({'success': False, 'error': str(e)}), 502
 
-            # For toggle, the dispatcher returns the resulting port state so we
-            # can tell the user which way it flipped. enable/disable are
-            # unambiguous from the action itself.
+            # toggle and state both return the live port state from the
+            # dispatcher; enable/disable are unambiguous from the action itself.
             if action == "toggle":
                 state = "enabled" if result else "disabled"
                 message = f"USB port '{netname}' toggled → {state}"
+            elif action == "state":
+                state = "enabled" if result else "disabled"
+                message = f"USB port '{netname}' is {state}"
             else:
                 state = "enabled" if action == "enable" else "disabled"
                 message = f"USB port '{netname}' {action}d"

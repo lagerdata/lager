@@ -214,8 +214,17 @@ def toggle(ctx, box):
     _run_usb_action(ctx, box, "toggle")
 
 
+@usb.command()
+@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.pass_context
+def state(ctx, box):
+    """Show whether the USB port is enabled or disabled (read-only)"""
+    _run_usb_action(ctx, box, "state")
+
+
 usb.net_examples = [
     "lager usb usb1 enable --box <BOX>",
     "lager usb usb1 toggle --box <BOX>",
+    "lager usb usb1 state --box <BOX>   (read-only: enabled/disabled)",
     "lager usb --box <BOX>          (list USB nets)",
 ]

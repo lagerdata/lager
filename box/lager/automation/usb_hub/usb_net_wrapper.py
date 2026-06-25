@@ -78,6 +78,17 @@ class USBNetWrapper:
             raise ValueError(f"USB net '{self.name}' has no port configured")
         return self._controller.toggle(self.name, self.port)
 
+    def state(self) -> bool:
+        """Read the current power state of this USB port without changing it.
+
+        Returns:
+            bool: True if currently enabled (powered on), False if currently
+            disabled (powered off).
+        """
+        if self.port is None:
+            raise ValueError(f"USB net '{self.name}' has no port configured")
+        return self._controller.state(self.name, self.port)
+
     def get_config(self) -> dict:
         """Get the raw net configuration dict."""
         return self._config.copy()
