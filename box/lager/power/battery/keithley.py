@@ -543,6 +543,17 @@ class KeithleyBattery(BatteryNet):
         per-device lock acquisition — per monitor tick instead of ~17, so
         polling cannot starve interactive commands on slow instruments.
         """
+        # Liveness probe — deliberately NOT swallowed. If the cached pyvisa
+        # session is stale (instrument power-cycled / USB re-enumerated), this
+        # raises a session/ENODEV error that propagates to the hardware
+        # service's /invoke handler, which evicts the stale session,
+        # reconnects, and retries this call on a fresh session. Without it the
+        # swallowing _safe_query calls below would return 0s and the stale
+        # session would never be evicted -- the TUI shows 0s (and the monitor
+        # spams DeviceError) until the box is rebooted. *IDN? is read-only and
+        # valid in any instrument mode, so it never perturbs state.
+        self._query("*IDN?")
+
         enabled = self._is_batt_output_on()
         mode_str = self._mode_string()
         model_str = self._safe_query(":BATT:STAT?", "") or "Custom"
