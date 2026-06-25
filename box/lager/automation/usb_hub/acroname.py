@@ -112,13 +112,20 @@ class AcronameUSBNet(USBNet):
         hub = self._connect_hub()
         hub.usb.setPortDisable(port)
 
-    def toggle(self, net_name: str, port: int) -> bool:  # type: ignore[override]
-        hub = self._connect_hub()
+    def _read_enabled(self, hub, port: int) -> bool:
+        """Read the live enabled/disabled state of a port from the hub."""
         res = hub.usb.getPortState(port)
         if res.error != self._Result.NO_ERROR:
             raise PortStateError(f"Acroname error code {res.error}")
+        return self._port_enabled(res.value)
 
-        currently_on = self._port_enabled(res.value)
+    def state(self, net_name: str, port: int) -> bool:  # type: ignore[override]
+        hub = self._connect_hub()
+        return self._read_enabled(hub, port)
+
+    def toggle(self, net_name: str, port: int) -> bool:  # type: ignore[override]
+        hub = self._connect_hub()
+        currently_on = self._read_enabled(hub, port)
         if currently_on:
             hub.usb.setPortDisable(port)
         else:

@@ -27,6 +27,7 @@ __all__ = [
     "enable",
     "disable",
     "toggle",
+    "state",
     "USBBackendError",
     "LibraryMissingError",
     "DeviceNotFoundError",
@@ -60,3 +61,4 @@ def _make_proxy(attr: str) -> Callable[..., Any]:  # helper factory
 enable = _make_proxy("enable")    # type: ignore[assignment]
 disable = _make_proxy("disable")  # type: ignore[assignment]
 toggle = _make_proxy("toggle")    # type: ignore[assignment]
+state = _make_proxy("state")      # type: ignore[assignment]

@@ -25,7 +25,8 @@ from lager import (
 |--------|-------------|
 | `enable()` | Enable (power on) USB port |
 | `disable()` | Disable (power off) USB port |
-| `toggle()` | Toggle USB port power state |
+| `toggle()` | Toggle USB port power state; returns the resulting state (`True`=enabled) |
+| `state()` | Read the current power state without changing it (`True`=enabled) |
 
 ## Exception Classes
 
@@ -83,13 +84,28 @@ print("USB port powered off")
 
 ### `toggle()`
 
-Toggle the power state of the USB port.
+Toggle the power state of the USB port. Returns the resulting state
+(`True` if now enabled, `False` if now disabled).
 
 ```python
 from lager import Net, NetType
 
 usb = Net.get('SENSOR_USB', type=NetType.Usb)
-usb.toggle()  # On -> Off or Off -> On
+now_on = usb.toggle()  # On -> Off or Off -> On
+```
+
+### `state()`
+
+Read the current power state of the USB port **without changing it**. Returns
+`True` if the port is currently enabled (powered on), `False` if disabled. The
+value is read live from the hub, so it always reflects the real port state.
+
+```python
+from lager import Net, NetType
+
+usb = Net.get('SENSOR_USB', type=NetType.Usb)
+if not usb.state():
+    usb.enable()   # only power on if it isn't already
 ```
 
 ## Examples

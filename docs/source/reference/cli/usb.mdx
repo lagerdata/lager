@@ -23,7 +23,7 @@ lager usb [OPTIONS] [NET_NAME] [COMMAND]
 | Argument | Description |
 |----------|-------------|
 | `NET_NAME` | USB net name (optional - lists nets if omitted) |
-| `COMMAND` | Power command: `enable`, `disable`, or `toggle` |
+| `COMMAND` | Power command: `enable`, `disable`, `toggle`, or `state` |
 
 ## Commands
 
@@ -32,6 +32,7 @@ lager usb [OPTIONS] [NET_NAME] [COMMAND]
 | `enable` | Enable (power on) the USB port |
 | `disable` | Disable (power off) the USB port |
 | `toggle` | Toggle the current power state |
+| `state` | Show whether the port is enabled or disabled (read-only) |
 
 ---
 
@@ -69,7 +70,24 @@ lager usb USB1 disable --box my-lager-box
 
 # Toggle USB port state
 lager usb USB1 toggle --box my-lager-box
+
+# Read the current state without changing it
+lager usb USB1 state --box my-lager-box
 ```
+
+### Read port state (read-only)
+
+`state` reports whether a port is currently enabled or disabled **without
+changing it**. The value is read live from the hub hardware, so it always
+reflects the real port state — nothing is cached or stored:
+
+```bash
+lager usb USB1 state --box my-lager-box
+# [OK] USB port 'USB1' is enabled
+```
+
+This is the read-only counterpart to `toggle`: use `state` to check a port,
+`toggle` to flip it (which also reports the resulting state).
 
 <Note>`toggle` reports the resulting state so you can tell which way it flipped:
 

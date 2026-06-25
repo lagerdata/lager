@@ -24,6 +24,16 @@ class USBNet(ABC):
             (powered on), False if it is now disabled (powered off).
         """
         raise NotImplementedError()
+
+    @abstractmethod
+    def state(self, net_name, port):
+        """Read the current power state of the specified port without changing it.
+
+        Returns:
+            bool: True if the port is currently enabled (powered on), False if
+            it is currently disabled (powered off).
+        """
+        raise NotImplementedError()
     
     # ─────────────  Common backend exceptions  ─────────────
 
