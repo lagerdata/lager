@@ -67,10 +67,10 @@ def test_live_measurements():
     try:
         from lager import Net, NetType
         psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
+        psu.enable()
         psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
-        psu.enable()
-        time.sleep(0.5)
+        time.sleep(2.0)
 
         try:
             mv = psu.voltage()
@@ -144,10 +144,10 @@ def test_setpoint_vs_measured():
         from lager import Net, NetType
         psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
         target = min(5.0, CHANNEL_MAX_VOLTAGE)
+        psu.enable()
         psu.set_voltage(target)
         psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
-        psu.enable()
-        time.sleep(0.5)
+        time.sleep(2.0)
 
         measured = psu.voltage()
 
@@ -189,10 +189,10 @@ def test_power_consistency():
     try:
         from lager import Net, NetType
         psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
+        psu.enable()
         psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
-        psu.enable()
-        time.sleep(0.5)
+        time.sleep(2.0)
 
         mv = float(psu.voltage())
         mi = float(psu.current())
@@ -237,9 +237,8 @@ def test_output_is_enabled():
     try:
         from lager import Net, NetType
         psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
-        psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
-
         psu.enable()
+        psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         time.sleep(0.3)
         state_on = psu.output_is_enabled()
         passed_on = bool(state_on)
@@ -282,10 +281,10 @@ def test_output_mode():
     try:
         from lager import Net, NetType
         psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
+        psu.enable()
         psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
-        psu.enable()
-        time.sleep(0.5)
+        time.sleep(2.0)
 
         mode = psu.get_output_mode()
         passed_type = isinstance(mode, str)
@@ -329,10 +328,10 @@ def test_embedded_voltages():
     try:
         from lager import Net, NetType
         psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
+        psu.enable()
         psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
         psu.set_ovp(CHANNEL_MAX_VOLTAGE)
-        psu.enable()
-        time.sleep(0.5)
+        time.sleep(2.0)
 
         _all_voltages = [1.8, 2.5, 3.3, 5.0]
         targets = [v for v in _all_voltages if v <= CHANNEL_MAX_VOLTAGE]
@@ -388,10 +387,10 @@ def test_measurement_stability():
     try:
         from lager import Net, NetType
         psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
+        psu.enable()
         psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
-        psu.enable()
-        time.sleep(1.5)
+        time.sleep(2.0)
 
         readings = []
         for _ in range(5):
@@ -439,9 +438,9 @@ def test_current_limit_readback():
     try:
         from lager import Net, NetType
         psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
-        psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         psu.enable()
-        time.sleep(0.3)
+        psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
+        time.sleep(2.0)
 
         for limit_a in [0.5, 1.0]:
             psu.set_current(min(limit_a, CHANNEL_MAX_CURRENT))
@@ -488,11 +487,11 @@ def test_protection_pre_enable():
         ovp_limit = min(test_voltage * 1.1, CHANNEL_MAX_VOLTAGE)
         ocp_limit = min(1.0, CHANNEL_MAX_CURRENT)
 
+        psu.enable()
         psu.set_voltage(test_voltage)
         psu.set_ovp(ovp_limit)
         psu.set_ocp(ocp_limit)
-        psu.enable()
-        time.sleep(0.5)
+        time.sleep(2.0)
 
         v_sp = psu.voltage()
         ovp_val = psu.get_ovp_limit()
@@ -559,6 +558,7 @@ def test_rapid_cycling():
     try:
         from lager import Net, NetType
         psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
+        psu.enable()
         psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
 
@@ -662,8 +662,8 @@ def test_monitor_state():
     try:
         from lager import Net, NetType
         psu = Net.get(KEITHLEY_SUPPLY_NET, type=NetType.PowerSupply)
-        psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         psu.enable()
+        psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         time.sleep(0.3)
 
         state = psu.get_monitor_state()
