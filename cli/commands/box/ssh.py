@@ -44,11 +44,22 @@ def _get_ssh_install_hint() -> str:
         return "Please install an SSH client for your operating system."
 
 
-@click.command()
+@click.command(context_settings=dict(ignore_unknown_options=True))
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
-def ssh(ctx, box):
-    """SSH into a box"""
+@click.argument("command", nargs=-1, type=click.UNPROCESSED)
+def ssh(ctx, box, command):
+    """SSH into a box, or run a command on it.
+
+    With no COMMAND, opens an interactive shell on the box. With a COMMAND,
+    runs it on the box (like `ssh user@host <command>`) and returns its output
+    and exit code — handy for scripting and one-off checks:
+
+        lager ssh --box my-box -- ls -la /etc/lager
+
+    Use `--` to separate lager's options from the remote command when the
+    command contains its own dashed flags.
+    """
     from ...box_storage import get_box_user
 
     # Use default box if none specified
@@ -74,6 +85,11 @@ def ssh(ctx, box):
     if os.path.exists(_LAGER_BOX_KEY):
         ssh_cmd.extend(['-i', _LAGER_BOX_KEY])
     ssh_cmd.append(ssh_host)
+
+    # When a command is supplied, append it so ssh runs it on the box and exits
+    # (non-interactive). With no command, ssh opens an interactive shell as before.
+    if command:
+        ssh_cmd.extend(command)
 
     try:
         # Run SSH as a child process (not exec) so Click ctx.call_on_close hooks run.
