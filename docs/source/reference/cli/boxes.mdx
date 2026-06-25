@@ -35,26 +35,30 @@ lager boxes COMMAND [OPTIONS]
 Add a new Lagerbox configuration.
 
 ```bash
-lager boxes add --name NAME --ip IP [OPTIONS]
+lager boxes add --name NAME --ip IP --user USER [OPTIONS]
 ```
 
 **Options:**
 - `--name` (required) - Name to assign to the box
 - `--ip` (required) - IP address of the box
-- `--user` - SSH username (default: lagerdata)
+- `--user` (required) - SSH username for the box (the account you log in as)
 - `--version` - Lager Box version/branch (e.g., staging, main)
 - `--yes` - Confirm without prompting
+
+<Note>`--user` is **required**. It previously defaulted to `lagerdata`, but
+since most boxes use a different login account, the default was removed so the
+correct user is always recorded for SSH, updates, and `lager ssh`.</Note>
 
 **Examples:**
 ```bash
 # Add a basic box
-lager boxes add --name my-lager-box --ip <BOX_IP>
+lager boxes add --name my-lager-box --ip <BOX_IP> --user lager
 
-# Add with custom username
+# Add with a Raspberry Pi default account
 lager boxes add --name pi-lager-box --ip <BOX_IP> --user pi
 
 # Add with version tracking
-lager boxes add --name staging-lager-box --ip <BOX_IP> --version staging
+lager boxes add --name staging-lager-box --ip <BOX_IP> --user lager --version staging
 ```
 
 ### `add-all`
@@ -319,9 +323,9 @@ The boxes commands perform validation:
 
 ```bash
 # Set up a new bench
-lager boxes add --name my-lager-box --ip <BOX_IP>
-lager boxes add --name staging-box --ip <BOX_IP>
-lager boxes add --name pi-box --ip <BOX_IP>
+lager boxes add --name my-lager-box --ip <BOX_IP> --user lager
+lager boxes add --name staging-box --ip <BOX_IP> --user lager
+lager boxes add --name pi-box --ip <BOX_IP> --user lager
 
 # Export configuration for team sharing
 lager boxes export -o bench-config.json
@@ -339,6 +343,6 @@ lager boxes delete-all --yes
 
 - Box names must be unique
 - IP addresses must be unique (no duplicate IPs)
-- The default SSH user is `lagerdata`
+- `--user` is required when adding a box (there is no default SSH user)
 - Use `--merge` when importing to preserve existing boxes
 - Sync command requires Lager Boxes to be online and accessible
