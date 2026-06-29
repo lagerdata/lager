@@ -758,22 +758,19 @@ class Keithley2281S(SupplyNet):
             raw = self._safe_query_no_mode(':MEAS:CONC:DC?', '')
             if raw:
                 val = self._safe_float(self._parse_current_from_response(raw))
-                logger.info("GAP1-SINK-DIAG MEAS:CONC:DC? raw=%r -> %s A", raw, val)
                 return self._note_sink_rating(val)
 
             # Fallback: legacy single-current read (≈0 while sinking but
             # known-stable) so a missing concurrent reply never raises.
             raw2 = self._safe_query_no_mode(':MEAS:CURR?', '')
             if raw2:
-                val2 = self._safe_float(raw2)
-                logger.info("GAP1-SINK-DIAG MEAS:CURR? raw=%r -> %s A", raw2, val2)
-                return val2
+                return self._safe_float(raw2)
             return None
         except Exception as e:
             # Never propagate: a raised read here would become ConnectionFailed
             # and also poison the following set_voltage. Drain one error (read
             # only), keep the session, and let the caller fall back to last-good.
-            logger.warning("GAP1-SINK-DIAG read error (session kept): %s", e)
+            logger.warning("2281S current read failed (session kept): %s", e)
             try:
                 self.instr.query(":SYST:ERR?", check_errors=False)
             except Exception:
@@ -788,8 +785,8 @@ class Keithley2281S(SupplyNet):
 
     def _note_sink_rating(self, val: float) -> float:
         if val < -self._SINK_RATING_A * 1.1:
-            logger.warning("GAP1-SINK-DIAG sink current %.4f A exceeds the 1 A "
-                           "(±10%%) rating", val)
+            logger.warning("2281S sink current %.4f A exceeds the 1 A (±10%%) "
+                           "rating", val)
         return val
 
     @staticmethod
