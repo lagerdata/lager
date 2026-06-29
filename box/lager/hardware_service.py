@@ -224,28 +224,37 @@ def _usb_ids_from_address(address):
 
 def _usb_device_enumerated(address):
     """True/False if the USB instrument is / isn't on the bus right now; None
-    if unknown (non-USB address or PyUSB unavailable). Used to decide whether a
+    if unknown (non-USB address or sysfs unavailable). Used to decide whether a
     self-restart can possibly help: an *enumerated* device we can't reopen is a
     wedged in-process session (restart helps); an absent one is unplugged
-    (restart can't help — don't loop)."""
+    (restart can't help — don't loop).
+
+    Reads sysfs (the kernel's device list) rather than libusb/PyUSB on purpose:
+    the wedge is precisely that THIS process's libusb context is stale and can't
+    see the re-enumerated device, so a libusb-based check would wrongly report
+    the device as gone and suppress the restart. sysfs is unaffected."""
+    import glob
     vid, pid, serial = _usb_ids_from_address(address)
     if vid is None:
         return None
+    vid_s, pid_s = f"{vid:04x}", f"{pid:04x}"
     try:
-        import usb.core
-        import usb.util
-    except Exception:
-        return None
-    try:
-        for dev in usb.core.find(find_all=True, idVendor=vid, idProduct=pid):
+        for dev_dir in glob.glob("/sys/bus/usb/devices/*/"):
+            def _read(name):
+                try:
+                    with open(os.path.join(dev_dir, name)) as fh:
+                        return fh.read().strip()
+                except OSError:
+                    return None
+            if (_read("idVendor") or "").lower() != vid_s:
+                continue
+            if (_read("idProduct") or "").lower() != pid_s:
+                continue
             if serial is None:
                 return True
-            try:
-                if usb.util.get_string(dev, dev.iSerialNumber) == serial:
-                    return True
-            except Exception:
-                # Serial unreadable (interface claimed/busy) but a matching
-                # VID/PID unit is physically present — treat as enumerated.
+            dev_serial = _read("serial")
+            if dev_serial is None or dev_serial == serial:
+                # serial matches, or is unreadable but VID/PID matched — present
                 return True
         return False
     except Exception:
