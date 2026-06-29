@@ -25,10 +25,37 @@ from lager import (
     USBBackendError,
 )
 from lager.automation import usb_hub
+from lager.util import self_restart as _self_restart
 
 logger = logging.getLogger(__name__)
 
 _VALID_ACTIONS = ("enable", "disable", "toggle", "state")
+
+# Per-service cooldown stamp for the shared self-restart (box_http_server runs
+# under start-services.sh's `while true` supervisor, like hardware_service).
+_BHS_SELF_RESTART_STAMP = "/tmp/lager-box-http-server-self-restart"
+
+
+def _usb_net_address(netname):
+    """Best-effort VISA-style address for a USB net, for the sysfs-gated
+    self-restart check. None if it can't be resolved."""
+    try:
+        from lager.automation.usb_hub.dispatcher import _load_net_definitions
+        return (_load_net_definitions().get(netname) or {}).get("address")
+    except Exception:
+        return None
+
+
+def _self_restart_if_wedged(netname, action, exc):
+    """If a USB op failed because the device is unreachable but the device is
+    still on the bus (sysfs), this process's USB/HID context is wedged after a
+    re-enumeration — exit so the supervisor respawns box_http_server with a
+    clean context. No-op when the device is genuinely absent or in cooldown."""
+    address = _usb_net_address(netname)
+    if address:
+        _self_restart.maybe_self_restart(
+            address, f"usb {action} {netname}", service="box_http_server",
+            stamp_path=_BHS_SELF_RESTART_STAMP)
 
 # Serialize hub calls within this process. The underlying Acroname/YKUSH
 # drivers share cached hardware handles across requests; back-to-back
@@ -77,6 +104,8 @@ def register_usb_routes(app: Flask) -> None:
                 return jsonify({'success': False, 'error': f'library-missing: {e}'}), 500
             except DeviceNotFoundError as e:
                 logger.warning("[HTTP] /usb/command device not found: %s", e)
+                # "device not found" + still in sysfs = wedged USB context.
+                _self_restart_if_wedged(netname, action, e)
                 return jsonify({'success': False, 'error': f'device-not-found: {e}'}), 404
             except PortStateError as e:
                 logger.warning("[HTTP] /usb/command port-state error: %s", e)
@@ -112,4 +141,11 @@ def register_usb_routes(app: Flask) -> None:
             })
         except Exception as e:
             logger.exception("[HTTP] /usb/command unexpected error")
+            # YKUSH/pykush raises a plain "device not found" (not lager's
+            # DeviceNotFoundError), so an unreachable wedge lands here. Only
+            # self-restart when the error means the device is unreachable (not
+            # a device that responded with an error).
+            if _self_restart.looks_like_device_unreachable(e):
+                _self_restart_if_wedged(
+                    locals().get('netname'), locals().get('action'), e)
             return jsonify({'success': False, 'error': str(e)}), 500

@@ -27,6 +27,8 @@ import traceback
 import atexit
 from flask import Flask, request, jsonify, send_from_directory
 
+from lager.util import self_restart as _self_restart
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -193,130 +195,22 @@ def _close_visa_resource(address):
 
 # --- Self-restart on an unrecoverable wedged VISA session -------------------
 # After a USB instrument re-enumerates (mains power-cycle / USB hub-port
-# toggle), the libusb interface claim from the now-dead session can be orphaned
-# *inside this process*: the device is back on the bus and a fresh process can
-# open it, but this one never can — no amount of close/evict/reopen helps
-# (reproduced on a Keithley 2281S). The only reliable recovery is a fresh
-# process, so we exit and let start-services.sh's `while true` supervisor
-# respawn hardware_service with a clean libusb context. The monitor's next tick
-# then gets a working session and the TUI self-heals (~2s blip, no container
-# restart). Heavily gated so it only fires for the real wedge.
+# toggle), the libusb claim from the now-dead session can be orphaned *inside
+# this process*: the device is back on the bus but only a fresh process can
+# reopen it. So we exit and let start-services.sh's supervisor respawn
+# hardware_service with a clean libusb context (the TUI self-heals, ~2s blip).
+# The mechanism is shared with box_http_server's USB path (lager.util.self_restart).
 _HW_SELF_RESTART_STAMP = "/tmp/lager-hardware-service-self-restart"
-_HW_SELF_RESTART_COOLDOWN_S = 60.0
-_OPEN_FAILURE_MARKERS = (
-    'open_resource', 'open_bare_resource', 'after_parsing',
-    'could not open instrument',
-)
-
-
-def _usb_ids_from_address(address):
-    """Parse (vid, pid, serial) from a USB VISA address, else (None, None, None)."""
-    import re
-    m = re.match(r'USB\d*::(0x[0-9A-Fa-f]+)::(0x[0-9A-Fa-f]+)::([^:]+)::',
-                 str(address or ''))
-    if not m:
-        return (None, None, None)
-    try:
-        return (int(m.group(1), 16), int(m.group(2), 16), m.group(3))
-    except ValueError:
-        return (None, None, None)
-
-
-def _usb_device_enumerated(address):
-    """True/False if the USB instrument is / isn't on the bus right now; None
-    if unknown (non-USB address or sysfs unavailable). Used to decide whether a
-    self-restart can possibly help: an *enumerated* device we can't reopen is a
-    wedged in-process session (restart helps); an absent one is unplugged
-    (restart can't help — don't loop).
-
-    Reads sysfs (the kernel's device list) rather than libusb/PyUSB on purpose:
-    the wedge is precisely that THIS process's libusb context is stale and can't
-    see the re-enumerated device, so a libusb-based check would wrongly report
-    the device as gone and suppress the restart. sysfs is unaffected."""
-    import glob
-    vid, pid, serial = _usb_ids_from_address(address)
-    if vid is None:
-        return None
-    vid_s, pid_s = f"{vid:04x}", f"{pid:04x}"
-    try:
-        for dev_dir in glob.glob("/sys/bus/usb/devices/*/"):
-            def _read(name):
-                try:
-                    with open(os.path.join(dev_dir, name)) as fh:
-                        return fh.read().strip()
-                except OSError:
-                    return None
-            if (_read("idVendor") or "").lower() != vid_s:
-                continue
-            if (_read("idProduct") or "").lower() != pid_s:
-                continue
-            if serial is None:
-                return True
-            dev_serial = _read("serial")
-            if dev_serial is None or dev_serial == serial:
-                # serial matches, or is unreadable but VID/PID matched — present
-                return True
-        return False
-    except Exception:
-        return None
 
 
 def _looks_like_open_failure(exc):
-    """True when an exception/traceback looks like a failure to OPEN the VISA
-    session (vs. a normal command error on an already-open device)."""
-    blob = (traceback.format_exc() + ' ' + str(exc)).lower()
-    return any(m in blob for m in _OPEN_FAILURE_MARKERS)
+    return _self_restart.looks_like_open_failure(exc)
 
 
 def _maybe_self_restart_for_wedged_session(address, context):
-    """Exit so the supervisor respawns us, when a VISA session is wedged
-    in-process. No-op unless the device is enumerated (a restart can actually
-    help) and we haven't restarted within the cooldown (anti-loop)."""
-    import time
-    # The wedge is detected at the tail of a re-enumeration, so the device may
-    # not be back in sysfs for a beat. Retry briefly (~4s) so a still-
-    # re-enumerating instrument isn't misread as unplugged — that false
-    # "not on the bus" would suppress the restart and leave the TUI dead.
-    enumerated = None
-    for _delay in (0.0, 0.5, 1.0, 1.0, 1.5):
-        if _delay:
-            time.sleep(_delay)
-        enumerated = _usb_device_enumerated(address)
-        if enumerated is not False:  # True (present) or None (unknown) — stop
-            break
-    if enumerated is None:
-        logger.warning(
-            f"[self-restart] {context}: cannot confirm USB enumeration for "
-            f"{address}; not restarting.")
-        return
-    if enumerated is False:
-        logger.warning(
-            f"[self-restart] {context}: {address} is not on the USB bus "
-            f"(unplugged/off) — a restart can't help; surfacing the error.")
-        return
-    now = time.time()
-    try:
-        last = os.path.getmtime(_HW_SELF_RESTART_STAMP)
-    except OSError:
-        last = 0.0
-    if now - last < _HW_SELF_RESTART_COOLDOWN_S:
-        logger.error(
-            f"[self-restart] {context}: {address} wedged, but self-restarted "
-            f"{int(now - last)}s ago (< {int(_HW_SELF_RESTART_COOLDOWN_S)}s "
-            f"cooldown); surfacing the error instead of restarting again.")
-        return
-    try:
-        with open(_HW_SELF_RESTART_STAMP, 'w') as fh:
-            fh.write(str(now))
-    except OSError:
-        pass
-    logger.critical(
-        f"[self-restart] {context}: VISA session for {address} is wedged "
-        f"in-process (device is enumerated but cannot be reopened — orphaned "
-        f"libusb claim). Exiting so the supervisor respawns hardware_service "
-        f"with a clean libusb context.")
-    logging.shutdown()  # flush handlers before the hard exit
-    os._exit(70)  # EX_SOFTWARE; start-services.sh's `while true` respawns us
+    _self_restart.maybe_self_restart(
+        address, context, service="hardware_service",
+        stamp_path=_HW_SELF_RESTART_STAMP)
 
 
 # Substrings that classify an error as a stale pyvisa session worth recreating.
