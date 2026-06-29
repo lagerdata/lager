@@ -218,12 +218,22 @@ class BatteryNet(ABC):
         pass
 
     @abstractmethod
-    def esr(self) -> float:
+    def esr(self, value: float | None = None) -> float:
         """
-        Read the battery equivalent series resistance.
-        
+        Read or set the battery equivalent series resistance (ESR).
+
+        With no argument, reads and returns the real-time series resistance.
+
+        With a value, sets the simulator's series resistance. Note that some
+        instruments expose this only as a series-resistance *offset* added to
+        the active battery model rather than an absolute value; see the
+        backend implementation for exact semantics and the supported range.
+
+        Args:
+            value: Series resistance (ohms) to set. If None, reads instead.
+
         Returns:
-            ESR in ohms.
+            ESR in ohms when reading; None when setting.
         """
         pass
 
