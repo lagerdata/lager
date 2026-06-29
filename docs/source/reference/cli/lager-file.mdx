@@ -59,7 +59,7 @@ Managed with `lager defaults`.
 ```json
 {
   "DEFAULTS": {
-    "gateway_id": "lab-box-1",
+    "gateway_id": "my-lager-box",
     "serial_device": "/dev/ttyUSB0",
     "net_power_supply": "VDD_MAIN",
     "net_debug": "SWD",
@@ -71,7 +71,7 @@ Managed with `lager defaults`.
 **CLI commands:**
 
 ```bash
-lager defaults add --box lab-box-1 --supply-net VDD_MAIN
+lager defaults add --box my-lager-box --supply-net VDD_MAIN
 lager defaults list
 lager defaults delete box
 lager defaults delete-all
@@ -106,13 +106,13 @@ Each entry can be either a simple IP string (legacy format) or an object with ad
 ```json
 {
   "BOXES": {
-    "lab-box-1": "100.64.0.10",
-    "lab-box-2": {
+    "my-lager-box": "100.64.0.10",
+    "staging-box": {
       "ip": "100.64.0.11",
       "user": "admin",
       "version": "staging"
     },
-    "remote-box": "192.168.1.50"
+    "legacy-box": "192.168.1.50"
   }
 }
 ```
@@ -120,11 +120,11 @@ Each entry can be either a simple IP string (legacy format) or an object with ad
 **CLI commands:**
 
 ```bash
-lager boxes add --name lab-box-1 --ip 100.64.0.10
-lager boxes add --name lab-box-2 --ip 100.64.0.11 --user admin --version staging
+lager boxes add --name my-lager-box --ip 100.64.0.10
+lager boxes add --name staging-box --ip 100.64.0.11 --user admin --version staging
 lager boxes list
-lager boxes edit --name lab-box-1 --ip 100.64.0.12
-lager boxes delete --name lab-box-1
+lager boxes edit --name my-lager-box --ip 100.64.0.12
+lager boxes delete --name my-lager-box
 lager boxes delete-all
 lager boxes export                    # Print boxes as JSON
 lager boxes import --file boxes.json  # Import boxes from JSON
@@ -156,7 +156,7 @@ Stores hardware net configurations organized by box name. Each net maps a human-
 ```json
 {
   "NETS": {
-    "lab-box-1": [
+    "my-lager-box": [
       {
         "name": "VDD_MAIN",
         "role": "supply",
@@ -362,7 +362,7 @@ These environment variables override the default file location and behavior:
 export LAGER_CONFIG_FILE_DIR=/opt/lager
 
 # Override default box for this session
-export LAGER_BOX=lab-box-2
+export LAGER_BOX=staging-box
 ```
 
 ---
@@ -391,22 +391,22 @@ No manual migration is required. The CLI reads both formats and writes back the 
 ```json
 {
   "DEFAULTS": {
-    "gateway_id": "lab-box-1",
+    "gateway_id": "my-lager-box",
     "net_power_supply": "VDD_MAIN",
     "net_debug": "SWD",
     "net_uart": "SERIAL_DBG",
     "net_adc": "ADC_SENSE"
   },
   "BOXES": {
-    "lab-box-1": {
+    "my-lager-box": {
       "ip": "100.64.0.10",
       "version": "main"
     },
-    "lab-box-2": "100.64.0.11",
-    "remote-box": "192.168.1.50"
+    "staging-box": "100.64.0.11",
+    "legacy-box": "192.168.1.50"
   },
   "NETS": {
-    "lab-box-1": [
+    "my-lager-box": [
       {
         "name": "VDD_MAIN",
         "role": "supply",

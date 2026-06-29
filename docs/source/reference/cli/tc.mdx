@@ -64,15 +64,15 @@ $ lager thermocouple TEMP_SENSOR --box my-lager-box
 
 ```bash
 # Read temperature from sensor
-lager thermocouple TEMP_SENSOR --box lab-gw
+lager thermocouple TEMP_SENSOR --box my-lager-box
 
 # Monitor multiple thermocouples
-lager thermocouple TC1 --box lab-gw
-lager thermocouple TC2 --box lab-gw
-lager thermocouple TC3 --box lab-gw
+lager thermocouple TC1 --box my-lager-box
+lager thermocouple TC2 --box my-lager-box
+lager thermocouple TC3 --box my-lager-box
 
 # Use in shell script
-TEMP=$(lager thermocouple OVEN_TC --box lab-gw)
+TEMP=$(lager thermocouple OVEN_TC --box my-lager-box)
 if (( $(echo "$TEMP > 100" | bc -l) )); then
     echo "Temperature exceeded 100°C!"
 fi

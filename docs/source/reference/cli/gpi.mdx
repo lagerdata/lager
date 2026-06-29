@@ -144,25 +144,25 @@ The FT232H provides 16 GPIO pins across two ports:
 
 ```bash
 # Check if button is pressed
-STATE=$(lager gpi BUTTON1 --box lab-gw)
+STATE=$(lager gpi BUTTON1 --box my-lager-box)
 if [ "$STATE" -eq "1" ]; then
     echo "Button pressed"
 fi
 
 # Read multiple inputs
-lager gpi BUTTON1 --box lab-gw
-lager gpi SENSOR_INT --box lab-gw
-lager gpi FAULT_PIN --box lab-gw
+lager gpi BUTTON1 --box my-lager-box
+lager gpi SENSOR_INT --box my-lager-box
+lager gpi FAULT_PIN --box my-lager-box
 
 # Wait for device ready signal
-lager gpi READY_PIN --wait-for high --timeout 30 --box lab-gw
+lager gpi READY_PIN --wait-for high --timeout 30 --box my-lager-box
 
 # Wait for interrupt (active-low)
-lager gpi INT_N --wait-for low --timeout 5 --box lab-gw
+lager gpi INT_N --wait-for low --timeout 5 --box my-lager-box
 
 # Scripted: wait for button press, then proceed
 echo "Press the button..."
-lager gpi BUTTON --wait-for high --timeout 60 --box lab-gw && echo "Button pressed!"
+lager gpi BUTTON --wait-for high --timeout 60 --box my-lager-box && echo "Button pressed!"
 ```
 
 ---

@@ -31,7 +31,7 @@ lager adc [NET] [OPTIONS]
 Read voltage from an ADC net:
 
 ```bash
-lager adc SENSOR_1 --box my-box
+lager adc SENSOR_1 --box my-lager-box
 ```
 
 **Output:**
@@ -47,7 +47,7 @@ The result is returned in volts with 6 decimal places.
 When invoked without a net name (and no default is set), lists all available ADC nets:
 
 ```bash
-lager adc --box my-box
+lager adc --box my-lager-box
 ```
 
 **Output:**
@@ -128,16 +128,16 @@ lager adc
 
 ```bash
 # Read ADC value from voltage sensor
-lager adc VOLTAGE_SENSOR --box my-box
+lager adc VOLTAGE_SENSOR --box my-lager-box
 
 # Read ADC value from temperature sensor
-lager adc TEMP_SENSOR --box my-box
+lager adc TEMP_SENSOR --box my-lager-box
 
 # Read ADC value from current monitor
-lager adc CURRENT_MONITOR --box my-box
+lager adc CURRENT_MONITOR --box my-lager-box
 
 # List all ADC nets on the box
-lager adc --box my-box
+lager adc --box my-lager-box
 
 # Use default net (if configured)
 lager adc
@@ -148,7 +148,7 @@ lager adc
 ```bash
 #!/bin/bash
 # Read sensor and check threshold
-RESULT=$(lager adc VOLTAGE_SENSOR --box my-box)
+RESULT=$(lager adc VOLTAGE_SENSOR --box my-lager-box)
 echo "$RESULT"
 
 # Extract numeric value

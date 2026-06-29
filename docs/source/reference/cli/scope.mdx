@@ -168,9 +168,9 @@ lager scope NET_NAME probe RATIO [--box BOX] [--mcu MCU]
 - `RATIO` - Probe attenuation: `1`, `10`, `100`, or `1000`
 
 ```bash
-lager scope ANALOG1 probe 10 --box my-box    # 10:1 probe
-lager scope ANALOG1 probe 1 --box my-box     # Direct connection (1:1)
-lager scope ANALOG1 probe 100 --box my-box   # 100:1 high-voltage probe
+lager scope ANALOG1 probe 10 --box my-lager-box    # 10:1 probe
+lager scope ANALOG1 probe 1 --box my-lager-box     # Direct connection (1:1)
+lager scope ANALOG1 probe 100 --box my-lager-box   # 100:1 high-voltage probe
 ```
 
 ### `scale`
@@ -185,10 +185,10 @@ lager scope NET_NAME scale VOLTS_PER_DIV [--box BOX] [--mcu MCU]
 - `VOLTS_PER_DIV` - Vertical scale in volts per division (0.001 to 100.0)
 
 ```bash
-lager scope ANALOG1 scale 1.0 --box my-box    # 1V/div
-lager scope ANALOG1 scale 0.5 --box my-box    # 500mV/div
-lager scope ANALOG1 scale 0.1 --box my-box    # 100mV/div
-lager scope ANALOG1 scale 0.001 --box my-box  # 1mV/div (minimum)
+lager scope ANALOG1 scale 1.0 --box my-lager-box    # 1V/div
+lager scope ANALOG1 scale 0.5 --box my-lager-box    # 500mV/div
+lager scope ANALOG1 scale 0.1 --box my-lager-box    # 100mV/div
+lager scope ANALOG1 scale 0.001 --box my-lager-box  # 1mV/div (minimum)
 ```
 
 ### `timebase`
@@ -203,10 +203,10 @@ lager scope NET_NAME timebase SEC_PER_DIV [--box BOX] [--mcu MCU]
 - `SEC_PER_DIV` - Horizontal timebase in seconds per division (1e-9 to 50.0)
 
 ```bash
-lager scope ANALOG1 timebase 0.001 --box my-box      # 1ms/div
-lager scope ANALOG1 timebase 0.0001 --box my-box     # 100us/div
-lager scope ANALOG1 timebase 0.000001 --box my-box   # 1us/div
-lager scope ANALOG1 timebase 0.000000001 --box my-box # 1ns/div (minimum)
+lager scope ANALOG1 timebase 0.001 --box my-lager-box      # 1ms/div
+lager scope ANALOG1 timebase 0.0001 --box my-lager-box     # 100us/div
+lager scope ANALOG1 timebase 0.000001 --box my-lager-box   # 1us/div
+lager scope ANALOG1 timebase 0.000000001 --box my-lager-box # 1ns/div (minimum)
 ```
 
 ---
@@ -349,13 +349,13 @@ lager scope NET_NAME trigger edge [OPTIONS]
 
 ```bash
 # Rising edge at 1.5V
-lager scope ANALOG1 trigger edge --slope rising --level 1.5 --box my-box
+lager scope ANALOG1 trigger edge --slope rising --level 1.5 --box my-lager-box
 
 # Falling edge in single capture mode
-lager scope ANALOG1 trigger edge --slope falling --level 0.5 --mode single --box my-box
+lager scope ANALOG1 trigger edge --slope falling --level 0.5 --mode single --box my-lager-box
 
 # Either edge with AC coupling
-lager scope ANALOG1 trigger edge --slope both --coupling ac --level 0 --box my-box
+lager scope ANALOG1 trigger edge --slope both --coupling ac --level 0 --box my-lager-box
 ```
 
 ### `trigger pulse`
@@ -389,10 +389,10 @@ lager scope NET_NAME trigger pulse [OPTIONS]
 
 ```bash
 # Detect short positive glitches (< 100us)
-lager scope ANALOG1 trigger pulse --trigger-on positive_less --upper 0.0001 --box my-box
+lager scope ANALOG1 trigger pulse --trigger-on positive_less --upper 0.0001 --box my-lager-box
 
 # Detect long negative pulses (> 1ms)
-lager scope ANALOG1 trigger pulse --trigger-on negative_greater --upper 0.001 --level 1.0 --box my-box
+lager scope ANALOG1 trigger pulse --trigger-on negative_greater --upper 0.001 --level 1.0 --box my-lager-box
 ```
 
 ### `trigger i2c`
@@ -436,23 +436,23 @@ lager scope NET_NAME trigger i2c [OPTIONS]
 # Trigger on I2C start condition
 lager scope ANALOG1 trigger i2c \
   --source-scl SCL_NET --source-sda SDA_NET \
-  --trigger-on start --box my-box
+  --trigger-on start --box my-lager-box
 
 # Trigger on specific I2C address (7-bit)
 lager scope ANALOG1 trigger i2c \
   --source-scl SCL_NET --source-sda SDA_NET \
-  --trigger-on address --address 0x48 --box my-box
+  --trigger-on address --address 0x48 --box my-lager-box
 
 # Trigger on I2C write to address 0x76 with data 0xF4
 lager scope ANALOG1 trigger i2c \
   --source-scl SCL_NET --source-sda SDA_NET \
   --trigger-on addr_data --address 0x76 --data 0xF4 \
-  --direction write --box my-box
+  --direction write --box my-lager-box
 
 # Trigger on NACK (missing acknowledgment)
 lager scope ANALOG1 trigger i2c \
   --source-scl SCL_NET --source-sda SDA_NET \
-  --trigger-on ack_miss --box my-box
+  --trigger-on ack_miss --box my-lager-box
 ```
 
 ### `trigger spi`
@@ -486,12 +486,12 @@ lager scope NET_NAME trigger spi [OPTIONS]
 # Trigger on CS assertion
 lager scope ANALOG1 trigger spi \
   --source-mosi-miso MOSI_NET --source-sck SCK_NET --source-cs CS_NET \
-  --trigger-on cs --box my-box
+  --trigger-on cs --box my-lager-box
 
 # Trigger on SPI data pattern with falling clock edge
 lager scope ANALOG1 trigger spi \
   --source-mosi-miso MOSI_NET --source-sck SCK_NET --source-cs CS_NET \
-  --data 0xFF --clk-slope falling --box my-box
+  --data 0xFF --clk-slope falling --box my-lager-box
 ```
 
 ### `trigger uart`
@@ -518,15 +518,15 @@ lager scope NET_NAME trigger uart [OPTIONS]
 ```bash
 # Trigger on UART start bit at 115200 baud
 lager scope ANALOG1 trigger uart \
-  --source UART_TX --baud 115200 --trigger-on start --box my-box
+  --source UART_TX --baud 115200 --trigger-on start --box my-lager-box
 
 # Trigger on specific UART data byte
 lager scope ANALOG1 trigger uart \
-  --source UART_TX --baud 9600 --trigger-on data --data 0x55 --box my-box
+  --source UART_TX --baud 9600 --trigger-on data --data 0x55 --box my-lager-box
 
 # Trigger on UART framing error
 lager scope ANALOG1 trigger uart \
-  --source UART_RX --baud 115200 --trigger-on error --box my-box
+  --source UART_RX --baud 115200 --trigger-on error --box my-lager-box
 ```
 
 ---
@@ -579,18 +579,18 @@ lager scope NET_NAME cursor hide [--box BOX] [--mcu MCU]
 
 ```bash
 # Position cursors for time measurement
-lager scope ANALOG1 cursor set-a --x -0.001 --box my-box
-lager scope ANALOG1 cursor set-b --x 0.001 --box my-box
+lager scope ANALOG1 cursor set-a --x -0.001 --box my-lager-box
+lager scope ANALOG1 cursor set-b --x 0.001 --box my-lager-box
 
 # Fine-tune cursor B position
-lager scope ANALOG1 cursor move-b --x 0.0001 --box my-box
+lager scope ANALOG1 cursor move-b --x 0.0001 --box my-lager-box
 
 # Set voltage measurement cursors
-lager scope ANALOG1 cursor set-a --y 0.5 --box my-box
-lager scope ANALOG1 cursor set-b --y 3.3 --box my-box
+lager scope ANALOG1 cursor set-a --y 0.5 --box my-lager-box
+lager scope ANALOG1 cursor set-b --y 3.3 --box my-lager-box
 
 # Hide cursors when done
-lager scope ANALOG1 cursor hide --box my-box
+lager scope ANALOG1 cursor hide --box my-lager-box
 ```
 
 ---
@@ -637,19 +637,19 @@ lager scope NET_NAME stream start [OPTIONS]
 
 ```bash
 # Start streaming on channel A with default settings
-lager scope PICO1 stream start --box my-box
+lager scope PICO1 stream start --box my-lager-box
 
 # Start with specific configuration
-lager scope PICO1 stream start -c A -v 2.0 -t 0.0001 --box my-box
+lager scope PICO1 stream start -c A -v 2.0 -t 0.0001 --box my-lager-box
 
 # Start with trigger configuration
 lager scope PICO1 stream start \
   --trigger-level 1.5 --trigger-slope rising \
-  --capture-mode normal --box my-box
+  --capture-mode normal --box my-lager-box
 
 # Start in single capture mode with AC coupling
 lager scope PICO1 stream start \
-  --capture-mode single --coupling ac --box my-box
+  --capture-mode single --coupling ac --box my-lager-box
 ```
 
 ### `stream stop`
@@ -704,16 +704,16 @@ lager scope NET_NAME stream capture [OPTIONS]
 
 ```bash
 # Capture 1 second of data (default)
-lager scope PICO1 stream capture --box my-box
+lager scope PICO1 stream capture --box my-lager-box
 
 # Capture 5 seconds to specific file
-lager scope PICO1 stream capture -o waveform.csv -d 5.0 --box my-box
+lager scope PICO1 stream capture -o waveform.csv -d 5.0 --box my-lager-box
 
 # Capture up to 1M samples
-lager scope PICO1 stream capture -n 1000000 -o data.csv --box my-box
+lager scope PICO1 stream capture -n 1000000 -o data.csv --box my-lager-box
 
 # Capture with JSON output format
-lager scope PICO1 stream capture --json --box my-box
+lager scope PICO1 stream capture --json --box my-lager-box
 ```
 
 ### `stream config`
@@ -742,16 +742,16 @@ lager scope NET_NAME stream config [OPTIONS]
 
 ```bash
 # Change vertical scale while streaming
-lager scope PICO1 stream config -v 0.5 --box my-box
+lager scope PICO1 stream config -v 0.5 --box my-lager-box
 
 # Switch to channel B
-lager scope PICO1 stream config -c B --enable --box my-box
+lager scope PICO1 stream config -c B --enable --box my-lager-box
 
 # Change trigger settings
-lager scope PICO1 stream config --trigger-level 2.0 --trigger-slope falling --box my-box
+lager scope PICO1 stream config --trigger-level 2.0 --trigger-slope falling --box my-lager-box
 
 # Switch to single capture mode
-lager scope PICO1 stream config --capture-mode single --box my-box
+lager scope PICO1 stream config --capture-mode single --box my-lager-box
 ```
 
 ---
@@ -762,117 +762,117 @@ lager scope PICO1 stream config --capture-mode single --box my-box
 
 ```bash
 # Enable scope channel
-lager scope ANALOG1 enable --box my-box
+lager scope ANALOG1 enable --box my-lager-box
 
 # Auto-scale to find signal
-lager scope ANALOG1 autoscale --box my-box
+lager scope ANALOG1 autoscale --box my-lager-box
 
 # Fine-tune settings
-lager scope ANALOG1 scale 0.5 --box my-box
-lager scope ANALOG1 timebase 0.001 --box my-box
+lager scope ANALOG1 scale 0.5 --box my-lager-box
+lager scope ANALOG1 timebase 0.001 --box my-lager-box
 
 # Start continuous capture
-lager scope ANALOG1 start --box my-box
+lager scope ANALOG1 start --box my-lager-box
 
 # Take measurements
-lager scope ANALOG1 measure freq --display --box my-box
-lager scope ANALOG1 measure vpp --display --box my-box
+lager scope ANALOG1 measure freq --display --box my-lager-box
+lager scope ANALOG1 measure vpp --display --box my-lager-box
 
 # Single capture mode
-lager scope ANALOG1 start --single --box my-box
+lager scope ANALOG1 start --single --box my-lager-box
 
 # Stop capture
-lager scope ANALOG1 stop --box my-box
+lager scope ANALOG1 stop --box my-lager-box
 ```
 
 ### Channel Configuration
 
 ```bash
 # Configure for 10x probe at 500mV/div, 1ms/div
-lager scope ANALOG1 probe 10 --box my-box
-lager scope ANALOG1 scale 0.5 --box my-box
-lager scope ANALOG1 timebase 0.001 --box my-box
+lager scope ANALOG1 probe 10 --box my-lager-box
+lager scope ANALOG1 scale 0.5 --box my-lager-box
+lager scope ANALOG1 timebase 0.001 --box my-lager-box
 
 # Set AC coupling for audio signals
-lager scope ANALOG1 coupling ac --box my-box
+lager scope ANALOG1 coupling ac --box my-lager-box
 
 # Force trigger when signal doesn't meet criteria
-lager scope ANALOG1 force --box my-box
+lager scope ANALOG1 force --box my-lager-box
 ```
 
 ### Measurements
 
 ```bash
 # Time measurements
-lager scope ANALOG1 measure freq --display --box my-box
-lager scope ANALOG1 measure period --box my-box
-lager scope ANALOG1 measure duty-cycle-pos --box my-box
+lager scope ANALOG1 measure freq --display --box my-lager-box
+lager scope ANALOG1 measure period --box my-lager-box
+lager scope ANALOG1 measure duty-cycle-pos --box my-lager-box
 
 # Voltage measurements
-lager scope ANALOG1 measure vpp --box my-box
-lager scope ANALOG1 measure vrms --display --box my-box
-lager scope ANALOG1 measure vmax --box my-box
+lager scope ANALOG1 measure vpp --box my-lager-box
+lager scope ANALOG1 measure vrms --display --box my-lager-box
+lager scope ANALOG1 measure vmax --box my-lager-box
 ```
 
 ### Triggering
 
 ```bash
 # Edge trigger
-lager scope ANALOG1 trigger edge --slope rising --level 1.5 --box my-box
+lager scope ANALOG1 trigger edge --slope rising --level 1.5 --box my-lager-box
 
 # Pulse width trigger (glitch detection)
-lager scope ANALOG1 trigger pulse --trigger-on positive_less --upper 0.0001 --box my-box
+lager scope ANALOG1 trigger pulse --trigger-on positive_less --upper 0.0001 --box my-lager-box
 
 # UART trigger at 115200 baud
 lager scope ANALOG1 trigger uart \
-  --source UART_NET --baud 115200 --trigger-on start --box my-box
+  --source UART_NET --baud 115200 --trigger-on start --box my-lager-box
 
 # I2C trigger on address 0x48
 lager scope ANALOG1 trigger i2c \
   --source-scl SCL --source-sda SDA \
-  --trigger-on address --address 0x48 --box my-box
+  --trigger-on address --address 0x48 --box my-lager-box
 
 # SPI trigger on chip select
 lager scope ANALOG1 trigger spi \
   --source-mosi-miso MOSI --source-sck SCK --source-cs CS \
-  --trigger-on cs --box my-box
+  --trigger-on cs --box my-lager-box
 ```
 
 ### Cursor Measurements
 
 ```bash
 # Measure time between two events
-lager scope ANALOG1 cursor set-a --x -0.001 --box my-box
-lager scope ANALOG1 cursor set-b --x 0.002 --box my-box
+lager scope ANALOG1 cursor set-a --x -0.001 --box my-lager-box
+lager scope ANALOG1 cursor set-b --x 0.002 --box my-lager-box
 
 # Measure voltage difference
-lager scope ANALOG1 cursor set-a --y 0.0 --box my-box
-lager scope ANALOG1 cursor set-b --y 3.3 --box my-box
+lager scope ANALOG1 cursor set-a --y 0.0 --box my-lager-box
+lager scope ANALOG1 cursor set-b --y 3.3 --box my-lager-box
 
 # Clean up
-lager scope ANALOG1 cursor hide --box my-box
+lager scope ANALOG1 cursor hide --box my-lager-box
 ```
 
 ### PicoScope Streaming
 
 ```bash
 # Start streaming with default settings
-lager scope PICO1 stream start --box my-box
+lager scope PICO1 stream start --box my-lager-box
 
 # Open web visualization
-lager scope PICO1 stream web --box my-box
+lager scope PICO1 stream web --box my-lager-box
 
 # Capture data to file
-lager scope PICO1 stream capture -o waveform.csv -d 5.0 --box my-box
+lager scope PICO1 stream capture -o waveform.csv -d 5.0 --box my-lager-box
 
 # Adjust settings while streaming
-lager scope PICO1 stream config -v 2.0 -t 0.0001 --box my-box
+lager scope PICO1 stream config -v 2.0 -t 0.0001 --box my-lager-box
 
 # Check streaming status
-lager scope PICO1 stream status --box my-box
+lager scope PICO1 stream status --box my-lager-box
 
 # Stop streaming
-lager scope PICO1 stream stop --box my-box
+lager scope PICO1 stream stop --box my-lager-box
 ```
 
 ---

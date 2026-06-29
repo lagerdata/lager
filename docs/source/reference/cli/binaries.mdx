@@ -42,13 +42,13 @@ lager binaries add BINARY_PATH [OPTIONS]
 **Examples:**
 ```bash
 # Upload with default name
-lager binaries add ./my_tool --box lab-lager-box
+lager binaries add ./my_tool --box my-lager-box
 
 # Upload with custom name
-lager binaries add ./rt_newtmgr_v1.2 --name rt_newtmgr --box lab-lager-box
+lager binaries add ./rt_newtmgr_v1.2 --name rt_newtmgr --box my-lager-box
 
 # Skip confirmation
-lager binaries add ./firmware_flasher --box lab-lager-box --yes
+lager binaries add ./firmware_flasher --box my-lager-box --yes
 ```
 
 ### `list`
@@ -61,7 +61,7 @@ lager binaries list --box BOX
 
 Output:
 ```
-Custom binaries on lab-lager-box:
+Custom binaries on my-lager-box:
   rt_newtmgr (1.2 MB)
   firmware_flasher (856 KB)
   custom_tool (234 KB)
@@ -85,10 +85,10 @@ lager binaries remove BINARY_NAME [OPTIONS]
 **Examples:**
 ```bash
 # Remove with confirmation
-lager binaries remove old_tool --box lab-lager-box
+lager binaries remove old_tool --box my-lager-box
 
 # Remove without confirmation
-lager binaries remove old_tool --box lab-lager-box --yes
+lager binaries remove old_tool --box my-lager-box --yes
 ```
 
 ---
@@ -138,7 +138,7 @@ ENV PATH="/home/www-data/customer-binaries:${PATH}"
 
 Then rebuild the container:
 ```bash
-lager update --box lab-lager-box --yes
+lager update --box my-lager-box --yes
 ```
 
 Now you can call binaries directly:
@@ -153,16 +153,16 @@ subprocess.run(['rt_newtmgr', 'arg1', 'arg2'], ...)
 ```bash
 # Complete workflow
 # 1. Upload binary
-lager binaries add ./my_custom_tool --box lab-lager-box --yes
+lager binaries add ./my_custom_tool --box my-lager-box --yes
 
 # 2. Verify it's there
-lager binaries list --box lab-lager-box
+lager binaries list --box my-lager-box
 
 # 3. Use in Python script
-lager python ./test_script.py --box lab-lager-box
+lager python ./test_script.py --box my-lager-box
 
 # 4. Clean up when done
-lager binaries remove my_custom_tool --box lab-lager-box --yes
+lager binaries remove my_custom_tool --box my-lager-box --yes
 ```
 
 ---
@@ -173,23 +173,23 @@ lager binaries remove my_custom_tool --box lab-lager-box --yes
 
 Upload vendor-specific tools for device interaction:
 ```bash
-lager binaries add ./vendor_cli --box lab-lager-box
+lager binaries add ./vendor_cli --box my-lager-box
 ```
 
 ### Firmware Tools
 
 Upload custom firmware manipulation tools:
 ```bash
-lager binaries add ./sign_firmware --box lab-lager-box
-lager binaries add ./encrypt_image --box lab-lager-box
+lager binaries add ./sign_firmware --box my-lager-box
+lager binaries add ./encrypt_image --box my-lager-box
 ```
 
 ### Test Utilities
 
 Upload test-specific utilities:
 ```bash
-lager binaries add ./stress_test --box lab-lager-box
-lager binaries add ./validate_output --box lab-lager-box
+lager binaries add ./stress_test --box my-lager-box
+lager binaries add ./validate_output --box my-lager-box
 ```
 
 ---

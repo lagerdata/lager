@@ -86,29 +86,29 @@ lager webcam stop-all --box my-lager-box
 
 ```bash
 # Start a webcam
-lager webcam CAM1 start --box lab-gw
+lager webcam CAM1 start --box my-lager-box
 
 # Get the stream URL
-lager webcam url --box lab-gw
+lager webcam url --box my-lager-box
 
 # Open in browser
 # http://<BOX_IP>:8081/stream
 
 # Stop when done
-lager webcam CAM1 stop --box lab-gw
+lager webcam CAM1 stop --box my-lager-box
 ```
 
 ### Multiple Cameras
 
 ```bash
 # Start all cameras
-lager webcam start-all --box lab-gw
+lager webcam start-all --box my-lager-box
 
 # View all URLs
-lager webcam url --box lab-gw
+lager webcam url --box my-lager-box
 
 # Stop all cameras
-lager webcam stop-all --box lab-gw
+lager webcam stop-all --box my-lager-box
 ```
 
 ---
@@ -137,7 +137,7 @@ lager webcam BENCH_CAM stop
 
 View LED states, display outputs, or physical connections:
 ```bash
-lager webcam url --box remote-box
+lager webcam url --box my-lager-box
 # Open stream in browser
 ```
 

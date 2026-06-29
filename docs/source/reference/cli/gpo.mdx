@@ -114,9 +114,9 @@ The FT232H provides 16 GPIO pins across two ports:
 
 ```bash
 # Control an LED
-lager gpo LED1 on --box lab-gw
+lager gpo LED1 on --box my-lager-box
 sleep 1
-lager gpo LED1 off --box lab-gw
+lager gpo LED1 off --box my-lager-box
 
 # Toggle reset line
 lager gpo RESET_N low
@@ -130,11 +130,11 @@ for i in {1..5}; do
 done
 
 # Hold a signal during manual testing
-lager gpo BOOT0 high --hold --box lab-gw
+lager gpo BOOT0 high --hold --box my-lager-box
 # Ctrl+C to release, then flash firmware
 
 # Assert chip select for manual SPI debugging
-lager gpo CS_N low --hold --box lab-gw
+lager gpo CS_N low --hold --box my-lager-box
 ```
 
 ---
