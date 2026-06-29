@@ -724,17 +724,25 @@ class Keithley2281S(SupplyNet):
     def _read_signed_current(self):
         """Read the signed output current (negative while sinking), robustly.
 
-        The 2281S in power-supply mode runs a continuous concurrent V/I/P
-        measurement (INIT:CONT ON), so we FETCh that latest reading instead of
-        issuing :MEAS/:READ — those ABORt and reconfigure the measurement,
-        which while sinking desynced the VISA session and, stacked across many
-        queries per call, blew the box proxy's HTTP budget (ConnectionFailed).
+        Per the 2281S manual, power-supply mode DOES report sink current
+        ("Sink operation: source +V and measure -I"; sink-current readback is a
+        characterized spec verified with the unit absorbing external current).
+        The signed value is reported by the CONCURRENT (V+I) measurement
+        function — the power-supply default (:SENS:FUNC default "CONC") and
+        autoranged by default (:SENS:<func>:RANGe:AUTO default ON). The legacy
+        ``:MEAS:CURR?`` forces the single Current function, which reads 0 for
+        reverse current — that was the GAP-1 bug, not an instrument limit.
 
-        At most three short, NON-disruptive queries, each isolated; never
-        raises and never tears down the session. Returns None only if every
-        read failed (caller keeps the last-good value).
+        STRICTLY READ-ONLY and latency-bounded: at most two short queries, no
+        writes (a stray write here left an error that desynced set_voltage's
+        error-drain and glitched the output), never raises, never tears down
+        the session. Returns None only if every read failed (caller keeps
+        last-good).
         """
-        # Bound latency for every read in this call, then restore it.
+        # Bound latency for every read in this call, then restore it. (The
+        # wrapper pins the VISA timeout to 10s; a single stuck read at 10s
+        # alone meets the box proxy's HTTP budget and surfaces as
+        # ConnectionFailed.)
         raw_instr = getattr(self.instr, 'instr', None)
         restore = getattr(raw_instr, 'timeout', None) if raw_instr is not None else None
         if restore is not None:
@@ -743,40 +751,28 @@ class Keithley2281S(SupplyNet):
             except Exception:
                 restore = None
         try:
-            # One-time, best-effort autorange so the 100 mA / 1 A sink readings
-            # are not clamped by a pinned range. Config command, not a trigger.
-            if not getattr(self, '_sink_autorange_done', False):
-                try:
-                    self._write(':SENS:CURR:RANG:AUTO ON', check_errors=False)
-                except Exception:
-                    pass
-                self._sink_autorange_done = True
-
-            # 1) Continuous concurrent reading — signed, non-disruptive.
-            raw = self._safe_query_no_mode(':FETC:CONC:DC?', '')
+            # Concurrent (V+I) reading: signed and autoranged in power-supply
+            # mode. Self-contained — forces the concurrent function — so it is
+            # reliable regardless of any prior single-function read, and does
+            # not affect the output regulation.
+            raw = self._safe_query_no_mode(':MEAS:CONC:DC?', '')
             if raw:
                 val = self._safe_float(self._parse_current_from_response(raw))
-                logger.info("GAP1-SINK-DIAG FETC:CONC:DC? raw=%r -> %s A", raw, val)
+                logger.info("GAP1-SINK-DIAG MEAS:CONC:DC? raw=%r -> %s A", raw, val)
                 return self._note_sink_rating(val)
 
-            # 2) Single current fetch — still non-triggering.
-            raw2 = self._safe_query_no_mode(':FETC:CURR:DC?', '')
+            # Fallback: legacy single-current read (≈0 while sinking but
+            # known-stable) so a missing concurrent reply never raises.
+            raw2 = self._safe_query_no_mode(':MEAS:CURR?', '')
             if raw2:
                 val2 = self._safe_float(raw2)
-                logger.info("GAP1-SINK-DIAG FETC:CURR:DC? raw=%r -> %s A", raw2, val2)
-                return self._note_sink_rating(val2)
-
-            # 3) Legacy read — returns ~0 while sinking but is known-stable.
-            raw3 = self._safe_query_no_mode(':MEAS:CURR?', '')
-            if raw3:
-                val3 = self._safe_float(raw3)
-                logger.info("GAP1-SINK-DIAG MEAS:CURR? raw=%r -> %s A", raw3, val3)
-                return val3
+                logger.info("GAP1-SINK-DIAG MEAS:CURR? raw=%r -> %s A", raw2, val2)
+                return val2
             return None
         except Exception as e:
             # Never propagate: a raised read here would become ConnectionFailed
-            # and also poison the following set_voltage. Drain one error, keep
-            # the session, and let the caller fall back to last-good.
+            # and also poison the following set_voltage. Drain one error (read
+            # only), keep the session, and let the caller fall back to last-good.
             logger.warning("GAP1-SINK-DIAG read error (session kept): %s", e)
             try:
                 self.instr.query(":SYST:ERR?", check_errors=False)
