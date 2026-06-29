@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import time
 
@@ -18,6 +19,8 @@ from .supply_net import (
     DeviceNotFoundError,
     SupplyBackendError,
 )
+
+logger = logging.getLogger(__name__)
 
 # ANSI color codes
 GREEN = '\033[92m'
@@ -724,6 +727,104 @@ class Keithley2281S(SupplyNet):
     def _meas_i(self) -> str:
         return self._safe_query(":MEAS:CURR?", default=self._get_iset())
 
+    # Sink rated to 1 A ± 10% per the 2281S reference manual (non-programmable).
+    _SINK_RATING_A = 1.0
+    # Bound a single current read so a stuck query can't blow the box proxy's
+    # ~10s HTTP budget (which surfaces to the Net client as ConnectionFailed).
+    _CURRENT_READ_TIMEOUT_MS = 1500
+
+    def _read_signed_current(self):
+        """Read the signed output current (negative while sinking), robustly.
+
+        Per the 2281S manual, power-supply mode DOES report sink current
+        ("Sink operation: source +V and measure -I"; sink-current readback is a
+        characterized spec verified with the unit absorbing external current).
+        The signed value is reported by the CONCURRENT (V+I) measurement
+        function — the power-supply default (:SENS:FUNC default "CONC") and
+        autoranged by default (:SENS:<func>:RANGe:AUTO default ON). The legacy
+        ``:MEAS:CURR?`` forces the single Current function, which reads 0 for
+        reverse current — that was the GAP-1 bug, not an instrument limit.
+
+        STRICTLY READ-ONLY and latency-bounded: at most two short queries, no
+        writes (a stray write here left an error that desynced set_voltage's
+        error-drain and glitched the output), never raises, never tears down
+        the session. Returns None only if every read failed (caller keeps
+        last-good).
+        """
+        # Bound latency for every read in this call, then restore it. (The
+        # wrapper pins the VISA timeout to 10s; a single stuck read at 10s
+        # alone meets the box proxy's HTTP budget and surfaces as
+        # ConnectionFailed.)
+        raw_instr = getattr(self.instr, 'instr', None)
+        restore = getattr(raw_instr, 'timeout', None) if raw_instr is not None else None
+        if restore is not None:
+            try:
+                raw_instr.timeout = self._CURRENT_READ_TIMEOUT_MS
+            except Exception:
+                restore = None
+        try:
+            # Concurrent (V+I) reading: signed and autoranged in power-supply
+            # mode. Self-contained — forces the concurrent function — so it is
+            # reliable regardless of any prior single-function read, and does
+            # not affect the output regulation.
+            raw = self._safe_query_no_mode(':MEAS:CONC:DC?', '')
+            if raw:
+                val = self._safe_float(self._parse_current_from_response(raw))
+                return self._note_sink_rating(val)
+
+            # Fallback: legacy single-current read (≈0 while sinking but
+            # known-stable) so a missing concurrent reply never raises.
+            raw2 = self._safe_query_no_mode(':MEAS:CURR?', '')
+            if raw2:
+                return self._safe_float(raw2)
+            return None
+        except Exception as e:
+            # Never propagate: a raised read here would become ConnectionFailed
+            # and also poison the following set_voltage. Drain one error (read
+            # only), keep the session, and let the caller fall back to last-good.
+            logger.warning("2281S current read failed (session kept): %s", e)
+            try:
+                self.instr.query(":SYST:ERR?", check_errors=False)
+            except Exception:
+                pass
+            return None
+        finally:
+            if restore is not None:
+                try:
+                    raw_instr.timeout = restore
+                except Exception:
+                    pass
+
+    def _note_sink_rating(self, val: float) -> float:
+        if val < -self._SINK_RATING_A * 1.1:
+            logger.warning("2281S sink current %.4f A exceeds the 1 A (±10%%) "
+                           "rating", val)
+        return val
+
+    @staticmethod
+    def _parse_current_from_response(response: str) -> str:
+        """Pull the current field out of a concurrent measurement reply.
+
+        Concurrent format is current,voltage,time e.g.
+        "+1.500000E+00A,+3.299153E+00V,+3.369820E+05s". Mirrors
+        _parse_voltage_from_response but targets the 'A' field; falls back to
+        the first comma-separated field (concurrent order leads with current).
+        """
+        s = str(response).strip()
+        if ',' in s:
+            parts = [p.strip() for p in s.split(',')]
+            for p in parts:
+                pl = p.lower()
+                if pl.endswith('ma'):
+                    try:
+                        return str(float(p[:-2]) / 1000.0)
+                    except (TypeError, ValueError):
+                        return p[:-2]
+                if pl.endswith('a'):
+                    return p[:-1]
+            return parts[0]
+        return s
+
     def output_is_enabled(self, channel=None) -> bool:
         # `channel` is accepted for compatibility with multi-channel drivers
         # that the supply HTTP handler is modeled on (Rigol DP800). The
@@ -749,8 +850,18 @@ class Keithley2281S(SupplyNet):
         return self._safe_float(self._meas_v())
 
     def measure_current(self, channel=None) -> float:
-        """Measure actual output current."""
-        return self._safe_float(self._meas_i())
+        """Measure actual output current, signed (negative while sinking).
+
+        Robust against transient SCPI/VISA failures: a failed read returns the
+        last-good value (or 0.0) instead of raising, so net.current() can never
+        drop the box connection or cascade into the following set_voltage. See
+        _read_signed_current for why this avoids :MEAS/:READ mid-sink.
+        """
+        val = self._read_signed_current()
+        if val is not None:
+            self._last_good_current = val
+            return val
+        return getattr(self, '_last_good_current', 0.0)
 
     def measure_power(self, channel=None) -> float:
         """Measure actual output power (V * I)."""

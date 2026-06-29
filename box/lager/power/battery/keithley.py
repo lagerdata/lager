@@ -260,11 +260,28 @@ class KeithleyBattery(BatteryNet):
         except Exception:
             return 0.0
 
-    def esr(self) -> float:
-        try:
-            return float(self._safe_query(":BATT:SIM:RES?", "0.067"))
-        except Exception:
-            return 0.067
+    def esr(self, value: float | None = None):
+        """Get or set the battery simulator series resistance.
+
+        With no argument, returns the real-time internal resistance (ohms)
+        reported by the active battery model (``:BATT:SIM:RES?``).
+
+        With a value, sets the simulator's series-resistance OFFSET
+        (``:BATT:SIM:RES:OFFSet``). The Keithley 2281S has no SCPI command to
+        set an absolute simulated resistance — the intrinsic resistance comes
+        from the active battery model as a function of SOC. The offset
+        (-100 to +100 Ω) is added in series on top of that model resistance,
+        so a positive value injects additional series resistance into the
+        output path (e.g. ``esr(0.4)`` adds 400 mΩ). Read back the resulting
+        live total with ``esr()``.
+        """
+        if value is None:
+            try:
+                return float(self._safe_query(":BATT:SIM:RES?", "0.067"))
+            except Exception:
+                return 0.067
+        self.set_esr(value)
+        return None
 
     def set_mode_battery(self) -> None:
         self.set_to_battery_mode()
@@ -316,6 +333,34 @@ class KeithleyBattery(BatteryNet):
             raise BatteryBackendError("Current limit exceeds instrument maximum (6.0A)")
         self._set_with_output_management(f":BATT:SIM:CURR:LIM {value}", ignore_codes=(-222,))
         time.sleep(0.05)
+
+    def set_esr(self, value: float | None) -> None:
+        """Set the battery simulator's series-resistance offset (ohms).
+
+        Maps to ``:BATT:SIM:RESistance:OFFSet``. Per the 2281S reference the
+        offset range is -100 to +100 Ω, and it cannot be changed while the
+        battery model is running (error 704) — ``_set_with_output_management``
+        disables the simulator output around the write to avoid that. There is
+        no command to set an absolute simulated resistance; this offset is
+        added in series on top of the active model's intrinsic resistance.
+        """
+        if value is None:
+            return
+        v = float(value)
+        if v < -100.0 or v > 100.0:
+            raise BatteryBackendError("ESR offset out of range (must be -100 to 100 Ω)")
+        self._set_with_output_management(f":BATT:SIM:RES:OFFS {v}", ignore_codes=(-222,))
+        time.sleep(0.05)
+        # Verify and clarify the offset semantics (no absolute-ESR SCPI exists).
+        actual = self._safe_query(":BATT:SIM:RES:OFFS?", str(v))
+        try:
+            if abs(float(actual) - v) > 0.001:
+                print(f"{RED}WARNING: ESR offset clamped from {v:.3f}Ω to {float(actual):.3f}Ω "
+                      f"(instrument limit){RESET}", file=sys.stderr)
+        except (TypeError, ValueError):
+            pass
+        print(f"{GREEN}ESR offset set to: {self._fmt_ohm(actual)} "
+              f"(added in series on top of the active battery model){RESET}")
 
     def set_ovp(self, value: float | None) -> None:
         if value is None:

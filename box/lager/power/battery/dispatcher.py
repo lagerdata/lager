@@ -262,3 +262,14 @@ def esr(netname: str, **_) -> float:
     """Get battery equivalent series resistance."""
     drv, _ = _dispatcher._resolve_net_and_driver(netname)
     return drv.esr()
+
+
+def set_esr(netname: str, value: float = None, **_) -> None:
+    """Set the battery simulator series-resistance offset (ohms).
+
+    The 2281S has no absolute-resistance setter; this writes the series
+    resistance offset (:BATT:SIM:RES:OFFSet, -100 to 100 Ω) added on top of
+    the active battery model. See KeithleyBattery.set_esr for details.
+    """
+    drv, _ = _dispatcher._resolve_net_and_driver(netname)
+    drv.esr(value=value)
