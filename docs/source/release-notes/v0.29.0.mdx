@@ -1,0 +1,42 @@
+---
+title: "Version 0.29.0"
+description: "June 29, 2026"
+---
+
+## <u>Features</u>
+
+- **`lager boxes add` now requires `--user` (breaking change).** The implicit `lagerdata` default has been removed — you must specify the box's login user explicitly when adding a box.
+- **Read a USB net's state without changing it.** The new `lager usb <net> state` reports whether a port is on or off, read-only.
+- **Run a one-off command on a Lager Box over SSH.** `lager ssh --box <box> -- <command>` runs a single command on the box and returns its output, like `ssh user@host <command>`, instead of only opening an interactive shell.
+- **Keithley 2281S battery-simulator internal resistance.** You can now set the simulated ESR in battery-sim mode (`:BATT:SIM:RES:OFFSet`).
+- **Keithley 2281S two-quadrant current readback.** Charger and sink testing now reads back negative (sink) current correctly instead of reporting 0.
+
+## <u>Bug Fixes</u>
+
+- **Multi-hub Acroname boxes address the right hub.** A Lager Box with more than one Acroname USB hub now binds each USB net to its own hub by serial number, so commands no longer land on the wrong hub.
+- **YKUSH USB hubs recover automatically.** A stale or transient YKUSH handle is now auto-recovered, and the hardware service self-restarts after a power-cycle instead of staying wedged.
+- **The Keithley battery/supply monitor self-heals after a power-cycle.** A non-intrusive liveness probe detects a dropped VISA session and restarts the hardware service automatically, so the supply/battery TUI keeps working without manual intervention.
+- **A wedged USB hub no longer takes down USB control.** `box_http_server` now self-restarts to recover a wedged hub.
+
+## <u>Improvements</u>
+
+- **`lager usb <net> toggle` reports the resulting state.** Toggling a port now tells you whether it ended up on or off.
+- **Documentation refresh.** Added a `devenv` reference page and a J-Link section to `lager diagnose`, documented the DP711 crossover-cable requirement, refreshed the `debug`/`boxes` docs, and removed dead pages.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.29.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.29.0/)

@@ -2,6 +2,29 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.29.0] - 2026-06-29
+
+USB control gets multi-hub support and read-only state queries, `lager ssh` can run a one-off command on the box, and the Keithley 2281S gains two-quadrant (battery-sim) coverage. Power-supply/battery monitors and USB hubs now self-heal after a power-cycle instead of wedging. **Breaking:** `lager boxes add` now requires `--user`.
+
+### Added
+- **`lager usb <net> state`** — a read-only command that reports a USB net's current port state without changing it.
+- **`lager ssh --box <box> -- <cmd>`** runs a single command on the box and returns its output, like `ssh user@host <cmd>`, instead of only opening an interactive shell.
+- **Keithley 2281S battery-sim ESR setter.** Set the simulated internal resistance in battery-simulator mode via `:BATT:SIM:RES:OFFSet`.
+- **Keithley 2281S signed sink-current read (two-quadrant).** Charger/sink testing now reads back negative current correctly instead of reporting 0.
+
+### Changed
+- **`lager boxes add` now requires `--user` (breaking).** The implicit `lagerdata` default has been removed; you must specify the box's login user explicitly.
+- **`lager usb <net> toggle` reports the resulting state.** Toggling a port now prints whether it ended up on or off.
+
+### Fixed
+- **Acroname multi-hub boxes bind each net to its own hub by serial.** A box with more than one Acroname hub no longer addresses the wrong hub; each USB net is matched to its hub by serial number.
+- **YKUSH recovers from a stale/transient handle** and self-restarts the hardware service on a power-cycle instead of failing until manual intervention.
+- **The Keithley battery/supply TUI monitor self-heals after a power-cycle.** A non-intrusive liveness probe plus a sysfs-gated hardware-service self-restart (via the new shared `lager.util.self_restart`) recover a stale VISA session automatically.
+- **`box_http_server` self-restarts to recover a wedged USB hub.**
+
+### Docs
+- Documented the DP711 crossover-cable requirement; added a `devenv` reference page and a J-Link section to `diagnose`; fixed stale `debug`/`boxes`/`pip` docs; removed dead pages (`pip`, `web-apps`, `docker-helper`).
+
 ## [0.28.5] - 2026-06-24
 
 `lager update` brings up a brand-new box reliably. The BuildKit work in 0.28.4 made the box image require the Docker `buildx` plugin, which a stock `docker.io` install (e.g. Ubuntu) doesn't bundle — so a fresh box failed mid-build with a confusing "buildx component is missing or broken". Update now catches that up front, provisioning installs buildx, and a stale SSH control socket no longer masquerades as an auth failure.
