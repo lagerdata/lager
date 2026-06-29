@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import time
 
@@ -18,6 +19,8 @@ from .supply_net import (
     DeviceNotFoundError,
     SupplyBackendError,
 )
+
+logger = logging.getLogger(__name__)
 
 # ANSI color codes
 GREEN = '\033[92m'
@@ -712,6 +715,104 @@ class Keithley2281S(SupplyNet):
     def _meas_i(self) -> str:
         return self._safe_query(":MEAS:CURR?", default=self._get_iset())
 
+    # Sink rated to 1 A ± 10% per the 2281S reference manual (non-programmable).
+    _SINK_RATING_A = 1.0
+    # Cap diagnostic sweeps so a tight current()-polling loop can't flood the log.
+    _SINK_DIAG_MAX = 12
+
+    def _meas_i_diagnostic(self) -> float:
+        """One-shot diagnostic sweep of candidate current reads (GAP 1).
+
+        While the supply may be SINKING (external source pushing current in),
+        log every candidate query's result at INFO so the box log reveals which
+        SCPI read carries the real signed (negative) current vs 0. Returns a
+        best-effort signed current: the first candidate that parses to a
+        non-zero value (preferring the DC-qualified and concurrent reads), so
+        ``net.current()`` reflects sink current even before this is finalized.
+
+        TEMPORARY: once the box log shows the authoritative query, collapse
+        ``measure_current()`` back to that single query and delete this.
+        """
+        n = getattr(self, '_sink_diag_count', 0)
+        if n >= self._SINK_DIAG_MAX:
+            # Past the diagnostic budget: behave like the plain read.
+            return self._safe_float(self._meas_i())
+        self._sink_diag_count = n + 1
+
+        state = {
+            'ENTR:FUNC': self._safe_query_no_mode(':ENTR:FUNC?', '?'),
+            'SENS:FUNC': self._safe_query_no_mode(':SENS:FUNC?', '?'),
+            'CURR:RANG': self._safe_query_no_mode(':SENS:CURR:RANG?', '?'),
+            'CURR:RANG:AUTO': self._safe_query_no_mode(':SENS:CURR:RANG:AUTO?', '?'),
+            'OUTP': self._safe_query_no_mode(':OUTP?', '?'),
+        }
+        logger.info("GAP1-SINK-DIAG [%d/%d] state=%s", n + 1, self._SINK_DIAG_MAX, state)
+
+        candidates = [
+            (':MEAS:CURR?',    lambda r: self._safe_float(r)),
+            (':MEAS:CURR:DC?', lambda r: self._safe_float(r)),
+            (':FETC:CURR?',    lambda r: self._safe_float(r)),
+            (':READ:CURR?',    lambda r: self._safe_float(r)),
+            (':MEAS:CONC:DC?', lambda r: self._safe_float(self._parse_current_from_response(r))),
+        ]
+        results = []
+        for cmd, parse in candidates:
+            raw = self._safe_query_no_mode(cmd, '')
+            try:
+                val = parse(raw)
+            except Exception:
+                val = None
+            results.append((cmd, val))
+            logger.info("GAP1-SINK-DIAG   %-15s raw=%r parsed=%s", cmd, raw, val)
+
+        # Does forcing current autorange ON change the reading? (Pinned-low
+        # range can read 0 while sinking.)
+        try:
+            self._write(':SENS:CURR:RANG:AUTO ON', check_errors=False)
+            time.sleep(0.05)
+        except Exception:
+            pass
+        raw_auto = self._safe_query_no_mode(':MEAS:CURR?', '')
+        val_auto = self._safe_float(raw_auto)
+        results.append((':MEAS:CURR? (after RANG:AUTO ON)', val_auto))
+        logger.info("GAP1-SINK-DIAG   %-15s raw=%r parsed=%s",
+                    ':MEAS:CURR? autorange', raw_auto, val_auto)
+
+        # Best-effort signed value: first non-zero parse, in the order above.
+        for cmd, val in results:
+            if val is not None and abs(val) > 1e-6:
+                if abs(val) > self._SINK_RATING_A * 1.1:
+                    logger.warning("GAP1-SINK-DIAG |%.4f A| from %s exceeds the "
+                                   "1 A sink rating", val, cmd)
+                logger.info("GAP1-SINK-DIAG -> using %s = %s A", cmd, val)
+                return val
+        logger.info("GAP1-SINK-DIAG -> all candidates ~0; returning :MEAS:CURR?")
+        return self._safe_float(self._meas_i())
+
+    @staticmethod
+    def _parse_current_from_response(response: str) -> str:
+        """Pull the current field out of a concurrent measurement reply.
+
+        Concurrent format is current,voltage,time e.g.
+        "+1.500000E+00A,+3.299153E+00V,+3.369820E+05s". Mirrors
+        _parse_voltage_from_response but targets the 'A' field; falls back to
+        the first comma-separated field (concurrent order leads with current).
+        """
+        s = str(response).strip()
+        if ',' in s:
+            parts = [p.strip() for p in s.split(',')]
+            for p in parts:
+                pl = p.lower()
+                if pl.endswith('ma'):
+                    try:
+                        return str(float(p[:-2]) / 1000.0)
+                    except (TypeError, ValueError):
+                        return p[:-2]
+                if pl.endswith('a'):
+                    return p[:-1]
+            return parts[0]
+        return s
+
     def output_is_enabled(self, channel=None) -> bool:
         # `channel` is accepted for compatibility with multi-channel drivers
         # that the supply HTTP handler is modeled on (Rigol DP800). The
@@ -737,8 +838,16 @@ class Keithley2281S(SupplyNet):
         return self._safe_float(self._meas_v())
 
     def measure_current(self, channel=None) -> float:
-        """Measure actual output current."""
-        return self._safe_float(self._meas_i())
+        """Measure actual output current.
+
+        TEMP (GAP 1 sink-current investigation): instead of a single
+        ``:MEAS:CURR?``, runs a one-shot diagnostic sweep of candidate current
+        reads and logs each result at INFO, so the box log reveals which SCPI
+        query carries the real signed (negative) sink current vs 0. Returns a
+        best-effort signed value. Once the authoritative query is known from
+        the log, this should collapse back to that single query.
+        """
+        return self._meas_i_diagnostic()
 
     def measure_power(self, channel=None) -> float:
         """Measure actual output power (V * I)."""
