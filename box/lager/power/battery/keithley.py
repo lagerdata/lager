@@ -552,7 +552,9 @@ class KeithleyBattery(BatteryNet):
         # session would never be evicted -- the TUI shows 0s (and the monitor
         # spams DeviceError) until the box is rebooted. *IDN? is read-only and
         # valid in any instrument mode, so it never perturbs state.
-        self._query("*IDN?")
+        _probe = getattr(self, "instr", None)
+        if _probe is not None:
+            _probe.query("*IDN?", check_errors=False)
 
         enabled = self._is_batt_output_on()
         mode_str = self._mode_string()

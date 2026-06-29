@@ -509,7 +509,9 @@ class Keithley2281S(SupplyNet):
         # swallowing _safe_query_no_mode calls below return 0s and the stale
         # session is never evicted -- the TUI shows 0s until the box is
         # rebooted. *IDN? is read-only and valid in any instrument mode.
-        self._query("*IDN?")
+        _probe = getattr(self, "instr", None)
+        if _probe is not None:
+            _probe.query("*IDN?", check_errors=False)
 
         enabled_raw = self._safe_query_no_mode(":OUTP?", default="").strip().upper()
         enabled = enabled_raw in ("1", "ON")
