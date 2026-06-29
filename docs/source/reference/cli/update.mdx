@@ -98,14 +98,14 @@ CLI version: 0.3.22
 
 Checking box versions...
 
-  lab-box-1    0.3.20  will update
-  lab-box-2    0.3.22  current
-  pi-box       0.3.19  will update
-  offline-box  ---     unreachable (skipped)
+  my-lager-box  0.3.20  will update
+  staging-box   0.3.22  current
+  pi-box        0.3.19  will update
+  offline-box   ---     unreachable (skipped)
 
 2 box(es) need updating. Proceed? [Y/n]: y
 
-Updating lab-box-1...
+Updating my-lager-box...
   [OK] Updated to 0.3.22
 
 Updating pi-box...
@@ -198,7 +198,7 @@ cli/deployment/security/secure_box_firewall.sh <box-ip>
 
 ```bash
 # Standard update workflow
-lager update --box lab-lager-box --version main --yes
+lager update --box my-lager-box --version main --yes
 
 # Update all boxes at once
 lager update --all --yes

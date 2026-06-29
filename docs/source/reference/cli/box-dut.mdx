@@ -39,7 +39,7 @@ lager box dut [COMMAND] [OPTIONS]
 Print the current DUT context as JSON.
 
 ```bash
-lager box dut show --box my-box
+lager box dut show --box my-lager-box
 ```
 
 ### Edit
@@ -48,7 +48,7 @@ Round-trip the DUT context through `$EDITOR` (falls back to `nano`, then `vi`).
 On save, the new JSON is validated and written back to `/etc/lager/bench.json`.
 
 ```bash
-lager box dut edit --box my-box
+lager box dut edit --box my-lager-box
 ```
 
 The editable block accepts these fields:
@@ -72,7 +72,7 @@ fetches and analyses it with its own tools.
 
 ```bash
 lager box dut add-doc --kind schematic \
-  --title "Main board" --repo-path docs/sch.pdf --pages 3-5 --box my-box
+  --title "Main board" --repo-path docs/sch.pdf --pages 3-5 --box my-lager-box
 ```
 
 **Options:**

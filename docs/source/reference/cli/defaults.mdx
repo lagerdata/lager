@@ -60,13 +60,13 @@ lager defaults add [OPTIONS]
 **Examples:**
 ```bash
 # Set default Lager Box
-lager defaults add --box lab-lager-box
+lager defaults add --box my-lager-box
 
 # Set default power supply net
 lager defaults add --supply-net VDD_MAIN
 
 # Set multiple defaults at once
-lager defaults add --box lab-lager-box --supply-net POWER --debug-net DEBUG_SWD
+lager defaults add --box my-lager-box --supply-net POWER --debug-net DEBUG_SWD
 
 # Set the default username used for box locking
 lager defaults add --user alice
@@ -83,7 +83,7 @@ lager defaults list
 Output:
 ```
 Current defaults:
-  box: lab-lager-box
+  box: my-lager-box
   supply-net: VDD_MAIN
   battery-net: VBAT
   debug-net: DEBUG_SWD
@@ -150,10 +150,10 @@ When you run a command without specifying an option, the CLI checks for a defaul
 
 ```bash
 # Without defaults - must specify everything
-lager supply VDD_MAIN voltage 3.3 --box lab-lager-box
+lager supply VDD_MAIN voltage 3.3 --box my-lager-box
 
 # With defaults set
-lager defaults add --box lab-lager-box --supply-net VDD_MAIN
+lager defaults add --box my-lager-box --supply-net VDD_MAIN
 
 # Now you can simply run
 lager supply voltage 3.3
@@ -175,7 +175,7 @@ Defaults are stored in the `.lager` configuration file:
 
 ```ini
 [LAGER]
-default_lager_box = lab-lager-box
+default_lager_box = my-lager-box
 default_supply_net = VDD_MAIN
 default_battery_net = VBAT
 default_serial_port = /dev/ttyUSB0

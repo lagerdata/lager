@@ -32,10 +32,10 @@ lager diagnose NET [OPTIONS]
 
 ```bash
 # Diagnose a net, auto-detecting its role from saved nets
-lager diagnose battery1 --box lab-lager-box
+lager diagnose battery1 --box my-lager-box
 
 # Override the role explicitly
-lager diagnose battery1 --box lab-lager-box --type battery
+lager diagnose battery1 --box my-lager-box --type battery
 ```
 
 The command queries three box-side endpoints in parallel and prints a section for
@@ -103,8 +103,8 @@ The decision tree, in order (first match wins):
 ## Sample session
 
 ```
-$ lager diagnose battery1 --box lab-lager-box
-lager diagnose — lab-lager-box → battery1
+$ lager diagnose battery1 --box my-lager-box
+lager diagnose — my-lager-box → battery1
   NetType: battery    address: USB0::0x05E6::0x2281::4518305::INSTR
 
 == USB (host-side) ==

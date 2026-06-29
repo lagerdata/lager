@@ -3,29 +3,29 @@ title: An Introduction to Lager
 description: Learn how Lager adds efficiency to embedded development and hardware testing.
 ---
 
-**Lager** is a hardware testing platform that lets you remotely control lab equipment and debug embedded devices from your laptop. Think of it as your lab bench, accessible from anywhere via simple command-line commands.
+**Lager** is an open-source platform for embedded software development. It provides a unified interface for interacting with embedded hardware, allowing firmware engineers to build repeatable development and validation workflows that run consistently on a developer's desk, in CI, or under the control of AI agents.
 
-The tool significantly increases efficiency by replacing manual probing and handwritten test procedures with scriptable, reproducible workflows that integrate directly into your development cycle.
+By replacing one-off scripts and manual bench procedures with reusable automation, Lager helps teams build more reliable embedded software with less effort.
 
 ---
 
 ## How Lager Works
 
-Lager creates a **remote lab** with three components:
+A Lager setup has three components that together expose your hardware through a single, programmable interface:
 
 ```
-Your Laptop  →  Lager Box  →  Lab Equipment + Device Under Test
+Your Laptop / CI / AI Agent  →  Lager Box  →  Bench Equipment + Device Under Test
 ```
 
 ### 1. Lager Box
 
-The **Lager Box** is a compact, mini-computer that sits in your lab, physically connected to your test equipment and Device Under Test (DUT).
+The **Lager Box** is any x86-64 machine running Ubuntu 22.04 or newer (for example, a compact mini PC) that sits alongside your hardware, physically connected to your test equipment and Device Under Test (DUT).
 
-Once connected to your lab instruments and your DUT, your Lager Box replaces your need to physically be in your lab by creating a virtual interface that you can interact with from anywhere as long as you have network access.
+Once connected to your instruments and your DUT, the Lager Box exposes them through a consistent programmable interface that you can drive from your desk, from CI, or from an AI agent.
 
 ### 2. Lager CLI & Python Library
 
-To interact with a Lager Box, you'll need the **Lager CLI** - a command-line tool you install on your personal computer. It allows you to create a personalized environment to more effectively interact with your instruments and DUT as if they were physically with you.
+To interact with a Lager Box, you'll need the **Lager CLI** - a command-line tool you install on your computer. It gives you a unified interface for working with your instruments and DUT.
 
 You can use the CLI interactively from the terminal or automate entire test suites with the **Lager Python library**.
 
@@ -39,7 +39,7 @@ Common workflows:
 
 The CLI also includes **Lager Terminal**, an interactive REPL with tab completion and command history. Run `lager terminal` or just `lager` with no arguments to launch it.
 
-### 3. Lab Equipment & Devices
+### 3. Bench Equipment & Devices
 
 The Lager Box supports a wide range of professional test equipment that you connect with:
 - Power supplies, battery simulators, and electronic loads

@@ -31,7 +31,7 @@ lager authorize [OPTIONS]
 
 ```bash
 # Authorize a specific Lager Box
-lager authorize --box lab-lager-box
+lager authorize --box my-lager-box
 
 # Authorize the default Lager Box
 lager authorize
@@ -64,12 +64,12 @@ key exists (since lager 0.28.1), so authorized boxes connect without a password.
 
 ```bash
 # First-time setup for a new box
-lager boxes add --name lab-lager-box --ip 100.x.y.z
-lager authorize --box lab-lager-box
+lager boxes add --name my-lager-box --ip 100.x.y.z
+lager authorize --box my-lager-box
 
 # Re-running against an already-authorized box is safe (no-op)
-lager authorize --box lab-lager-box
-# lab-lager-box is already authorized — no password needed.
+lager authorize --box my-lager-box
+# my-lager-box is already authorized — no password needed.
 ```
 
 ---

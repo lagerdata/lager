@@ -14,7 +14,7 @@ lager supply [OPTIONS] NET_NAME COMMAND [ARGS]...
 When invoked without a subcommand, lists all available power supply nets on the box:
 
 ```bash
-lager supply --box my-box
+lager supply --box my-lager-box
 ```
 
 ```
@@ -342,7 +342,7 @@ lager supply state
 
 ```bash
 # List all power supply nets
-lager supply --box my-box
+lager supply --box my-lager-box
 
 # Set voltage with protection
 lager supply PSU voltage 3.3 --ovp 3.6 --ocp 0.5 --yes
@@ -372,7 +372,7 @@ lager supply PSU tui
 ```bash
 #!/bin/bash
 # Power cycle a device under test
-BOX="my-box"
+BOX="my-lager-box"
 NET="DUT_POWER"
 
 lager supply $NET voltage 3.3 --ovp 3.6 --ocp 0.5 --yes --box $BOX

@@ -51,10 +51,10 @@ Energy 'POWER_METER' (10.0s):
 
 ```bash
 # Integrate over the default 10 seconds
-lager energy POWER_METER read --box my-box
+lager energy POWER_METER read --box my-lager-box
 
 # Integrate over 60 seconds
-lager energy POWER_METER read --box my-box --duration 60
+lager energy POWER_METER read --box my-lager-box --duration 60
 
 # Use the default net
 lager energy read
@@ -93,10 +93,10 @@ Stats 'POWER_METER' (1.0s):
 
 ```bash
 # Stats over the default 1 second
-lager energy POWER_METER stats --box my-box
+lager energy POWER_METER stats --box my-lager-box
 
 # Stats over 5 seconds for better averaging
-lager energy POWER_METER stats --box my-box --duration 5
+lager energy POWER_METER stats --box my-lager-box --duration 5
 
 # Use the default net
 lager energy stats
@@ -135,7 +135,7 @@ For instantaneous power readings only, see [Watt Meter](/source/reference/cli/wa
 ```bash
 #!/bin/bash
 # Verify a device's energy consumption during a 10-second test
-RESULT=$(lager energy POWER_METER read --box my-box --duration 10)
+RESULT=$(lager energy POWER_METER read --box my-lager-box --duration 10)
 echo "$RESULT"
 
 # Extract mWh value for pass/fail
@@ -152,7 +152,7 @@ echo "PASS: Energy within budget"
 ```bash
 #!/bin/bash
 # Check sleep current is below 100 uA
-RESULT=$(lager energy POWER_METER stats --box my-box --duration 5)
+RESULT=$(lager energy POWER_METER stats --box my-lager-box --duration 5)
 echo "$RESULT"
 
 # Extract mean current in amps, convert to uA

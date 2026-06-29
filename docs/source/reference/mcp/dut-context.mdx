@@ -21,7 +21,7 @@ Each net carries a single-sentence **purpose** plus optional **notes**. Set them
 in the Net Manager TUI:
 
 ```bash
-lager nets tui --box my-box
+lager nets tui --box my-lager-box
 ```
 
 Select a net, open its details, and fill in:
@@ -41,7 +41,7 @@ lager nets describe uart1 \
   --purpose "DUT debug CLI over UART" \
   --notes "PA9/PA10; 115200 8N1" \
   --tag cli --tag boot-critical \
-  --box my-box
+  --box my-lager-box
 ```
 </Note>
 
@@ -53,10 +53,10 @@ peripherals, subsystems, and references to documents. Author it with the
 
 ```bash
 # View current context
-lager box dut show --box my-box
+lager box dut show --box my-lager-box
 
 # Edit the whole DUT block in $EDITOR
-lager box dut edit --box my-box
+lager box dut edit --box my-lager-box
 ```
 
 A fully authored DUT context looks like this in `bench.json`:
@@ -105,10 +105,10 @@ Attach a pointer without hand-editing JSON:
 
 ```bash
 lager box dut add-doc --kind schematic \
-  --title "Main board" --repo-path docs/sch.pdf --pages 3-5 --box my-box
+  --title "Main board" --repo-path docs/sch.pdf --pages 3-5 --box my-lager-box
 
 lager box dut add-doc --kind datasheet \
-  --title "STM32H7 reference manual" --url "https://..." --pages 150-200 --box my-box
+  --title "STM32H7 reference manual" --url "https://..." --pages 150-200 --box my-lager-box
 ```
 
 A document reference (`DocRef`) has:

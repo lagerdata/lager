@@ -41,15 +41,15 @@ lager logs size [--box BOX] [--verbose]
 lager logs size
 
 # Check specific Lager Box
-lager logs size --box lab-lager-box
+lager logs size --box my-lager-box
 
 # Show individual files
-lager logs size --box lab-lager-box --verbose
+lager logs size --box my-lager-box --verbose
 ```
 
 Output:
 ```
-Log sizes on lab-lager-box:
+Log sizes on my-lager-box:
   Total: 1.2 GB
   [WARNING] Log size exceeds 500 MB
 
@@ -75,18 +75,18 @@ lager logs clean --box BOX [--older-than DAYS] [--yes]
 **Examples:**
 ```bash
 # Clean logs older than 1 day (default)
-lager logs clean --box lab-lager-box
+lager logs clean --box my-lager-box
 
 # Clean logs older than 7 days
-lager logs clean --box lab-lager-box --older-than 7
+lager logs clean --box my-lager-box --older-than 7
 
 # Clean without confirmation
-lager logs clean --box lab-lager-box --yes
+lager logs clean --box my-lager-box --yes
 ```
 
 Output:
 ```
-Cleaning logs older than 1 day on lab-lager-box...
+Cleaning logs older than 1 day on my-lager-box...
 Removed 15 files
 Space freed: 856 MB
 ```
@@ -106,15 +106,15 @@ lager logs docker --box BOX [--container NAME]
 **Examples:**
 ```bash
 # Check all containers
-lager logs docker --box lab-lager-box
+lager logs docker --box my-lager-box
 
 # Check specific container
-lager logs docker --box lab-lager-box --container controller
+lager logs docker --box my-lager-box --container controller
 ```
 
 Output:
 ```
-Docker log sizes on lab-lager-box:
+Docker log sizes on my-lager-box:
   controller: 8.2 MB
   python: 12.4 MB
   hardware_rtc: 3.1 MB
@@ -166,7 +166,7 @@ Schedule regular log cleaning:
 
 ```bash
 # In crontab or CI/CD
-lager logs clean --box lab-lager-box --older-than 7 --yes
+lager logs clean --box my-lager-box --older-than 7 --yes
 ```
 
 ---
@@ -183,7 +183,7 @@ done
 
 # Monitor log growth
 lager logs size  # Check all Lager Boxes
-lager logs docker --box lab-gw  # Check Docker logs
+lager logs docker --box my-lager-box  # Check Docker logs
 ```
 
 ---

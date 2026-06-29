@@ -88,11 +88,11 @@ detached script keeps running on the box, but the lock must be released
 manually:
 
 ```bash
-lager python long_test.py --box lab-box --detach
-# Box 'lab-box' locked for detached run; release with: lager boxes unlock --box lab-box
+lager python long_test.py --box my-lager-box --detach
+# Box 'my-lager-box' locked for detached run; release with: lager boxes unlock --box my-lager-box
 
 # ... later, after the script finishes on the box:
-lager boxes unlock --box lab-box
+lager boxes unlock --box my-lager-box
 ```
 
 ### Escape hatches
@@ -129,16 +129,16 @@ lager boxes lock --box NAME
 
 **Example**:
 ```bash
-lager boxes lock --box lab-box
+lager boxes lock --box my-lager-box
 
 # Output:
-Box 'lab-box' is locked by alice
+Box 'my-lager-box' is locked by alice
 ```
 
 If the box is already locked by another user:
 
 ```
-Error: Box 'lab-box' is already locked by bob (since 2026-03-20T13:00:00Z)
+Error: Box 'my-lager-box' is already locked by bob (since 2026-03-20T13:00:00Z)
 ```
 
 ### `lager boxes unlock`
@@ -155,10 +155,10 @@ lager boxes unlock --box NAME [--force]
 **Examples**:
 ```bash
 # Unlock your own lock
-lager boxes unlock --box lab-box
+lager boxes unlock --box my-lager-box
 
 # Force unlock a box locked by someone else
-lager boxes unlock --box lab-box --force
+lager boxes unlock --box my-lager-box --force
 ```
 
 ## Management operations skip the lock
@@ -181,11 +181,11 @@ This is what lets you Ctrl+C a hung detached script and immediately
 When boxes are locked, `lager boxes` shows an extra column:
 
 ```
- name        ip               version   status    locked by
+ name           ip               version   status    locked by
 =====================================================================
- lab-box-1   100.x.x.1        0.24.0    current   alice
- lab-box-2   100.x.x.2        0.24.0    current   github lager run 9182 job test on runner-3
- lab-box-3   100.x.x.3        0.24.0    current
+ my-lager-box   100.x.x.1        0.24.0    current   alice
+ staging-box    100.x.x.2        0.24.0    current   github lager run 9182 job test on runner-3
+ pi-box         100.x.x.3        0.24.0    current
 ```
 
 CI holders are formatted human-readably (e.g. `github lager run 9182 job
@@ -207,7 +207,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: pip install lager-cli
-      - run: lager python test/api/${{ matrix.suite }} --box lab-box
+      - run: lager python test/api/${{ matrix.suite }} --box my-lager-box
 ```
 
 The three matrix items each get a unique holder (`...GITHUB_JOB=hardware-tests/<runner>:<pid>`

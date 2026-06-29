@@ -42,13 +42,13 @@ lager pip install PACKAGES... [OPTIONS]
 **Examples:**
 ```bash
 # Install a single package
-lager pip install numpy --box lab-lager-box --yes
+lager pip install numpy --box my-lager-box --yes
 
 # Install multiple packages
-lager pip install pandas scipy matplotlib --box lab-lager-box
+lager pip install pandas scipy matplotlib --box my-lager-box
 
 # Install specific versions
-lager pip install 'requests==2.28.0' 'flask>=2.0' --box lab-lager-box
+lager pip install 'requests==2.28.0' 'flask>=2.0' --box my-lager-box
 ```
 
 ### `list`
@@ -61,7 +61,7 @@ lager pip list --box BOX
 
 Output:
 ```
-User-installed packages on lab-lager-box:
+User-installed packages on my-lager-box:
   numpy==1.24.0
   pandas==2.0.0
   requests==2.28.0
@@ -85,10 +85,10 @@ lager pip uninstall PACKAGES... [OPTIONS]
 **Examples:**
 ```bash
 # Uninstall a package
-lager pip uninstall old-package --box lab-lager-box --yes
+lager pip uninstall old-package --box my-lager-box --yes
 
 # Uninstall multiple packages
-lager pip uninstall pkg1 pkg2 pkg3 --box lab-lager-box
+lager pip uninstall pkg1 pkg2 pkg3 --box my-lager-box
 ```
 
 ### `apply`
@@ -143,10 +143,10 @@ If you don't use `--yes`, packages are queued for installation:
 
 ```bash
 # Queue packages
-lager pip install numpy pandas --box lab-gw
+lager pip install numpy pandas --box my-lager-box
 
 # Later, apply changes
-lager pip apply --box lab-gw --yes
+lager pip apply --box my-lager-box --yes
 ```
 
 ---
@@ -155,16 +155,16 @@ lager pip apply --box lab-gw --yes
 
 ```bash
 # Set up a Lager Box with data science packages
-lager pip install numpy pandas scipy matplotlib seaborn --box lab-lager-box --yes
+lager pip install numpy pandas scipy matplotlib seaborn --box my-lager-box --yes
 
 # Add a specific version
-lager pip install 'scikit-learn==1.2.0' --box lab-lager-box --yes
+lager pip install 'scikit-learn==1.2.0' --box my-lager-box --yes
 
 # Check what's installed
-lager pip list --box lab-lager-box
+lager pip list --box my-lager-box
 
 # Clean up unused packages
-lager pip uninstall unused-package --box lab-lager-box --yes
+lager pip uninstall unused-package --box my-lager-box --yes
 ```
 
 ---

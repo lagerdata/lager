@@ -49,7 +49,7 @@ lager boxes add --name NAME --ip IP [OPTIONS]
 **Examples:**
 ```bash
 # Add a basic box
-lager boxes add --name lab-lager-box --ip <BOX_IP>
+lager boxes add --name my-lager-box --ip <BOX_IP>
 
 # Add with custom username
 lager boxes add --name pi-lager-box --ip <BOX_IP> --user pi
@@ -146,7 +146,7 @@ lager boxes edit --name NAME [OPTIONS]
 **Examples:**
 ```bash
 # Change IP address
-lager boxes edit --name lab-lager-box --ip <BOX_IP>
+lager boxes edit --name my-lager-box --ip <BOX_IP>
 
 # Rename a box
 lager boxes edit --name old-name --new-name new-name
@@ -171,14 +171,14 @@ The command queries each box's `/cli-version` endpoint to display real-time vers
 ```
 CLI version: 0.3.22
 
-┌─────────────┬─────────────────┬───────────┬─────────┬───────────────┐
-│ Name        │ IP              │ User      │ Version │ Status        │
-├─────────────┼─────────────────┼───────────┼─────────┼───────────────┤
-│ lab-box-1   │ <BOX_IP>        │ lagerdata │ 0.3.22  │ current       │
-│ lab-box-2   │ <BOX_IP>        │ lagerdata │ 0.3.20  │ needs update  │
-│ pi-box      │ <BOX_IP>        │ pi        │ 0.3.23  │ newer         │
-│ offline-box │ <BOX_IP>        │ lagerdata │ ---     │ unreachable   │
-└─────────────┴─────────────────┴───────────┴─────────┴───────────────┘
+┌──────────────┬─────────────────┬───────────┬─────────┬───────────────┐
+│ Name         │ IP              │ User      │ Version │ Status        │
+├──────────────┼─────────────────┼───────────┼─────────┼───────────────┤
+│ my-lager-box │ <BOX_IP>        │ lagerdata │ 0.3.22  │ current       │
+│ staging-box  │ <BOX_IP>        │ lagerdata │ 0.3.20  │ needs update  │
+│ pi-box       │ <BOX_IP>        │ pi        │ 0.3.23  │ newer         │
+│ offline-box  │ <BOX_IP>        │ lagerdata │ ---     │ unreachable   │
+└──────────────┴─────────────────┴───────────┴─────────┴───────────────┘
 
 Summary: 1 current, 1 needs update, 1 newer, 1 unreachable
 ```
@@ -271,7 +271,7 @@ lager boxes lock --box NAME
 
 **Example:**
 ```bash
-lager boxes lock --box lab-box
+lager boxes lock --box my-lager-box
 ```
 
 ### `unlock`
@@ -289,10 +289,10 @@ lager boxes unlock --box NAME [--force]
 **Examples:**
 ```bash
 # Unlock your own lock
-lager boxes unlock --box lab-box
+lager boxes unlock --box my-lager-box
 
 # Force unlock another user's lock
-lager boxes unlock --box lab-box --force
+lager boxes unlock --box my-lager-box --force
 ```
 
 ---
@@ -304,7 +304,7 @@ Box configurations are stored in `.lager` file in your project directory:
 ```json
 {
   "boxes": {
-    "lab-box-1": {
+    "my-lager-box": {
       "ip": "<BOX_IP>",
       "user": "lagerdata",
       "version": "main"
@@ -333,16 +333,16 @@ The boxes commands perform validation:
 ## Examples
 
 ```bash
-# Set up a new lab
-lager boxes add --name lager-box-1 --ip <BOX_IP>
-lager boxes add --name lager-box-2 --ip <BOX_IP>
-lager boxes add --name lager-box-3 --ip <BOX_IP>
+# Set up a new bench
+lager boxes add --name my-lager-box --ip <BOX_IP>
+lager boxes add --name staging-box --ip <BOX_IP>
+lager boxes add --name pi-box --ip <BOX_IP>
 
 # Export configuration for team sharing
-lager boxes export -o lab-config.json
+lager boxes export -o bench-config.json
 
 # Import on another machine
-lager boxes import lab-config.json --yes
+lager boxes import bench-config.json --yes
 
 # Sync versions after updates
 lager boxes sync

@@ -91,13 +91,13 @@ lager watt
 
 ```bash
 # Read power from watt meter
-lager watt POWER_METER --box my-box
+lager watt POWER_METER --box my-lager-box
 
 # Read using default net
 lager watt
 
 # List available watt meter nets
-lager watt --box my-box
+lager watt --box my-lager-box
 ```
 
 ## Scripting Examples
@@ -107,7 +107,7 @@ lager watt --box my-box
 ```bash
 #!/bin/bash
 # Verify power consumption is within limits
-RESULT=$(lager watt POWER --box my-box)
+RESULT=$(lager watt POWER --box my-lager-box)
 echo "$RESULT"
 
 # Extract numeric value for comparison
@@ -124,7 +124,7 @@ echo "PASS: Power within limits"
 ```bash
 #!/bin/bash
 # Sample power over time
-BOX="my-box"
+BOX="my-lager-box"
 NET="POWER"
 
 echo "timestamp,power_w"

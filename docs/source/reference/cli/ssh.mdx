@@ -23,7 +23,7 @@ lager ssh [OPTIONS]
 
 ```bash
 # SSH to specific Lager Box
-lager ssh --box lab-lager-box
+lager ssh --box my-lager-box
 
 # SSH to default Lager Box
 lager ssh
@@ -75,15 +75,15 @@ ssh-copy-id lagerdata@<box-ip>
 
 ```bash
 # Quick SSH access
-lager ssh --box lab-lager-box
+lager ssh --box my-lager-box
 
 # Debug container issues
-lager ssh --box lab-lager-box
+lager ssh --box my-lager-box
 docker ps
 docker logs controller
 
 # Check Lager Box status
-lager ssh --box lab-lager-box
+lager ssh --box my-lager-box
 cat /etc/lager/version
 sudo ufw status
 ```

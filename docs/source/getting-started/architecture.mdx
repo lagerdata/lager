@@ -8,7 +8,7 @@ An overview of how the Lager platform components fit together -- from CLI comman
 ## High-Level Overview
 
 ```
-USER COMPUTER                                  LAGERBOX (Cybergeek Mini PC)
+USER COMPUTER                                  LAGERBOX (x86-64, Ubuntu 22.04+)
 +---------------------------+                  +----------------------------------------------+
 |                           |                  |                                              |
 |  $ lager supply psu1      |                  |   Docker Container ("lager")                 |
@@ -59,7 +59,7 @@ Docker container with full access to `lager.*` hardware libraries.
 |------|------------|
 | **CLI** | The `lager-cli` Python package (installed via `pip install lager-cli`). A Click-based command-line tool that runs on the developer's laptop. |
 | **Tailscale VPN** | A WireGuard-based mesh VPN that creates an encrypted tunnel between the developer's machine and the Lagerbox. |
-| **Lagerbox** | A Cybergeek mini PC running Linux, physically co-located with the test instruments. Runs a Docker container hosting the Flask/WebSocket server and hardware drivers. |
+| **Lagerbox** | Any x86-64 machine running Ubuntu 22.04 or newer, physically co-located with the test instruments. Runs a Docker container hosting the Flask/WebSocket server and hardware drivers. |
 | **Net** | A logical name (e.g., `psu1`, `uart0`) that maps to a specific instrument + channel + address. Stored in `/etc/lager/saved_nets.json` on the box. |
 | **DUT** | Device Under Test -- the embedded board or product being tested. |
 | **Instrument** | A piece of test equipment (power supply, oscilloscope, LabJack, debug probe, etc.) connected to the box via USB, serial, or LAN. |
@@ -70,7 +70,7 @@ Docker container with full access to `lager.*` hardware libraries.
 ## Lagerbox Internals
 
 ```
-LAGERBOX HOST (Cybergeek Mini PC, Linux)
+LAGERBOX HOST (x86-64, Ubuntu 22.04+)
 +-----------------------------------------------------------------------+
 |                                                                       |
 |  /etc/lager/                       ~/third_party/                     |
@@ -259,7 +259,7 @@ How instruments physically connect between the Lagerbox and the DUT:
 
 ```
                     LAGERBOX
-              (Cybergeek Mini PC)
+            (x86-64, Ubuntu 22.04+)
                   +----------+
                   |          |
             USB-A |  USB-A   | USB-A        LAN
@@ -309,8 +309,8 @@ How instruments physically connect between the Lagerbox and the DUT:
 A CI runner is an ephemeral GitHub Actions VM that joins Tailscale and runs `lager` commands exactly like a developer would -- no special CI-specific infrastructure is needed.
 
 ```
-GITHUB CLOUD                         TAILSCALE NETWORK           HARDWARE LAB
-============                         =================           ============
+GITHUB CLOUD                         TAILSCALE NETWORK           HARDWARE BENCH
+============                         =================           ==============
 
 +---------------------------+
 | GitHub Actions Runner     |
@@ -371,7 +371,7 @@ jobs:
       - name: Install Lager CLI
         run: cd cli && pip install -q -e .
 
-      - name: Connect to hardware lab via Tailscale
+      - name: Connect to hardware bench via Tailscale
         uses: tailscale/github-action@v2
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
