@@ -729,77 +729,84 @@ class Keithley2281S(SupplyNet):
 
     # Sink rated to 1 A ± 10% per the 2281S reference manual (non-programmable).
     _SINK_RATING_A = 1.0
-    # Cap diagnostic sweeps so a tight current()-polling loop can't flood the log.
-    _SINK_DIAG_MAX = 12
+    # Bound a single current read so a stuck query can't blow the box proxy's
+    # ~10s HTTP budget (which surfaces to the Net client as ConnectionFailed).
+    _CURRENT_READ_TIMEOUT_MS = 1500
 
-    def _meas_i_diagnostic(self) -> float:
-        """One-shot diagnostic sweep of candidate current reads (GAP 1).
+    def _read_signed_current(self):
+        """Read the signed output current (negative while sinking), robustly.
 
-        While the supply may be SINKING (external source pushing current in),
-        log every candidate query's result at INFO so the box log reveals which
-        SCPI read carries the real signed (negative) current vs 0. Returns a
-        best-effort signed current: the first candidate that parses to a
-        non-zero value (preferring the DC-qualified and concurrent reads), so
-        ``net.current()`` reflects sink current even before this is finalized.
+        The 2281S in power-supply mode runs a continuous concurrent V/I/P
+        measurement (INIT:CONT ON), so we FETCh that latest reading instead of
+        issuing :MEAS/:READ — those ABORt and reconfigure the measurement,
+        which while sinking desynced the VISA session and, stacked across many
+        queries per call, blew the box proxy's HTTP budget (ConnectionFailed).
 
-        TEMPORARY: once the box log shows the authoritative query, collapse
-        ``measure_current()`` back to that single query and delete this.
+        At most three short, NON-disruptive queries, each isolated; never
+        raises and never tears down the session. Returns None only if every
+        read failed (caller keeps the last-good value).
         """
-        n = getattr(self, '_sink_diag_count', 0)
-        if n >= self._SINK_DIAG_MAX:
-            # Past the diagnostic budget: behave like the plain read.
-            return self._safe_float(self._meas_i())
-        self._sink_diag_count = n + 1
-
-        state = {
-            'ENTR:FUNC': self._safe_query_no_mode(':ENTR:FUNC?', '?'),
-            'SENS:FUNC': self._safe_query_no_mode(':SENS:FUNC?', '?'),
-            'CURR:RANG': self._safe_query_no_mode(':SENS:CURR:RANG?', '?'),
-            'CURR:RANG:AUTO': self._safe_query_no_mode(':SENS:CURR:RANG:AUTO?', '?'),
-            'OUTP': self._safe_query_no_mode(':OUTP?', '?'),
-        }
-        logger.info("GAP1-SINK-DIAG [%d/%d] state=%s", n + 1, self._SINK_DIAG_MAX, state)
-
-        candidates = [
-            (':MEAS:CURR?',    lambda r: self._safe_float(r)),
-            (':MEAS:CURR:DC?', lambda r: self._safe_float(r)),
-            (':FETC:CURR?',    lambda r: self._safe_float(r)),
-            (':READ:CURR?',    lambda r: self._safe_float(r)),
-            (':MEAS:CONC:DC?', lambda r: self._safe_float(self._parse_current_from_response(r))),
-        ]
-        results = []
-        for cmd, parse in candidates:
-            raw = self._safe_query_no_mode(cmd, '')
+        # Bound latency for every read in this call, then restore it.
+        raw_instr = getattr(self.instr, 'instr', None)
+        restore = getattr(raw_instr, 'timeout', None) if raw_instr is not None else None
+        if restore is not None:
             try:
-                val = parse(raw)
+                raw_instr.timeout = self._CURRENT_READ_TIMEOUT_MS
             except Exception:
-                val = None
-            results.append((cmd, val))
-            logger.info("GAP1-SINK-DIAG   %-15s raw=%r parsed=%s", cmd, raw, val)
-
-        # Does forcing current autorange ON change the reading? (Pinned-low
-        # range can read 0 while sinking.)
+                restore = None
         try:
-            self._write(':SENS:CURR:RANG:AUTO ON', check_errors=False)
-            time.sleep(0.05)
-        except Exception:
-            pass
-        raw_auto = self._safe_query_no_mode(':MEAS:CURR?', '')
-        val_auto = self._safe_float(raw_auto)
-        results.append((':MEAS:CURR? (after RANG:AUTO ON)', val_auto))
-        logger.info("GAP1-SINK-DIAG   %-15s raw=%r parsed=%s",
-                    ':MEAS:CURR? autorange', raw_auto, val_auto)
+            # One-time, best-effort autorange so the 100 mA / 1 A sink readings
+            # are not clamped by a pinned range. Config command, not a trigger.
+            if not getattr(self, '_sink_autorange_done', False):
+                try:
+                    self._write(':SENS:CURR:RANG:AUTO ON', check_errors=False)
+                except Exception:
+                    pass
+                self._sink_autorange_done = True
 
-        # Best-effort signed value: first non-zero parse, in the order above.
-        for cmd, val in results:
-            if val is not None and abs(val) > 1e-6:
-                if abs(val) > self._SINK_RATING_A * 1.1:
-                    logger.warning("GAP1-SINK-DIAG |%.4f A| from %s exceeds the "
-                                   "1 A sink rating", val, cmd)
-                logger.info("GAP1-SINK-DIAG -> using %s = %s A", cmd, val)
-                return val
-        logger.info("GAP1-SINK-DIAG -> all candidates ~0; returning :MEAS:CURR?")
-        return self._safe_float(self._meas_i())
+            # 1) Continuous concurrent reading — signed, non-disruptive.
+            raw = self._safe_query_no_mode(':FETC:CONC:DC?', '')
+            if raw:
+                val = self._safe_float(self._parse_current_from_response(raw))
+                logger.info("GAP1-SINK-DIAG FETC:CONC:DC? raw=%r -> %s A", raw, val)
+                return self._note_sink_rating(val)
+
+            # 2) Single current fetch — still non-triggering.
+            raw2 = self._safe_query_no_mode(':FETC:CURR:DC?', '')
+            if raw2:
+                val2 = self._safe_float(raw2)
+                logger.info("GAP1-SINK-DIAG FETC:CURR:DC? raw=%r -> %s A", raw2, val2)
+                return self._note_sink_rating(val2)
+
+            # 3) Legacy read — returns ~0 while sinking but is known-stable.
+            raw3 = self._safe_query_no_mode(':MEAS:CURR?', '')
+            if raw3:
+                val3 = self._safe_float(raw3)
+                logger.info("GAP1-SINK-DIAG MEAS:CURR? raw=%r -> %s A", raw3, val3)
+                return val3
+            return None
+        except Exception as e:
+            # Never propagate: a raised read here would become ConnectionFailed
+            # and also poison the following set_voltage. Drain one error, keep
+            # the session, and let the caller fall back to last-good.
+            logger.warning("GAP1-SINK-DIAG read error (session kept): %s", e)
+            try:
+                self.instr.query(":SYST:ERR?", check_errors=False)
+            except Exception:
+                pass
+            return None
+        finally:
+            if restore is not None:
+                try:
+                    raw_instr.timeout = restore
+                except Exception:
+                    pass
+
+    def _note_sink_rating(self, val: float) -> float:
+        if val < -self._SINK_RATING_A * 1.1:
+            logger.warning("GAP1-SINK-DIAG sink current %.4f A exceeds the 1 A "
+                           "(±10%%) rating", val)
+        return val
 
     @staticmethod
     def _parse_current_from_response(response: str) -> str:
@@ -850,16 +857,18 @@ class Keithley2281S(SupplyNet):
         return self._safe_float(self._meas_v())
 
     def measure_current(self, channel=None) -> float:
-        """Measure actual output current.
+        """Measure actual output current, signed (negative while sinking).
 
-        TEMP (GAP 1 sink-current investigation): instead of a single
-        ``:MEAS:CURR?``, runs a one-shot diagnostic sweep of candidate current
-        reads and logs each result at INFO, so the box log reveals which SCPI
-        query carries the real signed (negative) sink current vs 0. Returns a
-        best-effort signed value. Once the authoritative query is known from
-        the log, this should collapse back to that single query.
+        Robust against transient SCPI/VISA failures: a failed read returns the
+        last-good value (or 0.0) instead of raising, so net.current() can never
+        drop the box connection or cascade into the following set_voltage. See
+        _read_signed_current for why this avoids :MEAS/:READ mid-sink.
         """
-        return self._meas_i_diagnostic()
+        val = self._read_signed_current()
+        if val is not None:
+            self._last_good_current = val
+            return val
+        return getattr(self, '_last_good_current', 0.0)
 
     def measure_power(self, channel=None) -> float:
         """Measure actual output power (V * I)."""
