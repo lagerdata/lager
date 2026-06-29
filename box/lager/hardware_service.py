@@ -740,6 +740,16 @@ def invoke():
     except Exception as e:
         logger.error(f"Error in /invoke: {e}")
         logger.error(traceback.format_exc())
+        # A failure to OPEN the session can surface here too — e.g. a cache-miss
+        # tick where create_device's per-driver open fails after the device
+        # re-enumerated. Same wedge: if the device is on the bus but unreopenable
+        # in-process, let the supervisor respawn us with a clean libusb context.
+        _addr = locals().get('address')
+        if _addr and _looks_like_open_failure(e):
+            _maybe_self_restart_for_wedged_session(
+                _addr,
+                f"{locals().get('device_name', '?')}.{locals().get('function_name', '?')} "
+                f"(open failed, top-level)")
         return jsonify({
             'error': f'Internal server error: {str(e)}',
             'details': traceback.format_exc()
