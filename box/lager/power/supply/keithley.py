@@ -294,6 +294,13 @@ class Keithley2281S(SupplyNet):
             except Exception:
                 raise SupplyBackendError("Failed to enable output after 3 retries")
 
+        # Re-arm trigger model after all :OUTP ON calls — :OUTP ON resets INIT:CONT on the 2281S.
+        try:
+            self._write(":INIT:CONT ON", check_errors=False)
+            time.sleep(0.05)
+        except Exception:
+            pass
+
     def disable(self) -> None:
         """
         Turn output OFF (mode-aware).
@@ -725,10 +732,18 @@ class Keithley2281S(SupplyNet):
             pass
 
     def _meas_v(self) -> str:
+        try:
+            self._write(":INIT:CONT ON", check_errors=False)
+        except Exception:
+            pass
         raw = self._safe_query(":MEAS:VOLT?", default=self._get_vset())
         return self._parse_voltage_from_response(raw)
 
     def _meas_i(self) -> str:
+        try:
+            self._write(":INIT:CONT ON", check_errors=False)
+        except Exception:
+            pass
         return self._safe_query(":MEAS:CURR?", default=self._get_iset())
 
     # Sink rated to 1 A ± 10% per the 2281S reference manual (non-programmable).
@@ -1002,6 +1017,8 @@ class Keithley2281S(SupplyNet):
                     self._write(":OUTP ON", check_errors=False)
                     time.sleep(0.1)
                     self._drain_error_queue(ignore_codes=(-222, -200, 300, 200))
+                    self._write(":INIT:CONT ON", check_errors=False)
+                    time.sleep(0.05)
                 except Exception:
                     pass
 
