@@ -744,7 +744,8 @@ class Keithley2281S(SupplyNet):
             self._write(":INIT:CONT ON", check_errors=False)
         except Exception:
             pass
-        return self._safe_query(":MEAS:CURR?", default=self._get_iset())
+        raw = self._safe_query(":MEAS:CURR?", default=self._get_iset())
+        return self._parse_current_from_response(raw)
 
     # Sink rated to 1 A ± 10% per the 2281S reference manual (non-programmable).
     _SINK_RATING_A = 1.0
@@ -1318,6 +1319,21 @@ class Keithley2281S(SupplyNet):
             self._set_ocp(ocp)
             # Then set the current
             self._set_iset(iset)
+
+    @staticmethod
+    def _parse_current_from_response(response: str) -> str:
+        """
+        Parse current from Keithley response which may be in verbose or simple format.
+        Verbose format: "-7.293284E-07A,+5.000000E+00V,+1.050650E+04s"
+        Simple format: "0.001"
+        """
+        response_str = str(response).strip()
+        if ',' in response_str:
+            parts = response_str.split(',')
+            for part in parts:
+                if part.strip().upper().endswith('A'):
+                    return part.strip()[:-1]
+        return response_str
 
     @staticmethod
     def _parse_voltage_from_response(response: str) -> str:
