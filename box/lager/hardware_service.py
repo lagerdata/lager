@@ -273,7 +273,17 @@ def _maybe_self_restart_for_wedged_session(address, context):
     in-process. No-op unless the device is enumerated (a restart can actually
     help) and we haven't restarted within the cooldown (anti-loop)."""
     import time
-    enumerated = _usb_device_enumerated(address)
+    # The wedge is detected at the tail of a re-enumeration, so the device may
+    # not be back in sysfs for a beat. Retry briefly (~4s) so a still-
+    # re-enumerating instrument isn't misread as unplugged — that false
+    # "not on the bus" would suppress the restart and leave the TUI dead.
+    enumerated = None
+    for _delay in (0.0, 0.5, 1.0, 1.0, 1.5):
+        if _delay:
+            time.sleep(_delay)
+        enumerated = _usb_device_enumerated(address)
+        if enumerated is not False:  # True (present) or None (unknown) — stop
+            break
     if enumerated is None:
         logger.warning(
             f"[self-restart] {context}: cannot confirm USB enumeration for "
