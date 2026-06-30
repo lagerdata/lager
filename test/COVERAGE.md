@@ -133,10 +133,10 @@ test/
 ├── mcp/                  # MCP server tests (pytest)
 │   ├── unit/             # 8 test files: mocked, no hardware
 │   └── integration/      # 1 test file: live hardware required
-├── unit/                 # Local unit tests (66 files)
-│   ├── box/              # 40 files: box-side Python unit tests
+├── unit/                 # Local unit tests (72 files)
+│   ├── box/              # 42 files: box-side Python unit tests
 │   ├── blufi/            # 1 file: BluFi protocol unit tests
-│   ├── cli/              # 20 files: CLI Python unit tests
+│   ├── cli/              # 24 files: CLI Python unit tests
 │   └── measurement/      # 1 file: PPK2 watt/energy unit tests
 └── framework/            # Test utilities
     ├── harness.sh        # Bash test framework
@@ -349,7 +349,7 @@ test/
 
 #### Unit Tests (`test/unit/` -- 66 files)
 
-##### Box Unit Tests (`test/unit/box/` -- 40 files)
+##### Box Unit Tests (`test/unit/box/` -- 42 files)
 
 | File | What it tests |
 |------|---------------|
@@ -370,12 +370,14 @@ test/
 | `test_debug_rtt_reconnect.py` | J-Link RTT reader reconnect-aware socket handling across J-Link restart |
 | `test_detect_and_configure_rtt.py` | RTT control-block RAM scan doesn't leave core halted in all-stop mode |
 | `test_device_lock.py` | Cross-process advisory fcntl lock preventing USB-TMC pyvisa race |
+| `test_diagnose_jlink_parse.py` | Box-side J-Link diagnose parsers: `_parse_emu_list`, `_serial_in_emu_list`, `_parse_connect_output`; pinned with captured JLinkExe text, no hardware |
 | `test_gdb_controller_leak.py` | GdbController close on failed attempts to prevent fd leak |
 | `test_hardware_service_retry.py` | Close-then-recreate retry path for concurrent Keithley resource collisions |
 | `test_host_ops.py` | apt_install and sysctl_apply SSH execution branches |
 | `test_jlink_commander_use_poll.py` | JLinkExe spawned with use_poll=True to avoid fd >= 1024 select() failure |
 | `test_jlink_multi.py` | Multi-probe start_jlink_gdbserver with per-probe serial/port/RTT configuration |
 | `test_jlink_multi_gdbserver_select.py` | Multi-probe GDB slot dispatch |
+| `test_jlink_memrd_reset_halt.py` | DA1469x reset+halt-before-read in `jlink.py`: gate tests for r/h-before-mem8, non-DA1469x regression guard, env-var opt-out, `reset_halt=` override |
 | `test_jlink_uncached_verify.py` | DA1469x opt-in uncached QSPI post-program verify to detect false XIP failures |
 | `test_lock_state.py` | lock_state.py single source of truth for box-side lock behavior |
 | `test_monitor_state.py` | SupplyNet/KeithleyBattery single-call monitor-state helpers reducing per-device lock contention |
@@ -394,14 +396,17 @@ test/
 | `test_usb_scanner_custom.py` | Custom-device surfacing in box HTTP scanner GET /instruments/list |
 | `test_usb_scanner_uart_fallback.py` | UART enumeration without USB serial by matching sysfs path |
 
-##### CLI Unit Tests (`test/unit/cli/` -- 20 files)
+##### CLI Unit Tests (`test/unit/cli/` -- 24 files)
 
 | File | What it tests |
 |------|---------------|
 | `test_address_utils.py` | IPv4/IPv6/Tailscale/hostname validation rejecting schemes, ports, and paths |
 | `test_battery_tui.py` | BatteryTUI render output, command parsing, and worker thread offloading |
 | `test_box_lock_helpers.py` | Lock holder resolution, acquire/release/heartbeat, and format_lock_user CI support |
+| `test_devenv_config_commands.py` | `lager devenv mount` and `lager devenv env` subcommands: editing project-local `.lager` volumes/environment keys |
+| `test_devenv_terminal_docker_args.py` | `docker run` args for `lager devenv terminal` and `lager exec`: `-v`/`-e`/`--passenv`, `.lager` config keys, user:group handling; regression for `--group` bare-flag bug |
 | `test_diagnose_classify.py` | `lager diagnose` classification decision tree for one-line user diagnosis |
+| `test_diagnose_classify_jlink.py` | `lager diagnose` J-Link classification: turns `/diagnose/usb` + `/diagnose/jlink` payloads into user-actionable one-line diagnosis (sibling of `test_diagnose_classify.py`) |
 | `test_error_mapping.py` | map_system_error errno mapping [16/19/110] to actionable headlines and actions |
 | `test_nets_add_labjack_pins.py` | LabJack I2C/SPI arbitrary pin selection via --sda/--scl/--cs/--sck/--mosi/--miso |
 | `test_nets_add_roles.py` | Role-token normalization converting legacy supply/batt to power-supply/battery |
@@ -410,6 +415,7 @@ test/
 | `test_net_tui_assign.py` | Custom-device assignment TUI helpers (_assign_payload, _cable_ident, _run_custom_devices) |
 | `test_net_tui_labjack_pins.py` | TUI LabJack pin dialog preserving legacy channels or persisting custom params |
 | `test_net_tui_uart_guard.py` | UART net save validation rejecting bare interface indices and empty pins |
+| `test_nets_tui_startup.py` | Nets TUI startup regressions: tree-building with mixed net types, empty-state rendering, unsaved-placeholder rendering |
 | `test_performance_improvements.py` | Config caching, connection pooling |
 | `test_python_auto_lock.py` | `lager python` auto-lock wrapper idempotency, atexit, and heartbeat thread |
 | `test_python_breakpoint_session.py` | Breakpoint client request shapes for continue_python/breakpoint_status endpoints |
