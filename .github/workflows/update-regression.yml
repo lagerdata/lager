@@ -1,0 +1,49 @@
+name: Update Regression
+
+on:
+  schedule:
+    - cron: "0 12 * * 0"  # Sundays 4 AM PST
+  workflow_dispatch:
+
+jobs:
+  update-regression:
+    name: Full lager update on MASTER box
+    runs-on: [self-hosted, lager-hardware]
+    timeout-minutes: 30
+
+    env:
+      LAGER_BOX_NAME: ${{ secrets.LAGER_BOX_NAME }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install lager CLI (editable)
+        run: pip install -e cli/
+        shell: bash
+
+      - name: Register lager box
+        run: |
+          lager boxes add \
+            --name "$LAGER_BOX_NAME" \
+            --ip "${{ secrets.LAGER_BOX_IP }}" \
+            --yes
+        shell: bash
+
+      - name: Run full update (force rebuild)
+        run: lager update --force --box "$LAGER_BOX_NAME"
+        shell: bash
+
+      - name: Verify box recovered
+        run: lager hello --box "$LAGER_BOX_NAME"
+        shell: bash
+
+      - name: Post-update hardware smoke test
+        env:
+          SUPPLY_NET: ${{ vars.SUPPLY_NET || 'supply1' }}
+          CHANNEL_MAX_VOLTAGE: ${{ vars.CHANNEL_MAX_VOLTAGE || '60.0' }}
+          CHANNEL_MAX_CURRENT: ${{ vars.CHANNEL_MAX_CURRENT || '1.0' }}
+        run: |
+          lager python test/api/power/test_supply_Rigol_DP821.py \
+            --box "$LAGER_BOX_NAME"
+        shell: bash

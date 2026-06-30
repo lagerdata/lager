@@ -14,6 +14,7 @@ fixes don't have to be made three times.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from typing import Callable, Optional, Tuple
 
@@ -52,11 +53,20 @@ def ensure_lager_box_keypair(key_path: str = _LAGER_BOX_KEY) -> bool:
     if os.path.exists(key_path):
         return False
     os.makedirs(os.path.dirname(key_path), mode=0o700, exist_ok=True)
-    proc = subprocess.run(
-        ["ssh-keygen", "-t", "ed25519", "-f", key_path, "-N", "", "-C", "lager-box-access"],
-        capture_output=True,
-        text=True,
-    )
+    keygen_exe = shutil.which("ssh-keygen")
+    if keygen_exe is None:
+        raise LagerError(
+            "ssh-keygen not found — install the OpenSSH client.",
+            fixes=["Windows: Settings → System → Optional Features → 'OpenSSH Client'"],
+        )
+    try:
+        proc = subprocess.run(
+            [keygen_exe, "-t", "ed25519", "-f", key_path, "-N", "", "-C", "lager-box-access"],
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        raise LagerError("ssh-keygen failed to launch.", cause=str(exc), raw=exc) from exc
     if proc.returncode != 0:
         raise LagerError(
             "Could not generate the SSH key.",
@@ -85,17 +95,22 @@ def key_auth_works(
     "key not authorized", which makes `lager update` spuriously re-prompt
     "SSH key not configured" on every run for a box that is in fact set up.
     """
-    proc = subprocess.run(
-        [
-            "ssh", "-i", key_path,
-            "-o", "BatchMode=yes",
-            "-o", "StrictHostKeyChecking=accept-new",
-            "-o", f"ConnectTimeout={connect_timeout}",
-            dest, "true",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    if shutil.which("ssh") is None:
+        return False
+    try:
+        proc = subprocess.run(
+            [
+                "ssh", "-i", key_path,
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-o", f"ConnectTimeout={connect_timeout}",
+                dest, "true",
+            ],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return False
     return proc.returncode == 0
 
 

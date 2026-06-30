@@ -1,0 +1,187 @@
+name: Hardware Tests
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+  schedule:
+    - cron: "0 11 * * *"  # 3 AM PST
+  workflow_dispatch:
+    inputs:
+      box_name:
+        description: "Lager box name (overrides secret LAGER_BOX_NAME)"
+        required: false
+        type: string
+
+jobs:
+  hardware-tests:
+    name: Run hardware tests on lager box
+    runs-on: [self-hosted, lager-hardware]
+    timeout-minutes: 40
+
+    env:
+      LAGER_BOX_NAME: ${{ inputs.box_name || secrets.LAGER_BOX_NAME }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install lager CLI (editable)
+        run: pip install -e cli/
+        shell: bash
+
+      - name: Run CLI unit tests
+        id: unit-test
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          pip install pytest
+          pytest test/unit/cli/ -v
+        shell: bash
+
+      - name: Register lager box
+        run: |
+          lager boxes add \
+            --name "$LAGER_BOX_NAME" \
+            --ip "${{ secrets.LAGER_BOX_IP }}" \
+            --user lagerdata \
+            --yes
+        shell: bash
+
+      - name: Set up lager SSH key
+        run: |
+          if [ ! -f ~/.ssh/lager_box ]; then
+            ssh-keygen -t ed25519 -f ~/.ssh/lager_box -N "" -C "lager-box-access"
+          fi
+          grep -qF "$(cat ~/.ssh/lager_box.pub)" ~/.ssh/authorized_keys 2>/dev/null || \
+            cat ~/.ssh/lager_box.pub >> ~/.ssh/authorized_keys
+        shell: bash
+
+      - name: Verify box connectivity
+        run: lager hello --box "$LAGER_BOX_NAME"
+        shell: bash
+
+      - name: Verify update probe (dry-run)
+        run: |
+          rc=0; lager update --check --box "$LAGER_BOX_NAME" || rc=$?
+          [ "$rc" -le 1 ] || exit "$rc"
+        shell: bash
+
+      - name: Test Rigol DP821 CH1 (60V / 1A)
+        id: rigol-ch1-test
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          SUPPLY_NET: ${{ vars.RIGOL_CH1_NET || 'supply2' }}
+          CHANNEL_MAX_VOLTAGE: ${{ vars.RIGOL_CH1_MAX_VOLTAGE || '60.0' }}
+          CHANNEL_MAX_CURRENT: ${{ vars.RIGOL_CH1_MAX_CURRENT || '1.0' }}
+        run: |
+          lager python test/api/power/test_supply_Rigol_DP821.py \
+            --box "$LAGER_BOX_NAME"
+        shell: bash
+
+      - name: Test Rigol DP821 CH2 (8V / 10A)
+        id: rigol-ch2-test
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          SUPPLY_NET: ${{ vars.RIGOL_CH2_NET || 'supply3' }}
+          CHANNEL_MAX_VOLTAGE: ${{ vars.RIGOL_CH2_MAX_VOLTAGE || '8.0' }}
+          CHANNEL_MAX_CURRENT: ${{ vars.RIGOL_CH2_MAX_CURRENT || '10.0' }}
+        run: |
+          lager python test/api/power/test_supply_Rigol_DP821.py \
+            --box "$LAGER_BOX_NAME"
+        shell: bash
+
+      - name: Test LabJack T7 (ADC / DAC / GPIO)
+        id: labjack-test
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          ADC_NET: ${{ vars.ADC_NET || 'adc1' }}
+          DAC_NET: ${{ vars.DAC_NET || 'dac1' }}
+          GPIO_NET: ${{ vars.GPIO_NET || 'gpio16' }}
+          ADC_NETS: ${{ vars.ADC_NETS || 'adc1,adc2,adc3' }}
+          LOOPBACK_ADC_NET: ${{ vars.LOOPBACK_ADC_NET || 'adc1' }}
+        run: |
+          lager python test/api/io/test_LabJack_T7.py \
+            --box "$LAGER_BOX_NAME"
+        shell: bash
+
+      - name: Test Acroname USB Hub
+        id: acroname-test
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          USB_NET: ${{ vars.USB_NET || 'usb1' }}
+          USB_NETS: ${{ vars.USB_NETS || 'usb1' }}
+        run: |
+          lager python test/api/usb/test_Acroname.py \
+            --box "$LAGER_BOX_NAME"
+        shell: bash
+
+      - name: Test Keithley 2281S power supply
+        id: keithley-supply-test
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          KEITHLEY_SUPPLY_NET: ${{ vars.KEITHLEY_SUPPLY_NET || 'supply1' }}
+          KEITHLEY_MAX_VOLTAGE: ${{ vars.KEITHLEY_MAX_VOLTAGE || '20.0' }}
+          KEITHLEY_MAX_CURRENT: ${{ vars.KEITHLEY_MAX_CURRENT || '6.0' }}
+        run: |
+          lager python test/api/power/test_supply_Keithley_2281S.py \
+            --box "$LAGER_BOX_NAME"
+        shell: bash
+
+      - name: Test Keithley 2281S battery simulator
+        id: keithley-battery-test
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          KEITHLEY_BATTERY_NET: ${{ vars.KEITHLEY_BATTERY_NET || 'battery1' }}
+        run: |
+          lager python test/api/power/test_battery_Keithley_2281S.py \
+            --box "$LAGER_BOX_NAME"
+        shell: bash
+
+      - name: Test MCC USB-202 (ADC / DAC / GPIO)
+        id: usb202-test
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          ADC_NETS: ${{ vars.USB202_ADC_NETS || 'adc15,adc16,adc17,adc18,adc19,adc20,adc21,adc22' }}
+          DAC_NETS: ${{ vars.USB202_DAC_NETS || 'dac3,dac4' }}
+          GPIO_NETS: ${{ vars.USB202_GPIO_NETS || 'gpio24,gpio25,gpio26,gpio27,gpio28,gpio29,gpio30,gpio31' }}
+          SUPPLY_NET: ${{ vars.USB202_SUPPLY_NET || '' }}
+          SUPPLY_VOLTAGE: ${{ vars.USB202_SUPPLY_VOLTAGE || '3.3' }}
+          SUPPLY_ADC_NET: ${{ vars.USB202_SUPPLY_ADC_NET || '' }}
+          LABJACK_ADC_NET: ${{ vars.USB202_LABJACK_ADC_NET || '' }}
+          GPIO_LOOPBACK_OUT: ${{ vars.USB202_GPIO_LOOPBACK_OUT || '' }}
+          GPIO_LOOPBACK_IN: ${{ vars.USB202_GPIO_LOOPBACK_IN || '' }}
+        run: |
+          lager python test/api/io/test_usb202.py \
+            --box "$LAGER_BOX_NAME"
+        shell: bash
+
+      - name: Fail job if any test failed
+        if: >
+          steps.rigol-ch1-test.outcome == 'failure' ||
+          steps.rigol-ch2-test.outcome == 'failure' ||
+          steps.labjack-test.outcome == 'failure' ||
+          steps.unit-test.outcome == 'failure' ||
+          steps.acroname-test.outcome == 'failure' ||
+          steps.keithley-supply-test.outcome == 'failure' ||
+          steps.keithley-battery-test.outcome == 'failure' ||
+          steps.usb202-test.outcome == 'failure'
+        run: |
+          echo "One or more hardware tests failed:"
+          echo "  rigol-ch1-test:       ${{ steps.rigol-ch1-test.outcome }}"
+          echo "  rigol-ch2-test:       ${{ steps.rigol-ch2-test.outcome }}"
+          echo "  labjack-test:         ${{ steps.labjack-test.outcome }}"
+          echo "  acroname-test:        ${{ steps.acroname-test.outcome }}"
+          echo "  keithley-supply-test: ${{ steps.keithley-supply-test.outcome }}"
+          echo "  keithley-battery-test:${{ steps.keithley-battery-test.outcome }}"
+          echo "  usb202-test:          ${{ steps.usb202-test.outcome }}"
+          exit 1
+        shell: bash

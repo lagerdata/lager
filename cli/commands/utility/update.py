@@ -11,6 +11,7 @@
 import click
 import requests
 import re
+import shlex
 import shutil
 import subprocess
 import threading
@@ -440,6 +441,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     and it forces a clean rebuild (wiping the cached image and the cargo/npm
     persistence volumes) so no stale layer or toolchain survives the retry.
     """
+    click.echo(f"[DEBUG] update.py: {__file__}")
     from ...box_storage import update_box_version
     from ... import __version__ as cli_version
 
@@ -536,22 +538,48 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         except LagerError:
             log_error('Error: Failed to create SSH key')
             return False
+        except FileNotFoundError:
+            click.secho('ssh-keygen not found. Install OpenSSH client tools.', fg='red')
+            click.echo('  Windows: Settings → System → Optional Features → "OpenSSH Client"')
+            return False
 
-        # Copy key to box
+        # Copy key to box using ssh directly — ssh-copy-id is a POSIX shell
+        # script not available on Windows, even when Git for Windows is installed.
         click.echo()
         click.echo('Copying SSH key to box (enter password when prompted):')
-        copy_result = subprocess.run(
-            [
-                'ssh-copy-id',
-                '-o', 'StrictHostKeyChecking=accept-new',
-                '-o', 'ConnectTimeout=30',
-                '-i', key_file,
-                ssh_host,
-            ],
-            timeout=300  # 5 minutes - allow time for user to enter password
-        )
+        try:
+            pub_key = open(f'{key_file}.pub').read().strip()
+        except OSError as e:
+            click.secho(f'Could not read public key {key_file}.pub: {e}', fg='red')
+            return False
 
-        if copy_result.returncode == 0 and key_auth_works(ssh_host):
+        remote_cmd = (
+            f'mkdir -p ~/.ssh && echo {shlex.quote(pub_key)} >> ~/.ssh/authorized_keys'
+            ' && chmod 600 ~/.ssh/authorized_keys'
+        )
+        try:
+            copy_result = subprocess.run(
+                [
+                    'ssh',
+                    '-o', 'StrictHostKeyChecking=accept-new',
+                    '-o', 'ConnectTimeout=30',
+                    ssh_host,
+                    remote_cmd,
+                ],
+                timeout=300,  # 5 minutes — allow time for user to enter password
+            )
+        except (FileNotFoundError, OSError):
+            click.echo()
+            click.secho('ssh not found on this system.', fg='red')
+            click.echo('Install the OpenSSH client:')
+            click.echo('  Windows: Settings → System → Optional Features → "OpenSSH Client"')
+            return False
+
+        try:
+            _key_works = copy_result.returncode == 0 and key_auth_works(ssh_host)
+        except OSError:
+            _key_works = False
+        if _key_works:
             click.echo()
             click.secho('SSH key installed successfully!', fg='green')
             click.echo('Future connections will not require a password.')
@@ -577,6 +605,10 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             click.echo()  # New line after progress bar
             click.secho('SSH key not configured for this box', fg='yellow')
             click.echo()
+
+            if check:
+                click.secho("Run 'lager update --box ...' (without --check) to set up the SSH key first.", fg='yellow')
+                ctx.exit(2)
 
             if yes or click.confirm('Set up SSH key for this box? (requires password once, then never again)'):
                 if setup_ssh_key():
@@ -611,8 +643,14 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         log_error(f'Error: Connection to {ssh_host} timed out')
         ctx.exit(1)
     except Exception as e:
-        if progress:
-            progress.finish(success=False)
+        import traceback as _tb
+        tb_str = _tb.format_exc()
+        try:
+            if progress:
+                progress.finish(success=False)
+        except Exception:
+            pass
+        click.echo(tb_str)
         log_error(f'Error: {str(e)}')
         ctx.exit(1)
 
@@ -630,15 +668,26 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     # (e.g. a devenv where it's a single-file bind mount and ssh's atomic replace
     # errors with "Invalid cross-device link"): accept-new lets the connection
     # proceed despite the write failure.
-    _ssh_mux_opts = [
-        '-o', 'StrictHostKeyChecking=accept-new',
-        '-o', 'ConnectTimeout=30',
-        '-o', 'ControlMaster=auto',
-        '-o', f'ControlPath={_ssh_control_path}',
-        '-o', 'ControlPersist=10m',
-        '-o', 'ServerAliveInterval=30',
-        '-o', 'ServerAliveCountMax=3',
-    ]
+    if sys.platform == 'win32':
+        # ControlPath is a Unix-domain socket — Windows OpenSSH treats any ControlPath
+        # value as a literal filename and then fails at getsockname() with
+        # "Not a socket". ServerAliveInterval also triggers getsockname on some
+        # Windows builds when stdout/stderr are piped. Use the minimal safe set.
+        _ssh_mux_opts = [
+            '-o', 'ControlMaster=no',
+            '-o', 'StrictHostKeyChecking=accept-new',
+            '-o', 'ConnectTimeout=10',
+        ]
+    else:
+        _ssh_mux_opts = [
+            '-o', 'StrictHostKeyChecking=accept-new',
+            '-o', 'ConnectTimeout=30',
+            '-o', 'ControlMaster=auto',
+            '-o', f'ControlPath={_ssh_control_path}',
+            '-o', 'ControlPersist=10m',
+            '-o', 'ServerAliveInterval=30',
+            '-o', 'ServerAliveCountMax=3',
+        ]
 
     # Tear down any leftover control master for this host before the first
     # probe. A socket orphaned by an earlier interrupted/failed run (or one
@@ -647,18 +696,19 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     # confusing "Permission denied (publickey,password)" on the probe even
     # though the key authenticates fine on a fresh connection. Ask the master
     # to exit, then unlink the socket if it lingers; both are best-effort.
-    try:
-        subprocess.run(
-            ['ssh', '-o', f'ControlPath={_ssh_control_path}', '-O', 'exit', ssh_host],
-            capture_output=True, timeout=10,
-        )
-    except (subprocess.SubprocessError, OSError):
-        pass
-    try:
-        if os.path.exists(_ssh_control_path):
-            os.remove(_ssh_control_path)
-    except OSError:
-        pass
+    if sys.platform != 'win32':
+        try:
+            subprocess.run(
+                ['ssh', '-o', f'ControlPath={_ssh_control_path}', '-O', 'exit', ssh_host],
+                capture_output=True, timeout=10,
+            )
+        except (subprocess.SubprocessError, OSError):
+            pass
+        try:
+            if os.path.exists(_ssh_control_path):
+                os.remove(_ssh_control_path)
+        except OSError:
+            pass
 
     # Helper function to run SSH commands
     def run_ssh_command_with_output(cmd, timeout_secs=120):
@@ -671,7 +721,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         ssh_cmd.extend(_ssh_mux_opts)
         ssh_cmd.append(ssh_host)
         ssh_cmd.append(cmd)
-        return subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=timeout_secs)
+        return subprocess.run(ssh_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout_secs)
 
     def run_ssh_command_interactive(cmd, timeout_secs=300, allow_sudo_prompt=False):
         """Run an SSH command that may require sudo password input.
@@ -1705,6 +1755,8 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             bufsize=1
         )
         if process.stdout:
@@ -1718,7 +1770,9 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             ssh_cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True
+            text=True,
+            encoding='utf-8',
+            errors='replace',
         )
         # Read and store output for potential error reporting
         if process.stdout:
@@ -1962,7 +2016,17 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     if container_lines:
         log_status('OK', 'green')
     else:
-        log_status('WARNING (lager container not detected)', 'yellow')
+        if progress:
+            progress.finish(success=False)
+        log_status('FAILED', 'red')
+        log_error('Error: lager container is not running after startup')
+        click.secho(
+            'The container may have crashed immediately after starting. Check logs on the box:',
+            fg='yellow', err=True
+        )
+        click.echo(f'  ssh {ssh_host} "docker logs lager --tail 50"', err=True)
+        click.echo(f'  ssh {ssh_host} "docker ps -a | grep lager"', err=True)
+        ctx.exit(1)
 
     if verbose and container_lines:
         click.echo()

@@ -93,6 +93,24 @@ def get_state() -> Dict[str, Any]:
 # ------------------------------- mappers --------------------------------
 
 def mapper_factory(net, device_type, net_info):
+    if isinstance(device_type, str) and '::' in device_type:
+        # VISA resource string passed as device_type; resolve via instrument field or USB vendor ID
+        instrument = (net_info.get('instrument') or '') if isinstance(net_info, dict) else ''
+        instr = instrument.lower()
+        addr  = device_type.lower()
+        if 'keithley' in instr or '0x05e6' in addr:
+            device_type = 'keithley'
+        elif 'rigol_dp7' in instr or instr.startswith('dp7'):
+            device_type = 'rigol_dp700'
+        elif 'rigol_dp' in instr or instr.startswith('dp8') or '0x1ab1' in addr:
+            device_type = 'rigol_dp800'
+        elif 'rigol_dl' in instr or 'dl3000' in instr:
+            device_type = 'rigol_dl3000'
+        elif 'keysight' in instr and 'e36' in instr:
+            device_type = 'keysight_e36000'
+        else:
+            raise TypeError(f"Invalid mapper type {device_type}")
+
     if device_type == "rigol_mso5000":
         if net.type == NetType.Analog:
             return RigolMSO5000AnalogMapper(net, Device(device_type, net_info))
