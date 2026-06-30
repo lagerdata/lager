@@ -269,6 +269,13 @@ def add(name, ip, user, version, yes):
         elif existing_name:
             # Same name, check if IP is also the same
             if existing_name[1] == ip:
+                if yes:
+                    add_box(name, ip, user, version)
+                    success_msg = f"Added box '{name}' with IP '{ip}'"
+                    if user:
+                        success_msg += f" (user: {user})"
+                    click.echo(click.style(success_msg, fg='green'))
+                    return
                 click.echo(f"  A box with the name '{existing_name[0]}' and IP '{ip}' already exists.")
                 click.echo()
                 confirm_prompt = "Update existing box?"
