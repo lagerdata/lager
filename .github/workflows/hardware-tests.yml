@@ -45,6 +45,7 @@ jobs:
           lager boxes add \
             --name "$LAGER_BOX_NAME" \
             --ip "${{ secrets.LAGER_BOX_IP }}" \
+            --user lagerdata \
             --yes
         shell: bash
 

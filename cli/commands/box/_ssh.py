@@ -14,6 +14,7 @@ fixes don't have to be made three times.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from typing import Callable, Optional, Tuple
 
@@ -94,17 +95,22 @@ def key_auth_works(
     "key not authorized", which makes `lager update` spuriously re-prompt
     "SSH key not configured" on every run for a box that is in fact set up.
     """
-    proc = subprocess.run(
-        [
-            "ssh", "-i", key_path,
-            "-o", "BatchMode=yes",
-            "-o", "StrictHostKeyChecking=accept-new",
-            "-o", f"ConnectTimeout={connect_timeout}",
-            dest, "true",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    if shutil.which("ssh") is None:
+        return False
+    try:
+        proc = subprocess.run(
+            [
+                "ssh", "-i", key_path,
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-o", f"ConnectTimeout={connect_timeout}",
+                dest, "true",
+            ],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return False
     return proc.returncode == 0
 
 
