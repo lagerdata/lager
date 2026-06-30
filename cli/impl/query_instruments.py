@@ -103,7 +103,7 @@ SUPPORTED_USB: Dict[str, Dict[str, str | List[str] | None]] = {
     # debug — J-Link family (handled by the J-Link backend on the box)
     "J-Link":                       {"vid": "1366", "pid": "1024", "net_type": ["debug"]},
     "J-Link_Plus":                  {"vid": "1366", "pid": "0101", "net_type": ["debug"]},
-    "J-Link":                       {"vid": "1366", "pid": "1020", "net_type": ["debug"]},
+    "J-Link_Base_Compact":          {"vid": "1366", "pid": "1020", "net_type": ["debug"]},
     "Flasher_ARM":                  {"vid": "1366", "pid": "0503", "net_type": ["debug"]},
     "J-Link_Flasher_Pro":           {"vid": "1366", "pid": "0105", "net_type": ["debug"]},
     # debug — OpenOCD-backed probes
@@ -228,7 +228,7 @@ CHANNEL_MAPS = {
     # debug — J-Link family
     "J-Link":                 {"debug": ["DEVICE_TYPE"]},
     "J-Link_Plus":            {"debug": ["DEVICE_TYPE"]},
-    "J-Link":                 {"debug": ["DEVICE_TYPE"]},
+    "J-Link_Base_Compact":    {"debug": ["DEVICE_TYPE"]},
     "Flasher_ARM":            {"debug": ["DEVICE_TYPE"]},
     "J-Link_Flasher_Pro":     {"debug": ["DEVICE_TYPE"]},
     # debug — OpenOCD-backed probes
