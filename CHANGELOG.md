@@ -2,7 +2,9 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
-## [Unreleased]
+## [0.30.0] - 2026-06-30
+
+Adds first-class support for the SEGGER J-Link Base Compact and makes the bundled J-Link udev rule match by vendor ID, so every J-Link variant is granted device access and auto-detected instead of only three hard-coded product IDs. Also fixes a CLI scanner bug that silently dropped the standard J-Link.
 
 ### Added
 - **J-Link Base Compact (`1366:1020`) is auto-detected as a debug net.** The box USB scanner now recognizes the Base Compact's product ID, so it scans, nets, and drives exactly like any other J-Link.

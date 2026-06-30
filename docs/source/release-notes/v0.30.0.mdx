@@ -1,0 +1,31 @@
+---
+title: "Version 0.30.0"
+description: "June 30, 2026"
+---
+
+## <u>Features</u>
+
+- **SEGGER J-Link Base Compact support.** The J-Link Base Compact (USB `1366:1020`) is now granted device access and auto-detected as a `debug` net, so it scans, nets, and drives a target exactly like any other J-Link.
+
+## <u>Bug Fixes</u>
+
+- **Every J-Link variant is granted device access by vendor ID.** The bundled udev rules previously allow-listed only three J-Link product IDs (`0x1024`, `0x0101`, `0x0503`), so a J-Link enumerating under any other PID kept its default root-only ownership and was unusable from a Lager Box or its container — silently degrading debug/flash. The rule now matches the SEGGER vendor ID (`0x1366`), covering every current and future J-Link.
+- **The standard J-Link is no longer dropped from device discovery.** A duplicate dictionary key in the CLI's USB scanner silently overwrote the standard J-Link (`0x1024`) entry; each J-Link product now has its own key so both resolve.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.30.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.30.0/)
