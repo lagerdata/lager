@@ -2,6 +2,15 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Added
+- **J-Link Base Compact (`1366:1020`) is auto-detected as a debug net.** The box USB scanner now recognizes the Base Compact's product ID, so it scans, nets, and drives exactly like any other J-Link.
+
+### Fixed
+- **The shipped udev rules grant `GROUP="lager"` to every SEGGER J-Link by vendor ID.** Previously only PIDs `0x1024 / 0x0101 / 0x0503` were allow-listed, so a J-Link enumerating under any other PID (e.g. the Base Compact's `0x1020`) kept kernel-default `root:root` ownership and was unusable from the box user and inside the container — silently degrading debug/flash. The rule now matches `idVendor==0x1366` (all PIDs), mirroring the Acroname-hub rule in the same file.
+- **The CLI USB scanner no longer drops the standard J-Link (`0x1024`).** A duplicate `"J-Link"` dictionary key in `query_instruments.py` silently overwrote the `0x1024` entry; the Base Compact now has its own key so both probes resolve.
+
 ## [0.29.0] - 2026-06-29
 
 USB control gets multi-hub support and read-only state queries, `lager ssh` can run a one-off command on the box, and the Keithley 2281S gains two-quadrant (battery-sim) coverage. Power-supply/battery monitors and USB hubs now self-heal after a power-cycle instead of wedging. **Breaking:** `lager boxes add` now requires `--user`.
