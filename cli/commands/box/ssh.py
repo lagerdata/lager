@@ -9,6 +9,7 @@
 import click
 from click.exceptions import Exit
 import os
+import shlex
 import subprocess
 import platform
 from ...box_storage import resolve_and_validate_box
@@ -88,8 +89,14 @@ def ssh(ctx, box, command):
 
     # When a command is supplied, append it so ssh runs it on the box and exits
     # (non-interactive). With no command, ssh opens an interactive shell as before.
+    #
+    # ssh joins multiple remote arguments with spaces and the box's shell
+    # re-parses the result, so passing the tokens as-is loses the quoting of any
+    # argument containing spaces or shell metacharacters (e.g. `sh -c 'exit 7'`
+    # arrives at the box as `sh -c exit 7`). Re-quote each token and hand ssh a
+    # single remote command string so the box reconstructs the original argv.
     if command:
-        ssh_cmd.extend(command)
+        ssh_cmd.append(' '.join(shlex.quote(arg) for arg in command))
 
     try:
         # Run SSH as a child process (not exec) so Click ctx.call_on_close hooks run.
