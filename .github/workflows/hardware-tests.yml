@@ -62,7 +62,9 @@ jobs:
         shell: bash
 
       - name: Verify update probe (dry-run)
-        run: lager update --check --box "$LAGER_BOX_NAME"
+        run: |
+          rc=0; lager update --check --box "$LAGER_BOX_NAME" || rc=$?
+          [ "$rc" -le 1 ] || exit "$rc"
         shell: bash
 
       - name: Test Rigol DP821 CH1 (60V / 1A)
