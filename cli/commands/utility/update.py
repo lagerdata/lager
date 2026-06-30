@@ -668,15 +668,26 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     # (e.g. a devenv where it's a single-file bind mount and ssh's atomic replace
     # errors with "Invalid cross-device link"): accept-new lets the connection
     # proceed despite the write failure.
-    _ssh_mux_opts = [
-        '-o', 'StrictHostKeyChecking=accept-new',
-        '-o', 'ConnectTimeout=30',
-        '-o', 'ControlMaster=auto',
-        '-o', f'ControlPath={_ssh_control_path}',
-        '-o', 'ControlPersist=10m',
-        '-o', 'ServerAliveInterval=30',
-        '-o', 'ServerAliveCountMax=3',
-    ]
+    if sys.platform == 'win32':
+        # ControlPath is a Unix-domain socket — Windows OpenSSH treats any ControlPath
+        # value as a literal filename and then fails at getsockname() with
+        # "Not a socket". ServerAliveInterval also triggers getsockname on some
+        # Windows builds when stdout/stderr are piped. Use the minimal safe set.
+        _ssh_mux_opts = [
+            '-o', 'ControlMaster=no',
+            '-o', 'StrictHostKeyChecking=accept-new',
+            '-o', 'ConnectTimeout=10',
+        ]
+    else:
+        _ssh_mux_opts = [
+            '-o', 'StrictHostKeyChecking=accept-new',
+            '-o', 'ConnectTimeout=30',
+            '-o', 'ControlMaster=auto',
+            '-o', f'ControlPath={_ssh_control_path}',
+            '-o', 'ControlPersist=10m',
+            '-o', 'ServerAliveInterval=30',
+            '-o', 'ServerAliveCountMax=3',
+        ]
 
     # Tear down any leftover control master for this host before the first
     # probe. A socket orphaned by an earlier interrupted/failed run (or one
@@ -685,18 +696,19 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     # confusing "Permission denied (publickey,password)" on the probe even
     # though the key authenticates fine on a fresh connection. Ask the master
     # to exit, then unlink the socket if it lingers; both are best-effort.
-    try:
-        subprocess.run(
-            ['ssh', '-o', f'ControlPath={_ssh_control_path}', '-O', 'exit', ssh_host],
-            capture_output=True, timeout=10,
-        )
-    except (subprocess.SubprocessError, OSError):
-        pass
-    try:
-        if os.path.exists(_ssh_control_path):
-            os.remove(_ssh_control_path)
-    except OSError:
-        pass
+    if sys.platform != 'win32':
+        try:
+            subprocess.run(
+                ['ssh', '-o', f'ControlPath={_ssh_control_path}', '-O', 'exit', ssh_host],
+                capture_output=True, timeout=10,
+            )
+        except (subprocess.SubprocessError, OSError):
+            pass
+        try:
+            if os.path.exists(_ssh_control_path):
+                os.remove(_ssh_control_path)
+        except OSError:
+            pass
 
     # Helper function to run SSH commands
     def run_ssh_command_with_output(cmd, timeout_secs=120):
