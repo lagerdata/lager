@@ -8,6 +8,7 @@ This module contains utility functions for checking J-Link debugger status.
 """
 
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -64,21 +65,49 @@ def read_pidfile(pidfile, max_tries=1, interval=0):
 
 def check_process(pid):
     """
-    Check if process is running
+    Check if a process is running and not a defunct (zombie) process
+
+    ``os.kill(pid, 0)`` succeeds for a zombie process: a ``<defunct>`` entry
+    lingers in the process table until its parent reaps it. A wedged
+    ``JLinkGDBServer`` left ``<defunct>`` by a flash that ran while the probe
+    was down would therefore read as "running" and get reused by
+    ``connect(ignore_if_connected=True)``, failing the next flash. We treat a
+    zombie as not running so the caller force-restarts a clean server (this is
+    what the manual ``lager debug flash`` does via ``force=True``).
 
     Args:
         pid: Process ID
 
     Returns:
-        True if process exists, False otherwise
+        True if the process exists and is not a zombie, False otherwise
     """
     try:
         # Sending signal 0 checks if process exists without actually sending a signal
-        import os
         os.kill(pid, 0)
-        return True
     except (OSError, ProcessLookupError):
         return False
+    return not _pid_is_zombie(pid)
+
+
+def _pid_is_zombie(pid):
+    """Return True if *pid* is in the zombie/defunct state ('Z' in /proc).
+
+    Reads ``/proc/<pid>/stat`` whose format is ``pid (comm) state ...``. The
+    ``comm`` field may itself contain spaces and parentheses, so the state code
+    is the first token after the final ``)``. When ``/proc`` is unavailable
+    (e.g. a non-Linux host running the unit tests), we cannot tell, so we assume
+    the process is not a zombie and preserve the bare ``os.kill`` behaviour.
+    """
+    try:
+        with open(f'/proc/{pid}/stat', 'r') as f:
+            stat = f.read()
+    except OSError:
+        return False
+    rparen = stat.rfind(')')
+    if rparen == -1:
+        return False
+    fields = stat[rparen + 1:].split()
+    return bool(fields) and fields[0] == 'Z'
 
 
 def check_logfile(logfile_path, max_tries=3, mcu=None, target_port=2331):
