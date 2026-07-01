@@ -643,6 +643,14 @@ ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/mkdir -p /etc/lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/lager/saved_nets.json
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /etc/lager/version
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/mv /tmp/lager_version_tmp /etc/lager/version
+# Allow ${BOX_USER} to write /etc/lager/bench.json (lager box dut edit/add-doc).
+# /etc/lager is owned by www-data, so the login user can't create files there;
+# the CLI stages to /tmp/lager-bench.json.tmp then cp's it in under this grant.
+# Path-scoped (fixed source + dest), mirroring the tee/mv grants for
+# saved_nets.json/version. Absolute /bin paths must match the CLI invocation
+# byte-for-byte or sudo -n falls through to "a password is required".
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/cp /tmp/lager-bench.json.tmp /etc/lager/bench.json
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/lager/bench.json
 # Allow ${BOX_USER} user to enable Docker service for auto-start
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/systemctl enable docker
 SUDOERS
@@ -758,9 +766,15 @@ fi
 # =============================================================================
 print_step "Deploying Box Code"
 
-BOX_SRC="${SCRIPT_DIR}/../../box/"
-UDEV_RULES_DIR="${SCRIPT_DIR}/../../box/udev_rules"
-MODPROBE_D_DIR="${SCRIPT_DIR}/../../box/modprobe_d"
+# This script lives at cli/deployment/scripts/, so the repo's box/ dir is THREE
+# levels up (../../../box), not two. With ../../box these pointed at the
+# nonexistent cli/box, so the `[ -d "$UDEV_RULES_DIR" ]` guards below fell
+# through to a warning (not a `set -e` abort) and `lager install` silently
+# skipped udev + modprobe deployment. (../security on line 745 confirms the
+# depth: one `..` reaches cli/deployment, so box/ at repo root needs three.)
+BOX_SRC="${SCRIPT_DIR}/../../../box/"
+UDEV_RULES_DIR="${SCRIPT_DIR}/../../../box/udev_rules"
+MODPROBE_D_DIR="${SCRIPT_DIR}/../../../box/modprobe_d"
 
     # ==========================================================================
     # Sparse Checkout Deployment via HTTPS (no authentication needed)
@@ -824,13 +838,17 @@ MODPROBE_D_DIR="${SCRIPT_DIR}/../../box/modprobe_d"
             git reset --hard ${GIT_REF}
         "
 
-        # After update, check if box/ subdirectory exists and flatten if needed
+        # After update, check if box/ subdirectory exists and flatten if needed.
+        # Overwrite-safe: an older flat deploy can leave a non-empty top-level
+        # dir (e.g. ~/box/lager with ignored *.pyc that `git clean -fd` keeps),
+        # and a plain `mv box/* .` then dies with "cannot overwrite './lager':
+        # Directory not empty". Remove each target first so the move always wins.
         if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -d ~/box/box" 2>/dev/null; then
             print_info "Flattening directory structure..."
             ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
                 cd ~/box && \
                 shopt -s dotglob && \
-                mv box/* . && \
+                for f in box/*; do rm -rf \"./\${f#box/}\" && mv \"\$f\" \"./\${f#box/}\" || exit 1; done && \
                 rmdir box
             "
         fi
@@ -865,12 +883,14 @@ MODPROBE_D_DIR="${SCRIPT_DIR}/../../box/modprobe_d"
             exit 1
         fi
 
-        # Flatten directory structure: move box/* to root
+        # Flatten directory structure: move box/* to root. Overwrite-safe (see
+        # the update path above): remove each target first so a pre-existing
+        # non-empty top-level dir never aborts the move.
         print_info "Flattening directory structure..."
         ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
             cd ~/box && \
             shopt -s dotglob && \
-            mv box/* . && \
+            for f in box/*; do rm -rf \"./\${f#box/}\" && mv \"\$f\" \"./\${f#box/}\" || exit 1; done && \
             rmdir box
         "
 
