@@ -51,6 +51,19 @@ def _resolve_supply_proxy(netname: str):
     return supply, channel, voltage_max, current_max
 
 
+def build_supply_state(supply, channel, netname):
+    """Build the structured supply state dict. Used by both the SocketIO
+    monitor and the HTTP /supply/command 'state' action so they never drift.
+
+    The field-by-field logic (including per-group try/except fallbacks)
+    lives in the driver's get_monitor_state(); this wrapper adds the
+    netname/channel envelope that both transports emit.
+    """
+    state = {'netname': netname, 'channel': channel}
+    state.update(supply.get_monitor_state(channel))
+    return state
+
+
 def register_supply_routes(app: Flask) -> None:
     """
     Register supply HTTP routes with the Flask app.
@@ -74,7 +87,8 @@ def register_supply_routes(app: Flask) -> None:
         Request body:
         {
             "netname": "supply1",
-            "action": "voltage" | "current" | "enable" | "disable" | "ocp" | "ovp",
+            "action": "voltage" | "current" | "enable" | "disable" | "ocp" | "ovp"
+                      | "clear_ocp" | "clear_ovp" | "state",
             "params": {"value": 3.3}  # Optional, for set operations
         }
 
@@ -84,6 +98,10 @@ def register_supply_routes(app: Flask) -> None:
             "action": "voltage",
             "message": "Voltage set to 3.3V"
         }
+
+        The 'state' action additionally returns a structured "state" object —
+        the same dict the SocketIO monitor emits (built by build_supply_state)
+        — so HTTP-only clients can render a live view by polling.
         """
         try:
             data = request.get_json()
@@ -250,6 +268,18 @@ def register_supply_routes(app: Flask) -> None:
                     except Exception:
                         pass
                     result['message'] = msg
+                    try:
+                        result['state'] = build_supply_state(supply, channel, netname)
+                    except Exception:
+                        pass  # message string is still returned; state is best-effort
+
+                elif action == 'clear_ocp':
+                    supply.clear_overcurrent_protection_trip(channel=channel)
+                    result['message'] = 'OCP trip cleared'
+
+                elif action == 'clear_ovp':
+                    supply.clear_overvoltage_protection_trip(channel=channel)
+                    result['message'] = 'OVP trip cleared'
 
                 else:
                     return jsonify({'success': False, 'error': f'Unknown action: {action}'}), 400
@@ -503,8 +533,7 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                         # starve interactive TUI commands, and on the
                         # Keithley 2281S in battery mode the mode-enforcing
                         # queries blew the proxy's 10s HTTP budget outright.
-                        state = {'netname': netname, 'channel': channel}
-                        state.update(supply.get_monitor_state(channel))
+                        state = build_supply_state(supply, channel, netname)
 
                         socketio.emit('supply_state_update',
                                     {'state': state},

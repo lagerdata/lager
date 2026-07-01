@@ -45,6 +45,20 @@ def _resolve_battery_proxy(netname: str):
     return battery, channel
 
 
+def build_battery_state(battery, channel, netname):
+    """Build the structured battery state dict. Shared by the SocketIO monitor
+    and the HTTP /battery/command 'state' (and 'print_state') action so they
+    never drift.
+
+    The field-by-field logic (_safe_query fallbacks, trip decoding) lives in
+    the driver's get_monitor_state(); this wrapper adds the netname/channel
+    envelope that both transports emit.
+    """
+    state = {'netname': netname, 'channel': channel}
+    state.update(battery.get_monitor_state(channel))
+    return state
+
+
 def register_battery_routes(app: Flask) -> None:
     """
     Register battery HTTP routes on the Flask app.
@@ -77,6 +91,11 @@ def register_battery_routes(app: Flask) -> None:
             "action": "soc",
             "message": "SOC set to 80%"
         }
+
+        The 'state'/'print_state' action additionally returns a structured
+        "state" object — the same dict the SocketIO monitor emits (built by
+        build_battery_state) — so HTTP-only clients can render a live view
+        by polling.
         """
         try:
             data = request.get_json()
@@ -279,6 +298,10 @@ def register_battery_routes(app: Flask) -> None:
 
                     state_str = "ON" if enabled else "OFF"
                     result['message'] = f'Channel {channel}: {state_str}, Mode: {mode_str}, Model: {model_str}, SOC: {soc}%, Voltage: {tvol}V, Current: {curr}A'
+                    try:
+                        result['state'] = build_battery_state(battery, channel, netname)
+                    except Exception:
+                        pass  # message string is still returned; state is best-effort
 
                 else:
                     return jsonify({'success': False, 'error': f'Unknown action: {action}'}), 400
@@ -495,8 +518,7 @@ def register_battery_socketio(socketio: SocketIO) -> None:
                         # (KeithleyBattery.get_monitor_state), so polling
                         # cannot interleave with and starve interactive
                         # commands the way the old per-field version could.
-                        state = {'netname': netname, 'channel': channel}
-                        state.update(battery.get_monitor_state(channel))
+                        state = build_battery_state(battery, channel, netname)
 
                         socketio.emit('battery_state_update',
                                     {'state': state},
