@@ -151,9 +151,13 @@ class YoctoWatt(WattMeterBase):
             self._read_lock = threading.Lock()  # Thread-safe reads
             self._initialized = True
 
-    def read(self) -> float:
+    def read(self, duration: float = 0.1) -> float:
         """
         Read current power in watts (thread-safe).
+
+        Args:
+            duration: Accepted for interface compatibility but ignored; the
+                Yocto-Watt returns an instantaneous averaged value of its own.
 
         Returns:
             Power measurement in watts as a float

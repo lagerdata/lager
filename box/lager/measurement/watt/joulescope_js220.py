@@ -147,9 +147,13 @@ class JoulescopeJS220(WattMeterBase):
                     f"Failed to read raw data from Joulescope '{self.name}': {e}"
                 ) from e
 
-    def read(self) -> float:
+    def read(self, duration: float = 0.1) -> float:
         """
         Read current power in watts (thread-safe).
+
+        Args:
+            duration: Averaging window in seconds. Longer windows average more
+                samples for a lower-noise reading.
 
         Returns:
             Power measurement in watts as a float
@@ -161,8 +165,8 @@ class JoulescopeJS220(WattMeterBase):
                 )
 
             try:
-                # Read data for a short duration and compute mean values
-                data = self._device.read(contiguous_duration=0.1)
+                # Read data for the requested duration and compute mean values
+                data = self._device.read(contiguous_duration=duration)
                 current, voltage = np.mean(data, axis=0, dtype=np.float64)
                 power = current * voltage
                 return float(power)
@@ -171,9 +175,13 @@ class JoulescopeJS220(WattMeterBase):
                     f"Failed to read from Joulescope '{self.name}': {e}"
                 ) from e
 
-    def read_current(self) -> float:
+    def read_current(self, duration: float = 0.1) -> float:
         """
         Read current in amps (thread-safe).
+
+        Args:
+            duration: Averaging window in seconds. Longer windows average more
+                samples for a lower-noise reading.
 
         Returns:
             Current measurement in amps as a float
@@ -185,7 +193,7 @@ class JoulescopeJS220(WattMeterBase):
                 )
 
             try:
-                data = self._device.read(contiguous_duration=0.1)
+                data = self._device.read(contiguous_duration=duration)
                 current, _ = np.mean(data, axis=0, dtype=np.float64)
                 return float(current)
             except Exception as e:
@@ -193,9 +201,13 @@ class JoulescopeJS220(WattMeterBase):
                     f"Failed to read current from Joulescope '{self.name}': {e}"
                 ) from e
 
-    def read_voltage(self) -> float:
+    def read_voltage(self, duration: float = 0.1) -> float:
         """
         Read voltage in volts (thread-safe).
+
+        Args:
+            duration: Averaging window in seconds. Longer windows average more
+                samples for a lower-noise reading.
 
         Returns:
             Voltage measurement in volts as a float
@@ -207,7 +219,7 @@ class JoulescopeJS220(WattMeterBase):
                 )
 
             try:
-                data = self._device.read(contiguous_duration=0.1)
+                data = self._device.read(contiguous_duration=duration)
                 _, voltage = np.mean(data, axis=0, dtype=np.float64)
                 return float(voltage)
             except Exception as e:
@@ -215,9 +227,13 @@ class JoulescopeJS220(WattMeterBase):
                     f"Failed to read voltage from Joulescope '{self.name}': {e}"
                 ) from e
 
-    def read_all(self) -> dict:
+    def read_all(self, duration: float = 0.1) -> dict:
         """
         Read all measurements in a single operation (thread-safe).
+
+        Args:
+            duration: Averaging window in seconds. Longer windows average more
+                samples for a lower-noise reading.
 
         Returns:
             Dictionary with 'current' (amps), 'voltage' (volts), and 'power' (watts)
@@ -229,7 +245,7 @@ class JoulescopeJS220(WattMeterBase):
                 )
 
             try:
-                data = self._device.read(contiguous_duration=0.1)
+                data = self._device.read(contiguous_duration=duration)
                 current, voltage = np.mean(data, axis=0, dtype=np.float64)
                 power = current * voltage
                 return {

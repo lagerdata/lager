@@ -2,6 +2,18 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+The watt meter reads current and voltage, not just power. Readings are SI-scaled so a small load no longer rounds to `0.000 W`, an averaging window trades acquisition time for resolution, and `--json` makes readings scriptable.
+
+### Added
+- **`lager watt <net> current|voltage|all`** — read current (A), voltage (V), or all three (current/voltage/power) from a watt-meter net, not just power. Backed by the Joulescope JS220 and Nordic PPK2; a Yocto-Watt (power only) reports a clear "not supported" message.
+- **`--duration` averaging window on watt reads.** Average over a longer capture (e.g. `--duration 1.0`) for a lower-noise, higher-effective-resolution reading.
+- **`--json` output for `lager watt`.** Emit a machine-readable JSON object in base SI units (W/A/V) for HIL scripts.
+
+### Changed
+- **`lager watt` output is SI-scaled.** Sub-milliwatt/-milliamp readings now display in µ/n units (e.g. `52.340 µW`) instead of rounding to `0.000 W`.
+
 ## [0.29.0] - 2026-06-29
 
 USB control gets multi-hub support and read-only state queries, `lager ssh` can run a one-off command on the box, and the Keithley 2281S gains two-quadrant (battery-sim) coverage. Power-supply/battery monitors and USB hubs now self-heal after a power-cycle instead of wedging. **Breaking:** `lager boxes add` now requires `--user`.
