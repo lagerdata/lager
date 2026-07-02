@@ -15,6 +15,20 @@ from lager.exceptions import (
 __all__ = ['SupplyBackendError', 'LibraryMissingError', 'DeviceNotFoundError', 'SupplyNet']
 
 
+def _safe(fn, default=None):
+    """Run a single monitor-field read, degrading to `default` on any error.
+
+    One flaky field (e.g. :OUTP:MODE? unsupported by a DP711 firmware, a
+    measure_power overflow, a transient bus error) must cost only that field,
+    not the whole get_monitor_state() gather — the WebSocket monitor and the
+    HTTP 'state' action both drop the entire structured state if this raises.
+    """
+    try:
+        return fn()
+    except Exception:
+        return default
+
+
 class SupplyNet(abc.ABC):
     """Abstract base class defining the interface for a power supply backend."""
 
@@ -95,36 +109,39 @@ class SupplyNet(abc.ABC):
         should override this with a non-intrusive implementation that
         never enforces or switches the instrument mode.
         """
-        state = {
-            'voltage': float(self.measure_voltage(channel)),
-            'current': float(self.measure_current(channel)),
-            'power': float(self.measure_power(channel)),
-            'enabled': self.output_is_enabled(channel),
-            'mode': self.get_output_mode(channel) if hasattr(self, 'get_output_mode') else 'CV',
-            'voltage_set': float(self.get_channel_voltage(source=channel)),
-            'current_set': float(self.get_channel_current(source=channel)),
+        # Liveness probe — deliberately NOT swallowed (mirrors the Keithley
+        # overrides). If the cached pyvisa session is stale (instrument
+        # power-cycled / USB re-enumerated), this raises a session/ENODEV
+        # error that propagates to the hardware service's /invoke handler,
+        # which evicts the stale session, reconnects, and retries this call
+        # on a fresh session. Without it the _safe-guarded reads below would
+        # return defaults forever and the stale session would never be
+        # evicted. *IDN? is read-only and valid in any instrument mode.
+        _probe = getattr(self, "instr", None)
+        if _probe is not None:
+            try:
+                _probe.query("*IDN?", check_errors=False)
+            except TypeError:
+                # raw pyvisa resource without the check_errors kwarg
+                _probe.query("*IDN?")
+
+        # Every field read is individually _safe-guarded: one failing query
+        # (unsupported SCPI on a given firmware, a transient bus error) costs
+        # only that field, never the whole gather.
+        limits = _safe(lambda: self.get_channel_limits(channel), {}) or {}
+        return {
+            'voltage': _safe(lambda: float(self.measure_voltage(channel)), 0.0),
+            'current': _safe(lambda: float(self.measure_current(channel)), 0.0),
+            'power': _safe(lambda: float(self.measure_power(channel)), 0.0),
+            'enabled': _safe(lambda: self.output_is_enabled(channel)),
+            'mode': _safe(lambda: self.get_output_mode(channel), 'CV')
+                    if hasattr(self, 'get_output_mode') else 'CV',
+            'voltage_set': _safe(lambda: float(self.get_channel_voltage(source=channel))),
+            'current_set': _safe(lambda: float(self.get_channel_current(source=channel))),
+            'voltage_max': _safe(lambda: limits.get('voltage_max', 0), 0),
+            'current_max': _safe(lambda: limits.get('current_max', 0), 0),
+            'ocp_limit': _safe(lambda: float(self.get_overcurrent_protection_value(channel))),
+            'ocp_tripped': _safe(lambda: self.overcurrent_protection_is_tripped(channel)),
+            'ovp_limit': _safe(lambda: float(self.get_overvoltage_protection_value(channel))),
+            'ovp_tripped': _safe(lambda: self.overvoltage_protection_is_tripped(channel)),
         }
-
-        try:
-            limits = self.get_channel_limits(channel)
-            state['voltage_max'] = limits.get('voltage_max', 0)
-            state['current_max'] = limits.get('current_max', 0)
-        except (AttributeError, NotImplementedError):
-            state['voltage_max'] = 0
-            state['current_max'] = 0
-
-        try:
-            state['ocp_limit'] = float(self.get_overcurrent_protection_value(channel))
-            state['ocp_tripped'] = self.overcurrent_protection_is_tripped(channel)
-        except (AttributeError, NotImplementedError):
-            state['ocp_limit'] = None
-            state['ocp_tripped'] = None
-
-        try:
-            state['ovp_limit'] = float(self.get_overvoltage_protection_value(channel))
-            state['ovp_tripped'] = self.overvoltage_protection_is_tripped(channel)
-        except (AttributeError, NotImplementedError):
-            state['ovp_limit'] = None
-            state['ovp_tripped'] = None
-
-        return state
