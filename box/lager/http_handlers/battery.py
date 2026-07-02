@@ -45,6 +45,18 @@ def _resolve_battery_proxy(netname: str):
     return battery, channel
 
 
+# Wire shape of the battery state dict (minus the netname/channel envelope).
+# build_battery_state pre-fills every key with None so consumers always get a
+# full-shaped dict even when the driver returns a partial one or the gather
+# fails outright.
+BATTERY_STATE_FIELDS = (
+    'terminal_voltage', 'current', 'esr', 'soc', 'voc',
+    'enabled', 'mode', 'model', 'capacity', 'current_limit',
+    'ocp_limit', 'ovp_limit', 'volt_full', 'volt_empty',
+    'ocp_tripped', 'ovp_tripped',
+)
+
+
 def build_battery_state(battery, channel, netname):
     """Build the structured battery state dict. Shared by the SocketIO monitor
     and the HTTP /battery/command 'state' (and 'print_state') action so they
@@ -53,9 +65,25 @@ def build_battery_state(battery, channel, netname):
     The field-by-field logic (_safe_query fallbacks, trip decoding) lives in
     the driver's get_monitor_state(); this wrapper adds the netname/channel
     envelope that both transports emit.
+
+    Never raises: always returns a full-shaped dict (every field key present,
+    None where a read failed). If the single get_monitor_state /invoke fails
+    entirely — hardware_service down, stale-session retry exhausted, transient
+    "[Errno 16] Resource busy" — the data fields stay None and 'error' carries
+    the transport-level detail; otherwise 'error' is None.
     """
-    state = {'netname': netname, 'channel': channel}
-    state.update(battery.get_monitor_state(channel))
+    state = {'netname': netname, 'channel': channel, 'error': None}
+    state.update({field: None for field in BATTERY_STATE_FIELDS})
+    try:
+        state.update(battery.get_monitor_state(channel))
+    except ConnectionFailed as e:
+        state['error'] = f'Hardware service unreachable: {describe_error(e)}'
+    except DeviceError as e:
+        state['error'] = f'Hardware service error: {describe_error(e)}'
+    except Exception as e:
+        state['error'] = f'Monitoring error: {describe_error(e)}'
+    if state['error']:
+        logger.warning(f"Battery state gather failed for {netname}: {state['error']}")
     return state
 
 
@@ -289,19 +317,29 @@ def register_battery_routes(app: Flask) -> None:
                     # as "Could not open instrument at ...: failed to set
                     # configuration [Errno 16] Resource busy" right after a
                     # successful supply command.
-                    enabled = battery._is_batt_output_on()
-                    mode_str = battery._mode_string()
-                    model_str = battery._safe_query(':BATT:STAT?', '') or 'Custom'
-                    soc = battery._safe_query(':BATT:SIM:SOC?', '0')
-                    tvol = battery._safe_query(':BATT:SIM:TVOL?', '0')
-                    curr = battery._safe_query(':BATT:SIM:CURR?', '0')
+                    # One build_battery_state call — a single /invoke — supplies
+                    # both the structured state and the human-readable message.
+                    # The builder never raises and always returns a full-shaped
+                    # dict (None for fields that failed), so the response
+                    # always includes 'state' even on a degraded read.
+                    state = build_battery_state(battery, channel, netname)
+                    result['state'] = state
 
-                    state_str = "ON" if enabled else "OFF"
-                    result['message'] = f'Channel {channel}: {state_str}, Mode: {mode_str}, Model: {model_str}, SOC: {soc}%, Voltage: {tvol}V, Current: {curr}A'
-                    try:
-                        result['state'] = build_battery_state(battery, channel, netname)
-                    except Exception:
-                        pass  # message string is still returned; state is best-effort
+                    def _fmt(value, unit):
+                        return 'n/a' if value is None else f'{value}{unit}'
+
+                    enabled = state['enabled']
+                    state_str = 'UNKNOWN' if enabled is None else ('ON' if enabled else 'OFF')
+                    msg = (
+                        f"Channel {channel}: {state_str}, "
+                        f"Mode: {state['mode'] or 'n/a'}, Model: {state['model'] or 'n/a'}, "
+                        f"SOC: {_fmt(state['soc'], '%')}, "
+                        f"Voltage: {_fmt(state['terminal_voltage'], 'V')}, "
+                        f"Current: {_fmt(state['current'], 'A')}"
+                    )
+                    if state['error']:
+                        msg += f" (degraded: {state['error']})"
+                    result['message'] = msg
 
                 else:
                     return jsonify({'success': False, 'error': f'Unknown action: {action}'}), 400
@@ -520,24 +558,22 @@ def register_battery_socketio(socketio: SocketIO) -> None:
                         # commands the way the old per-field version could.
                         state = build_battery_state(battery, channel, netname)
 
-                        socketio.emit('battery_state_update',
-                                    {'state': state},
-                                    namespace='/battery',
-                                    room=session_id)
-                    except ConnectionFailed as e:
-                        detail = describe_error(e)
-                        logger.error(f"[BATTERY-MONITOR-{thread_name}] hardware_service unreachable: {detail}")
-                        socketio.emit('error',
-                                    {'message': f'Hardware service unreachable: {detail}'},
-                                    namespace='/battery',
-                                    room=session_id)
-                    except DeviceError as e:
-                        detail = describe_error(e)
-                        logger.error(f"[BATTERY-MONITOR-{thread_name}] hardware_service error: {detail}")
-                        socketio.emit('error',
-                                    {'message': f'Hardware service error: {detail}'},
-                                    namespace='/battery',
-                                    room=session_id)
+                        # The builder never raises: a total gather failure
+                        # comes back as state['error'] with all data fields
+                        # None. Emit the error event (as before) rather than
+                        # an all-None state update, so the TUI keeps its last
+                        # good display instead of blanking on a transient.
+                        if state['error']:
+                            logger.error(f"[BATTERY-MONITOR-{thread_name}] {state['error']}")
+                            socketio.emit('error',
+                                        {'message': state['error']},
+                                        namespace='/battery',
+                                        room=session_id)
+                        else:
+                            socketio.emit('battery_state_update',
+                                        {'state': state},
+                                        namespace='/battery',
+                                        room=session_id)
                     except Exception as e:
                         detail = describe_error(e)
                         logger.error(f"[BATTERY-MONITOR-{thread_name}] Error monitoring battery: {detail}")

@@ -51,16 +51,43 @@ def _resolve_supply_proxy(netname: str):
     return supply, channel, voltage_max, current_max
 
 
+# Wire shape of the supply state dict (minus the netname/channel envelope).
+# build_supply_state pre-fills every key with None so consumers always get a
+# full-shaped dict even when the driver returns a partial one or the gather
+# fails outright.
+SUPPLY_STATE_FIELDS = (
+    'voltage', 'current', 'power', 'enabled', 'mode',
+    'voltage_set', 'current_set', 'voltage_max', 'current_max',
+    'ocp_limit', 'ocp_tripped', 'ovp_limit', 'ovp_tripped',
+)
+
+
 def build_supply_state(supply, channel, netname):
     """Build the structured supply state dict. Used by both the SocketIO
     monitor and the HTTP /supply/command 'state' action so they never drift.
 
-    The field-by-field logic (including per-group try/except fallbacks)
-    lives in the driver's get_monitor_state(); this wrapper adds the
-    netname/channel envelope that both transports emit.
+    The field-by-field logic (including per-field _safe fallbacks) lives in
+    the driver's get_monitor_state(); this wrapper adds the netname/channel
+    envelope that both transports emit.
+
+    Never raises: always returns a full-shaped dict (every field key present,
+    None where a read failed). If the single get_monitor_state /invoke fails
+    entirely — hardware_service down, stale-session retry exhausted, transient
+    "[Errno 16] Resource busy" — the data fields stay None and 'error' carries
+    the transport-level detail; otherwise 'error' is None.
     """
-    state = {'netname': netname, 'channel': channel}
-    state.update(supply.get_monitor_state(channel))
+    state = {'netname': netname, 'channel': channel, 'error': None}
+    state.update({field: None for field in SUPPLY_STATE_FIELDS})
+    try:
+        state.update(supply.get_monitor_state(channel))
+    except ConnectionFailed as e:
+        state['error'] = f'Hardware service unreachable: {describe_error(e)}'
+    except DeviceError as e:
+        state['error'] = f'Hardware service error: {describe_error(e)}'
+    except Exception as e:
+        state['error'] = f'Monitoring error: {describe_error(e)}'
+    if state['error']:
+        logger.warning(f"Supply state gather failed for {netname}: {state['error']}")
     return state
 
 
@@ -235,43 +262,31 @@ def register_supply_routes(app: Flask) -> None:
                         result['message'] = f'OVP limit: {ovp}V'
 
                 elif action == 'state':
-                    # Get current state from the supply
-                    enabled = supply.output_is_enabled(channel=channel)
-                    voltage_set = float(supply.get_channel_voltage(source=channel))
-                    current_set = float(supply.get_channel_current(source=channel))
+                    # One build_supply_state call — a single /invoke — supplies
+                    # both the structured state and the human-readable message.
+                    # The builder never raises and always returns a full-shaped
+                    # dict (None for fields that failed), so the response
+                    # always includes 'state' even on a degraded read.
+                    state = build_supply_state(supply, channel, netname)
+                    result['state'] = state
 
-                    # Try to get measurements if output is on
-                    try:
-                        if enabled:
-                            voltage_meas = float(supply.measure_voltage())
-                            current_meas = float(supply.measure_current())
-                        else:
-                            voltage_meas = 0.0
-                            current_meas = 0.0
-                    except Exception:
-                        voltage_meas = 0.0
-                        current_meas = 0.0
+                    def _fmt(value, unit):
+                        return 'n/a' if value is None else f'{value}{unit}'
 
-                    state_str = "ON" if enabled else "OFF"
+                    enabled = state['enabled']
+                    state_str = 'UNKNOWN' if enabled is None else ('ON' if enabled else 'OFF')
                     msg = (
-                        f'Channel {channel}: {state_str}, Set: {voltage_set}V/{current_set}A, '
-                        f'Measured: {voltage_meas}V/{current_meas}A'
+                        f"Channel {channel}: {state_str}, "
+                        f"Set: {_fmt(state['voltage_set'], 'V')}/{_fmt(state['current_set'], 'A')}, "
+                        f"Measured: {_fmt(state['voltage'], 'V')}/{_fmt(state['current'], 'A')}"
                     )
-                    try:
-                        ocp_s = float(supply.get_overcurrent_protection_value(channel))
-                        msg += f', OCP: {ocp_s}A'
-                    except Exception:
-                        pass
-                    try:
-                        ovp_s = float(supply.get_overvoltage_protection_value(channel))
-                        msg += f', OVP: {ovp_s}V'
-                    except Exception:
-                        pass
+                    if state['ocp_limit'] is not None:
+                        msg += f", OCP: {state['ocp_limit']}A"
+                    if state['ovp_limit'] is not None:
+                        msg += f", OVP: {state['ovp_limit']}V"
+                    if state['error']:
+                        msg += f" (degraded: {state['error']})"
                     result['message'] = msg
-                    try:
-                        result['state'] = build_supply_state(supply, channel, netname)
-                    except Exception:
-                        pass  # message string is still returned; state is best-effort
 
                 elif action == 'clear_ocp':
                     supply.clear_overcurrent_protection_trip(channel=channel)
@@ -535,24 +550,22 @@ def register_supply_socketio(socketio: SocketIO) -> None:
                         # queries blew the proxy's 10s HTTP budget outright.
                         state = build_supply_state(supply, channel, netname)
 
-                        socketio.emit('supply_state_update',
-                                    {'state': state},
-                                    namespace='/supply',
-                                    room=session_id)
-                    except ConnectionFailed as e:
-                        detail = describe_error(e)
-                        logger.error(f"[MONITOR-{thread_name}] hardware_service unreachable: {detail}")
-                        socketio.emit('error',
-                                    {'message': f'Hardware service unreachable: {detail}'},
-                                    namespace='/supply',
-                                    room=session_id)
-                    except DeviceError as e:
-                        detail = describe_error(e)
-                        logger.error(f"[MONITOR-{thread_name}] hardware_service error: {detail}")
-                        socketio.emit('error',
-                                    {'message': f'Hardware service error: {detail}'},
-                                    namespace='/supply',
-                                    room=session_id)
+                        # The builder never raises: a total gather failure
+                        # comes back as state['error'] with all data fields
+                        # None. Emit the error event (as before) rather than
+                        # an all-None state update, so the TUI keeps its last
+                        # good display instead of blanking on a transient.
+                        if state['error']:
+                            logger.error(f"[MONITOR-{thread_name}] {state['error']}")
+                            socketio.emit('error',
+                                        {'message': state['error']},
+                                        namespace='/supply',
+                                        room=session_id)
+                        else:
+                            socketio.emit('supply_state_update',
+                                        {'state': state},
+                                        namespace='/supply',
+                                        room=session_id)
                     except Exception as e:
                         detail = describe_error(e)
                         logger.error(f"[MONITOR-{thread_name}] Error monitoring supply: {detail}")
