@@ -163,9 +163,16 @@ def watt(ctx, box, netname):
     ctx.obj.watt_box = box
 
     if ctx.invoked_subcommand is None:
-        # No subcommand resolved -> list available watt meter nets.
-        box_ip = resolve_box(ctx, box)
-        display_nets(ctx, box_ip, None, WATT_ROLE, "watt meter")
+        if netname is not None:
+            # A net was named (explicitly, or via a configured default) but no
+            # subcommand followed -> read power, matching `lager watt NET`. This
+            # covers option-first ordering (`lager watt --box X NET`) and default
+            # nets, which don't go through WattGroup's power-subcommand injection.
+            _run_watt(ctx, box, netname, "power", 0.1, False)
+        else:
+            # No net resolved -> list available watt meter nets.
+            box_ip = resolve_box(ctx, box)
+            display_nets(ctx, box_ip, None, WATT_ROLE, "watt meter")
 
 
 watt.net_examples = [

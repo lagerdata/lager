@@ -133,6 +133,41 @@ class TestBackwardCompatible:
         assert payloads[0]["mode"] == "current"
         assert payloads[0]["netname"] == "NET1"
 
+    def test_box_before_net_no_subcommand_reads_power(self):
+        # `lager watt --box b NET1` (net after option, no subcommand) reads power,
+        # matching `lager watt NET1 --box b` — it must not fall back to listing.
+        result, payloads, display_mock = _run(["--box", "b", "NET1"])
+        assert result.exit_code == 0, result.output
+        assert len(payloads) == 1
+        assert payloads[0]["mode"] == "power"
+        assert payloads[0]["netname"] == "NET1"
+        assert not display_mock.called
+
+    def test_bare_watt_reads_configured_default_net(self):
+        # `lager watt --box b` with a configured default net reads power from it
+        # instead of listing nets.
+        payloads: list[dict] = []
+
+        def fake_run_python_internal(*, args=(), **kwargs):
+            payloads.append(json.loads(args[0]))
+            return 0
+
+        display_mock = MagicMock()
+        with patch.object(watt_mod, "run_python_internal", fake_run_python_internal), \
+             patch.object(watt_mod, "resolve_box", lambda ctx, box: "1.2.3.4"), \
+             patch.object(watt_mod, "validate_net_exists",
+                          lambda ctx, ip, name, role: {"name": name}), \
+             patch.object(watt_mod, "display_nets", display_mock), \
+             patch.object(watt_mod, "get_default_net", lambda ctx, t: "defnet"):
+            result = CliRunner().invoke(
+                watt_group, ["--box", "b"], obj=_Obj(), catch_exceptions=False
+            )
+        assert result.exit_code == 0, result.output
+        assert len(payloads) == 1
+        assert payloads[0]["mode"] == "power"
+        assert payloads[0]["netname"] == "defnet"
+        assert not display_mock.called
+
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
