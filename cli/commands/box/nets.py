@@ -335,6 +335,14 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     # battery
     "Keithley_2281S": ["battery", "power-supply"],
 
+    # watt-meter / energy-analyzer
+    # Names mirror the box scanner (box/lager/http_handlers/usb_scanner.py) and
+    # cli/impl/query_instruments.py so `lager nets add` accepts the same roles
+    # the scanner advertises for these instruments.
+    "Joulescope_JS220": ["watt-meter", "energy-analyzer"],
+    "Nordic_PPK2": ["watt-meter", "energy-analyzer"],
+    "Yocto_Watt": ["watt-meter"],
+
     # scope
     "Rigol_MS05204": ["scope"],
     "Picoscope_2000": ["scope"],

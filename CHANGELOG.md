@@ -2,6 +2,26 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.31.0] - 2026-07-02
+
+Richer Joulescope power measurement plus more robust box setup. The watt meter now reads current and voltage — not just power — with SI-scaled output so a small load no longer rounds to `0.000 W`; `--duration` averages over any window (gaplessly on the JS220 via its on-device accumulator); `--json` makes readings scriptable; and `lager energy` reads close the device cleanly on exit. On the setup side, `lager box dut edit`/`add-doc` now work against a Lager Box's www-data-owned `/etc/lager`, and `lager install` is more robust — it asks for the box password once, deploys its udev/modprobe rules correctly, and no longer clobbers the installed `lager` while flattening box code.
+
+### Added
+- **`lager watt <net> current|voltage|all`** — read current (A), voltage (V), or all three (current/voltage/power) from a watt-meter net, not just power. Backed by the Joulescope JS220 and Nordic PPK2; a Yocto-Watt (power only) reports a clear "not supported" message.
+- **`--duration` averaging window on watt reads.** Average over a longer capture (e.g. `--duration 1.0`) for a lower-noise, higher-effective-resolution reading. On the Joulescope JS220, long windows (e.g. `--duration 60`) are measured gaplessly via the on-device charge accumulator (average current = Δcharge ÷ Δt) — constant memory, captures every transient, and scales to arbitrarily long windows.
+- **`--json` output for `lager watt`.** Emit a machine-readable JSON object in base SI units (W/A/V) for HIL scripts.
+- **`lager nets add` now accepts Joulescope JS220, Nordic PPK2, and Yocto-Watt.** These watt-meter/energy-analyzer instruments were missing from the CLI's instrument table, so creating a `watt-meter` or `energy-analyzer` net previously required the Workbench UI; they can now be added from the command line like any other instrument.
+
+### Changed
+- **`lager watt` output is SI-scaled.** Sub-milliwatt/-milliamp readings now display in µ/n units (e.g. `52.340 µW`) instead of rounding to `0.000 W`. Values too small for the nano prefix fall back to scientific notation (e.g. `3.000e-13 W`) rather than rounding to zero.
+- **`lager install` prompts for the box password at most once.** SSH key setup now runs first, so the remaining install steps authenticate by key instead of re-prompting for the box password on each one (previously up to ~10 prompts on a fresh box).
+
+### Fixed
+- **`lager energy` reads no longer hang or crash on exit.** The reader now closes the Joulescope device when it finishes, so its USB streaming thread is torn down cleanly instead of leaving the process to hang (or segfault) after printing correct output.
+- **`lager box dut edit` and `dut add-doc` work on a Lager Box's www-data-owned `/etc/lager`.** The CLI stages the updated `bench.json` in `/tmp` and installs it via a passwordless `sudo -n /bin/cp`/`chmod` fallback when the unprivileged move is denied, instead of failing with a bare "Permission denied"; the SSH banner is stripped from output and a clear message (with the exact sudoers snippet to add) is shown when the sudo grant is missing.
+- **`lager install` deploys its udev and modprobe rules again.** An off-by-one in the script's source path (`../../box` → `../../../box`) resolved the rules directory to a nonexistent location, so the udev/modprobe install was silently skipped and instrument USB permissions were never applied.
+- **`lager install` no longer clobbers the installed `lager` command while flattening box code.** The flatten step (`mv box/* .`) could die trying to overwrite `./lager`; it is now overwrite-safe.
+
 ## [0.30.0] - 2026-06-30
 
 Adds first-class support for the SEGGER J-Link Base Compact and makes the bundled J-Link udev rule match by vendor ID, so every J-Link variant is granted device access and auto-detected instead of only three hard-coded product IDs. Also fixes a CLI scanner bug that silently dropped the standard J-Link.
