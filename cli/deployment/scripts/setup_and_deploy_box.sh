@@ -416,6 +416,115 @@ else
     print_success "SSH connection ready (using existing multiplexing)"
 fi
 
+# =============================================================================
+# STEP 2: Sudo Configuration
+#
+# MUST run here, right after SSH key setup and before the git/docker/DNS/
+# firewall steps below: each of those uses `sudo`, so on a box whose login user
+# lacks broad passwordless sudo they would each prompt for the sudo password (the
+# extra prompts on a fresh install). Writing this NOPASSWD sudoers file first
+# means one sudo prompt here, and every privileged step afterward is passwordless.
+# =============================================================================
+print_step "Configuring Passwordless Sudo"
+
+# Always create/update sudoers file to ensure it has latest rules
+# (Don't skip even if file exists - it might have outdated rules)
+print_info "Setting up passwordless sudo (you may be prompted for password once)..."
+echo ""
+
+# Create a temporary script on the box to set up sudoers
+TEMP_SCRIPT=$(mktemp)
+cat > "$TEMP_SCRIPT" << SCRIPT_EOF
+#!/bin/bash
+echo "Creating sudoers configuration for passwordless udev management..."
+
+# Create sudoers file (using actual username: ${BOX_USER})
+sudo tee /etc/sudoers.d/lagerdata-udev > /dev/null << 'SUDOERS'
+# Allow ${BOX_USER} user to manage udev rules without password
+# This enables automated deployment of instrument USB permissions
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/cp /tmp/*.rules /etc/udev/rules.d/
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/udev/rules.d/*.rules
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/udevadm control --reload-rules
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/udevadm trigger
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /tmp/*.rules
+# Modprobe blacklist deployment (0.20.0+: usbtmc blacklist for USB-TMC drivers)
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/cp /tmp/*.conf /etc/modprobe.d/
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/modprobe.d/*.conf
+${BOX_USER} ALL=(ALL) NOPASSWD: /sbin/modprobe -r usbtmc
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /tmp/*.conf
+# Allow ${BOX_USER} user to manage /etc/lager directory permissions
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod * /etc/lager
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod * /etc/lager/saved_nets.json
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod * /etc/lager/version
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chown * /etc/lager
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chown * /etc/lager/saved_nets.json
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chown * /etc/lager/version
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod * /etc/lager
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod * /etc/lager/saved_nets.json
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod * /etc/lager/version
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chown * /etc/lager
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chown * /etc/lager/saved_nets.json
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chown * /etc/lager/version
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/mkdir -p /etc/lager
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/lager/saved_nets.json
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /etc/lager/version
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/mv /tmp/lager_version_tmp /etc/lager/version
+# Allow ${BOX_USER} to write /etc/lager/bench.json (lager box dut edit/add-doc).
+# /etc/lager is owned by www-data, so the login user can't create files there;
+# the CLI stages to /tmp/lager-bench.json.tmp then cp's it in under this grant.
+# Path-scoped (fixed source + dest), mirroring the tee/mv grants for
+# saved_nets.json/version. Absolute /bin paths must match the CLI invocation
+# byte-for-byte or sudo -n falls through to "a password is required".
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/cp /tmp/lager-bench.json.tmp /etc/lager/bench.json
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/lager/bench.json
+# Allow ${BOX_USER} user to enable Docker service for auto-start
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/systemctl enable docker
+# --- Cover the deploy steps that run AFTER this block so they don't re-prompt
+# for the sudo password. Absolute paths, with both /usr/sbin+/sbin and
+# /bin+/usr/bin variants, so they match however the box's secure_path resolves
+# each binary. ---
+# Docker group membership (docker pre-flight):
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/sbin/usermod -aG docker ${BOX_USER}
+${BOX_USER} ALL=(ALL) NOPASSWD: /sbin/usermod -aG docker ${BOX_USER}
+# Docker container DNS (install daemon.json + restart docker):
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/install -m 0644 /tmp/lager_daemon.json /etc/docker/daemon.json
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/install -m 0644 /tmp/lager_daemon.json /etc/docker/daemon.json
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/systemctl restart docker
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart docker
+# Firewall: install the shipped script to a ROOT-owned path (the login user
+# can't modify it there), then run it. NOPASSWD on a /tmp path would be unsafe
+# (world-writable); a fixed root-owned path is safe.
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/install -D -m 0755 -o root -g root /tmp/secure_box_firewall.sh /usr/local/lib/lager/secure_box_firewall.sh
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/install -D -m 0755 -o root -g root /tmp/secure_box_firewall.sh /usr/local/lib/lager/secure_box_firewall.sh
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/local/lib/lager/secure_box_firewall.sh
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/local/lib/lager/secure_box_firewall.sh *
+SUDOERS
+
+# Set correct permissions
+sudo chmod 440 /etc/sudoers.d/lagerdata-udev
+
+# Validate sudoers syntax
+if sudo visudo -c; then
+    echo "[OK] Sudoers configuration created successfully"
+else
+    echo "[ERROR] Invalid sudoers syntax"
+    exit 1
+fi
+SCRIPT_EOF
+
+# Copy script to box and execute with -t for terminal allocation
+scp $SCP_OPTS "$TEMP_SCRIPT" "${BOX_USER}@${BOX_IP}:/tmp/setup_sudo.sh" >/dev/null
+ssh_t "${BOX_USER}@${BOX_IP}" "chmod +x /tmp/setup_sudo.sh && /tmp/setup_sudo.sh && rm /tmp/setup_sudo.sh"
+rm "$TEMP_SCRIPT"
+echo ""
+
+# Verify setup
+if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -f /etc/sudoers.d/lagerdata-udev" 2>/dev/null; then
+    print_success "Sudo configuration completed"
+else
+    print_warning "Sudo setup may have failed - deployment may require password"
+fi
+
 # Check for git on box (required for deployment)
 print_info "Checking for git on box..."
 if ssh -o BatchMode=yes -o ConnectTimeout=10 "${BOX_USER}@${BOX_IP}" "command -v git &> /dev/null" 2>/dev/null; then
@@ -603,90 +712,6 @@ fi
 rm "$TEMP_DNS_SCRIPT"
 echo ""
 
-# =============================================================================
-# STEP 2: Sudo Configuration
-# =============================================================================
-print_step "Configuring Passwordless Sudo"
-
-# Always create/update sudoers file to ensure it has latest rules
-# (Don't skip even if file exists - it might have outdated rules)
-print_info "Setting up passwordless sudo (you may be prompted for password once)..."
-echo ""
-
-# Create a temporary script on the box to set up sudoers
-TEMP_SCRIPT=$(mktemp)
-cat > "$TEMP_SCRIPT" << SCRIPT_EOF
-#!/bin/bash
-echo "Creating sudoers configuration for passwordless udev management..."
-
-# Create sudoers file (using actual username: ${BOX_USER})
-sudo tee /etc/sudoers.d/lagerdata-udev > /dev/null << 'SUDOERS'
-# Allow ${BOX_USER} user to manage udev rules without password
-# This enables automated deployment of instrument USB permissions
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/cp /tmp/*.rules /etc/udev/rules.d/
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/udev/rules.d/*.rules
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/udevadm control --reload-rules
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/udevadm trigger
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /tmp/*.rules
-# Modprobe blacklist deployment (0.20.0+: usbtmc blacklist for USB-TMC drivers)
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/cp /tmp/*.conf /etc/modprobe.d/
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/modprobe.d/*.conf
-${BOX_USER} ALL=(ALL) NOPASSWD: /sbin/modprobe -r usbtmc
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /tmp/*.conf
-# Allow ${BOX_USER} user to manage /etc/lager directory permissions
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod * /etc/lager
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod * /etc/lager/saved_nets.json
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod * /etc/lager/version
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chown * /etc/lager
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chown * /etc/lager/saved_nets.json
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chown * /etc/lager/version
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod * /etc/lager
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod * /etc/lager/saved_nets.json
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod * /etc/lager/version
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chown * /etc/lager
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chown * /etc/lager/saved_nets.json
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chown * /etc/lager/version
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/mkdir -p /etc/lager
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/lager/saved_nets.json
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /etc/lager/version
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/mv /tmp/lager_version_tmp /etc/lager/version
-# Allow ${BOX_USER} to write /etc/lager/bench.json (lager box dut edit/add-doc).
-# /etc/lager is owned by www-data, so the login user can't create files there;
-# the CLI stages to /tmp/lager-bench.json.tmp then cp's it in under this grant.
-# Path-scoped (fixed source + dest), mirroring the tee/mv grants for
-# saved_nets.json/version. Absolute /bin paths must match the CLI invocation
-# byte-for-byte or sudo -n falls through to "a password is required".
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/cp /tmp/lager-bench.json.tmp /etc/lager/bench.json
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/lager/bench.json
-# Allow ${BOX_USER} user to enable Docker service for auto-start
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/systemctl enable docker
-SUDOERS
-
-# Set correct permissions
-sudo chmod 440 /etc/sudoers.d/lagerdata-udev
-
-# Validate sudoers syntax
-if sudo visudo -c; then
-    echo "[OK] Sudoers configuration created successfully"
-else
-    echo "[ERROR] Invalid sudoers syntax"
-    exit 1
-fi
-SCRIPT_EOF
-
-# Copy script to box and execute with -t for terminal allocation
-scp $SCP_OPTS "$TEMP_SCRIPT" "${BOX_USER}@${BOX_IP}:/tmp/setup_sudo.sh" >/dev/null
-ssh_t "${BOX_USER}@${BOX_IP}" "chmod +x /tmp/setup_sudo.sh && /tmp/setup_sudo.sh && rm /tmp/setup_sudo.sh"
-rm "$TEMP_SCRIPT"
-echo ""
-
-# Verify setup
-if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -f /etc/sudoers.d/lagerdata-udev" 2>/dev/null; then
-    print_success "Sudo configuration completed"
-else
-    print_warning "Sudo setup may have failed - deployment may require password"
-fi
-
 # Ensure /etc/lager directory exists (always check, even if sudo was already configured)
 echo ""
 print_info "Ensuring /etc/lager directory exists..."
@@ -760,9 +785,12 @@ else
     print_info "Running firewall configuration on box..."
     echo ""
 
-    # Run the firewall script on the box
-    # Note: Cannot capture output because sudo may prompt for password via PTY
-    ssh_t "${BOX_USER}@${BOX_IP}" "chmod +x /tmp/secure_box_firewall.sh && sudo /tmp/secure_box_firewall.sh $FIREWALL_ARGS && rm /tmp/secure_box_firewall.sh"
+    # Install the script to a ROOT-owned path, then run it from there. The
+    # passwordless-sudo file written earlier grants NOPASSWD only for this fixed
+    # root-owned path (and the install into it), never a /tmp path — so the login
+    # user can't swap the script out from under sudo. With the grant in place this
+    # runs without a password prompt.
+    ssh_t "${BOX_USER}@${BOX_IP}" "sudo /usr/bin/install -D -m 0755 -o root -g root /tmp/secure_box_firewall.sh /usr/local/lib/lager/secure_box_firewall.sh && sudo /usr/local/lib/lager/secure_box_firewall.sh $FIREWALL_ARGS && rm -f /tmp/secure_box_firewall.sh"
 
     echo ""
     print_success "Firewall configuration completed"
