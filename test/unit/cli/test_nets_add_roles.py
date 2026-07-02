@@ -48,6 +48,14 @@ KEITHLEY = {
     "net_type": ["battery", "power-supply"],
     "channels": {"power-supply": ["1"], "battery": ["1"]},
 }
+JS220_ADDR = "USB0::0x16D0::0x10BA::001234::INSTR"
+JS220 = {
+    "name": "Joulescope_JS220",
+    "vid": "16d0", "pid": "10ba", "serial": "001234",
+    "address": JS220_ADDR,
+    "net_type": ["watt-meter", "energy-analyzer"],
+    "channels": {"watt-meter": ["0"], "energy-analyzer": ["0"]},
+}
 
 
 class FakeBox:
@@ -108,7 +116,7 @@ def fake_box():
     # Click command shadowing the submodule attribute; go via importlib.
     devpy = importlib.import_module("cli.commands.development.python")
 
-    box = FakeBox([DP811, KEITHLEY])
+    box = FakeBox([DP811, KEITHLEY, JS220])
     # add_cmd calls run_python_internal via the nets module's import;
     # _run_net_py goes through devpy.run_python_internal_get_output, which
     # resolves run_python_internal from devpy's globals at call time.
@@ -257,6 +265,36 @@ class TestTablesAreCanonical:
         # Everything else passes through untouched.
         for role in ("power-supply", "battery", "solar", "debug", "uart", "adc"):
             assert nets_mod._canonical_role(role) == role
+
+
+# --------------------------------------------------------------------------- #
+# add: watt-meter / energy-analyzer instruments (Joulescope, PPK2, Yocto)      #
+# --------------------------------------------------------------------------- #
+
+class TestWattMeterInstrumentsInMap:
+    def test_joulescope_roles_present(self):
+        assert set(nets_mod.INSTRUMENT_NET_MAP["Joulescope_JS220"]) == {
+            "watt-meter", "energy-analyzer"}
+        assert set(nets_mod.INSTRUMENT_NET_MAP["Nordic_PPK2"]) == {
+            "watt-meter", "energy-analyzer"}
+        assert nets_mod.INSTRUMENT_NET_MAP["Yocto_Watt"] == ["watt-meter"]
+
+    def test_add_energy_analyzer_on_joulescope(self, fake_box):
+        # REGRESSION: `lager nets add` rejected every Joulescope net because the
+        # instrument was absent from INSTRUMENT_NET_MAP, forcing GUI-only adds.
+        result = _invoke(["add", "energy1", "energy-analyzer", "0", JS220_ADDR, "--box", "b"])
+        assert result.exit_code == 0, result.output
+        assert fake_box.saved_nets[0]["role"] == "energy-analyzer"
+        assert fake_box.saved_nets[0]["instrument"] == "Joulescope_JS220"
+
+    def test_add_watt_meter_on_joulescope(self, fake_box):
+        result = _invoke(["add", "watt1", "watt-meter", "0", JS220_ADDR, "--box", "b"])
+        assert result.exit_code == 0, result.output
+        assert fake_box.saved_nets[0]["role"] == "watt-meter"
+
+    def test_watt_and_energy_nets_coexist_on_one_joulescope(self):
+        # The JS220 backs both roles simultaneously; it must not be single-channel.
+        assert "Joulescope_JS220" not in nets_mod._SINGLE_CHANNEL_INST
 
 
 if __name__ == "__main__":

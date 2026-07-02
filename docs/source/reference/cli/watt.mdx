@@ -1,46 +1,103 @@
 ---
 title: Watt Meter
-description: Read power consumption from watt meter
+description: Read power, current, and voltage from a watt meter
 ---
 
-Read power consumption measurements from watt meter Nets through the Lager CLI. Supports Yocto-Watt, Joulescope JS220, and Nordic PPK2 hardware.
+Read power, current, and voltage measurements from watt meter Nets through the Lager CLI. Supports Yocto-Watt, Joulescope JS220, and Nordic PPK2 hardware.
 
 ## Syntax
 
 ```bash
-lager watt [OPTIONS] [NET_NAME]
+lager watt [NET_NAME] [COMMAND] [OPTIONS]
 ```
 
+With no `COMMAND`, `lager watt NET_NAME` reads power (watts). The `current`, `voltage`, and `all` subcommands read the other quantities (Joulescope JS220 and Nordic PPK2 only).
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| _(none)_ / `power` | Read power in watts |
+| `current` | Read current in amps |
+| `voltage` | Read voltage in volts |
+| `all` | Read current, voltage, and power together |
+
 ## Options
+
+These options are available on each read subcommand (`power`/`current`/`voltage`/`all`). `--box` is also accepted directly after `lager watt NET_NAME` for the default power read.
 
 | Option | Description |
 |--------|-------------|
 | `--box BOX` | Lagerbox name or IP address |
+| `-d, --duration FLOAT` | Averaging window in seconds (default `0.1`). Longer windows average more samples for a lower-noise, higher-resolution reading. |
+| `--json` | Emit a machine-readable JSON object instead of formatted text |
 | `--help` | Show help message and exit |
 
 ## Arguments
 
 | Argument | Description |
 |----------|-------------|
-| `NET_NAME` | Name of the watt meter net to read (optional if default is set) |
+| `NET_NAME` | Name of the watt meter net to read (optional if a default is set). Must appear **before** the subcommand. |
 
 ## Usage
 
 ```bash
-lager watt NET_NAME [--box BOX]
+lager watt NET_NAME [--box BOX]                  # power
+lager watt NET_NAME current [--box BOX]          # current
+lager watt NET_NAME voltage [--box BOX]          # voltage
+lager watt NET_NAME all [--box BOX]              # current + voltage + power
 ```
 
-If `NET_NAME` is omitted and no default is set, lists all available watt meter nets on the box.
+If `NET_NAME` is omitted and no default is set, `lager watt` lists all available watt meter nets on the box.
 
 ## Output
 
-Returns power in watts with 3 decimal places:
+Readings are formatted with an SI prefix so small magnitudes stay readable (for example a 52.34 µW load is shown as `52.340 µW` rather than rounding to `0.000 W`):
 
 ```
-Power 'POWER_METER': 5.230 W
+Power 'POWER_METER': 52.340 µW
+Current 'POWER_METER': 12.000 mA
+Voltage 'POWER_METER': 3.300 V
 ```
 
-The reading timeout is 30 seconds. If no reading is received within that time, the command exits with an error suggesting the device may be disconnected or experiencing USB issues.
+`all` prints all three quantities:
+
+```
+Measurements 'POWER_METER' (0.1s):
+  Current: 12.000 mA
+  Voltage: 3.300 V
+  Power:   39.600 mW
+```
+
+With `--json`, output is a single JSON object (units are base SI — amps, volts, watts):
+
+```bash
+lager watt POWER_METER all --json --box my-lager-box
+{"netname": "POWER_METER", "current": 0.012, "voltage": 3.3, "power": 0.0396, "duration_s": 0.1}
+```
+
+The default reading timeout is 30 seconds (scaled up for long `--duration` windows). If no reading is received within that time, the command exits with an error suggesting the device may be disconnected or experiencing USB issues.
+
+### Increasing resolution
+
+Two levers improve a power/current reading:
+
+- **Display** — output is SI-scaled automatically, so sub-milliwatt and sub-milliamp readings are shown in µ/n units instead of rounding to zero. For values too small for even the nano prefix, the reading is shown in scientific notation (e.g. `3.000e-13 W`) rather than rounding to `0.000` — a nonzero reading is never lost.
+- **Averaging window** — pass `--duration` to average over a longer capture. A longer window reduces noise on the mean, giving a steadier, higher-effective-resolution value:
+
+```bash
+lager watt POWER_METER current --duration 1.0 --box my-lager-box
+```
+
+### Long averaging windows
+
+`--duration` also works for long windows — e.g. the average current over a minute:
+
+```bash
+lager watt POWER_METER current --duration 60 --box my-lager-box
+```
+
+On a Joulescope JS220, windows longer than ~10 s are measured with the instrument's **on-device charge accumulator** (average current = Δcharge ÷ Δt) rather than by buffering raw samples. This is **gapless** (it captures every transient, not just the sampled fraction), uses constant memory, and scales to arbitrarily long windows (a minute, ten minutes, longer). Short windows continue to use direct sampling.
 
 ## Supported Hardware
 
@@ -54,14 +111,14 @@ The reading timeout is 30 seconds. If no reading is received within that time, t
 
 | Feature | Yocto-Watt | Joulescope JS220 | Nordic PPK2 |
 |---------|-----------|------------------|-------------|
-| Power reading (`read`) | Yes | Yes | Yes |
-| Voltage reading (`read_voltage`) | No | Yes (Python API) | Yes (Python API) |
-| Current reading (`read_current`) | No | Yes (Python API) | Yes (Python API) |
-| Combined reading (`read_all`) | No | Yes (Python API) | Yes (Python API) |
-| Measurement method | Instantaneous | 0.1s averaged | 0.3s averaged |
+| Power reading (`power`) | Yes | Yes | Yes |
+| Voltage reading (`voltage`) | No | Yes | Yes (configured source voltage) |
+| Current reading (`current`) | No | Yes | Yes |
+| Combined reading (`all`) | No | Yes | Yes |
+| Configurable averaging (`--duration`) | No (instantaneous) | Yes | Yes |
 | Device selection | Channel-based | Serial number-based | Serial number-based |
 
-The CLI `lager watt` command returns power (watts) for all devices. The Joulescope JS220 and Nordic PPK2's additional measurement capabilities (individual voltage and current readings) are available through the [Python API](/reference/python/watt).
+The `current`, `voltage`, and `all` subcommands require a Joulescope JS220 or Nordic PPK2. On a Yocto-Watt (power only) they exit with a clear "not supported" message — use `lager watt NET_NAME` for power instead. The same readings are also available through the [Python API](/reference/python/watt).
 
 ### Instrument Name Matching
 
@@ -93,6 +150,19 @@ lager watt
 # Read power from watt meter
 lager watt POWER_METER --box my-lager-box
 
+# Read current / voltage (Joulescope JS220 or Nordic PPK2)
+lager watt POWER_METER current --box my-lager-box
+lager watt POWER_METER voltage --box my-lager-box
+
+# Read current, voltage, and power together
+lager watt POWER_METER all --box my-lager-box
+
+# Average over 1 second for a lower-noise reading
+lager watt POWER_METER current --duration 1.0 --box my-lager-box
+
+# Machine-readable output for scripts
+lager watt POWER_METER all --json --box my-lager-box
+
 # Read using default net
 lager watt
 
@@ -102,36 +172,32 @@ lager watt --box my-lager-box
 
 ## Scripting Examples
 
-### Power Threshold Check
+### Power Threshold Check (JSON)
 
 ```bash
 #!/bin/bash
-# Verify power consumption is within limits
-RESULT=$(lager watt POWER --box my-lager-box)
-echo "$RESULT"
+# Verify power consumption is within limits using JSON output
+POWER=$(lager watt POWER all --json --box my-lager-box | python3 -c 'import sys,json; print(json.load(sys.stdin)["power"])')
 
-# Extract numeric value for comparison
-POWER=$(echo "$RESULT" | grep -oP '[\d.]+(?= W)')
 if (( $(echo "$POWER > 10" | bc -l) )); then
     echo "FAIL: Power consumption too high: ${POWER}W"
     exit 1
 fi
-echo "PASS: Power within limits"
+echo "PASS: Power within limits (${POWER}W)"
 ```
 
-### Power Profiling
+### Current Profiling (JSON)
 
 ```bash
 #!/bin/bash
-# Sample power over time
+# Sample current over time
 BOX="my-lager-box"
 NET="POWER"
 
-echo "timestamp,power_w"
+echo "timestamp,current_a"
 for i in $(seq 1 10); do
-    RESULT=$(lager watt $NET --box $BOX)
-    POWER=$(echo "$RESULT" | grep -oP '[\d.]+(?= W)')
-    echo "$(date +%s),$POWER"
+    CURRENT=$(lager watt $NET current --json --box $BOX | python3 -c 'import sys,json; print(json.load(sys.stdin)["current"])')
+    echo "$(date +%s),$CURRENT"
     sleep 1
 done
 ```
@@ -140,15 +206,17 @@ done
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| Timeout (30s) | Device disconnected or USB issue | Check USB connection; replug device |
+| `does not support reading current/voltage` | Net is backed by a Yocto-Watt (power only) | Use `lager watt NET_NAME` for power, or move the net to a Joulescope/PPK2 |
+| Timeout | Device disconnected or USB issue | Check USB connection; replug device |
 | Connection refused | Box service not running | Check box: `lager hello --box <box>` |
 | Device not found | Watt meter not detected | Verify device is connected: `lager instruments --box <box>` |
 
 ## Notes
 
-- Power is returned in watts (W) with 3 decimal places
-- Joulescope JS220 averages measurements over 0.1 seconds for higher precision
-- Nordic PPK2 averages measurements over 0.3 seconds; operates in source mode (supplies a configurable voltage 0.8–5V and measures current)
-- Net names refer to names assigned when setting up your testbed
-- Use `lager nets` to see available watt meter nets
-- Use `lager instruments --box <box>` to verify the device is detected
+- Readings are SI-scaled (W/mW/µW/nW, A/mA/µA/nA, V/mV) with 3 significant decimal places; values too small for the nano prefix fall back to scientific notation instead of rounding to `0.000`. `--json` emits base SI units (W, A, V).
+- `--duration` sets the averaging window; the Joulescope JS220 and Nordic PPK2 honor it, while the Yocto-Watt returns an instantaneous value and ignores it. On the JS220, windows longer than ~10 s are measured gaplessly with the on-device charge accumulator (constant memory, any length).
+- The Nordic PPK2 operates in source mode (supplies a configurable voltage 0.8–5V and measures current); its `voltage` reading is the configured source voltage.
+- The `current`, `voltage`, and `all` subcommands must follow the net name: `lager watt NET_NAME current`.
+- Net names refer to names assigned when setting up your testbed.
+- Use `lager nets` to see available watt meter nets, and `lager instruments --box <box>` to verify the device is detected.
+```

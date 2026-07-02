@@ -221,46 +221,62 @@ class PPK2Watt(WattMeterBase):
             voltage_v = self._voltage_mv / 1000.0
             return (current_amps, voltage_v)
 
-    def read(self) -> float:
+    def read(self, duration: float = 0.1) -> float:
         """
         Read current power in watts (thread-safe).
+
+        Args:
+            duration: Averaging window in seconds. Longer windows average more
+                samples for a lower-noise reading.
 
         Returns:
             Power measurement in watts as a float
         """
-        current_amps, voltage_v = self.read_raw(0.1)
+        current_amps, voltage_v = self.read_raw(duration)
         mean_current = float(np.mean(current_amps))
         return mean_current * voltage_v
 
-    def read_current(self) -> float:
+    def read_current(self, duration: float = 0.1) -> float:
         """
         Read current in amps (thread-safe).
+
+        Args:
+            duration: Averaging window in seconds. Longer windows average more
+                samples for a lower-noise reading.
 
         Returns:
             Current measurement in amps as a float
         """
-        current_amps, _ = self.read_raw(0.1)
+        current_amps, _ = self.read_raw(duration)
         return float(np.mean(current_amps))
 
-    def read_voltage(self) -> float:
+    def read_voltage(self, duration: float = 0.1) -> float:
         """
         Read voltage in volts (thread-safe).
 
         Returns the configured source voltage (PPK2 does not independently measure voltage).
+
+        Args:
+            duration: Accepted for interface compatibility but ignored; the PPK2
+                sources a fixed configured voltage rather than measuring it.
 
         Returns:
             Voltage in volts as a float
         """
         return self._voltage_mv / 1000.0
 
-    def read_all(self) -> dict:
+    def read_all(self, duration: float = 0.1) -> dict:
         """
         Read all measurements in a single operation (thread-safe).
+
+        Args:
+            duration: Averaging window in seconds. Longer windows average more
+                samples for a lower-noise reading.
 
         Returns:
             Dictionary with 'current' (amps), 'voltage' (volts), and 'power' (watts)
         """
-        current_amps, voltage_v = self.read_raw(0.1)
+        current_amps, voltage_v = self.read_raw(duration)
         mean_current = float(np.mean(current_amps))
         power = mean_current * voltage_v
         return {

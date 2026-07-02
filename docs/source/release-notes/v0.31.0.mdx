@@ -1,0 +1,40 @@
+---
+title: "Version 0.31.0"
+description: "July 2, 2026"
+---
+
+## <u>Features</u>
+
+- **Read current, voltage, or all three from a watt-meter net.** `lager watt <net> current|voltage|all` reads current (A), voltage (V), or current/voltage/power together — not just power. Backed by the Joulescope JS220 and Nordic PPK2; a Yocto-Watt (power only) reports a clear "not supported" message.
+- **`--duration` averaging window on `lager watt`.** Average a reading over a longer capture for lower noise and higher effective resolution. On the JS220, long windows (e.g. `--duration 60`) are measured gaplessly via the on-device charge accumulator, so every transient is captured in constant memory.
+- **`--json` output for `lager watt`.** Emit a machine-readable object in base SI units (W/A/V) for HIL scripts.
+- **`lager nets add` now accepts Joulescope JS220, Nordic PPK2, and Yocto-Watt.** These watt-meter / energy-analyzer instruments can now be added from the command line instead of only through the Workbench UI.
+
+## <u>Bug Fixes</u>
+
+- **Small loads no longer read `0.000 W`.** `lager watt` output is SI-scaled (µ/n units, e.g. `52.340 µW`), falling back to scientific notation for values too small for the nano prefix.
+- **`lager energy` reads no longer hang or crash on exit.** The reader now closes the Joulescope device when it finishes, so its USB streaming thread is torn down cleanly.
+- **`lager box dut edit` and `dut add-doc` succeed on a Lager Box's www-data-owned `/etc/lager`.** The updated `bench.json` is staged in `/tmp` and installed via a passwordless `sudo` fallback — with a clear message when the sudo grant is missing — instead of failing with "Permission denied".
+- **`lager install` deploys its udev and modprobe rules again**, and its box-code flatten step no longer clobbers the installed `lager` command.
+
+## <u>Improvements</u>
+
+- **`lager install` prompts for the box password at most once.** SSH key setup now runs first, so the remaining install steps authenticate by key instead of re-prompting for the password on each one.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.31.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.31.0/)

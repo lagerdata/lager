@@ -230,5 +230,53 @@ class ResolveBoxUser(unittest.TestCase):
             self.assertEqual(_ssh.resolve_box_user("10.0.0.1"), "lagerdata")
 
 
+class StripSshBanner(unittest.TestCase):
+    _BANNER = "Warning: Permanently added '1.2.3.4' (ED25519) to the list of known hosts."
+
+    def test_removes_banner_keeps_real_error(self):
+        stderr = f"{self._BANNER}\r\nsudo: a password is required\r\n"
+        out = _ssh.strip_ssh_banner(stderr)
+        self.assertNotIn("Permanently added", out)
+        self.assertEqual(out, "sudo: a password is required")
+
+    def test_banner_only_returns_empty(self):
+        self.assertEqual(_ssh.strip_ssh_banner(self._BANNER + "\n"), "")
+
+    def test_empty_and_none_safe(self):
+        self.assertEqual(_ssh.strip_ssh_banner(""), "")
+        self.assertEqual(_ssh.strip_ssh_banner(None), "")
+
+    def test_passthrough_without_banner(self):
+        self.assertEqual(
+            _ssh.strip_ssh_banner("  bash: line 1: Permission denied\n"),
+            "bash: line 1: Permission denied",
+        )
+
+
+class SudoErrorMessageStripsBanner(unittest.TestCase):
+    def test_banner_stripped_and_bootstrap_kept(self):
+        stderr = (
+            "Warning: Permanently added '1.2.3.4' (ED25519) to the list of known hosts.\r\n"
+            "sudo: a password is required\r\n"
+        )
+        out = _ssh.sudo_error_message(
+            stderr, base_text="need sudo", bootstrap_text="RUN THIS BOOTSTRAP"
+        )
+        self.assertNotIn("Permanently added", out)
+        self.assertIn("RUN THIS BOOTSTRAP", out)
+
+    def test_non_sudo_error_returned_banner_free(self):
+        stderr = (
+            "Warning: Permanently added '1.2.3.4' (ED25519) to the list of known hosts.\r\n"
+            "cp: cannot create regular file: Read-only file system\r\n"
+        )
+        out = _ssh.sudo_error_message(
+            stderr, base_text="need sudo", bootstrap_text="RUN THIS BOOTSTRAP"
+        )
+        self.assertIn("Read-only file system", out)
+        self.assertNotIn("Permanently added", out)
+        self.assertNotIn("RUN THIS BOOTSTRAP", out)
+
+
 if __name__ == "__main__":
     unittest.main()
