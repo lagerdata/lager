@@ -164,6 +164,27 @@ def default_ssh_runner(
     return rc, stdout, stderr
 
 
+_SSH_BANNER_PREFIXES = ("Warning: Permanently added",)
+
+
+def strip_ssh_banner(stderr: str) -> str:
+    """Drop ssh's informational host-key banner from captured stderr.
+
+    ssh writes "Warning: Permanently added '<host>' (<type>) to the list
+    of known hosts." to stderr the first time it learns a box's host key.
+    It is not an error, but folding it verbatim into a "Failed to ..."
+    message (as the bench.json write path used to) buries the real cause.
+    Returns "" for empty/None input.
+    """
+    if not stderr:
+        return ""
+    kept = [
+        ln for ln in stderr.splitlines()
+        if not ln.strip().startswith(_SSH_BANNER_PREFIXES)
+    ]
+    return "\n".join(kept).strip()
+
+
 def sudo_error_message(
     stderr: str,
     *,
@@ -178,8 +199,11 @@ def sudo_error_message(
     the sudoers rule the caller needs is feature-specific (mount prep
     needs only mkdir+chown; apply needs apt/sysctl/tee/rm too), so the
     bootstrap is passed in rather than hard-coded here.
+
+    The ssh host-key banner is stripped first so it never leaks into a
+    surfaced message via the raw-stderr path.
     """
-    err = (stderr or "").strip()
+    err = strip_ssh_banner(stderr)
     if err and "a password is required" not in err.lower() and "sudo:" not in err.lower():
         return err
     out = base_text

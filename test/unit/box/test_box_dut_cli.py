@@ -28,8 +28,9 @@ class FakeSsh:
     (cmd, stdin) so tests can assert on the transport.
     """
 
-    def __init__(self, read_body=""):
+    def __init__(self, read_body="", write_result=(0, "", "")):
         self.read_body = read_body
+        self.write_result = write_result
         self.written = None
         self.calls = []
 
@@ -37,13 +38,13 @@ class FakeSsh:
         self.calls.append((cmd, stdin))
         if stdin is not None:
             self.written = stdin
-            return 0, "", ""
+            return self.write_result
         # read path (cat ... || true)
         return 0, self.read_body, ""
 
 
-def _patch(read_body=""):
-    fake = FakeSsh(read_body=read_body)
+def _patch(read_body="", write_result=(0, "", "")):
+    fake = FakeSsh(read_body=read_body, write_result=write_result)
     return fake, patch.multiple(
         box_dut_cli,
         default_ssh_runner=fake,
@@ -148,6 +149,88 @@ class AddDocCmd(unittest.TestCase):
             )
         self.assertEqual(result.exit_code, 1)
         self.assertIsNone(fake.written, "should not write when args invalid")
+
+    def test_add_doc_write_failure_exits_nonzero(self):
+        """A failed bench.json write must exit(1), not traceback."""
+        fake, ctx = _patch(
+            read_body="",
+            write_result=(1, "", "sudo: a password is required\r\n"),
+        )
+        with ctx:
+            result = self.runner.invoke(
+                box_dut_cli.box_dut,
+                ["add-doc", "--box", "b", "--kind", "schematic",
+                 "--title", "Main", "--repo-path", "docs/sch.pdf"],
+            )
+        self.assertEqual(result.exit_code, 1, msg=result.output)
+        self.assertNotIn("Traceback", result.output)
+
+
+# ---------------------------------------------------------------------------
+# _write_bench_json: the remote command string and failure surfacing
+# ---------------------------------------------------------------------------
+
+class WriteBenchJsonCommand(unittest.TestCase):
+    """The write path must stage in /tmp (never inside www-data-owned
+    /etc/lager) and fall back to the passwordless-sudo grant."""
+
+    def _run(self, payload=None, write_result=(0, "", "")):
+        fake = FakeSsh(write_result=write_result)
+        with patch.object(box_dut_cli, "default_ssh_runner", fake):
+            ok = box_dut_cli._write_bench_json("1.2.3.4", payload or {"k": "v"})
+        return fake, ok
+
+    def test_stages_to_tmp_not_etc_lager(self):
+        fake, ok = self._run({"k": "v"})
+        self.assertTrue(ok)
+        cmd = fake.calls[-1][0]
+        self.assertIn("/tmp/lager-bench.json.tmp", cmd)
+        # The old bug staged the temp inside the target dir.
+        self.assertNotIn("cat > /etc/lager", cmd)
+        self.assertNotIn("bench.json.tmp.$$", cmd)
+        # Body still travels over stdin, intact.
+        self.assertEqual(json.loads(fake.written), {"k": "v"})
+
+    def test_has_sudo_cp_and_chmod_fallback(self):
+        cmd = self._run()[0].calls[-1][0]
+        self.assertIn(
+            "sudo -n /bin/cp /tmp/lager-bench.json.tmp /etc/lager/bench.json", cmd)
+        self.assertIn("sudo -n /bin/chmod 644 /etc/lager/bench.json", cmd)
+
+    def test_tries_unprivileged_mv_before_sudo(self):
+        cmd = self._run()[0].calls[-1][0]
+        mv_i = cmd.index("mv -f /tmp/lager-bench.json.tmp /etc/lager/bench.json")
+        cp_i = cmd.index("sudo -n /bin/cp")
+        self.assertLess(mv_i, cp_i, "unprivileged mv must be tried before sudo")
+
+    def test_cleans_up_tmp(self):
+        self.assertIn("rm -f /tmp/lager-bench.json.tmp", self._run()[0].calls[-1][0])
+
+    def test_missing_grant_is_actionable_and_banner_stripped(self):
+        stderr = (
+            "Warning: Permanently added '1.2.3.4' (ED25519) to the list of known hosts.\r\n"
+            "sudo: a password is required to run sudo\r\n"
+        )
+        with patch.object(box_dut_cli.click, "secho") as secho:
+            _, ok = self._run(write_result=(1, "", stderr))
+        self.assertFalse(ok)
+        msg = secho.call_args[0][0]
+        self.assertNotIn("Permanently added", msg)
+        self.assertIn("lager update", msg)
+        self.assertIn("NOPASSWD", msg)
+
+    def test_plain_error_surfaced_without_bootstrap(self):
+        stderr = (
+            "Warning: Permanently added '1.2.3.4' (ED25519) to the list of known hosts.\r\n"
+            "cp: cannot create regular file '/etc/lager/bench.json': Read-only file system\r\n"
+        )
+        with patch.object(box_dut_cli.click, "secho") as secho:
+            _, ok = self._run(write_result=(1, "", stderr))
+        self.assertFalse(ok)
+        msg = secho.call_args[0][0]
+        self.assertIn("Read-only file system", msg)
+        self.assertNotIn("Permanently added", msg)
+        self.assertNotIn("NOPASSWD", msg)
 
 
 if __name__ == "__main__":

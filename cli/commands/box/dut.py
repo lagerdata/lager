@@ -32,11 +32,43 @@ from typing import Any, Optional
 import click
 
 from .config import _resolve_box
-from ._ssh import default_ssh_runner, resolve_box_user
+from ._ssh import (
+    default_ssh_runner,
+    resolve_box_user,
+    strip_ssh_banner,
+    sudo_error_message,
+)
 from ...core.group_usage import LagerGroup
 from ...errors import ssh_error
 
 _BENCH_JSON_PATH = "/etc/lager/bench.json"
+# Staged in /tmp (world-writable, 1777) rather than inside /etc/lager, which on a
+# normally-installed box is owned by www-data (setup_and_deploy_box.sh chowns it
+# to uid 33), so the login user cannot create files there. Fixed name (not
+# mktemp) so the passwordless-sudo grant can be an exact literal path, mirroring
+# /tmp/lager_version_tmp. Both paths must stay free of shell-special chars so
+# shlex.quote is a no-op and the quoted command still matches the sudoers spec.
+_BENCH_JSON_TMP_PATH = "/tmp/lager-bench.json.tmp"
+
+_BENCH_SUDO_BASE = (
+    "writing /etc/lager/bench.json needs passwordless sudo — a normally-"
+    "installed box owns /etc/lager as www-data, so the login user can't write "
+    "it directly."
+)
+
+_BENCH_SUDOERS_BOOTSTRAP = (
+    "This box is missing the bench.json sudo grant (older box, or not yet "
+    "re-provisioned). Re-provision with `lager update --box <BOX>` (or "
+    "`lager install`), or add it ONCE on the box:\n"
+    "\n"
+    "  sudo tee /etc/sudoers.d/lager-bench-json >/dev/null <<'SUDOERS'\n"
+    "  lagerdata ALL=(ALL) NOPASSWD: /bin/cp /tmp/lager-bench.json.tmp /etc/lager/bench.json\n"
+    "  lagerdata ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/lager/bench.json\n"
+    "  SUDOERS\n"
+    "  sudo chmod 440 /etc/sudoers.d/lager-bench-json\n"
+    "\n"
+    "Then re-run the command."
+)
 
 
 def _read_bench_json(box_ip: str) -> dict:
@@ -64,39 +96,49 @@ def _read_bench_json(box_ip: str) -> dict:
 
 
 def _write_bench_json(box_ip: str, payload: dict) -> bool:
-    """Replace /etc/lager/bench.json with ``payload`` atomically.
+    """Replace /etc/lager/bench.json with ``payload``.
 
-    The body is piped over SSH stdin so it never goes through the shell.
-    We stage it in a temp file (``cat`` only writes our own file, no
-    metacharacter expansion) and then ``mv`` it into place.
-
-    ``/etc/lager`` is owned by the login user on the box (start_box.sh
-    chowns it and writes saved_nets.json without sudo), and renaming a
-    file into a directory only needs write permission on that directory
-    — not on the file being replaced. So the unprivileged ``mv`` works
-    even when an existing bench.json was created by the www-data
-    container. ``sudo -n`` is only a fallback for boxes with unusual
-    ownership; it is intentionally *not* required, because no box
-    installs a passwordless rule for ``tee``/``mv`` of bench.json.
+    The JSON body is piped over SSH stdin so it never goes through the
+    shell, and staged in ``/tmp`` (world-writable) — never inside
+    ``/etc/lager``, which on a normally-installed box is owned by
+    ``www-data`` (mode 755; see setup_and_deploy_box.sh), where the login
+    user cannot create files. We then try an unprivileged ``mv`` into
+    place — which succeeds on legacy boxes where the login user owns
+    ``/etc/lager`` — and fall back to the pre-provisioned passwordless
+    ``sudo -n /bin/cp`` + ``chmod 644`` grant that setup_and_deploy_box.sh
+    installs (mirroring the ``saved_nets.json`` / ``version`` write grants
+    and the udev grant). The ``/tmp`` temp is always removed. On a box that
+    predates the grant the write fails with an actionable "re-provision"
+    message rather than a bare "Permission denied".
 
     Returns True on success.
     """
     body = json.dumps(payload, indent=2) + "\n"
-    tmp = f"{_BENCH_JSON_PATH}.tmp.$$"
+    q_dst = shlex.quote(_BENCH_JSON_PATH)      # /etc/lager/bench.json
+    q_tmp = shlex.quote(_BENCH_JSON_TMP_PATH)  # /tmp/lager-bench.json.tmp
+    # Stage in /tmp, try an unprivileged atomic move, then fall back to the
+    # passwordless-sudo grant when /etc/lager is www-data-owned. Absolute binary
+    # paths (/bin/cp, /bin/chmod) so they match the NOPASSWD command specs
+    # exactly. rc is captured before the /tmp cleanup so `rm` can't mask it; the
+    # unprivileged mv's stderr is dropped (expected EACCES on a www-data box)
+    # so only the real diagnostic from the sudo branch reaches the user.
     cmd = (
-        f"cat > {tmp} && chmod 644 {tmp} && "
-        f"{{ mv -f {tmp} {_BENCH_JSON_PATH} 2>/dev/null "
-        f"|| sudo -n mv -f {tmp} {_BENCH_JSON_PATH}; }} || "
-        f"{{ rm -f {tmp}; exit 1; }}"
+        f"cat > {q_tmp} && chmod 644 {q_tmp} && "
+        f"{{ mv -f {q_tmp} {q_dst} 2>/dev/null "
+        f"|| {{ sudo -n /bin/cp {q_tmp} {q_dst} && sudo -n /bin/chmod 644 {q_dst}; }}; }}; "
+        f"rc=$?; rm -f {q_tmp}; exit $rc"
     )
     rc, _stdout, stderr = default_ssh_runner(box_ip, cmd, stdin=body)
+    stderr = strip_ssh_banner(stderr)
     if rc == 255:
         ssh_error(stderr, box_ip, user=resolve_box_user(box_ip)).die()
     if rc != 0:
-        click.secho(
-            f"Failed to write {_BENCH_JSON_PATH}: {(stderr or '').strip()}",
-            fg="red", err=True,
+        msg = sudo_error_message(
+            stderr,
+            base_text=_BENCH_SUDO_BASE,
+            bootstrap_text=_BENCH_SUDOERS_BOOTSTRAP,
         )
+        click.secho(f"Failed to write {_BENCH_JSON_PATH}: {msg}", fg="red", err=True)
         return False
     return True
 
