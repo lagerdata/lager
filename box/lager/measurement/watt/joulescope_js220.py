@@ -9,17 +9,28 @@ Uses the joulescope Python package to interface with Joulescope JS220 hardware.
 
 from __future__ import annotations
 import threading
+import time
 from typing import Dict, Optional
 
 import numpy as np
 
 from .watt_net import WattMeterBase
+from .accumulator import average_from_accumulators
 from lager.exceptions import WattBackendError
 
 try:
     import joulescope
 except ModuleNotFoundError:
     joulescope = None
+
+
+# A contiguous `device.read()` buffers every sample for the whole window in RAM
+# and must fit the JS220's ~30s host stream buffer, so it is only used for short
+# windows. Longer windows use the on-device statistics accumulators
+# (`read_average`), which are gapless and hold no samples.
+_MAX_CONTIGUOUS_SECONDS = 10.0
+# Max seconds to wait for the first on-device statistics update after start().
+_STATS_SETTLE_TIMEOUT = 3.0
 
 
 def _parse_serial(location) -> Optional[str]:
@@ -158,6 +169,8 @@ class JoulescopeJS220(WattMeterBase):
         Returns:
             Power measurement in watts as a float
         """
+        if duration > _MAX_CONTIGUOUS_SECONDS:
+            return self.read_average(duration)["power"]
         with self._read_lock:
             if self._device is None:
                 raise WattBackendError(
@@ -186,6 +199,8 @@ class JoulescopeJS220(WattMeterBase):
         Returns:
             Current measurement in amps as a float
         """
+        if duration > _MAX_CONTIGUOUS_SECONDS:
+            return self.read_average(duration)["current"]
         with self._read_lock:
             if self._device is None:
                 raise WattBackendError(
@@ -212,6 +227,8 @@ class JoulescopeJS220(WattMeterBase):
         Returns:
             Voltage measurement in volts as a float
         """
+        if duration > _MAX_CONTIGUOUS_SECONDS:
+            return self.read_average(duration)["voltage"]
         with self._read_lock:
             if self._device is None:
                 raise WattBackendError(
@@ -238,6 +255,8 @@ class JoulescopeJS220(WattMeterBase):
         Returns:
             Dictionary with 'current' (amps), 'voltage' (volts), and 'power' (watts)
         """
+        if duration > _MAX_CONTIGUOUS_SECONDS:
+            return self.read_average(duration)
         with self._read_lock:
             if self._device is None:
                 raise WattBackendError(
@@ -257,6 +276,97 @@ class JoulescopeJS220(WattMeterBase):
                 raise WattBackendError(
                     f"Failed to read from Joulescope '{self.name}': {e}"
                 ) from e
+
+    def read_average(self, duration: float) -> dict:
+        """
+        Gapless average current/voltage/power over a long window.
+
+        Uses the JS220's on-device statistics accumulators (charge in coulombs,
+        energy in joules) sampled at the window start and end:
+        ``avg_current = Δcharge / Δt``, ``avg_power = Δenergy / Δt``, and
+        ``avg_voltage = Δenergy / Δcharge`` (the charge-weighted mean voltage).
+
+        Unlike a raw capture this holds no samples in memory and never drops
+        data, so it scales to arbitrarily long windows and captures every
+        transient.
+
+        Args:
+            duration: Averaging window in seconds.
+
+        Returns:
+            Dictionary with 'current' (amps), 'voltage' (volts), 'power' (watts)
+        """
+        with self._read_lock:
+            if self._device is None:
+                raise WattBackendError(
+                    f"Joulescope '{self.name}' is not connected"
+                )
+            try:
+                return self._accumulate_average(duration)
+            except WattBackendError:
+                raise
+            except Exception as e:
+                raise WattBackendError(
+                    f"Failed to average from Joulescope '{self.name}': {e}"
+                ) from e
+
+    def _accumulate_average(self, duration: float) -> dict:
+        """Integrate the on-device charge/energy accumulators over `duration`."""
+        latest: Dict[str, dict] = {}
+
+        def _on_statistics(data):
+            latest["data"] = data
+
+        self._device.statistics_callback_register(_on_statistics, "sensor")
+        self._device.start()
+        try:
+            # Wait for the first on-device statistics update to arrive.
+            waited = 0.0
+            while "data" not in latest and waited < _STATS_SETTLE_TIMEOUT:
+                time.sleep(0.05)
+                waited += 0.05
+            if "data" not in latest:
+                raise WattBackendError(
+                    f"No statistics from Joulescope '{self.name}'"
+                )
+
+            start = latest["data"]
+            fs = float(start["time"]["sample_freq"]["value"])
+            charge0 = float(start["accumulators"]["charge"]["value"])
+            energy0 = float(start["accumulators"]["energy"]["value"])
+            sample0 = float(start["time"]["samples"]["value"][1])
+
+            # Let the accumulators integrate over the requested window.
+            time.sleep(duration)
+
+            end = latest["data"]
+            charge1 = float(end["accumulators"]["charge"]["value"])
+            energy1 = float(end["accumulators"]["energy"]["value"])
+            sample1 = float(end["time"]["samples"]["value"][1])
+            fallback_voltage = float(end["signals"]["voltage"]["avg"]["value"])
+
+            try:
+                return average_from_accumulators(
+                    charge0, energy0, sample0,
+                    charge1, energy1, sample1,
+                    fs, fallback_voltage=fallback_voltage,
+                )
+            except ValueError as e:
+                raise WattBackendError(
+                    f"Statistics window too short on Joulescope '{self.name}': {e}"
+                ) from e
+        finally:
+            try:
+                self._device.stop()
+            except Exception:
+                pass
+            try:
+                self._device.statistics_callback_unregister(_on_statistics, "sensor")
+            except Exception:
+                try:
+                    self._device.statistics_callback_unregister(_on_statistics)
+                except Exception:
+                    pass
 
     def close(self) -> None:
         """Close the connection and release resources."""

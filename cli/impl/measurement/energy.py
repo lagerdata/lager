@@ -5,25 +5,13 @@ import sys
 import os
 import json
 from lager.nets.net import Net, NetType
+from lager.measurement.format_utils import fmt_si as _fmt_si
 
 # ANSI color codes
 GREEN = '\033[92m'
 CYAN = '\033[96m'
 RED = '\033[91m'
 RESET = '\033[0m'
-
-
-def _fmt_si(value, unit):
-    """Format a value with an appropriate SI prefix."""
-    abs_val = abs(value)
-    if abs_val >= 1.0:
-        return f"{value:.3f} {unit}"
-    elif abs_val >= 1e-3:
-        return f"{value * 1e3:.3f} m{unit}"
-    elif abs_val >= 1e-6:
-        return f"{value * 1e6:.3f} µ{unit}"
-    else:
-        return f"{value * 1e9:.3f} n{unit}"
 
 
 def _print_energy(netname, result):
