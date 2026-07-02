@@ -274,6 +274,148 @@ else
     print_success "Box is reachable"
 fi
 
+# =============================================================================
+# STEP 1: SSH Key Setup + connection multiplexing
+#
+# MUST run here, before the git/docker/buildx/DNS steps below: each of those
+# opens its own ssh/scp connection, so on a brand-new box with no key installed
+# yet they would prompt for the box password every single time (the "entered it
+# ~10 times" symptom). Installing the lager_box key and SSH config entry up
+# front means exactly ONE password prompt for the whole install; everything
+# after is key-based.
+# =============================================================================
+print_step "Checking SSH Access"
+
+KEY_FILE="$HOME/.ssh/lager_box"
+SSH_CONFIG="$HOME/.ssh/config"
+NEEDS_SSH_SETUP=false
+
+# Check if we already have passwordless access
+print_info "Testing existing SSH configuration..."
+if ssh -o BatchMode=yes -o ConnectTimeout=5 "${BOX_USER}@${BOX_IP}" "echo 'test'" &>/dev/null; then
+    print_success "Passwordless SSH already configured"
+else
+    print_warning "Passwordless SSH not configured - will set up now"
+    NEEDS_SSH_SETUP=true
+fi
+
+if [ "$NEEDS_SSH_SETUP" = true ]; then
+    echo ""
+    echo -e "${BOLD}Setting up SSH access...${NC}"
+    echo ""
+
+    # Check if key already exists
+    if [ -f "$KEY_FILE" ]; then
+        print_success "SSH key already exists at $KEY_FILE"
+    else
+        print_info "Generating SSH key pair..."
+        ssh-keygen -t ed25519 -f "$KEY_FILE" -N "" -C "lager-box-access"
+        print_success "SSH key generated"
+    fi
+    echo ""
+
+    # Copy public key to box
+    print_info "Copying public key to box..."
+    echo "You will be prompted for your box password ONE TIME:"
+    echo ""
+
+    cat "$KEY_FILE.pub" | ssh "$BOX_USER@$BOX_IP" "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys"
+
+    if [ $? -eq 0 ]; then
+        echo ""
+        print_success "Public key copied successfully"
+    else
+        echo ""
+        print_error "Failed to copy public key. Please check your password and try again."
+        exit 1
+    fi
+
+    # Configure SSH config
+    echo ""
+    print_info "Configuring SSH client..."
+
+    # Check if entry already exists for this specific IP
+    if grep -q "Host $BOX_IP$" "$SSH_CONFIG" 2>/dev/null; then
+        print_success "SSH config entry already exists for $BOX_IP"
+    else
+        # Create SSH config if it doesn't exist
+        touch "$SSH_CONFIG"
+        chmod 600 "$SSH_CONFIG"
+
+        # Find where to insert (before "Host *" if it exists, otherwise at end)
+        if grep -q "^Host \*" "$SSH_CONFIG" 2>/dev/null; then
+            # Insert before the "Host *" line to override global settings
+            TEMP_FILE=$(mktemp)
+            awk '/^Host \*/ && !inserted {
+              print "# Lager Box - Auto-configured by setup_and_deploy_box.sh"
+              print "# Entry for '"$BOX_IP"' ('"$BOX_USER"')"
+              print "# MUST be before Host * to override global settings"
+              print "Host '"$BOX_IP"'"
+              print "  User '"$BOX_USER"'"
+              print "  IdentityFile ~/.ssh/lager_box"
+              print "  ProxyCommand none"
+              print "  StrictHostKeyChecking no"
+              print "  UserKnownHostsFile=/dev/null"
+              print ""
+              inserted=1
+            }
+            {print}' "$SSH_CONFIG" > "$TEMP_FILE"
+            mv "$TEMP_FILE" "$SSH_CONFIG"
+        else
+            # Append to end of file
+            cat >> "$SSH_CONFIG" << EOF
+
+# Lager Box - Auto-configured by setup_and_deploy_box.sh
+# Entry for $BOX_IP ($BOX_USER)
+Host $BOX_IP
+    User $BOX_USER
+    IdentityFile ~/.ssh/lager_box
+    ProxyCommand none
+    StrictHostKeyChecking no
+    UserKnownHostsFile=/dev/null
+EOF
+        fi
+
+        print_success "SSH config updated"
+    fi
+
+    # Test connection
+    echo ""
+    print_info "Testing passwordless connection..."
+    if ssh -o BatchMode=yes -o ConnectTimeout=5 "$BOX_IP" "echo 'Connection successful'" 2>/dev/null; then
+        print_success "Passwordless SSH access configured successfully!"
+    else
+        print_warning "Connection test failed. You may need to manually verify the setup."
+    fi
+fi
+
+# =============================================================================
+# Establish SSH Connection Multiplexing
+# =============================================================================
+if [ "$LAGER_OWN_MASTER" = true ]; then
+    # Clean up any stale control socket from a previous run
+    ssh -O exit -o ControlPath="${CONTROL_PATH}" "${BOX_USER}@${BOX_IP}" 2>/dev/null || true
+
+    # Establish master connection (runs in background)
+    print_info "Establishing persistent SSH connection..."
+    if ssh $SSH_OPTS -fN "${BOX_USER}@${BOX_IP}"; then
+        print_success "SSH connection established (multiplexed)"
+    else
+        print_warning "Could not establish multiplexed SSH — will use individual connections"
+    fi
+
+    # Clean up master connection on exit (success or failure)
+    cleanup_ssh() {
+        ssh -O exit -o ControlPath="${CONTROL_PATH}" "${BOX_USER}@${BOX_IP}" 2>/dev/null || true
+    }
+    trap cleanup_ssh EXIT
+else
+    # Warm up the existing multiplexed connection
+    print_info "Warming up SSH connection..."
+    ssh $SSH_OPTS -o BatchMode=yes "${BOX_USER}@${BOX_IP}" "true" 2>/dev/null || true
+    print_success "SSH connection ready (using existing multiplexing)"
+fi
+
 # Check for git on box (required for deployment)
 print_info "Checking for git on box..."
 if ssh -o BatchMode=yes -o ConnectTimeout=10 "${BOX_USER}@${BOX_IP}" "command -v git &> /dev/null" 2>/dev/null; then
@@ -460,141 +602,6 @@ else
 fi
 rm "$TEMP_DNS_SCRIPT"
 echo ""
-
-# =============================================================================
-# STEP 1: SSH Key Setup
-# =============================================================================
-print_step "Checking SSH Access"
-
-KEY_FILE="$HOME/.ssh/lager_box"
-SSH_CONFIG="$HOME/.ssh/config"
-NEEDS_SSH_SETUP=false
-
-# Check if we already have passwordless access
-print_info "Testing existing SSH configuration..."
-if ssh -o BatchMode=yes -o ConnectTimeout=5 "${BOX_USER}@${BOX_IP}" "echo 'test'" &>/dev/null; then
-    print_success "Passwordless SSH already configured"
-else
-    print_warning "Passwordless SSH not configured - will set up now"
-    NEEDS_SSH_SETUP=true
-fi
-
-if [ "$NEEDS_SSH_SETUP" = true ]; then
-    echo ""
-    echo -e "${BOLD}Setting up SSH access...${NC}"
-    echo ""
-
-    # Check if key already exists
-    if [ -f "$KEY_FILE" ]; then
-        print_success "SSH key already exists at $KEY_FILE"
-    else
-        print_info "Generating SSH key pair..."
-        ssh-keygen -t ed25519 -f "$KEY_FILE" -N "" -C "lager-box-access"
-        print_success "SSH key generated"
-    fi
-    echo ""
-
-    # Copy public key to box
-    print_info "Copying public key to box..."
-    echo "You will be prompted for your box password ONE TIME:"
-    echo ""
-
-    cat "$KEY_FILE.pub" | ssh "$BOX_USER@$BOX_IP" "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys"
-
-    if [ $? -eq 0 ]; then
-        echo ""
-        print_success "Public key copied successfully"
-    else
-        echo ""
-        print_error "Failed to copy public key. Please check your password and try again."
-        exit 1
-    fi
-
-    # Configure SSH config
-    echo ""
-    print_info "Configuring SSH client..."
-
-    # Check if entry already exists for this specific IP
-    if grep -q "Host $BOX_IP$" "$SSH_CONFIG" 2>/dev/null; then
-        print_success "SSH config entry already exists for $BOX_IP"
-    else
-        # Create SSH config if it doesn't exist
-        touch "$SSH_CONFIG"
-        chmod 600 "$SSH_CONFIG"
-
-        # Find where to insert (before "Host *" if it exists, otherwise at end)
-        if grep -q "^Host \*" "$SSH_CONFIG" 2>/dev/null; then
-            # Insert before the "Host *" line to override global settings
-            TEMP_FILE=$(mktemp)
-            awk '/^Host \*/ && !inserted {
-              print "# Lager Box - Auto-configured by setup_and_deploy_box.sh"
-              print "# Entry for '"$BOX_IP"' ('"$BOX_USER"')"
-              print "# MUST be before Host * to override global settings"
-              print "Host '"$BOX_IP"'"
-              print "  User '"$BOX_USER"'"
-              print "  IdentityFile ~/.ssh/lager_box"
-              print "  ProxyCommand none"
-              print "  StrictHostKeyChecking no"
-              print "  UserKnownHostsFile=/dev/null"
-              print ""
-              inserted=1
-            }
-            {print}' "$SSH_CONFIG" > "$TEMP_FILE"
-            mv "$TEMP_FILE" "$SSH_CONFIG"
-        else
-            # Append to end of file
-            cat >> "$SSH_CONFIG" << EOF
-
-# Lager Box - Auto-configured by setup_and_deploy_box.sh
-# Entry for $BOX_IP ($BOX_USER)
-Host $BOX_IP
-    User $BOX_USER
-    IdentityFile ~/.ssh/lager_box
-    ProxyCommand none
-    StrictHostKeyChecking no
-    UserKnownHostsFile=/dev/null
-EOF
-        fi
-
-        print_success "SSH config updated"
-    fi
-
-    # Test connection
-    echo ""
-    print_info "Testing passwordless connection..."
-    if ssh -o BatchMode=yes -o ConnectTimeout=5 "$BOX_IP" "echo 'Connection successful'" 2>/dev/null; then
-        print_success "Passwordless SSH access configured successfully!"
-    else
-        print_warning "Connection test failed. You may need to manually verify the setup."
-    fi
-fi
-
-# =============================================================================
-# Establish SSH Connection Multiplexing
-# =============================================================================
-if [ "$LAGER_OWN_MASTER" = true ]; then
-    # Clean up any stale control socket from a previous run
-    ssh -O exit -o ControlPath="${CONTROL_PATH}" "${BOX_USER}@${BOX_IP}" 2>/dev/null || true
-
-    # Establish master connection (runs in background)
-    print_info "Establishing persistent SSH connection..."
-    if ssh $SSH_OPTS -fN "${BOX_USER}@${BOX_IP}"; then
-        print_success "SSH connection established (multiplexed)"
-    else
-        print_warning "Could not establish multiplexed SSH — will use individual connections"
-    fi
-
-    # Clean up master connection on exit (success or failure)
-    cleanup_ssh() {
-        ssh -O exit -o ControlPath="${CONTROL_PATH}" "${BOX_USER}@${BOX_IP}" 2>/dev/null || true
-    }
-    trap cleanup_ssh EXIT
-else
-    # Warm up the existing multiplexed connection
-    print_info "Warming up SSH connection..."
-    ssh $SSH_OPTS -o BatchMode=yes "${BOX_USER}@${BOX_IP}" "true" 2>/dev/null || true
-    print_success "SSH connection ready (using existing multiplexing)"
-fi
 
 # =============================================================================
 # STEP 2: Sudo Configuration
