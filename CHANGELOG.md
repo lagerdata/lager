@@ -10,9 +10,13 @@ The watt meter reads current and voltage, not just power. Readings are SI-scaled
 - **`lager watt <net> current|voltage|all`** — read current (A), voltage (V), or all three (current/voltage/power) from a watt-meter net, not just power. Backed by the Joulescope JS220 and Nordic PPK2; a Yocto-Watt (power only) reports a clear "not supported" message.
 - **`--duration` averaging window on watt reads.** Average over a longer capture (e.g. `--duration 1.0`) for a lower-noise, higher-effective-resolution reading. On the Joulescope JS220, long windows (e.g. `--duration 60`) are measured gaplessly via the on-device charge accumulator (average current = Δcharge ÷ Δt) — constant memory, captures every transient, and scales to arbitrarily long windows.
 - **`--json` output for `lager watt`.** Emit a machine-readable JSON object in base SI units (W/A/V) for HIL scripts.
+- **`lager nets add` now accepts Joulescope JS220, Nordic PPK2, and Yocto-Watt.** These watt-meter/energy-analyzer instruments were missing from the CLI's instrument table, so creating a `watt-meter` or `energy-analyzer` net previously required the Workbench UI; they can now be added from the command line like any other instrument.
 
 ### Changed
 - **`lager watt` output is SI-scaled.** Sub-milliwatt/-milliamp readings now display in µ/n units (e.g. `52.340 µW`) instead of rounding to `0.000 W`. Values too small for the nano prefix fall back to scientific notation (e.g. `3.000e-13 W`) rather than rounding to zero.
+
+### Fixed
+- **`lager energy` reads no longer hang or crash on exit.** The reader now closes the Joulescope device when it finishes, so its USB streaming thread is torn down cleanly instead of leaving the process to hang (or segfault) after printing correct output.
 
 ## [0.29.0] - 2026-06-29
 

@@ -138,6 +138,14 @@ class JoulescopeEnergyAnalyzer(EnergyAnalyzerBase):
             "duration_s": duration,
         }
 
+    def close(self) -> None:
+        """Close the shared Joulescope device so its USB stream thread is torn
+        down cleanly. Without this the reading process can hang or crash on exit.
+        """
+        js220 = getattr(self, "_js220", None)
+        if js220 is not None:
+            js220.close()
+
     @classmethod
     def clear_cache(cls) -> None:
         """Clear all cached instances."""

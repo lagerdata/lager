@@ -52,12 +52,17 @@ def main() -> int:
 
         net = Net.get(netname, type=NetType.EnergyAnalyzer)
 
-        if mode == "stats":
-            result = net.read_stats(duration)
-            _print_stats(netname, result)
-        else:
-            result = net.read_energy(duration)
-            _print_energy(netname, result)
+        try:
+            if mode == "stats":
+                result = net.read_stats(duration)
+                _print_stats(netname, result)
+            else:
+                result = net.read_energy(duration)
+                _print_energy(netname, result)
+        finally:
+            # Close the device so its USB stream thread is torn down cleanly;
+            # otherwise the process can hang or crash on exit.
+            net.close()
 
         return 0
     except KeyError as e:
