@@ -8,12 +8,20 @@ import re
 import subprocess
 from typing import Any, Callable, Sequence
 
-from .usb_net import LibraryMissingError, USBNet
+from .usb_net import LibraryMissingError, USBNet, hub_access
 
 # ────────────────────────────────────────────────────────────────────
 #  helpers – regex, constants
 # ────────────────────────────────────────────────────────────────────
 _SERIAL_RE = re.compile(r"::([^:]+)::INSTR$")
+
+# How long to wait for the cross-process hub lock before giving up. libusb
+# access to the hub is EXCLUSIVE, so box_http_server (the `lager usb` path),
+# the MCP server, and each `lager python` test (its own subprocess) must not
+# open the same hub at once; device_lock (fcntl.flock, shared /tmp) serialises
+# them. Generous because a genuinely stuck holder is rare and releasing per op
+# keeps real hold times to milliseconds.
+_LOCK_TIMEOUT_S = 10.0
 
 
 def _serial_from_address(addr: str | None) -> str | None:
@@ -86,58 +94,77 @@ def _ensure_library() -> None:
 class YKUSHUSBNet(USBNet):
     """USBNet implementation for Yepkit YKUSH hubs."""
 
-    # Live YKUSH handles, keyed by serial. A handle is dropped and rebuilt on
-    # first failure (see _with_device), so a power-cycled hub or a transient
-    # USB/HID read error self-heals instead of staying wedged until a restart.
-    _devices: dict = {}
+    @staticmethod
+    def _release(dev) -> None:
+        """Close the pykush handle deterministically so the libusb/usbfs claim
+        on the hub is released the moment the operation finishes.
 
-    @classmethod
-    def _device_for(cls, serial: str | None):
-        dev = cls._devices.get(serial)
-        if dev is None:
-            _ensure_library()
-            dev = _YKUSH_CLS(serial=serial) if serial else _YKUSH_CLS()
-            cls._devices[serial] = dev
-        return dev
-
-    @classmethod
-    def _invalidate(cls, serial: str | None) -> None:
-        """Drop the cached handle for *serial*, closing it best-effort."""
-        dev = cls._devices.pop(serial, None)
+        pykush only frees the device in ``__del__``. Relying on GC means a
+        long-lived process (box_http_server, the MCP server) keeps the hub
+        claimed indefinitely after the first use, which makes every *other*
+        process — notably an in-container ``lager python`` test running in its
+        own subprocess — fail to open the same hub with "OSError: open failed".
+        Closing here (and nulling ``_devhandle`` so a later ``__del__`` is a
+        no-op) hands the hub back immediately."""
         if dev is None:
             return
-        for closer in ("close", "disconnect"):
-            fn = getattr(dev, closer, None)
-            if callable(fn):
-                try:
-                    fn()
-                except Exception:
-                    pass
+        handle = getattr(dev, "_devhandle", None)
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception:
+                pass
+            try:
+                dev._devhandle = None
+            except Exception:
+                pass
+
+    def _run_once(self, fn):
+        """Open a fresh YKUSH connection, run ``fn(dev)``, and always release
+        the handle — never cache it (see ``_release``)."""
+        _ensure_library()
+        dev = _YKUSH_CLS(serial=self.serial) if self.serial else _YKUSH_CLS()
+        try:
+            return fn(dev)
+        finally:
+            self._release(dev)
+
+    def _lock_key(self) -> str:
+        """Cross-process lock key identifying the *physical* hub, so every net
+        on one YKUSH serialises but different hubs don't block each other. The
+        VISA address is unique per hub; fall back to the serial."""
+        return self.address or f"ykush::{self.serial or 'default'}"
 
     def _with_device(self, fn):
-        """Run ``fn(dev)``, retrying once with a fresh handle if the cached one
-        fails. This recovers a YKUSH that was power-cycled or hit a transient
-        USB/HID read error without needing a hardware-service restart."""
+        """Run ``fn(dev)`` against a freshly-opened hub, retrying once if the
+        first attempt fails. A fresh handle per call self-heals a power-cycled
+        hub or a transient USB/HID error, and releasing it after each call means
+        the hub is never pinned open. The whole open→operate→close cycle (and
+        the retry) runs under the shared cross-process device lock so concurrent
+        callers — e.g. box_http_server and a ``lager python`` test — don't
+        collide on the hub's exclusive libusb claim."""
         _ensure_library()
-        try:
-            return fn(self._device_for(self.serial))
-        except LibraryMissingError:
-            raise
-        except Exception:
-            # Cached handle is likely stale (device re-enumerated). Drop it and
-            # try once more with a fresh connection.
-            self._invalidate(self.serial)
-            return fn(self._device_for(self.serial))
+        with hub_access(self._lock_key(), timeout=_LOCK_TIMEOUT_S):
+            try:
+                return self._run_once(fn)
+            except LibraryMissingError:
+                raise
+            except Exception:
+                # Transient (power-cycled hub / stale enumeration). The first
+                # handle was already released; try once more, still holding the
+                # lock so no other process slips in between attempts.
+                return self._run_once(fn)
 
     # ----------------------------------------------------------------
     def __init__(self, net_info: dict | None = None) -> None:
         # Don't check library here - defer until first use
         net_info = net_info or {}
+        self.address = net_info.get("address")
         self.serial = (
             net_info.get("serial")
             or net_info.get("uid")
             or net_info.get("serial_number")
-            or _serial_from_address(net_info.get("address"))
+            or _serial_from_address(self.address)
         )
 
     # ----------------------------------------------------------------
