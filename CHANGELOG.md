@@ -2,6 +2,22 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+Driver and setup robustness fixes surfaced while bringing the shared hardware
+bench under continuous integration.
+
+### Fixed
+- **Keithley 2281S measurement parsing.** Current/voltage reads that come back as
+  multi-field or unit-suffixed responses are now parsed robustly instead of
+  raising or returning an incorrect value.
+- **VISA-resource net mapping.** Nets backed by a VISA resource now resolve to
+  the correct instrument backend, fixing misrouted access to VISA-connected
+  supplies/meters.
+- **Windows-safe `lager update`.** SSH-key setup and the update flow no longer
+  crash on Windows hosts (broadened error handling around `ssh-copy-id` and the
+  container update steps).
+
 ## [0.31.1] - 2026-07-06
 
 Power-supply and battery-simulator state reads are now fault-tolerant: the `/supply/command` and `/battery/command` HTTP endpoints always return a structured `state` object, and a single failing instrument query degrades that one field instead of dropping the whole readout. Also adds opt-in MCP box-control and command-execution tools for automated recovery workflows, and fixes a J-Link flash failure after a probe power-cycle mid-session.

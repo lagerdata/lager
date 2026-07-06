@@ -1,0 +1,39 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# CLI unit tests. These need no hardware and no box, so they run on a
+# GitHub-hosted runner and are safe to gate pull requests (no self-hosted
+# runner is exposed to fork PRs here).
+
+name: Unit Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit-tests:
+    name: CLI unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install lager CLI (editable) + pytest
+        run: |
+          pip install -e cli/
+          pip install pytest
+        shell: bash
+
+      - name: Run CLI unit tests
+        run: pytest test/unit/cli/ -v
+        shell: bash

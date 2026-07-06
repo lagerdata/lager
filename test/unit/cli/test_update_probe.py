@@ -21,7 +21,13 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 
-from cli.commands.utility.update import _probe_shell_script, _parse_probe_output
+from cli.commands.utility.update import (
+    _probe_shell_script,
+    _parse_probe_output,
+    _build_hash_shell_cmd,
+    _BUILD_HASH_INPUTS,
+    _PROBE_PREFIX,
+)
 
 
 class ProbeScriptEmitsModprobeKeys(unittest.TestCase):

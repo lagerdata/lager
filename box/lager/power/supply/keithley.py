@@ -294,6 +294,13 @@ class Keithley2281S(SupplyNet):
             except Exception:
                 raise SupplyBackendError("Failed to enable output after 3 retries")
 
+        # Re-arm trigger model after all :OUTP ON calls — :OUTP ON resets INIT:CONT on the 2281S.
+        try:
+            self._write(":INIT:CONT ON", check_errors=False)
+            time.sleep(0.05)
+        except Exception:
+            pass
+
     def disable(self) -> None:
         """
         Turn output OFF (mode-aware).
@@ -393,7 +400,8 @@ class Keithley2281S(SupplyNet):
 
         if enabled:
             # Use actual measurements when output is enabled
-            v = self._safe_query_no_mode(":MEAS:VOLT?", default=v_set)
+            v_raw = self._safe_query_no_mode(":MEAS:VOLT?", default=v_set)
+            v = self._parse_voltage_from_response(v_raw)
             i = self._safe_query_no_mode(":MEAS:CURR?", default=i_set)
             # Determine if in CV or CC mode by checking QIE register
             mode = self._determine_operating_mode_no_mode()
@@ -445,7 +453,8 @@ class Keithley2281S(SupplyNet):
 
         # Get measurements or use setpoints if disabled
         if enabled:
-            v = self._safe_query_no_mode(":MEAS:VOLT?", default=v_set)
+            v_raw = self._safe_query_no_mode(":MEAS:VOLT?", default=v_set)
+            v = self._parse_voltage_from_response(v_raw)
             i = self._safe_query_no_mode(":MEAS:CURR?", default=i_set)
             mode = self._determine_operating_mode_no_mode()
         else:
@@ -522,7 +531,8 @@ class Keithley2281S(SupplyNet):
         v_set = self._safe_float(self._safe_query_no_mode(":SOUR1:VOLT?", default="0.0"))
         i_set = self._safe_float(self._safe_query_no_mode(":SOUR1:CURR?", default="0.0"))
         if enabled:
-            v = self._safe_float(self._safe_query_no_mode(":MEAS:VOLT?", default=str(v_set)))
+            v_raw = self._safe_query_no_mode(":MEAS:VOLT?", default=str(v_set))
+            v = self._safe_float(self._parse_voltage_from_response(v_raw))
             i = self._safe_float(self._safe_query_no_mode(":MEAS:CURR?", default=str(i_set)))
             mode = self._determine_operating_mode_no_mode()
         else:
@@ -722,10 +732,20 @@ class Keithley2281S(SupplyNet):
             pass
 
     def _meas_v(self) -> str:
-        return self._safe_query(":MEAS:VOLT?", default=self._get_vset())
+        try:
+            self._write(":INIT:CONT ON", check_errors=False)
+        except Exception:
+            pass
+        raw = self._safe_query(":MEAS:VOLT?", default=self._get_vset())
+        return self._parse_voltage_from_response(raw)
 
     def _meas_i(self) -> str:
-        return self._safe_query(":MEAS:CURR?", default=self._get_iset())
+        try:
+            self._write(":INIT:CONT ON", check_errors=False)
+        except Exception:
+            pass
+        raw = self._safe_query(":MEAS:CURR?", default=self._get_iset())
+        return self._parse_current_from_response(raw)
 
     # Sink rated to 1 A ± 10% per the 2281S reference manual (non-programmable).
     _SINK_RATING_A = 1.0
@@ -998,6 +1018,8 @@ class Keithley2281S(SupplyNet):
                     self._write(":OUTP ON", check_errors=False)
                     time.sleep(0.1)
                     self._drain_error_queue(ignore_codes=(-222, -200, 300, 200))
+                    self._write(":INIT:CONT ON", check_errors=False)
+                    time.sleep(0.05)
                 except Exception:
                     pass
 
@@ -1134,7 +1156,7 @@ class Keithley2281S(SupplyNet):
         """
         mode = self._safe_query(":ENTR:FUNC?", default="")
         up = mode.upper()
-        if "POW" in up or "SUPPLY" in up:
+        if "POW" in up or "SUPPLY" in up or up == "PSS":
             return
 
         # Check if output is enabled to avoid disrupting it
@@ -1156,7 +1178,7 @@ class Keithley2281S(SupplyNet):
                 self._write(f":ENTR:FUNC {tok}", check_errors=False)
                 time.sleep(0.1)  # Increased delay for mode switching
                 now = self._safe_query(":ENTR:FUNC?", default="")
-                if "POW" in now.upper() or "SUPPLY" in now.upper():
+                if "POW" in now.upper() or "SUPPLY" in now.upper() or "PSS" in now.upper():
                     # Clear any errors that may have accumulated during mode switching
                     try:
                         self._drain_error_queue(ignore_codes=(-104, -222))
@@ -1297,6 +1319,21 @@ class Keithley2281S(SupplyNet):
             self._set_ocp(ocp)
             # Then set the current
             self._set_iset(iset)
+
+    @staticmethod
+    def _parse_current_from_response(response: str) -> str:
+        """
+        Parse current from Keithley response which may be in verbose or simple format.
+        Verbose format: "-7.293284E-07A,+5.000000E+00V,+1.050650E+04s"
+        Simple format: "0.001"
+        """
+        response_str = str(response).strip()
+        if ',' in response_str:
+            parts = response_str.split(',')
+            for part in parts:
+                if part.strip().upper().endswith('A'):
+                    return part.strip()[:-1]
+        return response_str
 
     @staticmethod
     def _parse_voltage_from_response(response: str) -> str:
