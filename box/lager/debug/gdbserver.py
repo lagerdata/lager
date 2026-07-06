@@ -14,6 +14,7 @@ import signal
 import time
 import logging
 
+from .mappings import check_process
 from .probes import jlink_gdbserver_pidfile, jlink_gdbserver_logfile
 
 logger = logging.getLogger(__name__)
@@ -58,14 +59,16 @@ def get_jlink_gdbserver_status(serial=None):
         with open(pidfile, 'r') as f:
             pid = int(f.read().strip())
 
-        # Check if process is alive
-        try:
-            os.kill(pid, 0)  # Signal 0 checks if process exists
+        # Check if the process is alive AND not a defunct zombie. A zombie
+        # JLinkGDBServer (left by a flash that ran while the probe was down)
+        # passes a bare os.kill(pid, 0) check and would be reused by
+        # connect(ignore_if_connected=True), failing the next flash.
+        if check_process(pid):
             return {'running': True, 'pid': pid}
-        except OSError:
-            # Process doesn't exist, clean up stale PID file
-            os.remove(pidfile)
-            return {'running': False, 'pid': None}
+        # Process doesn't exist or is a zombie — clean up the stale PID file so
+        # connect() falls through to a fresh start_jlink_gdbserver().
+        os.remove(pidfile)
+        return {'running': False, 'pid': None}
     except Exception as e:
         logger.warning(f'Error checking JLinkGDBServer status: {e}')
         return {'running': False, 'pid': None}

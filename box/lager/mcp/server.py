@@ -160,6 +160,27 @@ from .tools import authoring  # noqa: E402, F401
 # Box health / identity
 from .tools import box  # noqa: E402, F401
 
+# Scoped box-control tools — read-only by default; only registered when an
+# operator opts in via LAGER_MCP_ALLOW_CONTROL (see config.control_tools_enabled).
+from .config import control_tools_enabled, exec_tools_enabled  # noqa: E402
+
+if control_tools_enabled():
+    from .tools import control  # noqa: E402
+
+    control.register(mcp)
+    logger.info("Lager MCP control tools enabled (LAGER_MCP_ALLOW_CONTROL set)")
+
+# General box-control primitives (arbitrary exec + file I/O) — a separate,
+# more dangerous tier behind its own gate. Off by default.
+if exec_tools_enabled():
+    from .tools import exec as exec_tools  # noqa: E402
+
+    exec_tools.register(mcp)
+    logger.warning(
+        "Lager MCP EXEC tools enabled (LAGER_MCP_ALLOW_EXEC set) — arbitrary "
+        "command execution and file writes are now exposed over MCP"
+    )
+
 # ---------------------------------------------------------------------------
 # Register prompts (slash-command entry points for MCP clients)
 # ---------------------------------------------------------------------------
