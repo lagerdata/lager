@@ -32,7 +32,7 @@ def _run(coro_fn):
 @pytest.mark.unit
 class TestBoxExec:
     def test_success(self):
-        fake = SimpleNamespace(returncode=0, stdout="hello\n", stderr="")
+        fake = SimpleNamespace(returncode=0, stdout=b"hello\n", stderr=b"")
         with patch("lager.mcp.tools.exec.subprocess.run", return_value=fake) as run:
             result = json.loads(exec_tools.box_exec("echo hello"))
         run.assert_called_once()
@@ -42,7 +42,7 @@ class TestBoxExec:
         assert result["truncated"] is False
 
     def test_nonzero_exit(self):
-        fake = SimpleNamespace(returncode=2, stdout="", stderr="boom\n")
+        fake = SimpleNamespace(returncode=2, stdout=b"", stderr=b"boom\n")
         with patch("lager.mcp.tools.exec.subprocess.run", return_value=fake):
             result = json.loads(exec_tools.box_exec("false"))
         assert result["exit_code"] == 2
@@ -62,12 +62,21 @@ class TestBoxExec:
         assert "error" in result
 
     def test_output_truncated(self):
-        big = "x" * 20000
-        fake = SimpleNamespace(returncode=0, stdout=big, stderr="")
+        big = b"x" * 20000
+        fake = SimpleNamespace(returncode=0, stdout=big, stderr=b"")
         with patch("lager.mcp.tools.exec.subprocess.run", return_value=fake):
             result = json.loads(exec_tools.box_exec("cat big"))
         assert result["truncated"] is True
         assert len(result["stdout"]) == 8192
+
+    def test_non_utf8_output_does_not_crash(self):
+        # subprocess.run (no text=) returns bytes; non-UTF-8 output must decode
+        # with errors="replace" instead of raising UnicodeDecodeError.
+        fake = SimpleNamespace(returncode=0, stdout=b"\xff\xfe bad", stderr=b"")
+        with patch("lager.mcp.tools.exec.subprocess.run", return_value=fake):
+            result = json.loads(exec_tools.box_exec("cat binary"))
+        assert result["exit_code"] == 0
+        assert chr(0xFFFD) in result["stdout"]
 
 
 @pytest.mark.unit
@@ -118,6 +127,15 @@ class TestWriteFile:
         parent.write_text("x")
         result = json.loads(exec_tools.write_file(str(parent / "child.txt"), "data"))
         assert "error" in result
+
+    def test_write_error_cleans_up_tmp(self, tmp_path):
+        # If the atomic replace fails after the temp file is written, the temp
+        # file must be removed (no orphaned .tmp left behind).
+        f = tmp_path / "x.txt"
+        with patch("lager.mcp.tools.exec.os.replace", side_effect=OSError("boom")):
+            result = json.loads(exec_tools.write_file(str(f), "data"))
+        assert "error" in result
+        assert not (tmp_path / "x.txt.tmp").exists()
 
 
 @pytest.mark.unit

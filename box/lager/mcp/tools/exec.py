@@ -64,12 +64,11 @@ def box_exec(command: str, timeout_s: int = 60, cwd: str | None = None) -> str:
             shell=True,
             cwd=cwd,
             capture_output=True,
-            text=True,
             timeout=timeout_s,
         )
     except subprocess.TimeoutExpired as exc:
-        out, out_trunc = _tail(exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or ""))
-        err, err_trunc = _tail(exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or ""))
+        out, out_trunc = _tail((exc.stdout or b"").decode("utf-8", errors="replace"))
+        err, err_trunc = _tail((exc.stderr or b"").decode("utf-8", errors="replace"))
         return json.dumps({
             "command": command,
             "exit_code": None,
@@ -81,8 +80,8 @@ def box_exec(command: str, timeout_s: int = 60, cwd: str | None = None) -> str:
     except Exception as exc:
         return json.dumps({"error": f"box_exec failed to launch: {exc}"})
 
-    out, out_trunc = _tail(proc.stdout or "")
-    err, err_trunc = _tail(proc.stderr or "")
+    out, out_trunc = _tail((proc.stdout or b"").decode("utf-8", errors="replace"))
+    err, err_trunc = _tail((proc.stderr or b"").decode("utf-8", errors="replace"))
     return json.dumps({
         "command": command,
         "exit_code": proc.returncode,
@@ -136,6 +135,7 @@ def write_file(path: str, content: str) -> str:
     logger.info("write_file: %r (%d bytes)", path, len(content))
     backup: str | None = None
     old = ""
+    tmp: str | None = None
     try:
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
@@ -150,7 +150,13 @@ def write_file(path: str, content: str) -> str:
         with open(tmp, "w", encoding="utf-8") as fh:
             fh.write(content)
         os.replace(tmp, path)
+        tmp = None
     except (PermissionError, IsADirectoryError, OSError) as exc:
+        if tmp and os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
         return json.dumps({"error": f"Cannot write '{path}': {exc}"})
 
     diff = "".join(
