@@ -439,6 +439,28 @@ fi
 # www-data, so it needs the host group's GID as a supplementary group to open
 # the devices. Resolved numerically because the GID mapping is what matters
 # inside the container, not the group name.
+#
+# Self-heal the host 'lager' group BEFORE resolving its GID below. A box whose
+# udev rules were installed by a path that never created the group leaves every
+# instrument node owned by root:root, so the container gets EACCES opening them
+# and pykush reports the misleading "device not found". The getent guard keeps
+# a healthy box free of any sudo call. Order matters: systemd-udevd caches the
+# group database at startup, so a group created now is invisible to the running
+# udevd until it is RESTARTED — a plain `udevadm control --reload-rules` reloads
+# rules but not that cache, leaving GROUP="lager" unresolved and the node still
+# root:root. So restart udevd, then re-trigger to re-chown already-enumerated
+# nodes without a physical replug. `sudo -n` never blocks on a password, and the
+# `|| echo` keeps `set -e` from aborting if the passwordless grant is absent
+# (the box then degrades to the WARNING path below).
+if ! getent group lager >/dev/null; then
+    echo "Host group 'lager' missing — creating it and reapplying udev rules..."
+    sudo -n groupadd -f lager \
+        && sudo -n systemctl restart systemd-udevd \
+        && sudo -n udevadm control --reload-rules \
+        && sudo -n udevadm trigger \
+        || echo "[WARNING] Could not auto-create 'lager' group (sudo -n failed); run 'lager update' or add the groupadd/systemctl sudoers grants."
+fi
+
 LAGER_GROUP_ADD=()
 LAGER_GID="$(getent group lager | cut -d: -f3)"
 if [ -n "$LAGER_GID" ]; then

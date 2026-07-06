@@ -1259,11 +1259,18 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         # to (GROUP="lager"); the getent guard keeps the groupadd off the
         # common path so provisioned boxes stay within the passwordless
         # sudoers grant. Queued for the single privileged session below.
+        # systemd-udevd caches the group database at startup, so if the group
+        # was just created above, udevd cannot resolve GROUP="lager" and leaves
+        # instrument nodes root:root until it is restarted — a plain
+        # reload-rules is not enough. Restart udevd before the trigger so the
+        # re-chown to root:lager actually takes effect. `groupadd -f` is
+        # idempotent and byte-matches the passwordless sudoers grant.
         install_cmd = (
             f'cp {udev_src_path}/99-instrument.rules /tmp/ && '
-            '{ getent group lager >/dev/null || sudo /usr/sbin/groupadd lager; } && '
+            '{ getent group lager >/dev/null || sudo /usr/sbin/groupadd -f lager; } && '
             'sudo /bin/cp /tmp/99-instrument.rules /etc/udev/rules.d/ && '
             'sudo /bin/chmod 644 /etc/udev/rules.d/99-instrument.rules && '
+            'sudo /usr/bin/systemctl restart systemd-udevd && '
             'sudo /usr/bin/udevadm control --reload-rules && '
             'sudo /usr/bin/udevadm trigger && '
             'sudo /bin/rm -f /tmp/99-instrument.rules'
@@ -1280,6 +1287,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
                     click.echo(f'  Manual fix: ssh {ssh_host}, then:', err=True)
                     click.echo('    sudo groupadd -f lager', err=True)
                     click.echo(f'    sudo cp {_src}/99-instrument.rules /etc/udev/rules.d/', err=True)
+                    click.echo('    sudo systemctl restart systemd-udevd  # so udevd sees the new group', err=True)
                     click.echo('    sudo udevadm control --reload-rules && sudo udevadm trigger', err=True)
 
         enqueue_priv('udev', install_cmd, _render_udev)

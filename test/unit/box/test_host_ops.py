@@ -167,6 +167,12 @@ class UdevApply(unittest.TestCase):
         # File body is piped via stdin to tee — never interpolated into the cmd.
         self.assertIn("tee /tmp/99-lager-user.rules", cmd)
         self.assertIn('MODE="0666"', stdin)
+        # The rules chown nodes to GROUP="lager"; ensure the group exists first
+        # (getent-guarded, idempotent) and restart udevd so it resolves a
+        # freshly-created group before the trigger re-chowns nodes.
+        self.assertIn("getent group lager", cmd)
+        self.assertIn("sudo -n /usr/sbin/groupadd -f lager", cmd)
+        self.assertIn("sudo -n /usr/bin/systemctl restart systemd-udevd", cmd)
         # cp/chmod/udevadm shapes must match the lagerdata-udev NOPASSWD specs:
         # absolute binary paths, cp into the directory (the glob's dest).
         self.assertIn("sudo -n /bin/cp /tmp/99-lager-user.rules /etc/udev/rules.d/", cmd)

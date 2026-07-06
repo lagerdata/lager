@@ -447,6 +447,15 @@ ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/udev/rules.d/*.rules
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/udevadm control --reload-rules
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/udevadm trigger
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /tmp/*.rules
+# Instrument 'lager' group: udev rules chown device nodes to GROUP="lager".
+# Creating the group is scoped to the exact name (cannot create arbitrary
+# groups). Restarting systemd-udevd is required so udevd picks up a
+# newly-created group before the trigger re-chowns nodes (it caches the group
+# db at startup). Both path variants because secure_path may resolve either.
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/sbin/groupadd -f lager
+${BOX_USER} ALL=(ALL) NOPASSWD: /sbin/groupadd -f lager
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart systemd-udevd
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/systemctl restart systemd-udevd
 # Modprobe blacklist deployment (0.20.0+: usbtmc blacklist for USB-TMC drivers)
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/cp /tmp/*.conf /etc/modprobe.d/
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/modprobe.d/*.conf
@@ -950,8 +959,14 @@ if [ -d "${UDEV_RULES_DIR}" ]; then
         # Install rules and reload udev
         ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
             echo 'Installing udev rules...'
+            # The instrument rules chown device nodes to GROUP=\"lager\"; create
+            # the group first (idempotent) or those rules silently leave nodes
+            # root:root. Restart udevd after so it picks up the new group before
+            # the trigger re-chowns nodes (udevd caches the group db at startup).
+            getent group lager >/dev/null || sudo groupadd -f lager
             sudo cp /tmp/*.rules /etc/udev/rules.d/
             sudo chmod 644 /etc/udev/rules.d/*.rules
+            sudo systemctl restart systemd-udevd
             sudo udevadm control --reload-rules
             sudo udevadm trigger
             echo 'Deployed udev rules:'

@@ -29,8 +29,9 @@ _SYSCTL_HEADER = (
 
 # User udev rules live in their own file so they never collide with the
 # shipped 99-instrument.rules. The filename matches the `99-*.rules` glob the
-# box's `/etc/sudoers.d/lagerdata-udev` NOPASSWD entries already allow, so no
-# new sudo grant is needed (provisioned by setup_and_deploy_box.sh).
+# box's `/etc/sudoers.d/lagerdata-udev` NOPASSWD entries already allow. The
+# group-ensure (groupadd -f lager) and systemd-udevd restart also rely on
+# grants in that same file — all provisioned by setup_and_deploy_box.sh.
 UDEV_RULES_FILENAME = "99-lager-user.rules"
 UDEV_RULES_DIR = "/etc/udev/rules.d/"
 UDEV_RULES_PATH = UDEV_RULES_DIR + UDEV_RULES_FILENAME
@@ -47,6 +48,8 @@ UDEV_SUDOERS_BOOTSTRAP = (
     "  sudo tee /etc/sudoers.d/lagerdata-udev >/dev/null <<'SUDOERS'\n"
     "  lagerdata ALL=(ALL) NOPASSWD: /bin/cp /tmp/*.rules /etc/udev/rules.d/\n"
     "  lagerdata ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/udev/rules.d/*.rules\n"
+    "  lagerdata ALL=(ALL) NOPASSWD: /usr/sbin/groupadd -f lager\n"
+    "  lagerdata ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart systemd-udevd\n"
     "  lagerdata ALL=(ALL) NOPASSWD: /usr/bin/udevadm control --reload-rules\n"
     "  lagerdata ALL=(ALL) NOPASSWD: /usr/bin/udevadm trigger\n"
     "  SUDOERS\n"
@@ -217,10 +220,17 @@ def udev_apply(
     quoted_path = shlex.quote(UDEV_RULES_PATH)
     # tee writes our stdin to /tmp; the rest run under the udev sudoers grant.
     # Absolute binary paths so they match the NOPASSWD command specs exactly.
+    # The rendered rules chown nodes to GROUP="lager", so the group must exist
+    # or the nodes silently stay root:root; groupadd -f is idempotent and
+    # getent-guarded. systemd-udevd caches the group db at startup, so it must
+    # be restarted before the trigger for a freshly-created group to resolve —
+    # a plain reload-rules is not enough.
     cmd = (
         f"tee {quoted_tmp} >/dev/null && "
+        f"{{ getent group lager >/dev/null || sudo -n /usr/sbin/groupadd -f lager; }} && "
         f"sudo -n /bin/cp {quoted_tmp} {shlex.quote(UDEV_RULES_DIR)} && "
         f"sudo -n /bin/chmod 644 {quoted_path} && "
+        f"sudo -n /usr/bin/systemctl restart systemd-udevd && "
         f"sudo -n /usr/bin/udevadm control --reload-rules && "
         f"sudo -n /usr/bin/udevadm trigger"
     )
@@ -233,8 +243,10 @@ def udev_apply(
                 stderr, base_text=_SUDO_BASE_TEXT, bootstrap_text=UDEV_SUDOERS_BOOTSTRAP
             ),
             manual_fix=(
-                f"printf '%s' {shlex.quote(body)} | sudo tee {quoted_path} >/dev/null "
+                "sudo groupadd -f lager "
+                f"&& printf '%s' {shlex.quote(body)} | sudo tee {quoted_path} >/dev/null "
                 f"&& sudo chmod 644 {quoted_path} "
+                "&& sudo systemctl restart systemd-udevd "
                 "&& sudo udevadm control --reload-rules && sudo udevadm trigger"
             ),
         )

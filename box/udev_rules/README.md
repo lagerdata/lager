@@ -71,7 +71,11 @@ SUBSYSTEM=="usb", ATTRS{idVendor}=="<VID>", ATTRS{idProduct}=="<PID>", MODE="066
 - `ATTRS{idProduct}=="<PID>"`: Match specific product ID (4-digit hex)
 - `MODE="0660", GROUP="lager"`: Read/write for the lager group only. The
   container user gets access via `--group-add` in start_box.sh; the host
-  needs the group (`sudo groupadd -f lager` — `lager update` ensures this).
+  needs the group (`sudo groupadd -f lager` — `lager update` and start_box.sh
+  self-heal this). Note: systemd-udevd caches the group database at startup, so
+  after creating the group you must `sudo systemctl restart systemd-udevd`
+  before `sudo udevadm trigger` — otherwise udevd can't resolve GROUP="lager"
+  and the nodes stay root:root.
 
 ### SCPI/USBTMC Instruments (prevents "Resource busy" errors)
 
