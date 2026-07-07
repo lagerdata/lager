@@ -55,6 +55,7 @@ class EnsureKeypair(unittest.TestCase):
         run = RecordingRun([_proc(0)])
         with patch.object(_ssh, "subprocess") as sub, \
              patch.object(_ssh.os.path, "exists", lambda p: False), \
+             patch.object(_ssh.shutil, "which", lambda name: "ssh-keygen"), \
              patch.object(_ssh.os, "makedirs", lambda *a, **k: None):
             sub.run = run
             self.assertTrue(_ssh.ensure_lager_box_keypair("/tmp/nope/lager_box"))
@@ -67,6 +68,7 @@ class EnsureKeypair(unittest.TestCase):
         run = RecordingRun([_proc(1, stderr="disk full")])
         with patch.object(_ssh, "subprocess") as sub, \
              patch.object(_ssh.os.path, "exists", lambda p: False), \
+             patch.object(_ssh.shutil, "which", lambda name: "ssh-keygen"), \
              patch.object(_ssh.os, "makedirs", lambda *a, **k: None):
             sub.run = run
             with self.assertRaises(LagerError):

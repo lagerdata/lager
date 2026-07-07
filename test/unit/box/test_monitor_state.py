@@ -130,6 +130,8 @@ class TestSupplyNetGetMonitorState:
             supply_net,
             get_overcurrent_protection_value=boom,
             get_overvoltage_protection_value=boom,
+            overcurrent_protection_is_tripped=boom,
+            overvoltage_protection_is_tripped=boom,
         ).get_monitor_state(1)
         assert state["ocp_limit"] is None
         assert state["ocp_tripped"] is None

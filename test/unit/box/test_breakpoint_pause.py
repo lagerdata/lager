@@ -184,7 +184,28 @@ def test_stale_resume_marker_is_cleared(tmp_path, monkeypatch):
     assert time.monotonic() - start >= 0.2
 
 
-def test_interactive_console_evaluates_script_state(monkeypatch):
+@pytest.fixture
+def _ignore_sigpipe():
+    """Replicate the box's SIGPIPE handling (box_http_server.py sets SIG_IGN).
+
+    The socket console already absorbs BrokenPipeError (see _serve/_interact),
+    but if SIGPIPE is at its default disposition a client that disconnects
+    mid-write delivers the signal and kills the interpreter (exit 141) on Linux
+    before the handler runs. Ignoring it here — as the box does in production —
+    turns that into the BrokenPipeError the console already handles.
+    """
+    import signal
+    if not hasattr(signal, "SIGPIPE"):
+        yield
+        return
+    old = signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGPIPE, old)
+
+
+def test_interactive_console_evaluates_script_state(monkeypatch, _ignore_sigpipe):
     """End-to-end proof the interactive console can read the paused script's
     namespace, run statements, and survive errors — all over the socket."""
     monkeypatch.setattr(bp, "CONSOLE_PORT_RANGE", range(8401, 8411))

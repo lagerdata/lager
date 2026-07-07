@@ -1,0 +1,26 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# Runtime dependencies required to IMPORT the box-side package tree so its
+# non-hardware unit tests can run headless on a GitHub-hosted runner:
+#   test/unit/box/  test/unit/measurement/  test/unit/blufi/  test/mcp/unit/
+#
+# Hardware SDKs (joulescope, ppk2_api, yoctopuce, labjack-ljm, brainstem,
+# uldaq, phidget22, pyftdi, ...) are intentionally NOT listed: the test
+# conftests mock them, and the box unit tests load individual modules by path
+# to avoid importing them. Everything here is a pure-Python wheel.
+numpy
+simplejson
+pyvisa
+pyvisa-py
+flask
+pyserial
+pyusb
+cryptography
+fastmcp
+pexpect
+pygdbmi         # box/lager/debug/gdb.py — GDB/MI controller (needed to import lager.debug)
+flask-socketio  # box/lager/http_handlers — websocket monitors (needed to import lager.http_handlers)
+# NB: pymupdf (PyMuPDF) is intentionally NOT listed — it is AGPL-3.0, which
+# conflicts with this project's Apache-2.0 license. Without it,
+# test/unit/test_pdf_pages.py skips (it importorskips fitz); that's acceptable.
