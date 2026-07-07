@@ -2,6 +2,18 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.31.1] - 2026-07-06
+
+Power-supply and battery-simulator state reads are now fault-tolerant: the `/supply/command` and `/battery/command` HTTP endpoints always return a structured `state` object, and a single failing instrument query degrades that one field instead of dropping the whole readout. Also adds opt-in MCP box-control and command-execution tools for automated recovery workflows, and fixes a J-Link flash failure after a probe power-cycle mid-session.
+
+### Added
+- **Structured `state` object from the supply/battery HTTP command endpoints.** The `state` action on `/supply/command` and `/battery/command` now returns the same structured dict the WebSocket monitors emit, so HTTP-only clients can render a live readout by polling. The supply endpoint also gains `clear_ocp`/`clear_ovp` actions, matching the WebSocket handler and the battery endpoint.
+- **Opt-in MCP box-control and command-execution tools.** The on-box MCP server (read-only by default) can now expose gated tools for probe/net status checks, USB-hub power-cycling, and command execution, enabling automated recovery workflows. These stay disabled unless explicitly enabled on the box.
+
+### Fixed
+- **One failing instrument query no longer blanks the whole supply/battery readout.** Every field in the monitor-state gather is guarded individually, so an unsupported SCPI query, a measurement overflow, or a transient bus error degrades that field to `null` instead of aborting the gather. The monitors report a clear error — and the TUI keeps its last good display — only when the instrument is entirely unreachable, and a power-cycled instrument still triggers stale-session recovery.
+- **Flashing recovers after a debug probe power-cycles mid-session.** A J-Link GDB server left defunct by a flash that ran while the probe was down was previously treated as still running, so reconnects reused the dead server and the next flash failed. Zombie server processes are now detected and a clean server is restarted automatically.
+
 ## [0.31.0] - 2026-07-02
 
 Richer Joulescope power measurement plus more robust box setup. The watt meter now reads current and voltage — not just power — with SI-scaled output so a small load no longer rounds to `0.000 W`; `--duration` averages over any window (gaplessly on the JS220 via its on-device accumulator); `--json` makes readings scriptable; and `lager energy` reads close the device cleanly on exit. On the setup side, `lager box dut edit`/`add-doc` now work against a Lager Box's www-data-owned `/etc/lager`, and `lager install` is more robust — it asks for the box password once, deploys its udev/modprobe rules correctly, and no longer clobbers the installed `lager` while flattening box code.
