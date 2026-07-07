@@ -1,0 +1,32 @@
+---
+title: "Version 0.31.1"
+description: "July 6, 2026"
+---
+
+## <u>Features</u>
+
+- **Structured state from the supply/battery HTTP command endpoints.** The `state` action on a Lager Box's `/supply/command` and `/battery/command` endpoints now returns the same structured state object the WebSocket monitors emit, so HTTP-only clients can render a live readout by polling. The supply endpoint also gains `clear_ocp`/`clear_ovp` actions, matching the WebSocket handler and the battery endpoint.
+- **Opt-in MCP box-control and command-execution tools.** The on-box MCP server (read-only by default) can now expose gated tools for probe/net status checks, USB-hub power-cycling, and command execution, enabling automated recovery workflows. These stay disabled unless explicitly enabled on the box.
+
+## <u>Bug Fixes</u>
+
+- **One failing instrument query no longer blanks the whole supply/battery readout.** Every field in the monitor-state gather is guarded individually, so an unsupported SCPI query, a measurement overflow, or a transient bus error degrades that single field instead of dropping the entire state. The monitors report a clear error — and the TUI keeps its last good display — only when the instrument is entirely unreachable.
+- **Flashing recovers after a debug probe power-cycles mid-session.** A J-Link GDB server left defunct by a flash that ran while the probe was down was previously treated as still running, so the next flash failed. Zombie server processes are now detected and a clean server is restarted automatically.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.31.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.31.1/)
