@@ -30,7 +30,8 @@ Optional: BMP280 sensor wired to LabJack I2C for device-specific tests.
 LabJack T7 I2C constraints:
   - Maximum 56 bytes per transaction (hardware buffer limit)
   - No internal pull-ups (pull_ups parameter silently ignored)
-  - Frequency range ~25 Hz to ~450 kHz via throttle register
+  - Frequency range ~130 Hz to ~450 kHz via throttle register
+    (slower requests are clamped to the firmware floor with a warning)
   - Reconnect retry logic with exponential backoff (errors 1227/1239)
 """
 import sys
@@ -198,6 +199,7 @@ def test_config_frequencies():
 
     # Non-standard frequencies: accepted without error.
     # LabJack throttle formula maps these to valid throttle values.
+    # 25 Hz is below the ~130 Hz firmware floor and is clamped (warns once).
     for freq in (1_000, 10_000, 25, 450_000):
         try:
             i2c.config(frequency_hz=freq)
