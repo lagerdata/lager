@@ -387,28 +387,44 @@ class LabJackI2C(I2CBase):
 
         # Use throttle=0 (max speed) for scanning - probing for ACKs is
         # timing-insensitive and max speed keeps the address sweep fast
+        options = 0x04  # clock stretching
         for addr in range(start_addr, end_addr + 1):
-            try:
-                ljm.eWriteName(handle, "I2C_SDA_DIONUM", self._sda_pin)
-                ljm.eWriteName(handle, "I2C_SCL_DIONUM", self._scl_pin)
-                ljm.eWriteName(handle, "I2C_SPEED_THROTTLE", 0)
-                ljm.eWriteName(handle, "I2C_OPTIONS", 0x04)  # clock stretching
-                ljm.eWriteName(handle, "I2C_SLAVE_ADDRESS", addr)
-                ljm.eWriteName(handle, "I2C_NUM_BYTES_TX", 0)
-                ljm.eWriteName(handle, "I2C_NUM_BYTES_RX", 0)
-                ljm.eWriteName(handle, "I2C_GO", 1)
+            for _ in range(2):  # allow one retry after a bus reset
+                try:
+                    ljm.eWriteName(handle, "I2C_SDA_DIONUM", self._sda_pin)
+                    ljm.eWriteName(handle, "I2C_SCL_DIONUM", self._scl_pin)
+                    ljm.eWriteName(handle, "I2C_SPEED_THROTTLE", 0)
+                    ljm.eWriteName(handle, "I2C_OPTIONS", options)
+                    ljm.eWriteName(handle, "I2C_SLAVE_ADDRESS", addr)
+                    ljm.eWriteName(handle, "I2C_NUM_BYTES_TX", 0)
+                    ljm.eWriteName(handle, "I2C_NUM_BYTES_RX", 0)
+                    ljm.eWriteName(handle, "I2C_GO", 1)
 
-                # Read ACKS register to verify actual acknowledgment.
-                # I2C_ACKS reports the number of ACKs received. For a
-                # 0-byte probe, only the address byte is sent. ACKS > 0
-                # means the device responded with ACK.
-                acks = int(ljm.eReadName(handle, "I2C_ACKS"))
-                if acks > 0:
-                    found.append(addr)
-                    _debug(f"Device found at 0x{addr:02x} (ACKS={acks})")
-            except Exception:
-                # Bus error - no device at this address
-                pass
+                    # Read ACKS register to verify actual acknowledgment.
+                    # I2C_ACKS reports the number of ACKs received. For a
+                    # 0-byte probe, only the address byte is sent. ACKS > 0
+                    # means the device responded with ACK.
+                    acks = int(ljm.eReadName(handle, "I2C_ACKS"))
+                    if acks > 0:
+                        found.append(addr)
+                        _debug(f"Device found at 0x{addr:02x} (ACKS={acks})")
+                    break
+                except Exception as e:
+                    # Bus held low (error 2720, I2C_BUS_BUSY): a wedged
+                    # slave fails every probe, so the whole scan comes back
+                    # empty. Set I2C_OPTIONS bit 0 so the firmware resets
+                    # the bus, and keep it set for the rest of the sweep.
+                    error_str = str(e)
+                    is_bus_busy = (
+                        "2720" in error_str or
+                        "BUS_BUSY" in error_str.upper()
+                    )
+                    if is_bus_busy and not (options & 0x01):
+                        options |= 0x01
+                        _debug("I2C bus busy during scan; enabling bus reset")
+                        continue
+                    # Other bus error - no device at this address
+                    break
 
         return found
 
