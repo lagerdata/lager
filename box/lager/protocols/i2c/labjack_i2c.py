@@ -59,8 +59,10 @@ MAX_BYTES_PER_TRANSACTION = 56
 THROTTLE_MAX_FREQ_HZ = 450_000
 THROTTLE_FLOOR = 46_000  # slowest allowed, ~130 Hz
 # Added clock period per throttle count below 65536, derived from the
-# datasheet anchor 65516 ~= 100 kHz. T-series I2C is bit-banged in
-# firmware, so achieved bus speed is approximate and varies with load.
+# datasheet anchor 65516 ~= 100 kHz. Cross-checked at the far end of the
+# range: this model predicts ~39 Hz at throttle=1, and the LabJack Modbus
+# map lists throttle=1 as ~40 Hz. T-series I2C is bit-banged in firmware,
+# so achieved bus speed is approximate and varies with load.
 THROTTLE_SECONDS_PER_COUNT = 3.889e-7
 
 
