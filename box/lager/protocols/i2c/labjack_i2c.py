@@ -232,6 +232,7 @@ class LabJackI2C(I2CBase):
             )
 
         last_error = None
+        bus_reset_requested = False
 
         for attempt in range(max_retries):
             try:
@@ -278,6 +279,20 @@ class LabJackI2C(I2CBase):
             except Exception as e:
                 last_error = e
                 error_str = str(e)
+
+                # Bus held low (error 2720, I2C_BUS_BUSY) -- e.g. a slave
+                # wedged mid-transaction after its own bus timeout fired.
+                # Retry once with I2C_OPTIONS bit 0 set, which makes the
+                # firmware reset the bus before the transaction.
+                is_bus_busy = (
+                    "2720" in error_str or
+                    "BUS_BUSY" in error_str.upper()
+                )
+                if is_bus_busy and not bus_reset_requested:
+                    bus_reset_requested = True
+                    options |= 0x01
+                    _debug("I2C bus busy; retrying with bus reset requested")
+                    continue
 
                 # Firmware rejected the computed throttle (error 2729,
                 # I2C_SPEED_TOO_LOW). Should not happen with the

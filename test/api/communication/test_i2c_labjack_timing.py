@@ -38,12 +38,18 @@ REPS = int(os.environ.get("REPS", "20"))
 
 # Requested frequency -> acceptable implied-frequency range.
 # 450 kHz is the throttle=0 baseline that overhead is measured against.
+#
+# Default floor is 10 kHz: many slave chips have an SMBus-style bus
+# timeout (~25-35 ms) and will wedge the bus (holding SDA low, error
+# 2720 I2C_BUS_BUSY) if a multi-byte transaction runs slower than that.
+# Set INCLUDE_1KHZ=1 to test 1 kHz anyway on slaves that tolerate it.
 BASELINE_FREQ = 450_000
 TEST_FREQS = [
     (100_000, (50_000, 200_000)),
     (10_000, (5_000, 20_000)),
-    (1_000, (500, 2_000)),
 ]
+if os.environ.get("INCLUDE_1KHZ"):
+    TEST_FREQS.append((1_000, (500, 2_000)))
 
 # Approximate clocks per transaction: address byte plus each data byte
 # is 8 bits + ACK.
