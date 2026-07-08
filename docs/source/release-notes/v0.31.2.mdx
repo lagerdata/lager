@@ -1,0 +1,29 @@
+---
+title: "Version 0.31.2"
+description: "July 8, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **USB-hub nets work from `lager python` scripts instead of raising `OSError: open failed`.** libusb access to a Yepkit YKUSH or Acroname hub is exclusive, and the drivers cached the open handle indefinitely — so after the first `lager usb` command the Lager Box server pinned the hub, every separate process (each `lager python` script runs in its own subprocess) failed to open it, and only a container restart recovered. Each operation is now a fresh open, operate, release cycle, serialized within and across processes by a per-hub lock; different hubs never block each other. Note: the per-operation reconnect adds roughly 2 seconds to each Acroname operation (YKUSH is unaffected at ~0.1 s).
+- **Keithley 2281S measurement parsing.** Current/voltage reads that come back as multi-field or unit-suffixed responses are now parsed robustly instead of raising or returning an incorrect value.
+- **VISA-resource net mapping.** Nets backed by a VISA resource now resolve to the correct instrument backend, fixing misrouted access to VISA-connected supplies and meters.
+- **Windows-safe `lager update`.** SSH-key setup and the update flow no longer crash on Windows hosts (broadened error handling around `ssh-copy-id` and the container update steps).
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.31.2
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.31.2/)
