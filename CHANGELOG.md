@@ -2,12 +2,25 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
-## [Unreleased]
+## [0.31.2] - 2026-07-08
 
-Driver and setup robustness fixes surfaced while bringing the shared hardware
-bench under continuous integration.
+USB hubs are no longer pinned open by the Lager Box server: every YKUSH/Acroname
+hub operation now opens a fresh handle, operates, and releases it under a per-hub
+lock, so `lager python` scripts can drive USB nets without `OSError: open failed`.
+Also includes driver and setup robustness fixes surfaced while bringing the shared
+hardware bench under continuous integration.
 
 ### Fixed
+- **USB-hub nets work from `lager python` scripts instead of raising `OSError: open failed`.**
+  libusb access to a Yepkit YKUSH or Acroname hub is exclusive, and the drivers cached
+  the open handle indefinitely — so after the first `lager usb` command the long-lived
+  box server pinned the hub, every separate process (each `lager python` script runs in
+  its own subprocess) failed to open it, and only a container restart recovered. Each
+  operation is now a fresh open → operate → release cycle, serialized within and across
+  processes by a per-hub lock; different hubs never block each other. Note: the
+  per-operation reconnect adds roughly 2 seconds to each Acroname operation (YKUSH is
+  unaffected at ~0.1 s); a follow-up may restore a short-lived cached session if this
+  matters for your workflow.
 - **Keithley 2281S measurement parsing.** Current/voltage reads that come back as
   multi-field or unit-suffixed responses are now parsed robustly instead of
   raising or returning an incorrect value.
