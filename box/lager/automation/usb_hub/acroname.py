@@ -144,8 +144,9 @@ class AcronameUSBNet(USBNet):
         """Serialise across threads and processes, open a fresh hub connection,
         run ``fn(hub)``, and always disconnect so the hub is never left claimed."""
         with hub_access(self._lock_key(), timeout=_LOCK_TIMEOUT_S):
-            hub = self._open_hub()
+            hub = None
             try:
+                hub = self._open_hub()
                 return fn(hub)
             finally:
                 self._close_hub(hub)

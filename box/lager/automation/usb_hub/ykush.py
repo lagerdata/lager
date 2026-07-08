@@ -123,8 +123,9 @@ class YKUSHUSBNet(USBNet):
         """Open a fresh YKUSH connection, run ``fn(dev)``, and always release
         the handle — never cache it (see ``_release``)."""
         _ensure_library()
-        dev = _YKUSH_CLS(serial=self.serial) if self.serial else _YKUSH_CLS()
+        dev = None
         try:
+            dev = _YKUSH_CLS(serial=self.serial) if self.serial else _YKUSH_CLS()
             return fn(dev)
         finally:
             self._release(dev)
