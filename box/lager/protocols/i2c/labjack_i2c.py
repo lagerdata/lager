@@ -10,7 +10,10 @@ the built-in I2C functionality.
 LabJack T7 I2C Registers:
 - I2C_SDA_DIONUM (5100): SDA pin number (FIO/EIO/CIO/MIO number)
 - I2C_SCL_DIONUM (5101): SCL pin number
-- I2C_SPEED_THROTTLE (5102): Clock speed control (0=max ~450kHz, 65535=~25Hz)
+- I2C_SPEED_THROTTLE (5102): Clock speed control. Counts DOWN from 65536:
+                       0 is equivalent to 65536 (max, ~450kHz), 65516 is
+                       ~100kHz. Firmware rejects values below 46000 (~130Hz)
+                       with error 2729 (I2C_SPEED_TOO_LOW).
 - I2C_OPTIONS (5103): Bit 0 = reset bus, Bit 1 = no-stop (repeated start),
                        Bit 2 = enable clock stretching
 - I2C_SLAVE_ADDRESS (5104): Un-shifted 7-bit I2C slave address
@@ -48,6 +51,18 @@ def _debug(msg: str) -> None:
 # The T7 I2C data buffers are limited to 56 bytes each.
 MAX_BYTES_PER_TRANSACTION = 56
 
+# I2C_SPEED_THROTTLE semantics (T-series datasheet, section 13.3):
+# the register counts down from 65536. Writing 0 is equivalent to 65536
+# (max speed, ~450 kHz); smaller values slow the clock (65516 ~= 100 kbps).
+# The firmware rejects values below 46000 with error 2729
+# (I2C_SPEED_TOO_LOW: "throttle setting is too low, watchdog may fire").
+THROTTLE_MAX_FREQ_HZ = 450_000
+THROTTLE_FLOOR = 46_000  # slowest allowed, ~130 Hz
+# Added clock period per throttle count below 65536, derived from the
+# datasheet anchor 65516 ~= 100 kHz. T-series I2C is bit-banged in
+# firmware, so achieved bus speed is approximate and varies with load.
+THROTTLE_SECONDS_PER_COUNT = 3.889e-7
+
 
 class LabJackI2C(I2CBase):
     """
@@ -61,8 +76,9 @@ class LabJackI2C(I2CBase):
     - scl_pin: SCL pin number (e.g., 5 for FIO5)
     """
 
-    # Class-level flag: print throttle warning only once per session
+    # Class-level flags: print each throttle warning only once per session
     _throttle_warning_shown = False
+    _speed_fallback_warning_shown = False
 
     def __init__(
         self,
@@ -73,6 +89,9 @@ class LabJackI2C(I2CBase):
         self._sda_pin = int(sda_pin)
         self._scl_pin = int(scl_pin)
         self._frequency_hz = frequency_hz
+        # Set when firmware rejects a computed throttle (error 2729);
+        # forces max speed until the next config() call.
+        self._force_max_speed = False
 
         _debug(f"LabJackI2C initialized: SDA={sda_pin}, SCL={scl_pin}, "
                f"freq={frequency_hz}Hz")
@@ -104,33 +123,39 @@ class LabJackI2C(I2CBase):
         """
         Convert frequency in Hz to LabJack I2C_SPEED_THROTTLE value.
 
-        LabJack T7 I2C clock formula:
-        - Throttle 0 = ~450 kHz (fastest)
-        - Throttle 65535 = ~25 Hz (slowest)
-
-        Formula: throttle = (450000 / freq_hz - 1) / 0.0069
+        The throttle counts down from 65536: writing 0 is equivalent to
+        65536 (max speed, ~450 kHz) and smaller values slow the clock
+        (65516 ~= 100 kHz per the T-series datasheet). The firmware
+        rejects values below 46000 (~130 Hz) with error 2729.
         """
-        if frequency_hz >= 450_000:
+        if frequency_hz <= 0:
+            raise I2CBackendError(
+                f"Invalid I2C frequency: {frequency_hz}Hz. "
+                f"Frequency must be a positive integer."
+            )
+
+        if self._force_max_speed:
             return 0
 
-        if frequency_hz <= 25:
-            return 65535
+        if frequency_hz >= THROTTLE_MAX_FREQ_HZ:
+            return 0
 
-        throttle = int((450_000 / frequency_hz - 1) / 0.0069)
-        throttle = max(0, min(65535, throttle))
+        extra_period = 1.0 / frequency_hz - 1.0 / THROTTLE_MAX_FREQ_HZ
+        throttle = 65536 - round(extra_period / THROTTLE_SECONDS_PER_COUNT)
 
-        # Hardware limitation: LabJack T7 I2C fails with error 2729
-        # (I2C_SPEED_TOO_LOW) at any throttle > 0. Force throttle=0
-        # (~450kHz, within I2C fast mode spec) for all transactions.
-        if throttle > 0:
+        if throttle >= 65536:
+            return 0
+
+        if throttle < THROTTLE_FLOOR:
             if not LabJackI2C._throttle_warning_shown:
                 sys.stderr.write(
-                    f"WARNING: LabJack I2C hardware limitation - forcing ~450kHz "
-                    f"(requested {frequency_hz/1000:.0f}kHz)\n"
+                    f"WARNING: LabJack I2C minimum clock is ~130Hz; clamping "
+                    f"requested {frequency_hz}Hz to firmware floor "
+                    f"(throttle {THROTTLE_FLOOR})\n"
                 )
                 sys.stderr.flush()
                 LabJackI2C._throttle_warning_shown = True
-            return 0
+            return THROTTLE_FLOOR
 
         return throttle
 
@@ -254,6 +279,26 @@ class LabJackI2C(I2CBase):
                 last_error = e
                 error_str = str(e)
 
+                # Firmware rejected the computed throttle (error 2729,
+                # I2C_SPEED_TOO_LOW). Should not happen with the
+                # THROTTLE_FLOOR clamp, but if a firmware rev enforces a
+                # higher floor, degrade to max speed instead of failing.
+                is_speed_rejected = (
+                    "2729" in error_str or
+                    "SPEED_TOO_LOW" in error_str.upper()
+                )
+                if is_speed_rejected and not self._force_max_speed:
+                    self._force_max_speed = True
+                    if not LabJackI2C._speed_fallback_warning_shown:
+                        sys.stderr.write(
+                            f"WARNING: LabJack firmware rejected I2C throttle "
+                            f"for {self._frequency_hz}Hz (error 2729); falling "
+                            f"back to max speed ~450kHz\n"
+                        )
+                        sys.stderr.flush()
+                        LabJackI2C._speed_fallback_warning_shown = True
+                    continue
+
                 is_recoverable = (
                     "1227" in error_str or
                     "1239" in error_str or
@@ -292,6 +337,8 @@ class LabJackI2C(I2CBase):
             pull_ups: Ignored for LabJack (no internal pull-ups)
         """
         self._frequency_hz = frequency_hz
+        # Re-arm the computed throttle path after a firmware fallback.
+        self._force_max_speed = False
 
         if pull_ups is not None:
             _debug("LabJack does not have internal I2C pull-ups, "
@@ -323,8 +370,8 @@ class LabJackI2C(I2CBase):
         handle = self._get_handle()
         ljm = self._get_ljm()
 
-        # Use throttle=0 (max speed) for scanning - scan is timing-insensitive
-        # and this avoids the I2C_SPEED_TOO_LOW firmware quirk
+        # Use throttle=0 (max speed) for scanning - probing for ACKs is
+        # timing-insensitive and max speed keeps the address sweep fast
         for addr in range(start_addr, end_addr + 1):
             try:
                 ljm.eWriteName(handle, "I2C_SDA_DIONUM", self._sda_pin)

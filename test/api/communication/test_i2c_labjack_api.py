@@ -33,7 +33,8 @@ Wiring Diagram:
 LabJack T7 I2C constraints:
   - Maximum 56 bytes per transaction (hardware buffer limit)
   - No internal pull-ups (pull_ups parameter silently ignored)
-  - Frequency range ~25 Hz to ~450 kHz via throttle register
+  - Frequency range ~130 Hz to ~450 kHz via throttle register
+    (slower requests are clamped to the firmware floor with a warning)
   - Reconnect retry logic with exponential backoff (errors 1227/1239)
   - Must check I2C_ACKS register after I2C_GO (NACK detection)
 
