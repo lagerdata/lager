@@ -1360,7 +1360,7 @@ def _ensure_apt_packages(
         )
         return True
     click.echo(f"Installing apt packages on {resolved_box}: {', '.join(pkgs)}")
-    result = apt_install(resolved_box, list(pkgs))
+    result = apt_install(resolved_box, list(pkgs), user=resolve_box_user(resolved_box))
     if not result.ok:
         click.secho(f"apt install failed: {result.message}", fg="red", err=True)
         if result.manual_fix:
@@ -1386,7 +1386,7 @@ def _ensure_sysctl(
         click.echo(f"Applying {len(sysctl)} sysctl key(s) on {resolved_box}...")
     else:
         click.echo(f"Clearing sysctl conf on {resolved_box}...")
-    result = sysctl_apply(resolved_box, dict(sysctl))
+    result = sysctl_apply(resolved_box, dict(sysctl), user=resolve_box_user(resolved_box))
     if not result.ok:
         click.secho(f"sysctl apply failed: {result.message}", fg="red", err=True)
         if result.manual_fix:
@@ -1414,7 +1414,7 @@ def _ensure_udev_rules(
         click.echo(f"Installing {len(rules)} udev rule(s) on {resolved_box}...")
     else:
         click.echo(f"Clearing user udev rules on {resolved_box}...")
-    result = udev_apply(resolved_box, list(rules))
+    result = udev_apply(resolved_box, list(rules), user=resolve_box_user(resolved_box))
     if not result.ok:
         click.secho(f"udev apply failed: {result.message}", fg="red", err=True)
         if result.manual_fix:
