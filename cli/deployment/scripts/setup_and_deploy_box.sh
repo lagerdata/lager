@@ -290,9 +290,18 @@ KEY_FILE="$HOME/.ssh/lager_box"
 SSH_CONFIG="$HOME/.ssh/config"
 NEEDS_SSH_SETUP=false
 
-# Check if we already have passwordless access
+# Check if we already have passwordless access.
+#
+# ControlPath=none / ControlMaster=no: BatchMode blocks password prompts but
+# does NOT bypass connection multiplexing — with a live master (the user's
+# own ControlMaster, or one left by the CLI's password-authenticated
+# connectivity check) this test rides the already-authenticated connection
+# and false-positives, so key setup is silently skipped and every later
+# BatchMode operation (`lager update`, probes) fails with "Permission
+# denied". Force a genuinely fresh connection so the test exercises key
+# authentication for real.
 print_info "Testing existing SSH configuration..."
-if ssh -o BatchMode=yes -o ConnectTimeout=5 "${BOX_USER}@${BOX_IP}" "echo 'test'" &>/dev/null; then
+if ssh -o BatchMode=yes -o ConnectTimeout=5 -o ControlPath=none -o ControlMaster=no "${BOX_USER}@${BOX_IP}" "echo 'test'" &>/dev/null; then
     print_success "Passwordless SSH already configured"
 else
     print_warning "Passwordless SSH not configured - will set up now"

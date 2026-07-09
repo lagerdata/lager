@@ -487,46 +487,70 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
             fg='yellow', err=True,
         )
     else:
-        sudoers_cmd = boxcfg_sudoers_bootstrap_cmd(user)
-
+        # Skip the bootstrap (and its sudo password prompt) when the grant is
+        # already live — marker file present AND `sudo -n apt-get` actually
+        # works as this user, the same functional probe `lager update` uses.
+        # Re-installs then never prompt here at all. This matters because the
+        # prompt lands at the very end of a long install, when the operator
+        # may have stepped away.
         try:
-            bootstrap_result = subprocess.run(
-                ["ssh", "-t", ssh_host, sudoers_cmd],
-                timeout=120,
+            precheck = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", ssh_host,
+                 "test -f /etc/lager/.boxcfg-sudoers-v2 "
+                 "&& sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1"],
+                capture_output=True, timeout=15,
             )
-            if bootstrap_result.returncode != 0:
-                click.secho(
-                    "Warning: Sudoers rule could not be installed. `lager box config apply` "
-                    "will require manual sudoers setup on this box. See `lager box config "
-                    "apply --help` for the snippet to paste.",
-                    fg='yellow', err=True,
+            already_configured = precheck.returncode == 0
+        except Exception:
+            already_configured = False
+
+        if already_configured:
+            click.secho("Passwordless sudo for `lager box config` already configured", fg='green')
+        else:
+            sudoers_cmd = boxcfg_sudoers_bootstrap_cmd(user)
+
+            try:
+                # Interactive: waits on a human typing the box's sudo password
+                # at the end of a long install. A 120s timeout here killed the
+                # bootstrap mid-prompt for a slow (or absent) operator, so give
+                # them 10 minutes; the timeout only guards a genuine hang.
+                bootstrap_result = subprocess.run(
+                    ["ssh", "-t", ssh_host, sudoers_cmd],
+                    timeout=600,
                 )
-            else:
-                # Verify: marker file written by the bootstrap above (means the
-                # current rule shape was installed) + functional apt-get probe
-                # (means the NOPASSWD/SETENV grant is live). Marker name carries
-                # a version suffix so older boxes upgrading to a future rule
-                # shape re-bootstrap automatically.
-                verify_result = subprocess.run(
-                    ["ssh", "-o", "BatchMode=yes", ssh_host,
-                     "test -f /etc/lager/.boxcfg-sudoers-v2 "
-                     "&& sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1"],
-                    capture_output=True, timeout=15,
-                )
-                if verify_result.returncode == 0:
-                    click.secho("Passwordless sudo for `lager box config` configured", fg='green')
-                else:
+                if bootstrap_result.returncode != 0:
                     click.secho(
-                        "Warning: Sudoers file installed but `sudo -n apt-get` still fails. "
-                        "Check /etc/sudoers.d/lager-box-config on the box for syntax issues.",
+                        "Warning: Sudoers rule could not be installed. `lager box config apply` "
+                        "will require manual sudoers setup on this box. See `lager box config "
+                        "apply --help` for the snippet to paste.",
                         fg='yellow', err=True,
                     )
-        except (subprocess.TimeoutExpired, Exception) as e:
-            click.secho(
-                f"Warning: Sudoers bootstrap failed: {e}. `lager box config apply` "
-                "will require manual sudoers setup.",
-                fg='yellow', err=True,
-            )
+                else:
+                    # Verify: marker file written by the bootstrap above (means the
+                    # current rule shape was installed) + functional apt-get probe
+                    # (means the NOPASSWD/SETENV grant is live). Marker name carries
+                    # a version suffix so older boxes upgrading to a future rule
+                    # shape re-bootstrap automatically.
+                    verify_result = subprocess.run(
+                        ["ssh", "-o", "BatchMode=yes", ssh_host,
+                         "test -f /etc/lager/.boxcfg-sudoers-v2 "
+                         "&& sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1"],
+                        capture_output=True, timeout=15,
+                    )
+                    if verify_result.returncode == 0:
+                        click.secho("Passwordless sudo for `lager box config` configured", fg='green')
+                    else:
+                        click.secho(
+                            "Warning: Sudoers file installed but `sudo -n apt-get` still fails. "
+                            "Check /etc/sudoers.d/lager-box-config on the box for syntax issues.",
+                            fg='yellow', err=True,
+                        )
+            except (subprocess.TimeoutExpired, Exception) as e:
+                click.secho(
+                    f"Warning: Sudoers bootstrap failed: {e}. `lager box config apply` "
+                    "will require manual sudoers setup.",
+                    fg='yellow', err=True,
+                )
 
     click.echo()
 
