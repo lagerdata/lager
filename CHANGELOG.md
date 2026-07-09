@@ -41,6 +41,22 @@ rule names the box's actual login user instead of a hardcoded `lagerdata`.
   interpolated into sudoers content), already-provisioned wrong-user boxes re-bootstrap
   automatically on their next `lager update`, and the manual-fix snippets shown on
   failure name the right user too.
+- **SSH key setup is no longer silently skipped for clients with connection
+  multiplexing.** The install's "Passwordless SSH already configured" test used
+  BatchMode, which blocks password prompts but still rides a live ControlMaster
+  connection (the user's own, or one left by the CLI's password-authenticated
+  connectivity check) — so the test false-positived, the key and SSH config entry
+  were never installed, and every later BatchMode operation (`lager update`, box
+  probes) failed with "Permission denied". The test now forces a genuinely fresh
+  connection (`ControlPath=none`).
+- **The end-of-install sudo prompt no longer times out on a slow (or absent) operator.**
+  The sudoers bootstrap ran under a 120-second subprocess timeout that included the
+  time a human takes to type the box's sudo password — at the end of a 15+ minute
+  install, stepping away meant the bootstrap was killed mid-prompt and the box was
+  left needing manual sudoers setup. Install now checks first whether the grant is
+  already live and skips the prompt entirely (re-installs never ask), and genuine
+  first-time bootstraps get a 10-minute window; `lager update`'s privileged session
+  gets the same treatment.
 
 ## [0.31.2] - 2026-07-08
 

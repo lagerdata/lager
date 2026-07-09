@@ -1533,7 +1533,10 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         elif verbose:
             click.echo()
 
-        run_ssh_command_interactive(combined_priv_cmd, allow_sudo_prompt=True)
+        # 600s, not the 300s default: this session waits on a human typing the
+        # sudo password late in the run, when the operator may have stepped
+        # away — the timeout should only guard a genuine hang.
+        run_ssh_command_interactive(combined_priv_cmd, timeout_secs=600, allow_sudo_prompt=True)
 
         if not verbose and progress:
             progress.resume()
