@@ -196,5 +196,90 @@ class UdevApply(unittest.TestCase):
         self.assertIsNotNone(result.manual_fix)
 
 
+class BoxcfgSudoers(unittest.TestCase):
+    # For the default user, the generated bootstrap command must stay
+    # byte-identical to the command `lager install`/`lager update` shipped
+    # before the rule content was centralized here (v0.31.2) — re-running
+    # against an already-provisioned lagerdata box must be a no-op overwrite.
+    LEGACY_CMD = (
+        "printf '%s\\n' "
+        "'lagerdata ALL=(root) NOPASSWD: SETENV: /usr/bin/apt-get' "
+        "'lagerdata ALL=(root) NOPASSWD: /bin/mkdir, /bin/chown, "
+        "/usr/sbin/sysctl --system, /sbin/sysctl --system, "
+        "/usr/bin/tee /etc/sysctl.d/99-lager-box-config.conf, "
+        "/bin/rm -f /etc/sysctl.d/99-lager-box-config.conf, "
+        "/bin/cp /etc/lager/box_config.applied.json /etc/lager/box_config.json' "
+        "| sudo tee /etc/sudoers.d/lager-box-config >/dev/null "
+        "&& sudo chmod 440 /etc/sudoers.d/lager-box-config "
+        "&& sudo touch /etc/lager/.boxcfg-sudoers-v2 "
+        "&& sudo chmod 644 /etc/lager/.boxcfg-sudoers-v2"
+    )
+
+    def test_default_user_matches_legacy_command(self):
+        self.assertEqual(ops.boxcfg_sudoers_bootstrap_cmd(), self.LEGACY_CMD)
+
+    def test_rules_name_the_given_user(self):
+        # The whole point of parameterizing: on a juultest box the rule must
+        # grant juultest, or `sudo -n apt-get` never matches (the JUL-24 bug).
+        rules = ops.boxcfg_sudoers_rules("juultest")
+        self.assertEqual(len(rules), 2)
+        for rule in rules:
+            self.assertTrue(rule.startswith("juultest ALL=(root) NOPASSWD: "), rule)
+        self.assertNotIn("lagerdata", " ".join(rules))
+
+    def test_bootstrap_cmd_interpolates_user(self):
+        cmd = ops.boxcfg_sudoers_bootstrap_cmd("juultest")
+        self.assertIn("'juultest ALL=(root) NOPASSWD: SETENV: /usr/bin/apt-get'", cmd)
+        self.assertNotIn("lagerdata", cmd)
+
+
+class UsernameValidation(unittest.TestCase):
+    def test_accepts_real_fleet_usernames(self):
+        for user in ["lagerdata", "juultest", "faunalogy-2", "_svc", "a.b-c_d", "Host$"]:
+            self.assertTrue(ops.is_valid_unix_username(user), user)
+
+    def test_rejects_injection_and_junk(self):
+        for user in [
+            None,
+            "",
+            "juul test",                     # space splits sudoers fields
+            "a'b",                           # would close the shell quote
+            "a\nb ALL=(ALL) NOPASSWD: ALL",  # sudoers line injection
+            "$(reboot)",
+            "a;b",
+            "-flag",
+            "1starts-with-digit",
+        ]:
+            self.assertFalse(ops.is_valid_unix_username(user), repr(user))
+
+
+class BootstrapTexts(unittest.TestCase):
+    def test_sudoers_bootstrap_names_user(self):
+        text = ops.sudoers_bootstrap("juultest")
+        self.assertIn("'juultest ALL=(root) NOPASSWD: SETENV: /usr/bin/apt-get'", text)
+        self.assertNotIn("lagerdata", text)
+
+    def test_udev_bootstrap_names_user(self):
+        text = ops.udev_sudoers_bootstrap("juultest")
+        self.assertIn(
+            "juultest ALL=(ALL) NOPASSWD: /bin/cp /tmp/*.rules /etc/udev/rules.d/", text
+        )
+        # The sudoers *filename* is historical and stays lagerdata-udev
+        # (matching what setup_and_deploy_box.sh writes); only the rule
+        # lines must name the login user.
+        self.assertIn("/etc/sudoers.d/lagerdata-udev", text)
+
+    def test_failure_messages_carry_user(self):
+        runner, _ = _runner_returning(1, stderr="sudo: a password is required")
+        result = ops.apt_install("1.2.3.4", ["tcpdump"], ssh_runner=runner, user="juultest")
+        self.assertIn("juultest ALL=(root)", result.message)
+        result = ops.sysctl_apply("1.2.3.4", {"vm.dirty_ratio": "10"}, ssh_runner=runner, user="juultest")
+        self.assertIn("juultest ALL=(root)", result.message)
+        result = ops.udev_apply(
+            "1.2.3.4", [{"vid": "1209", "pid": "0001"}], ssh_runner=runner, user="juultest"
+        )
+        self.assertIn("juultest ALL=(ALL)", result.message)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -21,6 +21,7 @@ from ...box_storage import (
 )
 from ...core.ssh_utils import host_in_known_hosts
 from ...errors import ssh_error, LagerError
+from ..box._host_ops import boxcfg_sudoers_bootstrap_cmd, is_valid_unix_username
 
 
 def get_script_path(script_name: str, subdir: str = "scripts") -> Path:
@@ -461,10 +462,11 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     # `lager box config apply` needs root on the host for apt-get install,
     # sysctl writes, and mount-path mkdir/chown. Those run over SSH in a
     # non-interactive context (no TTY for sudo to prompt against), so the
-    # rule must grant NOPASSWD up front. The rule is narrowly scoped:
-    # tee/rm/sysctl are path-locked to the exact files used so the
-    # lagerdata account can't escalate via them; apt-get and mkdir/chown
-    # are unscoped because the package list and host paths are user-defined.
+    # rule must grant NOPASSWD up front. The rule content lives in
+    # _host_ops.boxcfg_sudoers_rules — it must name the actual login user
+    # (it previously hardcoded `lagerdata`, so on boxes with a different
+    # user, e.g. the juultest fleet, the grant never matched and the verify
+    # below always warned "sudo -n apt-get still fails").
     #
     # Idempotent: re-running install overwrites the file with the same
     # content. Failure here is a warning, not fatal — the box is otherwise
@@ -474,58 +476,57 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     click.echo("(One-time setup. You'll be prompted for the sudo password on the box.)")
     click.echo()
 
-    sudoers_cmd = (
-        "printf '%s\\n' "
-        "'lagerdata ALL=(root) NOPASSWD: SETENV: /usr/bin/apt-get' "
-        "'lagerdata ALL=(root) NOPASSWD: /bin/mkdir, /bin/chown, "
-        "/usr/sbin/sysctl --system, /sbin/sysctl --system, "
-        "/usr/bin/tee /etc/sysctl.d/99-lager-box-config.conf, "
-        "/bin/rm -f /etc/sysctl.d/99-lager-box-config.conf, "
-        "/bin/cp /etc/lager/box_config.applied.json /etc/lager/box_config.json' "
-        "| sudo tee /etc/sudoers.d/lager-box-config >/dev/null "
-        "&& sudo chmod 440 /etc/sudoers.d/lager-box-config "
-        "&& sudo touch /etc/lager/.boxcfg-sudoers-v2 "
-        "&& sudo chmod 644 /etc/lager/.boxcfg-sudoers-v2"
-    )
-
-    try:
-        bootstrap_result = subprocess.run(
-            ["ssh", "-t", ssh_host, sudoers_cmd],
-            timeout=120,
-        )
-        if bootstrap_result.returncode != 0:
-            click.secho(
-                "Warning: Sudoers rule could not be installed. `lager box config apply` "
-                "will require manual sudoers setup on this box. See `lager box config "
-                "apply --help` for the snippet to paste.",
-                fg='yellow', err=True,
-            )
-        else:
-            # Verify: marker file written by the bootstrap above (means the
-            # current rule shape was installed) + functional apt-get probe
-            # (means the NOPASSWD/SETENV grant is live). Marker name carries
-            # a version suffix so older boxes upgrading to a future rule
-            # shape re-bootstrap automatically.
-            verify_result = subprocess.run(
-                ["ssh", "-o", "BatchMode=yes", ssh_host,
-                 "test -f /etc/lager/.boxcfg-sudoers-v2 "
-                 "&& sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1"],
-                capture_output=True, timeout=15,
-            )
-            if verify_result.returncode == 0:
-                click.secho("Passwordless sudo for `lager box config` configured", fg='green')
-            else:
-                click.secho(
-                    "Warning: Sudoers file installed but `sudo -n apt-get` still fails. "
-                    "Check /etc/sudoers.d/lager-box-config on the box for syntax issues.",
-                    fg='yellow', err=True,
-                )
-    except (subprocess.TimeoutExpired, Exception) as e:
+    if not is_valid_unix_username(user):
+        # The username lands inside a root-owned sudoers file; refuse to
+        # interpolate anything that isn't a plain unix username.
         click.secho(
-            f"Warning: Sudoers bootstrap failed: {e}. `lager box config apply` "
-            "will require manual sudoers setup.",
+            f"Warning: username {user!r} is not a plain unix username; skipping the "
+            "passwordless-sudo bootstrap. `lager box config apply` will require "
+            "manual sudoers setup on this box. See `lager box config apply --help` "
+            "for the snippet to paste.",
             fg='yellow', err=True,
         )
+    else:
+        sudoers_cmd = boxcfg_sudoers_bootstrap_cmd(user)
+
+        try:
+            bootstrap_result = subprocess.run(
+                ["ssh", "-t", ssh_host, sudoers_cmd],
+                timeout=120,
+            )
+            if bootstrap_result.returncode != 0:
+                click.secho(
+                    "Warning: Sudoers rule could not be installed. `lager box config apply` "
+                    "will require manual sudoers setup on this box. See `lager box config "
+                    "apply --help` for the snippet to paste.",
+                    fg='yellow', err=True,
+                )
+            else:
+                # Verify: marker file written by the bootstrap above (means the
+                # current rule shape was installed) + functional apt-get probe
+                # (means the NOPASSWD/SETENV grant is live). Marker name carries
+                # a version suffix so older boxes upgrading to a future rule
+                # shape re-bootstrap automatically.
+                verify_result = subprocess.run(
+                    ["ssh", "-o", "BatchMode=yes", ssh_host,
+                     "test -f /etc/lager/.boxcfg-sudoers-v2 "
+                     "&& sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1"],
+                    capture_output=True, timeout=15,
+                )
+                if verify_result.returncode == 0:
+                    click.secho("Passwordless sudo for `lager box config` configured", fg='green')
+                else:
+                    click.secho(
+                        "Warning: Sudoers file installed but `sudo -n apt-get` still fails. "
+                        "Check /etc/sudoers.d/lager-box-config on the box for syntax issues.",
+                        fg='yellow', err=True,
+                    )
+        except (subprocess.TimeoutExpired, Exception) as e:
+            click.secho(
+                f"Warning: Sudoers bootstrap failed: {e}. `lager box config apply` "
+                "will require manual sudoers setup.",
+                fg='yellow', err=True,
+            )
 
     click.echo()
 

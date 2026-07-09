@@ -447,6 +447,10 @@ ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/udev/rules.d/*.rules
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/udevadm control --reload-rules
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/udevadm trigger
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /tmp/*.rules
+# The instrument rules grant device access via GROUP="lager"; the deploy
+# step below creates the group if missing (non-tty ssh, so it needs NOPASSWD).
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/sbin/groupadd lager
+${BOX_USER} ALL=(ALL) NOPASSWD: /sbin/groupadd lager
 # Modprobe blacklist deployment (0.20.0+: usbtmc blacklist for USB-TMC drivers)
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/cp /tmp/*.conf /etc/modprobe.d/
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/modprobe.d/*.conf
@@ -556,21 +560,31 @@ else
         echo ""
         print_info "Installing Docker on box (this may take a few minutes)..."
 
-        # Install Docker on the box
-        ssh_t "${BOX_USER}@${BOX_IP}" "
+        # Install Docker on the box.
+        #
+        # `systemctl daemon-reload` + restarting docker.socket before the
+        # daemon matters on boxes where docker was ever removed: the old
+        # socket unit lingers loaded in systemd and the reinstalled service
+        # fails to start with "Unit docker.socket failed to load properly ...
+        # Device or resource busy". `restart` (not `start`) also recovers a
+        # half-started daemon left behind by the package postinst.
+        #
+        # `if ssh_t ...` (not `ssh_t; if [ $? ... ]`): under `set -e` a bare
+        # failing ssh_t aborts the whole script with an unexplained
+        # "Deployment failed!" before the manual-fix message below can print.
+        if ssh_t "${BOX_USER}@${BOX_IP}" "
             sudo apt-get update && \
             sudo apt-get install -y docker.io docker-compose-v2 && \
             { sudo apt-get install -y docker-buildx || sudo apt-get install -y docker-buildx-plugin || true; } && \
+            sudo systemctl daemon-reload && \
             sudo systemctl enable docker && \
-            sudo systemctl start docker && \
+            { sudo systemctl restart docker.socket 2>/dev/null || true; } && \
+            sudo systemctl restart docker && \
             sudo usermod -aG docker \$USER
-        "
-
-        if [ $? -eq 0 ]; then
+        "; then
             print_success "Docker installed successfully"
             echo ""
-            print_warning "Docker group membership requires re-login to take effect"
-            print_info "The script will continue, but you may need to re-run if Docker commands fail"
+            print_info "Docker group membership needs a new SSH login - the script reconnects automatically before the container steps"
             echo ""
         else
             print_error "Failed to install Docker"
@@ -578,6 +592,7 @@ else
             echo "Please install Docker manually on the box:"
             echo "  ssh ${BOX_USER}@${BOX_IP}"
             echo "  sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2"
+            echo "  sudo systemctl daemon-reload && sudo systemctl restart docker"
             echo "  sudo usermod -aG docker \$USER"
             echo "  # Log out and back in, then re-run this script"
             exit 1
@@ -593,8 +608,42 @@ ssh_t "${BOX_USER}@${BOX_IP}" "sudo usermod -aG docker \$USER" 2>/dev/null || tr
 if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker info >/dev/null 2>&1"; then
     print_success "${BOX_USER} has docker access"
 else
-    print_warning "Docker group membership may require re-login"
-    print_info "If Docker commands fail, log out and back in to the box, then re-run install"
+    # `docker info` fails for two distinct reasons; fix each in turn.
+    #
+    # (1) The daemon isn't running — seen on boxes where a previous docker
+    # install/remove left a stale docker.socket unit loaded in systemd, so
+    # the service can't start until a daemon-reload.
+    if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "systemctl is-active --quiet docker"; then
+        print_info "Docker daemon is not running - starting it..."
+        ssh_t "${BOX_USER}@${BOX_IP}" "
+            sudo systemctl daemon-reload && \
+            { sudo systemctl restart docker.socket 2>/dev/null || true; } && \
+            sudo systemctl restart docker
+        " || true
+    fi
+    # (2) A fresh `usermod -aG docker` only shows up in NEW SSH logins, and
+    # this whole run multiplexes every command over one master connection
+    # established BEFORE the group change (either the user's ControlMaster or
+    # the one this script sets up). Without a reconnect, the container steps
+    # below die with "permission denied ... /var/run/docker.sock" and the
+    # operator has to re-run the whole install. Cycle the master so the rest
+    # of the run authenticates fresh — the key was installed in step 1, so
+    # this costs no extra password prompt. ControlMaster=auto (both paths)
+    # re-establishes the master on the next ssh automatically.
+    print_info "Restarting SSH connection so docker group membership takes effect..."
+    ssh $SSH_OPTS -O exit "${BOX_USER}@${BOX_IP}" 2>/dev/null || true
+    sleep 1
+    if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker info >/dev/null 2>&1"; then
+        print_success "${BOX_USER} has docker access (after recovery)"
+    else
+        print_error "Docker is installed but not usable by ${BOX_USER}"
+        echo ""
+        echo "Check on the box:"
+        echo "  systemctl status docker      # daemon should be active"
+        echo "  id -nG                       # should include 'docker'"
+        echo "Then re-run this script."
+        exit 1
+    fi
 fi
 
 # Ensure the Docker buildx plugin is present. `lager update` builds the box image
@@ -801,16 +850,6 @@ fi
 # =============================================================================
 print_step "Deploying Box Code"
 
-# This script lives at cli/deployment/scripts/, so the repo's box/ dir is THREE
-# levels up (../../../box), not two. With ../../box these pointed at the
-# nonexistent cli/box, so the `[ -d "$UDEV_RULES_DIR" ]` guards below fell
-# through to a warning (not a `set -e` abort) and `lager install` silently
-# skipped udev + modprobe deployment. (../security on line 745 confirms the
-# depth: one `..` reaches cli/deployment, so box/ at repo root needs three.)
-BOX_SRC="${SCRIPT_DIR}/../../../box/"
-UDEV_RULES_DIR="${SCRIPT_DIR}/../../../box/udev_rules"
-MODPROBE_D_DIR="${SCRIPT_DIR}/../../../box/modprobe_d"
-
     # ==========================================================================
     # Sparse Checkout Deployment via HTTPS (no authentication needed)
     # ==========================================================================
@@ -935,80 +974,108 @@ MODPROBE_D_DIR="${SCRIPT_DIR}/../../../box/modprobe_d"
     echo ""
     print_success "Box code deployed via sparse checkout (version: ${GIT_VERSION})"
 
-# Deploy udev rules (applies to both deployment methods)
+# Deploy udev rules (from the box-side checkout).
+#
+# The rules ship in the repo's box/ directory, which the sparse checkout
+# above just placed on the box (~/box/udev_rules after flattening) at
+# exactly ${GIT_VERSION}. Deploying from that box-side copy works for every
+# CLI install method: a pip-installed lager-cli ships only the cli/ package,
+# so a host-side ../../../box path only exists for editable repo installs —
+# with the old host-side scp, every pip-CLI install silently skipped udev
+# deployment and fresh boxes came up with no instrument rules.
+#
+# This ssh session has no TTY for a sudo password prompt, so every sudo uses
+# the exact absolute-path command granted NOPASSWD in
+# /etc/sudoers.d/lagerdata-udev (written in step 2 above). One file per
+# `sudo /bin/cp`: the grant pattern `/tmp/*.rules` matches exactly two
+# arguments, so a multi-file glob expansion would fall outside the grant.
 echo ""
-print_info "Deploying udev rules..."
-if [ -d "${UDEV_RULES_DIR}" ]; then
-    # Deploy all .rules files from udev_rules directory
-    RULES_COUNT=$(find "${UDEV_RULES_DIR}" -name "*.rules" 2>/dev/null | wc -l)
-    if [ "$RULES_COUNT" -gt 0 ]; then
-        echo "Found $RULES_COUNT udev rule(s) to deploy"
-
-        # Copy all rules files to /tmp on box
-        scp $SCP_OPTS "${UDEV_RULES_DIR}"/*.rules "${BOX_USER}@${BOX_IP}:/tmp/"
-
-        # Install rules and reload udev
-        ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
-            echo 'Installing udev rules...'
-            sudo cp /tmp/*.rules /etc/udev/rules.d/
-            sudo chmod 644 /etc/udev/rules.d/*.rules
-            sudo udevadm control --reload-rules
-            sudo udevadm trigger
-            echo 'Deployed udev rules:'
-            ls -1 /tmp/*.rules | xargs -n1 basename
-            rm -f /tmp/*.rules
-            echo '[OK] Udev rules deployed and activated'
-        "
-        print_success "Udev rules deployed successfully"
+print_info "Deploying udev rules from box checkout..."
+if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
+    if [ -d \$HOME/box/udev_rules ]; then SRC=\$HOME/box/udev_rules
+    elif [ -d \$HOME/box/box/udev_rules ]; then SRC=\$HOME/box/box/udev_rules
     else
-        print_warning "No .rules files found in ${UDEV_RULES_DIR}"
+        echo '[ERROR] udev_rules directory not found in ~/box or ~/box/box'
+        exit 1
     fi
-else
-    print_warning "udev_rules directory not found at ${UDEV_RULES_DIR}"
+    RULES_COUNT=\$(find \"\$SRC\" -maxdepth 1 -name '*.rules' 2>/dev/null | wc -l)
+    if [ \"\$RULES_COUNT\" -eq 0 ]; then
+        echo \"[ERROR] no .rules files found in \$SRC\"
+        exit 1
+    fi
+    echo \"Installing \$RULES_COUNT udev rule(s) from \$SRC...\"
+    getent group lager >/dev/null || sudo /usr/sbin/groupadd lager 2>/dev/null || sudo /sbin/groupadd lager || exit 1
+    for f in \"\$SRC\"/*.rules; do
+        b=\$(basename \"\$f\")
+        cp \"\$f\" \"/tmp/\$b\" || exit 1
+        sudo /bin/cp \"/tmp/\$b\" /etc/udev/rules.d/ || exit 1
+        sudo /bin/chmod 644 \"/etc/udev/rules.d/\$b\" || exit 1
+        rm -f \"/tmp/\$b\"
+        echo \"  deployed \$b\"
+    done
+    sudo /usr/bin/udevadm control --reload-rules || exit 1
+    sudo /usr/bin/udevadm trigger || exit 1
+    echo '[OK] Udev rules deployed and activated'
+"; then
+    print_error "Udev rules deployment failed"
+    echo ""
+    echo "Without the udev rules, instruments are not accessible on this box."
+    echo "The rules ship inside the box checkout (~/box/udev_rules); if you are"
+    echo "installing a version that predates them, re-run with: --version main"
+    exit 1
 fi
+print_success "Udev rules deployed successfully"
 
-# Deploy modprobe.d blacklist files (mirrors udev_rules pattern; 0.20.0+).
-# This persistently keeps the Linux usbtmc kernel module from auto-binding
-# to USB-TMC instruments, which would otherwise race pyvisa-py's libusb
-# claim and produce [Errno 16] Resource busy.
+# Deploy modprobe.d blacklists (from the box-side checkout, same pattern and
+# rationale as the udev rules above; 0.20.0+). This persistently keeps the
+# Linux usbtmc kernel module from auto-binding to USB-TMC instruments, which
+# would otherwise race pyvisa-py's libusb claim and produce [Errno 16]
+# Resource busy. The install itself must succeed (hard error), but the
+# usbtmc unload stays best-effort: `modprobe -r usbtmc` fails with EBUSY if
+# anything has the device open — a reboot will clear it.
 echo ""
-print_info "Deploying modprobe.d blacklists..."
-if [ -d "${MODPROBE_D_DIR}" ]; then
-    CONF_COUNT=$(find "${MODPROBE_D_DIR}" -name "*.conf" 2>/dev/null | wc -l)
-    if [ "$CONF_COUNT" -gt 0 ]; then
-        echo "Found $CONF_COUNT modprobe.d config(s) to deploy"
-
-        # Copy all .conf files to /tmp on box
-        scp $SCP_OPTS "${MODPROBE_D_DIR}"/*.conf "${BOX_USER}@${BOX_IP}:/tmp/"
-
-        # Install configs and try to unload usbtmc so the change takes effect
-        # immediately. `modprobe -r usbtmc` fails with EBUSY if anything has the
-        # device open; we treat that as fine — a reboot will clear it.
-        ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
-            echo 'Installing modprobe.d configs...'
-            sudo cp /tmp/*.conf /etc/modprobe.d/
-            sudo chmod 644 /etc/modprobe.d/*.conf
-            echo 'Deployed modprobe.d configs:'
-            ls -1 /tmp/*.conf | xargs -n1 basename
-            rm -f /tmp/*.conf
-            if lsmod | grep -q '^usbtmc'; then
-                echo 'Attempting to unload usbtmc (will fail if a USB-TMC instrument is in use)...'
-                if sudo modprobe -r usbtmc 2>/dev/null; then
-                    echo '[OK] usbtmc unloaded; blacklist now in effect'
-                else
-                    echo '[WARN] usbtmc still loaded with a device in use — reboot the box to clear'
-                fi
-            else
-                echo '[OK] usbtmc not currently loaded'
-            fi
-        "
-        print_success "Modprobe.d blacklists deployed successfully"
+print_info "Deploying modprobe.d blacklists from box checkout..."
+if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
+    if [ -d \$HOME/box/modprobe_d ]; then SRC=\$HOME/box/modprobe_d
+    elif [ -d \$HOME/box/box/modprobe_d ]; then SRC=\$HOME/box/box/modprobe_d
     else
-        print_warning "No .conf files found in ${MODPROBE_D_DIR}"
+        echo '[ERROR] modprobe_d directory not found in ~/box or ~/box/box'
+        exit 1
     fi
-else
-    print_warning "modprobe_d directory not found at ${MODPROBE_D_DIR}"
+    CONF_COUNT=\$(find \"\$SRC\" -maxdepth 1 -name '*.conf' 2>/dev/null | wc -l)
+    if [ \"\$CONF_COUNT\" -eq 0 ]; then
+        echo \"[ERROR] no .conf files found in \$SRC\"
+        exit 1
+    fi
+    echo \"Installing \$CONF_COUNT modprobe.d config(s) from \$SRC...\"
+    for f in \"\$SRC\"/*.conf; do
+        b=\$(basename \"\$f\")
+        cp \"\$f\" \"/tmp/\$b\" || exit 1
+        sudo /bin/cp \"/tmp/\$b\" /etc/modprobe.d/ || exit 1
+        sudo /bin/chmod 644 \"/etc/modprobe.d/\$b\" || exit 1
+        rm -f \"/tmp/\$b\"
+        echo \"  deployed \$b\"
+    done
+    if lsmod | grep -q '^usbtmc'; then
+        echo 'Attempting to unload usbtmc (will fail if a USB-TMC instrument is in use)...'
+        if sudo /sbin/modprobe -r usbtmc 2>/dev/null; then
+            echo '[OK] usbtmc unloaded; blacklist now in effect'
+        else
+            echo '[WARN] usbtmc still loaded with a device in use — reboot the box to clear'
+        fi
+    else
+        echo '[OK] usbtmc not currently loaded'
+    fi
+"; then
+    print_error "Modprobe.d blacklist deployment failed"
+    echo ""
+    echo "Without the usbtmc blacklist, USB-TMC instruments can hit"
+    echo "'[Errno 16] Resource busy'. The configs ship inside the box checkout"
+    echo "(~/box/modprobe_d); if you are installing a version that predates"
+    echo "them, re-run with: --version main"
+    exit 1
 fi
+print_success "Modprobe.d blacklists deployed successfully"
 
 
 # =============================================================================
@@ -1358,6 +1425,28 @@ if [ "$SKIP_VERIFY" = false ]; then
     echo ""
     print_info "Verifying auto-restart configuration..."
     ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "cd ~/box && ./verify_restart_policy.sh" || true
+
+    # Verify instrument-access prerequisites. The deploy above hard-fails if
+    # these can't be installed, so a miss here means something removed them
+    # since — either way it must never scroll by silently (fresh boxes shipped
+    # without instrument rules three times before this check existed).
+    echo ""
+    print_info "Verifying instrument udev rules..."
+    if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -f /etc/udev/rules.d/99-instrument.rules"; then
+        print_success "Instrument udev rules present (/etc/udev/rules.d/99-instrument.rules)"
+    else
+        print_warning "Instrument udev rules MISSING — instruments will not be accessible"
+    fi
+    if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "getent group lager >/dev/null"; then
+        print_success "'lager' group exists"
+    else
+        print_warning "'lager' group missing — the udev rules grant device access to it"
+    fi
+    if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -f /etc/modprobe.d/blacklist-usbtmc.conf"; then
+        print_success "usbtmc blacklist present (/etc/modprobe.d/blacklist-usbtmc.conf)"
+    else
+        print_warning "usbtmc blacklist missing — USB-TMC instruments may hit 'Resource busy'"
+    fi
 
     # Test lager connectivity (if lager CLI is available)
     if command -v lager &> /dev/null; then

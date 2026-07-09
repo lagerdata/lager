@@ -25,6 +25,7 @@ from ...box_storage import (
 )
 from ...context import get_default_box
 from ...core.ssh_utils import get_ssh_connection_pool
+from ..box._host_ops import boxcfg_sudoers_bootstrap_cmd, is_valid_unix_username
 from ..box._ssh import ensure_lager_box_keypair, key_auth_works
 from ...errors import LagerError
 
@@ -1445,33 +1446,35 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     #
     # `lager box config apply` needs root on the host for apt-get install,
     # sysctl writes, and mount-path mkdir/chown — all over BatchMode SSH
-    # where sudo can't prompt. The rule grants narrow NOPASSWD for exactly
-    # those operations. The probe ran the functional check (marker file
-    # present + `sudo -n apt-get` actually works), so we only bootstrap when
-    # it came back negative. Runs on every update so existing boxes
-    # gradually pick up the rule; idempotent.
+    # where sudo can't prompt. The rule (built in
+    # _host_ops.boxcfg_sudoers_bootstrap_cmd) grants narrow NOPASSWD for
+    # exactly those operations, and must name the actual login user — it
+    # previously hardcoded `lagerdata`, so on boxes with a different user
+    # (e.g. the juultest fleet) the grant never matched. The probe ran the
+    # functional check (marker file present + `sudo -n apt-get` actually
+    # works) as that user, so wrong-user boxes come back negative and
+    # re-bootstrap here with the corrected rule. Runs on every update so
+    # existing boxes gradually pick up the rule; idempotent.
     if progress:
         progress.update("Checking box-config sudoers...")
     log('Checking box-config sudoers...', nl=False)
 
     if facts.get('BOXCFG_SUDOERS_OK') == '1':
         log_status('OK', 'green')
+    elif not is_valid_unix_username(username):
+        # The username lands inside a root-owned sudoers file; refuse to
+        # interpolate anything that isn't a plain unix username.
+        log_status('SKIPPED (unusual username)', 'yellow')
+        if verbose:
+            click.echo(
+                f'  Username {username!r} is not a plain unix username; '
+                '`lager box config apply` will need manual sudoers setup.',
+                err=True,
+            )
     else:
         log_status('needs bootstrap', 'yellow')
 
-        boxcfg_sudoers_cmd = (
-            "printf '%s\\n' "
-            "'lagerdata ALL=(root) NOPASSWD: SETENV: /usr/bin/apt-get' "
-            "'lagerdata ALL=(root) NOPASSWD: /bin/mkdir, /bin/chown, "
-            "/usr/sbin/sysctl --system, /sbin/sysctl --system, "
-            "/usr/bin/tee /etc/sysctl.d/99-lager-box-config.conf, "
-            "/bin/rm -f /etc/sysctl.d/99-lager-box-config.conf, "
-            "/bin/cp /etc/lager/box_config.applied.json /etc/lager/box_config.json' "
-            "| sudo tee /etc/sudoers.d/lager-box-config >/dev/null "
-            "&& sudo chmod 440 /etc/sudoers.d/lager-box-config "
-            "&& sudo touch /etc/lager/.boxcfg-sudoers-v2 "
-            "&& sudo chmod 644 /etc/lager/.boxcfg-sudoers-v2"
-        )
+        boxcfg_sudoers_cmd = boxcfg_sudoers_bootstrap_cmd(username)
 
         def _render_boxcfg(ok):
             log('Installing box-config sudoers...', nl=False)

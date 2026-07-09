@@ -2,6 +2,46 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+`lager install` now reliably provisions instrument access on fresh boxes: udev
+rules and the usbtmc blacklist install from the box's own checkout (so a
+pip-installed CLI no longer silently skips them), and the box-config sudoers
+rule names the box's actual login user instead of a hardcoded `lagerdata`.
+
+### Fixed
+- **`lager install` deploys instrument udev rules from every CLI install method.**
+  The rules were copied from the host's repo checkout, which only exists for
+  editable/source installs — a pip-installed `lager-cli` (the common case) has no
+  `box/` directory, so installs completed with a scroll-by warning and fresh boxes
+  came up with no instrument udev rules or usbtmc blacklist. Both now install from
+  the box's own sparse checkout (`~/box/udev_rules`, `~/box/modprobe_d`) at exactly
+  the deployed version, the `lager` group is created if missing, a failed deploy
+  aborts the install instead of warning, and post-deployment verification checks
+  the rules, group, and blacklist explicitly.
+- **Fresh-box installs no longer fail at container start with "permission denied ...
+  docker.sock".** When the install itself installs docker and adds the login user to
+  the docker group, the group only takes effect on a new SSH login — but the whole
+  run multiplexes over one master connection established before the change, so the
+  container steps failed and the operator had to re-run the entire install. The
+  script now detects the stale session, cycles the SSH master connection (no extra
+  password prompt — the key is already installed by then), and continues. The docker
+  install itself is also hardened for boxes where docker was ever removed: a stale
+  docker.socket unit left loaded in systemd made the reinstalled service fail with
+  "Device or resource busy"; the install now runs `systemctl daemon-reload` and
+  restarts the socket before the daemon, recovers a dead daemon during the
+  docker-access check, and if docker still isn't usable fails right there with
+  diagnostics instead of dying later at the container step.
+- **Box-config passwordless sudo works on boxes whose login user isn't `lagerdata`.**
+  The `/etc/sudoers.d/lager-box-config` rule written by `lager install`/`lager update`
+  hardcoded the `lagerdata` username, so on boxes with a different login user (e.g.
+  `juultest`) the grant never matched — install ended with "Sudoers file installed
+  but `sudo -n apt-get` still fails" and `lager box config apply` required manual
+  setup. The rule now names the box's actual login user (validated before being
+  interpolated into sudoers content), already-provisioned wrong-user boxes re-bootstrap
+  automatically on their next `lager update`, and the manual-fix snippets shown on
+  failure name the right user too.
+
 ## [0.31.2] - 2026-07-08
 
 USB hubs are no longer pinned open by the Lager Box server: every YKUSH/Acroname

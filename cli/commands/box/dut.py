@@ -56,19 +56,23 @@ _BENCH_SUDO_BASE = (
     "it directly."
 )
 
-_BENCH_SUDOERS_BOOTSTRAP = (
-    "This box is missing the bench.json sudo grant (older box, or not yet "
-    "re-provisioned). Re-provision with `lager update --box <BOX>` (or "
-    "`lager install`), or add it ONCE on the box:\n"
-    "\n"
-    "  sudo tee /etc/sudoers.d/lager-bench-json >/dev/null <<'SUDOERS'\n"
-    "  lagerdata ALL=(ALL) NOPASSWD: /bin/cp /tmp/lager-bench.json.tmp /etc/lager/bench.json\n"
-    "  lagerdata ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/lager/bench.json\n"
-    "  SUDOERS\n"
-    "  sudo chmod 440 /etc/sudoers.d/lager-bench-json\n"
-    "\n"
-    "Then re-run the command."
-)
+def _bench_sudoers_bootstrap(user: str = "lagerdata") -> str:
+    """Manual-fix text for a box missing the bench.json sudo grant. Names
+    the box's actual login user so the pasted rule matches it (a hardcoded
+    `lagerdata` never matched on e.g. juultest boxes)."""
+    return (
+        "This box is missing the bench.json sudo grant (older box, or not yet "
+        "re-provisioned). Re-provision with `lager update --box <BOX>` (or "
+        "`lager install`), or add it ONCE on the box:\n"
+        "\n"
+        "  sudo tee /etc/sudoers.d/lager-bench-json >/dev/null <<'SUDOERS'\n"
+        f"  {user} ALL=(ALL) NOPASSWD: /bin/cp /tmp/lager-bench.json.tmp /etc/lager/bench.json\n"
+        f"  {user} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/lager/bench.json\n"
+        "  SUDOERS\n"
+        "  sudo chmod 440 /etc/sudoers.d/lager-bench-json\n"
+        "\n"
+        "Then re-run the command."
+    )
 
 
 def _read_bench_json(box_ip: str) -> dict:
@@ -136,7 +140,7 @@ def _write_bench_json(box_ip: str, payload: dict) -> bool:
         msg = sudo_error_message(
             stderr,
             base_text=_BENCH_SUDO_BASE,
-            bootstrap_text=_BENCH_SUDOERS_BOOTSTRAP,
+            bootstrap_text=_bench_sudoers_bootstrap(resolve_box_user(box_ip)),
         )
         click.secho(f"Failed to write {_BENCH_JSON_PATH}: {msg}", fg="red", err=True)
         return False

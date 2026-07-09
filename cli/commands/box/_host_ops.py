@@ -16,6 +16,7 @@ branch without a real box.
 
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass
 from typing import Dict, List, Optional
@@ -39,45 +40,106 @@ _UDEV_HEADER = (
     "# Managed by `lager box config udev`; manual edits are overwritten on apply.\n"
 )
 
-UDEV_SUDOERS_BOOTSTRAP = (
-    "Applying user udev rules needs the passwordless-sudo udev grant that the "
-    "box setup script installs. If it's missing (older box), re-run the box "
-    "setup/deploy, or add it ONCE on the box:\n"
-    "\n"
-    "  sudo tee /etc/sudoers.d/lagerdata-udev >/dev/null <<'SUDOERS'\n"
-    "  lagerdata ALL=(ALL) NOPASSWD: /bin/cp /tmp/*.rules /etc/udev/rules.d/\n"
-    "  lagerdata ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/udev/rules.d/*.rules\n"
-    "  lagerdata ALL=(ALL) NOPASSWD: /usr/bin/udevadm control --reload-rules\n"
-    "  lagerdata ALL=(ALL) NOPASSWD: /usr/bin/udevadm trigger\n"
-    "  SUDOERS\n"
-    "  sudo chmod 440 /etc/sudoers.d/lagerdata-udev\n"
-    "\n"
-    "Then re-run `lager box config apply`."
-)
+# --- Box-config sudoers rule: single source of truth ------------------------
+#
+# `lager install` and `lager update` write this rule to BOXCFG_SUDOERS_PATH
+# so `lager box config apply` can run apt-get/sysctl/mkdir/chown over
+# BatchMode SSH. The rule must name the actual login user: it used to
+# hardcode `lagerdata`, so on boxes with a different user (e.g. the juultest
+# fleet) the grant never matched — install ended with "Sudoers file installed
+# but `sudo -n apt-get` still fails" and every apply needed manual setup.
+#
+# The username lands inside a root-owned sudoers file, so callers must gate
+# interpolation on is_valid_unix_username().
 
-SUDOERS_BOOTSTRAP = (
-    "Box-config apply needs passwordless sudo for a small set of commands. "
-    "Run this ONCE on the box (you'll be prompted for the sudo password "
-    "the one time):\n"
-    "\n"
-    "  printf '%s\\n' \\\n"
-    "    'lagerdata ALL=(root) NOPASSWD: SETENV: /usr/bin/apt-get' \\\n"
-    "    'lagerdata ALL=(root) NOPASSWD: /bin/mkdir, /bin/chown, "
-    "/usr/sbin/sysctl --system, /sbin/sysctl --system, "
-    "/usr/bin/tee /etc/sysctl.d/99-lager-box-config.conf, "
-    "/bin/rm -f /etc/sysctl.d/99-lager-box-config.conf, "
-    "/bin/cp /etc/lager/box_config.applied.json /etc/lager/box_config.json' \\\n"
-    "    | sudo tee /etc/sudoers.d/lager-box-config >/dev/null\n"
-    "  sudo chmod 440 /etc/sudoers.d/lager-box-config\n"
-    "  sudo touch /etc/lager/.boxcfg-sudoers-v2 && sudo chmod 644 /etc/lager/.boxcfg-sudoers-v2\n"
-    "\n"
-    "Then re-run `lager box config apply`. tee/rm/sysctl are path-scoped so a "
-    "compromised lagerdata account cannot escalate to root via them; apt-get "
-    "and mkdir/chown are unscoped because the package list and host paths are "
-    "user-defined. SETENV on apt-get is required so "
-    "`DEBIAN_FRONTEND=noninteractive` propagates and package postinst scripts "
-    "(iptables-persistent, etc.) don't prompt."
-)
+BOXCFG_SUDOERS_PATH = "/etc/sudoers.d/lager-box-config"
+BOXCFG_SUDOERS_MARKER = "/etc/lager/.boxcfg-sudoers-v2"
+
+# useradd's default charset plus uppercase and dots (both appear in real
+# deployments and are harmless in sudoers). Every allowed character is inert
+# inside the single-quoted rule strings and sudoers syntax; anything else
+# (spaces, quotes, $(), newlines, ...) is refused.
+_UNIX_USERNAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*\$?")
+
+
+def is_valid_unix_username(user: Optional[str]) -> bool:
+    """True for plain unix usernames — the gate for interpolating a name
+    into sudoers content."""
+    return bool(user) and _UNIX_USERNAME_RE.fullmatch(user) is not None
+
+
+def boxcfg_sudoers_rules(user: str = "lagerdata") -> List[str]:
+    """The NOPASSWD rule lines for `lager box config apply`. tee/rm/sysctl
+    are path-scoped so a compromised account cannot escalate via them;
+    apt-get and mkdir/chown are unscoped because the package list and host
+    paths are user-defined. SETENV on apt-get is required so
+    DEBIAN_FRONTEND=noninteractive propagates and package postinst scripts
+    (iptables-persistent, etc.) don't prompt."""
+    return [
+        f"{user} ALL=(root) NOPASSWD: SETENV: /usr/bin/apt-get",
+        f"{user} ALL=(root) NOPASSWD: /bin/mkdir, /bin/chown, "
+        "/usr/sbin/sysctl --system, /sbin/sysctl --system, "
+        f"/usr/bin/tee {SYSCTL_CONF_PATH}, "
+        f"/bin/rm -f {SYSCTL_CONF_PATH}, "
+        "/bin/cp /etc/lager/box_config.applied.json /etc/lager/box_config.json",
+    ]
+
+
+def boxcfg_sudoers_bootstrap_cmd(user: str = "lagerdata") -> str:
+    """One shell command that installs the box-config sudoers rule plus the
+    versioned marker file. Used verbatim by `lager install` and
+    `lager update`; the manual snippet in sudoers_bootstrap() mirrors it."""
+    quoted_rules = " ".join(f"'{r}'" for r in boxcfg_sudoers_rules(user))
+    return (
+        f"printf '%s\\n' {quoted_rules} "
+        f"| sudo tee {BOXCFG_SUDOERS_PATH} >/dev/null "
+        f"&& sudo chmod 440 {BOXCFG_SUDOERS_PATH} "
+        f"&& sudo touch {BOXCFG_SUDOERS_MARKER} "
+        f"&& sudo chmod 644 {BOXCFG_SUDOERS_MARKER}"
+    )
+
+
+def udev_sudoers_bootstrap(user: str = "lagerdata") -> str:
+    """Manual-fix text for a box missing the udev sudoers grant."""
+    return (
+        "Applying user udev rules needs the passwordless-sudo udev grant that the "
+        "box setup script installs. If it's missing (older box), re-run the box "
+        "setup/deploy, or add it ONCE on the box:\n"
+        "\n"
+        "  sudo tee /etc/sudoers.d/lagerdata-udev >/dev/null <<'SUDOERS'\n"
+        f"  {user} ALL=(ALL) NOPASSWD: /bin/cp /tmp/*.rules /etc/udev/rules.d/\n"
+        f"  {user} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/udev/rules.d/*.rules\n"
+        f"  {user} ALL=(ALL) NOPASSWD: /usr/bin/udevadm control --reload-rules\n"
+        f"  {user} ALL=(ALL) NOPASSWD: /usr/bin/udevadm trigger\n"
+        "  SUDOERS\n"
+        "  sudo chmod 440 /etc/sudoers.d/lagerdata-udev\n"
+        "\n"
+        "Then re-run `lager box config apply`."
+    )
+
+
+def sudoers_bootstrap(user: str = "lagerdata") -> str:
+    """Manual-fix text for a box missing the box-config sudoers grant."""
+    rules = boxcfg_sudoers_rules(user)
+    return (
+        "Box-config apply needs passwordless sudo for a small set of commands. "
+        "Run this ONCE on the box (you'll be prompted for the sudo password "
+        "the one time):\n"
+        "\n"
+        "  printf '%s\\n' \\\n"
+        f"    '{rules[0]}' \\\n"
+        f"    '{rules[1]}' \\\n"
+        f"    | sudo tee {BOXCFG_SUDOERS_PATH} >/dev/null\n"
+        f"  sudo chmod 440 {BOXCFG_SUDOERS_PATH}\n"
+        f"  sudo touch {BOXCFG_SUDOERS_MARKER} && sudo chmod 644 {BOXCFG_SUDOERS_MARKER}\n"
+        "\n"
+        "Then re-run `lager box config apply`. tee/rm/sysctl are path-scoped so a "
+        f"compromised {user} account cannot escalate to root via them; apt-get "
+        "and mkdir/chown are unscoped because the package list and host paths are "
+        "user-defined. SETENV on apt-get is required so "
+        "`DEBIAN_FRONTEND=noninteractive` propagates and package postinst scripts "
+        "(iptables-persistent, etc.) don't prompt."
+    )
 
 _SUDO_BASE_TEXT = "passwordless sudo is not configured on the box for the apply commands."
 
@@ -95,9 +157,11 @@ def apt_install(
     packages: List[str],
     *,
     ssh_runner: Optional[SshRunner] = None,
+    user: str = "lagerdata",
 ) -> HostOpResult:
     """Install the given apt packages on the box host. Idempotent — apt
-    skips packages that are already at the requested version."""
+    skips packages that are already at the requested version. `user` only
+    names the login user in the manual-fix bootstrap text on failure."""
     if not packages:
         return HostOpResult(ok=True, action="noop", message="No apt packages configured.")
     runner = ssh_runner or default_ssh_runner
@@ -111,7 +175,7 @@ def apt_install(
         return HostOpResult(
             ok=False,
             action="failed",
-            message=_sudo_or_apt_error(stderr),
+            message=_sudo_or_apt_error(stderr, user),
             manual_fix=f"sudo apt-get install -y {quoted_pkgs}",
         )
     return HostOpResult(
@@ -127,10 +191,12 @@ def sysctl_apply(
     *,
     conf_path: str = SYSCTL_CONF_PATH,
     ssh_runner: Optional[SshRunner] = None,
+    user: str = "lagerdata",
 ) -> HostOpResult:
     """Write the sysctl conf and run `sysctl --system`. When `sysctl` is
     empty, removes the conf file so the previously-set keys revert to
     defaults on next reboot (and immediately, where the kernel allows it).
+    `user` only names the login user in the bootstrap text on failure.
     """
     runner = ssh_runner or default_ssh_runner
     quoted_path = shlex.quote(conf_path)
@@ -142,7 +208,7 @@ def sysctl_apply(
             return HostOpResult(
                 ok=False,
                 action="failed",
-                message=sudo_error_message(stderr, base_text=_SUDO_BASE_TEXT, bootstrap_text=SUDOERS_BOOTSTRAP),
+                message=sudo_error_message(stderr, base_text=_SUDO_BASE_TEXT, bootstrap_text=sudoers_bootstrap(user)),
                 manual_fix=f"sudo rm -f {quoted_path} && sudo sysctl --system",
             )
         return HostOpResult(ok=True, action="cleared", message=f"Removed {conf_path}.")
@@ -157,7 +223,7 @@ def sysctl_apply(
         return HostOpResult(
             ok=False,
             action="failed",
-            message=sudo_error_message(stderr, base_text=_SUDO_BASE_TEXT, bootstrap_text=SUDOERS_BOOTSTRAP),
+            message=sudo_error_message(stderr, base_text=_SUDO_BASE_TEXT, bootstrap_text=sudoers_bootstrap(user)),
             manual_fix=(
                 f"printf '%s' {shlex.quote(body)} | sudo tee {quoted_path} "
                 "&& sudo sysctl --system"
@@ -201,6 +267,7 @@ def udev_apply(
     rules: List[Dict[str, object]],
     *,
     ssh_runner: Optional[SshRunner] = None,
+    user: str = "lagerdata",
 ) -> HostOpResult:
     """Install the user udev rules file on the box host and reload udev.
 
@@ -230,7 +297,7 @@ def udev_apply(
             ok=False,
             action="failed",
             message=sudo_error_message(
-                stderr, base_text=_SUDO_BASE_TEXT, bootstrap_text=UDEV_SUDOERS_BOOTSTRAP
+                stderr, base_text=_SUDO_BASE_TEXT, bootstrap_text=udev_sudoers_bootstrap(user)
             ),
             manual_fix=(
                 f"printf '%s' {shlex.quote(body)} | sudo tee {quoted_path} >/dev/null "
@@ -249,13 +316,13 @@ def udev_apply(
     )
 
 
-def _sudo_or_apt_error(stderr: str) -> str:
+def _sudo_or_apt_error(stderr: str, user: str = "lagerdata") -> str:
     err = (stderr or "").strip()
     low = err.lower()
     if "a password is required" in low or low.startswith("sudo:"):
-        return sudo_error_message(stderr, base_text=_SUDO_BASE_TEXT, bootstrap_text=SUDOERS_BOOTSTRAP)
+        return sudo_error_message(stderr, base_text=_SUDO_BASE_TEXT, bootstrap_text=sudoers_bootstrap(user))
     if "unable to locate package" in low or "has no installation candidate" in low:
         # apt failed for a real reason — package name typo, missing repo, etc.
         # The bootstrap message would only confuse the user.
         return f"apt-get failed: {err}"
-    return sudo_error_message(stderr, base_text=_SUDO_BASE_TEXT, bootstrap_text=SUDOERS_BOOTSTRAP)
+    return sudo_error_message(stderr, base_text=_SUDO_BASE_TEXT, bootstrap_text=sudoers_bootstrap(user))
