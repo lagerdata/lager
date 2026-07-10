@@ -74,7 +74,13 @@ def boxcfg_sudoers_rules(user: str = "lagerdata") -> List[str]:
     apt-get and mkdir/chown are unscoped because the package list and host
     paths are user-defined. SETENV on apt-get is required so
     DEBIAN_FRONTEND=noninteractive propagates and package postinst scripts
-    (iptables-persistent, etc.) don't prompt."""
+    (iptables-persistent, etc.) don't prompt.
+
+    Raises ValueError on a non-plain username: callers validate first, so
+    this is a backstop that makes a future caller that forgets fail loudly
+    instead of interpolating into root-owned sudoers content."""
+    if not is_valid_unix_username(user):
+        raise ValueError(f"invalid unix username for sudoers rule: {user!r}")
     return [
         f"{user} ALL=(root) NOPASSWD: SETENV: /usr/bin/apt-get",
         f"{user} ALL=(root) NOPASSWD: /bin/mkdir, /bin/chown, "
@@ -101,6 +107,13 @@ def boxcfg_sudoers_bootstrap_cmd(user: str = "lagerdata") -> str:
 
 def udev_sudoers_bootstrap(user: str = "lagerdata") -> str:
     """Manual-fix text for a box missing the udev sudoers grant."""
+    # Error-path text renderer: must never raise (it runs while composing a
+    # failure message). The user comes from local box storage unvalidated
+    # (resolve_box_user), so a non-plain name falls back to the historical
+    # default rather than being interpolated into a paste-into-root-shell
+    # snippet; the operator substitutes their real user.
+    if not is_valid_unix_username(user):
+        user = "lagerdata"
     return (
         "Applying user udev rules needs the passwordless-sudo udev grant that the "
         "box setup script installs. If it's missing (older box), re-run the box "
@@ -120,6 +133,10 @@ def udev_sudoers_bootstrap(user: str = "lagerdata") -> str:
 
 def sudoers_bootstrap(user: str = "lagerdata") -> str:
     """Manual-fix text for a box missing the box-config sudoers grant."""
+    # Same never-raise rule as udev_sudoers_bootstrap: fall back before
+    # boxcfg_sudoers_rules so its ValueError backstop can't fire mid-error.
+    if not is_valid_unix_username(user):
+        user = "lagerdata"
     rules = boxcfg_sudoers_rules(user)
     return (
         "Box-config apply needs passwordless sudo for a small set of commands. "
