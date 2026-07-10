@@ -2,6 +2,32 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.31.4] - 2026-07-10
+
+LabJack I2C fixes: the requested bus frequency is now actually applied (previously every
+request silently ran at maximum speed), and a bus wedged by a slave holding SDA low
+(LabJack error 2720, `I2C_BUS_BUSY`) now recovers automatically — during both normal
+transactions and address scans.
+
+### Fixed
+- **LabJack I2C nets honor the requested bus frequency.** The LabJack's
+  `I2C_SPEED_THROTTLE` register counts *down* from 65536 toward slower speeds, but the
+  old conversion assumed the opposite scale, produced invalid register values, and had
+  been papered over by clamping every request to maximum speed (~450 kHz) — so
+  `frequency_hz` in a net's params or `i2c.config(frequency_hz=...)` was silently
+  ignored. The throttle is now computed correctly from the requested frequency, clamped
+  to the firmware floor, and degrades to maximum speed only if the firmware rejects the
+  value. Verified against the LabJack Modbus register map across the full range.
+- **LabJack I2C auto-recovers from a wedged bus (error 2720).** A slave whose internal
+  bus timeout fires mid-transaction — e.g. at very slow clock speeds — can hold SDA low,
+  failing every subsequent transaction with `I2C_BUS_BUSY` until the box was power-cycled.
+  Transactions now retry once with the firmware's bus-reset option enabled, clearing the
+  stuck slave transparently.
+- **LabJack I2C scan no longer returns empty on a wedged bus.** The address sweep
+  swallowed per-probe errors, so a bus stuck in `BUS_BUSY` made every probe fail silently
+  and the scan reported no devices. The sweep now enables the firmware bus reset as soon
+  as one probe reports `BUS_BUSY` and keeps it on for the remainder of the sweep.
+
 ## [0.31.3] - 2026-07-10
 
 `lager install` now reliably provisions instrument access on fresh boxes: udev
