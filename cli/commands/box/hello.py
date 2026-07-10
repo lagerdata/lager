@@ -9,9 +9,10 @@
 import click
 import requests
 from ...box_storage import resolve_and_validate_box_with_name
+from ...core.net_group import BoxCommand
 
 
-@click.command()
+@click.command(cls=BoxCommand)
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def hello(ctx, box):

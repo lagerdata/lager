@@ -18,7 +18,7 @@ import requests
 from texttable import Texttable
 
 # Import consolidated helpers from cli.core.net_helpers
-from ...core.net_group import NetCommand
+from ...core.net_group import NetCommand, HiddenArgument
 from ...core.net_helpers import resolve_box, run_backend
 from ...context import get_impl_path, get_default_net
 from ...errors import net_not_specified_error
@@ -306,7 +306,8 @@ def _connect_uart_http(ctx, box_ip, netname, overrides, interactive):
 
 @click.command(cls=NetCommand)
 @click.argument("NETNAME", required=False, metavar="[NET_NAME]")
-@click.argument("ACTION", required=False)
+@click.argument("ACTION", required=False, cls=HiddenArgument,
+                metavar="serial-port", type=click.Choice(["serial-port"]))
 @click.pass_context
 # Target options
 @click.option('--box', required=False, help="Lagerbox name or IP")
@@ -325,7 +326,12 @@ def _connect_uart_http(ctx, box_ip, netname, overrides, interactive):
 @click.option('--line-ending', type=click.Choice(['lf', 'crlf', 'cr']), default='lf', help='Line ending format (lf=\\n, crlf=\\r\\n, cr=\\r)', show_default=True)
 def uart(ctx, netname, action, box, baudrate, bytesize, parity, stopbits, xonxoff, rtscts, dsrdtr,
          interactive, opost, line_ending):
-    """Connect to UART serial port"""
+    """Connect to UART serial port.
+
+    With no NET_NAME, lists the UART nets saved on the box. Passing
+    'serial-port' after the net name prints the /dev path currently backing
+    the net instead of connecting.
+    """
     # Resolve box to box IP
     target_box, box_name = _resolve_box_with_name(ctx, box)
 
@@ -334,10 +340,8 @@ def uart(ctx, netname, action, box, baudrate, bytesize, parity, stopbits, xonxof
         netname = get_default_net(ctx, 'uart')
 
     # Handle sub-action to report the current serial port in use
+    # (ACTION is validated by click.Choice; 'serial-port' is the only value)
     if action:
-        if action != "serial-port":
-            raise click.UsageError(f"Unknown UART action '{action}'. Supported: serial-port")
-
         if not netname:
             net_not_specified_error('UART', 'uart', default_flag='uart-net').die()
 
