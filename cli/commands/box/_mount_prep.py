@@ -25,6 +25,7 @@ import shlex
 from dataclasses import dataclass
 from typing import Optional
 
+from ._host_ops import is_valid_unix_username
 from ._ssh import SshRunner, default_ssh_runner, resolve_box_user, sudo_error_message
 
 CONTAINER_UID = 33
@@ -34,6 +35,11 @@ EXPECTED_OWNER = f"{CONTAINER_UID}:{CONTAINER_GID}"
 
 def sudoers_bootstrap(user: str = "lagerdata") -> str:
     """Copy-pasteable sudoers setup, scoped to the box's actual SSH user."""
+    # Error-path text renderer: never raise, never interpolate a non-plain
+    # username (it comes from local box storage unvalidated) into a
+    # paste-into-root-shell snippet. Same rule as _host_ops.sudoers_bootstrap.
+    if not is_valid_unix_username(user):
+        user = "lagerdata"
     return (
         "Auto-prep needs passwordless sudo for two specific commands. Run this "
         "ONCE on the box (you'll be prompted for the sudo password the one "
