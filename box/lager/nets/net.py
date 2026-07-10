@@ -69,7 +69,7 @@ from ..rotation import Rotation
 from ..actuate import Actuate
 from ..protocols.wifi import Wifi
 from ..protocols.mikrotik.router import MikroTikRouter
-from ..protocols.uart.uart_net import UARTNet
+from ..protocols.uart.uart_net import UARTNet, usb_identity_for_net_record
 from ..protocols.spi.spi_net import SPINet
 from ..protocols.i2c.i2c_net import I2CNet
 from ..automation.usb_hub.usb_net_wrapper import USBNetWrapper
@@ -293,6 +293,16 @@ class Net:
 
     @classmethod
     def save_local_net(cls, data: Dict[str, Any]) -> None:
+        # UART nets: record a durable USB identity snapshot alongside the pin.
+        # A raw /dev/tty* number does not survive USB re-enumeration; the
+        # snapshot (vid/pid + serial or physical port + interface) does. Pin
+        # is left byte-for-byte unchanged so scanner/TUI matching keeps
+        # working. Best-effort: device unplugged at save time -> no field.
+        if data.get("role") == "uart" and not data.get("usb_identity"):
+            ident = usb_identity_for_net_record(data)
+            if ident:
+                data["usb_identity"] = ident
+
         # normalize minimal mapping info expected elsewhere
         pin = data.get("pin", 0)
         mapping = {"net": data["name"], "pin": pin, "location": str(pin)}

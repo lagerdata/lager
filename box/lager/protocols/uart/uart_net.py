@@ -8,8 +8,35 @@ Provides clean access to UART nets from Python scripts running on the box.
 """
 from __future__ import annotations
 
+import os
 from typing import Optional
 import serial
+
+
+def usb_identity_for_net_record(record: dict) -> Optional[dict]:
+    """Best-effort durable USB identity snapshot for a saved uart net record.
+
+    ``pin`` is either a raw ``/dev/tty*`` path (snapshot that node directly)
+    or a USB serial number (snapshot the cable's tty matching the record's
+    channel/interface). Returns None — never raises — when the device is not
+    currently attached, so saving an offline net still succeeds unchanged.
+    """
+    try:
+        from lager.devices import serial_id
+        pin = record.get('device_path') or record.get('pin') or ''
+        if isinstance(pin, str) and pin.startswith('/dev/'):
+            return serial_id.identity_for_tty(pin)
+        if pin:
+            channel = str(record.get('channel', '0') or '0')
+            want = int(channel) if channel.isdigit() else 0
+            for cable in serial_id.list_cables():
+                if cable.get('serial') == pin:
+                    ident = serial_id.identity_for_tty(cable['tty'])
+                    if ident and ident.get('interface') in (None, want):
+                        return ident
+    except Exception:
+        pass
+    return None
 
 
 class UARTNet:
@@ -64,6 +91,10 @@ class UARTNet:
         Raises:
             FileNotFoundError: If the UART device is not connected
         """
+        if self._device_path is not None and not os.path.exists(self._device_path):
+            # The cached node vanished (USB re-enumeration); re-resolve.
+            self._device_path = None
+
         if self._device_path is None:
             # Use the dispatcher to resolve the device path
             from .uart_bridge import UARTBridge
@@ -74,6 +105,7 @@ class UARTNet:
                 bridge_serial=self.usb_serial,
                 port=self.channel,
                 device_path=self._config.get('device_path'),
+                usb_identity=self._config.get('usb_identity'),
                 baudrate=self.params.get('baudrate', 115200)
             )
             self._device_path = bridge.device_path
@@ -105,6 +137,7 @@ class UARTNet:
             bridge_serial=self.usb_serial,
             port=self.channel,
             device_path=self._config.get('device_path'),
+            usb_identity=self._config.get('usb_identity'),
             **final_params
         )
 

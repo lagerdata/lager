@@ -71,7 +71,8 @@ def _make_driver(rec: dict[str, Any], overrides: dict[str, Any]):
     final_params = {**params, **overrides}
 
     try:
-        return UARTBridge(bridge_serial, port, device_path=device_path, **final_params)
+        return UARTBridge(bridge_serial, port, device_path=device_path,
+                          usb_identity=rec.get("usb_identity"), **final_params)
     except Exception as exc:
         raise UARTBackendError(f"Failed to create UART driver: {exc}") from exc
 

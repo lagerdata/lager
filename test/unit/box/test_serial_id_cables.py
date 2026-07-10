@@ -74,7 +74,7 @@ class SerialIdCablesTests(unittest.TestCase):
 
     # ---- fake sysfs builders ----------------------------------------------
 
-    def _add_cable(self, tty_name, port, vid=VID, pid=PID, serial=SERIAL):
+    def _add_cable(self, tty_name, port, vid=VID, pid=PID, serial=SERIAL, iface=0):
         """Create a USB device dir + interface dir + tty pointing at it."""
         usb_dev = self._devices / port
         usb_dev.mkdir(parents=True, exist_ok=True)
@@ -82,12 +82,12 @@ class SerialIdCablesTests(unittest.TestCase):
         (usb_dev / "idProduct").write_text(f"{pid}\n")
         if serial is not None:
             (usb_dev / "serial").write_text(f"{serial}\n")
-        iface = usb_dev / f"{port}:1.0"
-        iface.mkdir(exist_ok=True)
+        iface_dir = usb_dev / f"{port}:1.{iface}"
+        iface_dir.mkdir(exist_ok=True)
 
         tty_dir = self._sys_tty / tty_name
         tty_dir.mkdir()
-        (tty_dir / "device").symlink_to(iface)
+        (tty_dir / "device").symlink_to(iface_dir)
 
     # ---- list_cables --------------------------------------------------------
 
@@ -149,6 +149,106 @@ class SerialIdCablesTests(unittest.TestCase):
         self._add_cable("ttyUSB0", "1-1.2")
         addr = serial_id.make_address(VID, PID, serial=SERIAL)
         self.assertEqual(serial_id.resolve_address_to_tty(addr), "/dev/ttyUSB0")
+
+    # ---- identity_for_tty (UART net re-enumeration snapshot) ----------------
+
+    def test_identity_for_tty_fields(self):
+        self._add_cable("ttyUSB0", "1-1.2")
+        self.assertEqual(serial_id.identity_for_tty("/dev/ttyUSB0"), {
+            "vid": VID,
+            "pid": PID,
+            "serial": SERIAL,
+            "port_path": "1-1.2",
+            "interface": 0,
+        })
+
+    def test_identity_for_tty_parses_interface(self):
+        self._add_cable("ttyUSB3", "1-1.5", serial=None, iface=3)
+        ident = serial_id.identity_for_tty("/dev/ttyUSB3")
+        self.assertEqual(ident["interface"], 3)
+        self.assertIsNone(ident["serial"])
+
+    def test_identity_for_tty_follows_symlink(self):
+        # /dev/serial/by-id/... style symlink resolves to the tty name.
+        self._add_cable("ttyUSB0", "1-1.2")
+        link = Path(self._tmp) / "usb-FTDI_cable-if00-port0"
+        link.symlink_to("/dev/ttyUSB0")
+        ident = serial_id.identity_for_tty(str(link))
+        self.assertEqual(ident["port_path"], "1-1.2")
+
+    def test_identity_for_tty_unknown_or_garbage(self):
+        self.assertIsNone(serial_id.identity_for_tty("/dev/ttyUSB9"))
+        self.assertIsNone(serial_id.identity_for_tty(""))
+        self.assertIsNone(serial_id.identity_for_tty(None))
+
+    # ---- resolve_identity ----------------------------------------------------
+
+    def _reenumerate(self, old_tty, new_tty, port, **kwargs):
+        """Simulate a re-enumeration: same USB device, new tty number."""
+        shutil.rmtree(self._sys_tty / old_tty)
+        self._add_cable(new_tty, port, **kwargs)
+
+    def test_resolve_identity_by_serial_survives_renumbering(self):
+        self._add_cable("ttyUSB0", "1-1.2")
+        ident = serial_id.identity_for_tty("/dev/ttyUSB0")
+        self._reenumerate("ttyUSB0", "ttyUSB5", "1-1.2")
+        self.assertEqual(serial_id.resolve_identity(ident), "/dev/ttyUSB5")
+
+    def test_resolve_identity_serial_follows_cable_across_ports(self):
+        # Serial is the primary key: port_path only breaks ties.
+        self._add_cable("ttyUSB0", "1-1.2")
+        ident = serial_id.identity_for_tty("/dev/ttyUSB0")
+        self._reenumerate("ttyUSB0", "ttyUSB1", "1-1.9")
+        self.assertEqual(serial_id.resolve_identity(ident), "/dev/ttyUSB1")
+
+    def test_resolve_identity_clone_serials_port_tiebreak(self):
+        self._add_cable("ttyUSB0", "1-1.2", serial="DUP")
+        self._add_cable("ttyUSB1", "1-1.3", serial="DUP")
+        ident = serial_id.identity_for_tty("/dev/ttyUSB1")
+        self.assertEqual(serial_id.resolve_identity(ident), "/dev/ttyUSB1")
+
+    def test_resolve_identity_multi_interface_picks_channel(self):
+        # FT4232H: one USB device (no serial), four ttys on interfaces 0-3.
+        for n in range(4):
+            self._add_cable(f"ttyUSB{n}", "1-1.3", serial=None, iface=n)
+        ident = serial_id.identity_for_tty("/dev/ttyUSB2")
+        self.assertEqual(ident["interface"], 2)
+        self._reenumerate("ttyUSB2", "ttyUSB7", "1-1.3", serial=None, iface=2)
+        self.assertEqual(serial_id.resolve_identity(ident), "/dev/ttyUSB7")
+
+    def test_resolve_identity_serialless_requires_port_match(self):
+        self._add_cable("ttyUSB0", "1-1.4", serial=None)
+        ident = serial_id.identity_for_tty("/dev/ttyUSB0")
+        self.assertEqual(serial_id.resolve_identity(ident), "/dev/ttyUSB0")
+        ident["port_path"] = "1-1.9"
+        self.assertIsNone(serial_id.resolve_identity(ident))
+
+    def test_resolve_identity_unplugged_returns_none(self):
+        self._add_cable("ttyUSB0", "1-1.2")
+        ident = serial_id.identity_for_tty("/dev/ttyUSB0")
+        shutil.rmtree(self._sys_tty / "ttyUSB0")
+        self.assertIsNone(serial_id.resolve_identity(ident))
+
+    def test_resolve_identity_garbage_input(self):
+        self.assertIsNone(serial_id.resolve_identity(None))
+        self.assertIsNone(serial_id.resolve_identity("not-a-dict"))
+        self.assertIsNone(serial_id.resolve_identity({}))
+        self.assertIsNone(serial_id.resolve_identity({"vid": VID}))
+
+    def test_resolve_identity_unknown_interface_not_excluding(self):
+        # A tty whose interface cannot be determined must still match a
+        # snapshot that recorded one (single-interface common case).
+        usb_dev = self._devices / "1-1.6"
+        usb_dev.mkdir(parents=True)
+        (usb_dev / "idVendor").write_text(f"{VID}\n")
+        (usb_dev / "idProduct").write_text(f"{PID}\n")
+        (usb_dev / "serial").write_text("NOIFACE\n")
+        tty_dir = self._sys_tty / "ttyACM0"
+        tty_dir.mkdir()
+        (tty_dir / "device").symlink_to(usb_dev)  # no :cfg.N ancestor
+        ident = {"vid": VID, "pid": PID, "serial": "NOIFACE",
+                 "port_path": "1-1.6", "interface": 0}
+        self.assertEqual(serial_id.resolve_identity(ident), "/dev/ttyACM0")
 
 
 if __name__ == "__main__":
