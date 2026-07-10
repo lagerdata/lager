@@ -25,6 +25,9 @@ import types
 import unittest
 
 
+_created_pkg_stubs = []
+
+
 def _load_real(module_name, relpath):
     """Load a real box module by path into a minimal fake `lager` package tree
     (so the drivers' relative/absolute imports resolve without importing the
@@ -37,6 +40,7 @@ def _load_real(module_name, relpath):
             mod = types.ModuleType(pkg)
             mod.__path__ = []  # mark as package
             sys.modules[pkg] = mod
+            _created_pkg_stubs.append(pkg)
     if module_name in sys.modules and getattr(sys.modules[module_name], "__file__", None):
         return sys.modules[module_name]
     path = os.path.join(box_root, relpath)
@@ -51,6 +55,12 @@ def _load_real(module_name, relpath):
 _load_real("lager.util.device_lock", "lager/util/device_lock.py")
 _load_real("lager.automation.usb_hub.usb_net", "lager/automation/usb_hub/usb_net.py")
 ykush = _load_real("lager.automation.usb_hub.ykush", "lager/automation/usb_hub/ykush.py")
+
+# The bare package stubs exist only so the drivers' top-level imports resolve
+# while loading. Drop them now: a pathless `lager` left in sys.modules poisons
+# every later real `import lager.*` in the same pytest process.
+for _pkg in _created_pkg_stubs:
+    sys.modules.pop(_pkg, None)
 
 
 class _FakePyKush:
