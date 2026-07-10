@@ -638,6 +638,24 @@ def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
     return get_default_box(ctx)
 
 
+def _channel_display(rec):
+    """Channel column value for one net record.
+
+    Boxes annotate uart nets that carry a durable identity with `live_path` —
+    the node the device owns right now — which can differ from the stored pin
+    after a USB re-enumeration. Show reality when the box provides it
+    (live_path=None means the device is currently unplugged); records without
+    the field (older boxes, non-uart roles) show the stored pin as before.
+    """
+    pin = rec.get("pin", "") or ""
+    if rec.get("role") == "uart" and "live_path" in rec:
+        live = rec.get("live_path")
+        if live:
+            return live
+        return f"{pin} (disconnected)" if pin else "(disconnected)"
+    return pin
+
+
 def _display_table(records):
 
     if not records:
@@ -679,11 +697,10 @@ def _display_table(records):
         )
         rows = []
         for rec in nets:
-            pin = rec.get("pin", "") or ""
             row = [
                 rec.get("name", ""),
                 rec.get("role", ""),
-                pin,
+                _channel_display(rec),
             ]
             if has_any_script:
                 row.append("yes" if rec.get("jlink_script") else "")

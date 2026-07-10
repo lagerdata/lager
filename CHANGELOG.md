@@ -59,6 +59,11 @@ rule names the box's actual login user instead of a hardcoded `lagerdata`.
   re-save a net once to upgrade it. `lager python` scripts using
   `UARTNet.get_path()` also stop returning a cached path whose node no longer
   exists.
+- **`lager nets` shows where a UART device actually is.** The Channel column
+  now displays the node the device owns right now (resolved live from its
+  durable identity), so it stays truthful after a re-enumeration shuffles tty
+  numbers instead of showing the stale stored path; unplugged devices are
+  marked `(disconnected)`. The stored record is never modified by listing.
 - **`lager install` deploys instrument udev rules from every CLI install method.**
   The rules were copied from the host's repo checkout, which only exists for
   editable/source installs — a pip-installed `lager-cli` (the common case) has no
