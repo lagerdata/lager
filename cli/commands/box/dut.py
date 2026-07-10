@@ -32,6 +32,7 @@ from typing import Any, Optional
 import click
 
 from .config import _resolve_box
+from ._host_ops import is_valid_unix_username
 from ._ssh import (
     default_ssh_runner,
     resolve_box_user,
@@ -60,6 +61,11 @@ def _bench_sudoers_bootstrap(user: str = "lagerdata") -> str:
     """Manual-fix text for a box missing the bench.json sudo grant. Names
     the box's actual login user so the pasted rule matches it (a hardcoded
     `lagerdata` never matched on e.g. juultest boxes)."""
+    # Error-path text renderer: never raise, never interpolate a non-plain
+    # username (it comes from local box storage unvalidated) into a
+    # paste-into-root-shell snippet. Same rule as _host_ops.sudoers_bootstrap.
+    if not is_valid_unix_username(user):
+        user = "lagerdata"
     return (
         "This box is missing the bench.json sudo grant (older box, or not yet "
         "re-provisioned). Re-provision with `lager update --box <BOX>` (or "

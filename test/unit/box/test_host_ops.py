@@ -232,6 +232,18 @@ class BoxcfgSudoers(unittest.TestCase):
         self.assertIn("'juultest ALL=(root) NOPASSWD: SETENV: /usr/bin/apt-get'", cmd)
         self.assertNotIn("lagerdata", cmd)
 
+    def test_rules_raise_on_invalid_user(self):
+        # Backstop for executed sudoers content: install/update validate
+        # before calling, so a raise here means a future caller forgot —
+        # fail loudly instead of writing tainted root-owned sudoers.
+        for user in ["", "a'b", "a\nb ALL=(ALL) NOPASSWD: ALL", "$(reboot)"]:
+            with self.assertRaises(ValueError, msg=repr(user)):
+                ops.boxcfg_sudoers_rules(user)
+
+    def test_bootstrap_cmd_raises_on_invalid_user(self):
+        with self.assertRaises(ValueError):
+            ops.boxcfg_sudoers_bootstrap_cmd("a;b")
+
 
 class UsernameValidation(unittest.TestCase):
     def test_accepts_real_fleet_usernames(self):
@@ -268,6 +280,17 @@ class BootstrapTexts(unittest.TestCase):
         # (matching what setup_and_deploy_box.sh writes); only the rule
         # lines must name the login user.
         self.assertIn("/etc/sudoers.d/lagerdata-udev", text)
+
+    def test_bootstrap_texts_fall_back_on_invalid_user(self):
+        # These render inside error messages, so they must never raise and
+        # never interpolate an unvalidated (box-storage) username into a
+        # paste-into-root-shell snippet: invalid names fall back to the
+        # historical default.
+        evil = "a\nb ALL=(ALL) NOPASSWD: ALL"
+        for renderer in [ops.sudoers_bootstrap, ops.udev_sudoers_bootstrap]:
+            text = renderer(evil)
+            self.assertNotIn(evil, text, renderer.__name__)
+            self.assertIn("lagerdata", text, renderer.__name__)
 
     def test_failure_messages_carry_user(self):
         runner, _ = _runner_returning(1, stderr="sudo: a password is required")

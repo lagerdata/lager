@@ -589,7 +589,7 @@ else
             sudo systemctl enable docker && \
             { sudo systemctl restart docker.socket 2>/dev/null || true; } && \
             sudo systemctl restart docker && \
-            sudo usermod -aG docker \$USER
+            sudo usermod -aG docker ${BOX_USER}
         "; then
             print_success "Docker installed successfully"
             echo ""
@@ -602,16 +602,18 @@ else
             echo "  ssh ${BOX_USER}@${BOX_IP}"
             echo "  sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2"
             echo "  sudo systemctl daemon-reload && sudo systemctl restart docker"
-            echo "  sudo usermod -aG docker \$USER"
+            echo "  sudo usermod -aG docker ${BOX_USER}"
             echo "  # Log out and back in, then re-run this script"
             exit 1
         fi
     fi
 fi
 
-# Always ensure current user is in docker group (handles multi-user scenario)
+# Always ensure current user is in docker group (handles multi-user scenario).
+# ${BOX_USER} expands client-side (not remote $USER, which non-interactive
+# sessions may not export) and matches the NOPASSWD usermod grant exactly.
 print_info "Ensuring ${BOX_USER} is in the docker group..."
-ssh_t "${BOX_USER}@${BOX_IP}" "sudo usermod -aG docker \$USER" 2>/dev/null || true
+ssh_t "${BOX_USER}@${BOX_IP}" "sudo usermod -aG docker ${BOX_USER}" 2>/dev/null || true
 
 # Verify docker access works for this user
 if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker info >/dev/null 2>&1"; then
