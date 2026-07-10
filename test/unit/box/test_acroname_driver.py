@@ -22,6 +22,9 @@ import types
 import unittest
 
 
+_created_pkg_stubs = []
+
+
 def _load_real(module_name, relpath):
     box_root = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "..", "..", "box")
@@ -31,6 +34,7 @@ def _load_real(module_name, relpath):
             mod = types.ModuleType(pkg)
             mod.__path__ = []
             sys.modules[pkg] = mod
+            _created_pkg_stubs.append(pkg)
     if module_name in sys.modules and getattr(sys.modules[module_name], "__file__", None):
         return sys.modules[module_name]
     path = os.path.join(box_root, relpath)
@@ -46,6 +50,13 @@ _load_real("lager.automation.usb_hub.usb_net", "lager/automation/usb_hub/usb_net
 acroname = _load_real(
     "lager.automation.usb_hub.acroname", "lager/automation/usb_hub/acroname.py"
 )
+
+# The bare package stubs exist only so the drivers' top-level imports resolve
+# while loading. Drop them now: a pathless `lager` left in sys.modules poisons
+# every later real `import lager.*` in the same pytest process (this file
+# collects first alphabetically, so it used to break 7 other test modules).
+for _pkg in _created_pkg_stubs:
+    sys.modules.pop(_pkg, None)
 
 
 class _FakeResult:
