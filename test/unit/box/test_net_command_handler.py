@@ -237,8 +237,8 @@ class TestNetCommandHandler(unittest.TestCase):
         drv.read.assert_called_once_with(3, fill=0xFF)
 
     def test_spi_known_role_unknown_action_is_400_not_501(self):
-        # Stout treats 501 as "use the /python fallback"; a supported role with
-        # an unsupported action must be a 400, never a 501.
+        # The control plane treats 501 as "use the /python fallback"; a supported
+        # role with an unsupported action must be a 400, never a 501.
         ctx, _ = self._patch_dispatcher(
             'lager.protocols.spi.dispatcher',
             _resolve_net_and_driver=MagicMock(return_value=MagicMock()))

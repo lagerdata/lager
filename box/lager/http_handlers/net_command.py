@@ -198,7 +198,7 @@ def _eload(netname, role, action, params):
 
 def _spi(netname, role, action, params):
     # Bus transaction via the SPI dispatcher's cached, lock-guarded driver
-    # (matches cli/impl/protocols/spi.py and Stout's TIER1_NET_SCRIPT). The
+    # (matches cli/impl/protocols/spi.py and the control plane's TIER1_NET_SCRIPT). The
     # whole resolve+transact is serialized per netname so concurrent requests
     # can't interleave words on the same device.
     if action not in ("transfer", "read"):
@@ -225,7 +225,7 @@ def _spi(netname, role, action, params):
 
 def _i2c(netname, role, action, params):
     # I2C transaction via the I2C dispatcher's cached, lock-guarded driver
-    # (matches cli/impl/protocols/i2c.py and Stout's TIER1_NET_SCRIPT).
+    # (matches cli/impl/protocols/i2c.py and the control plane's TIER1_NET_SCRIPT).
     # Serialized per netname (see _spi).
     if action not in ("scan", "read", "write", "transfer"):
         raise UnknownAction(action)
@@ -264,7 +264,7 @@ def _energy_analyzer(netname, role, action, params):
     from lager.measurement.energy_analyzer.dispatcher import read_energy, read_stats
     default = 10.0 if action == "read_energy" else 1.0
     duration = float(params.get("duration") or default)
-    # Clamp to the box's safe measurement window. Stout clamps to 30s too,
+    # Clamp to the box's safe measurement window. The control plane clamps to 30s too,
     # sized so the held connection stays under Nginx's 60s proxy_read_timeout.
     duration = max(0.1, min(duration, 30.0))
     with _get_net_lock(netname):
@@ -285,7 +285,7 @@ def _energy_analyzer(netname, role, action, params):
 
 
 # role string -> handler. Keep aligned with mcp/data/api_reference.py and the
-# Stout-side allowlist (control-plane NET_PYTHON_ACTIONS / NET_COMMAND_ROUTES).
+# control-plane allowlist (NET_PYTHON_ACTIONS / NET_COMMAND_ROUTES).
 ROLE_ACTIONS = {
     "gpio": _gpio,
     "adc": _adc,
