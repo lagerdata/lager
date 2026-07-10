@@ -27,6 +27,7 @@ def usb_identity_for_net_record(record: dict) -> Optional[dict]:
         if isinstance(pin, str) and pin.startswith('/dev/'):
             return serial_id.identity_for_tty(pin)
         if pin:
+            pin = str(pin)  # tolerate numeric serials stored as JSON numbers
             channel = str(record.get('channel', '0') or '0')
             want = int(channel) if channel.isdigit() else 0
             for cable in serial_id.list_cables():

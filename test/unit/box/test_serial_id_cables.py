@@ -234,6 +234,9 @@ class SerialIdCablesTests(unittest.TestCase):
         self.assertIsNone(serial_id.resolve_identity("not-a-dict"))
         self.assertIsNone(serial_id.resolve_identity({}))
         self.assertIsNone(serial_id.resolve_identity({"vid": VID}))
+        # Non-string vid/pid (hand-edited JSON) must not raise
+        self.assertIsNone(serial_id.resolve_identity({"vid": 1234, "pid": 5678}))
+        self.assertIsNone(serial_id.resolve_identity({"vid": None, "pid": PID}))
 
     def test_resolve_identity_unknown_interface_not_excluding(self):
         # A tty whose interface cannot be determined must still match a
