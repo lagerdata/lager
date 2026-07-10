@@ -119,6 +119,15 @@ class UsbIdentityForNetRecordTests(unittest.TestCase):
         ident = uart_net.usb_identity_for_net_record(record)
         self.assertEqual(ident["interface"], 1)
 
+    def test_numeric_serial_pin_matches_string_cable_serial(self):
+        # A purely numeric serial stored as a JSON number must still match
+        # the cable's (string) serial.
+        self.fake.list_cables = lambda: [{"serial": "12345", "tty": "/dev/ttyUSB4"}]
+        self.fake.identity_for_tty = lambda tty: dict(IDENT_CP210X_IF0)
+        record = {"role": "uart", "pin": 12345}
+        self.assertEqual(uart_net.usb_identity_for_net_record(record),
+                         IDENT_CP210X_IF0)
+
     def test_serial_pin_default_channel_zero(self):
         self.fake.list_cables = lambda: [{"serial": "CPSER", "tty": "/dev/ttyUSB4"}]
         self.fake.identity_for_tty = lambda tty: dict(IDENT_CP210X_IF0)

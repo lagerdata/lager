@@ -208,8 +208,12 @@ def resolve_identity(ident) -> Optional[str]:
     """
     if not isinstance(ident, dict):
         return None
-    vid = (ident.get("vid") or "").lower()
-    pid = (ident.get("pid") or "").lower()
+    vid = ident.get("vid")
+    pid = ident.get("pid")
+    if not isinstance(vid, str) or not isinstance(pid, str):
+        return None
+    vid = vid.lower()
+    pid = pid.lower()
     if not vid or not pid:
         return None
     serial = ident.get("serial")
