@@ -7,6 +7,7 @@ Communicates with UART bridges by serial number and port.
 """
 from __future__ import annotations
 
+import errno
 import sys
 import select
 import termios
@@ -30,6 +31,7 @@ class UARTBridge:
         bridge_serial: str,
         port: str,
         device_path: str | None = None,
+        usb_identity: dict | None = None,
         baudrate: int = 115200,
         bytesize: int = 8,
         parity: str = "none",
@@ -57,10 +59,15 @@ class UARTBridge:
         opost: Enable output post-processing (convert \n to \r\n)
         line_ending: Line ending for commands (lf/crlf/cr)
         device_path: Optional direct /dev/tty* path for adapters without USB serial numbers
+        usb_identity: Optional durable USB identity snapshot ({vid, pid,
+            serial, port_path, interface}) recorded when the net was saved;
+            preferred over the stored path because /dev/tty* numbers do not
+            survive USB re-enumeration
         """
         self.bridge_serial = bridge_serial
         self.port = port
         self.device_path_override = device_path
+        self.usb_identity = usb_identity
         self.baudrate = baudrate
         self.bytesize = bytesize
         self.parity = parity
@@ -79,15 +86,7 @@ class UARTBridge:
         }.get(line_ending, b'\n')
 
         # Find device path
-        if self.device_path_override:
-            self.device_path = self.device_path_override
-        else:
-            # If the "serial" looks like a direct device path, treat it as such.
-            if bridge_serial and isinstance(bridge_serial, str) and bridge_serial.startswith("/dev/"):
-                self.device_path = bridge_serial
-                self.bridge_serial = ""
-            else:
-                self.device_path = self._find_device_by_serial(bridge_serial)
+        self.device_path = self._resolve_device_path_initial()
 
         if not self.device_path:
             raise FileNotFoundError(
@@ -136,6 +135,152 @@ class UARTBridge:
 
         return None
 
+    def _resolve_device_path_initial(self) -> Optional[str]:
+        """Resolve the tty node for this bridge at construction time.
+
+        Preference order: durable usb_identity snapshot (survives USB
+        re-enumeration), explicit device-path override, a /dev/* path stored
+        in the pin field, then sysfs lookup by USB serial. An unresolvable
+        identity falls through to the legacy order so a net that the old
+        logic could still open keeps working.
+        """
+        if self.usb_identity:
+            path = self._resolve_identity_path()
+            if path:
+                return path
+        if self.device_path_override:
+            return self.device_path_override
+        if (self.bridge_serial and isinstance(self.bridge_serial, str)
+                and self.bridge_serial.startswith("/dev/")):
+            # The "serial" is a direct device path; treat it as such.
+            path = self.bridge_serial
+            self.bridge_serial = ""
+            return path
+        if self.bridge_serial:
+            return self._find_device_by_serial(self.bridge_serial)
+        return None
+
+    def _resolve_identity_path(self) -> Optional[str]:
+        """Live tty for the usb_identity snapshot, or None. Never raises."""
+        try:
+            from lager.devices import serial_id
+            return serial_id.resolve_identity(self.usb_identity)
+        except Exception:
+            return None
+
+    # A locked-but-alive port (EBUSY/EAGAIN from the exclusive=True flock
+    # arbitration, see _connect) must never be classified as device-gone or a
+    # reconnect loop would churn against a healthy concurrent holder.
+    _DEVICE_GONE_ERRNOS = frozenset({errno.ENODEV, errno.ENOENT, errno.ENXIO, errno.EIO})
+    _DEVICE_GONE_KEYWORDS = (
+        'no such device', 'errno 19', 'enodev',
+        'device disconnected', 'returned no data',
+        'input/output error', 'errno 5',
+        'no such file or directory', 'errno 2',
+    )
+    _DEVICE_BUSY_KEYWORDS = (
+        'errno 11', 'errno 16', 'resource temporarily unavailable', 'busy', 'lock',
+    )
+
+    @classmethod
+    def is_device_gone(cls, exc: Exception) -> bool:
+        """True if *exc* indicates the underlying USB device went away.
+
+        pyserial often wraps the OSError into a SerialException string, so a
+        text match backs up the errno check.
+        """
+        if isinstance(exc, OSError) and exc.errno in cls._DEVICE_GONE_ERRNOS:
+            return True
+        text = str(exc).lower()
+        if any(k in text for k in cls._DEVICE_BUSY_KEYWORDS):
+            return False
+        return any(k in text for k in cls._DEVICE_GONE_KEYWORDS)
+
+    def try_reopen(self) -> bool:
+        """One reopen attempt after the device vanished. Never raises.
+
+        Closes the dead handle first (releasing the fd lets the kernel reuse
+        the tty number), re-resolves the device by its durable identity, and
+        reopens. Returns True when a fresh connection is open.
+        """
+        self._cleanup()
+        path = None
+        if self.usb_identity:
+            path = self._resolve_identity_path()
+            if not path and self.bridge_serial:
+                path = self._find_device_by_serial(self.bridge_serial)
+        elif self.bridge_serial:
+            path = self._find_device_by_serial(self.bridge_serial)
+        else:
+            # No durable identity available (never successfully opened and no
+            # USB serial): all we can do is retry the stored path once it
+            # exists again — a symlink (/dev/serial/by-*) re-resolves at open.
+            raw = self.device_path_override or self.device_path
+            if raw and os.path.exists(raw):
+                path = raw
+        if not path:
+            return False
+        try:
+            self.device_path = path
+            self._connect()
+            return True
+        except Exception:
+            self._cleanup()
+            return False
+
+    def reconnect(self, *, stop_check=None, on_status=None,
+                  total_timeout: float = 60.0) -> bool:
+        """Re-resolve and reopen after a re-enumeration, with bounded backoff.
+
+        Args:
+            stop_check: callable polled between attempts; returning True
+                aborts the wait (session shutdown)
+            on_status: callable(status: str) invoked with 'reconnecting' once
+                up front and 'reconnected' on success; exceptions ignored
+            total_timeout: give up after this many seconds
+
+        Returns True when the port is open again.
+        """
+        def _status(status):
+            if on_status:
+                try:
+                    on_status(status)
+                except Exception:
+                    pass
+
+        _status('reconnecting')
+        deadline = time.monotonic() + total_timeout
+        delay = 0.5
+        while True:
+            if stop_check and stop_check():
+                return False
+            if self.try_reopen():
+                _status('reconnected')
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            # Sleep in short slices so stop_check aborts promptly.
+            slice_end = min(time.monotonic() + delay, deadline)
+            while time.monotonic() < slice_end:
+                if stop_check and stop_check():
+                    return False
+                time.sleep(min(0.25, max(0.0, slice_end - time.monotonic())))
+            delay = min(delay * 2, 5.0)
+
+    def _reconnect_with_notices(self, stop_check=None) -> bool:
+        """reconnect() with the stderr notices used by the monitor modes."""
+        sys.stderr.buffer.write(
+            b"\r\n\033[33m[device disconnected - reconnecting...]\033[0m\r\n")
+        sys.stderr.buffer.flush()
+        if not self.reconnect(stop_check=stop_check):
+            sys.stderr.buffer.write(b"\r\n\033[31m[device did not return]\033[0m\r\n")
+            sys.stderr.buffer.flush()
+            return False
+        msg = f"\033[32m[reconnected to {self.device_path}]\033[0m\r\n"
+        sys.stderr.buffer.write(msg.encode())
+        sys.stderr.buffer.flush()
+        return True
+
     def _connect(self):
         """Open the serial connection."""
         # Map parity string to pyserial constant
@@ -181,6 +326,17 @@ class UARTBridge:
         self.serial_conn.reset_input_buffer()
         self.serial_conn.reset_output_buffer()
 
+        # Snapshot the durable USB identity of whatever we actually opened so
+        # a later re-enumeration can be healed even when the net stored only a
+        # raw /dev/tty* path (whose number may point elsewhere afterwards).
+        try:
+            from lager.devices import serial_id
+            ident = serial_id.identity_for_tty(self.device_path)
+            if ident:
+                self.usb_identity = ident
+        except Exception:
+            pass
+
     def _cleanup(self):
         """Close serial connection."""
         if self.serial_conn and self.serial_conn.is_open:
@@ -225,7 +381,16 @@ class UARTBridge:
 
         try:
             while True:
-                data = self.serial_conn.read(self.serial_conn.in_waiting or 1)
+                try:
+                    data = self.serial_conn.read(self.serial_conn.in_waiting or 1)
+                except KeyboardInterrupt:
+                    raise
+                except Exception as exc:
+                    if not self.is_device_gone(exc):
+                        raise
+                    if not self._reconnect_with_notices():
+                        break
+                    continue
                 if data:
                     # Apply output post-processing if enabled
                     if self.opost:
@@ -317,7 +482,17 @@ class UARTBridge:
 
             while not stop_event.is_set():
                 try:
-                    data = self.serial_conn.read(self.serial_conn.in_waiting or 1)
+                    try:
+                        data = self.serial_conn.read(self.serial_conn.in_waiting or 1)
+                    except Exception as exc:
+                        if stop_event.is_set() or not self.is_device_gone(exc):
+                            raise
+                        if not self._reconnect_with_notices(stop_check=stop_event.is_set):
+                            # Device never came back: end the whole session so
+                            # the stdin thread stops too.
+                            stop_event.set()
+                            break
+                        continue
                     if not data:
                         # No data available - if we're waiting after a newline, show prompt
                         with current_line_lock:
@@ -425,7 +600,16 @@ class UARTBridge:
                             # Track for echo suppression
                             pending_echo.append(byte_val)
 
-                except Exception:
+                except Exception as exc:
+                    if stop_event.is_set():
+                        break
+                    if self.is_device_gone(exc) or not (
+                            self.serial_conn and self.serial_conn.is_open):
+                        # The reader thread is reconnecting after a device
+                        # re-enumeration; drop typed bytes until the port is
+                        # back instead of killing the session.
+                        time.sleep(0.1)
+                        continue
                     break
 
         # Show initial prompt

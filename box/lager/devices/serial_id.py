@@ -24,6 +24,14 @@ its ``query_instruments`` mirror, and ``uart_bridge._find_device_by_serial``).
 Those resolve *all* interfaces of multi-channel chips for the scanner/UART
 paths; this is a deliberately small single-cable resolver for the custom-device
 framework. A future cleanup could unify all four behind one helper.
+
+The UART net path additionally uses the interface-aware pair below
+(``identity_for_tty`` / ``resolve_identity``): a snapshot taken from a live tty
+records vid/pid, USB serial, physical port path, and USB interface number, and
+resolves back to whichever tty the same device owns after a re-enumeration —
+including the correct channel of multi-interface chips (FT4232H) and
+serial-less adapters (pinned to their physical port, same trade-off as the
+``/port/`` address form above).
 """
 
 from __future__ import annotations
@@ -121,6 +129,127 @@ def _usb_device_dir_for_tty(tty_dev: Path) -> Optional[Path]:
         if not parent or parent == node or parent == Path("/sys"):
             return None
         node = parent
+    return None
+
+
+# USB interface suffix of a sysfs dir name, e.g. "1-1.2:1.3" -> interface 3.
+_IFACE_SUFFIX_RE = re.compile(r":\d+\.(\d+)$")
+
+
+def _interface_for_tty(tty_dev: Path) -> Optional[int]:
+    """USB interface number a tty belongs to, or None if undeterminable.
+
+    Walks up from the tty's ``device`` link looking for the deepest ancestor
+    whose name carries the ``:<config>.<interface>`` suffix — the same
+    convention ``usb_scanner._walk_ttys`` harvests. Distinguishes the four
+    channels of a multi-interface chip (FT4232H) that share one USB device.
+    """
+    device_link = tty_dev / "device"
+    if not device_link.exists():
+        return None
+    try:
+        node = device_link.resolve()
+    except OSError:
+        return None
+    for _ in range(10):
+        m = _IFACE_SUFFIX_RE.search(node.name)
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                return None
+        parent = node.parent
+        if not parent or parent == node or parent == Path("/sys"):
+            return None
+        node = parent
+    return None
+
+
+def identity_for_tty(tty: str) -> Optional[Dict[str, Optional[str]]]:
+    """Snapshot the durable USB identity of a live tty node.
+
+    Accepts ``/dev/ttyUSB*`` / ``/dev/ttyACM*`` or a symlink to one (e.g. a
+    ``/dev/serial/by-id/...`` path). Returns ``{"vid", "pid", "serial",
+    "port_path", "interface"}`` or None when the tty is not backed by a USB
+    device (or is gone).
+    """
+    if not tty or not isinstance(tty, str):
+        return None
+    try:
+        name = os.path.basename(os.path.realpath(tty))
+    except OSError:
+        return None
+    tty_dev = _SYS_TTY / name
+    usb_dir = _usb_device_dir_for_tty(tty_dev)
+    if usb_dir is None:
+        return None
+    vid = (_read_sysfs_text(usb_dir / "idVendor") or "").lower()
+    pid = (_read_sysfs_text(usb_dir / "idProduct") or "").lower()
+    if not vid or not pid:
+        return None
+    return {
+        "vid": vid,
+        "pid": pid,
+        "serial": _read_sysfs_text(usb_dir / "serial"),
+        "port_path": usb_dir.name,
+        "interface": _interface_for_tty(tty_dev),
+    }
+
+
+def resolve_identity(ident) -> Optional[str]:
+    """Resolve an ``identity_for_tty`` snapshot back to the live tty node.
+
+    Match rules: vid/pid always; interface when both sides know it; then USB
+    serial when the snapshot has one (falling back to the port path to break
+    ties between clone adapters sharing a serial), else the physical port
+    path. Returns ``/dev/tty...`` or None if the device is not (yet) back.
+    Tolerates arbitrary garbage input — a malformed snapshot resolves to None
+    rather than raising.
+    """
+    if not isinstance(ident, dict):
+        return None
+    vid = (ident.get("vid") or "").lower()
+    pid = (ident.get("pid") or "").lower()
+    if not vid or not pid:
+        return None
+    serial = ident.get("serial")
+    port_path = ident.get("port_path")
+    want_iface = ident.get("interface")
+    if not _SYS_TTY.exists():
+        return None
+
+    candidates = []  # (tty name, usb device-dir basename, usb serial)
+    for tty_dev in sorted(_SYS_TTY.iterdir(), key=lambda p: p.name):
+        if not tty_dev.name.startswith(("ttyUSB", "ttyACM")):
+            continue
+        usb_dir = _usb_device_dir_for_tty(tty_dev)
+        if usb_dir is None:
+            continue
+        if (_read_sysfs_text(usb_dir / "idVendor") or "").lower() != vid:
+            continue
+        if (_read_sysfs_text(usb_dir / "idProduct") or "").lower() != pid:
+            continue
+        if want_iface is not None:
+            iface = _interface_for_tty(tty_dev)
+            if iface is not None and iface != want_iface:
+                continue
+        candidates.append(
+            (tty_dev.name, usb_dir.name, _read_sysfs_text(usb_dir / "serial"))
+        )
+
+    if serial:
+        matches = [c for c in candidates if c[2] == serial]
+        if not matches:
+            return None
+        if len(matches) > 1 and port_path:
+            ported = [c for c in matches if c[1] == port_path]
+            if ported:
+                matches = ported
+        return f"/dev/{matches[0][0]}"
+    if port_path:
+        for c in candidates:
+            if c[1] == port_path:
+                return f"/dev/{c[0]}"
     return None
 
 

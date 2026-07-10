@@ -65,6 +65,7 @@ class UARTWebSocketClient:
         self.sio.on('connected', self._on_connected, namespace='/uart')
         self.sio.on('uart_connected', self._on_uart_connected, namespace='/uart')
         self.sio.on('uart_data', self._on_uart_data, namespace='/uart')
+        self.sio.on('uart_status', self._on_uart_status, namespace='/uart')
         self.sio.on('uart_stopped', self._on_uart_stopped, namespace='/uart')
         self.sio.on('error', self._on_error, namespace='/uart')
 
@@ -137,6 +138,24 @@ class UARTWebSocketClient:
                     sys.stdout.buffer.flush()
         except Exception as e:
             click.secho(f"\nError processing UART data: {e}", fg='red', err=True)
+
+    def _on_uart_status(self, data):
+        """Handle box-side session status (device re-enumeration healing).
+
+        Purely informational: the box is re-resolving/reopening the device and
+        the session stays alive, so this must NOT set stop_event. Boxes
+        predating the event never send it.
+        """
+        status = (data or {}).get('status')
+        if status == 'reconnecting':
+            msg = "\r\n\033[33m[UART device disconnected - reconnecting...]\033[0m\r\n"
+        elif status == 'reconnected':
+            device_path = (data or {}).get('device_path', 'device')
+            msg = f"\033[32m[reconnected to {device_path}]\033[0m\r\n"
+        else:
+            return
+        sys.stderr.buffer.write(msg.encode())
+        sys.stderr.buffer.flush()
 
     def _on_uart_stopped(self, data):
         """Handle UART stop confirmation."""

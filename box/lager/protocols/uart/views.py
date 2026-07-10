@@ -113,14 +113,31 @@ def stream_uart_net(netname: str, overrides: dict, interactive: bool) -> Respons
                                 if driver.opost:
                                     data = data.replace(b'\n', b'\r\n')
                                 yield data
-                    except (BrokenPipeError, ConnectionResetError, OSError):
+                    except (BrokenPipeError, ConnectionResetError):
                         # Client disconnected abruptly
                         connection_active = False
                         break
                     except Exception as e:
-                        # Log other exceptions but don't crash
-                        import logging
-                        logging.getLogger(__name__).error(f"Error in UART stream: {e}")
+                        if driver.is_device_gone(e):
+                            # The adapter re-enumerated (hub power-cycle, DUT
+                            # reflash, replug). Reopen inline so the generator
+                            # keeps yielding notices — and a departed client
+                            # still aborts promptly via GeneratorExit.
+                            yield b"\r\n\033[33m[device disconnected - reconnecting...]\033[0m\r\n"
+                            deadline = time.monotonic() + 60.0
+                            reopened = driver.try_reopen()
+                            while not reopened and time.monotonic() < deadline:
+                                time.sleep(1.0)
+                                reopened = driver.try_reopen()
+                            if reopened:
+                                msg = f"\033[32m[reconnected to {driver.device_path}]\033[0m\r\n"
+                                yield msg.encode()
+                                continue
+                            yield b"\r\n\033[31m[device did not return]\033[0m\r\n"
+                        else:
+                            # Log other exceptions but don't crash
+                            import logging
+                            logging.getLogger(__name__).error(f"Error in UART stream: {e}")
                         connection_active = False
                         break
 
