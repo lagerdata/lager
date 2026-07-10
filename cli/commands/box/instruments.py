@@ -14,6 +14,7 @@ from ...context import get_impl_path
 from ..development.python import run_python_internal
 from ...context import get_default_box
 from ...box_storage import resolve_and_validate_box
+from ...core.net_group import BoxCommand
 from collections import defaultdict
 from ...sort_utils import natural_sort_key
 
@@ -22,7 +23,7 @@ from contextlib import redirect_stdout
 
 _MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port"}
 
-@click.command()
+@click.command(cls=BoxCommand)
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.pass_context
 def instruments(ctx, box: str | None) -> None:

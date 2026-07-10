@@ -3,10 +3,11 @@
 """
 Usage-line formatting tests for CommandFirstUsageMixin / LagerGroup.
 
-Guards three things: plain groups read `COMMAND [OPTIONS]` (bracketed
+Guards four things: plain groups read `COMMAND [OPTIONS]` (bracketed
 when invokable bare), NetGroup-style groups keep their own rewritten
-usage, and the root SectionedGroup still renders its sectioned command
-list.
+usage, net-style leaf commands read positionals-first with a
+`--box [BOX_NAME]` tail, and the root SectionedGroup still renders its
+sectioned command list.
 """
 import unittest
 
@@ -61,6 +62,62 @@ class BoxStyleUsage(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("authorize --box [BOX_NAME]", result.output)
         self.assertNotIn("[ARGS]", result.output)
+
+
+class NetLeafUsage(unittest.TestCase):
+    """Standalone leaf net commands: positionals first, then the --box tail,
+    no [OPTIONS] — never Click's stock `[OPTIONS] [NET_NAME]`."""
+
+    def _usage(self, args):
+        result = CliRunner().invoke(cli, args + ["--help"], prog_name="lager")
+        self.assertEqual(result.exit_code, 0, result.output)
+        return result.output
+
+    def test_uart_positionals_first(self):
+        out = self._usage(["uart"])
+        self.assertIn("uart [NET_NAME] --box [BOX_NAME]", out)
+        self.assertNotIn("[OPTIONS]", out)
+        # The serial-port action is hidden from the usage line but still
+        # documented in the help body.
+        self.assertIn("serial-port", out)
+
+    def test_adc_positionals_first(self):
+        out = self._usage(["adc"])
+        self.assertIn("adc [NET_NAME] --box [BOX_NAME]", out)
+        self.assertNotIn("[OPTIONS]", out)
+
+    def test_gpo_keeps_level_before_box(self):
+        out = self._usage(["gpo"])
+        self.assertIn("gpo [NET_NAME] [LEVEL] --box [BOX_NAME]", out)
+        self.assertNotIn("[OPTIONS]", out)
+
+
+class NetSubCommandUsage(unittest.TestCase):
+    """Subcommands of net groups get the same positionals-first tail,
+    whether the group declares NETNAME (supply, i2c) or extracts it
+    positionally (debug)."""
+
+    def _usage(self, args):
+        result = CliRunner().invoke(cli, args + ["--help"], prog_name="lager")
+        self.assertEqual(result.exit_code, 0, result.output)
+        return result.output
+
+    def test_supply_voltage(self):
+        out = self._usage(["supply", "mynet", "voltage"])
+        self.assertIn("supply [NET_NAME] voltage [VALUE] --box [BOX_NAME]", out)
+
+    def test_i2c_write(self):
+        out = self._usage(["i2c", "mynet", "write"])
+        self.assertIn("i2c [NET_NAME] write [DATA] --box [BOX_NAME]", out)
+
+    def test_debug_flash_inserts_netname(self):
+        out = self._usage(["debug", "mynet", "flash"])
+        self.assertIn("debug [NET_NAME] flash --box [BOX_NAME]", out)
+
+    def test_nets_add_no_netname_insertion(self):
+        out = self._usage(["nets", "add"])
+        self.assertIn("nets add NAME ROLE CHANNEL ADDRESS --box [BOX_NAME]", out)
+        self.assertNotIn("nets [NET_NAME]", out)
 
 
 class RootHelp(unittest.TestCase):
