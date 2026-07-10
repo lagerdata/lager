@@ -9,8 +9,6 @@ This module provides the `lager gpi` command for reading GPIO input state
 """
 from __future__ import annotations
 
-import json
-
 import click
 
 from ...context import get_default_net
@@ -19,7 +17,7 @@ from ...core.net_helpers import (
     resolve_box,
     list_nets_by_role,
     display_nets_table,
-    run_impl_script,
+    post_net_command,
     validate_net_exists,
 )
 
@@ -68,30 +66,18 @@ def gpi(ctx, box, wait_for, timeout, scan_rate, scans_per_read, poll_interval, n
         return  # Error already displayed
 
     if wait_for is not None:
-        payload_dict = {
-            "netname": netname,
-            "action": "wait_for_level",
-            "level": wait_for,
-        }
+        wait_params = {"level": wait_for}
         if timeout is not None:
-            payload_dict["timeout"] = timeout
+            wait_params["timeout"] = timeout
         if scan_rate is not None:
-            payload_dict["scan_rate"] = scan_rate
+            wait_params["scan_rate"] = scan_rate
         if scans_per_read is not None:
-            payload_dict["scans_per_read"] = scans_per_read
+            wait_params["scans_per_read"] = scans_per_read
         if poll_interval is not None:
-            payload_dict["poll_interval"] = poll_interval
-        payload = json.dumps(payload_dict)
+            wait_params["poll_interval"] = poll_interval
+        post_net_command(ctx, box_ip, netname, "wait_for_level", role="gpio", **wait_params)
     else:
-        payload = json.dumps({"netname": netname, "action": "input"})
-
-    run_impl_script(
-        ctx=ctx,
-        box=box_ip,
-        impl_script="gpio.py",
-        args=(payload,),
-        timeout=None,
-    )
+        post_net_command(ctx, box_ip, netname, "input", role="gpio")
 
 
 gpi.net_examples = [

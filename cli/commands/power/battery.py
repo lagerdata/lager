@@ -14,7 +14,6 @@ Usage:
 """
 from __future__ import annotations
 
-import json
 import asyncio
 
 import click
@@ -26,12 +25,11 @@ from ...core.net_helpers import (
     resolve_box,
     validate_net,
     display_nets,
-    run_backend,
+    NET_HTTP_PORT,
     NET_ROLES,
 )
-from ...context import get_impl_path, get_default_net
+from ...context import get_default_net
 from ...errors import LagerError, connection_error, is_connection_error
-from ..development.python import run_python_internal
 from .battery_model_csv import parse_model_csv, write_model_csv
 
 
@@ -41,81 +39,52 @@ BATTERY_ROLE = NET_ROLES["battery"]  # "battery"
 # ---------- Battery-specific backend runner ----------
 
 def _run_backend(ctx, box, action: str, **params):
-    """
-    Run backend command and handle errors gracefully.
+    """Drive the battery simulator over the box's warm HTTP endpoint.
 
-    First tries to use the WebSocket HTTP endpoint if a TUI is running for this net,
-    which allows sharing the USB connection. Falls back to direct access if no TUI is active.
+    Posts to :9000/battery/command, which shares the instrument connection with
+    an active TUI session when one exists and otherwise drives the cached driver
+    in-process. There is no :5000 script-upload fallback.
+
+    ``box`` is the already-resolved box IP (callers pass resolve_box(...)).
     """
     import requests
 
     netname = params.get('netname')
+    url = f"http://{box}:{NET_HTTP_PORT}/battery/command"
+    payload = {"netname": netname, "action": action, "params": params}
 
-    # Try WebSocket HTTP endpoint first (for concurrent TUI + CLI access)
-    if netname:
-        try:
-            # Get box IP
-            from ...box_storage import resolve_and_validate_box
-            box_ip = resolve_and_validate_box(ctx, box)
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+    except (requests.ConnectionError, requests.Timeout):
+        click.secho(
+            f"Error: cannot reach box at {box}:{NET_HTTP_PORT}. "
+            f"Check network/Tailscale and that the box is online and updated.",
+            fg='red', err=True,
+        )
+        raise SystemExit(1)
+    except requests.RequestException as e:
+        click.secho(f"Error: battery request to box failed: {e}", fg='red', err=True)
+        raise SystemExit(1)
 
-            # Try the WebSocket-shared endpoint
-            url = f"http://{box_ip}:9000/battery/command"
-            payload = {
-                "netname": netname,
-                "action": action,
-                "params": params
-            }
+    try:
+        result = response.json()
+    except ValueError:
+        click.secho(
+            f"Error: box returned a non-JSON response (HTTP {response.status_code}).",
+            fg='red', err=True,
+        )
+        raise SystemExit(1)
 
-            response = requests.post(url, json=payload, timeout=10)
+    if response.status_code == 200 and result.get('success'):
+        click.echo(f"\033[92m{result.get('message', 'Command executed')}\033[0m")
+        return
 
-            if response.status_code == 200:
-                result = response.json()
-                if result.get('success'):
-                    # Command succeeded via WebSocket endpoint
-                    message = result.get('message', 'Command executed')
-                    click.echo(f"\033[92m{message}\033[0m")
-                    return
-                else:
-                    # WebSocket endpoint returned error
-                    click.echo(f"Error: {result.get('error', 'Unknown error')}", err=True)
-                    raise SystemExit(1)
-
-            elif response.status_code == 404:
-                # No active WebSocket session, fall through to direct access
-                pass
-
-            else:
-                # Other HTTP error, try direct access as fallback
-                pass
-
-        except (requests.ConnectionError, requests.Timeout):
-            # Box not reachable via HTTP, fall through to direct access
-            pass
-        except Exception:
-            # Other error, fall through to direct access
-            pass
-
-    # Fall back to direct USB access (original behavior)
-    data = {
-        'action': action,
-        'params': params,
-    }
-    run_python_internal(
-        ctx,
-        get_impl_path('battery.py'),
-        box,
-        env=(f'LAGER_COMMAND_DATA={json.dumps(data)}',),
-        passenv=(),
-        kill=False,
-        download=(),
-        allow_overwrite=False,
-        signum='SIGTERM',
-        timeout=0,
-        detach=False,
-        port=(),
-        org=None,
-        args=(),
-    )
+    error = result.get('error') or f"battery command failed (HTTP {response.status_code})"
+    if response.status_code == 404:
+        error = (f"{error}. This box image does not expose /battery/command; "
+                 f"update the box.")
+    click.secho(f"Error: {error}", fg='red', err=True)
+    raise SystemExit(1)
 
 
 def _battery_command_request(ctx, box, action: str, timeout: int = 30, **params):

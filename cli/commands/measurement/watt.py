@@ -9,19 +9,19 @@ from __future__ import annotations
 import json
 
 import click
-from ...context import get_default_net, get_impl_path
-from ..development.python import run_python_internal
+from ...context import get_default_net
 from ...core.net_group import NetGroup
 from ...core.net_helpers import (
     resolve_box,
     display_nets,
+    post_net_command,
     validate_net_exists,
 )
 
 WATT_ROLE = "watt-meter"
 
-# Base timeout for watt meter readings (seconds); scaled up for long durations.
-WATT_TIMEOUT = 30
+_UNITS = {"power": ("Power", "W"), "current": ("Current", "A"),
+          "voltage": ("Voltage", "V")}
 
 
 class WattGroup(NetGroup):
@@ -76,55 +76,35 @@ def _run_watt(ctx, box, netname, mode, duration, as_json):
     if net is None:
         return  # Error already displayed
 
-    payload = json.dumps({
-        "netname": netname,
-        "mode": mode,
-        "duration": duration,
-        "json": as_json,
-    })
+    # The box exposes each quantity as its own /net/command action; "all"
+    # returns a {current, voltage, power} dict. post_net_command surfaces any
+    # hardware error (e.g. UnsupportedInstrumentError for power-only meters).
+    result = post_net_command(ctx, box_ip, netname, mode, role="watt-meter",
+                              quiet=True, duration=duration)
+    value = result.get("value")
 
-    # Give the box enough time for long averaging windows.
-    timeout = max(WATT_TIMEOUT, int(duration) + 20)
-
-    try:
-        run_python_internal(
-            ctx=ctx,
-            runnable=get_impl_path("watt.py"),
-            box=box_ip,
-            env=(),
-            passenv=(),
-            kill=False,
-            download=(),
-            allow_overwrite=False,
-            signum="SIGTERM",
-            timeout=timeout,
-            detach=False,
-            port=(),
-            org=None,
-            args=[payload],
-        )
-    except SystemExit as e:
-        # Re-raise non-zero exits to preserve exit code
-        if e.code != 0:
-            raise
-    except Exception as e:
-        error_str = str(e)
-        click.secho("Error: Failed to read watt meter", fg='red', err=True)
-        if "Connection refused" in error_str:
-            click.secho(f"Could not connect to box at {box_ip}", err=True)
-            click.secho("Check that the box is online and Docker container is running.", err=True)
-        elif "timed out" in error_str.lower():
-            click.secho("Watt meter reading timed out.", err=True)
-            click.secho("Possible causes:", err=True)
-            click.secho("  - Watt meter not connected or powered off", err=True)
-            click.secho("  - USB connection issue", err=True)
-            click.secho("  - Device at incorrect address", err=True)
-        elif "device not found" in error_str.lower() or "no such device" in error_str.lower():
-            click.secho("Watt meter device not found.", err=True)
-            click.secho("Check that the watt meter (Yocto-Watt or Joulescope JS220) is connected via USB.", err=True)
+    if mode == "all":
+        current = float(value["current"])
+        voltage = float(value["voltage"])
+        power = float(value["power"])
+        if as_json:
+            click.echo(json.dumps({
+                "netname": netname, "current": current, "voltage": voltage,
+                "power": power, "duration_s": duration,
+            }))
         else:
-            click.secho(f"Details: {e}", err=True)
-        ctx.exit(1)
+            click.echo(f"Measurements '{netname}' ({duration:g}s):")
+            click.echo(f"  Current: {current:.6g} A")
+            click.echo(f"  Voltage: {voltage:.6g} V")
+            click.echo(f"  Power:   {power:.6g} W")
+        return
+
+    v = float(value)
+    label, unit = _UNITS[mode]
+    if as_json:
+        click.echo(json.dumps({"netname": netname, mode: v, "duration_s": duration}))
+    else:
+        click.echo(f"{label} '{netname}': {v:.6g} {unit}")
 
 
 # Shared options for the read subcommands.

@@ -17,9 +17,6 @@
 """
 from __future__ import annotations
 
-import io
-import json
-from contextlib import redirect_stderr
 import asyncio
 
 import click
@@ -35,10 +32,10 @@ from ...core.net_helpers import (
     validate_positive_parameters,
     validate_protection_limits,
     parse_value_with_negatives,
+    NET_HTTP_PORT,
     NET_ROLES,
 )
-from ...context import get_default_box, get_impl_path, get_default_net
-from ..development.python import run_python_internal
+from ...context import get_default_net
 
 
 SUPPLY_ROLE = NET_ROLES["power_supply"]  # "power-supply"
@@ -88,125 +85,52 @@ def _validate_supply_limits(ctx, voltage=None, current=None, ovp=None, ocp=None)
 # ---------- Supply-specific backend runner ----------
 
 def _run_backend(ctx, box, action: str, **params):
-    """
-    Run backend command and handle errors gracefully.
+    """Drive the power supply over the box's warm HTTP endpoint.
 
-    First tries to use the WebSocket HTTP endpoint if a TUI is running for this net,
-    which allows sharing the USB connection. Falls back to direct access if no TUI is active.
+    Posts to :9000/supply/command, which shares the instrument connection with
+    an active TUI session when one exists and otherwise drives the cached driver
+    in-process. There is no :5000 script-upload fallback.
+
+    ``box`` is the already-resolved box IP (callers pass resolve_box(...)).
     """
     import requests
 
-    netname = getattr(ctx.obj, "netname", None)
-
-    # Try WebSocket HTTP endpoint first (for concurrent TUI + CLI access)
-    if netname:
-        try:
-            # Get box IP
-            from ...box_storage import resolve_and_validate_box
-            box_ip = resolve_and_validate_box(ctx, box)
-
-            # Try the WebSocket-shared endpoint
-            url = f"http://{box_ip}:9000/supply/command"
-            payload = {
-                "netname": netname,
-                "action": action,
-                "params": params
-            }
-
-            response = requests.post(url, json=payload, timeout=10)
-
-            if response.status_code == 200:
-                result = response.json()
-                if result.get('success'):
-                    # Command succeeded via WebSocket endpoint
-                    message = result.get('message', 'Command executed')
-                    click.echo(f"[OK] {message}")
-                    return
-                else:
-                    # WebSocket endpoint returned error
-                    click.echo(f"Error: {result.get('error', 'Unknown error')}", err=True)
-                    raise SystemExit(1)
-
-            elif response.status_code == 404:
-                # No active WebSocket session, fall through to direct access
-                pass
-
-            else:
-                # Other HTTP error, try direct access as fallback
-                pass
-
-        except (requests.ConnectionError, requests.Timeout):
-            # Box not reachable via HTTP, fall through to direct access
-            pass
-        except Exception:
-            # Other error, fall through to direct access
-            pass
-
-    # Fall back to direct USB access (original behavior)
-    data = {
-        "action": action,
-        "params": params,
-    }
-
-    # Capture stderr to detect Resource busy errors
-    stderr_capture = io.StringIO()
+    netname = params.get("netname") or getattr(ctx.obj, "netname", None)
+    url = f"http://{box}:{NET_HTTP_PORT}/supply/command"
+    payload = {"netname": netname, "action": action, "params": params}
 
     try:
-        with redirect_stderr(stderr_capture):
-            run_python_internal(
-                ctx,
-                get_impl_path("supply.py"),
-                box,
-                env=(f"LAGER_COMMAND_DATA={json.dumps(data)}",),
-                passenv=(),
-                kill=False,
-                download=(),
-                allow_overwrite=False,
-                signum="SIGTERM",
-                timeout=0,
-                detach=False,
-                port=(),
-                org=None,
-                args=(),
-            )
-    except SystemExit as e:
-        # Get captured stderr
-        stderr_output = stderr_capture.getvalue()
+        response = requests.post(url, json=payload, timeout=10)
+    except (requests.ConnectionError, requests.Timeout):
+        click.secho(
+            f"Error: cannot reach box at {box}:{NET_HTTP_PORT}. "
+            f"Check network/Tailscale and that the box is online and updated.",
+            fg='red', err=True,
+        )
+        raise SystemExit(1)
+    except requests.RequestException as e:
+        click.secho(f"Error: supply request to box failed: {e}", fg='red', err=True)
+        raise SystemExit(1)
 
-        # Check if this is a "Resource busy" error
-        if e.code != 0 and "Resource busy" in stderr_output:
-            click.echo(stderr_output, err=True)  # Print the original error
-            click.echo("\n" + "="*70, err=True)
-            click.echo("WARNING: Power supply is currently in use by the TUI", err=True)
-            click.echo("="*70, err=True)
-            click.echo(f"\nThe power supply '{netname}' cannot be accessed because it's being used", err=True)
-            click.echo("by an active 'lager supply tui' session.\n", err=True)
-            click.echo("To fix this:", err=True)
-            click.echo(f"  1. Close the TUI: Press 'q' or 'Ctrl+C' in the TUI window", err=True)
-            click.echo(f"  2. Then retry this command", err=True)
-            click.echo("\nOr use the TUI's command prompt to control the supply interactively.", err=True)
-            raise SystemExit(1)
-        elif e.code != 0:
-            # Other error - print captured stderr and re-raise
-            click.echo(stderr_output, err=True)
-            raise
+    try:
+        result = response.json()
+    except ValueError:
+        click.secho(
+            f"Error: box returned a non-JSON response (HTTP {response.status_code}).",
+            fg='red', err=True,
+        )
+        raise SystemExit(1)
 
-    # Provide feedback for operations that don't naturally produce output
-    if action in ["set_mode", "clear_ovp", "clear_ocp", "enable", "disable"]:
-        operation_names = {
-            "set_mode": "Set power supply mode",
-            "clear_ovp": "Cleared OVP protection",
-            "clear_ocp": "Cleared OCP protection",
-            "enable": "Enabled supply output",
-            "disable": "Disabled supply output"
-        }
-        click.echo(f"[OK] {operation_names.get(action, 'Operation completed')}")
+    if response.status_code == 200 and result.get('success'):
+        click.echo(f"[OK] {result.get('message', 'Command executed')}")
+        return
 
-    # Provide feedback for voltage/current set operations
-    if action == "voltage" and params.get("value") is not None:
-        click.echo(f"[OK] Voltage set to {params.get('value')}V")
-    elif action == "current" and params.get("value") is not None:
-        click.echo(f"[OK] Current set to {params.get('value')}A")
+    error = result.get('error') or f"supply command failed (HTTP {response.status_code})"
+    if response.status_code == 404:
+        error = (f"{error}. This box image does not expose /supply/command; "
+                 f"update the box.")
+    click.secho(f"Error: {error}", fg='red', err=True)
+    raise SystemExit(1)
 
 
 # ---------- CLI ----------

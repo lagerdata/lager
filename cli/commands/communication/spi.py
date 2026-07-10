@@ -19,18 +19,15 @@ from __future__ import annotations
 
 import json
 import re
-import sys
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import click
-import requests
 from texttable import Texttable
 
 from ...core.net_group import NetGroupHelpMixin
-from ...core.net_helpers import resolve_box
-from ...context import get_impl_path, get_default_net
+from ...core.net_helpers import resolve_box, fetch_nets, post_net_command
+from ...context import get_default_net
 from ...errors import net_not_specified_error
-from ..development.python import run_python_internal
 
 SPI_ROLE = "spi"
 
@@ -81,27 +78,8 @@ def _resolve_box_with_name(ctx, box):
 
 
 def _fetch_spi_nets(ctx: click.Context, box_ip: str) -> list[dict]:
-    """
-    Fetch SPI nets from the box by reading saved_nets.json.
-    """
-    try:
-        box_url = f'http://{box_ip}:9000/nets/list'
-        response = requests.get(box_url, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            nets = data.get('nets', [])
-            return [n for n in nets if n.get("role") == SPI_ROLE]
-        else:
-            # Fallback: this endpoint returns all saved nets despite the URL path.
-            box_url = f'http://{box_ip}:9000/uart/nets/list'
-            response = requests.get(box_url, timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                nets = data.get('nets', [])
-                return [n for n in nets if n.get("role") == SPI_ROLE]
-            return []
-    except (requests.RequestException, json.JSONDecodeError):
-        return []
+    """Fetch SPI nets from the box (:9000/nets/list), filtered by role."""
+    return [n for n in fetch_nets(box_ip) if n.get("role") == SPI_ROLE]
 
 
 def _list_spi_nets(ctx, box):
@@ -389,32 +367,28 @@ def display_nets(ctx, box, netname: Optional[str] = None):
     click.echo(table.draw())
 
 
-def _run_spi_backend(ctx, box_ip, action: str, **params):
-    """Run SPI backend command."""
-    data = {
-        "action": action,
-        "params": params,
-    }
-    try:
-        run_python_internal(
-            ctx,
-            get_impl_path("spi.py"),
-            box_ip,
-            env=(f"LAGER_COMMAND_DATA={json.dumps(data)}",),
-            passenv=(),
-            kill=False,
-            download=(),
-            allow_overwrite=False,
-            signum="SIGTERM",
-            timeout=0,
-            detach=False,
-            port=(),
-            org=None,
-            args=(),
-        )
-    except SystemExit as e:
-        if e.code != 0:
-            raise
+def _format_spi_output(words: list, fmt: str, word_size: int) -> str:
+    """Format SPI words for display (mirrors the box dispatcher's _format_output)."""
+    if fmt == "json":
+        return json.dumps({"data": words})
+    if fmt == "bytes":
+        return " ".join(str(w) for w in words)
+    width = 2 if word_size == 8 else (4 if word_size == 16 else 8)
+    return " ".join(f"{w:0{width}x}" for w in words)
+
+
+def _run_spi_backend(ctx, box_ip, action: str, netname: str,
+                     output_format: str = "hex", **params):
+    """Drive SPI over the box's :9000 /net/command endpoint.
+
+    The box returns the raw word list (plus the effective word size); the CLI
+    formats it per --format / --word-size so behavior matches the old path.
+    """
+    result = post_net_command(ctx, box_ip, netname, action, role="spi",
+                              quiet=True, **params)
+    words = result.get("value") or []
+    word_size = int(result.get("word_size", 8))
+    click.echo(_format_spi_output(words, output_format, word_size))
 
 
 # ---------- CLI ----------
@@ -647,7 +621,7 @@ def config(ctx, box, mode, bit_order, frequency, cs_active, word_size, cs_mode):
     if not netname:
         net_not_specified_error('SPI', 'spi').die()
 
-    params = {"netname": netname}
+    params = {}
     if mode is not None:
         params["mode"] = int(mode)
     if bit_order is not None:
@@ -661,7 +635,7 @@ def config(ctx, box, mode, bit_order, frequency, cs_active, word_size, cs_mode):
     if cs_mode is not None:
         params["cs_mode"] = cs_mode
 
-    _run_spi_backend(ctx, box_ip, "config", **params)
+    post_net_command(ctx, box_ip, netname, "config", role="spi", **params)
 
 
 @spi.command()

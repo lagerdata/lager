@@ -9,8 +9,6 @@ on LabJack devices.
 """
 from __future__ import annotations
 
-import json
-
 import click
 
 from ...context import get_default_net
@@ -19,7 +17,7 @@ from ...core.net_helpers import (
     resolve_box,
     list_nets_by_role,
     display_nets_table,
-    run_impl_script,
+    post_net_command,
     validate_net_exists,
 )
 
@@ -52,15 +50,7 @@ def adc(ctx, box, netname):
     if validate_net_exists(ctx, box_ip, netname, ADC_ROLE) is None:
         return
 
-    payload = json.dumps({"netname": netname})
-
-    run_impl_script(
-        ctx=ctx,
-        box=box_ip,
-        impl_script="adc.py",
-        args=(payload,),
-        timeout=None,
-    )
+    post_net_command(ctx, box_ip, netname, "read", role="adc")
 
 
 adc.net_examples = [

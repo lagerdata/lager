@@ -6,20 +6,17 @@ Energy analyzer commands.
 """
 from __future__ import annotations
 
-import json
-
 import click
-from ...context import get_default_net, get_impl_path
-from ..development.python import run_python_internal
+from ...context import get_default_net
 from ...core.net_group import NetGroup
 from ...core.net_helpers import (
     resolve_box,
     display_nets,
+    post_net_command,
     validate_net_exists,
 )
 
 ENERGY_ROLE = "energy-analyzer"
-ENERGY_TIMEOUT = 120  # allow up to 2 min for long integrations
 
 
 def _require_netname(ctx):
@@ -44,32 +41,10 @@ def _run_energy(ctx, box, duration, netname, mode):
     if net is None:
         return
 
-    payload = json.dumps({"netname": netname, "duration": duration, "mode": mode})
-
-    try:
-        run_python_internal(
-            ctx=ctx,
-            runnable=get_impl_path("energy.py"),
-            box=box_ip,
-            env=(),
-            passenv=(),
-            kill=False,
-            download=(),
-            allow_overwrite=False,
-            signum="SIGTERM",
-            timeout=ENERGY_TIMEOUT,
-            detach=False,
-            port=(),
-            org=None,
-            args=[payload],
-        )
-    except SystemExit as e:
-        if e.code != 0:
-            raise
-    except Exception as e:
-        click.secho(f"Error: Failed to read energy {mode}", fg='red', err=True)
-        click.secho(f"Details: {e}", err=True)
-        ctx.exit(1)
+    # mode "energy" -> integrate charge/energy; "stats" -> average I/V/P.
+    action = "read_energy" if mode == "energy" else "read_stats"
+    post_net_command(ctx, box_ip, netname, action, role="energy-analyzer",
+                     duration=duration)
 
 
 @click.group(

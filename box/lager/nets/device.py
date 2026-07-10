@@ -57,9 +57,17 @@ def enum_decoder(obj):
     return obj
 
 class Device:
-    def __init__(self, device_name, net_info=None):
+    #: Default per-request HTTP timeout for /invoke (seconds). Thermocouple
+    #: reads take ~3s, so 10s is a safe margin for typical calls.
+    DEFAULT_TIMEOUT = 10.0
+
+    def __init__(self, device_name, net_info=None, timeout=None):
         self.device_name = device_name
         self.net_info = net_info
+        # Callers that drive long-running device methods (gpio wait_for_level,
+        # watt/energy-analyzer integration windows up to ~30s) must widen this
+        # so the /invoke POST doesn't time out before the device method returns.
+        self.timeout = timeout if timeout is not None else self.DEFAULT_TIMEOUT
 
     def invoke(self, func, *args, **kwargs):
         data = {
@@ -70,14 +78,12 @@ class Device:
             'net_info': self.net_info,
         }
         try:
-            # Use session with connection pooling and 10s timeout
-            # (thermocouple reads take ~3s, so 10s provides safe margin)
             # Note: Using localhost since all services run in same container
             resp = _session.post(
                 f'http://localhost:{HARDWARE_PORT}/invoke',
                 headers={'Content-Type': 'application/json'},
                 data=json.dumps(data, cls=EnumEncoder),
-                timeout=10.0  # 10 second timeout
+                timeout=self.timeout
             )
         except Exception as exc:
             raise ConnectionFailed from exc

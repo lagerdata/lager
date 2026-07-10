@@ -111,8 +111,11 @@ from .net_helpers import (
     get_netname_or_none,
     # Net operations
     run_net_py,
+    fetch_nets,
+    post_net_command,
     list_nets_by_role,
     validate_net,
+    validate_net_exists,
     find_net_by_name,
     # Display operations
     display_nets,
@@ -201,8 +204,11 @@ __all__ = [
     'get_netname_or_none',
     # net_helpers exports - Net operations
     'run_net_py',
+    'fetch_nets',
+    'post_net_command',
     'list_nets_by_role',
     'validate_net',
+    'validate_net_exists',
     'find_net_by_name',
     # net_helpers exports - Display operations
     'display_nets',

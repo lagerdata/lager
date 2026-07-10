@@ -26,13 +26,14 @@ Response:
     { "success": true,  "action": "input", "message": "HIGH (1)", "value": 1 }
     { "success": false, "error": "Net 'gpi1' not found" }
 """
+import importlib
 import logging
-import threading
 
 from flask import Flask, request, jsonify
 
-from lager.nets.net import Net, NetType
-from lager.nets.device import ConnectionFailed, DeviceError
+from lager.nets.net import Net
+from lager.nets.device import ConnectionFailed, DeviceError, Device
+from lager.dispatchers import helpers
 from lager.exceptions import LagerBackendError
 
 logger = logging.getLogger(__name__)
@@ -61,63 +62,132 @@ def _ok_read(value, unit):
     return _ok("%s %s" % (value, unit), value)
 
 
-def _net(netname, role):
-    """Acquire the Net object for the resolved role via the high-level API.
+# ---------------------------------------------------------------------------
+# hardware_service routing for the IO / bus / measurement roles.
+#
+# Every Tier-1 role now drives its device through hardware_service
+# (POST :8080/invoke) via a Device proxy, the same single-owner path supply,
+# battery and eload use. hardware_service owns/caches the driver per physical
+# device and serializes access under a per-device lock, so concurrent :9000
+# requests (e.g. parallel cargo tests through the Rust crate) can never
+# interleave I/O on the same instrument.
+#
+# The catch for non-VISA devices: hardware_service's per-address lock keys on
+# net_info["address"], but a LabJack T7 has no VISA address and is shared
+# across GPIO/ADC/DAC/SPI/I2C (one LJM handle). So each net supplies an
+# explicit `device_id` (see _physical_device_id) — a stable physical-device
+# identity that is SHARED by every net/role on the same hardware. The cache
+# still keeps a distinct driver instance per net; only the lock is shared.
+#
+# Each role maps to a uniquely-named create_device factory module (adc_hs,
+# gpio_hs, …) so hardware_service's import-path search resolves it to the right
+# role (the raw driver module names — labjack_t7, usb202 — are ambiguous across
+# io.adc / io.dac / io.gpio).
+# ---------------------------------------------------------------------------
 
-    WARM-PATH NOTE (confirmed): for these Tier-1 roles, Net.get(...) returns a
-    concrete *in-process* driver (LabJackGPIO/USB202*/FT232HGPIO, LabJackADC/DAC,
-    PhidgetThermocouple, YoctoWatt/Joulescope/PPK2…), NOT a hardware_service
-    Device proxy — only supply/battery route through resolve_net_proxy + Device.
+_HS_FACTORY = {
+    "adc": "adc_hs",
+    "dac": "dac_hs",
+    "gpio": "gpio_hs",
+    "thermocouple": "thermocouple_hs",
+    "watt-meter": "watt_hs",
+    "energy-analyzer": "energy_hs",
+    "spi": "spi_hs",
+    "i2c": "i2c_hs",
+}
 
-    Implications of running these in box_http_server (vs `lager python`):
-      • We DO eliminate the dominant cost — the per-call subprocess spawn +
-        `lager` import — so this is already a big win over the exec path.
-      • We do NOT get hardware_service's session caching / per-device locks, so:
-          - each call constructs a fresh driver and re-opens the device;
-          - two concurrent calls (Flask is threaded) to the same device can race;
-          - it reintroduces the multi-owner problem hardware_service avoids
-            (e.g. a concurrent `lager gpi …` subprocess opening the same LabJack).
 
-    Decisions for this branch (pick per role):
-      (a) keep in-process drivers — simplest, fine for low-concurrency Workbench;
-          optionally cache the driver per (netname, role) to skip re-open, with
-          invalidate-on-error;
-      (b) route through hardware_service (resolve_net_proxy + Device, like
-          supply.py) for true caching + serialization — needs confirming
-          hardware_service can dispatch these device modules/methods.
+def _address_from_rec(rec):
+    """Resolve a device address from a saved-net record.
+
+    Prefers a per-net mappings[].device_override, else the top-level address —
+    the same precedence resolve_address() uses. Returns None if unset.
     """
-    return Net.get(netname, type=NetType.from_role(role))
+    for mapping in rec.get("mappings") or []:
+        if mapping.get("device_override"):
+            return mapping["device_override"]
+    return rec.get("address")
 
 
-# ---------------------------------------------------------------------------
-# Per-netname serialization for in-process bus/measurement drivers.
-#
-# The spi/i2c dispatchers cache their drivers behind a module lock, and the
-# energy-analyzer dispatcher caches too — but that lock only guards driver
-# *construction*, not the device I/O. Flask runs threaded, so two Workbench
-# requests (or a Workbench request racing a `lager spi/i2c/energy` subprocess)
-# on the same net would interleave transactions on one physical device.
-#
-# Decision (per the _net() docstring's open question): for spi/i2c/energy-
-# analyzer we serialize the whole resolve+transact per netname. These roles are
-# inherently transactional (a transfer/scan/integration must complete before
-# the next starts), low-frequency from the dashboard, and cheap to queue. The
-# simpler stateless reads (gpio/adc/dac/thermocouple/watt-meter) are left
-# unserialized — their re-open-per-call already matches the /python path.
-# ---------------------------------------------------------------------------
+def _find_rec(netname, role, error_class):
+    """Return the saved-net record for (netname, role) or raise error_class.
 
-_net_locks = {}
-_net_locks_guard = threading.Lock()
+    Reads from the same source _resolve_role uses (Net.get_local_nets), so a
+    single mock covers both the role resolution and the proxy build in tests.
+    """
+    for entry in Net.get_local_nets():
+        if entry.get("name") == netname and entry.get("role") == role:
+            return entry
+    raise error_class("Net '%s' (role %s) not found." % (netname, role))
 
 
-def _get_net_lock(netname):
-    """Return a process-wide lock unique to `netname` (created on first use)."""
-    with _net_locks_guard:
-        lock = _net_locks.get(netname)
-        if lock is None:
-            lock = threading.Lock()
-            _net_locks[netname] = lock
-        return lock
+def _hw_proxy(netname, role, module_for_instrument, error_class):
+    """Resolve a VISA net to a hardware_service Device proxy (POST :8080/invoke).
+
+    Mirrors resolve_net_proxy's supply/battery flow (resolve record -> VISA
+    address -> instrument->module). Used for eload; the lock is hardware_service's
+    per-VISA-address lock, the single-owner path supply/battery use.
+    """
+    rec = _find_rec(netname, role, error_class)
+    address = _address_from_rec(rec)
+    if not address:
+        raise error_class("Net '%s' has no device address." % netname)
+
+    instrument = rec.get("instrument") or ""
+    device_name = module_for_instrument(instrument)
+    if device_name is None:
+        raise error_class(
+            "Unsupported %s instrument '%s' for net '%s'." % (role, instrument, netname))
+    net_info = {"name": netname, "address": address, "instrument": instrument}
+    return Device(device_name, net_info)
+
+
+def _physical_device_id(role, instrument, rec):
+    """Stable identity for the physical device backing this net.
+
+    hardware_service uses it as the shared lock key so that every net/role on
+    one physical device serializes — critically the LabJack T7, whose single
+    LJM handle is shared across GPIO/ADC/DAC/SPI/I2C, and a Joulescope/PPK2
+    shared by a watt-meter net and an energy-analyzer net. Keyed on the device
+    family + its serial/address (or a constant when a family has one shared
+    handle), NOT on the net name or pin.
+    """
+    inst = (instrument or "").lower()
+    addr = _address_from_rec(rec) or ""
+    serial = ""
+    if "::" in addr:
+        parts = addr.split("::")
+        if len(parts) > 3 and parts[3]:
+            serial = parts[3]
+    if any(k in inst for k in ("usb-202", "usb202", "mcc")):
+        return "usb202:" + (rec.get("unique_id") or addr or "ANY")
+    if "ft232h" in inst or "ftdi" in inst:
+        return "ft232h:" + (serial or addr or "ANY")
+    if "aardvark" in inst or "totalphase" in inst:
+        port = str((rec.get("params") or {}).get("port", 0))
+        return "aardvark:" + (serial or addr or port)
+    if "joulescope" in inst or "js220" in inst:
+        return "joulescope:" + (addr or "ANY")
+    if "ppk" in inst or "nordic" in inst:
+        return "ppk2:" + (addr or "ANY")
+    if role == "thermocouple" or "phidget" in inst:
+        return "phidget:" + (addr or "ANY")
+    if role == "watt-meter" or "yocto" in inst:
+        return "yocto:" + (addr or "ANY")
+    # Default: LabJack T7 — one shared LJM handle across all roles/pins.
+    return "labjack:" + (addr or "ANY")
+
+
+def _proxy(netname, role, timeout=None):
+    """Build a hardware_service Device proxy for a non-VISA (device_id) role."""
+    rec = _find_rec(netname, role, DeviceError)
+    instrument = rec.get("instrument") or ""
+    net_info = {
+        "name": netname,
+        "instrument": instrument,
+        "device_id": _physical_device_id(role, instrument, rec),
+    }
+    return Device(_HS_FACTORY[role], net_info, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -126,173 +196,265 @@ def _get_net_lock(netname):
 # ---------------------------------------------------------------------------
 
 def _gpio(netname, role, action, params):
-    net = _net(netname, role)
+    # Blocking edge/level wait runs inside hardware_service under the LabJack's
+    # shared device_id lock; the gpio_hs adapter normalizes the level and routes
+    # LabJack-specific scan kwargs (matches the gpio dispatcher). The whole wait
+    # is bounded by the caller-supplied timeout, which must stay under both the
+    # widened Device proxy timeout and the reverse proxy's read timeout.
+    if action == "wait_for_level":
+        level = params.get("level")
+        if level is None:
+            raise KeyError("level")
+        kwargs = {}
+        if params.get("timeout") is not None:
+            kwargs["timeout"] = float(params["timeout"])
+        if params.get("scan_rate") is not None:
+            kwargs["scan_rate"] = int(params["scan_rate"])
+        if params.get("scans_per_read") is not None:
+            kwargs["scans_per_read"] = int(params["scans_per_read"])
+        if params.get("poll_interval") is not None:
+            kwargs["poll_interval"] = float(params["poll_interval"])
+        wait_timeout = kwargs.get("timeout")
+        proxy_timeout = min(float(wait_timeout) + 5.0, 55.0) if wait_timeout else 55.0
+        dev = _proxy(netname, role, timeout=proxy_timeout)
+        elapsed = float(dev.wait_for_level(level, **kwargs))
+        return _ok("Reached level %s in %.4fs" % (level, elapsed), elapsed)
+
+    dev = _proxy(netname, role)
     if action == "input":
-        v = int(net.input())
+        v = int(dev.input())
         return _ok("%s (%d)" % ("HIGH" if v else "LOW", v), v)
     if action == "output_high":
-        net.output(1)
+        dev.output(1)
         return _ok("Output set HIGH")
     if action == "output_low":
-        net.output(0)
+        dev.output(0)
         return _ok("Output set LOW")
+    # Generic output with an explicit level (supports gpo's toggle/high/low).
+    # The adapter resolves toggle (read+write) in one /invoke -> atomic.
+    if action == "output":
+        level = params.get("level")
+        if level is None:
+            raise KeyError("level")
+        v = int(dev.output(level))
+        if str(level).strip().lower() == "toggle":
+            return _ok("Toggled to %s" % ("HIGH" if v else "LOW"), v)
+        return _ok("Output set %s" % ("HIGH" if v else "LOW"), v)
     raise UnknownAction(action)
 
 
 def _adc(netname, role, action, params):
     if action != "read":
         raise UnknownAction(action)
-    return _ok_read(float(_net(netname, role).input()), "V")
+    return _ok_read(float(_proxy(netname, role).input()), "V")
 
 
 def _dac(netname, role, action, params):
-    net = _net(netname, role)
+    dev = _proxy(netname, role)
     if action == "set":
         v = float(params["value"])
-        net.output(v)
+        dev.output(v)
         return _ok("Set to %.6f V" % v, v)
     if action == "read":
-        return _ok_read(float(net.input()), "V")
+        return _ok_read(float(dev.input()), "V")
     raise UnknownAction(action)
 
 
 def _thermocouple(netname, role, action, params):
     if action != "read":
         raise UnknownAction(action)
-    return _ok_read(float(_net(netname, role).read()), "°C")
+    return _ok_read(float(_proxy(netname, role).read()), "°C")
 
 
 def _watt_meter(netname, role, action, params):
-    if action != "read":
+    # "read"/"power" -> watts; "current"/"voltage" -> A/V (Joulescope/PPK2);
+    # "all" -> {current, voltage, power}. The watt_hs adapter performs the timed
+    # measurement in one /invoke under the device_id lock (shared with an
+    # energy-analyzer net on the same Joulescope/PPK2); a power-only meter's
+    # UnsupportedInstrumentError surfaces as a 502.
+    if action not in ("read", "power", "current", "voltage", "all"):
         raise UnknownAction(action)
-    net = _net(netname, role)
-    p = float(net.read())
-    try:
-        net.close()
-    except Exception:
-        pass
-    return _ok_read(p, "W")
+    duration = float(params.get("duration") or 0.1)
+    # Widen the proxy timeout to cover the integration window (+margin).
+    dev = _proxy(netname, role, timeout=min(duration + 10.0, 55.0))
+    r = dev.measure(action, duration)
+    if action == "all":
+        current = float(r["current"])
+        voltage = float(r["voltage"])
+        power = float(r["power"])
+        msg = "I %.6f A, V %.3f V, P %.6f W (%gs)" % (
+            current, voltage, power, duration)
+        return _ok(msg, {
+            "current": current, "voltage": voltage, "power": power,
+            "duration_s": duration,
+        })
+    unit = {"read": "W", "power": "W", "current": "A", "voltage": "V"}[action]
+    return _ok_read(float(r["value"]), unit)
 
 
 def _eload(netname, role, action, params):
-    # E-load uses the dispatcher functions (matches cli/impl/power/eload.py),
-    # not the Net object — set when params.value is present, else read.
-    from lager.power.eload.dispatcher import (
-        set_constant_current, get_constant_current,
-        set_constant_voltage, get_constant_voltage,
-        set_constant_resistance, get_constant_resistance,
-        set_constant_power, get_constant_power,
-    )
-    setters = {"cc": set_constant_current, "cv": set_constant_voltage,
-               "cr": set_constant_resistance, "cp": set_constant_power}
-    getters = {"cc": get_constant_current, "cv": get_constant_voltage,
-               "cr": get_constant_resistance, "cp": get_constant_power}
-    if action not in setters:
+    # E-load is a VISA instrument: route through hardware_service (POST
+    # :8080/invoke) so device access is serialized by hardware_service's
+    # per-VISA-address lock and the pyvisa session is cached/owned there —
+    # the same single-owner path supply/battery use. The composite driver
+    # methods (apply_setpoint/read_setpoint/get_state_dict) make each action a
+    # single /invoke, so a mode+setpoint transaction can't interleave with a
+    # concurrent request on the same instrument.
+    from lager.exceptions import ELoadBackendError
+    dev = _hw_proxy(netname, "eload", helpers._eload_module_for_instrument,
+                    ELoadBackendError)
+
+    if action == "state":
+        state = dev.get_state_dict()
+        msg = "Mode %s, %s, V %.3f, I %.3f, P %.3f" % (
+            state["mode"], "Enabled" if state["input_enabled"] else "Disabled",
+            state["measured_voltage"], state["measured_current"],
+            state["measured_power"])
+        return _ok(msg, state)
+
+    if action not in ("cc", "cv", "cr", "cp"):
         raise UnknownAction(action)
     value = params.get("value")
-    res = setters[action](netname, float(value)) if value is not None else getters[action](netname)
-    if isinstance(res, dict) and res.get("error"):
-        raise DeviceError(res["error"])
+    if value is not None:
+        res = dev.apply_setpoint(action, float(value))
+    else:
+        res = dev.read_setpoint(action)
     return _ok(str(res), res)
 
 
 def _spi(netname, role, action, params):
-    # Bus transaction via the SPI dispatcher's cached, lock-guarded driver
-    # (matches cli/impl/protocols/spi.py and the control plane's TIER1_NET_SCRIPT). The
-    # whole resolve+transact is serialized per netname so concurrent requests
-    # can't interleave words on the same device.
-    if action not in ("transfer", "read"):
+    # SPI bus transactions run inside hardware_service (spi_hs adapter) under the
+    # bus device's shared device_id lock, so a full transfer can't interleave
+    # with another request on the same device. Config persistence stays box-side
+    # (a saved_nets.json write); the effective config is then applied to the
+    # hardware_service-owned driver. Returned `value` is the raw word list; the
+    # CLI formats it (hex/bytes/json + word size).
+    spi_disp = importlib.import_module("lager.protocols.spi.dispatcher")
+    dev = _proxy(netname, role)
+
+    if action == "config":
+        cfg = {}
+        for key in ("mode", "bit_order", "frequency_hz", "word_size",
+                    "cs_active", "cs_mode"):
+            if params.get(key) is not None:
+                cfg[key] = params[key]
+        if cfg.get("frequency_hz") is not None and int(cfg["frequency_hz"]) <= 0:
+            raise ValueError("Invalid SPI frequency: %sHz" % cfg["frequency_hz"])
+        # Apply to the live driver, persist explicit overrides, read back effective.
+        dev.config(cfg)
+        if cfg:
+            spi_disp._persist_params(netname, **cfg)
+        rec = spi_disp.helpers.find_saved_net(netname, spi_disp.SPIBackendError)
+        effective = spi_disp._get_spi_params(rec)
+        msg = ("SPI configured: mode=%s, freq=%sHz, word_size=%s, "
+               "bit_order=%s, cs_active=%s, cs_mode=%s" % (
+                   effective["mode"], effective["frequency_hz"],
+                   effective["word_size"], effective["bit_order"],
+                   effective["cs_active"], effective["cs_mode"]))
+        return _ok(msg, effective)
+
+    if action not in ("transfer", "read", "write", "read_write"):
         raise UnknownAction(action)
-    from lager.protocols.spi.dispatcher import _resolve_net_and_driver
     overrides = params.get("overrides") or None
     fill = int(params.get("fill", 0xFF))
-    with _get_net_lock(netname):
-        drv = _resolve_net_and_driver(netname, overrides)
-        if action == "read":
-            result = drv.read(int(params["n_words"]), fill=fill)
-        else:
-            # transfer: pad/truncate data to n_words with fill (default 0xFF)
-            data = [int(b) for b in (params.get("data") or [])]
-            n = int(params.get("n_words") or len(data))
-            if len(data) < n:
-                data = data + [fill] * (n - len(data))
-            elif len(data) > n:
-                data = data[:n]
-            result = drv.read_write(data)
-    words = [int(w) for w in result]
-    return _ok(" ".join("%02X" % w for w in words) or "(no data)", words)
+    keep_cs = bool(params.get("keep_cs", False))
+    if action == "read":
+        out = dev.read(int(params["n_words"]), fill, keep_cs, overrides)
+    elif action in ("write", "read_write"):
+        # Full-duplex transfer of exactly the supplied words.
+        out = dev.read_write([int(b) for b in (params.get("data") or [])],
+                             keep_cs, overrides)
+    else:
+        # transfer: pad/truncate data to n_words with fill (default 0xFF)
+        out = dev.transfer([int(b) for b in (params.get("data") or [])],
+                           params.get("n_words"), fill, keep_cs, overrides)
+    words = [int(w) for w in out["words"]]
+    res = _ok(" ".join("%02X" % w for w in words) or "(no data)", words)
+    res["word_size"] = int(out["word_size"])
+    return res
 
 
 def _i2c(netname, role, action, params):
-    # I2C transaction via the I2C dispatcher's cached, lock-guarded driver
-    # (matches cli/impl/protocols/i2c.py and the control plane's TIER1_NET_SCRIPT).
-    # Serialized per netname (see _spi).
+    # I2C transactions run inside hardware_service (i2c_hs adapter) under the bus
+    # device's shared device_id lock. Config persistence stays box-side; the
+    # effective config is applied to the hardware_service-owned driver.
+    i2c_disp = importlib.import_module("lager.protocols.i2c.dispatcher")
+    dev = _proxy(netname, role)
+
+    if action == "config":
+        freq = params.get("frequency_hz")
+        pull_ups = params.get("pull_ups")
+        if freq is not None and int(freq) <= 0:
+            raise ValueError("Invalid I2C frequency: %sHz" % freq)
+        rec = i2c_disp.helpers.find_saved_net(netname, i2c_disp.I2CBackendError)
+        stored = rec.get("params", {})
+        eff_freq = freq if freq is not None else stored.get("frequency_hz", 100_000)
+        eff_pull_ups = pull_ups if pull_ups is not None else stored.get("pull_ups", False)
+        dev.config(eff_freq, eff_pull_ups)
+        persist = {}
+        if freq is not None:
+            persist["frequency_hz"] = freq
+        if pull_ups is not None:
+            persist["pull_ups"] = pull_ups
+        if persist:
+            i2c_disp._persist_params(netname, **persist)
+        return _ok(
+            "I2C configured: freq=%sHz, pull_ups=%s" % (
+                eff_freq, "on" if eff_pull_ups else "off"),
+            {"frequency_hz": eff_freq, "pull_ups": bool(eff_pull_ups)})
+
     if action not in ("scan", "read", "write", "transfer"):
         raise UnknownAction(action)
-    from lager.protocols.i2c.dispatcher import _resolve_net_and_driver
     overrides = params.get("overrides") or None
-    with _get_net_lock(netname):
-        drv = _resolve_net_and_driver(netname, overrides)
-        if action == "scan":
-            found = [int(a) for a in drv.scan()]
-            if found:
-                msg = "Found %d device(s): %s" % (
-                    len(found), ", ".join("0x%02x" % a for a in found))
-            else:
-                msg = "No devices found"
-            return _ok(msg, found)
-        if action == "read":
-            result = [int(b) for b in drv.read(int(params["address"]), int(params["num_bytes"]))]
-            return _ok(" ".join("%02X" % b for b in result) or "(no data)", result)
-        if action == "write":
-            data = [int(b) for b in (params.get("data") or [])]
-            drv.write(int(params["address"]), data)
-            return _ok("Wrote %d byte(s) to 0x%02x" % (len(data), int(params["address"])))
-        # transfer: write then read in one transaction (repeated start)
-        data = [int(b) for b in (params.get("data") or [])]
-        result = [int(b) for b in drv.write_read(int(params["address"]), data, int(params["num_bytes"]))]
+    if action == "scan":
+        found = [int(a) for a in dev.scan(
+            params.get("start_addr"), params.get("end_addr"), overrides)]
+        if found:
+            msg = "Found %d device(s): %s" % (
+                len(found), ", ".join("0x%02x" % a for a in found))
+        else:
+            msg = "No devices found"
+        return _ok(msg, found)
+    if action == "read":
+        result = [int(b) for b in dev.read(
+            int(params["address"]), int(params["num_bytes"]), overrides)]
         return _ok(" ".join("%02X" % b for b in result) or "(no data)", result)
+    if action == "write":
+        data = [int(b) for b in (params.get("data") or [])]
+        dev.write(int(params["address"]), data, overrides)
+        return _ok("Wrote %d byte(s) to 0x%02x" % (len(data), int(params["address"])))
+    # transfer: write then read in one transaction (repeated start)
+    data = [int(b) for b in (params.get("data") or [])]
+    result = [int(b) for b in dev.write_read(
+        int(params["address"]), data, int(params["num_bytes"]), overrides)]
+    return _ok(" ".join("%02X" % b for b in result) or "(no data)", result)
 
 
 def _energy_analyzer(netname, role, action, params):
-    # Joulescope JS220 / Nordic PPK2 via the energy_analyzer dispatcher, which
-    # returns dicts directly. read_energy integrates, read_stats averages.
-    # Serialized per netname (see _spi) — a measurement must finish before the
-    # next starts on the same device.
+    # Joulescope JS220 / Nordic PPK2 via the energy_hs adapter, run inside
+    # hardware_service under the device's shared device_id lock (SAME id as a
+    # watt-meter net on the same physical unit, so the two serialize). A
+    # measurement must finish before the next starts on the same device.
     if action not in ("read_stats", "read_energy"):
         raise UnknownAction(action)
-    from lager.measurement.energy_analyzer.dispatcher import (
-        read_energy, read_stats, close_net,
-    )
     default = 10.0 if action == "read_energy" else 1.0
     duration = float(params.get("duration") or default)
     # Clamp to the box's safe measurement window. The control plane clamps to 30s too,
     # sized so the held connection stays under Nginx's 60s proxy_read_timeout.
     duration = max(0.1, min(duration, 30.0))
-    with _get_net_lock(netname):
-        try:
-            if action == "read_energy":
-                r = read_energy(netname, duration)
-                msg = "%.4f J (%.4f C) over %.1f s" % (
-                    float(r.get("energy_j") or 0), float(r.get("charge_c") or 0),
-                    float(r.get("duration_s") or duration))
-            else:
-                r = read_stats(netname, duration)
-                c = r.get("current") or {}
-                v = r.get("voltage") or {}
-                p = r.get("power") or {}
-                msg = "I %.6f A, V %.3f V, P %.6f W (mean over %.1f s)" % (
-                    float(c.get("mean") or 0), float(v.get("mean") or 0),
-                    float(p.get("mean") or 0), duration)
-        finally:
-            # Release the device after every read (mirrors _watt_meter): the
-            # JS220 holds an exclusive USB claim while open, so keeping it
-            # open in this long-lived process fails watt-meter reads of the
-            # same physical device (and any external tool) with IN_USE.
-            try:
-                close_net(netname)
-            except Exception:
-                pass
+    dev = _proxy(netname, role, timeout=min(duration + 10.0, 55.0))
+    r = dev.measure(action, duration)
+    if action == "read_energy":
+        msg = "%.4f J (%.4f C) over %.1f s" % (
+            float(r.get("energy_j") or 0), float(r.get("charge_c") or 0),
+            float(r.get("duration_s") or duration))
+    else:
+        c = r.get("current") or {}
+        v = r.get("voltage") or {}
+        p = r.get("power") or {}
+        msg = "I %.6f A, V %.3f V, P %.6f W (mean over %.1f s)" % (
+            float(c.get("mean") or 0), float(v.get("mean") or 0),
+            float(p.get("mean") or 0), duration)
     return _ok(msg, r)
 
 

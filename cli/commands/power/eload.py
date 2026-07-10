@@ -22,7 +22,7 @@ from ...core.net_helpers import (
     require_netname,
     resolve_box,
     display_nets,
-    run_impl_script,
+    post_net_command,
     NET_ROLES,
 )
 from ...context import get_default_net
@@ -67,6 +67,17 @@ def _validate_eload_value(ctx, mode, value):
         ctx.exit(1)
 
 
+def _run_eload(ctx, box_ip, netname, mode, value):
+    """Drive an e-load mode via the box's :9000 /net/command endpoint.
+
+    ``value`` present -> set that mode's setpoint; absent -> read it back.
+    """
+    params = {}
+    if value is not None:
+        params["value"] = value
+    post_net_command(ctx, box_ip, netname, mode, role="eload", **params)
+
+
 # ---------- CLI ----------
 
 @click.group(cls=NetGroup, invoke_without_command=True)
@@ -105,10 +116,7 @@ def cc(ctx, value, box):
     _validate_eload_value(ctx, "cc", value)
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "eload")
-    args = ["cc", netname]
-    if value is not None:
-        args.append(str(value))
-    run_impl_script(ctx, resolved_box, 'eload.py', args=tuple(args))
+    _run_eload(ctx, resolved_box, netname, "cc", value)
 
 
 @eload.command()
@@ -120,10 +128,7 @@ def cv(ctx, value, box):
     _validate_eload_value(ctx, "cv", value)
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "eload")
-    args = ["cv", netname]
-    if value is not None:
-        args.append(str(value))
-    run_impl_script(ctx, resolved_box, 'eload.py', args=tuple(args))
+    _run_eload(ctx, resolved_box, netname, "cv", value)
 
 
 @eload.command()
@@ -135,10 +140,7 @@ def cr(ctx, value, box):
     _validate_eload_value(ctx, "cr", value)
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "eload")
-    args = ["cr", netname]
-    if value is not None:
-        args.append(str(value))
-    run_impl_script(ctx, resolved_box, 'eload.py', args=tuple(args))
+    _run_eload(ctx, resolved_box, netname, "cr", value)
 
 
 @eload.command()
@@ -150,10 +152,7 @@ def cp(ctx, value, box):
     _validate_eload_value(ctx, "cp", value)
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "eload")
-    args = ["cp", netname]
-    if value is not None:
-        args.append(str(value))
-    run_impl_script(ctx, resolved_box, 'eload.py', args=tuple(args))
+    _run_eload(ctx, resolved_box, netname, "cp", value)
 
 
 @eload.command()
@@ -163,5 +162,4 @@ def state(ctx, box):
     """Display electronic load state"""
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "eload")
-    args = ["state", netname]
-    run_impl_script(ctx, resolved_box, 'eload.py', args=tuple(args))
+    post_net_command(ctx, resolved_box, netname, "state", role="eload")

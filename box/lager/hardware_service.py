@@ -514,7 +514,22 @@ def invoke():
         # supply command + a battery command both targeting the same
         # Keithley 2281S). Without this, pyvisa raises "Query INTERRUPTED"
         # or libusb returns Resource busy on USB transfer.
-        device_lock = _get_address_lock(address) if address else _get_device_lock(cache_key)
+        #
+        # device_id: an explicit physical-device identity supplied by callers
+        # whose devices have no VISA address (LabJack, USB-202, FT232H,
+        # Aardvark, Phidget, Joulescope, PPK2). It is decoupled from cache_key
+        # on purpose: the cache keeps a distinct driver instance per net
+        # (different pins/channels), while the lock is SHARED across every net
+        # and role that resolves to the same physical device — e.g. a GPIO net
+        # and an ADC net on one LabJack, or watt + energy-analyzer on one
+        # Joulescope — so they can never interleave I/O on the shared handle.
+        device_id = net_info.get('device_id') if net_info else None
+        if device_id:
+            device_lock = _get_address_lock(device_id)
+        elif address:
+            device_lock = _get_address_lock(address)
+        else:
+            device_lock = _get_device_lock(cache_key)
         try:
             with device_lock:
                 _sync_device_channel(device, net_info)

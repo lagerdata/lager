@@ -548,5 +548,82 @@ class ChannelSyncTests(unittest.TestCase):
         self.assertEqual(applied, [(3, 20.0), (1, 5.0)])
 
 
+class DeviceIdLockTests(unittest.TestCase):
+    """A net_info `device_id` provides an explicit physical-device lock key for
+    devices with no VISA address (LabJack shared across GPIO/ADC/DAC/SPI/I2C,
+    watt+energy on one Joulescope, etc). The cache still keeps a distinct
+    driver instance per net, but the lock is shared across every net/role that
+    names the same device_id — so concurrent I/O on one physical device
+    serializes even across different roles/modules."""
+
+    def setUp(self):
+        hw.device_cache.clear()
+        hw.module_cache.clear()
+        with hw.device_locks_meta_lock:
+            hw.device_locks.clear()
+        self.client = hw.app.test_client()
+
+    def _fake_module(self, value):
+        dev = MagicMock(name=f'dev{value}')
+        dev.read.return_value = value
+        del dev.device  # not a wrapper; skip .device dereference
+        mod = MagicMock()
+        mod.create_device = MagicMock(return_value=dev)
+        del mod.clear_resource_cache
+        return mod
+
+    def test_device_id_shared_lock_across_roles_distinct_cache(self):
+        # Two roles (adc + gpio) on ONE physical LabJack: same device_id,
+        # different device_name + net_info -> distinct cache entries, one lock.
+        # Fake device names injected at hardware_service's first search path
+        # (lager.<device>) so the test exercises only the lock logic, isolated
+        # from the real *_hs adapter modules.
+        mod_adc = self._fake_module(1)
+        mod_gpio = self._fake_module(0)
+        sys.modules['lager.fake_adc_hs'] = mod_adc
+        sys.modules['lager.fake_gpio_hs'] = mod_gpio
+        try:
+            r1 = self.client.post('/invoke', json={
+                'device': 'fake_adc_hs', 'function': 'read', 'args': [], 'kwargs': {},
+                'net_info': {'device_id': 'labjack', 'pin': 0, 'name': 'adc1'},
+            })
+            r2 = self.client.post('/invoke', json={
+                'device': 'fake_gpio_hs', 'function': 'read', 'args': [], 'kwargs': {},
+                'net_info': {'device_id': 'labjack', 'pin': 1, 'name': 'gpi1'},
+            })
+            self.assertEqual(r1.status_code, 200, r1.get_json())
+            self.assertEqual(r2.status_code, 200, r2.get_json())
+            # Distinct cached driver instances (different pins) ...
+            self.assertEqual(len(hw.device_cache), 2)
+            # ... but a single SHARED physical-device lock keyed on device_id.
+            self.assertIn(('__address__', 'labjack'), hw.device_locks)
+            # No per-cache_key locks were created for these calls (they used
+            # the device_id lock path, not the fallback).
+            cache_key_locks = [
+                k for k in hw.device_locks
+                if isinstance(k, tuple) and k and k[0] != '__address__'
+            ]
+            self.assertEqual(cache_key_locks, [])
+        finally:
+            sys.modules.pop('lager.fake_adc_hs', None)
+            sys.modules.pop('lager.fake_gpio_hs', None)
+
+    def test_no_device_id_no_address_falls_back_to_cache_key_lock(self):
+        mod = self._fake_module(7)
+        sys.modules['lager.fake_adc_hs2'] = mod
+        try:
+            r = self.client.post('/invoke', json={
+                'device': 'fake_adc_hs2', 'function': 'read', 'args': [], 'kwargs': {},
+                'net_info': {'pin': 0, 'name': 'adc9'},
+            })
+            self.assertEqual(r.status_code, 200, r.get_json())
+            # Fallback: lock keyed on the cache_key (device_name, net_info_hash).
+            self.assertFalse(any(
+                isinstance(k, tuple) and k and k[0] == '__address__'
+                for k in hw.device_locks))
+        finally:
+            sys.modules.pop('lager.fake_adc_hs2', None)
+
+
 if __name__ == '__main__':
     unittest.main()

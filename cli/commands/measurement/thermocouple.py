@@ -6,15 +6,13 @@ Thermocouple commands for temperature measurement.
 """
 from __future__ import annotations
 
-import json
-
 import click
-from ...context import get_default_net, get_impl_path
-from ..development.python import run_python_internal
+from ...context import get_default_net
 from ...core.net_group import NetCommand
 from ...core.net_helpers import (
     resolve_box,
     display_nets,
+    post_net_command,
     validate_net_exists,
 )
 
@@ -45,36 +43,7 @@ def thermocouple(ctx, box, netname):
     if net is None:
         return  # Error already displayed by validate_net_exists
 
-    payload = json.dumps({"netname": netname})
-
-    try:
-        run_python_internal(
-            ctx=ctx,
-            runnable=get_impl_path("thermocouple.py"),
-            box=box_ip,
-            env=(),
-            passenv=(),
-            kill=False,
-            download=(),
-            allow_overwrite=False,
-            signum="SIGTERM",
-            timeout=30,  # Add reasonable timeout for temperature reading
-            detach=False,
-            port=(),
-            org=None,
-            args=[payload],
-        )
-    except SystemExit as e:
-        # Re-raise non-zero exits (error already displayed by run_python_internal)
-        if e.code != 0:
-            raise
-    except Exception as e:
-        click.secho(f"Error reading thermocouple: {e}", fg='red', err=True)
-        click.secho("Troubleshooting tips:", err=True)
-        click.secho(f"  1. Check thermocouple is connected to Phidget device", err=True)
-        click.secho(f"  2. Verify net configuration: lager nets --box {box or box_ip}", err=True)
-        click.secho(f"  3. Check box connectivity: lager hello --box {box or box_ip}", err=True)
-        ctx.exit(1)
+    post_net_command(ctx, box_ip, netname, "read", role="thermocouple")
 
 
 thermocouple.net_examples = [

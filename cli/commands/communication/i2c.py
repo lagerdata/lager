@@ -17,18 +17,15 @@ from __future__ import annotations
 
 import json
 import re
-import sys
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import click
-import requests
 from texttable import Texttable
 
 from ...core.net_group import NetGroupHelpMixin
-from ...core.net_helpers import resolve_box
-from ...context import get_impl_path, get_default_net
+from ...core.net_helpers import resolve_box, fetch_nets, post_net_command
+from ...context import get_default_net
 from ...errors import net_not_specified_error
-from ..development.python import run_python_internal
 
 I2C_ROLE = "i2c"
 
@@ -75,20 +72,8 @@ def _resolve_box_with_name(ctx, box):
 
 
 def _fetch_i2c_nets(ctx: click.Context, box_ip: str) -> list[dict]:
-    """
-    Fetch I2C nets from the box by reading saved_nets.json.
-    """
-    try:
-        # This endpoint returns all saved nets; we filter client-side by role.
-        box_url = f'http://{box_ip}:9000/uart/nets/list'
-        response = requests.get(box_url, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            nets = data.get('nets', [])
-            return [n for n in nets if n.get("role") == I2C_ROLE]
-        return []
-    except (requests.RequestException, json.JSONDecodeError):
-        return []
+    """Fetch I2C nets from the box (:9000/nets/list), filtered by role."""
+    return [n for n in fetch_nets(box_ip) if n.get("role") == I2C_ROLE]
 
 
 def _list_i2c_nets(ctx, box):
@@ -292,32 +277,32 @@ def display_nets(ctx, box, netname: Optional[str] = None):
     click.echo(table.draw())
 
 
-def _run_i2c_backend(ctx, box_ip, action: str, **params):
-    """Run I2C backend command."""
-    data = {
-        "action": action,
-        "params": params,
-    }
-    try:
-        run_python_internal(
-            ctx,
-            get_impl_path("i2c.py"),
-            box_ip,
-            env=(f"LAGER_COMMAND_DATA={json.dumps(data)}",),
-            passenv=(),
-            kill=False,
-            download=(),
-            allow_overwrite=False,
-            signum="SIGTERM",
-            timeout=0,
-            detach=False,
-            port=(),
-            org=None,
-            args=(),
-        )
-    except SystemExit as e:
-        if e.code != 0:
-            raise
+def _format_i2c_output(data_bytes: list, fmt: str) -> str:
+    """Format I2C bytes for display (mirrors the box dispatcher's _format_output)."""
+    if fmt == "json":
+        return json.dumps({"data": data_bytes})
+    if fmt == "bytes":
+        return " ".join(str(b) for b in data_bytes)
+    return " ".join(f"{b:02x}" for b in data_bytes)
+
+
+def _format_scan_grid(found: list, start_addr: int = 0x08,
+                      end_addr: int = 0x77) -> str:
+    """Render scan results as an i2cdetect-style grid (client-side)."""
+    found_set = set(found)
+    lines = ["     " + "  ".join(f"{i:x}" for i in range(16))]
+    for row in range(0, 0x80, 16):
+        cols = []
+        for col in range(16):
+            addr = row + col
+            if addr < start_addr or addr > end_addr:
+                cols.append("  ")
+            elif addr in found_set:
+                cols.append(f"{addr:02x}")
+            else:
+                cols.append("--")
+        lines.append(f"{row:02x}: " + " ".join(cols))
+    return "\n".join(lines)
 
 
 # ---------- CLI ----------
@@ -375,15 +360,13 @@ def config(ctx, box, frequency, pull_ups):
     if not netname:
         net_not_specified_error('I2C', 'i2c').die()
 
-    params = {
-        "netname": netname,
-    }
+    params = {}
     if frequency is not None:
         params["frequency_hz"] = _parse_frequency(frequency)
     if pull_ups is not None:
         params["pull_ups"] = (pull_ups == "on")
 
-    _run_i2c_backend(ctx, box_ip, "config", **params)
+    post_net_command(ctx, box_ip, netname, "config", role="i2c", **params)
 
 
 @i2c.command()
@@ -412,12 +395,18 @@ def scan(ctx, box, start, end):
     start_addr = _parse_address(start)
     end_addr = _parse_address(end)
 
-    _run_i2c_backend(
-        ctx, box_ip, "scan",
-        netname=netname,
-        start_addr=start_addr,
-        end_addr=end_addr,
+    result = post_net_command(
+        ctx, box_ip, netname, "scan", role="i2c", quiet=True,
+        start_addr=start_addr, end_addr=end_addr,
     )
+    found = result.get("value") or []
+    click.echo(_format_scan_grid(found, start_addr, end_addr))
+    if found:
+        addr_list = ", ".join(f"0x{a:02x}" for a in found)
+        click.echo(f"\nFound {len(found)} device(s): {addr_list}")
+    else:
+        click.echo(f"\nNo devices found in range "
+                   f"0x{start_addr:02x}-0x{end_addr:02x}")
 
 
 @i2c.command()
@@ -450,14 +439,13 @@ def read(ctx, num_bytes, box, address, frequency, output_format):
     if frequency is not None:
         overrides['frequency_hz'] = _parse_frequency(frequency)
 
-    _run_i2c_backend(
-        ctx, box_ip, "read",
-        netname=netname,
+    result = post_net_command(
+        ctx, box_ip, netname, "read", role="i2c", quiet=True,
         address=addr,
         num_bytes=num_bytes,
-        output_format=output_format,
         overrides=overrides if overrides else None,
     )
+    click.echo(_format_i2c_output(result.get("value") or [], output_format))
 
 
 @i2c.command()
@@ -502,12 +490,10 @@ def write(ctx, data, box, address, data_file, frequency, output_format):
     if frequency is not None:
         overrides['frequency_hz'] = _parse_frequency(frequency)
 
-    _run_i2c_backend(
-        ctx, box_ip, "write",
-        netname=netname,
+    post_net_command(
+        ctx, box_ip, netname, "write", role="i2c",
         address=addr,
         data=data_bytes,
-        output_format=output_format,
         overrides=overrides if overrides else None,
     )
 
@@ -555,12 +541,11 @@ def transfer(ctx, num_bytes, box, address, data_str, data_file, frequency, outpu
     if frequency is not None:
         overrides['frequency_hz'] = _parse_frequency(frequency)
 
-    _run_i2c_backend(
-        ctx, box_ip, "transfer",
-        netname=netname,
+    result = post_net_command(
+        ctx, box_ip, netname, "transfer", role="i2c", quiet=True,
         address=addr,
         num_bytes=num_bytes,
         data=data_bytes,
-        output_format=output_format,
         overrides=overrides if overrides else None,
     )
+    click.echo(_format_i2c_output(result.get("value") or [], output_format))
