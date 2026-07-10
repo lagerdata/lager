@@ -1,0 +1,31 @@
+---
+title: "Version 0.31.5"
+description: "July 10, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **UART nets survive USB re-enumeration.** When a UART adapter re-enumerated mid-session (hub power-cycle, DUT reflash, accidental replug), the Lager Box kept a stale open file descriptor on the vanished tty — which killed the stream and pinned the old `/dev/ttyUSB*` number so the device came back under a new one — and the "session already active" guards then refused clean reconnects. The Lager Box now closes the port and releases the session the moment a read fails, and transparently re-resolves and reopens the adapter with backoff (up to 60s): by USB serial when the adapter has one, otherwise by vendor/product + physical USB port + interface — so serial-less adapters and multi-port chips (FT4232H channels) heal in place. Applies to `lager uart` sessions, the HTTP stream endpoint, and on-box monitor modes. The CLI shows `[reconnecting...]` / `[reconnected]` notices during the gap; older CLIs simply resume streaming.
+- **New UART nets are saved with a durable USB identity.** Creating or re-saving a UART net (TUI or `lager nets add`) now records a `usb_identity` snapshot of the adapter alongside the existing `pin`, so the net keeps resolving across replugs and reboots even when it was created from a raw `/dev/ttyUSB*` path. Existing saved nets are untouched and keep working exactly as before — re-save a net once to upgrade it.
+
+## <u>Improvements</u>
+
+- **`lager nets` shows where a UART device actually is.** The Channel column now displays the node the device owns right now (resolved live from its durable identity), so it stays truthful after a re-enumeration shuffles tty numbers; unplugged devices are marked `(disconnected)`. The stored record is never modified by listing.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.31.5
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.31.5/)
