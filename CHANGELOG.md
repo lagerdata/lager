@@ -2,6 +2,43 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+UART nets survive USB re-enumeration: live sessions heal in place when a device
+re-enumerates (hub power-cycle, DUT reflash, replug), saved nets resolve by a
+durable USB identity instead of a raw `/dev/tty*` number, and `lager nets`
+shows where each UART device actually is right now.
+
+### Fixed
+- **UART nets survive USB re-enumeration.** When a UART adapter re-enumerated
+  mid-session (hub power-cycle, DUT reflash, accidental replug), the box kept a
+  stale open file descriptor on the vanished tty — which killed the stream AND
+  pinned the old `/dev/ttyUSB*` number so the device came back under a new one —
+  and the "session already active" guards then refused clean reconnects until
+  the socket dropped. The box now closes the port and releases the session the
+  moment a read fails, classifies device-gone errors (busy/locked ports are
+  deliberately excluded), and transparently re-resolves and reopens the adapter
+  with backoff (up to 60s): by USB serial when the adapter has one, otherwise by
+  vendor/product + physical USB port + interface — so serial-less adapters
+  (Prolific PL2303, FTDI chips with no programmed serial) and multi-port chips
+  (FT4232H channels) heal in place. Applies to `lager uart` websocket sessions,
+  the HTTP stream endpoint, and on-box monitor modes. The CLI shows
+  `[reconnecting...]` / `[reconnected]` notices during the gap; older CLIs
+  simply resume streaming.
+- **New UART nets are saved with a durable USB identity.** Creating or re-saving
+  a UART net (TUI or `lager nets add`) now records a `usb_identity` snapshot of
+  the adapter alongside the existing `pin`, so the net keeps resolving across
+  replugs and reboots even when it was created from a raw `/dev/ttyUSB*` path.
+  Existing saved nets are untouched and keep working exactly as before —
+  re-save a net once to upgrade it. `lager python` scripts using
+  `UARTNet.get_path()` also stop returning a cached path whose node no longer
+  exists.
+- **`lager nets` shows where a UART device actually is.** The Channel column
+  now displays the node the device owns right now (resolved live from its
+  durable identity), so it stays truthful after a re-enumeration shuffles tty
+  numbers instead of showing the stale stored path; unplugged devices are
+  marked `(disconnected)`. The stored record is never modified by listing.
+
 ## [0.31.4] - 2026-07-10
 
 LabJack I2C fixes: the requested bus frequency is now actually applied (previously every
@@ -36,34 +73,6 @@ pip-installed CLI no longer silently skips them), and the box-config sudoers
 rule names the box's actual login user instead of a hardcoded `lagerdata`.
 
 ### Fixed
-- **UART nets survive USB re-enumeration.** When a UART adapter re-enumerated
-  mid-session (hub power-cycle, DUT reflash, accidental replug), the box kept a
-  stale open file descriptor on the vanished tty — which killed the stream AND
-  pinned the old `/dev/ttyUSB*` number so the device came back under a new one —
-  and the "session already active" guards then refused clean reconnects until
-  the socket dropped. The box now closes the port and releases the session the
-  moment a read fails, classifies device-gone errors (busy/locked ports are
-  deliberately excluded), and transparently re-resolves and reopens the adapter
-  with backoff (up to 60s): by USB serial when the adapter has one, otherwise by
-  vendor/product + physical USB port + interface — so serial-less adapters
-  (Prolific PL2303, FTDI chips with no programmed serial) and multi-port chips
-  (FT4232H channels) heal in place. Applies to `lager uart` websocket sessions,
-  the HTTP stream endpoint, and on-box monitor modes. The CLI shows
-  `[reconnecting...]` / `[reconnected]` notices during the gap; older CLIs
-  simply resume streaming.
-- **New UART nets are saved with a durable USB identity.** Creating or re-saving
-  a UART net (TUI or `lager nets add`) now records a `usb_identity` snapshot of
-  the adapter alongside the existing `pin`, so the net keeps resolving across
-  replugs and reboots even when it was created from a raw `/dev/ttyUSB*` path.
-  Existing saved nets are untouched and keep working exactly as before —
-  re-save a net once to upgrade it. `lager python` scripts using
-  `UARTNet.get_path()` also stop returning a cached path whose node no longer
-  exists.
-- **`lager nets` shows where a UART device actually is.** The Channel column
-  now displays the node the device owns right now (resolved live from its
-  durable identity), so it stays truthful after a re-enumeration shuffles tty
-  numbers instead of showing the stale stored path; unplugged devices are
-  marked `(disconnected)`. The stored record is never modified by listing.
 - **`lager install` deploys instrument udev rules from every CLI install method.**
   The rules were copied from the host's repo checkout, which only exists for
   editable/source installs — a pip-installed `lager-cli` (the common case) has no
