@@ -2,7 +2,7 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
-## [Unreleased]
+## [0.31.3] - 2026-07-10
 
 `lager install` now reliably provisions instrument access on fresh boxes: udev
 rules and the usbtmc blacklist install from the box's own checkout (so a

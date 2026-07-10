@@ -1,0 +1,33 @@
+---
+title: "Version 0.31.3"
+description: "July 10, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **`lager install` deploys instrument udev rules from every CLI install method.** The rules were copied from the host's repo checkout, which only exists for editable/source installs — a pip-installed `lager-cli` (the common case) has no `box/` directory, so installs completed with a scroll-by warning and fresh Lager Boxes came up with no instrument udev rules or usbtmc blacklist. Both now install from the Lager Box's own checkout at exactly the deployed version, the `lager` group is created if missing, a failed deploy aborts the install instead of warning, and post-deployment verification checks the rules, group, and blacklist explicitly.
+- **Box-config passwordless sudo works on Lager Boxes whose login user isn't `lagerdata`.** The sudoers rule written by `lager install`/`lager update` hardcoded the `lagerdata` username, so on boxes with a different login user the grant never matched — install ended with "Sudoers file installed but `sudo -n apt-get` still fails" and `lager box config apply` required manual setup. The rule now names the box's actual login user (validated before being interpolated into sudoers content), already-provisioned boxes re-bootstrap automatically on their next `lager update`, and the manual-fix snippets shown on failure name the right user too.
+- **Fresh-box installs no longer fail at container start with "permission denied ... docker.sock".** When the install itself installs docker, the new group membership only takes effect on a new SSH login; the script now cycles the SSH connection automatically and continues. The docker install is also hardened for boxes where docker was ever removed (stale systemd socket units made the reinstall fail with "Device or resource busy").
+- **SSH key setup is no longer silently skipped for clients with connection multiplexing.** The "Passwordless SSH already configured" check could ride an existing authenticated connection and false-positive, leaving the box unusable for `lager update`. The check now forces a genuinely fresh connection.
+
+## <u>Improvements</u>
+
+- **The end-of-install sudo prompt no longer times out on a slow (or absent) operator.** Install now checks whether the passwordless-sudo grant is already live and skips the prompt entirely on re-installs; genuine first-time setups get a 10-minute window instead of 2 minutes.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.31.3
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.31.3/)
