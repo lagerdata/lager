@@ -9,9 +9,7 @@ Commands for box UART interaction
 from __future__ import annotations
 
 import sys
-import io
 import json
-from contextlib import redirect_stdout
 
 import click
 import requests
@@ -19,10 +17,9 @@ from texttable import Texttable
 
 # Import consolidated helpers from cli.core.net_helpers
 from ...core.net_group import NetCommand, HiddenArgument
-from ...core.net_helpers import resolve_box, run_backend
-from ...context import get_impl_path, get_default_net
+from ...core.net_helpers import resolve_box
+from ...context import get_default_net
 from ...errors import net_not_specified_error
-from ..development.python import run_python_internal
 
 UART_ROLE = "uart"
 
@@ -92,33 +89,20 @@ def _get_uart_net(ctx, box, netname):
 
 
 def _run_query_instruments(ctx: click.Context, box_ip: str) -> list[dict]:
-    """Query instruments on the box to get device information."""
-    buf = io.StringIO()
+    """Query instruments on the box (:9000/instruments/list) for device paths.
+
+    Returns the same records as the old :5000 ``query_instruments.py`` exec
+    (name/address/channels/tty_path), served warm by the box HTTP server.
+    """
     try:
-        with redirect_stdout(buf):
-            run_python_internal(
-                ctx,
-                get_impl_path("query_instruments.py"),
-                box_ip,
-                env={},
-                passenv=(),
-                kill=False,
-                download=(),
-                allow_overwrite=False,
-                signum="SIGTERM",
-                timeout=0,
-                detach=False,
-                port=(),
-                org=None,
-                args=(),
-            )
-    except SystemExit:
+        resp = requests.get(f'http://{box_ip}:9000/instruments/list', timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list):
+                return data
+    except (requests.RequestException, json.JSONDecodeError):
         pass
-    raw = buf.getvalue() or "[]"
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return []
+    return []
 
 
 def _find_device_path(usb_serial: str, inst_list: list[dict]) -> str | None:
@@ -194,36 +178,6 @@ def display_nets(ctx, box, netname: str | None):
 
     result = table.draw()
     click.echo(result)
-
-
-def _run_uart_backend(ctx, box_ip, action: str, **params):
-    """Run backend command and handle errors gracefully"""
-    data = {
-        "action": action,
-        "params": params,
-    }
-    try:
-        run_python_internal(
-            ctx,
-            get_impl_path("uart.py"),
-            box_ip,
-            env=(f"LAGER_COMMAND_DATA={json.dumps(data)}",),
-            passenv=(),
-            kill=False,
-            download=(),
-            allow_overwrite=False,
-            signum="SIGTERM",
-            timeout=0,
-            detach=False,
-            port=(),
-            org=None,
-            args=(),
-        )
-    except SystemExit as e:
-        # Backend errors are already printed by the backend
-        # Just re-raise to preserve exit code
-        if e.code != 0:
-            raise
 
 
 def _connect_uart_http(ctx, box_ip, netname, overrides, interactive):
@@ -442,8 +396,9 @@ def uart(ctx, netname, action, box, baudrate, bytesize, parity, stopbits, xonxof
         err=True,
     )
 
-    # Connect to UART via HTTP using run_python_internal()
-    # This uses the same streaming pattern as all other lager commands
+    # Connect to UART over the box's WebSocket API on :9000 (see
+    # _connect_uart_http); serial-port discovery/listing also goes through
+    # the :9000 HTTP endpoints, so UART no longer touches the :5000 exec path.
     _connect_uart_http(
         ctx, target_box, netname, overrides, interactive
     )

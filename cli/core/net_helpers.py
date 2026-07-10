@@ -33,9 +33,7 @@ Example:
 """
 from __future__ import annotations
 
-import io
 import json
-from contextlib import redirect_stdout
 from typing import TYPE_CHECKING
 
 import click
@@ -133,61 +131,149 @@ def get_netname_or_none(ctx: click.Context) -> str | None:
 # Net Operations (querying box for nets)
 # =============================================================================
 
-def run_net_py(ctx: click.Context, box: str, *args: str) -> list[dict]:
-    """
-    Run the net.py implementation script and return parsed JSON results.
+# Box HTTP API port (box_http_server.py). All net data plane traffic goes here
+# instead of the legacy :5000 `lager python` script-upload path.
+NET_HTTP_PORT = 9000
 
-    This function executes net.py on the box to retrieve net configurations.
-    It captures stdout and parses the JSON output.
+# Shared timeout for the quick net metadata/command round-trips.
+_NET_HTTP_TIMEOUT = 10
+
+
+def fetch_nets(box_ip: str) -> list[dict]:
+    """Fetch all saved nets from the box over HTTP (:9000/nets/list).
+
+    Returns the raw saved-net records (name/role/instrument/pin/address/params).
+    This replaces the old `net.py list` exec on :5000 — listing is now a plain
+    read against the long-lived box HTTP server. Returns [] if the box is
+    unreachable or returns nothing.
+
+    Falls back to the older `/uart/nets/list` shape ({"nets": [...]}) so the CLI
+    keeps listing on box images that predate `/nets/list`.
+    """
+    import requests
+
+    base = f"http://{box_ip}:{NET_HTTP_PORT}"
+    try:
+        resp = requests.get(f"{base}/nets/list", timeout=_NET_HTTP_TIMEOUT)
+        if resp.status_code == 200:
+            data = resp.json()
+            # /nets/list returns a bare array; tolerate the {"nets": [...]} shape.
+            if isinstance(data, dict):
+                data = data.get("nets", [])
+            if isinstance(data, list):
+                return data
+    except (requests.RequestException, ValueError):
+        pass
+
+    # Older boxes: /uart/nets/list returns {"nets": [...]}.
+    try:
+        resp = requests.get(f"{base}/uart/nets/list", timeout=_NET_HTTP_TIMEOUT)
+        if resp.status_code == 200:
+            data = resp.json()
+            nets = data.get("nets", []) if isinstance(data, dict) else data
+            if isinstance(nets, list):
+                return nets
+    except (requests.RequestException, ValueError):
+        pass
+
+    return []
+
+
+def post_net_command(
+    ctx: click.Context,
+    box_ip: str,
+    netname: str,
+    action: str,
+    role: str | None = None,
+    quiet: bool = False,
+    **params: Any,
+) -> dict:
+    """Drive a net via the box's warm HTTP endpoint (POST :9000/net/command).
+
+    This is the 9000-only replacement for the per-call `lager python` exec path:
+    the box resolves the net's role from saved_nets.json and dispatches to an
+    in-process driver, so there is no subprocess spawn / `import lager` per call
+    and no Python script uploaded to the box.
+
+    On success, prints ``result['message']`` (unless ``quiet``) and returns the
+    parsed JSON dict. On any failure it prints a clear error and raises
+    ``SystemExit(1)`` — there is intentionally no :5000 fallback.
 
     Args:
-        ctx: Click context object
-        box: Box IP address
-        *args: Arguments to pass to net.py (default: "list")
+        ctx: Click context (unused today; kept for a uniform call signature).
+        box_ip: Resolved box IP address.
+        netname: Target net name.
+        action: Role-specific action (e.g. "input", "read", "voltage").
+        role: Optional role hint; the box verifies it against saved_nets.json.
+        quiet: If True, do not echo the success message (caller formats output).
+        **params: Action parameters forwarded verbatim under ``params``.
 
     Returns:
-        List of net dictionaries parsed from JSON output.
-        Returns empty list if parsing fails or no nets found.
-
-    Example:
-        nets = run_net_py(ctx, box_ip, "list")
-        for net in nets:
-            print(f"Net: {net['name']}, Role: {net['role']}")
+        The parsed response dict (includes ``message`` and optional ``value``).
     """
-    from ..context import get_impl_path
-    from ..commands.development.python import run_python_internal
+    import requests
 
-    buf = io.StringIO()
+    payload: dict[str, Any] = {"netname": netname, "action": action, "params": params}
+    if role is not None:
+        payload["role"] = role
+
+    url = f"http://{box_ip}:{NET_HTTP_PORT}/net/command"
     try:
-        with redirect_stdout(buf):
-            run_python_internal(
-                ctx,
-                get_impl_path("net.py"),
-                box,
-                env={},
-                passenv=(),
-                kill=False,
-                download=(),
-                allow_overwrite=False,
-                signum="SIGTERM",
-                timeout=0,
-                detach=False,
-                port=(),
-                org=None,
-                args=args or ("list",),
-                # Capture call: stdout is redirected and there's no foreground
-                # consumer for an Enter-to-resume keypress. Opt out of the
-                # lager.pause() stdin watcher so it can't leak a daemon reader
-                # that races a later TUI or click.confirm for keystrokes.
-                watch_stdin_resume=False,
-            )
-    except SystemExit:
-        pass
-    raw = buf.getvalue() or "[]"
+        resp = requests.post(url, json=payload, timeout=_NET_HTTP_TIMEOUT)
+    except (requests.ConnectionError, requests.Timeout):
+        click.secho(
+            f"Error: cannot reach box at {box_ip}:{NET_HTTP_PORT}. "
+            f"Check network/Tailscale and that the box is online and updated.",
+            fg="red", err=True,
+        )
+        raise SystemExit(1)
+    except requests.RequestException as e:
+        click.secho(f"Error: request to box failed: {e}", fg="red", err=True)
+        raise SystemExit(1)
+
     try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return []
+        result = resp.json()
+    except ValueError:
+        click.secho(
+            f"Error: box returned a non-JSON response (HTTP {resp.status_code}).",
+            fg="red", err=True,
+        )
+        raise SystemExit(1)
+
+    if resp.status_code == 200 and result.get("success"):
+        if not quiet:
+            message = result.get("message", "Command executed")
+            click.echo(f"[OK] {message}")
+        return result
+
+    error = result.get("error") or f"HTTP {resp.status_code}"
+    if resp.status_code == 501:
+        click.secho(
+            f"Error: {error}. This box image does not support the "
+            f"'/net/command' path for this net; update the box.",
+            fg="red", err=True,
+        )
+    else:
+        click.secho(f"Error: {error}", fg="red", err=True)
+    raise SystemExit(1)
+
+
+def run_net_py(ctx: click.Context, box: str, *args: str) -> list[dict]:
+    """Return saved nets for the box (compatibility shim over :9000/nets/list).
+
+    Historically this ran ``net.py list`` on :5000 and parsed stdout. It is now
+    a thin wrapper over :func:`fetch_nets` so every net listing/validation path
+    uses the warm HTTP API. Only the ``list`` form is used by callers.
+
+    Args:
+        ctx: Click context object (unused; kept for signature compatibility).
+        box: Box IP address.
+        *args: Legacy args; ignored (listing is the only supported form).
+
+    Returns:
+        List of net dictionaries. Returns [] if the box is unreachable.
+    """
+    return fetch_nets(box)
 
 
 def list_nets_by_role(ctx: click.Context, box: str, role: str) -> list[dict]:

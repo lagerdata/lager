@@ -9,8 +9,6 @@ on DAC nets connected to LabJack devices.
 """
 from __future__ import annotations
 
-import json
-
 import click
 
 from ...context import get_default_net
@@ -19,7 +17,7 @@ from ...core.net_helpers import (
     resolve_box,
     list_nets_by_role,
     display_nets_table,
-    run_impl_script,
+    post_net_command,
     validate_net_exists,
 )
 
@@ -75,18 +73,10 @@ def dac(ctx, box, netname, voltage):
             click.secho(f"Error: Voltage must be between {DAC_MIN_VOLTAGE} and {DAC_MAX_VOLTAGE} V, got {voltage_float} V", fg='red', err=True)
             ctx.exit(1)
 
-    payload = {"netname": netname}
     if voltage is not None:
-        payload["voltage"] = voltage
-    payload_json = json.dumps(payload)
-
-    run_impl_script(
-        ctx=ctx,
-        box=box_ip,
-        impl_script="dac.py",
-        args=(payload_json,),
-        timeout=None,
-    )
+        post_net_command(ctx, box_ip, netname, "set", role="dac", value=voltage_float)
+    else:
+        post_net_command(ctx, box_ip, netname, "read", role="dac")
 
 
 dac.net_examples = [

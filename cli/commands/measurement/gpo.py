@@ -9,8 +9,6 @@ on LabJack devices.
 """
 from __future__ import annotations
 
-import json
-
 import click
 
 from ...context import get_default_net
@@ -19,7 +17,7 @@ from ...core.net_helpers import (
     resolve_box,
     list_nets_by_role,
     display_nets_table,
-    run_impl_script,
+    post_net_command,
     validate_net_exists,
 )
 
@@ -69,15 +67,13 @@ def gpo(ctx, box, netname, level, hold):
         click.echo(f"\nExample: lager gpo {netname} high --box {box or '[BOX_NAME]'}", err=True)
         ctx.exit(1)
 
-    payload = json.dumps({"netname": netname, "action": "output", "level": level, "hold": hold})
+    post_net_command(ctx, box_ip, netname, "output", role="gpio", level=level)
 
-    run_impl_script(
-        ctx=ctx,
-        box=box_ip,
-        impl_script="gpio.py",
-        args=(payload,),
-        timeout=None,
-    )
+    if hold:
+        # The output level is latched on the hardware and persists after this
+        # command returns, so there is nothing to "hold" over the stateless
+        # HTTP path (unlike the old long-lived script process).
+        click.echo("Note: output level is latched on the device; --hold is a no-op.")
 
 
 gpo.net_examples = [

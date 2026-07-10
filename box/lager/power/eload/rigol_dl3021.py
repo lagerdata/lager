@@ -253,6 +253,70 @@ class RigolDL3021(ELoadNet):
         elif mode in ["CW", "CP"]:
             print(f"{GREEN}  Power Setting: {self.power():.3f} W{RESET}")
 
+    # ------------------------------------------------------------------
+    # Composite methods for the hardware_service (/invoke) path.
+    #
+    # These bundle a full mode+setpoint transaction (or a full state read)
+    # into ONE call so that, when driven via the Device proxy, the entire
+    # operation runs under a single hardware_service per-address lock and can
+    # never interleave with another request on the same instrument. The
+    # /net/command eload handler calls exactly these three methods.
+    # ------------------------------------------------------------------
+
+    _SETPOINT_ACCESSORS = {
+        "cc": ("CC", "current"),
+        "cv": ("CV", "voltage"),
+        "cr": ("CR", "resistance"),
+        "cp": ("CW", "power"),
+    }
+
+    def apply_setpoint(self, kind: str, value: float) -> float:
+        """Set operation mode for `kind` and its setpoint atomically.
+
+        kind is one of cc/cv/cr/cp. Returns the applied value.
+        """
+        kind = (kind or "").lower()
+        if kind not in self._SETPOINT_ACCESSORS:
+            raise ValueError(f"Invalid eload mode '{kind}'. Must be cc, cv, cr, or cp.")
+        mode_type, accessor = self._SETPOINT_ACCESSORS[kind]
+        value = float(value)
+        self.mode(mode_type)
+        getattr(self, accessor)(value)
+        return value
+
+    def read_setpoint(self, kind: str) -> float:
+        """Read the current setpoint for `kind` (cc/cv/cr/cp)."""
+        kind = (kind or "").lower()
+        if kind not in self._SETPOINT_ACCESSORS:
+            raise ValueError(f"Invalid eload mode '{kind}'. Must be cc, cv, cr, or cp.")
+        _, accessor = self._SETPOINT_ACCESSORS[kind]
+        return float(getattr(self, accessor)())
+
+    def get_state_dict(self) -> dict:
+        """Return comprehensive load state as a JSON-serializable dict.
+
+        Machine-readable counterpart to print_state(), consumed by the
+        /net/command eload `state` action (and thus the CLI / Rust crate).
+        """
+        mode = self.mode()
+        enabled = bool(self.get_input_state())
+        state = {
+            "mode": mode,
+            "input_enabled": enabled,
+            "measured_voltage": float(self.measured_voltage()),
+            "measured_current": float(self.measured_current()),
+            "measured_power": float(self.measured_power()),
+        }
+        if mode == "CC":
+            state["current_setting"] = float(self.current())
+        elif mode == "CV":
+            state["voltage_setting"] = float(self.voltage())
+        elif mode == "CR":
+            state["resistance_setting"] = float(self.resistance())
+        elif mode in ("CW", "CP"):
+            state["power_setting"] = float(self.power())
+        return state
+
     def close(self) -> None:
         """Close the VISA connection and release resources."""
         if hasattr(self, 'visa_resource') and self.visa_resource is not None:

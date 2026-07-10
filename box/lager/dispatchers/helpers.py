@@ -169,6 +169,14 @@ def _battery_module_for_instrument(inst: str) -> Optional[str]:
     return None
 
 
+# Mirrors ELoadDispatcher._choose_driver (box/lager/power/eload/dispatcher.py).
+def _eload_module_for_instrument(inst: str) -> Optional[str]:
+    inst = (inst or "").lower()
+    if "rigol" in inst and ("dl3021" in inst or "dl3000" in inst):
+        return "rigol_dl3021"
+    return None
+
+
 def resolve_net_proxy(
     netname: str,
     role: str,
