@@ -7,7 +7,7 @@ Regression: the advertised `netCommand` capability must reflect whether the
 POST /net/command route actually registered (`_has_net_command`), not be
 hardcoded True. If the handler import fails the route is never registered, but
 a hardcoded True still tells the control plane the box serves /net/command —
-so Stout routes there and the box 404s ("The requested endpoint does not
+so it routes there and the box 404s ("The requested endpoint does not
 exist").
 
 The box package has hardware-only dependencies (pyvisa, usb, labjack, …) that

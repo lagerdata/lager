@@ -26,7 +26,7 @@ Schema (all fields optional except ``locked``):
     {
         "locked":         true,
         "user":           "<holder>",
-        "holder_type":    "user" | "ci" | "ephemeral" | "stout",
+        "holder_type":    "user" | "ci" | "ephemeral" | <reservation origin>,
         "locked_at":      "<ISO 8601 UTC>",
         "last_heartbeat": "<ISO 8601 UTC>",
         "ttl_seconds":    1800 | null
@@ -66,7 +66,13 @@ logger = logging.getLogger(__name__)
 LOCK_FILE = '/etc/lager/lock.json'
 LOCK_FILE_GUARD = LOCK_FILE + '.flock'
 
-VALID_HOLDER_TYPES = ('user', 'ci', 'ephemeral', 'stout')
+# Well-known holder types. ``ephemeral`` and ``ci`` are auto-locks (a
+# re-acquire may rewrite their classification and TTL); anything else is a
+# reservation. Other services (e.g. the web dashboard) write their own origin
+# token as ``holder_type``, so normalization preserves any non-empty string
+# verbatim — coercing an unrecognized reservation type to ``ephemeral`` would
+# give it a TTL and let the reaper silently drop it.
+KNOWN_HOLDER_TYPES = ('user', 'ci', 'ephemeral')
 
 # Sentinel meaning "the caller did not supply this field". We can't use
 # ``None`` for ``ttl_seconds`` because ``None`` IS a valid value (eternal
@@ -220,8 +226,11 @@ def _clear_lock() -> None:
 
 
 def _normalize_holder_type(value: Any, default: str = 'ephemeral') -> str:
-    if value in VALID_HOLDER_TYPES:
-        return value  # type: ignore[return-value]
+    # Any non-empty string is kept verbatim (see KNOWN_HOLDER_TYPES): only
+    # `ephemeral`/`ci` carry special semantics, and unrecognized tokens are
+    # reservation origins from other services that must not be reclassified.
+    if isinstance(value, str) and value:
+        return value
     return default
 
 
@@ -344,7 +353,7 @@ def acquire(
         if existing:
             # Same-holder refresh. Only auto-lock types (ephemeral/ci) may
             # have their classification and TTL rewritten by a re-acquire;
-            # a reservation (`user`, `stout`, or a legacy record with no
+            # a reservation (`user`, a dashboard origin, or a legacy record with no
             # holder_type — those were all written by `lager boxes lock`
             # era servers) must survive any number of `lager python` runs
             # untouched, or an eternal lock silently gains a TTL and gets
@@ -444,5 +453,5 @@ __all__ = [
     'status',
     'LOCK_FILE',
     'LOCK_FILE_GUARD',
-    'VALID_HOLDER_TYPES',
+    'KNOWN_HOLDER_TYPES',
 ]

@@ -270,7 +270,7 @@ USB control gets multi-hub support and read-only state queries, `lager ssh` can 
 Warm-path Workbench support for bus and energy instruments, plus UART hardening on the box.
 
 ### Added
-- **`spi`, `i2c`, and `energy-analyzer` nets are served by the box's `/net/command` endpoint.** Stout's Workbench drives these roles, which previously round-tripped through the `/python` executor — paying an interpreter spawn + device re-open on every command. They now run in the long-lived box HTTP server like the existing gpio/adc/dac/eload/thermocouple/watt-meter roles, matching Stout's actions and params exactly (spi `transfer`/`read`, i2c `scan`/`read`/`write`/`transfer`, energy-analyzer `read_stats`/`read_energy`). Message formats match the previous `/python` fallback so the dashboard log is identical on either path, and energy-analyzer durations are clamped to 0.1–30s. Each net's transactions are serialized per netname so concurrent requests can't interleave on one device. Rollout is back-compatible: a box without this build returns 501 and Stout falls back to `/python`, with no Stout deploy needed.
+- **`spi`, `i2c`, and `energy-analyzer` nets are served by the box's `/net/command` endpoint.** The web dashboard drives these roles, which previously round-tripped through the `/python` executor — paying an interpreter spawn + device re-open on every command. They now run in the long-lived box HTTP server like the existing gpio/adc/dac/eload/thermocouple/watt-meter roles, matching the dashboard's actions and params exactly (spi `transfer`/`read`, i2c `scan`/`read`/`write`/`transfer`, energy-analyzer `read_stats`/`read_energy`). Message formats match the previous `/python` fallback so the dashboard log is identical on either path, and energy-analyzer durations are clamped to 0.1–30s. Each net's transactions are serialized per netname so concurrent requests can't interleave on one device. Rollout is back-compatible: a box without this build returns 501 and the control plane falls back to `/python`, with no control-plane deploy needed.
 - **`simple-websocket` added to the box image** so Flask-SocketIO (threading mode) can serve the WebSocket transport instead of long-polling only. Clients negotiate transport automatically.
 
 ### Fixed
@@ -968,7 +968,7 @@ This release is a direct response to the "battery net not responding" incident o
 - Jobs WebSocket client in control plane heartbeat for receiving and executing job dispatch commands
 
 ### Changed
-- Default control plane URL changed to `https://api.stoutdata.ai`
+- Default control plane URL changed to the new control-plane API domain
 
 ## [0.6.0] - 2026-03-06
 

@@ -295,7 +295,8 @@ def format_lock_user(user):
     """Format a lock user string for display.
 
     Recognized formats:
-    - ``stout:<uuid>:<email>``                    -> just the email
+    - ``<origin>:<id>:<email>``                   -> just the email
+      (reservations written by other services, e.g. the web dashboard)
     - ``ci:github:<repo>#<run>-<attempt>/<job>@<runner>:<pid>``
                                                   -> ``github <repo> run <run> job <job> on <runner>``
     - ``ci:drone:<repo>#<build>:<pid>@<host>``    -> ``drone <repo> build <build>``
@@ -310,12 +311,6 @@ def format_lock_user(user):
     recognise so we never hide unexpected holders.
     """
     if not user:
-        return user
-
-    if user.startswith('stout:'):
-        parts = user.split(':', 2)
-        if len(parts) == 3:
-            return parts[2]
         return user
 
     if user.startswith('ci:'):
@@ -372,6 +367,15 @@ def format_lock_user(user):
                 return f'ci on {host}' if host else 'ci'
         except Exception:  # pylint: disable=broad-except
             return user
+
+    # Reservation holders written by other services (e.g. the web dashboard)
+    # look like ``<origin>:<id>:<email>``; show just the email. The ``ci:``
+    # prefix is excluded above, and requiring an ``@`` keeps genuinely
+    # unrecognized strings visible unchanged.
+    if not user.startswith('ci:'):
+        parts = user.split(':', 2)
+        if len(parts) == 3 and '@' in parts[2]:
+            return parts[2]
 
     return user
 

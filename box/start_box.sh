@@ -155,8 +155,9 @@ done
 #   /etc/lager/authorized_keys.d  — durable, persists across reboots
 #   /tmp/lager-authorized-keys.d  — staging area written by the container process
 #                                    (www-data can always write to /tmp)
-# Runs as lagerdata (no sudo needed). After the first successful Stout install,
-# systemd units handle this automatically; this is the bootstrap path for first install.
+# Runs as lagerdata (no sudo needed). After the first successful control-plane-driven
+# install, systemd units handle this automatically; this is the bootstrap path for
+# first install.
 _sync_authorized_keys() {
     local auth_keys="$HOME/.ssh/authorized_keys"
     mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
@@ -179,7 +180,8 @@ echo "Syncing SSH authorized keys..."
 _sync_authorized_keys
 
 # Background poller: catches keys written to authorized_keys.d while the box is running
-# (e.g., during a Stout install). Exits on next start_box.sh run via PID file cleanup.
+# (e.g., during a control-plane-driven install). Exits on next start_box.sh run via
+# PID file cleanup.
 _SSH_SYNC_PID_FILE="/tmp/lager-ssh-sync.pid"
 if [ -f "$_SSH_SYNC_PID_FILE" ]; then
     _old_pid=$(cat "$_SSH_SYNC_PID_FILE" 2>/dev/null || true)

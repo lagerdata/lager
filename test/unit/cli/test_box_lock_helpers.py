@@ -142,8 +142,8 @@ class TestFormatLockUserNew:
         out = box_storage.format_lock_user('ci:mystery:whatever')
         assert out == 'ci:mystery:whatever'
 
-    def test_existing_stout_still_works(self):
-        out = box_storage.format_lock_user('stout:abc:user@example.com')
+    def test_reservation_prefix_still_works(self):
+        out = box_storage.format_lock_user('dashboard:abc:user@example.com')
         assert out == 'user@example.com'
 
 
