@@ -2,7 +2,7 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
-## [Unreleased]
+## [0.31.5] - 2026-07-10
 
 UART nets survive USB re-enumeration: live sessions heal in place when a device
 re-enumerates (hub power-cycle, DUT reflash, replug), saved nets resolve by a
