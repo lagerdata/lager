@@ -149,6 +149,76 @@ class UsbIdentityForNetRecordTests(unittest.TestCase):
         self.assertIsNone(uart_net.usb_identity_for_net_record(record))
 
 
+class LiveUartPathTests(unittest.TestCase):
+    """live_uart_path: display-time resolution of where a net's device is now."""
+
+    def setUp(self):
+        self._devices_pkg = sys.modules["lager.devices"]
+        self._had_attr = hasattr(self._devices_pkg, "serial_id")
+        self._old_attr = getattr(self._devices_pkg, "serial_id", None)
+        self.fake = types.SimpleNamespace(
+            resolve_identity=lambda ident: None,
+            identity_for_tty=lambda tty: None,
+            list_cables=lambda: [],
+        )
+        self._devices_pkg.serial_id = self.fake
+
+    def tearDown(self):
+        if self._had_attr:
+            self._devices_pkg.serial_id = self._old_attr
+        else:
+            del self._devices_pkg.serial_id
+
+    def test_identity_resolves_to_live_node(self):
+        self.fake.resolve_identity = lambda ident: "/dev/ttyUSB1"
+        rec = {"role": "uart", "pin": "/dev/ttyUSB4",
+               "usb_identity": {"vid": "10c4", "pid": "ea60"}}
+        self.assertEqual(uart_net.live_uart_path(rec), "/dev/ttyUSB1")
+
+    def test_absent_device_returns_none(self):
+        rec = {"role": "uart", "pin": "/dev/ttyUSB4",
+               "usb_identity": {"vid": "10c4", "pid": "ea60"}}
+        self.assertIsNone(uart_net.live_uart_path(rec))
+
+    def test_by_id_pin_resolves_via_symlink(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile() as target:
+            link_dir = tempfile.mkdtemp()
+            link = os.path.join(link_dir, "by-id", "usb-X-if00")
+            os.makedirs(os.path.dirname(link))
+            os.symlink(target.name, link)
+            old_prefix = uart_net._STABLE_PIN_PREFIX
+            uart_net._STABLE_PIN_PREFIX = link_dir
+            try:
+                rec = {"role": "uart", "pin": link}
+                self.assertEqual(uart_net.live_uart_path(rec),
+                                 os.path.realpath(target.name))
+                self.assertTrue(uart_net.has_durable_identity(rec))
+                # Broken symlink (device absent) -> None
+                os.unlink(target.name)
+                # NamedTemporaryFile cleanup will fail on the missing file;
+                # recreate on exit
+                self.assertIsNone(uart_net.live_uart_path(rec))
+            finally:
+                uart_net._STABLE_PIN_PREFIX = old_prefix
+                open(target.name, "w").close()
+
+    def test_raw_pin_without_identity_is_unknowable(self):
+        rec = {"role": "uart", "pin": "/dev/ttyUSB4"}
+        self.assertIsNone(uart_net.live_uart_path(rec))
+        self.assertFalse(uart_net.has_durable_identity(rec))
+        self.assertTrue(uart_net.has_durable_identity(
+            {"role": "uart", "pin": "/dev/ttyUSB4", "usb_identity": {"vid": "x"}}))
+
+    def test_never_raises(self):
+        def boom(*a, **kw):
+            raise RuntimeError("sysfs exploded")
+        self.fake.resolve_identity = boom
+        self.assertIsNone(uart_net.live_uart_path(
+            {"role": "uart", "pin": "/dev/ttyUSB4", "usb_identity": {"vid": "x"}}))
+        self.assertIsNone(uart_net.live_uart_path({}))
+
+
 class SaveLocalNetWiringTests(unittest.TestCase):
     """Structural check that Net.save_local_net (box/lager/nets/net.py) is
     actually wired to the helper. net.py's import graph is too heavy to load
@@ -186,6 +256,23 @@ class SaveLocalNetWiringTests(unittest.TestCase):
         self.assertIn("'uart'", self.save_src)
         # Existing snapshots must be respected (no unconditional overwrite).
         self.assertIn("not data.get('usb_identity')", self.save_src)
+
+    def test_save_local_net_strips_display_annotation(self):
+        # live_path is display-only (added by list_saved); a client
+        # round-tripping a listed record must not persist it.
+        self.assertIn("data.pop('live_path', None)", self.save_src)
+
+    def test_list_saved_annotates_live_path(self):
+        import ast
+        list_src = None
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "list_saved":
+                list_src = ast.unparse(node)
+        self.assertIsNotNone(list_src, "list_saved not found in net.py")
+        self.assertIn("live_uart_path", list_src)
+        self.assertIn("has_durable_identity", list_src)
+        # Must annotate copies, never mutate the cached records in place.
+        self.assertIn("{**n", list_src)
 
 
 if __name__ == "__main__":

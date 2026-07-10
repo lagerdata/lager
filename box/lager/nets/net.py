@@ -69,7 +69,12 @@ from ..rotation import Rotation
 from ..actuate import Actuate
 from ..protocols.wifi import Wifi
 from ..protocols.mikrotik.router import MikroTikRouter
-from ..protocols.uart.uart_net import UARTNet, usb_identity_for_net_record
+from ..protocols.uart.uart_net import (
+    UARTNet,
+    usb_identity_for_net_record,
+    live_uart_path,
+    has_durable_identity,
+)
 from ..protocols.spi.spi_net import SPINet
 from ..protocols.i2c.i2c_net import I2CNet
 from ..automation.usb_hub.usb_net_wrapper import USBNetWrapper
@@ -302,6 +307,10 @@ class Net:
             ident = usb_identity_for_net_record(data)
             if ident:
                 data["usb_identity"] = ident
+        # live_path is a display-only annotation added by list_saved; never
+        # persist it (a client round-tripping a listed record would otherwise
+        # freeze a point-in-time tty number into the config).
+        data.pop("live_path", None)
 
         # normalize minimal mapping info expected elsewhere
         pin = data.get("pin", 0)
@@ -351,8 +360,17 @@ class Net:
         What the TUI expects: list of nets persisted on the box.
         """
         nets = cls.get_local_nets()
-        # Keep it simple: return as-is (already JSON-serializable).
-        return nets
+        # Annotate uart nets that carry a durable identity (usb_identity or a
+        # /dev/serial/by-* pin) with the node their device owns right now, so
+        # displays show reality after a re-enumeration shuffles tty numbers.
+        # live_path=None means the device is currently absent. Copies, not
+        # in-place: get_local_nets() returns the cached records.
+        out: List[Dict[str, Any]] = []
+        for n in nets:
+            if n.get("role") == "uart" and has_durable_identity(n):
+                n = {**n, "live_path": live_uart_path(n)}
+            out.append(n)
+        return out
 
     # ---------- factory ----------
     @classmethod

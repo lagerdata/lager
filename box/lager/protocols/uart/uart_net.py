@@ -39,6 +39,49 @@ def usb_identity_for_net_record(record: dict) -> Optional[dict]:
     return None
 
 
+# Pins under here are udev-managed symlinks that re-point at the live node
+# after a re-enumeration, so they are resolvable without a usb_identity.
+_STABLE_PIN_PREFIX = '/dev/serial/'
+
+
+def _stable_pin(record: dict) -> str:
+    pin = record.get('device_path') or record.get('pin') or ''
+    if isinstance(pin, str) and pin.startswith(_STABLE_PIN_PREFIX):
+        return pin
+    return ''
+
+
+def has_durable_identity(record: dict) -> bool:
+    """True when a uart record can be resolved to its live tty node."""
+    return bool(record.get('usb_identity')) or bool(_stable_pin(record))
+
+
+def live_uart_path(record: dict) -> Optional[str]:
+    """Where a saved uart net's device lives right now, or None if absent.
+
+    Mirrors the connect-time resolution order: durable usb_identity first,
+    then a stable /dev/serial/by-* symlink. Raw /dev/tty* pins without an
+    identity are not resolvable (the stored label is all we know), so callers
+    should only attach this for records where has_durable_identity() holds.
+    Display-only; never raises.
+    """
+    try:
+        from lager.devices import serial_id
+        ident = record.get('usb_identity')
+        if ident:
+            path = serial_id.resolve_identity(ident)
+            if path:
+                return path
+        pin = _stable_pin(record)
+        if pin:
+            real = os.path.realpath(pin)
+            if real != pin and os.path.exists(real):
+                return real
+    except Exception:
+        pass
+    return None
+
+
 class UARTNet:
     """
     Represents a UART net configuration.
