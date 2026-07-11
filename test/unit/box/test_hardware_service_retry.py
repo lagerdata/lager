@@ -625,5 +625,88 @@ class DeviceIdLockTests(unittest.TestCase):
             sys.modules.pop('lager.fake_adc_hs2', None)
 
 
+class ReleaseDirectUsbClaimTests(unittest.TestCase):
+    """Direct-USB handoff for lager python vs hardware_service contention."""
+
+    def setUp(self):
+        hw.device_cache.clear()
+        hw.module_cache.clear()
+        hw.device_locks.clear()
+        self.client = hw.app.test_client()
+
+    def test_release_endpoint_closes_labjack_and_usb_drivers(self):
+        calls = []
+
+        def _fake_force_close():
+            calls.append('labjack')
+
+        import lager.io.labjack_handle as lj
+        orig = lj.force_close_labjack
+        lj.force_close_labjack = _fake_force_close
+
+        # Seed a class-style dispatcher cache (GPIO) with a fake driver that
+        # tracks its close(), then assert it is closed and evicted.
+        from lager.io.gpio import dispatcher as gpio_disp
+        gpio_cls = type(gpio_disp._dispatcher)
+
+        class _FakeDriver:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+                calls.append('gpio_close')
+
+        fake = _FakeDriver()
+        gpio_cls._driver_cache['net0'] = fake
+
+        try:
+            resp = self.client.post('/cache/release_direct_usb')
+            self.assertEqual(resp.status_code, 200)
+            released = resp.get_json()['released']
+            self.assertIn('labjack', released)
+            self.assertIn('lager.io.gpio.dispatcher', released)
+            self.assertIn('labjack', calls)
+            self.assertIn('gpio_close', calls)
+            self.assertTrue(fake.closed)
+            # Driver evicted so the next /invoke reopens the device cleanly.
+            self.assertNotIn('net0', gpio_cls._driver_cache)
+        finally:
+            lj.force_close_labjack = orig
+            gpio_cls._driver_cache.pop('net0', None)
+
+    def test_release_purges_driver_class_singleton_caches(self):
+        """A closed JS220 must not linger in JoulescopeJS220._instances.
+
+        The driver class caches one instance per serial with _initialized=True;
+        if release only evicted the dispatcher cache, the next /invoke would
+        get the dead singleton back from __new__ and fail 'not connected'.
+        """
+        import lager.io.labjack_handle as lj
+        orig = lj.force_close_labjack
+        lj.force_close_labjack = lambda: None
+
+        from lager.measurement.watt.joulescope_js220 import JoulescopeJS220
+
+        class _FakeJS220:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        fake = _FakeJS220()
+        JoulescopeJS220._instances['FAKESERIAL'] = fake
+        try:
+            resp = self.client.post('/cache/release_direct_usb')
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn('JoulescopeJS220', resp.get_json()['released'])
+            self.assertTrue(fake.closed)
+            self.assertNotIn('FAKESERIAL', JoulescopeJS220._instances)
+        finally:
+            lj.force_close_labjack = orig
+            JoulescopeJS220._instances.pop('FAKESERIAL', None)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -696,6 +696,151 @@ def _close_device(device, cache_key):
     return False
 
 
+# Non-VISA subsystems whose drivers hold an exclusive USB claim inside THIS
+# process. Each entry: (module path, cache style). "class" = BaseDispatcher
+# subclass with a class-level _driver_cache reachable via the module's
+# `_dispatcher` singleton; "module" = a module-level `_driver_cache` dict
+# (guarded by `_driver_cache_lock`). LabJack is handled separately via its
+# singleton handle. VISA instruments (supply/battery/eload) are deliberately
+# excluded — their shared pyvisa sessions must persist (see clear_cache()).
+_DIRECT_USB_DISPATCHERS = [
+    ('lager.io.gpio.dispatcher', 'class'),
+    ('lager.io.adc.dispatcher', 'class'),
+    ('lager.io.dac.dispatcher', 'class'),
+    ('lager.measurement.watt.dispatcher', 'class'),
+    ('lager.measurement.energy_analyzer.dispatcher', 'class'),
+    ('lager.protocols.spi.dispatcher', 'module'),
+    ('lager.protocols.i2c.dispatcher', 'module'),
+]
+
+# Driver classes with their OWN per-serial singleton cache (cls._instances,
+# gated by _initialized in __init__), separate from the dispatcher caches
+# above. Closing one of these via the dispatcher cache alone is not enough:
+# the closed instance stays in _instances, the next /invoke gets it back from
+# __new__ (with __init__ early-returning on _initialized), and every read
+# fails "not connected" until hardware_service restarts. Their clear_cache()
+# closes instances AND empties _instances so the next /invoke reconstructs
+# and reopens the device. The energy-analyzer wrappers are listed too because
+# they mirror the pattern while delegating to the watt-class singletons.
+_SINGLETON_DRIVER_CLASSES = [
+    ('lager.measurement.watt.joulescope_js220', 'JoulescopeJS220'),
+    ('lager.measurement.watt.ppk2_watt', 'PPK2Watt'),
+    ('lager.measurement.watt.yocto_watt', 'YoctoWatt'),
+    ('lager.measurement.energy_analyzer.joulescope_energy', 'JoulescopeEnergyAnalyzer'),
+    ('lager.measurement.energy_analyzer.ppk2_energy', 'PPK2EnergyAnalyzer'),
+]
+
+
+def _try_close_driver(drv):
+    """Close a cached hardware driver via close() or _close() (best-effort)."""
+    for meth in ('close', '_close'):
+        fn = getattr(drv, meth, None)
+        if callable(fn):
+            try:
+                fn()
+            except Exception as e:
+                logger.warning(f"Error closing driver {type(drv).__name__}: {e}")
+            return True
+    return False
+
+
+def _release_direct_usb_claims():
+    """Release every exclusive USB claim held by non-VISA drivers.
+
+    Tier-1 :9000 net commands route through hardware_service, which keeps each
+    device's driver cached (and its USB session open) for warm-path latency.
+    ``lager python`` scripts talk to the same physical device directly in a
+    child process and fail with an exclusive-claim error (LabJack LJM 1230,
+    libusb ``Resource busy``) if we don't yield first.
+
+    Closes and evicts the cached drivers for LabJack (shared LJM handle),
+    FT232H, Aardvark, USB-202, Joulescope, and PPK2 across the GPIO/ADC/DAC/
+    SPI/I2C/watt/energy subsystems. Shared pyvisa sessions (supply/battery/
+    eload) are NOT touched — tearing those down on every script exit is the
+    v0.16.8 regression that reintroduced ``[Errno 16] Resource busy``.
+    """
+    released = []
+
+    # LabJack T7: single LJM handle shared across GPIO/ADC/DAC/SPI/I2C.
+    try:
+        from lager.io.labjack_handle import force_close_labjack
+        force_close_labjack()
+        released.append('labjack')
+    except Exception as e:
+        logger.warning(f"Failed to release LabJack claim: {e}")
+
+    # Per-instance USB drivers (FT232H, Aardvark, USB-202, Joulescope, PPK2):
+    # close each cached driver, then clear the cache so the next /invoke
+    # recreates and reopens it cleanly.
+    for module_path, style in _DIRECT_USB_DISPATCHERS:
+        try:
+            mod = importlib.import_module(module_path)
+        except Exception as e:
+            logger.debug(f"release: skip {module_path}: {e}")
+            continue
+        try:
+            if style == 'class':
+                # Drain via popitem() (atomic under the GIL) instead of
+                # snapshot-then-clear: BaseDispatcher._driver_cache has no
+                # lock, so a concurrent /invoke could insert a driver between
+                # the snapshot and clear_cache(), evicting it WITHOUT closing
+                # it — an orphaned USB claim no later release can find. The
+                # while-loop re-check closes mid-drain inserts too; anything
+                # cached after the loop exits stays tracked (benign: the
+                # script just races normally and the next release catches it).
+                cache = type(mod._dispatcher)._driver_cache
+                while cache:
+                    try:
+                        _, drv = cache.popitem()
+                    except KeyError:
+                        break
+                    _try_close_driver(drv)
+            else:  # module-level dict + lock
+                lock = getattr(mod, '_driver_cache_lock', None)
+                cache = mod._driver_cache
+                if lock is not None:
+                    with lock:
+                        for drv in list(cache.values()):
+                            _try_close_driver(drv)
+                        cache.clear()
+                else:
+                    for drv in list(cache.values()):
+                        _try_close_driver(drv)
+                    cache.clear()
+            released.append(module_path)
+        except Exception as e:
+            logger.warning(f"release: failed for {module_path}: {e}")
+
+    # Purge driver-class singleton caches (see _SINGLETON_DRIVER_CLASSES).
+    # sys.modules lookup instead of import: if the module was never imported,
+    # no singleton exists and there is nothing to close.
+    for module_path, cls_name in _SINGLETON_DRIVER_CLASSES:
+        mod = sys.modules.get(module_path)
+        if mod is None:
+            continue
+        try:
+            getattr(mod, cls_name).clear_cache()
+            released.append(cls_name)
+        except Exception as e:
+            logger.warning(f"release: singleton clear failed for {cls_name}: {e}")
+
+    logger.info(f"Released direct USB claims for lager python handoff: {released}")
+    return released
+
+
+@app.route('/cache/release_direct_usb', methods=['POST'])
+def release_direct_usb_cache():
+    """Release non-VISA USB claims owned by hardware_service.
+
+    Scoped alternative to ``/cache/clear``: closes the LabJack/FT232H/Aardvark/
+    USB-202/Joulescope/PPK2 drivers so a ``lager python`` child process can open
+    them directly, while retaining shared pyvisa sessions (supply/battery/eload).
+    Consumed by the python execution service before spawning a script.
+    """
+    released = _release_direct_usb_claims()
+    return jsonify({'released': released})
+
+
 @app.route('/cache/clear', methods=['POST'])
 def clear_cache():
     """Clear the device cache and close non-shared VISA/USB resources.

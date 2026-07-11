@@ -43,6 +43,30 @@ logger = logging.getLogger(__name__)
 MAX_TIMEOUT = 300
 LAGER_PYTHON_IP_ADDR = '172.18.0.10'  # Docker-internal network default; overridden by LOCAL_ADDRESS env var
 
+
+def _release_hardware_service_direct_usb_claims():
+    """Best-effort handoff: drop hardware_service's direct-USB claims.
+
+    Tier-1 :9000 net commands route through hardware_service, which keeps each
+    device's driver cached (and its USB session open) for warm-path latency.
+    ``lager python`` scripts talk to the same physical device directly in a
+    child process and fail with an exclusive-claim error (LabJack LJM 1230,
+    libusb ``Resource busy``) if we don't yield first. This releases every
+    non-VISA USB claim (LabJack/FT232H/Aardvark/USB-202/Joulescope/PPK2) while
+    retaining shared pyvisa sessions (supply/battery/eload) — unlike the old
+    v0.16.5 ``/cache/clear`` band-aid that tore those down and reintroduced
+    ``[Errno 16] Resource busy``.
+    """
+    try:
+        import requests
+        from lager.constants import HARDWARE_SERVICE_PORT
+        requests.post(
+            f'http://127.0.0.1:{HARDWARE_SERVICE_PORT}/cache/release_direct_usb',
+            timeout=5.0,
+        )
+    except Exception as e:
+        logger.debug("Direct USB claim release skipped: %s", e)
+
 # Nice-value delta we *try* to apply to scripts so they aren't out-scheduled
 # by the half-dozen other Python services sharing the lager container
 # (python execution / hardware / debug / HTTP / MCP). Critical for tight-
@@ -271,6 +295,11 @@ class PythonExecutor:
             stdin = subprocess.DEVNULL
             stdout = subprocess.PIPE
             stderr = subprocess.STDOUT if stdout_is_stderr else subprocess.PIPE
+
+            # Yield any direct-USB claims hardware_service holds from prior
+            # :9000 CLI net commands (gpo/adc/spi/watt/... on LabJack, FT232H,
+            # Aardvark, USB-202, Joulescope, PPK2) so this script can open them.
+            _release_hardware_service_direct_usb_claims()
 
             proc = subprocess.Popen(
                 base_command,
