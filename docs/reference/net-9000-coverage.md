@@ -60,9 +60,27 @@ resolves via its `lager.{device}` import search. Each adapter is a thin shim
 over the role's existing dispatcher, so behavior matches the former
 `lager <cmd>` path. Multi-step transactions (eload mode+setpoint, gpio toggle,
 spi transfer) are single composite `/invoke` calls, so they complete atomically
-under one lock acquisition. Long-running calls (gpio `wait_for_level`, watt /
-energy integration windows) widen the `Device` proxy HTTP timeout to cover the
-device-side duration.
+under one lock acquisition.
+
+### Timeout budgets for long-running actions
+
+Actions that block on the box for a caller-controlled duration must widen BOTH
+HTTP legs past that duration, or a healthy request dies with a client-side
+ReadTimeout:
+
+- **CLI -> box (:9000)**: `post_net_command(http_timeout=...)`. Quick commands
+  use the 10s default; energy uses `max(30, duration + 30)`, watt uses
+  `max(30, duration + 20)`, and gpi `--wait-for` uses `--timeout + 20` (or no
+  client timeout at all when `--timeout` is omitted — an unbounded wait,
+  matching the old :5000 behavior).
+- **box -> hardware_service (:8080)**: the `Device` proxy timeout, set per
+  handler to `duration + margin` (energy/watt) or the wait timeout + margin
+  (gpio; a 24h stand-in when unbounded).
+
+Energy integrations are clamped box-side at 120s (the old :5000 CLI budget).
+Direct :9000 callers are not Nginx-proxied, so long-held requests are safe;
+Stout's dashboard path separately clamps itself to 30s to stay under Nginx's
+60s `proxy_read_timeout`.
 
 ## Per-role status
 

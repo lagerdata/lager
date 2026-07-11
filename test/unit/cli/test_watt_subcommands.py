@@ -53,9 +53,11 @@ def _run(args):
     """
     calls: list[dict] = []
 
-    def fake_post(ctx, box_ip, netname, action, role=None, quiet=False, **params):
+    def fake_post(ctx, box_ip, netname, action, role=None, quiet=False,
+                  http_timeout=None, **params):
         calls.append({"box_ip": box_ip, "netname": netname, "action": action,
-                      "role": role, "quiet": quiet, "params": params})
+                      "role": role, "quiet": quiet,
+                      "http_timeout": http_timeout, "params": params})
         return {"success": True, "value": _VALUES[action], "message": "ok"}
 
     display_mock = MagicMock()
@@ -120,6 +122,16 @@ class TestSubcommandActions:
         _, calls, _ = _run(["NET1", "all", "-d", "2", "--box", "b"])
         assert calls[0]["params"]["duration"] == 2.0
         assert calls[0]["action"] == "all"
+
+    def test_http_timeout_covers_short_duration(self):
+        # Regression: the client budget must exceed the box-side averaging
+        # window, else a healthy long read dies with ReadTimeout at 10s.
+        _, calls, _ = _run(["NET1", "power", "--box", "b"])
+        assert calls[0]["http_timeout"] == 30.0
+
+    def test_http_timeout_scales_with_long_duration(self):
+        _, calls, _ = _run(["NET1", "all", "-d", "60", "--box", "b"])
+        assert calls[0]["http_timeout"] == 80.0
 
 
 # --------------------------------------------------------------------------- #

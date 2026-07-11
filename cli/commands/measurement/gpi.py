@@ -75,7 +75,12 @@ def gpi(ctx, box, wait_for, timeout, scan_rate, scans_per_read, poll_interval, n
             wait_params["scans_per_read"] = scans_per_read
         if poll_interval is not None:
             wait_params["poll_interval"] = poll_interval
-        post_net_command(ctx, box_ip, netname, "wait_for_level", role="gpio", **wait_params)
+        # The box holds the request until the level is reached (or the device
+        # wait times out), so the HTTP client budget must exceed --timeout; with
+        # no --timeout the wait is unbounded, matching the old :5000 behavior.
+        http_timeout = (timeout + 20.0) if timeout is not None else None
+        post_net_command(ctx, box_ip, netname, "wait_for_level", role="gpio",
+                         http_timeout=http_timeout, **wait_params)
     else:
         post_net_command(ctx, box_ip, netname, "input", role="gpio")
 

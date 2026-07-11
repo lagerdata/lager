@@ -19,6 +19,7 @@ legacy :5000 ``lager python`` script-upload path was removed. These tests:
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import sys
 from unittest.mock import patch
@@ -57,6 +58,7 @@ class TestPostNetCommand:
         def fake_post(url, json=None, timeout=None):
             captured["url"] = url
             captured["json"] = json
+            captured["timeout"] = timeout
             return _Resp(200, {"success": True, "message": "HIGH (1)", "value": 1})
 
         with patch("requests.post", fake_post):
@@ -66,7 +68,38 @@ class TestPostNetCommand:
         assert captured["url"] == "http://1.2.3.4:9000/net/command"
         assert captured["json"] == {
             "netname": "gpi1", "action": "input", "params": {}, "role": "gpio"}
+        assert captured["timeout"] == net_helpers._NET_HTTP_TIMEOUT
         assert result["value"] == 1
+
+    def test_http_timeout_forwarded_to_requests(self):
+        # Regression: long-running actions (energy/watt windows, gpi wait) widen
+        # the client timeout; post_net_command must actually pass it through.
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["timeout"] = timeout
+            return _Resp(200, {"success": True, "message": "ok"})
+
+        with patch("requests.post", fake_post):
+            net_helpers.post_net_command(
+                None, "1.2.3.4", "energy1", "read_energy",
+                role="energy-analyzer", quiet=True, http_timeout=130.0,
+                duration=100.0)
+        assert captured["timeout"] == 130.0
+
+    def test_http_timeout_none_disables_client_timeout(self):
+        # gpi --wait-for with no --timeout waits indefinitely (old behavior).
+        captured = {"timeout": "unset"}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["timeout"] = timeout
+            return _Resp(200, {"success": True, "message": "ok"})
+
+        with patch("requests.post", fake_post):
+            net_helpers.post_net_command(
+                None, "1.2.3.4", "gpi1", "wait_for_level", role="gpio",
+                quiet=True, http_timeout=None, level="high")
+        assert captured["timeout"] is None
 
     def test_params_forwarded_under_params_key(self):
         captured = {}
@@ -158,9 +191,10 @@ def _invoke_simple(module_name, command_attr, argv, patch_extra=None):
     mod = importlib.import_module(module_name)
     calls: list[dict] = []
 
-    def fake_post(ctx, box_ip, netname, action, role=None, quiet=False, **params):
+    def fake_post(ctx, box_ip, netname, action, role=None, quiet=False,
+                  http_timeout="default", **params):
         calls.append({"netname": netname, "action": action, "role": role,
-                      "params": params})
+                      "http_timeout": http_timeout, "params": params})
         return {"success": True, "value": 1, "message": "ok"}
 
     patchers = {
@@ -193,7 +227,7 @@ class TestSimpleCommandDispatch:
         calls = _invoke_simple("cli.commands.measurement.adc", "adc",
                                ["NET1", "--box", "b"])
         assert calls == [{"netname": "NET1", "action": "read", "role": "adc",
-                          "params": {}}]
+                          "http_timeout": "default", "params": {}}]
 
     def test_dac_read(self):
         calls = _invoke_simple("cli.commands.measurement.dac", "dac",
@@ -218,6 +252,17 @@ class TestSimpleCommandDispatch:
                                ["NET1", "--wait-for", "high", "--box", "b"])
         assert calls[0]["action"] == "wait_for_level"
         assert calls[0]["params"]["level"] == "high"
+        # No --timeout -> wait indefinitely; the client timeout must be off.
+        assert calls[0]["http_timeout"] is None
+
+    def test_gpi_wait_for_with_timeout_widens_client_budget(self):
+        # Regression: the HTTP budget must exceed the device-side wait, else a
+        # healthy wait longer than ~10s dies with ReadTimeout on the client.
+        calls = _invoke_simple(
+            "cli.commands.measurement.gpi", "gpi",
+            ["NET1", "--wait-for", "high", "--timeout", "60", "--box", "b"])
+        assert calls[0]["params"]["timeout"] == 60.0
+        assert calls[0]["http_timeout"] == 80.0
 
     def test_gpo_output(self):
         calls = _invoke_simple("cli.commands.measurement.gpo", "gpo",
@@ -230,6 +275,85 @@ class TestSimpleCommandDispatch:
                                "thermocouple", ["NET1", "--box", "b"])
         assert calls[0]["action"] == "read"
         assert calls[0]["role"] == "thermocouple"
+
+
+# --------------------------------------------------------------------------- #
+# Energy command: budget, output detail, --json                               #
+# --------------------------------------------------------------------------- #
+
+_ENERGY_VALUE = {
+    "duration_s": 10.0, "energy_j": 1.234, "energy_wh": 0.000342778,
+    "charge_c": 0.5678, "charge_ah": 0.000157722,
+}
+_STATS_VALUE = {
+    "duration_s": 1.0,
+    "current": {"mean": 0.001234, "min": 0.001, "max": 0.0015, "std": 0.0001},
+    "voltage": {"mean": 3.3, "min": 3.29, "max": 3.31, "std": 0.005},
+    "power": {"mean": 0.004072, "min": 0.0033, "max": 0.005, "std": 0.0003},
+}
+
+
+def _invoke_energy(argv):
+    mod = importlib.import_module("cli.commands.measurement.energy")
+    calls: list[dict] = []
+
+    def fake_post(ctx, box_ip, netname, action, role=None, quiet=False,
+                  http_timeout="default", **params):
+        calls.append({"netname": netname, "action": action, "role": role,
+                      "http_timeout": http_timeout, "params": params})
+        value = _ENERGY_VALUE if action == "read_energy" else _STATS_VALUE
+        return {"success": True, "value": value, "message": "ok"}
+
+    with patch.object(mod, "post_net_command", fake_post), \
+            patch.object(mod, "resolve_box", lambda ctx, box: "1.2.3.4"), \
+            patch.object(mod, "validate_net_exists",
+                         lambda ctx, ip, name, role: {"name": name}), \
+            patch.object(mod, "display_nets", lambda *a, **k: None), \
+            patch.object(mod, "get_default_net", lambda ctx, t: None):
+        result = CliRunner().invoke(mod.energy, argv, obj=_Obj(),
+                                    catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    return result, calls
+
+
+class TestEnergyCommand:
+
+    def test_read_widens_client_budget_past_duration(self):
+        # Regression: `lager energy read` defaults to a 10s integration; the
+        # old fixed 10s client timeout aborted the healthy default request.
+        _, calls = _invoke_energy(["NET1", "read", "--box", "b"])
+        assert calls[0]["action"] == "read_energy"
+        assert calls[0]["params"]["duration"] == 10.0
+        assert calls[0]["http_timeout"] == 40.0
+
+    def test_read_long_duration_budget(self):
+        # The old :5000 path allowed up to 120s integrations; the client budget
+        # must scale with the requested duration.
+        _, calls = _invoke_energy(
+            ["NET1", "read", "--duration", "100", "--box", "b"])
+        assert calls[0]["http_timeout"] == 130.0
+
+    def test_read_prints_full_energy_breakdown(self):
+        # Regression: the box's structured value (J/Wh, C/Ah) must be shown,
+        # not discarded in favor of the lossy one-line message.
+        result, _ = _invoke_energy(["NET1", "read", "--box", "b"])
+        assert "Energy 'NET1'" in result.output
+        assert "J" in result.output and "Wh" in result.output
+        assert "Charge" in result.output and "Ah" in result.output
+
+    def test_stats_prints_mean_min_max_std(self):
+        result, calls = _invoke_energy(["NET1", "stats", "--box", "b"])
+        assert calls[0]["action"] == "read_stats"
+        for token in ("Current", "Voltage", "Power",
+                      "mean=", "min=", "max=", "std="):
+            assert token in result.output
+
+    def test_read_json_output(self):
+        result, _ = _invoke_energy(["NET1", "read", "--json", "--box", "b"])
+        data = json.loads(result.output)
+        assert data["netname"] == "NET1"
+        assert data["energy_j"] == 1.234
+        assert data["charge_ah"] == 0.000157722
 
 
 # --------------------------------------------------------------------------- #

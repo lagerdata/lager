@@ -79,8 +79,11 @@ def _run_watt(ctx, box, netname, mode, duration, as_json):
     # The box exposes each quantity as its own /net/command action; "all"
     # returns a {current, voltage, power} dict. post_net_command surfaces any
     # hardware error (e.g. UnsupportedInstrumentError for power-only meters).
+    # The box holds the request for the whole averaging window, so give the
+    # HTTP client duration + margin (matches the old :5000 path's budget).
     result = post_net_command(ctx, box_ip, netname, mode, role="watt-meter",
-                              quiet=True, duration=duration)
+                              quiet=True, http_timeout=max(30.0, duration + 20.0),
+                              duration=duration)
     value = result.get("value")
 
     if mode == "all":

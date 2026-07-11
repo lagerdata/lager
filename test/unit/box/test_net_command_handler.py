@@ -472,15 +472,26 @@ class TestNetCommandHandler(unittest.TestCase):
         self.assertIn("V 3.300 V", data["message"])
         dev.measure.assert_called_once_with("read_stats", 2.0)
 
-    def test_energy_read_energy_clamps_max_duration(self):
+    def test_energy_read_energy_long_duration_not_over_clamped(self):
+        # Direct :9000 callers may integrate up to 120s (the old :5000 CLI
+        # budget); the 30s clamp belongs only to Stout's Nginx-proxied path.
         dev = MagicMock()
         dev.measure.return_value = {
-            "energy_j": 1.5, "charge_c": 0.5, "duration_s": 30.0}
+            "energy_j": 1.5, "charge_c": 0.5, "duration_s": 99.0}
         r, dev = self._run({"netname": "energy1", "action": "read_energy",
                             "params": {"duration": 99}}, dev)
         self.assertEqual(r.status_code, 200)
-        # 99s exceeds the 30s cap -> clamped to 30.0
-        dev.measure.assert_called_once_with("read_energy", 30.0)
+        dev.measure.assert_called_once_with("read_energy", 99.0)
+
+    def test_energy_read_energy_clamps_max_duration(self):
+        dev = MagicMock()
+        dev.measure.return_value = {
+            "energy_j": 1.5, "charge_c": 0.5, "duration_s": 120.0}
+        r, dev = self._run({"netname": "energy1", "action": "read_energy",
+                            "params": {"duration": 999}}, dev)
+        self.assertEqual(r.status_code, 200)
+        # 999s exceeds the 120s cap -> clamped to 120.0
+        dev.measure.assert_called_once_with("read_energy", 120.0)
 
     def test_energy_read_stats_clamps_min_duration(self):
         dev = MagicMock()
