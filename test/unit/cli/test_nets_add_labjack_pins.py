@@ -55,48 +55,15 @@ DP811 = {
 }
 
 
-class FakeBox:
-    """In-memory stand-in for the box-side scripts nets-add shells out to."""
-
-    def __init__(self, instruments):
-        self.instruments = instruments
-        self.saved_nets: list[dict] = []
-
-    def run_python_internal(self, ctx, runnable, box, env=None, passenv=(),
-                            kill=False, download=(), allow_overwrite=False,
-                            signum="SIGTERM", timeout=30, detach=False,
-                            port=(), org=None, args=(), **kwargs):
-        out = self._dispatch(os.path.basename(str(runnable)), tuple(args))
-        if out:
-            print(out)
-        return out
-
-    def _dispatch(self, script, args) -> str:
-        if script == "query_instruments.py":
-            if args and args[0] == "get_instrument":
-                match = next((i for i in self.instruments
-                              if i["address"] == args[1]), {})
-                return json.dumps(match)
-            return json.dumps(self.instruments)
-
-        if script == "net.py":
-            cmd = args[0]
-            if cmd == "list":
-                return json.dumps(self.saved_nets)
-            if cmd == "save":
-                self.saved_nets.append(json.loads(args[1]))
-                return json.dumps({"ok": True})
-
-        raise AssertionError(f"unexpected script {script} {args}")
+from test.unit.cli.nets_http_fake import FakeBoxHTTP  # noqa: E402
 
 
 @pytest.fixture
 def fake_box():
-    devpy = importlib.import_module("cli.commands.development.python")
-
-    box = FakeBox([LABJACK, DP811])
-    with patch.object(nets_mod, "run_python_internal", box.run_python_internal), \
-         patch.object(devpy, "run_python_internal", box.run_python_internal), \
+    # nets.py talks to the box over :9000 HTTP (requests.request); replace
+    # the box with the in-memory API fake.
+    box = FakeBoxHTTP([LABJACK, DP811])
+    with patch("requests.request", box.request), \
          patch("cli.box_storage.resolve_and_validate_box",
                lambda ctx, name: name or "testbox"), \
          patch.object(nets_mod, "_resolve_box", lambda ctx, name: name or "testbox"):

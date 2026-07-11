@@ -29,6 +29,7 @@ import io
 import warnings
 
 from .executor import PythonExecutor
+from ..binaries import store as binaries_store
 
 # Suppress cgi deprecation warning (still works in Python 3.12, removed in 3.13)
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='cgi')
@@ -48,13 +49,9 @@ SERVICE_HOST = '0.0.0.0'  # Listen on all interfaces
 SERVICE_PORT = 5000
 SERVICE_VERSION = '1.0.0'
 
-# Directories from which files may be downloaded.
-# Paths outside this allowlist are rejected regardless of traversal techniques.
-ALLOWED_DOWNLOAD_ROOTS = (
-    '/tmp/lager-output',
-    '/tmp/lager-results',
-    '/tmp/lager-job-output',
-)
+# Download allowlist lives in lager.binaries.store, shared with the :9000
+# handlers so both servers enforce identical policy.
+ALLOWED_DOWNLOAD_ROOTS = binaries_store.ALLOWED_DOWNLOAD_ROOTS
 
 
 def is_truthy_string(s):
@@ -210,28 +207,12 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
 
         filename = query_params['filename'][0]
 
-        # Resolve to absolute path first — eliminates all traversal sequences
-        # including '..' components and absolute paths pointing at sensitive locations.
-        abs_filename = os.path.abspath(filename)
-
-        # Allowlist check: the resolved path must reside under a permitted root.
-        # The os.sep suffix prevents /tmp/lager-output-evil from matching /tmp/lager-output.
-        if not any(
-            abs_filename == root or abs_filename.startswith(root + os.sep)
-            for root in ALLOWED_DOWNLOAD_ROOTS
-        ):
-            logger.warning(f"download-file: rejected path outside allowlist: {abs_filename!r}")
-            self.send_error_response(403, 'Access to this path is not permitted')
-            return
-
-        # Check if file exists
-        if not os.path.exists(abs_filename):
-            self.send_error_response(404, f'File not found: {filename}')
-            return
-
-        # Check if it's a file (not a directory)
-        if not os.path.isfile(abs_filename):
-            self.send_error_response(400, 'Path is not a file')
+        try:
+            abs_filename, file_size = binaries_store.resolve_download_path(filename)
+        except binaries_store.StoreError as e:
+            if e.status == 403:
+                logger.warning(f"download-file: rejected path outside allowlist: {filename!r}")
+            self.send_error_response(e.status, e.message)
             return
 
         try:
@@ -239,9 +220,6 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'application/octet-stream')
             self.send_header('Content-Disposition', f'attachment; filename="{os.path.basename(filename)}"')
-
-            # Get file size
-            file_size = os.path.getsize(abs_filename)
             self.send_header('Content-Length', str(file_size))
             self.end_headers()
 
@@ -880,11 +858,10 @@ print("Test execution complete.")
     # Custom Binaries Endpoints
     # =========================================================================
 
-    # Paths for customer binaries
-    # Host path (where files are stored on the box filesystem)
-    HOST_BINARIES_DIR = '/home/lagerdata/third_party/customer-binaries'
-    # Container path (where files are mounted inside the Docker container)
-    CONTAINER_BINARIES_DIR = '/home/www-data/customer-binaries'
+    # Paths for customer binaries (canonical values live in lager.binaries.store,
+    # shared with the :9000 handlers)
+    HOST_BINARIES_DIR = binaries_store.HOST_BINARIES_DIR
+    CONTAINER_BINARIES_DIR = binaries_store.CONTAINER_BINARIES_DIR
 
     def _handle_binaries_list(self):
         """
@@ -900,37 +877,7 @@ print("Test execution complete.")
             "mounted": true
         }
         """
-        import os
-        import stat
-
-        binaries = []
-        host_path = self.HOST_BINARIES_DIR
-        container_path = self.CONTAINER_BINARIES_DIR
-
-        # Check if directory exists (on host or in container depending on context)
-        # In container, we check the container path
-        check_path = container_path if os.path.exists(container_path) else host_path
-
-        if os.path.exists(check_path) and os.path.isdir(check_path):
-            for name in os.listdir(check_path):
-                file_path = os.path.join(check_path, name)
-                if os.path.isfile(file_path):
-                    file_stat = os.stat(file_path)
-                    binaries.append({
-                        'name': name,
-                        'size': file_stat.st_size,
-                        'executable': bool(file_stat.st_mode & stat.S_IXUSR)
-                    })
-
-        # Check if the container path is mounted
-        mounted = os.path.exists(container_path) and os.path.isdir(container_path)
-
-        self.send_json_response(200, {
-            'binaries': binaries,
-            'host_path': host_path,
-            'container_path': container_path,
-            'mounted': mounted
-        })
+        self.send_json_response(200, binaries_store.list_state())
 
     def _handle_binaries_add(self):
         """
@@ -948,9 +895,6 @@ print("Test execution complete.")
             "restart_required": false
         }
         """
-        import os
-        import stat
-
         try:
             fields = self.parse_multipart()
         except Exception as e:
@@ -975,11 +919,6 @@ print("Test execution complete.")
             self.send_error_response(400, 'name is required')
             return
 
-        # Validate name (no path separators)
-        if '/' in name or '\\' in name or '..' in name:
-            self.send_error_response(400, 'Invalid binary name')
-            return
-
         # Read binary content
         if hasattr(binary_file, 'read'):
             binary_content = binary_file.read()
@@ -989,42 +928,18 @@ print("Test execution complete.")
             self.send_error_response(400, 'Invalid binary file format')
             return
 
-        # Determine which path to use
-        # In container, we write to container path (which is mounted from host)
-        # If running outside container (dev mode), we write to host path
-        if os.path.exists(self.CONTAINER_BINARIES_DIR):
-            binaries_dir = self.CONTAINER_BINARIES_DIR
-        else:
-            binaries_dir = self.HOST_BINARIES_DIR
-
-        # Ensure directory exists
-        os.makedirs(binaries_dir, exist_ok=True)
-
-        # Write the binary
-        binary_path = os.path.join(binaries_dir, name)
         try:
-            with open(binary_path, 'wb') as f:
-                f.write(binary_content)
-
-            # Make executable
-            os.chmod(binary_path, os.stat(binary_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-
-            logger.info(f"Binary '{name}' uploaded to {binary_path} ({len(binary_content)} bytes)")
-
-            # Check if container path exists (i.e., if mount is active)
-            restart_required = not os.path.exists(self.CONTAINER_BINARIES_DIR)
-
-            self.send_json_response(200, {
-                'success': True,
-                'name': name,
-                'path': os.path.join(self.CONTAINER_BINARIES_DIR, name),
-                'size': len(binary_content),
-                'restart_required': restart_required
-            })
-
+            result = binaries_store.add_binary(name, binary_content)
+        except binaries_store.StoreError as e:
+            self.send_error_response(e.status, e.message)
+            return
         except Exception as e:
             logger.exception(f"Failed to write binary '{name}'")
             self.send_error_response(500, f"Failed to write binary: {e}")
+            return
+
+        logger.info(f"Binary '{name}' uploaded ({len(binary_content)} bytes)")
+        self.send_json_response(200, result)
 
     def _handle_binaries_remove(self):
         """
@@ -1041,8 +956,6 @@ print("Test execution complete.")
             "name": "my_tool"
         }
         """
-        import os
-
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length)
 
@@ -1053,39 +966,19 @@ print("Test execution complete.")
             return
 
         name = data.get('name')
-        if not name:
-            self.send_error_response(400, 'name is required')
-            return
-
-        # Validate name (no path separators)
-        if '/' in name or '\\' in name or '..' in name:
-            self.send_error_response(400, 'Invalid binary name')
-            return
-
-        # Determine which path to use
-        if os.path.exists(self.CONTAINER_BINARIES_DIR):
-            binaries_dir = self.CONTAINER_BINARIES_DIR
-        else:
-            binaries_dir = self.HOST_BINARIES_DIR
-
-        binary_path = os.path.join(binaries_dir, name)
-
-        if not os.path.exists(binary_path):
-            self.send_error_response(404, f"Binary '{name}' not found")
-            return
 
         try:
-            os.remove(binary_path)
-            logger.info(f"Binary '{name}' removed from {binary_path}")
-
-            self.send_json_response(200, {
-                'success': True,
-                'name': name
-            })
-
+            result = binaries_store.remove_binary(name)
+        except binaries_store.StoreError as e:
+            self.send_error_response(e.status, e.message)
+            return
         except Exception as e:
             logger.exception(f"Failed to remove binary '{name}'")
             self.send_error_response(500, f"Failed to remove binary: {e}")
+            return
+
+        logger.info(f"Binary '{name}' removed")
+        self.send_json_response(200, result)
 
 
 def create_python_service():

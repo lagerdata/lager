@@ -9,14 +9,11 @@
 import itertools
 import click
 import json
-import io
 import requests
 import signal
 import sys
-from contextlib import redirect_stdout
 from texttable import Texttable
-from ....context import get_default_box, get_impl_path, get_default_net
-from ..python import run_python_internal
+from ....context import get_default_box, get_default_net
 from ....core.param_types import MemoryAddressType, HexArrayType, BinfileType
 from ....box_storage import get_box_ip, get_box_name_by_ip, get_box_user
 from ....core.net_group import NetGroupHelpMixin, NetSubCommand
@@ -189,44 +186,28 @@ def _get_debug_net(ctx, box, net_name=None):
     if cached_net:
         return cached_net
 
-    # Cache miss - fetch from box
-    # Run net.py list to get available nets
-    buf = io.StringIO()
-    try:
-        with redirect_stdout(buf):
-            run_python_internal(
-                ctx, get_impl_path("net.py"), box,
-                env={}, passenv=(), kill=False, download=(),
-                allow_overwrite=False, signum="SIGTERM", timeout=0,
-                detach=False, port=(), org=None, args=("list",)
-            )
-    except SystemExit:
-        pass
+    # Cache miss - fetch from the box's :9000 HTTP API
+    from ....core.net_helpers import fetch_nets
 
-    try:
-        nets = json.loads(buf.getvalue() or "[]")
-        debug_nets = [n for n in nets if n.get("role") == "debug"]
+    nets = fetch_nets(box)
+    debug_nets = [n for n in nets if n.get("role") == "debug"]
 
-        if net_name:
-            # Find specific debug net
-            target_net = next((n for n in debug_nets if n.get("name") == net_name), None)
-            if not target_net:
-                click.secho(f"Debug net '{net_name}' not found.", fg='red', err=True)
-                ctx.exit(1)
-        else:
-            # Find first available debug net
-            if not debug_nets:
-                click.secho("No debug nets found. Create one with: lager nets add [NAME] debug [DEVICE_TYPE] [ADDRESS]", fg='red', err=True)
-                ctx.exit(1)
-            target_net = debug_nets[0]
+    if net_name:
+        # Find specific debug net
+        target_net = next((n for n in debug_nets if n.get("name") == net_name), None)
+        if not target_net:
+            click.secho(f"Debug net '{net_name}' not found.", fg='red', err=True)
+            ctx.exit(1)
+    else:
+        # Find first available debug net
+        if not debug_nets:
+            click.secho("No debug nets found. Create one with: lager nets add [NAME] debug [DEVICE_TYPE] [ADDRESS]", fg='red', err=True)
+            ctx.exit(1)
+        target_net = debug_nets[0]
 
-        # Cache the result before returning
-        cache.set(box, net_name, target_net)
-        return target_net
-
-    except json.JSONDecodeError:
-        click.secho("Failed to parse nets information.", fg='red', err=True)
-        ctx.exit(1)
+    # Cache the result before returning
+    cache.set(box, net_name, target_net)
+    return target_net
 
 
 def _debug_net_jlink_device(debug_net):
@@ -436,42 +417,11 @@ def _resolve_box(ctx, box):
     return resolve_and_validate_box(ctx, box)
 
 
-def _run_net_py(ctx: click.Context, box: str, *args: str) -> list[dict]:
-    """Run net.py to get list of nets."""
-    buf = io.StringIO()
-    try:
-        with redirect_stdout(buf):
-            run_python_internal(
-                ctx,
-                get_impl_path("net.py"),
-                box,
-                env={},
-                passenv=(),
-                kill=False,
-                download=(),
-                allow_overwrite=False,
-                signum="SIGTERM",
-                timeout=0,
-                detach=False,
-                port=(),
-                org=None,
-                args=args or ("list",),
-                # Capture call: opt out of the lager.pause() stdin watcher so it
-                # can't leak a daemon reader that races stdin (see net_helpers).
-                watch_stdin_resume=False,
-            )
-    except SystemExit:
-        pass
-    raw = buf.getvalue() or "[]"
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return []
-
-
 def _list_debug_nets(ctx, box):
-    """Get list of debug nets from box."""
-    recs = _run_net_py(ctx, box, "list")
+    """Get list of debug nets from the box's :9000 HTTP API."""
+    from ....core.net_helpers import fetch_nets
+
+    recs = fetch_nets(box)
     return [r for r in recs if r.get("role") == DEBUG_ROLE]
 
 

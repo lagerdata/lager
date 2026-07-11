@@ -152,12 +152,51 @@ class UsbScannerCustomTests(unittest.TestCase):
         # JSON-serializable for the /instruments/list HTTP response.
         json.dumps(out)
 
+    def test_unassigned_cable_passes_through_unchanged(self):
+        self._set_scan([_prolific_entry()])
+
+        out = us.list_instruments()
+        self.assertEqual([d["name"] for d in out], ["Prolific_USB_Serial"])
+        self.assertNotIn("custom", out[0])
+
     def test_unplugged_assignment_not_surfaced(self):
         cs.add("Rigol_DP711", VID, PID, serial=SERIAL)
         self._set_scan([_prolific_entry()])
 
         names = [d["name"] for d in us.list_instruments()]
         self.assertNotIn("Rigol_DP711", names)
+        self.assertIn("Prolific_USB_Serial", names)
+
+    def test_multi_role_chip_not_suppressed(self):
+        # An FTDI debug+uart chip sharing the custom tty keeps its generic
+        # record — only UART-only entries are replaced.
+        self._assign_live_dp711()
+        ftdi = {
+            "name": "FTDI_FT2232H",
+            "vid": "0403", "pid": "6010", "serial": "FT123",
+            "address": "USB0::0x0403::0x6010::FT123::INSTR",
+            "net_type": ["spi", "i2c", "gpio", "debug", "uart"],
+            "channels": {"uart": [TTY]},
+            "tty_path": TTY,
+            "tty_paths": [TTY],
+        }
+        self._set_scan([ftdi])
+
+        names = [d["name"] for d in us.list_instruments()]
+        self.assertIn("FTDI_FT2232H", names)
+        self.assertIn("Rigol_DP711", names)
+
+    def test_unknown_instrument_in_store_skipped(self):
+        # Hand-written store record bypassing add()'s catalog validation.
+        with open(cs.STORE_PATH, "w", encoding="utf-8") as f:
+            json.dump([{"instrument": "Flux_Capacitor", "vid": VID, "pid": PID,
+                        "serial": SERIAL, "port_path": None}], f)
+        self.resolved[(VID, PID, SERIAL, None)] = TTY
+        self._set_scan([_prolific_entry()])
+
+        names = [d["name"] for d in us.list_instruments()]
+        self.assertNotIn("Flux_Capacitor", names)
+        # No valid custom record -> no suppression either.
         self.assertIn("Prolific_USB_Serial", names)
 
     def test_port_path_assignment_surfaced_with_port_address(self):

@@ -4,12 +4,9 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import json
 import re
-import threading
 from collections import defaultdict
-from contextlib import redirect_stdout
 from ...sort_utils import natural_sort_key
 from dataclasses import dataclass, field
 from typing import Callable
@@ -47,8 +44,7 @@ except ModuleNotFoundError:
             pass
 
 # ───────────────────────── Lager helpers ──────────────────────────
-from ...context import get_impl_path
-from ..development.python import run_python_internal
+from ...core.net_helpers import NET_HTTP_PORT
 
 # ──────────────── helpers / model ─────────────────
 
@@ -63,20 +59,6 @@ class UARTNetSaveValidationError(ValueError):
     silent box-side failure at first use.
     """
 
-
-def _parse_backend_json_tui(raw: str):
-    """
-    Parse JSON response from backend, handling duplicate output from double execution.
-    Same logic as in nets.py's _parse_backend_json but for TUI usage.
-    """
-    try:
-        return json.loads(raw or "[]")
-    except json.JSONDecodeError:
-        # Duplicate output from double execution ("[...][...]" / "{...}{...}"):
-        # parse the first complete JSON value and ignore the rest. raw_decode
-        # handles nested brackets correctly — the previous hand-rolled depth
-        # scan misrouted doubled objects that contained arrays.
-        return json.JSONDecoder().raw_decode(raw.strip())[0]
 
 def _uid(instr: str, chan: str, role: str, name: str) -> str:
     """Return a row-key that is unique for (instrument, USB0::0x05E6::0x2281::4519728::INSTR channel, type, name)."""
@@ -128,61 +110,87 @@ def _first_word(role: str) -> str:
         return "supply"
     return role.split("-")[0]
 
-# Common kwargs for run_python_internal calls
-_RUN_PYTHON_KWARGS = {
-    "env": {},
-    "passenv": (),
-    "kill": False,
-    "download": (),
-    "allow_overwrite": False,
-    "signum": "SIGTERM",
-    "timeout": 30,  # 30 second timeout to prevent infinite hangs (was 0)
-    "detach": False,
-    "port": (),
-    "org": None,
-    # The TUI owns the terminal (Textual reads stdin for its own event loop), so
-    # opt out of the lager.pause() stdin-resume watcher thread — otherwise it
-    # races Textual for keystrokes and the TUI "behaves weird" / drops input.
-    "watch_stdin_resume": False,
-}
+# ──────────── box :9000 HTTP backend ────────────
+# All box round-trips go over the box's long-lived HTTP server (the same
+# /nets, /instruments and /custom-devices routes `lager nets` uses); the old
+# path uploaded net.py / query_instruments.py / custom_devices.py to the
+# :5000 exec service per call. Requests are thread-safe, so run_box_job
+# workers can overlap without the old stdout-capture lock.
 
-# redirect_stdout swaps the process-global sys.stdout, and run_box_job
-# workers may overlap (e.g. clicking Assign Device while a delete is in
-# flight) — serialize box calls so they can't capture each other's output.
-_RUN_SCRIPT_LOCK = threading.Lock()
+_HTTP_TIMEOUT = 30  # instrument scans probe hardware; give them headroom
 
 
-def _run_script(ctx: click.Context, script: str, dut: str, *args) -> str:
-    """Execute an internal script with given arguments and capture stdout."""
-    buf = io.StringIO()
-    with _RUN_SCRIPT_LOCK:
-        try:
-            with redirect_stdout(buf):
-                run_python_internal(ctx, get_impl_path(script), dut, **_RUN_PYTHON_KWARGS, args=args)
-        except SystemExit:
-            pass
-    return buf.getvalue()
+def _box_http(dut: str, method: str, path: str, json_body=None, params=None):
+    """One :9000 round-trip; parsed JSON on success, RuntimeError otherwise.
+
+    run_box_job forwards raised exceptions to the UI callback, so the
+    RuntimeError message (the box's `error` field when present) is what
+    lands in show_error.
+    """
+    import requests
+
+    url = f"http://{dut}:{NET_HTTP_PORT}{path}"
+    try:
+        resp = requests.request(method, url, json=json_body, params=params,
+                                timeout=_HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        raise RuntimeError(f"cannot reach box at {dut}:{NET_HTTP_PORT} ({e})")
+    try:
+        body = resp.json()
+    except ValueError:
+        body = None
+    if not (200 <= resp.status_code < 300):
+        error = body.get("error") if isinstance(body, dict) else None
+        raise RuntimeError(error or f"HTTP {resp.status_code} from box")
+    return body
+
+
+def _fetch_saved_nets_http(dut: str) -> list:
+    """GET /nets/list — the full saved-net records."""
+    records = _box_http(dut, "GET", "/nets/list")
+    if isinstance(records, dict):
+        records = records.get("nets", [])
+    return records if isinstance(records, list) else []
+
+
+def _fetch_instruments_http(dut: str) -> list:
+    """GET /instruments/list — detected instruments (incl. custom devices)."""
+    result = _box_http(dut, "GET", "/instruments/list")
+    return result if isinstance(result, list) else []
+
+
+def _save_net_http(dut: str, record: dict, old_name: str | None = None) -> None:
+    """PUT /nets/<name> — create or replace a net (rename when old_name given)."""
+    _box_http(dut, "PUT", f"/nets/{old_name or record.get('name')}",
+              json_body=record)
 
 
 # ──────────── custom-device (cable) assignment helpers ────────────
-# TUI twin of ``lager nets assign``, backed by the same box-side script
-# (cli/impl/custom_devices.py). Pure helpers live at module level so they
-# can be unit-tested without a running Textual app.
+# TUI twin of ``lager nets assign``, backed by the same /custom-devices/*
+# endpoints. Pure helpers live at module level so they can be unit-tested
+# without a running Textual app.
 
-def _run_custom_devices(ctx: click.Context, dut: str, *args):
-    """Run the custom_devices.py backend; None on failure.
+def _run_custom_devices(dut: str, action: str, payload: dict | None = None):
+    """Call the box's /custom-devices/* endpoints; None on failure.
 
-    The backend reports failures on stderr with a non-zero exit, which
-    ``_run_script`` swallows — so "no parseable stdout" is the TUI's failure
-    signal, covering both errors and box images that predate the script.
+    Box-reported errors (400 + {"error": ...}) come back as the parsed dict
+    so callers can surface the reason; None covers transport failures, non-
+    JSON responses, and box images that predate the endpoints (404).
     """
-    raw = _run_script(ctx, "custom_devices.py", dut, *args)
-    if not raw.strip():
-        return None
+    import requests
+
+    url = f"http://{dut}:{NET_HTTP_PORT}/custom-devices/{action}"
     try:
-        return _parse_backend_json_tui(raw)
-    except json.JSONDecodeError:
+        if action == "list":
+            resp = requests.get(url, timeout=_HTTP_TIMEOUT)
+        else:
+            resp = requests.post(url, json=payload or {}, timeout=_HTTP_TIMEOUT)
+        result = resp.json()
+    except Exception:
         return None
+    if resp.status_code == 404:
+        return None
+    return result if isinstance(result, dict) else None
 
 
 def _set_dialog_busy(screen: Screen, busy: bool) -> None:
@@ -223,7 +231,7 @@ def _assignment_row_label(a: dict) -> Text:
 
 
 def _assign_payload(cable: dict, device: str, baud: int | None) -> dict:
-    """Build the ``custom_devices.py assign`` payload for a picked cable.
+    """Build the ``/custom-devices/assign`` payload for a picked cable.
 
     Identity choice mirrors the durable-address rules: prefer the USB serial
     when the cable has one (assignment follows the cable across ports), else
@@ -328,8 +336,8 @@ def _validate_nets_before_save(nets: list["Net"]) -> list[tuple["Net", str]]:
     return bad
 
 
-def _save_nets_batch(ctx: click.Context, dut: str, nets: list["Net"], custom_names: dict[str, str] | None = None) -> bool:
-    """Save multiple nets using batch save with fallback to individual saves."""
+def _save_nets_batch(dut: str, nets: list["Net"], custom_names: dict[str, str] | None = None) -> bool:
+    """Save multiple nets, one PUT /nets/<name> per record."""
     if not nets:
         return True
 
@@ -358,33 +366,12 @@ def _save_nets_batch(ctx: click.Context, dut: str, nets: list["Net"], custom_nam
             record["params"] = n.params
         nets_data.append(record)
 
-    # Try batch save first
-    try:
-        raw = _run_script(ctx, "net.py", dut, "save-batch", json.dumps(nets_data))
-
-        if raw and raw.strip():
-            # Use the same JSON parsing logic as the CLI to handle duplicate output
-            response = _parse_backend_json_tui(raw)
-            if response.get("ok", False):
-                return True
-    except (json.JSONDecodeError, Exception):
-        pass  # Fall through to individual saves
-
-    # Fallback to individual saves (batch save failed or returned empty)
+    # One PUT per record; keep going on individual failures so one bad net
+    # doesn't sink the rest of the batch.
     saved_count = 0
-    for n in nets:
+    for record in nets_data:
         try:
-            net_name = custom_names.get(n.key(), n.net)
-            record = {
-                "name": net_name,
-                "role": n.type,
-                "address": n.addr,
-                "instrument": n.instrument,
-                "pin": n.chan,
-            }
-            if n.params:
-                record["params"] = n.params
-            _run_script(ctx, "net.py", dut, "save", json.dumps(record))
+            _save_net_http(dut, record)
             saved_count += 1
         except Exception:
             pass  # Continue trying to save other nets
@@ -1195,7 +1182,7 @@ class EditDetailsDialog(Screen):
         _set_dialog_busy(self, True)
 
         def work() -> dict:
-            _run_script(app.ctx, "net.py", app.dut, "save", json.dumps(net_data))
+            _save_net_http(app.dut, net_data)
             return {"saved": app._fetch_saved_records()}
 
         def done(out: object) -> None:
@@ -1244,9 +1231,10 @@ class ConfirmDelete(Screen):
         app.pop_screen()
         app.show_loading(f"Deleting net '{self.net.net}'...")
 
-        # Delete this net via net.py script (off the UI thread)
+        # Delete this net over the box HTTP API (off the UI thread)
         def work() -> dict:
-            _run_script(app.ctx, "net.py", app.dut, "delete", self.net.net, self.net.type)
+            _box_http(app.dut, "DELETE", f"/nets/{self.net.net}",
+                      params={"role": self.net.type})
             return {"saved": app._fetch_saved_records()}
 
         def done(out: object) -> None:
@@ -1332,9 +1320,17 @@ class RenameDialog(Screen):
         app.show_loading(f"Renaming net to '{new_name}'...")
         old_name = self.net.net
 
-        # Rename the net via net.py script (off the UI thread)
+        # Rename over the box HTTP API: PUT the stored record (fetched fresh
+        # so box-only fields like debug scripts survive) to the old name with
+        # the new name in the body (off the UI thread).
         def work() -> dict:
-            _run_script(app.ctx, "net.py", app.dut, "rename", old_name, new_name)
+            recs = _fetch_saved_nets_http(app.dut)
+            src = next((r for r in recs if r.get("name") == old_name), None)
+            if src is None:
+                raise RuntimeError(f"net '{old_name}' not found on the box")
+            record = {k: v for k, v in src.items() if k != "live_path"}
+            record["name"] = new_name
+            _save_net_http(app.dut, record, old_name=old_name)
             return {"saved": app._fetch_saved_records()}
 
         def done(out: object) -> None:
@@ -1949,7 +1945,7 @@ class AddScreen(Screen):
         _set_dialog_busy(self, True)
 
         def work() -> dict:
-            ok = _save_nets_batch(main.ctx, main.dut, nets_to_save, self.custom_names)
+            ok = _save_nets_batch(main.dut, nets_to_save, self.custom_names)
             return {"ok": ok, "saved": main._fetch_saved_records()}
 
         def done(out: object) -> None:
@@ -2053,9 +2049,9 @@ class ConfirmDeleteAll(Screen):
 
         _set_dialog_busy(self, True)
 
-        # Delete all saved nets via net.py script (off the UI thread)
+        # Delete all saved nets over the box HTTP API (off the UI thread)
         def work() -> dict:
-            _run_script(app.ctx, "net.py", app.dut, "delete-all")
+            _box_http(app.dut, "DELETE", "/nets")
             return {"saved": app._fetch_saved_records()}
 
         def done(out: object) -> None:
@@ -2078,7 +2074,7 @@ class AssignDeviceScreen(Screen):
     """Map a USB-serial cable to a catalog instrument (custom devices).
 
     Shows the box's unassigned USB-serial cables and current assignments
-    (from cli/impl/custom_devices.py list). Selecting a cable opens the
+    (from the box's /custom-devices/list). Selecting a cable opens the
     device-pick dialog; selecting an assignment offers removal. After
     either action the app re-scans instruments so the (un)assigned
     instrument appears in / disappears from the Add Nets flow.
@@ -2182,7 +2178,7 @@ class AssignDeviceScreen(Screen):
         self._set_busy(f"Assigning {device}...")
 
         def work() -> dict:
-            result = _run_custom_devices(app.ctx, app.dut, "assign", json.dumps(payload))
+            result = _run_custom_devices(app.dut, "assign", payload)
             if not isinstance(result, dict) or not result.get("address"):
                 return {"result": result}
             out: dict = {"result": result}
@@ -2191,15 +2187,19 @@ class AssignDeviceScreen(Screen):
                 # nets — re-sync the saved list.
                 out["saved"] = app._fetch_saved_records()
             out["instruments"] = app._fetch_instruments()
-            out["data"] = _run_custom_devices(app.ctx, app.dut, "list")
+            out["data"] = _run_custom_devices(app.dut, "list")
             return out
 
         def done(out: object) -> None:
             self._set_busy(None)
             result = out.get("result") if isinstance(out, dict) else None
             if not isinstance(result, dict) or not result.get("address"):
+                # The box reports validation failures (unplugged cable, ...)
+                # as {"error": ...}; show the reason when we have one.
+                reason = result.get("error") if isinstance(result, dict) else None
                 app.show_error(
-                    "Assignment failed — run 'lager nets assign' in a terminal for details."
+                    reason
+                    or "Assignment failed — run 'lager nets assign' in a terminal for details."
                 )
                 return
             msg = f"Assigned {result.get('instrument', device)}"
@@ -2225,7 +2225,7 @@ class AssignDeviceScreen(Screen):
         self._set_busy(f"Creating net '{name}'...")
 
         def work() -> dict:
-            ok = _save_nets_batch(app.ctx, app.dut, [net])
+            ok = _save_nets_batch(app.dut, [net])
             return {"ok": ok, "saved": app._fetch_saved_records()}
 
         def done(out: object) -> None:
@@ -2255,7 +2255,7 @@ class AssignDeviceScreen(Screen):
         self._set_busy("Removing assignment...")
 
         def work() -> dict:
-            result = _run_custom_devices(app.ctx, app.dut, "remove", json.dumps(ident))
+            result = _run_custom_devices(app.dut, "remove", ident)
             if not isinstance(result, dict) or not result.get("removed"):
                 return {"result": result}
             return {
@@ -2265,7 +2265,7 @@ class AssignDeviceScreen(Screen):
                 # placeholder list.
                 "saved": app._fetch_saved_records(),
                 "instruments": app._fetch_instruments(),
-                "data": _run_custom_devices(app.ctx, app.dut, "list"),
+                "data": _run_custom_devices(app.dut, "list"),
             }
 
         def done(out: object) -> None:
@@ -2970,7 +2970,7 @@ class NetApp(App):
     def run_box_job(self, work, on_done) -> None:
         """Run blocking box I/O on a worker thread, then update the UI.
 
-        Every box round-trip (run_python_internal) can take seconds; doing
+        Every box round-trip (HTTP to the box's :9000 API) can take seconds; doing
         one synchronously inside an event handler freezes the whole event
         loop — buttons stop responding until it returns, which reads as
         "I have to click multiple times". ``work`` runs on a thread and must
@@ -2999,13 +2999,12 @@ class NetApp(App):
             self.del_all_btn.display = False
 
     def _fetch_saved_records(self) -> list | None:
-        """Blocking ``net.py list`` round-trip; None on failure.
+        """Blocking ``GET /nets/list`` round-trip; None on failure.
 
         No widget access — safe to call from a ``run_box_job`` thread.
         """
         try:
-            output = _run_script(self.ctx, "net.py", self.dut, "list")
-            return _parse_backend_json_tui(output) if output.strip() else []
+            return _fetch_saved_nets_http(self.dut)
         except Exception:
             return None
 
@@ -3033,11 +3032,8 @@ class NetApp(App):
         No widget access — safe to call from a ``run_box_job`` thread.
         """
         try:
-            raw = _run_script(self.ctx, "query_instruments.py", self.dut)
-            # Duplicate-tolerant parse — same reason as everywhere else this
-            # file consumes backend stdout ("double execution" boxes).
-            return _parse_backend_json_tui(raw) if raw.strip() else []
-        except (json.JSONDecodeError, AttributeError):
+            return _fetch_instruments_http(self.dut)
+        except Exception:
             # Keep the previous scan rather than wiping the add list.
             return None
 
@@ -3126,7 +3122,7 @@ class NetApp(App):
             self.push_screen(AddScreen(self.nets, self.multi_labjack))
             return
         if event.button.id == "assign_btn":
-            # The custom_devices.py round-trip takes seconds — run it off the
+            # The /custom-devices/list round-trip takes seconds — run it off the
             # UI thread so the app keeps responding, and disable the button
             # so the click visibly registered.
             self.assign_btn.disabled = True
@@ -3144,7 +3140,7 @@ class NetApp(App):
                 self.push_screen(AssignDeviceScreen(data))
 
             self.run_box_job(
-                lambda: _run_custom_devices(self.ctx, self.dut, "list"),
+                lambda: _run_custom_devices(self.dut, "list"),
                 _open_assign,
             )
             return
@@ -3231,15 +3227,13 @@ class NetApp(App):
 def launch_tui(ctx: click.Context, dut: str) -> None:
     # Query connected instruments and saved nets
     try:
-        inst_result = _run_script(ctx, "query_instruments.py", dut)
-        inst_list = json.loads(inst_result) if inst_result.strip() else []
-    except (json.JSONDecodeError, AttributeError):
+        inst_list = _fetch_instruments_http(dut)
+    except Exception:
         inst_list = []
 
     try:
-        saved_result = _run_script(ctx, "net.py", dut, "list")
-        saved_list = _parse_backend_json_tui(saved_result) if saved_result.strip() else []
-    except (json.JSONDecodeError, AttributeError):
+        saved_list = _fetch_saved_nets_http(dut)
+    except Exception:
         saved_list = []
 
     # Sort instruments by their first channel to ensure consistent ordering

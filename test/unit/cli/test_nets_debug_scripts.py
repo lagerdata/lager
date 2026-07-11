@@ -203,7 +203,7 @@ def _make_db():
 
 @pytest.fixture
 def fake_box(monkeypatch):
-    """Replace ``_run_net_py`` + ``_resolve_box`` with an in-memory DB.
+    """Replace the :9000 HTTP helpers + ``_resolve_box`` with an in-memory DB.
 
     Returns a ``state`` dict so each test can inspect ``state['saves']``
     (chronological list of save payloads) and tweak ``state['db']`` for
@@ -211,23 +211,22 @@ def fake_box(monkeypatch):
     """
     state = {'db': _make_db(), 'saves': []}
 
-    def fake_run_net_py(ctx, box, *args):
-        if args[0] == 'list':
-            return json.dumps(state['db'])
-        if args[0] == 'save':
-            rec = json.loads(args[1])
-            state['saves'].append(rec)
-            for i, r in enumerate(state['db']):
-                if r.get('name') == rec.get('name'):
-                    state['db'][i] = rec
-                    break
-            return ''
-        raise AssertionError(f'unexpected args: {args!r}')
+    def fake_fetch_saved_nets(ctx, box):
+        return json.loads(json.dumps(state['db']))  # deep copy, like the wire
+
+    def fake_save_net_http(ctx, box, record, old_name=None):
+        rec = json.loads(json.dumps(record))
+        state['saves'].append(rec)
+        for i, r in enumerate(state['db']):
+            if r.get('name') == rec.get('name'):
+                state['db'][i] = rec
+                break
 
     def fake_resolve_box(ctx, box_opt=None):
         return 'TESTBOX'
 
-    monkeypatch.setattr(nets_mod, '_run_net_py', fake_run_net_py)
+    monkeypatch.setattr(nets_mod, '_fetch_saved_nets', fake_fetch_saved_nets)
+    monkeypatch.setattr(nets_mod, '_save_net_http', fake_save_net_http)
     monkeypatch.setattr(nets_mod, '_resolve_box', fake_resolve_box)
     return state
 

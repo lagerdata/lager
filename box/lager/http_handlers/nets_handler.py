@@ -21,7 +21,19 @@ def register_nets_routes(app: Flask) -> None:
 
     @app.route('/nets/list', methods=['GET'])
     def nets_list():
-        """Return full saved nets details."""
+        """Return full saved nets details.
+
+        Uses Net.list_saved() (same source the old `net.py list` exec used)
+        so uart nets carry the `live_path` annotation the CLI display relies
+        on; falls back to the raw file if the annotation pass fails.
+        """
+        try:
+            nets = Net.list_saved()
+            if not isinstance(nets, list):
+                nets = []
+            return jsonify(nets)
+        except Exception:
+            logger.exception("Net.list_saved failed; falling back to raw file")
         try:
             with open('/etc/lager/saved_nets.json', 'r') as f:
                 nets = json.load(f)

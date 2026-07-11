@@ -14,9 +14,9 @@ app — same approach as test_net_tui_uart_guard.py:
     cable has one, else port path) and forwards the optional baud override.
   * ``_cable_ident`` — the human label used by both the tree rows and the
     confirmation dialogs.
-  * ``_run_custom_devices`` — wraps the box backend; "no parseable stdout"
-    is the failure signal (the backend reports errors on stderr with a
-    non-zero exit, which ``_run_script`` swallows).
+  * ``_run_custom_devices`` — wraps the box's /custom-devices/* endpoints;
+    None (transport failure / non-JSON / 404 from an old box image) is the
+    failure signal, while box-reported errors come back as {"error": ...}.
 """
 
 from __future__ import annotations
@@ -73,35 +73,59 @@ class TestCableIdent:
 # _run_custom_devices                                                         #
 # --------------------------------------------------------------------------- #
 
+class _Resp:
+    """Minimal stand-in for a requests.Response."""
+
+    def __init__(self, status_code: int, body):
+        self.status_code = status_code
+        self._body = body
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("no JSON body")
+        return self._body
+
+
 class TestRunCustomDevices:
-    def _with_output(self, raw: str):
-        with patch.object(tui, "_run_script", return_value=raw):
-            return tui._run_custom_devices(None, "box", "list")
+    def _with_response(self, resp):
+        with patch("requests.get", return_value=resp), \
+             patch("requests.post", return_value=resp):
+            return tui._run_custom_devices("box", "list")
 
-    def test_parses_dict_output(self):
+    def test_parses_dict_response(self):
         data = {"catalog": [], "assignments": [], "cables": []}
-        assert self._with_output(json.dumps(data)) == data
+        assert self._with_response(_Resp(200, data)) == data
 
-    def test_empty_output_is_failure(self):
-        # Old box image (script missing) or backend error: stdout is empty.
-        assert self._with_output("") is None
-        assert self._with_output("   \n") is None
+    def test_missing_endpoint_is_failure(self):
+        # Old box image: /custom-devices/* doesn't exist yet → 404.
+        assert self._with_response(_Resp(404, {"error": "not found"})) is None
 
-    def test_garbage_output_is_failure(self):
-        assert self._with_output("Traceback (most recent call last): ...") is None
+    def test_non_json_response_is_failure(self):
+        assert self._with_response(_Resp(200, None)) is None
 
-    def test_duplicated_json_objects_are_tolerated(self):
-        # The box backend can double-execute and emit the payload twice;
-        # _parse_backend_json_tui's dedup handles it.
-        data = {"removed": True}
-        raw = json.dumps(data) + json.dumps(data)
-        assert self._with_output(raw) == data
+    def test_transport_failure_is_none(self):
+        import requests
+        with patch("requests.get", side_effect=requests.ConnectionError("down")):
+            assert tui._run_custom_devices("box", "list") is None
 
-    def test_forwards_args_to_backend(self):
-        with patch.object(tui, "_run_script", return_value="{}") as run:
-            tui._run_custom_devices(None, "mybox", "assign", '{"x":1}')
-        run.assert_called_once_with(None, "custom_devices.py", "mybox",
-                                    "assign", '{"x":1}')
+    def test_box_error_dict_is_passed_through(self):
+        # 400 + {"error": ...} (AssignmentError on the box) comes back as-is
+        # so callers can surface the reason.
+        err = {"error": "No USB-serial cable with serial number X"}
+        with patch("requests.post", return_value=_Resp(400, err)):
+            assert tui._run_custom_devices("box", "assign", {"x": 1}) == err
+
+    def test_list_gets_and_actions_post_payload(self):
+        with patch("requests.get", return_value=_Resp(200, {})) as get:
+            tui._run_custom_devices("mybox", "list")
+        url = get.call_args[0][0]
+        assert url.endswith("/custom-devices/list") and "mybox" in url
+
+        with patch("requests.post", return_value=_Resp(200, {})) as post:
+            tui._run_custom_devices("mybox", "assign", {"x": 1})
+        url = post.call_args[0][0]
+        assert url.endswith("/custom-devices/assign")
+        assert post.call_args[1]["json"] == {"x": 1}
 
 
 # --------------------------------------------------------------------------- #
@@ -258,11 +282,15 @@ class TestStartupDoesNotBlock:
         # launch_tui already fetched instruments and saved nets; re-fetching
         # at mount blocked the freshly painted UI for another round-trip.
         async def main():
-            with patch.object(tui, "_run_script") as rs:
+            with patch("requests.request") as req, \
+                 patch("requests.get") as get, \
+                 patch("requests.post") as post:
                 app = _make_app()
                 async with app.run_test(size=(100, 40)) as pilot:
                     await pilot.pause()
-            assert rs.call_count == 0
+            assert req.call_count == 0
+            assert get.call_count == 0
+            assert post.call_count == 0
         asyncio.run(main())
 
 
@@ -271,7 +299,7 @@ class TestAssignButtonOffloadsBoxCall:
         gate = threading.Event()
         seen: dict = {}
 
-        def fake_list(ctx, dut, *args):
+        def fake_list(dut, action, payload=None):
             seen["thread"] = threading.current_thread()
             gate.wait(timeout=2)
             return DEVICES_DATA
@@ -320,9 +348,9 @@ class TestAssignActionsOffloadBoxCalls:
     def test_do_assign_runs_in_worker_and_offers_create_net(self):
         seen: dict = {}
 
-        def fake_devices(ctx, dut, *args):
+        def fake_devices(dut, action, payload=None):
             seen.setdefault("threads", []).append(threading.current_thread())
-            if args[0] == "assign":
+            if action == "assign":
                 return {"instrument": "Rigol_DP711", "address": "serial://x"}
             return DEVICES_DATA
 
@@ -353,8 +381,8 @@ class TestAssignActionsOffloadBoxCalls:
     def test_do_unassign_runs_in_worker_and_rebuilds(self):
         assignment = {"instrument": "Rigol_DP711", "serial": "00000006"}
 
-        def fake_devices(ctx, dut, *args):
-            if args[0] == "remove":
+        def fake_devices(dut, action, payload=None):
+            if action == "remove":
                 return {"removed": True}
             return DEVICES_DATA
 
@@ -424,31 +452,39 @@ class TestRunPythonOffMainThread:
 
 class TestSavedNetFlowsOffloadBoxCalls:
     """The pre-0.24 flows (save details, delete, rename, batch add,
-    delete-all) used to run their net.py round-trips synchronously inside
+    delete-all) used to run their box round-trips synchronously inside
     button handlers — same freeze as the assign regression. They now go
     through run_box_job too."""
+
+    RECORD = {"name": "supply1", "role": "power-supply",
+              "instrument": "Rigol_DP832", "pin": "1",
+              "address": "USB0::0x1AB1::INSTR"}
 
     @staticmethod
     def _saved_net():
         return tui.Net("Rigol_DP832", "1", "power-supply", "supply1",
                        "USB0::0x1AB1::INSTR", saved=True)
 
-    @staticmethod
-    def _fake_run_script(record=None):
-        """net.py stub: mutations return nothing, list returns ``record``."""
-        listing = json.dumps([record] if record else [])
+    @classmethod
+    def _fake_box(cls, records=None):
+        """In-memory :9000 API; every request must land on a worker thread."""
+        from test.unit.cli.nets_http_fake import FakeBoxHTTP
 
-        def fake(ctx, script, dut, *args):
-            assert threading.current_thread() is not threading.main_thread()
-            return listing if args and args[0] == "list" else ""
-        return fake
+        class ThreadCheckedBox(FakeBoxHTTP):
+            def request(self, method, url, **kwargs):
+                assert threading.current_thread() is not threading.main_thread()
+                return super().request(method, url, **kwargs)
+
+        box = ThreadCheckedBox()
+        box.saved_nets = [dict(r) for r in (records if records is not None
+                                            else [cls.RECORD])]
+        return box
 
     def test_delete_all_runs_in_worker(self):
         async def main():
             app = tui.NetApp(ctx=None, dut="box", inst_list=[],
                              nets=[self._saved_net()])
-            with patch.object(tui, "_run_script",
-                              side_effect=self._fake_run_script()):
+            with patch("requests.request", self._fake_box().request):
                 async with app.run_test(size=(100, 40)) as pilot:
                     await pilot.pause()
                     screen = tui.ConfirmDeleteAll()
@@ -468,8 +504,7 @@ class TestSavedNetFlowsOffloadBoxCalls:
 
         async def main():
             app = tui.NetApp(ctx=None, dut="box", inst_list=[], nets=[net])
-            with patch.object(tui, "_run_script",
-                              side_effect=self._fake_run_script()):
+            with patch("requests.request", self._fake_box().request):
                 async with app.run_test(size=(100, 40)) as pilot:
                     await pilot.pause()
                     screen = tui.ConfirmDelete(net)
@@ -488,14 +523,11 @@ class TestSavedNetFlowsOffloadBoxCalls:
 
     def test_rename_runs_in_worker(self):
         net = self._saved_net()
-        renamed = {"name": "main_supply", "role": "power-supply",
-                   "instrument": "Rigol_DP832", "pin": "1",
-                   "address": "USB0::0x1AB1::INSTR"}
 
         async def main():
             app = tui.NetApp(ctx=None, dut="box", inst_list=[], nets=[net])
-            with patch.object(tui, "_run_script",
-                              side_effect=self._fake_run_script(renamed)):
+            box = self._fake_box()
+            with patch("requests.request", box.request):
                 async with app.run_test(size=(100, 40)) as pilot:
                     await pilot.pause()
                     screen = tui.RenameDialog(net)
@@ -517,8 +549,7 @@ class TestSavedNetFlowsOffloadBoxCalls:
 
         async def main():
             app = tui.NetApp(ctx=None, dut="box", inst_list=[], nets=[net])
-            with patch.object(tui, "_run_script",
-                              side_effect=self._fake_run_script()):
+            with patch("requests.request", self._fake_box().request):
                 async with app.run_test(size=(100, 40)) as pilot:
                     await pilot.pause()
                     screen = tui.EditDetailsDialog(net)
