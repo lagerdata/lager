@@ -9,6 +9,8 @@ on DAC nets connected to LabJack devices.
 """
 from __future__ import annotations
 
+import json
+
 import click
 
 from ...context import get_default_net
@@ -28,9 +30,11 @@ DAC_ROLE = "dac"
 @click.command(name="dac", cls=NetCommand, help="Set or read DAC output voltage")
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit a machine-readable JSON object instead of formatted text")
 @click.argument("netname", required=False, metavar="[NET_NAME]")
 @click.argument("voltage", required=False)
-def dac(ctx, box, netname, voltage):
+def dac(ctx, box, netname, voltage, as_json):
     """Set or read voltage from a DAC (digital-to-analog converter) net.
 
     If no voltage is provided, reads the current DAC value.
@@ -74,13 +78,29 @@ def dac(ctx, box, netname, voltage):
             ctx.exit(1)
 
     if voltage is not None:
-        post_net_command(ctx, box_ip, netname, "set", role="dac", value=voltage_float)
+        result = post_net_command(ctx, box_ip, netname, "set", role="dac",
+                                  quiet=True, value=voltage_float)
+        value = float(result.get("value"))
+        if as_json:
+            click.echo(json.dumps({
+                "netname": netname, "action": "set", "voltage": value,
+            }))
+        else:
+            click.secho(f"DAC '{netname}' set to {value:.6f} V", fg="green")
     else:
-        post_net_command(ctx, box_ip, netname, "read", role="dac")
+        result = post_net_command(ctx, box_ip, netname, "read", role="dac", quiet=True)
+        value = float(result.get("value"))
+        if as_json:
+            click.echo(json.dumps({
+                "netname": netname, "action": "read", "voltage": value,
+            }))
+        else:
+            click.secho(f"DAC '{netname}': {value:.6f} V", fg="green")
 
 
 dac.net_examples = [
     "lager dac dac1 3.3 --box <BOX>      (set 3.3 V)",
     "lager dac dac1 --box <BOX>          (read current value)",
+    "lager dac dac1 --json --box <BOX>   (JSON read)",
     "lager dac --box <BOX>               (list DAC nets)",
 ]

@@ -9,6 +9,8 @@ on LabJack devices.
 """
 from __future__ import annotations
 
+import json
+
 import click
 
 from ...context import get_default_net
@@ -28,8 +30,10 @@ ADC_ROLE = "adc"
 @click.command(name="adc", cls=NetCommand, help="Read voltage from ADC net")
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit a machine-readable JSON object instead of formatted text")
 @click.argument("netname", required=False, metavar="[NET_NAME]")
-def adc(ctx, box, netname):
+def adc(ctx, box, netname, as_json):
     """Read voltage from an ADC (analog-to-digital converter) net.
 
     If no netname is provided, lists available ADC nets.
@@ -50,10 +54,17 @@ def adc(ctx, box, netname):
     if validate_net_exists(ctx, box_ip, netname, ADC_ROLE) is None:
         return
 
-    post_net_command(ctx, box_ip, netname, "read", role="adc")
+    result = post_net_command(ctx, box_ip, netname, "read", role="adc", quiet=True)
+    voltage = float(result.get("value"))
+
+    if as_json:
+        click.echo(json.dumps({"netname": netname, "voltage": voltage}))
+    else:
+        click.secho(f"ADC '{netname}': {voltage:.6f} V", fg="green")
 
 
 adc.net_examples = [
     "lager adc adc1 --box <BOX>",
+    "lager adc adc1 --json --box <BOX>",
     "lager adc --box <BOX>          (list ADC nets)",
 ]

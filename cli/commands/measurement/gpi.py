@@ -9,6 +9,8 @@ This module provides the `lager gpi` command for reading GPIO input state
 """
 from __future__ import annotations
 
+import json
+
 import click
 
 from ...context import get_default_net
@@ -25,6 +27,10 @@ from ...core.net_helpers import (
 GPIO_ROLE = "gpio"
 
 
+def _level_label(value: int) -> str:
+    return "HIGH" if value == 1 else "LOW"
+
+
 @click.command(name="gpi", cls=NetCommand, help="Read GPIO input state (0 or 1)")
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
@@ -39,8 +45,11 @@ GPIO_ROLE = "gpio"
 @click.option("--scan-rate", type=int, default=None, help="LabJack streaming sample rate in Hz (advanced)")
 @click.option("--scans-per-read", type=int, default=None, help="LabJack scans per read batch (advanced)")
 @click.option("--poll-interval", type=float, default=None, help="Poll interval in seconds for non-streaming drivers (advanced)")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit a machine-readable JSON object instead of formatted text")
 @click.argument("netname", required=False, metavar="[NET_NAME]")
-def gpi(ctx, box, wait_for, timeout, scan_rate, scans_per_read, poll_interval, netname):
+def gpi(ctx, box, wait_for, timeout, scan_rate, scans_per_read, poll_interval,
+        netname, as_json):
     """Read the state of a GPIO input net.
 
     Returns 0 (low) or 1 (high).
@@ -79,14 +88,37 @@ def gpi(ctx, box, wait_for, timeout, scan_rate, scans_per_read, poll_interval, n
         # wait times out), so the HTTP client budget must exceed --timeout; with
         # no --timeout the wait is unbounded, matching the old :5000 behavior.
         http_timeout = (timeout + 20.0) if timeout is not None else None
-        post_net_command(ctx, box_ip, netname, "wait_for_level", role="gpio",
-                         http_timeout=http_timeout, **wait_params)
+        result = post_net_command(
+            ctx, box_ip, netname, "wait_for_level", role="gpio",
+            quiet=True, http_timeout=http_timeout, **wait_params)
+        elapsed = float(result.get("value"))
+        if as_json:
+            click.echo(json.dumps({
+                "netname": netname, "level": wait_for, "elapsed_s": elapsed,
+            }))
+        else:
+            click.secho(
+                f"GPIO '{netname}' reached level {wait_for} in {elapsed:.4f}s",
+                fg="green",
+            )
     else:
-        post_net_command(ctx, box_ip, netname, "input", role="gpio")
+        result = post_net_command(ctx, box_ip, netname, "input", role="gpio",
+                                  quiet=True)
+        value = int(result.get("value"))
+        if as_json:
+            click.echo(json.dumps({
+                "netname": netname, "value": value, "level": _level_label(value),
+            }))
+        else:
+            click.secho(
+                f"GPIO '{netname}': {_level_label(value)} ({value})",
+                fg="green",
+            )
 
 
 gpi.net_examples = [
     "lager gpi gpi1 --box <BOX>",
     "lager gpi gpi1 --wait-for high --timeout 5 --box <BOX>",
+    "lager gpi gpi1 --json --box <BOX>",
     "lager gpi --box <BOX>          (list GPIO nets)",
 ]

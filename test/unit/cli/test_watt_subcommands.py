@@ -133,6 +133,18 @@ class TestSubcommandActions:
         _, calls, _ = _run(["NET1", "all", "-d", "60", "--box", "b"])
         assert calls[0]["http_timeout"] == 80.0
 
+    def test_power_prints_role_label(self):
+        result, calls, _ = _run(["NET1", "power", "--box", "b"])
+        assert calls[0]["quiet"] is True
+        assert "Power 'NET1': 0.5 W" in result.output
+
+    def test_all_prints_multiline_measurements(self):
+        result, _, _ = _run(["NET1", "all", "--box", "b"])
+        assert "Measurements 'NET1'" in result.output
+        assert "Current:" in result.output
+        assert "Voltage:" in result.output
+        assert "Power:" in result.output
+
 
 # --------------------------------------------------------------------------- #
 # Backward-compatible default behaviors                                       #

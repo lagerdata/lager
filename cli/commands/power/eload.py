@@ -14,6 +14,8 @@ Usage:
 """
 from __future__ import annotations
 
+import json
+
 import click
 
 from ...core.net_group import NetGroup
@@ -37,6 +39,13 @@ ELOAD_LIMITS = {
     "cv": {"min": 0, "max": 150, "unit": "V", "name": "voltage"},     # Constant Voltage
     "cr": {"min": 0.03, "max": 10000, "unit": "ohms", "name": "resistance"},  # Constant Resistance (min ~30mOhm)
     "cp": {"min": 0, "max": 200, "unit": "W", "name": "power"},       # Constant Power
+}
+
+_MODE_META = {
+    "cc": ("CC", "current", "A"),
+    "cv": ("CV", "voltage", "V"),
+    "cr": ("CR", "resistance", "Ω"),
+    "cp": ("CP", "power", "W"),
 }
 
 
@@ -67,7 +76,51 @@ def _validate_eload_value(ctx, mode, value):
         ctx.exit(1)
 
 
-def _run_eload(ctx, box_ip, netname, mode, value):
+def _format_mode_result(mode: str, value: float, *, is_set: bool) -> str:
+    """Human-readable one-liner for cc/cv/cr/cp set/read (matches old impl)."""
+    mode_name, field, unit = _MODE_META[mode]
+    label = field.title()
+    parts = [f"Mode: {mode_name}"]
+    if is_set or mode_name:
+        parts.append(f"{label}: {value} {unit}")
+    return ", ".join(parts)
+
+
+def _print_mode_result(mode: str, value: float, *, is_set: bool) -> None:
+    click.secho(_format_mode_result(mode, value, is_set=is_set), fg="green")
+
+
+def _print_eload_state(state: dict) -> None:
+    """Multi-line state block matching rigol_dl3021.print_state()."""
+    input_state = "Enabled" if state.get("input_enabled") else "Disabled"
+    mode = state.get("mode", "?")
+
+    click.secho("Electronic Load State:", fg="green")
+    click.secho(f"  Mode: {mode}", fg="green")
+    click.secho(f"  Input: {input_state}", fg="green")
+    click.secho(
+        f"  Measured Voltage: {state['measured_voltage']:.3f} V", fg="green")
+    click.secho(
+        f"  Measured Current: {state['measured_current']:.3f} A", fg="green")
+    click.secho(
+        f"  Measured Power: {state['measured_power']:.3f} W", fg="green")
+
+    if mode == "CC" and "current_setting" in state:
+        click.secho(
+            f"  Current Setting: {state['current_setting']:.3f} A", fg="green")
+    elif mode == "CV" and "voltage_setting" in state:
+        click.secho(
+            f"  Voltage Setting: {state['voltage_setting']:.3f} V", fg="green")
+    elif mode == "CR" and "resistance_setting" in state:
+        click.secho(
+            f"  Resistance Setting: {state['resistance_setting']:.3f} Ω",
+            fg="green")
+    elif mode in ("CW", "CP") and "power_setting" in state:
+        click.secho(
+            f"  Power Setting: {state['power_setting']:.3f} W", fg="green")
+
+
+def _run_eload(ctx, box_ip, netname, mode, value, as_json=False):
     """Drive an e-load mode via the box's :9000 /net/command endpoint.
 
     ``value`` present -> set that mode's setpoint; absent -> read it back.
@@ -75,7 +128,20 @@ def _run_eload(ctx, box_ip, netname, mode, value):
     params = {}
     if value is not None:
         params["value"] = value
-    post_net_command(ctx, box_ip, netname, mode, role="eload", **params)
+    result = post_net_command(ctx, box_ip, netname, mode, role="eload",
+                              quiet=True, **params)
+    setpoint = float(result.get("value"))
+
+    if as_json:
+        mode_name, field, _ = _MODE_META[mode]
+        click.echo(json.dumps({
+            "netname": netname,
+            "mode": mode_name,
+            field: setpoint,
+            "action": "set" if value is not None else "read",
+        }))
+    else:
+        _print_mode_result(mode, setpoint, is_set=value is not None)
 
 
 # ---------- CLI ----------
@@ -103,63 +169,80 @@ eload.net_examples = [
     "lager eload eload1 cc 0.5 --box <BOX>",
     "lager eload eload1 cv 3.3 --box <BOX>",
     "lager eload eload1 state --box <BOX>",
+    "lager eload eload1 cc 0.5 --json --box <BOX>",
     "lager eload --box <BOX>                (list electronic load nets)",
 ]
 
 
+def _mode_options(func):
+    func = click.option("--json", "as_json", is_flag=True, default=False,
+                        help="Emit a machine-readable JSON object instead of formatted text")(func)
+    func = click.option("--box", required=False, help="Lagerbox name or IP")(func)
+    return func
+
+
 @eload.command()
 @click.argument('value', required=False, type=float)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@_mode_options
 @click.pass_context
-def cc(ctx, value, box):
+def cc(ctx, value, box, as_json):
     """Set (or read) constant current mode in amps (A)"""
     _validate_eload_value(ctx, "cc", value)
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "eload")
-    _run_eload(ctx, resolved_box, netname, "cc", value)
+    _run_eload(ctx, resolved_box, netname, "cc", value, as_json)
 
 
 @eload.command()
 @click.argument('value', required=False, type=float)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@_mode_options
 @click.pass_context
-def cv(ctx, value, box):
+def cv(ctx, value, box, as_json):
     """Set (or read) constant voltage mode in volts (V)"""
     _validate_eload_value(ctx, "cv", value)
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "eload")
-    _run_eload(ctx, resolved_box, netname, "cv", value)
+    _run_eload(ctx, resolved_box, netname, "cv", value, as_json)
 
 
 @eload.command()
 @click.argument('value', required=False, type=float)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@_mode_options
 @click.pass_context
-def cr(ctx, value, box):
+def cr(ctx, value, box, as_json):
     """Set (or read) constant resistance mode in ohms"""
     _validate_eload_value(ctx, "cr", value)
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "eload")
-    _run_eload(ctx, resolved_box, netname, "cr", value)
+    _run_eload(ctx, resolved_box, netname, "cr", value, as_json)
 
 
 @eload.command()
 @click.argument('value', required=False, type=float)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@_mode_options
 @click.pass_context
-def cp(ctx, value, box):
+def cp(ctx, value, box, as_json):
     """Set (or read) constant power mode in watts (W)"""
     _validate_eload_value(ctx, "cp", value)
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "eload")
-    _run_eload(ctx, resolved_box, netname, "cp", value)
+    _run_eload(ctx, resolved_box, netname, "cp", value, as_json)
 
 
 @eload.command()
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit a machine-readable JSON object instead of formatted text")
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.pass_context
-def state(ctx, box):
+def state(ctx, box, as_json):
     """Display electronic load state"""
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "eload")
-    post_net_command(ctx, resolved_box, netname, "state", role="eload")
+    result = post_net_command(ctx, resolved_box, netname, "state",
+                              role="eload", quiet=True)
+    load_state = result.get("value") or {}
+
+    if as_json:
+        click.echo(json.dumps({"netname": netname, **load_state}))
+    else:
+        _print_eload_state(load_state)
