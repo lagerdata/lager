@@ -184,10 +184,10 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     pip3 install brainstem --upgrade
 
 # Copy Python lager package modules (grouped structure)
-# Copy Python files at root level
-COPY __init__.py actuate.py box_http_server.py breakpoint.py cache.py constants.py core.py \
-     exceptions.py hardware_service.py lock_state.py log.py rotation.py \
-     /app/lager/lager/
+# All root-level .py modules (box_http_server, hardware_service, *_hs
+# adapters, ble shim, …). A glob avoids per-file omission bugs when new
+# top-level modules land (e.g. gpio_hs in the :9000 migration).
+COPY *.py /app/lager/lager/
 
 # Copy core subpackages
 COPY binaries /app/lager/lager/binaries
@@ -226,13 +226,18 @@ COPY automation /app/lager/lager/automation
 
 COPY run.sh /app
 
-# Smoke-check: api_reference must successfully introspect every driver in
-# _DRIVER_CLASSES. If a driver is renamed/moved without updating
-# _DRIVER_CLASSES, this fails the build instead of silently falling back
-# to stale hand-written method docs at runtime.
+# Smoke-check: (1) every root-level module hardware_service resolves at runtime
+# must import — the *_hs adapters and the lager.ble public-API shim were
+# historically omitted from the COPY list and only failed on-box; (2)
+# api_reference must successfully introspect every driver in _DRIVER_CLASSES.
+# If a driver is renamed/moved without updating _DRIVER_CLASSES, this fails
+# the build instead of silently falling back to stale docs at runtime.
 RUN cd /app/lager && python3 -c "\
-import logging, sys; \
+import importlib, logging, sys; \
 logging.basicConfig(level=logging.WARNING); \
+[importlib.import_module(f'lager.{m}') for m in \
+ ('adc_hs','dac_hs','gpio_hs','thermocouple_hs','watt_hs','energy_hs', \
+  'spi_hs','i2c_hs','ble')]; \
 from lager.mcp.data import api_reference; \
 missing = [nt for nt, dotted in api_reference._DRIVER_CLASSES.items() \
            if 'source_module' not in api_reference.API_REFERENCE.get(nt, {})]; \
