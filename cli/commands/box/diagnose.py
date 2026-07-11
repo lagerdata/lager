@@ -12,8 +12,8 @@ pyvisa probes, and hw_service introspection by hand to root-cause one
 EBUSY incident. This command collapses that workflow.
 
 Endpoints used (all introduced in 0.20.0):
-  - GET http://<box>:5000/diagnose/usb?address=...      (USB enum + lsof + dmesg + lsmod)
-  - GET http://<box>:5000/diagnose/visa?address=...     (bare pyvisa *IDN?)
+  - GET http://<box>:9000/diagnose/usb?address=...      (USB enum + lsof + dmesg + lsmod)
+  - GET http://<box>:9000/diagnose/visa?address=...     (bare pyvisa *IDN?)
   - GET http://<box>:8080/diagnose/dispatcher?address=...  (hw_service in-process cache)
 
 Older boxes return 404 per endpoint; the CLI falls back per-section and
@@ -50,19 +50,19 @@ def _fetch_net_info(
     the box. If requested_type != 'auto' and matches the net's role, use
     that — otherwise the returned role wins."""
     try:
-        r = requests.get(f'http://{box_ip}:5000/nets/list', timeout=5)
+        r = requests.get(f'http://{box_ip}:9000/nets/list', timeout=5)
         r.raise_for_status()
         nets = r.json()
     except requests.exceptions.ConnectionError:
         click.echo(click.style(
-            f'Box {display_name!r} unreachable at {box_ip}:5000 (connection refused). '
+            f'Box {display_name!r} unreachable at {box_ip}:9000 (connection refused). '
             f'The lager container may be stopped. Check with:\n'
             f'  lager ssh --box {display_name} -- "sudo docker ps"',
             fg='red'), err=True)
         return None, None
     except requests.exceptions.Timeout:
         click.echo(click.style(
-            f'Box {display_name!r} did not respond within 5s at {box_ip}:5000. '
+            f'Box {display_name!r} did not respond within 5s at {box_ip}:9000. '
             f'Check network/Tailscale connectivity, then `lager hello --box {display_name}`.',
             fg='red'), err=True)
         return None, None
@@ -444,9 +444,8 @@ def diagnose(ctx, net, box, net_type):
 
     # Fire the three endpoints in parallel.
     # Port mapping inside the box container:
-    #   5000 — lager.python.service (legacy /cli-version, /status, /nets/list)
     #   8080 — hardware_service.py  (/invoke, /diagnose/dispatcher)
-    #   9000 — box_http_server.py   (Flask+SocketIO; /diagnose/usb, /diagnose/visa)
+    #   9000 — box_http_server.py   (Flask+SocketIO; /diagnose/usb, /diagnose/visa, /nets/list)
     urls = {
         'usb': f'http://{resolved_box}:9000/diagnose/usb?address={address}',
         'visa': f'http://{resolved_box}:9000/diagnose/visa?address={address}',

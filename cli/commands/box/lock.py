@@ -35,7 +35,7 @@ def lock(ctx, box, lock_user):
         # lock immune to the new heartbeat-driven auto-reap that ephemeral
         # `lager python` locks participate in.
         resp = requests.post(
-            f'http://{ip}:5000/lock',
+            f'http://{ip}:9000/lock',
             json={
                 'user': user,
                 'holder_type': 'user',
@@ -78,7 +78,7 @@ def unlock(ctx, box, force):
 
     try:
         resp = requests.post(
-            f'http://{ip}:5000/unlock',
+            f'http://{ip}:9000/unlock',
             json={'user': user, 'force': force},
             timeout=5,
         )

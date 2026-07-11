@@ -452,7 +452,7 @@ def _check_box_lock(ip, box_name):
     import requests
 
     try:
-        resp = requests.get(f'http://{ip}:5000/lock', timeout=3)
+        resp = requests.get(f'http://{ip}:9000/lock', timeout=3)
         if resp.status_code == 200:
             data = resp.json()
             if data.get('locked'):
@@ -556,7 +556,9 @@ def default_heartbeat_interval():
 
 
 def _lock_url(ip, suffix=''):
-    return f'http://{ip}:5000/lock{suffix}'
+    # Lock state is shared box-wide; both the :5000 and :9000 servers expose
+    # it via lager.lock_state. The CLI talks to :9000 (the primary HTTP API).
+    return f'http://{ip}:9000/lock{suffix}'
 
 
 def acquire_box_lock(
@@ -711,7 +713,7 @@ def release_box_lock(ip, holder, *, quiet=True):
 
     try:
         resp = requests.post(
-            f'http://{ip}:5000/unlock',
+            f'http://{ip}:9000/unlock',
             json={'user': holder},
             timeout=5,
         )

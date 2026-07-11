@@ -58,23 +58,28 @@ def resolve_version_ref(target_version):
 
 
 def wait_for_box_ready(box_ip, *, timeout_s=60, initial_delay_s=2):
-    """Poll http://<box_ip>:5000/health until 200 or timeout.
+    """Poll the box health endpoints until both services answer or timeout.
 
-    Returns True on ready, False on timeout. The Python service on port 5000
-    (the on-box script-execution service) is the last to come up after the
-    container restarts, so polling it is more conservative than polling the
-    Flask server on 9000.
+    Returns True on ready, False on timeout. Requires both:
+      - :9000/health — box_http_server, the primary HTTP API the CLI uses
+      - :5000/health — lager.python.service, still used by `lager python`
+        and historically the last service to come up after a restart
+    so a successful update means the whole box is usable, not just one port.
     """
     deadline = time.monotonic() + timeout_s
     time.sleep(initial_delay_s)
     backoff = 1.0
+    pending = {9000, 5000}
     while time.monotonic() < deadline:
-        try:
-            r = requests.get(f'http://{box_ip}:5000/health', timeout=3)
-            if r.status_code == 200:
-                return True
-        except requests.exceptions.RequestException:
-            pass
+        for port in sorted(pending):
+            try:
+                r = requests.get(f'http://{box_ip}:{port}/health', timeout=3)
+                if r.status_code == 200:
+                    pending.discard(port)
+            except requests.exceptions.RequestException:
+                pass
+        if not pending:
+            return True
         time.sleep(backoff)
         backoff = min(backoff * 1.5, 5.0)
     return False
@@ -1993,11 +1998,11 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         ctx.exit(1)
 
     # Wait for the on-box services to become reachable. Previously this was a
-    # blind `time.sleep(5)`; on slower boxes the Python service on port 5000
-    # could still be initializing past that window, so subsequent steps would
-    # race against an unready service and the user would re-run `lager update`
-    # thinking the previous one didn't take. Poll /health (defined in
-    # box/lager/python/service.py) with a 60s ceiling.
+    # blind `time.sleep(5)`; on slower boxes the on-box services could still be
+    # initializing past that window, so subsequent steps would race against an
+    # unready service and the user would re-run `lager update` thinking the
+    # previous one didn't take. Poll /health on both :9000 and :5000 with a
+    # 60s ceiling.
     if progress:
         progress.update("Waiting for services...")
     log('Waiting for box services...', nl=False)
@@ -2006,7 +2011,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             progress.finish(success=False)
         log_status('FAILED', 'red')
         log_error('Error: Box services did not respond within 60s after restart')
-        click.echo(f'The lager container is running but http://{resolved_box}:5000/health did not return 200.', err=True)
+        click.echo(f'The lager container is running but /health on {resolved_box} (ports 9000/5000) did not return 200.', err=True)
         click.echo('Investigate with:', err=True)
         click.echo(f'  ssh {ssh_host} "docker logs lager --tail 50"', err=True)
         click.echo(f'  ssh {ssh_host} "docker ps"', err=True)

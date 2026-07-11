@@ -7,19 +7,13 @@
     Instruments commands
 """
 import click
-import json
 import shutil
+import requests
 from texttable import Texttable
-from ...context import get_impl_path
-from ..development.python import run_python_internal
-from ...context import get_default_box
 from ...box_storage import resolve_and_validate_box
 from ...core.net_group import BoxCommand
 from collections import defaultdict
 from ...sort_utils import natural_sort_key
-
-import io
-from contextlib import redirect_stdout
 
 _MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port"}
 
@@ -31,53 +25,36 @@ def instruments(ctx, box: str | None) -> None:
     # Resolve and validate the box name
     resolved_box = resolve_and_validate_box(ctx, box)
 
-    buf = io.StringIO()
+    # The box HTTP server scans USB in-process (same records the old
+    # query_instruments.py exec printed: name/address/channels/tty_path).
     try:
-        with redirect_stdout(buf):
-            run_python_internal(
-                ctx,
-                get_impl_path("query_instruments.py"),
-                resolved_box,
-                env={},
-                passenv=(),
-                kill=False,
-                download=(),
-                allow_overwrite=False,
-                signum="SIGTERM",
-                timeout=30,  # 30 second timeout
-                detach=False,
-                port=(),
-                org=None,
-                args=(),
-            )
-    except SystemExit as e:
-        # Re-raise non-zero exits (actual errors)
-        if e.code != 0:
-            raw_output = buf.getvalue()
-            if raw_output:
-                click.secho("Error querying instruments:", fg="red", err=True)
-                click.echo(raw_output, err=True)
-            raise
+        resp = requests.get(
+            f'http://{resolved_box}:9000/instruments/list', timeout=30,
+        )
+    except requests.exceptions.RequestException as e:
+        click.secho(f"Error querying instruments: {e}", fg="red", err=True)
+        click.secho(
+            "Check box connectivity with 'lager hello'.", fg="yellow", err=True,
+        )
+        ctx.exit(1)
+        return
 
-    raw_output = buf.getvalue()
-    try:
-        instruments_data = json.loads(raw_output or "[]")
-    except json.JSONDecodeError:
+    instruments_data = None
+    if resp.status_code == 200:
+        try:
+            instruments_data = resp.json()
+        except ValueError:
+            instruments_data = None
+
+    if not isinstance(instruments_data, list):
         click.secho(
             "Error: Could not parse instrument data from box",
             fg="red",
             err=True,
         )
-        if not raw_output:
-            click.secho(
-                "No output received from backend. Check box connectivity with 'lager hello'.",
-                fg="yellow",
-                err=True,
-            )
-        else:
-            click.secho(f"Raw output: {repr(raw_output[:500])}", fg="yellow", err=True)
-            if len(raw_output) > 500:
-                click.secho("(output truncated)", fg="yellow", err=True)
+        detail = resp.text or ""
+        if detail:
+            click.secho(f"Box response (HTTP {resp.status_code}): {detail[:500]}", fg="yellow", err=True)
         ctx.exit(1)
 
     if not instruments_data:

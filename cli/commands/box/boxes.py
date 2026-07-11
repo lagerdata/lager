@@ -15,7 +15,7 @@ from ...core.group_usage import LagerGroup
 from ...sort_utils import natural_sort_key
 
 
-def _list_boxes_live(port=5000, timeout=5):
+def _list_boxes_live(port=9000, timeout=5):
     """Query all boxes for their versions and display status table."""
     import requests
     import sys
@@ -75,14 +75,19 @@ def _list_boxes_live(port=5000, timeout=5):
             pass
 
         try:
-            url = f'http://{ip}:{port}/cli-version'
+            # /status on :9000 reports the box version (from /etc/lager/version).
+            # It predates the newer capability fields, so even older box images
+            # answer it — unlike a brand-new endpoint would.
+            url = f'http://{ip}:{port}/status'
             headers = {'Cache-Control': 'no-cache', 'Pragma': 'no-cache'}
             response = requests.get(url, timeout=timeout, headers=headers)
 
             if response.status_code == 200:
                 try:
                     data = response.json()
-                    box_version = data.get('box_version')
+                    box_version = data.get('version') or data.get('box_version')
+                    if box_version == 'unknown':
+                        box_version = None
 
                     if box_version:
                         update_box_version(name, box_version)
