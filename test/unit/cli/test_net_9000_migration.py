@@ -535,6 +535,12 @@ class TestNo5000Fallback:
         "cli.commands.communication.i2c",
         "cli.commands.communication.usb",
         "cli.commands.communication.uart",
+        "cli.commands.communication.ble",
+        "cli.commands.communication.wifi",
+        "cli.commands.communication.router",
+        "cli.commands.communication.blufi",
+        "cli.commands.development.arm",
+        "cli.commands.utility.webcam",
     ]
 
     @pytest.mark.parametrize("module_name", TIER1_MODULES)

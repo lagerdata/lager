@@ -11,11 +11,10 @@ from __future__ import annotations
 import json
 
 import click
-from texttable import Texttable
 
 # Import consolidated helpers from cli.core.net_helpers
 from ...core.group_usage import LagerGroup
-from ...core.net_helpers import resolve_box, run_impl_script
+from ...core.net_helpers import resolve_box, post_box_command
 
 # WiFi constraints
 MAX_SSID_LENGTH = 32  # IEEE 802.11 maximum SSID length
@@ -77,31 +76,32 @@ def _validate_interface(ctx: click.Context, interface: str) -> None:
         click.secho(f"Common names: {', '.join(COMMON_INTERFACES)}", err=True)
 
 
-def _run_wifi_command(ctx: click.Context, box_ip: str, args_dict: dict) -> None:
-    """Run WiFi impl script with JSON arguments."""
-    try:
-        run_impl_script(
-            ctx,
-            box_ip,
-            "wifi.py",
-            args=(json.dumps(args_dict),),
-        )
-    except SystemExit as e:
-        # Re-raise non-zero exits to preserve exit code
-        if e.code != 0:
-            raise
-    except Exception as e:
-        error_str = str(e)
-        click.secho(f"Error: WiFi command failed", fg='red', err=True)
-        if "Connection refused" in error_str:
-            click.secho(f"Could not connect to box at {box_ip}", err=True)
-            click.secho("Check that the box is online and Docker container is running.", err=True)
-        elif "timed out" in error_str.lower():
-            click.secho("WiFi command timed out.", err=True)
-            click.secho("Network operations may take longer than expected.", err=True)
-        else:
-            click.secho(f"Details: {e}", err=True)
-        ctx.exit(1)
+# nmcli connect can take up to ~30s on the box, plus scan latency.
+_WIFI_HTTP_TIMEOUT = 60.0
+
+
+def _post_wifi(ctx: click.Context, box_ip: str, action: str, **params) -> dict:
+    """POST one action to :9000/wifi/command and return the response."""
+    return post_box_command(
+        ctx, box_ip, "/wifi/command", action,
+        quiet=True, http_timeout=_WIFI_HTTP_TIMEOUT, **params,
+    )
+
+
+def _format_networks_table(networks: list[dict]) -> str:
+    """Format scan results in the same table shape the old impl printed."""
+    if not networks:
+        return "No networks found!"
+
+    lines = []
+    lines.append(f"{'SSID':<25} {'Security':<10} {'Strength'}")
+    lines.append("-" * 50)
+    for net in networks:
+        ssid = (net.get('ssid') or 'Unknown')[:24]
+        security = net.get('security', 'Unknown')
+        strength = net.get('strength', 0)
+        lines.append(f"{ssid:<25} {security:<10} {strength}%")
+    return '\n'.join(lines)
 
 
 @click.group(name='wifi', cls=LagerGroup, hidden=True)
@@ -119,11 +119,19 @@ def status(ctx, box):
     """
     box_ip = resolve_box(ctx, box)
 
-    status_args = {
-        'action': 'status'
-    }
+    result = _post_wifi(ctx, box_ip, 'status')
+    interfaces = (result.get('value') or {}).get('interfaces', [])
 
-    _run_wifi_command(ctx, box_ip, status_args)
+    click.secho("WiFi Status:", fg='green')
+    click.echo("=" * 40)
+    for info in interfaces:
+        connected = info.get('state', '').startswith('Connected')
+        click.secho(f"Interface: {info.get('interface')}", fg='green')
+        click.secho(f"    SSID:  {info.get('ssid')}",
+                    fg='green' if connected else 'red')
+        click.secho(f"    State: {info.get('state')}",
+                    fg='green' if connected else 'red')
+        click.echo()
 
 
 @_wifi.command()
@@ -139,12 +147,15 @@ def access_points(ctx, box, interface='wlan0'):
 
     box_ip = resolve_box(ctx, box)
 
-    scan_args = {
-        'action': 'scan',
-        'interface': interface
-    }
+    click.secho(f"Scanning for WiFi networks on {interface}...", fg='green')
+    result = _post_wifi(ctx, box_ip, 'scan', interface=interface)
+    networks = (result.get('value') or {}).get('access_points', [])
 
-    _run_wifi_command(ctx, box_ip, scan_args)
+    click.secho(f"\nFound {len(networks)} network(s):", fg='green')
+    click.secho(_format_networks_table(networks), fg='green')
+
+    click.secho("\nJSON Output:", fg='green')
+    click.echo(json.dumps({'access_points': networks}, indent=2))
 
 
 @_wifi.command()
@@ -164,14 +175,13 @@ def connect(ctx, box, ssid, interface, password=''):
 
     box_ip = resolve_box(ctx, box)
 
-    connect_args = {
-        'action': 'connect',
-        'ssid': ssid,
-        'password': password,
-        'interface': interface
-    }
+    click.secho(f"Connecting to WiFi network: {ssid}", fg='green')
+    result = _post_wifi(ctx, box_ip, 'connect',
+                        ssid=ssid, password=password, interface=interface)
 
-    _run_wifi_command(ctx, box_ip, connect_args)
+    click.secho(f"[OK] Successfully connected to {ssid}", fg='green')
+    click.echo("\nJSON Output:")
+    click.echo(json.dumps(result.get('value') or {}, indent=2))
 
 
 @_wifi.command()
@@ -192,10 +202,9 @@ def delete_connection(ctx, box, yes, ssid):
 
     box_ip = resolve_box(ctx, box)
 
-    delete_args = {
-        'action': 'delete',
-        'ssid': ssid,
-        'connection_name': ssid
-    }
+    click.secho(f"Deleting WiFi connection: {ssid}", fg='green')
+    result = _post_wifi(ctx, box_ip, 'delete', ssid=ssid, connection_name=ssid)
 
-    _run_wifi_command(ctx, box_ip, delete_args)
+    click.secho(f"[OK] Successfully deleted connection: {ssid}", fg='green')
+    click.echo("\nJSON Output:")
+    click.echo(json.dumps(result.get('value') or {}, indent=2))

@@ -144,11 +144,37 @@ from lager.http_handlers.usb import register_usb_routes
 # Import generic net command handler (warm-path replacement for the
 # `lager python` exec path on instruments without a dedicated endpoint).
 try:
-    from lager.http_handlers.net_command import register_net_command_routes
+    from lager.http_handlers.net_command import register_net_command_routes, ROLE_ACTIONS
     _has_net_command = True
+    _net_command_roles = sorted(ROLE_ACTIONS.keys())
 except Exception as e:
     logger.warning("Net command handler not available: %s", e)
     _has_net_command = False
+    _net_command_roles = []
+
+# Import box-level BLE handler (bleak on a dedicated event-loop thread).
+try:
+    from lager.http_handlers.ble import register_ble_routes
+    _has_ble = True
+except Exception as e:
+    logger.warning("BLE handler not available: %s", e)
+    _has_ble = False
+
+# Import box-level WiFi handler (nmcli/iwlist wrappers in lager.protocols.wifi).
+try:
+    from lager.http_handlers.wifi import register_wifi_routes
+    _has_wifi = True
+except Exception as e:
+    logger.warning("WiFi handler not available: %s", e)
+    _has_wifi = False
+
+# Import box-level BluFi handler (ESP32 WiFi provisioning over BLE).
+try:
+    from lager.http_handlers.blufi import register_blufi_routes
+    _has_blufi = True
+except Exception as e:
+    logger.warning("BluFi handler not available: %s", e)
+    _has_blufi = False
 
 # Import nets handler
 try:
@@ -269,6 +295,14 @@ def status():
         # /net/command on boxes where the handler import failed, which 404s.
         'capabilities': {
             'netCommand': _has_net_command,
+            # Roles served by POST /net/command on this box. Lets clients
+            # detect that arm/webcam/router landed (netCommand alone predates
+            # them) without version sniffing.
+            'netCommandRoles': _net_command_roles,
+            # Box-level (non-net) command endpoints.
+            'bleCommand': _has_ble,
+            'wifiCommand': _has_wifi,
+            'blufiCommand': _has_blufi,
         },
     })
 
@@ -297,6 +331,30 @@ if _has_net_command:
     print("[INIT] Net command endpoint registered", flush=True)
 else:
     print("[INIT] Net command endpoint NOT available", flush=True)
+
+# Register box-level BLE handler (if available)
+if _has_ble:
+    register_ble_routes(app)
+    logger.info("BLE endpoint registered")
+    print("[INIT] BLE endpoint registered", flush=True)
+else:
+    print("[INIT] BLE endpoint NOT available", flush=True)
+
+# Register box-level WiFi handler (if available)
+if _has_wifi:
+    register_wifi_routes(app)
+    logger.info("WiFi endpoint registered")
+    print("[INIT] WiFi endpoint registered", flush=True)
+else:
+    print("[INIT] WiFi endpoint NOT available", flush=True)
+
+# Register box-level BluFi handler (if available)
+if _has_blufi:
+    register_blufi_routes(app)
+    logger.info("BluFi endpoint registered")
+    print("[INIT] BluFi endpoint registered", flush=True)
+else:
+    print("[INIT] BluFi endpoint NOT available", flush=True)
 
 # Register nets REST handlers (if available)
 if _has_nets:

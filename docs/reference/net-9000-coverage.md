@@ -30,7 +30,22 @@ boxes). Supply, battery, and USB keep their dedicated `:9000` command endpoints;
 UART uses the `:9000` WebSocket stream plus `:9000` HTTP for discovery/listing.
 
 `ROLE_ACTIONS` currently registers: `gpio`, `adc`, `dac`, `thermocouple`,
-`watt-meter`, `eload`, `spi`, `i2c`, `energy-analyzer`.
+`watt-meter`, `eload`, `spi`, `i2c`, `energy-analyzer`, `arm`, `webcam`,
+`router` (+ `mikrotik` alias). The `/status` capability block advertises the
+role list as `netCommandRoles` so clients can detect arm/webcam/router support
+without version sniffing.
+
+Box-level capabilities that drive the box's own hardware rather than a saved
+net get dedicated endpoints, mirroring `/usb/command`: `POST /ble/command`,
+`POST /wifi/command`, and `POST /blufi/command`
+([box/lager/http_handlers/{ble,wifi,blufi}.py](../../box/lager/http_handlers/)),
+advertised as `bleCommand` / `wifiCommand` / `blufiCommand`. The CLI reaches
+them through `post_box_command` in
+[cli/core/net_helpers.py](../../cli/core/net_helpers.py). BLE and BluFi share
+one Bluetooth adapter, so both handlers serialize under a shared adapter lock
+and run their bleak coroutines on a dedicated event-loop thread; WiFi actions
+serialize under a wlan lock around the shared `lager.protocols.wifi`
+subprocess wrappers.
 
 ### Every Tier-1 role runs through hardware_service
 
@@ -100,28 +115,51 @@ Stout's dashboard path separately clamps itself to 30s to stay under Nginx's
 | i2c | `lager i2c` | `:9000/net/command` (`config`/`scan`/read/write) | Removed |
 | usb | `lager usb` | `:9000/usb/command` | Removed |
 | uart | `lager uart` | `:9000` WS stream + `:9000/instruments/list` discovery | Removed (dead exec helper deleted) |
+| arm | `lager arm` | `:9000/net/command` (via `arm_hs` in hardware_service) | Removed |
+| webcam | `lager webcam` | `:9000/net/command` (in-process WebcamService; `*-all` iterated CLI-side) | Removed |
+| router | `lager router` | `:9000/net/command` (in-process MikroTik REST client); `add-net` uses `PUT :9000/nets/<name>` | Removed |
+| ble (box-level) | `lager ble` | `:9000/ble/command` | Removed |
+| wifi (box-level) | `lager wifi` | `:9000/wifi/command` | Removed |
+| blufi (box-level) | `lager blufi` | `:9000/blufi/command` | Removed |
 
-All Tier-1 roles are 9000-only. There is intentionally no `:5000` fallback in
-any Tier-1 command; an unreachable or outdated box surfaces a clear error rather
-than silently falling back.
+All of the above are 9000-only. There is intentionally no `:5000` fallback in
+any of these commands; an unreachable or outdated box surfaces a clear error
+rather than silently falling back. The six former impl scripts
+(`cli/impl/communication/{ble,wifi,router,blufi}.py`,
+`cli/impl/device/{webcam,arm}.py`) are deleted.
 
-## Intentionally NOT on :9000/net/command (out of scope)
+## What still uses port 5000
 
-These commands still use the `:5000` exec path and are out of scope for the
-Tier-1 migration. They are complex, stateful, or streaming workflows that do not
-fit the simple request/response `/net/command` contract:
+`lager python` (and `install-wheel`) — the script-upload/exec service itself —
+stays on `:5000` by design.
 
-- `lager scope`, `lager scope stream` ([measurement/scope.py](../../cli/commands/measurement/scope.py)) - large streaming/capture workflow.
+CLI features still on the `:5000` exec path:
+
+- `lager scope`, `lager scope stream` ([measurement/scope.py](../../cli/commands/measurement/scope.py)) - large streaming/capture workflow (plus the oscilloscope daemon on 8082-8085).
 - `lager logic` ([measurement/logic.py](../../cli/commands/measurement/logic.py)) - logic-analyzer capture/trigger/cursor.
 - `lager solar` ([power/solar.py](../../cli/commands/power/solar.py)) - solar-array emulation mode.
-- `lager wifi` / `router` / `blufi` / `ble` ([communication/](../../cli/commands/communication/)) - connectivity provisioning via `run_impl_script`.
-- `lager webcam` ([utility/webcam.py](../../cli/commands/utility/webcam.py)) - image capture.
-- `lager net ...` management, `box config`, `box instruments`, `debug` ([box/](../../cli/commands/box/)) - net CRUD / box config / debug helpers.
-- `binaries`, `install-wheel`, `update`, `lock`/`unlock`, `diagnose` - box service endpoints that legitimately live on `:5000` (health, binaries, lock, diagnose) or are dev tooling.
+- `lager net ...` management TUI ([box/net_tui.py](../../cli/commands/box/net_tui.py)) - net CRUD itself already exists on `:9000`.
+- `lager box config` apply/poll ([box/config.py](../../cli/commands/box/config.py)).
+- `lager box instruments` ([box/instruments.py](../../cli/commands/box/instruments.py)) - `:9000/instruments/list` exists; the CLI still shims through `:5000`.
+- Debug flash helpers ([development/debug/commands.py](../../cli/commands/development/debug/commands.py)).
+
+`:5000` REST (non-exec) endpoints the CLI still calls: lock/unlock + heartbeat
+([box/lock.py](../../cli/commands/box/lock.py), `cli/box_storage.py`), binaries
+add/list/remove ([utility/binaries.py](../../cli/commands/utility/binaries.py)),
+health/hello/version, `/download-file`, and the `/nets/list` lookup inside
+`lager box diagnose`.
+
+Box-side/infra: the `:5000` service itself
+([box/lager/python/service.py](../../box/lager/python/service.py)), the MCP
+bench loader (`BOX_SERVICE_PORT = 5000`), and the firewall rules for
+5000/8301.
 
 ## Regression guards
 
-- Box: [test/unit/box/test_net_command_handler.py](../../test/unit/box/test_net_command_handler.py) covers each role/action through a mocked `Device` proxy, including gpio `wait_for_level` (timeout -> 502), watt-meter `current`/`all`, eload `state`, spi `write`/`config`, and i2c `config`/`scan` range.
+- Box: [test/unit/box/test_net_command_handler.py](../../test/unit/box/test_net_command_handler.py) covers each role/action through a mocked `Device` proxy, including gpio `wait_for_level` (timeout -> 502), watt-meter `current`/`all`, eload `state`, spi `write`/`config`, i2c `config`/`scan` range, arm moves/bounds (502), webcam start/stop/status, and router reads/controls/param pass-through.
+- Box: [test/unit/box/test_box_level_command_handlers.py](../../test/unit/box/test_box_level_command_handlers.py) covers the `/ble/command`, `/wifi/command`, and `/blufi/command` handlers with bleak/nmcli/BlufiClient mocked — action contracts, validation (400), and hardware failures (502).
+- Box: [test/unit/box/test_box_http_server_capabilities.py](../../test/unit/box/test_box_http_server_capabilities.py) asserts `/status` capabilities (`netCommand`, `netCommandRoles`, `bleCommand`/`wifiCommand`/`blufiCommand`) mirror actual route registration.
 - Box: [test/unit/box/test_hardware_service_retry.py](../../test/unit/box/test_hardware_service_retry.py) `DeviceIdLockTests` covers the shared `device_id` lock — two roles on one physical device get distinct cache entries but a single shared lock, with fallback to the cache-key lock when no `device_id`/`address` is present.
-- CLI: [test/unit/cli/test_net_9000_migration.py](../../test/unit/cli/test_net_9000_migration.py) covers `post_net_command`/`fetch_nets` HTTP behavior, per-command action dispatch, and a parametrized guard asserting no Tier-1 command module imports `run_python_internal` / `run_impl_script` / `run_backend`.
+- CLI: [test/unit/cli/test_net_9000_migration.py](../../test/unit/cli/test_net_9000_migration.py) covers `post_net_command`/`fetch_nets` HTTP behavior, per-command action dispatch, and a parametrized guard asserting no converted command module (including ble/wifi/router/blufi/arm/webcam) imports `run_python_internal` / `run_impl_script` / `run_backend`.
 - CLI: [test/unit/cli/test_watt_subcommands.py](../../test/unit/cli/test_watt_subcommands.py) covers watt output formatting over the 9000 path.
+- Rust: [lager-rs/tests/mock_api.rs](../../lager-rs/tests/mock_api.rs) pins the request/response contract for every arm/webcam/router/ble/wifi/blufi action; [lager-rs/tests/hardware.rs](../../lager-rs/tests/hardware.rs) has opt-in live-box smoke tests for all six.

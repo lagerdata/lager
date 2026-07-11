@@ -295,6 +295,79 @@ def post_net_command(
     raise SystemExit(1)
 
 
+def post_box_command(
+    ctx: click.Context,
+    box_ip: str,
+    endpoint: str,
+    action: str,
+    quiet: bool = False,
+    http_timeout: float | None = _NET_HTTP_TIMEOUT,
+    **params: Any,
+) -> dict:
+    """Drive a box-level (non-net) capability endpoint on port 9000.
+
+    Same contract as :func:`post_net_command`, but for capabilities that are
+    a property of the box itself rather than a saved net — the box's own
+    Bluetooth adapter (``/ble/command``, ``/blufi/command``) and wlan
+    interface (``/wifi/command``). No ``netname`` is sent.
+
+    Args:
+        ctx: Click context (unused today; kept for a uniform call signature).
+        box_ip: Resolved box IP address.
+        endpoint: Endpoint path, e.g. "/ble/command".
+        action: Endpoint-specific action (e.g. "scan", "provision").
+        quiet: If True, do not echo the success message (caller formats output).
+        http_timeout: HTTP client timeout in seconds. Callers whose action
+            blocks on the box for a caller-controlled duration (BLE scan
+            timeout, blufi provisioning) MUST widen this past that duration.
+        **params: Action parameters forwarded verbatim under ``params``.
+
+    Returns:
+        The parsed response dict (includes ``message`` and optional ``value``).
+    """
+    import requests
+
+    payload: dict[str, Any] = {"action": action, "params": params}
+    url = f"http://{box_ip}:{NET_HTTP_PORT}{endpoint}"
+    try:
+        resp = requests.post(url, json=payload, timeout=http_timeout)
+    except (requests.ConnectionError, requests.Timeout):
+        click.secho(
+            f"Error: cannot reach box at {box_ip}:{NET_HTTP_PORT}. "
+            f"Check network/Tailscale and that the box is online and updated.",
+            fg="red", err=True,
+        )
+        raise SystemExit(1)
+    except requests.RequestException as e:
+        click.secho(f"Error: request to box failed: {e}", fg="red", err=True)
+        raise SystemExit(1)
+
+    try:
+        result = resp.json()
+    except ValueError:
+        click.secho(
+            f"Error: box returned a non-JSON response (HTTP {resp.status_code}).",
+            fg="red", err=True,
+        )
+        raise SystemExit(1)
+
+    if resp.status_code == 200 and result.get("success"):
+        if not quiet:
+            message = result.get("message", "Command executed")
+            click.echo(f"[OK] {message}")
+        return result
+
+    error = result.get("error") or f"HTTP {resp.status_code}"
+    if resp.status_code == 404 and "does not exist" in str(error):
+        click.secho(
+            f"Error: this box image does not serve {endpoint}; update the box.",
+            fg="red", err=True,
+        )
+    else:
+        click.secho(f"Error: {error}", fg="red", err=True)
+    raise SystemExit(1)
+
+
 def run_net_py(ctx: click.Context, box: str, *args: str) -> list[dict]:
     """Return saved nets for the box (compatibility shim over :9000/nets/list).
 

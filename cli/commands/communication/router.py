@@ -13,26 +13,30 @@ import json
 import click
 
 from ...core.group_usage import LagerGroup
-from ...core.net_helpers import resolve_box, run_impl_script
+from ...core.net_helpers import resolve_box, post_net_command, NET_HTTP_PORT
+
+ROUTER_ROLE = "router"
+
+# Router REST calls are quick, but reboot/reset touch the router's own
+# management plane and can stall for several seconds.
+_ROUTER_HTTP_TIMEOUT = 30.0
 
 
 def _run_router(ctx: click.Context, box_ip: str, args_dict: dict) -> None:
-    """Run the router impl script with JSON arguments."""
-    try:
-        run_impl_script(ctx, box_ip, "router.py", args=(json.dumps(args_dict),))
-    except SystemExit as e:
-        if e.code != 0:
-            raise
-    except Exception as e:
-        error_str = str(e)
-        click.secho("Error: router command failed", fg="red", err=True)
-        if "Connection refused" in error_str:
-            click.secho(f"Could not connect to box at {box_ip}", err=True)
-        elif "timed out" in error_str.lower():
-            click.secho("Command timed out.", err=True)
-        else:
-            click.secho(f"Details: {e}", err=True)
-        ctx.exit(1)
+    """Drive a router net over the box HTTP API (POST :9000/net/command).
+
+    Prints the structured result as indented JSON, matching the old
+    impl-script output.
+    """
+    args_dict = dict(args_dict)
+    action = args_dict.pop("action")
+    netname = args_dict.pop("netname")
+    result = post_net_command(
+        ctx, box_ip, netname, action,
+        role=ROUTER_ROLE, quiet=True, http_timeout=_ROUTER_HTTP_TIMEOUT,
+        **args_dict,
+    )
+    click.echo(json.dumps(result.get("value"), indent=2))
 
 
 @click.group(name="router", cls=LagerGroup)
@@ -58,6 +62,8 @@ def add_net(ctx, name, address, username, password, instrument, use_ssl, box):
 
         lager router add-net router1 --address 192.168.88.1 --username admin --password secret --box mybox
     """
+    import requests
+
     box_ip = resolve_box(ctx, box)
 
     net_data = {
@@ -74,7 +80,23 @@ def add_net(ctx, name, address, username, password, instrument, use_ssl, box):
         },
     }
 
-    _run_router(ctx, box_ip, {"action": "add_net", "net_data": net_data})
+    # Nets CRUD already lives on the box HTTP API; no impl script needed.
+    url = f"http://{box_ip}:{NET_HTTP_PORT}/nets/{name}"
+    try:
+        resp = requests.put(url, json=net_data, timeout=10)
+    except requests.RequestException as e:
+        click.secho(f"Error: cannot reach box at {box_ip}:{NET_HTTP_PORT}: {e}",
+                    fg="red", err=True)
+        ctx.exit(1)
+
+    if resp.status_code != 200:
+        try:
+            error = resp.json().get("error") or f"HTTP {resp.status_code}"
+        except ValueError:
+            error = f"HTTP {resp.status_code}"
+        click.secho(f"Error: {error}", fg="red", err=True)
+        ctx.exit(1)
+
     click.secho(f"Net '{name}' (router) added on box {box_ip}.", fg="green")
 
 

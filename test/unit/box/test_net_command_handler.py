@@ -80,6 +80,11 @@ SAVED_NETS = [
     {"name": "spi1", "role": "spi", "instrument": "labjack_t7"},
     {"name": "i2c1", "role": "i2c", "instrument": "labjack_t7"},
     {"name": "energy1", "role": "energy-analyzer", "instrument": "joulescope"},
+    {"name": "arm1", "role": "arm", "instrument": "dexarm",
+     "location": {"serial_number": "ARM123"}},
+    {"name": "cam1", "role": "webcam", "pin": "video0"},
+    {"name": "camnodev", "role": "webcam"},
+    {"name": "router1", "role": "router", "address": "192.168.88.1"},
     {"name": "scope1", "role": "scope"},  # unsupported by /net/command
 ]
 
@@ -504,6 +509,246 @@ class TestNetCommandHandler(unittest.TestCase):
 
     def test_energy_unknown_action_is_400(self):
         r, _ = self._run({"netname": "energy1", "action": "bogus"})
+        self.assertEqual(r.status_code, 400)
+
+    # ----- arm -----
+
+    def test_arm_position(self):
+        dev = MagicMock()
+        dev.position.return_value = [0.0, 300.0, 0.0]
+        r, dev = self._run({"netname": "arm1", "action": "position"}, dev)
+        data = r.get_json()
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(data["value"], [0.0, 300.0, 0.0])
+        self.assertIn("X: 0.0 Y: 300.0 Z: 0.0", data["message"])
+        dev.position.assert_called_once_with()
+        # Routed through the arm_hs adapter with the serial-keyed device lock.
+        device_name, net_info = self._DeviceMock.call_args.args
+        self.assertEqual(device_name, "arm_hs")
+        self.assertEqual(net_info["device_id"], "dexarm:ARM123")
+
+    def test_arm_move_passes_coords_and_timeout(self):
+        dev = MagicMock()
+        dev.move.return_value = [50.0, 250.0, -20.0]
+        r, dev = self._run({"netname": "arm1", "action": "move",
+                            "params": {"x": 50, "y": 250, "z": -20}}, dev)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["value"], [50.0, 250.0, -20.0])
+        dev.move.assert_called_once_with(50.0, 250.0, -20.0, timeout=15.0)
+        # Proxy timeout is widened past the box-side move timeout.
+        self.assertEqual(self._DeviceMock.call_args.kwargs["timeout"], 30.0)
+
+    def test_arm_move_missing_coord_is_400(self):
+        r, _ = self._run({"netname": "arm1", "action": "move",
+                          "params": {"x": 50, "y": 250}})
+        self.assertEqual(r.status_code, 400)
+
+    def test_arm_move_by_defaults_missing_deltas_to_zero(self):
+        dev = MagicMock()
+        dev.move_by.return_value = [50.0, 240.0, 0.0]
+        r, dev = self._run({"netname": "arm1", "action": "move_by",
+                            "params": {"dy": -10}}, dev)
+        self.assertEqual(r.status_code, 200)
+        dev.move_by.assert_called_once_with(0.0, -10.0, 0.0, timeout=15.0)
+
+    def test_arm_home_and_motors(self):
+        for action, method in (("go_home", "go_home"),
+                               ("enable_motor", "enable_motor"),
+                               ("disable_motor", "disable_motor")):
+            dev = MagicMock()
+            r, dev = self._run({"netname": "arm1", "action": action}, dev)
+            self.assertEqual(r.status_code, 200, action)
+            self.assertTrue(r.get_json()["success"], action)
+            getattr(dev, method).assert_called_once_with()
+
+    def test_arm_read_and_save_position(self):
+        dev = MagicMock()
+        dev.read_and_save_position.return_value = [1.0, 2.0, 3.0]
+        r, dev = self._run({"netname": "arm1",
+                            "action": "read_and_save_position"}, dev)
+        data = r.get_json()
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(data["value"], [1.0, 2.0, 3.0])
+        self.assertIn("Saved position", data["message"])
+
+    def test_arm_set_acceleration(self):
+        dev = MagicMock()
+        r, dev = self._run({"netname": "arm1", "action": "set_acceleration",
+                            "params": {"acceleration": 30,
+                                       "travel_acceleration": 25}}, dev)
+        self.assertEqual(r.status_code, 200)
+        dev.set_acceleration.assert_called_once_with(
+            30, 25, retract_acceleration=60)
+
+    def test_arm_set_acceleration_missing_param_is_400(self):
+        r, _ = self._run({"netname": "arm1", "action": "set_acceleration",
+                          "params": {"acceleration": 30}})
+        self.assertEqual(r.status_code, 400)
+
+    def test_arm_out_of_bounds_is_502(self):
+        # arm_hs enforces workspace bounds inside hardware_service and the
+        # proxy surfaces that as a DeviceError.
+        dev = MagicMock()
+        dev.move.side_effect = net_command.DeviceError(
+            "Target position out of Dexarm workspace bounds")
+        r, _ = self._run({"netname": "arm1", "action": "move",
+                          "params": {"x": 9999, "y": 0, "z": 0}}, dev)
+        self.assertEqual(r.status_code, 502)
+
+    def test_arm_unknown_action_is_400(self):
+        r, _ = self._run({"netname": "arm1", "action": "bogus"})
+        self.assertEqual(r.status_code, 400)
+
+    # ----- webcam -----
+
+    def _run_webcam(self, body, **svc_attrs):
+        """POST with Net mocked and a fake lager.automation.webcam module.
+
+        The handler does `from lager.automation import webcam`, which resolves
+        through the parent package attribute when the real submodule was
+        already imported — so patch both sys.modules and the attribute.
+        """
+        import lager.automation as automation_pkg
+
+        fake = types.ModuleType('lager.automation.webcam')
+        for name, value in svc_attrs.items():
+            setattr(fake, name, value)
+        with patch.dict(sys.modules, {'lager.automation.webcam': fake}), \
+                patch.object(automation_pkg, 'webcam', fake, create=True), \
+                patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            resp = self._post(body)
+        return resp, fake
+
+    def test_webcam_start(self):
+        start_stream = MagicMock(return_value={
+            "url": "http://localhost:8090/stream.mjpg", "port": 8090})
+        r, fake = self._run_webcam(
+            {"netname": "cam1", "action": "start"}, start_stream=start_stream)
+        data = r.get_json()
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(data["success"])
+        self.assertEqual(data["value"]["port"], 8090)
+        self.assertFalse(data["value"]["already_running"])
+        self.assertIn("Stream started", data["message"])
+        # Video device is normalized to /dev/...; box_ip comes from the
+        # request host when not supplied.
+        fake.start_stream.assert_called_once_with(
+            "cam1", "/dev/video0", "localhost")
+
+    def test_webcam_start_already_running(self):
+        start_stream = MagicMock(return_value={
+            "url": "http://localhost:8090/stream.mjpg", "port": 8090,
+            "already_running": True})
+        r, _ = self._run_webcam(
+            {"netname": "cam1", "action": "start"}, start_stream=start_stream)
+        data = r.get_json()
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(data["value"]["already_running"])
+        self.assertIn("already running", data["message"])
+
+    def test_webcam_start_without_video_device_is_400(self):
+        r, _ = self._run_webcam(
+            {"netname": "camnodev", "action": "start"},
+            start_stream=MagicMock())
+        self.assertEqual(r.status_code, 400)
+
+    def test_webcam_stop(self):
+        r, fake = self._run_webcam(
+            {"netname": "cam1", "action": "stop"},
+            stop_stream=MagicMock(return_value=True))
+        data = r.get_json()
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(data["value"]["stopped"])
+        fake.stop_stream.assert_called_once_with("cam1")
+
+    def test_webcam_status_running_and_not_running(self):
+        info = {"url": "http://localhost:8090/stream.mjpg", "port": 8090,
+                "video_device": "/dev/video0"}
+        r, _ = self._run_webcam(
+            {"netname": "cam1", "action": "status"},
+            get_stream_info=MagicMock(return_value=info))
+        data = r.get_json()
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(data["value"]["running"])
+        self.assertEqual(data["value"]["video_device"], "/dev/video0")
+
+        r, _ = self._run_webcam(
+            {"netname": "cam1", "action": "url"},
+            get_stream_info=MagicMock(return_value=None))
+        data = r.get_json()
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(data["value"]["running"])
+
+    # ----- router -----
+
+    def _run_router(self, body, router=None):
+        router = MagicMock() if router is None else router
+        with patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            NetMock.get_from_saved_json.return_value = router
+            resp = self._post(body)
+        return resp, router
+
+    def test_router_system_info(self):
+        router = MagicMock()
+        router.get_system_info.return_value = {
+            "name": "MikroTik", "version": "7.14", "board": "hAP ac^2"}
+        r, router = self._run_router(
+            {"netname": "router1", "action": "system_info"}, router)
+        data = r.get_json()
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(data["value"]["board"], "hAP ac^2")
+        router.get_system_info.assert_called_once_with()
+
+    def test_router_interface_toggle(self):
+        router = MagicMock()
+        r, router = self._run_router(
+            {"netname": "router1", "action": "disable_interface",
+             "params": {"interface": "wlan1"}}, router)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["value"],
+                         {"interface": "wlan1", "disabled": True})
+        router.disable_interface.assert_called_once_with("wlan1")
+
+        r, router = self._run_router(
+            {"netname": "router1", "action": "enable_interface",
+             "params": {"interface": "wlan1"}})
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.get_json()["value"]["disabled"])
+
+    def test_router_generic_params_pass_through(self):
+        router = MagicMock()
+        router.add_bandwidth_limit.return_value = {"name": "limit-1"}
+        r, router = self._run_router(
+            {"netname": "router1", "action": "add_bandwidth_limit",
+             "params": {"target": "192.168.88.10", "max_limit": "1M/1M"}},
+            router)
+        self.assertEqual(r.status_code, 200)
+        router.add_bandwidth_limit.assert_called_once_with(
+            target="192.168.88.10", max_limit="1M/1M", name=None)
+
+    def test_router_missing_param_is_400(self):
+        r, _ = self._run_router(
+            {"netname": "router1", "action": "disable_interface"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_router_api_error_is_502(self):
+        router = MagicMock()
+        router.get_system_info.side_effect = Exception("connection refused")
+        r, _ = self._run_router(
+            {"netname": "router1", "action": "system_info"}, router)
+        self.assertEqual(r.status_code, 502)
+
+    def test_router_unloadable_net_is_502(self):
+        with patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            NetMock.get_from_saved_json.return_value = None
+            r = self._post({"netname": "router1", "action": "system_info"})
+        self.assertEqual(r.status_code, 502)
+
+    def test_router_unknown_action_is_400(self):
+        r, _ = self._run_router({"netname": "router1", "action": "bogus"})
         self.assertEqual(r.status_code, 400)
 
     # ----- generic dispatch -----
