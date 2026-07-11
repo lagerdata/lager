@@ -9,6 +9,8 @@ on LabJack devices.
 """
 from __future__ import annotations
 
+import json
+
 import click
 
 from ...context import get_default_net
@@ -25,15 +27,21 @@ from ...core.net_helpers import (
 GPIO_ROLE = "gpio"
 
 
+def _level_label(value: int) -> str:
+    return "HIGH" if value == 1 else "LOW"
+
+
 @click.command(name="gpo", cls=NetCommand, help="Set GPIO output level (0/1, low/high, off/on, toggle)")
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
 @click.option("--hold", is_flag=True, default=False,
               help="Hold output state (keeps process alive until Ctrl+C)")
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit a machine-readable JSON object instead of formatted text")
 @click.argument("netname", required=False, metavar="[NET_NAME]")
 @click.argument("level", required=False, metavar="[LEVEL]",
                 type=click.Choice(["low", "high", "on", "off", "0", "1", "toggle"], case_sensitive=False))
-def gpo(ctx, box, netname, level, hold):
+def gpo(ctx, box, netname, level, hold, as_json):
     """Set the output level of a GPIO output net.
 
     Level can be: low, high, on, off, 0, 1, or toggle.
@@ -67,7 +75,23 @@ def gpo(ctx, box, netname, level, hold):
         click.echo(f"\nExample: lager gpo {netname} high --box {box or '[BOX_NAME]'}", err=True)
         ctx.exit(1)
 
-    post_net_command(ctx, box_ip, netname, "output", role="gpio", level=level)
+    result = post_net_command(ctx, box_ip, netname, "output", role="gpio",
+                              quiet=True, level=level)
+    value = int(result.get("value"))
+    level_str = _level_label(value)
+    toggled = level.lower() == "toggle"
+
+    if as_json:
+        click.echo(json.dumps({
+            "netname": netname,
+            "value": value,
+            "level": level_str,
+            "toggled": toggled,
+        }))
+    elif toggled:
+        click.secho(f"GPIO '{netname}' toggled to {level_str}", fg="green")
+    else:
+        click.secho(f"GPIO '{netname}' set to {level_str}", fg="green")
 
     if hold:
         # Over the stateless HTTP path there is no per-command process whose
@@ -86,5 +110,6 @@ def gpo(ctx, box, netname, level, hold):
 gpo.net_examples = [
     "lager gpo gpo1 high --box <BOX>",
     "lager gpo gpo1 toggle --box <BOX>",
+    "lager gpo gpo1 high --json --box <BOX>",
     "lager gpo --box <BOX>          (list GPIO nets)",
 ]

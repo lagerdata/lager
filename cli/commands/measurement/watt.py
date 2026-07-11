@@ -96,10 +96,10 @@ def _run_watt(ctx, box, netname, mode, duration, as_json):
                 "power": power, "duration_s": duration,
             }))
         else:
-            click.echo(f"Measurements '{netname}' ({duration:g}s):")
-            click.echo(f"  Current: {current:.6g} A")
-            click.echo(f"  Voltage: {voltage:.6g} V")
-            click.echo(f"  Power:   {power:.6g} W")
+            click.secho(f"Measurements '{netname}' ({duration:g}s):", fg="green")
+            click.secho(f"  Current: {current:.6g} A", fg="green")
+            click.secho(f"  Voltage: {voltage:.6g} V", fg="green")
+            click.secho(f"  Power:   {power:.6g} W", fg="green")
         return
 
     v = float(value)
@@ -107,7 +107,7 @@ def _run_watt(ctx, box, netname, mode, duration, as_json):
     if as_json:
         click.echo(json.dumps({"netname": netname, mode: v, "duration_s": duration}))
     else:
-        click.echo(f"{label} '{netname}': {v:.6g} {unit}")
+        click.secho(f"{label} '{netname}': {v:.6g} {unit}", fg="green")
 
 
 # Shared options for the read subcommands.

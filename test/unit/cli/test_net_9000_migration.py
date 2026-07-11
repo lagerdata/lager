@@ -183,7 +183,8 @@ class TestFetchNets:
 # Simple Tier-1 commands dispatch via post_net_command                        #
 # --------------------------------------------------------------------------- #
 
-def _invoke_simple(module_name, command_attr, argv, patch_extra=None):
+def _invoke_simple(module_name, command_attr, argv, patch_extra=None,
+                   mock_value=1):
     """Invoke a standalone Tier-1 command with the box boundary mocked.
 
     Returns the list of post_net_command calls (each a dict of kwargs).
@@ -194,8 +195,9 @@ def _invoke_simple(module_name, command_attr, argv, patch_extra=None):
     def fake_post(ctx, box_ip, netname, action, role=None, quiet=False,
                   http_timeout="default", **params):
         calls.append({"netname": netname, "action": action, "role": role,
-                      "http_timeout": http_timeout, "params": params})
-        return {"success": True, "value": 1, "message": "ok"}
+                      "quiet": quiet, "http_timeout": http_timeout,
+                      "params": params})
+        return {"success": True, "value": mock_value, "message": "ok"}
 
     patchers = {
         "post_net_command": fake_post,
@@ -227,7 +229,8 @@ class TestSimpleCommandDispatch:
         calls = _invoke_simple("cli.commands.measurement.adc", "adc",
                                ["NET1", "--box", "b"])
         assert calls == [{"netname": "NET1", "action": "read", "role": "adc",
-                          "http_timeout": "default", "params": {}}]
+                          "quiet": True, "http_timeout": "default",
+                          "params": {}}]
 
     def test_dac_read(self):
         calls = _invoke_simple("cli.commands.measurement.dac", "dac",
@@ -275,6 +278,161 @@ class TestSimpleCommandDispatch:
                                "thermocouple", ["NET1", "--box", "b"])
         assert calls[0]["action"] == "read"
         assert calls[0]["role"] == "thermocouple"
+        assert calls[0]["quiet"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Role-specific CLI output (quiet=True + local formatting)                    #
+# --------------------------------------------------------------------------- #
+
+def _invoke_output(module_name, command_attr, argv, *, value, patch_extra=None):
+    """Invoke a Tier-1 command and return (CliResult, calls) with a canned value."""
+    mod = importlib.import_module(module_name)
+    calls: list[dict] = []
+
+    def fake_post(ctx, box_ip, netname, action, role=None, quiet=False,
+                  http_timeout="default", **params):
+        calls.append({"netname": netname, "action": action, "role": role,
+                      "quiet": quiet, "http_timeout": http_timeout,
+                      "params": params})
+        return {"success": True, "value": value, "message": "ok"}
+
+    patchers = {
+        "post_net_command": fake_post,
+        "resolve_box": lambda ctx, box: "1.2.3.4",
+        "validate_net_exists": lambda ctx, ip, name, role: {"name": name},
+        "get_default_net": lambda ctx, t: None,
+    }
+    if patch_extra:
+        patchers.update(patch_extra)
+
+    applied = [patch.object(mod, k, v) for k, v in patchers.items()
+               if hasattr(mod, k)]
+    for p in applied:
+        p.start()
+    try:
+        result = CliRunner().invoke(
+            getattr(mod, command_attr), argv, obj=_Obj(),
+            catch_exceptions=False)
+    finally:
+        for p in applied:
+            p.stop()
+    assert result.exit_code == 0, result.output
+    return result, calls
+
+
+_ELOAD_STATE = {
+    "mode": "CC",
+    "input_enabled": True,
+    "measured_voltage": 3.300,
+    "measured_current": 0.500,
+    "measured_power": 1.650,
+    "current_setting": 0.500,
+}
+
+
+def _invoke_eload(argv, *, value):
+    mod = importlib.import_module("cli.commands.power.eload")
+    calls: list[dict] = []
+
+    def fake_post(ctx, box_ip, netname, action, role=None, quiet=False,
+                  http_timeout="default", **params):
+        calls.append({"netname": netname, "action": action, "role": role,
+                      "quiet": quiet, "params": params})
+        return {"success": True, "value": value, "message": "ok"}
+
+    with patch.object(mod, "post_net_command", fake_post), \
+            patch.object(mod, "resolve_box", lambda ctx, box: "1.2.3.4"), \
+            patch.object(mod, "require_netname", lambda ctx, role: "NET1"), \
+            patch.object(mod, "display_nets", lambda *a, **k: None), \
+            patch.object(mod, "get_default_net", lambda ctx, t: None):
+        result = CliRunner().invoke(mod.eload, argv, obj=_Obj(),
+                                    catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    return result, calls
+
+
+class TestRoleSpecificOutput:
+
+    def test_adc_prints_role_label(self):
+        result, calls = _invoke_output(
+            "cli.commands.measurement.adc", "adc",
+            ["NET1", "--box", "b"], value=1.234567)
+        assert calls[0]["quiet"] is True
+        assert "ADC 'NET1': 1.234567 V" in result.output
+
+    def test_adc_json(self):
+        result, _ = _invoke_output(
+            "cli.commands.measurement.adc", "adc",
+            ["NET1", "--json", "--box", "b"], value=1.234567)
+        assert json.loads(result.output) == {
+            "netname": "NET1", "voltage": 1.234567}
+
+    def test_dac_read_prints_role_label(self):
+        result, _ = _invoke_output(
+            "cli.commands.measurement.dac", "dac",
+            ["NET1", "--box", "b"], value=3.3)
+        assert "DAC 'NET1': 3.300000 V" in result.output
+
+    def test_dac_set_prints_role_label(self):
+        result, _ = _invoke_output(
+            "cli.commands.measurement.dac", "dac",
+            ["NET1", "3.3", "--box", "b"], value=3.3)
+        assert "DAC 'NET1' set to 3.300000 V" in result.output
+
+    def test_gpi_input_prints_level(self):
+        result, _ = _invoke_output(
+            "cli.commands.measurement.gpi", "gpi",
+            ["NET1", "--box", "b"], value=1)
+        assert "GPIO 'NET1': HIGH (1)" in result.output
+
+    def test_gpi_wait_for_prints_elapsed(self):
+        result, calls = _invoke_output(
+            "cli.commands.measurement.gpi", "gpi",
+            ["NET1", "--wait-for", "high", "--box", "b"], value=0.25)
+        assert calls[0]["quiet"] is True
+        assert "GPIO 'NET1' reached level high in 0.2500s" in result.output
+
+    def test_gpo_set_prints_level(self):
+        result, _ = _invoke_output(
+            "cli.commands.measurement.gpo", "gpo",
+            ["NET1", "high", "--box", "b"], value=1)
+        assert "GPIO 'NET1' set to HIGH" in result.output
+
+    def test_gpo_toggle_prints_toggled(self):
+        result, _ = _invoke_output(
+            "cli.commands.measurement.gpo", "gpo",
+            ["NET1", "toggle", "--box", "b"], value=0)
+        assert "GPIO 'NET1' toggled to LOW" in result.output
+
+    def test_thermocouple_prints_temperature(self):
+        result, _ = _invoke_output(
+            "cli.commands.measurement.thermocouple", "thermocouple",
+            ["NET1", "--box", "b"], value=25.3)
+        assert "Temperature: 25.3˚C" in result.output
+
+    def test_eload_cc_set_prints_mode_and_value(self):
+        result, calls = _invoke_eload(
+            ["NET1", "cc", "0.5", "--box", "b"], value=0.5)
+        assert calls[0]["quiet"] is True
+        assert "Mode: CC" in result.output
+        assert "Current: 0.5 A" in result.output
+
+    def test_eload_state_prints_multiline_block(self):
+        result, _ = _invoke_eload(
+            ["NET1", "state", "--box", "b"], value=_ELOAD_STATE)
+        for token in ("Electronic Load State:", "Mode: CC", "Input: Enabled",
+                      "Measured Voltage:", "Measured Current:",
+                      "Current Setting:"):
+            assert token in result.output
+
+    def test_eload_state_json(self):
+        result, _ = _invoke_eload(
+            ["NET1", "state", "--json", "--box", "b"], value=_ELOAD_STATE)
+        data = json.loads(result.output)
+        assert data["netname"] == "NET1"
+        assert data["mode"] == "CC"
+        assert data["current_setting"] == 0.5
 
 
 # --------------------------------------------------------------------------- #
