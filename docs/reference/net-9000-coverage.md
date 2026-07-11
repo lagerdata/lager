@@ -128,6 +128,30 @@ rather than silently falling back. The six former impl scripts
 (`cli/impl/communication/{ble,wifi,router,blufi}.py`,
 `cli/impl/device/{webcam,arm}.py`) are deleted.
 
+## Box-management commands moved to :9000
+
+Beyond nets, the box-management REST calls now target `:9000` (which serves the
+same lock state via `lager.lock_state`, plus `/status`, `/hello`, `/health`,
+`/instruments/list`, and `/nets/list`):
+
+- Lock/unlock + heartbeat: [box/lock.py](../../cli/commands/box/lock.py) and
+  the shared helpers in `cli/box_storage.py` (`acquire_box_lock`,
+  `heartbeat_box_lock`, `release_box_lock`, `_check_box_lock`).
+- `lager box instruments`
+  ([box/instruments.py](../../cli/commands/box/instruments.py)) is a plain
+  `GET :9000/instruments/list` — the `query_instruments.py` exec is gone from
+  this command (the nets add/TUI flows still exec it; see below).
+- `lager hello`, `lager boxes` (live listing), and the version-skew warning
+  ([box/hello.py](../../cli/commands/box/hello.py),
+  [box/boxes.py](../../cli/commands/box/boxes.py),
+  [core/version_skew.py](../../cli/core/version_skew.py)) read the box version
+  from `GET :9000/status` instead of `:5000/cli-version`.
+- `lager box diagnose` resolves nets via `GET :9000/nets/list`.
+- `lager update`'s post-restart readiness poll
+  ([utility/update.py](../../cli/commands/utility/update.py)) requires
+  `/health` on **both** `:9000` and `:5000`, since `lager python` still needs
+  the `:5000` service.
+
 ## What still uses port 5000
 
 `lager python` (and `install-wheel`) — the script-upload/exec service itself —
@@ -138,16 +162,14 @@ CLI features still on the `:5000` exec path:
 - `lager scope`, `lager scope stream` ([measurement/scope.py](../../cli/commands/measurement/scope.py)) - large streaming/capture workflow (plus the oscilloscope daemon on 8082-8085).
 - `lager logic` ([measurement/logic.py](../../cli/commands/measurement/logic.py)) - logic-analyzer capture/trigger/cursor.
 - `lager solar` ([power/solar.py](../../cli/commands/power/solar.py)) - solar-array emulation mode.
-- `lager net ...` management TUI ([box/net_tui.py](../../cli/commands/box/net_tui.py)) - net CRUD itself already exists on `:9000`.
+- `lager net ...` management TUI ([box/net_tui.py](../../cli/commands/box/net_tui.py)) and the `lager nets add` instrument scan (`query_instruments.py` exec) - net CRUD itself already exists on `:9000`.
 - `lager box config` apply/poll ([box/config.py](../../cli/commands/box/config.py)).
-- `lager box instruments` ([box/instruments.py](../../cli/commands/box/instruments.py)) - `:9000/instruments/list` exists; the CLI still shims through `:5000`.
 - Debug flash helpers ([development/debug/commands.py](../../cli/commands/development/debug/commands.py)).
 
-`:5000` REST (non-exec) endpoints the CLI still calls: lock/unlock + heartbeat
-([box/lock.py](../../cli/commands/box/lock.py), `cli/box_storage.py`), binaries
+`:5000` REST (non-exec) endpoints the CLI still calls: binaries
 add/list/remove ([utility/binaries.py](../../cli/commands/utility/binaries.py)),
-health/hello/version, `/download-file`, and the `/nets/list` lookup inside
-`lager box diagnose`.
+`/download-file`, `/python/kill`, and the second half of `lager update`'s
+dual-port health poll.
 
 Box-side/infra: the `:5000` service itself
 ([box/lager/python/service.py](../../box/lager/python/service.py)), the MCP

@@ -57,14 +57,16 @@ def check_and_warn(box_ip: str, box_name: str | None = None) -> None:
     _checked_boxes.add(box_ip)
 
     try:
-        # /cli-version is served by lager.python.service on port 5000;
+        # /status on port 9000 (the box HTTP API) reports the box version;
         # it's the same endpoint `lager box hello` uses. 1.5s timeout
         # keeps the latency penalty bounded if the box is briefly slow.
-        r = requests.get(f'http://{box_ip}:5000/cli-version', timeout=1.5)
+        r = requests.get(f'http://{box_ip}:9000/status', timeout=1.5)
         if r.status_code != 200:
             return
         body = r.json()
-        box_version = body.get('box_version') or body.get('version')
+        box_version = body.get('version') or body.get('box_version')
+        if box_version == 'unknown':
+            box_version = None
     except Exception as e:
         logger.debug('version-skew check: fetch failed: %s', e)
         return

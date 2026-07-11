@@ -21,8 +21,8 @@ def hello(ctx, box):
     resolved_box, box_name = resolve_and_validate_box_with_name(ctx, box)
     display_name = box_name or resolved_box
 
-    # Port for the Python service
-    port = 5000
+    # Port for the box HTTP API
+    port = 9000
 
     # Display header
     click.echo()
@@ -30,20 +30,19 @@ def hello(ctx, box):
     click.echo(f'IP: {resolved_box}')
 
     try:
-        # Query the /cli-version endpoint for version info first
-        version_url = f'http://{resolved_box}:{port}/cli-version'
+        # /status on :9000 reports the box version (read from /etc/lager/version)
+        version_url = f'http://{resolved_box}:{port}/status'
         version_response = requests.get(version_url, timeout=10)
 
+        box_version = None
         if version_response.status_code == 200:
             data = version_response.json()
-            box_version = data.get('box_version')
+            box_version = data.get('version') or data.get('box_version')
+            if box_version == 'unknown':
+                box_version = None
 
-            if box_version:
-                click.echo(f'Version: {box_version}')
-            else:
-                click.echo(f'Version: {click.style("Unknown", fg="yellow")}')
-        elif version_response.status_code == 404:
-            click.echo(f'Version: {click.style("Unknown", fg="yellow")}')
+        if box_version:
+            click.echo(f'Version: {box_version}')
         else:
             click.echo(f'Version: {click.style("Unknown", fg="yellow")}')
 

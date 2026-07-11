@@ -322,7 +322,7 @@ class TestAcquireBoxLock:
             '10.0.0.1', 'lab-box', 'alice',
             holder_type='ephemeral', ttl_seconds=None, wait_seconds=0,
         )
-        assert captured['url'] == 'http://10.0.0.1:5000/lock'
+        assert captured['url'] == 'http://10.0.0.1:9000/lock'
         assert captured['json']['user'] == 'alice'
         assert captured['json']['holder_type'] == 'ephemeral'
         assert captured['json']['ttl_seconds'] is None
@@ -357,7 +357,7 @@ class TestReleaseBoxLock:
 
         monkeypatch.setattr(requests, 'post', fake_post)
         box_storage.release_box_lock('10.0.0.1', 'alice')
-        assert captured['url'] == 'http://10.0.0.1:5000/unlock'
+        assert captured['url'] == 'http://10.0.0.1:9000/unlock'
 
 
 class TestHeartbeatBoxLock:
@@ -385,7 +385,7 @@ class TestHeartbeatBoxLock:
 
         monkeypatch.setattr(requests, 'post', fake_post)
         box_storage.heartbeat_box_lock('10.0.0.1', 'alice')
-        assert captured['url'] == 'http://10.0.0.1:5000/lock/heartbeat'
+        assert captured['url'] == 'http://10.0.0.1:9000/lock/heartbeat'
         assert captured['json'] == {'user': 'alice'}
 
 
