@@ -198,9 +198,11 @@ def _proxy(netname, role, timeout=None):
 def _gpio(netname, role, action, params):
     # Blocking edge/level wait runs inside hardware_service under the LabJack's
     # shared device_id lock; the gpio_hs adapter normalizes the level and routes
-    # LabJack-specific scan kwargs (matches the gpio dispatcher). The whole wait
-    # is bounded by the caller-supplied timeout, which must stay under both the
-    # widened Device proxy timeout and the reverse proxy's read timeout.
+    # LabJack-specific scan kwargs (matches the gpio dispatcher). The internal
+    # box->hardware_service proxy timeout is sized past the caller-supplied wait
+    # timeout so the device method (not the transport) decides when to give up;
+    # with no wait timeout the proxy waits indefinitely, matching the old
+    # unbounded `lager gpi --wait-for` behavior.
     if action == "wait_for_level":
         level = params.get("level")
         if level is None:
@@ -215,7 +217,10 @@ def _gpio(netname, role, action, params):
         if params.get("poll_interval") is not None:
             kwargs["poll_interval"] = float(params["poll_interval"])
         wait_timeout = kwargs.get("timeout")
-        proxy_timeout = min(float(wait_timeout) + 5.0, 55.0) if wait_timeout else 55.0
+        # 24h stands in for "no timeout": Device(timeout=None) means "use the
+        # 10s default", so an explicit huge budget is how we defer entirely to
+        # the device-side wait (or the caller's own timeout + margin).
+        proxy_timeout = float(wait_timeout) + 10.0 if wait_timeout else 86400.0
         dev = _proxy(netname, role, timeout=proxy_timeout)
         elapsed = float(dev.wait_for_level(level, **kwargs))
         return _ok("Reached level %s in %.4fs" % (level, elapsed), elapsed)
@@ -276,7 +281,7 @@ def _watt_meter(netname, role, action, params):
         raise UnknownAction(action)
     duration = float(params.get("duration") or 0.1)
     # Widen the proxy timeout to cover the integration window (+margin).
-    dev = _proxy(netname, role, timeout=min(duration + 10.0, 55.0))
+    dev = _proxy(netname, role, timeout=duration + 15.0)
     r = dev.measure(action, duration)
     if action == "all":
         current = float(r["current"])
@@ -439,10 +444,13 @@ def _energy_analyzer(netname, role, action, params):
         raise UnknownAction(action)
     default = 10.0 if action == "read_energy" else 1.0
     duration = float(params.get("duration") or default)
-    # Clamp to the box's safe measurement window. The control plane clamps to 30s too,
-    # sized so the held connection stays under Nginx's 60s proxy_read_timeout.
-    duration = max(0.1, min(duration, 30.0))
-    dev = _proxy(netname, role, timeout=min(duration + 10.0, 55.0))
+    # Clamp to the box's safe measurement window (matches the old :5000 path's
+    # 120s CLI budget). Direct :9000 callers (CLI/Rust crate) are not proxied
+    # through Nginx, so long-held requests are fine; the control plane's
+    # dashboard path clamps itself to 30s to stay under Nginx's 60s
+    # proxy_read_timeout.
+    duration = max(0.1, min(duration, 120.0))
+    dev = _proxy(netname, role, timeout=duration + 15.0)
     r = dev.measure(action, duration)
     if action == "read_energy":
         msg = "%.4f J (%.4f C) over %.1f s" % (

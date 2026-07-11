@@ -70,10 +70,17 @@ def gpo(ctx, box, netname, level, hold):
     post_net_command(ctx, box_ip, netname, "output", role="gpio", level=level)
 
     if hold:
-        # The output level is latched on the hardware and persists after this
-        # command returns, so there is nothing to "hold" over the stateless
-        # HTTP path (unlike the old long-lived script process).
-        click.echo("Note: output level is latched on the device; --hold is a no-op.")
+        # Over the stateless HTTP path there is no per-command process whose
+        # exit could release the pin: hardware_service keeps the device session
+        # open persistently, so the driven level persists after this command
+        # returns regardless of --hold. The old "hold until Ctrl+C, release on
+        # exit" semantic no longer exists.
+        click.echo(
+            "Note: --hold is a no-op over the HTTP path. The output level "
+            "persists after this command returns (hardware_service keeps the "
+            "device session open); there is no hold-then-release-on-exit "
+            "behavior anymore."
+        )
 
 
 gpo.net_examples = [

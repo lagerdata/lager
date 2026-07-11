@@ -128,6 +128,35 @@ def get_netname_or_none(ctx: click.Context) -> str | None:
 
 
 # =============================================================================
+# Output formatting
+# =============================================================================
+
+def fmt_si(value: float, unit: str) -> str:
+    """Format a value with an appropriate SI prefix (mirrors the box-side
+    ``lager.measurement.format_utils.fmt_si`` so CLI output matches what the
+    old on-box impl scripts printed).
+
+    Scales sub-unit magnitudes into milli/micro/nano so small readings stay
+    readable (e.g. ``52.340 µW`` instead of ``0.000 W``); falls back to
+    scientific notation when even nano would round to zero.
+    """
+    abs_val = abs(value)
+    if abs_val == 0.0:
+        return f"{value:.3f} {unit}"
+    if abs_val >= 1.0:
+        scaled, prefix = value, ""
+    elif abs_val >= 1e-3:
+        scaled, prefix = value * 1e3, "m"
+    elif abs_val >= 1e-6:
+        scaled, prefix = value * 1e6, "µ"
+    else:
+        scaled, prefix = value * 1e9, "n"
+    if abs(scaled) < 0.0005:
+        return f"{value:.3e} {unit}"
+    return f"{scaled:.3f} {prefix}{unit}"
+
+
+# =============================================================================
 # Net Operations (querying box for nets)
 # =============================================================================
 
@@ -186,6 +215,7 @@ def post_net_command(
     action: str,
     role: str | None = None,
     quiet: bool = False,
+    http_timeout: float | None = _NET_HTTP_TIMEOUT,
     **params: Any,
 ) -> dict:
     """Drive a net via the box's warm HTTP endpoint (POST :9000/net/command).
@@ -206,6 +236,13 @@ def post_net_command(
         action: Role-specific action (e.g. "input", "read", "voltage").
         role: Optional role hint; the box verifies it against saved_nets.json.
         quiet: If True, do not echo the success message (caller formats output).
+        http_timeout: HTTP client timeout in seconds. Defaults to the
+            quick-command budget; callers whose action blocks on the box for a
+            caller-controlled duration (energy/watt integration windows,
+            gpi --wait-for) MUST widen this past that duration or the client
+            aborts a healthy request with ReadTimeout. None disables the client
+            timeout. (Named ``http_timeout`` because ``timeout`` is a valid
+            action param, e.g. gpio wait_for_level.)
         **params: Action parameters forwarded verbatim under ``params``.
 
     Returns:
@@ -219,7 +256,7 @@ def post_net_command(
 
     url = f"http://{box_ip}:{NET_HTTP_PORT}/net/command"
     try:
-        resp = requests.post(url, json=payload, timeout=_NET_HTTP_TIMEOUT)
+        resp = requests.post(url, json=payload, timeout=http_timeout)
     except (requests.ConnectionError, requests.Timeout):
         click.secho(
             f"Error: cannot reach box at {box_ip}:{NET_HTTP_PORT}. "
