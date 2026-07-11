@@ -142,6 +142,18 @@ class Dexarm(ArmBase):
     def save_position(self) -> None:
         self._send_cmd("M889\r")
 
+    def read_and_save_position(self) -> Tuple[float, float, float]:
+        """Read the current position, persist it on the arm (M889), and
+        return (x, y, z).
+
+        The CLI's ``read-and-save-position`` command has always called this
+        method, but only ``save_position()`` existed — so the command failed
+        with AttributeError on every box.
+        """
+        x, y, z, *_ = self.get_full_position()
+        self.save_position()
+        return x, y, z
+
     # ---- Low-level helpers / existing API ----
     def _send_cmd(self, data: str, wait: bool = True) -> None:
         """Send command to the arm, optionally wait for 'ok'."""

@@ -14,6 +14,7 @@ from .connect import connect_to_wifi
 from .disconnect import disconnect_wifi
 from .scan import scan_wifi
 from .status import get_wifi_status
+from .delete import delete_wifi_connection
 
 __all__ = [
     # Router management
@@ -25,4 +26,5 @@ __all__ = [
     'disconnect_wifi',
     'scan_wifi',
     'get_wifi_status',
+    'delete_wifi_connection',
 ]

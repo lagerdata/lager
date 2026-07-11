@@ -82,6 +82,34 @@ class StatusCapabilitiesTest(unittest.TestCase):
         box_http_server._has_net_command = False
         self.assertIs(self._capabilities()['netCommand'], False)
 
+    def test_advertises_net_command_roles(self):
+        # Clients detect arm/webcam/router support from the role list rather
+        # than version sniffing; it must mirror the registered ROLE_ACTIONS.
+        caps = self._capabilities()
+        roles = caps['netCommandRoles']
+        if box_http_server._has_net_command:
+            for role in ('gpio', 'adc', 'arm', 'webcam', 'router'):
+                self.assertIn(role, roles)
+        else:
+            self.assertEqual(roles, [])
+
+    def test_box_level_capabilities_reflect_registration(self):
+        # Same contract as netCommand: each flag mirrors whether its route
+        # actually registered.
+        orig = (box_http_server._has_ble, box_http_server._has_wifi,
+                box_http_server._has_blufi)
+        try:
+            box_http_server._has_ble = True
+            box_http_server._has_wifi = False
+            box_http_server._has_blufi = True
+            caps = self._capabilities()
+            self.assertIs(caps['bleCommand'], True)
+            self.assertIs(caps['wifiCommand'], False)
+            self.assertIs(caps['blufiCommand'], True)
+        finally:
+            (box_http_server._has_ble, box_http_server._has_wifi,
+             box_http_server._has_blufi) = orig
+
 
 if __name__ == '__main__':
     unittest.main()

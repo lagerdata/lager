@@ -9,17 +9,15 @@ Webcam streaming commands for viewing live camera feeds from box devices.
 Migrated from cli/webcam/commands.py to cli/commands/utility/webcam.py.
 """
 
-import io
 import click
-import json
-from contextlib import redirect_stdout
 from texttable import Texttable
-from ...context import get_default_box, get_impl_path, get_default_net
-from ..development.python import run_python_internal
-from ...box_storage import get_box_ip
+from ...context import get_default_box, get_default_net
 from ...core.net_group import NetGroupHelpMixin
+from ...core.net_helpers import list_nets_by_role, post_net_command
 
-WEBCAM_ROLE = "camera"
+# The box saves webcam nets with role "webcam" (NetType.from_role); the CLI
+# historically filtered on "camera", so listing never matched anything.
+WEBCAM_ROLE = "webcam"
 
 # Timeout for webcam commands (seconds)
 WEBCAM_TIMEOUT = 30
@@ -47,43 +45,9 @@ def _resolve_box(ctx, box):
     return resolve_and_validate_box(ctx, box)
 
 
-def _run_net_py(ctx: click.Context, box_ip: str, *args: str) -> list[dict]:
-    """Run net.py to get list of nets."""
-    buf = io.StringIO()
-    try:
-        with redirect_stdout(buf):
-            run_python_internal(
-                ctx,
-                get_impl_path("net.py"),
-                box_ip,
-                env={},
-                passenv=(),
-                kill=False,
-                download=(),
-                allow_overwrite=False,
-                signum="SIGTERM",
-                timeout=0,
-                detach=False,
-                port=(),
-                org=None,
-                args=args or ("list",),
-                # Capture call: opt out of the lager.pause() stdin watcher so it
-                # can't leak a daemon reader that races stdin (see net_helpers).
-                watch_stdin_resume=False,
-            )
-    except SystemExit:
-        pass
-    raw = buf.getvalue() or "[]"
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return []
-
-
 def _list_webcam_nets(ctx, box):
-    """Get list of webcam nets from box."""
-    recs = _run_net_py(ctx, box, "list")
-    return [r for r in recs if r.get("role") == WEBCAM_ROLE]
+    """Get list of webcam nets from box (GET :9000/nets/list)."""
+    return list_nets_by_role(ctx, box, WEBCAM_ROLE)
 
 
 def _display_webcam_nets(ctx, box):
@@ -111,111 +75,109 @@ def _display_webcam_nets(ctx, box):
     click.echo(table.draw())
 
 
+def _post_webcam(ctx: click.Context, box_ip: str, net_name: str, action: str) -> dict:
+    """POST one webcam action to :9000/net/command and return the response."""
+    return post_net_command(
+        ctx, box_ip, net_name, action,
+        role=WEBCAM_ROLE, quiet=True, http_timeout=WEBCAM_TIMEOUT,
+        # The box builds the viewer URL from this IP (the address the user
+        # reaches the box at), not the container-internal hostname.
+        box_ip=box_ip,
+    )
+
+
+def _try_post_webcam(ctx, box_ip, net_name, action):
+    """Like _post_webcam but returns None on failure instead of exiting.
+
+    Used by the *-all commands so one broken webcam doesn't abort the rest;
+    post_net_command has already printed the error before raising.
+    """
+    try:
+        return _post_webcam(ctx, box_ip, net_name, action)
+    except SystemExit:
+        return None
+
+
 def _run_webcam_command(ctx: click.Context, box_ip: str, action: str, net_name: str = None) -> dict:
     """
-    Execute webcam command on box.
+    Execute webcam command via the box HTTP API (POST :9000/net/command).
+
+    Single-net actions (start/stop) map directly onto the box's webcam role;
+    the *-all actions iterate the box's webcam nets client-side.
 
     Args:
         ctx: Click context
         box_ip: Box IP address
-        action: Action to perform (start, stop, url)
-        net_name: Name of the webcam net
+        action: start, stop, start-all, stop-all, or url-all
+        net_name: Name of the webcam net (single-net actions only)
 
     Returns:
-        dict: Response from box
+        dict: Result in the same shape the old impl script produced
 
     Raises:
-        SystemExit: On command failure
+        SystemExit: On command failure (single-net actions)
     """
-    import io
-    from contextlib import redirect_stdout
+    if action == "start":
+        result = _post_webcam(ctx, box_ip, net_name, "start")
+        value = result.get("value") or {}
+        return {
+            "ok": True,
+            "url": value.get("url"),
+            "port": value.get("port"),
+            "already_running": value.get("already_running", False),
+        }
 
-    command_data = {
-        "action": action,
-        "net_name": net_name,
-        "box_ip": box_ip
-    }
+    if action == "stop":
+        result = _post_webcam(ctx, box_ip, net_name, "stop")
+        value = result.get("value") or {}
+        return {"ok": value.get("stopped", False),
+                "message": result.get("message")}
 
-    buf = io.StringIO()
-    try:
-        with redirect_stdout(buf):
-            run_python_internal(
-                ctx,
-                get_impl_path("webcam.py"),
-                box_ip,
-                env=(f"LAGER_COMMAND_DATA={json.dumps(command_data)}",),
-                passenv=(),
-                kill=False,
-                download=(),
-                allow_overwrite=False,
-                signum="SIGTERM",
-                timeout=WEBCAM_TIMEOUT,
-                detach=False,
-                port=(),
-                org=None,
-                args=(),
-            )
-    except SystemExit as e:
-        # Capture output even on exit
-        output = buf.getvalue().strip()
-        if output:
-            try:
-                result = json.loads(output)
-                if "error" in result:
-                    click.secho(f"Error: {result['error']}", fg="red", err=True)
-                    ctx.exit(1)
-                return result
-            except json.JSONDecodeError:
-                pass
-        if e.code != 0:
-            raise
-    except Exception as e:
-        error_str = str(e)
-        click.secho(f"Error: Failed to execute webcam command", fg='red', err=True)
-        if "Connection refused" in error_str:
-            click.secho(f"Could not connect to box at {box_ip}", err=True)
-            click.secho("Check that the box is online and Docker container is running.", err=True)
-        elif "timed out" in error_str.lower():
-            click.secho("Webcam command timed out.", err=True)
-            click.secho("The webcam may be unresponsive or starting up slowly.", err=True)
-        else:
-            click.secho(f"Details: {e}", err=True)
-        ctx.exit(1)
+    if action in ("start-all", "stop-all", "url-all"):
+        webcam_nets = [n.get("name") for n in _list_webcam_nets(ctx, box_ip)]
+        if not webcam_nets:
+            return {"ok": True, "message": "No webcam nets found", "results": []}
 
-    output = buf.getvalue().strip()
+        results = []
+        for net in webcam_nets:
+            if action == "start-all":
+                result = _try_post_webcam(ctx, box_ip, net, "start")
+                if result is None:
+                    results.append({"net": net, "success": False, "error": "failed"})
+                else:
+                    value = result.get("value") or {}
+                    results.append({
+                        "net": net,
+                        "success": True,
+                        "url": value.get("url"),
+                        "already_running": value.get("already_running", False),
+                    })
+            elif action == "stop-all":
+                result = _try_post_webcam(ctx, box_ip, net, "stop")
+                if result is None:
+                    results.append({"net": net, "success": False, "error": "failed"})
+                else:
+                    stopped = (result.get("value") or {}).get("stopped", False)
+                    results.append({"net": net, "success": True,
+                                    "was_running": stopped})
+            else:  # url-all
+                result = _try_post_webcam(ctx, box_ip, net, "status")
+                if result is None:
+                    continue
+                value = result.get("value") or {}
+                if value.get("running"):
+                    results.append({
+                        "net": net,
+                        "url": value.get("url"),
+                        "port": value.get("port"),
+                        "video_device": value.get("video_device"),
+                    })
 
-    if not output:
-        click.secho("Error: No response from webcam service", fg="red", err=True)
-        click.secho("The webcam service may not be running on the box.", err=True)
-        ctx.exit(1)
+        if action == "url-all" and not results:
+            return {"ok": True, "message": "No active webcam streams", "results": []}
+        return {"ok": True, "results": results}
 
-    try:
-        result = json.loads(output)
-    except json.JSONDecodeError:
-        click.secho("Error: Failed to parse response from box", fg="red", err=True)
-        click.secho("Raw output:", fg="yellow", err=True)
-        # Show truncated output if too long
-        if len(output) > 500:
-            click.secho(f"  {output[:500]}... (truncated)", err=True)
-        else:
-            click.secho(f"  {output}", err=True)
-        ctx.exit(1)
-
-    if "error" in result:
-        error_msg = result['error']
-        click.secho(f"Error: {error_msg}", fg="red", err=True)
-        # Provide additional hints for common errors
-        if "not found" in error_msg.lower():
-            click.secho("Check that the webcam net is correctly configured.", err=True)
-            click.secho(f"List webcam nets with: lager webcam --box {box_ip}", err=True)
-        elif "device" in error_msg.lower() and ("busy" in error_msg.lower() or "in use" in error_msg.lower()):
-            click.secho("The webcam device may be in use by another process.", err=True)
-        elif "video" in error_msg.lower() and "no such" in error_msg.lower():
-            click.secho("The video device is not connected or has a different path.", err=True)
-            click.secho("Check the webcam connection and try again.", err=True)
-        ctx.exit(1)
-
-    return result
+    raise click.UsageError(f"Unknown webcam action: {action}")
 
 
 class WebcamGroup(NetGroupHelpMixin, click.Group):

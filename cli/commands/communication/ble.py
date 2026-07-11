@@ -12,12 +12,9 @@ import re
 import json
 
 import click
-from texttable import Texttable
 
-# Import consolidated helpers from cli.core.net_helpers
 from ...core.group_usage import LagerGroup
-from ...core.net_helpers import resolve_box, run_impl_script
-from ...context import get_impl_path
+from ...core.net_helpers import resolve_box, post_box_command
 
 
 @click.group(name='ble', cls=LagerGroup)
@@ -35,28 +32,13 @@ def check_name(device):
     return 0 if ADDRESS_NAME_RE.search(device['name']) else 1
 
 
-def normalize_device(device):
-    (address, data) = device
-    item = {'address': address}
-    manufacturer_data = data.get('manufacturer_data', {})
-    for (k, v) in manufacturer_data.items():
-        manufacturer_data[k] = bytes(v) if isinstance(v, list) else v
-    item.update(data)
-    return item
-
-
-def _run_ble_command(ctx: click.Context, box_ip: str, args_dict: dict) -> None:
-    """Run BLE impl script with JSON arguments."""
-    try:
-        run_impl_script(
-            ctx,
-            box_ip,
-            "ble.py",
-            args=(json.dumps(args_dict),),
-        )
-    except Exception as e:
-        click.secho(f"Error executing BLE command: {e}", fg='red', err=True)
-        ctx.exit(1)
+def _post_ble(ctx: click.Context, box_ip: str, action: str,
+              http_timeout: float, **params) -> dict:
+    """POST one action to :9000/ble/command and return the response."""
+    return post_box_command(
+        ctx, box_ip, "/ble/command", action,
+        quiet=True, http_timeout=http_timeout, **params,
+    )
 
 
 def _validate_ble_address(ctx: click.Context, address: str) -> None:
@@ -65,6 +47,47 @@ def _validate_ble_address(ctx: click.Context, address: str) -> None:
         click.secho(f"Error: Invalid BLE address format: {address}", fg='red', err=True)
         click.secho("Expected format: XX:XX:XX:XX:XX:XX (e.g., 00:11:22:33:44:55)", err=True)
         ctx.exit(1)
+
+
+def _format_device_table(devices: list[dict], verbose: bool = False) -> str:
+    """Format scan results in the same table shape the old impl printed."""
+    lines = []
+    if verbose:
+        lines.append(f"{'Name':<20} {'Address':<17} {'RSSI':<6} {'UUIDs'}")
+        lines.append("-" * 80)
+    else:
+        lines.append(f"{'Name':<20} {'Address':<17} {'RSSI'}")
+        lines.append("-" * 50)
+
+    for device in devices:
+        name = device.get('name') or device.get('address', '')
+        address = device.get('address', '')
+        rssi = device.get('rssi', -100)
+        if verbose:
+            uuids = device.get('uuids', [])
+            uuids_str = ', '.join(str(u)[:8] + '...' for u in uuids[:3])
+            if len(uuids) > 3:
+                uuids_str += f" (+{len(uuids)-3} more)"
+            lines.append(f"{name:<20} {address:<17} {rssi:<6} {uuids_str}")
+        else:
+            lines.append(f"{name:<20} {address:<17} {rssi}")
+
+    return '\n'.join(lines)
+
+
+def _print_services(services: list[dict]) -> None:
+    """Print a service/characteristic summary for info/connect output."""
+    for i, service in enumerate(services):
+        desc = service.get('description') or 'Unknown Service'
+        click.secho(f"  {i+1}. {service['uuid']}", fg='green')
+        click.secho(f"     Description: {desc}", fg='green')
+        chars = service.get('characteristics', [])
+        click.secho(f"     Characteristics: {len(chars)}", fg='green')
+        for char in chars[:3]:
+            props = ', '.join(char.get('properties', []))
+            click.secho(f"       - {char['uuid'][:8]}... [{props}]", fg='green')
+        if len(chars) > 3:
+            click.secho(f"       ... and {len(chars)-3} more", fg='green')
 
 
 @ble.command('scan')
@@ -86,15 +109,78 @@ def scan(ctx, box, timeout, name_contains, name_exact, verbose):
 
     box_ip = resolve_box(ctx, box)
 
-    scan_args = {
-        'action': 'scan',
-        'timeout': timeout,
-        'name_contains': name_contains,
-        'name_exact': name_exact,
-        'verbose': verbose
-    }
+    click.secho(f"Scanning for BLE devices for {timeout} seconds...", fg='green')
+    result = _post_ble(
+        ctx, box_ip, 'scan',
+        http_timeout=timeout + 30.0,
+        timeout=timeout,
+        name_contains=name_contains,
+        name_exact=name_exact,
+    )
 
-    _run_ble_command(ctx, box_ip, scan_args)
+    devices = (result.get('value') or {}).get('devices', [])
+    click.secho(f"Found {len(devices)} device(s)", fg='green')
+
+    if not devices:
+        if name_exact or name_contains:
+            click.secho("No devices found matching filter criteria!", fg='red')
+        else:
+            click.secho("No BLE devices found!", fg='red')
+        return
+
+    click.secho("\n" + _format_device_table(devices, verbose), fg='green')
+
+    # Structured data for programmatic use, matching the old script's output.
+    device_data = []
+    for device in devices:
+        item = {
+            'name': device.get('name'),
+            'address': device.get('address'),
+            'rssi': device.get('rssi', -100),
+        }
+        if verbose:
+            item['uuids'] = device.get('uuids', [])
+        device_data.append(item)
+
+    click.echo("\nJSON Output:")
+    click.echo(json.dumps(device_data, indent=2))
+
+
+def _info_or_connect(ctx, box, address, connect_style: bool):
+    """Shared body for the info and connect commands (same box action)."""
+    _validate_ble_address(ctx, address)
+    box_ip = resolve_box(ctx, box)
+
+    verb = "Connecting to" if connect_style else "Getting info for"
+    click.secho(f"{verb} BLE device: {address}", fg='green')
+
+    result = _post_ble(ctx, box_ip, 'connect' if connect_style else 'info',
+                       http_timeout=45.0, address=address)
+    value = result.get('value') or {}
+    services = value.get('services', [])
+
+    if connect_style:
+        click.secho(f"[OK] Connected to {address}", fg='green')
+        click.secho("\nConnection successful!", fg='green')
+        click.secho(f"Device: {address}", fg='green')
+        click.secho(f"Services: {len(services)}", fg='green')
+        if services:
+            click.secho("\nServices found:", fg='green')
+            for i, service in enumerate(services[:3]):
+                chars = service.get('characteristics', [])
+                click.secho(f"  {i+1}. {service['uuid'][:8]}... ({len(chars)} characteristics)", fg='green')
+            if len(services) > 3:
+                click.secho(f"  ... and {len(services)-3} more services", fg='green')
+    else:
+        click.secho("\nDevice Information:", fg='green')
+        click.secho(f"Address: {address}", fg='green')
+        click.secho(f"Services: {len(services)}", fg='green')
+        if services:
+            click.secho("\nServices:", fg='green')
+            _print_services(services)
+
+    click.echo("\nJSON Output:")
+    click.echo(json.dumps(value, indent=2))
 
 
 @ble.command('info')
@@ -105,15 +191,7 @@ def info(ctx, box, address):
     """
         Get BLE device information
     """
-    _validate_ble_address(ctx, address)
-    box_ip = resolve_box(ctx, box)
-
-    info_args = {
-        'action': 'info',
-        'address': address
-    }
-
-    _run_ble_command(ctx, box_ip, info_args)
+    _info_or_connect(ctx, box, address, connect_style=False)
 
 
 @ble.command('connect')
@@ -124,15 +202,7 @@ def connect(ctx, box, address):
     """
         Connect to a BLE device
     """
-    _validate_ble_address(ctx, address)
-    box_ip = resolve_box(ctx, box)
-
-    connect_args = {
-        'action': 'connect',
-        'address': address
-    }
-
-    _run_ble_command(ctx, box_ip, connect_args)
+    _info_or_connect(ctx, box, address, connect_style=True)
 
 
 @ble.command('disconnect')
@@ -146,9 +216,13 @@ def disconnect(ctx, box, address):
     _validate_ble_address(ctx, address)
     box_ip = resolve_box(ctx, box)
 
-    disconnect_args = {
-        'action': 'disconnect',
-        'address': address
-    }
+    click.secho(f"Disconnecting from BLE device: {address}", fg='green')
+    result = _post_ble(ctx, box_ip, 'disconnect', http_timeout=45.0, address=address)
+    value = result.get('value') or {}
 
-    _run_ble_command(ctx, box_ip, disconnect_args)
+    click.secho(f"[OK] Disconnected from {address}", fg='green')
+    if value.get('note'):
+        click.secho(f"  Note: {value['note']}", fg='green')
+
+    click.echo("\nJSON Output:")
+    click.echo(json.dumps(value, indent=2))

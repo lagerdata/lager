@@ -7,20 +7,19 @@ Robot arm control commands.
 This module provides CLI commands for controlling robot arm position and movement.
 All coordinates are in millimeters (mm).
 """
-import json
-
 import click
 from texttable import Texttable
 
-from ...context import get_default_box, get_default_net, get_impl_path
+from ...context import get_default_box, get_default_net
 from ...core.net_group import NetGroup
-from ...core.net_helpers import resolve_box, run_net_py, list_nets_by_role, validate_net_exists
+from ...core.net_helpers import (
+    resolve_box,
+    list_nets_by_role,
+    validate_net_exists,
+    post_net_command,
+)
 
 ARM_ROLE = "arm"
-
-
-def _impl_arm_path() -> str:
-    return get_impl_path("arm.py")
 
 
 def _list_arm_nets(ctx, box):
@@ -54,29 +53,24 @@ def _display_arm_nets(ctx, box):
 
 
 def _run(ctx, payload: dict, box: str):
-    """Run the arm implementation script with given payload."""
-    from .python import run_python_internal
+    """Drive the arm over the box HTTP API (POST :9000/net/command)."""
+    payload = dict(payload)
+    netname = payload.pop("netname")
+    action = payload.pop("command")
 
-    try:
-        run_python_internal(
-            ctx=ctx,
-            runnable=_impl_arm_path(),
-            box=box,
-            env=(),
-            passenv=(),
-            kill=False,
-            download=(),
-            allow_overwrite=False,
-            signum="SIGTERM",
-            timeout=30,  # 30 second timeout to prevent hanging
-            detach=False,
-            port=(),
-            org=None,
-            args=[json.dumps(payload)],
-        )
-    except Exception as e:
-        click.secho(f"Error executing arm command: {e}", fg='red', err=True)
-        ctx.exit(1)
+    # Moves block on the box until the arm reaches the target (or the move
+    # timeout expires), so the HTTP budget must outlast the move timeout.
+    http_timeout = 45.0
+    if action in ("move", "move_by"):
+        http_timeout = float(payload.get("timeout") or 15.0) + 30.0
+
+    result = post_net_command(
+        ctx, box, netname, action,
+        role=ARM_ROLE, quiet=True, http_timeout=http_timeout, **payload,
+    )
+    message = result.get("message")
+    if message:
+        click.secho(message, fg="green")
 
 
 def _require_netname(ctx) -> str:

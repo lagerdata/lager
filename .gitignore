@@ -102,3 +102,6 @@ dashboard_test_results.json
 
 # Claude Code local settings
 .claude/
+
+# Lager Rust crate (separate repo, developed in-tree for source visibility)
+lager-rs/

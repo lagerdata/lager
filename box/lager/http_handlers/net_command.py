@@ -94,6 +94,7 @@ _HS_FACTORY = {
     "energy-analyzer": "energy_hs",
     "spi": "spi_hs",
     "i2c": "i2c_hs",
+    "arm": "arm_hs",
 }
 
 
@@ -172,6 +173,12 @@ def _physical_device_id(role, instrument, rec):
         return "ppk2:" + (addr or "ANY")
     if role == "thermocouple" or "phidget" in inst:
         return "phidget:" + (addr or "ANY")
+    if role == "arm" or "dexarm" in inst or "rotrics" in inst:
+        # One serial port per arm; the lock key is the arm's serial number
+        # (saved under rec["serial"] or location.serial_number) or address.
+        location = rec.get("location")
+        loc_serial = location.get("serial_number") if isinstance(location, dict) else None
+        return "dexarm:" + (rec.get("serial") or loc_serial or addr or "ANY")
     if role == "watt-meter" or "yocto" in inst:
         return "yocto:" + (addr or "ANY")
     # Default: LabJack T7 — one shared LJM handle across all roles/pins.
@@ -466,6 +473,282 @@ def _energy_analyzer(netname, role, action, params):
     return _ok(msg, r)
 
 
+def _arm(netname, role, action, params):
+    # Dexarm robot arm via the arm_hs adapter: hardware_service owns the
+    # serial handle (opened once, cached) and serializes every call under the
+    # arm's device_id lock, so two concurrent commands can't interleave
+    # G-code. Moves block on the box until the arm reaches the target, so the
+    # internal proxy timeout is widened past the caller's move timeout.
+    if action == "position":
+        pos = _proxy(netname, role).position()
+        return _ok("X: %s Y: %s Z: %s" % tuple(pos), [float(v) for v in pos])
+
+    if action in ("move", "move_by"):
+        timeout = float(params.get("timeout") or 15.0)
+        dev = _proxy(netname, role, timeout=timeout + 15.0)
+        if action == "move":
+            for key in ("x", "y", "z"):
+                if params.get(key) is None:
+                    raise KeyError(key)
+            pos = dev.move(float(params["x"]), float(params["y"]),
+                           float(params["z"]), timeout=timeout)
+        else:
+            pos = dev.move_by(float(params.get("dx") or 0.0),
+                              float(params.get("dy") or 0.0),
+                              float(params.get("dz") or 0.0),
+                              timeout=timeout)
+        return _ok("X: %s Y: %s Z: %s" % tuple(pos), [float(v) for v in pos])
+
+    dev = _proxy(netname, role, timeout=30.0)
+    if action == "go_home":
+        dev.go_home()
+        return _ok("Arm moving to home position (X0 Y300 Z0)")
+    if action == "enable_motor":
+        dev.enable_motor()
+        return _ok("Arm motors enabled")
+    if action == "disable_motor":
+        dev.disable_motor()
+        return _ok("Arm motors disabled")
+    if action == "read_and_save_position":
+        pos = dev.read_and_save_position()
+        return _ok("Saved position X: %s Y: %s Z: %s" % tuple(pos),
+                   [float(v) for v in pos])
+    if action == "set_acceleration":
+        acceleration = params.get("acceleration")
+        travel = params.get("travel_acceleration")
+        if acceleration is None:
+            raise KeyError("acceleration")
+        if travel is None:
+            raise KeyError("travel_acceleration")
+        retract = int(params.get("retract_acceleration") or 60)
+        dev.set_acceleration(int(acceleration), int(travel),
+                             retract_acceleration=retract)
+        return _ok(
+            "Acceleration set (M204): print=%d travel=%d retract=%d"
+            % (int(acceleration), int(travel), retract))
+    raise UnknownAction(action)
+
+
+def _webcam_box_ip(params):
+    """Resolve the IP viewers should use in stream URLs: an explicit
+    params['box_ip'] wins, else the host the caller reached us at."""
+    box_ip = params.get("box_ip")
+    if box_ip:
+        return str(box_ip)
+    host = request.host or "localhost"
+    return host.rsplit(":", 1)[0]
+
+
+def _webcam(netname, role, action, params):
+    # In-process: WebcamService already manages its own stream subprocesses
+    # and state file, so there is no device handle to cache or lock.
+    from lager.automation import webcam as webcam_svc
+
+    box_ip = _webcam_box_ip(params)
+    if action == "start":
+        rec = _find_rec(netname, role, DeviceError)
+        video_device = rec.get("pin")
+        if not video_device:
+            raise ValueError(
+                "Net '%s' does not have a video device configured." % netname)
+        video_device = str(video_device)
+        if not video_device.startswith("/dev/"):
+            video_device = "/dev/" + video_device
+        try:
+            result = webcam_svc.start_stream(netname, video_device, box_ip)
+        except RuntimeError as e:
+            raise DeviceError(str(e))
+        msg = ("Stream already running at %s" if result.get("already_running")
+               else "Stream started at %s") % result["url"]
+        return _ok(msg, {
+            "url": result["url"],
+            "port": result["port"],
+            "already_running": bool(result.get("already_running", False)),
+        })
+
+    if action == "stop":
+        stopped = bool(webcam_svc.stop_stream(netname))
+        msg = "Stream stopped" if stopped else "Stream not running"
+        return _ok(msg, {"stopped": stopped})
+
+    if action in ("url", "status"):
+        info = webcam_svc.get_stream_info(netname, box_ip)
+        if not info:
+            return _ok("No active stream for net '%s'" % netname,
+                       {"running": False})
+        return _ok("Streaming at %s" % info["url"], {
+            "running": True,
+            "url": info["url"],
+            "port": info["port"],
+            "video_device": info["video_device"],
+        })
+
+    raise UnknownAction(action)
+
+
+def _router(netname, role, action, params):
+    # MikroTik router via its REST API — a pure `requests` client, so it runs
+    # in-process (no device caching or locking needed; the router serializes
+    # its own configuration changes).
+    from lager.nets.constants import NetType
+
+    router = Net.get_from_saved_json(netname, NetType.Router)
+    if router is None:
+        raise DeviceError("Router net '%s' could not be loaded" % netname)
+
+    def _kwargs(*exclude):
+        return {k: v for k, v in params.items() if k not in exclude}
+
+    try:
+        # -- Read-only / system --
+        if action == "connect":
+            result = router.connect()
+        elif action == "system_info":
+            result = router.get_system_info()
+        elif action == "interfaces":
+            result = router.get_interfaces()
+        elif action == "wireless_interfaces":
+            result = router.get_wireless_interfaces()
+        elif action == "wireless_clients":
+            result = router.get_wireless_clients()
+        elif action == "dhcp_leases":
+            result = router.get_dhcp_leases()
+        elif action == "security_profiles":
+            result = router.get_security_profiles()
+        elif action == "access_list":
+            result = router.get_access_list()
+
+        # -- System actions --
+        elif action == "reboot":
+            result = router.reboot()
+        elif action == "wait_for_ready":
+            result = {"ready": router.wait_for_ready(
+                timeout=params.get("timeout", 120))}
+
+        # -- Interface control --
+        elif action == "set_interface_disabled":
+            result = router.set_interface_disabled(
+                params["interface"], params["disabled"])
+        elif action == "enable_interface":
+            router.enable_interface(params["interface"])
+            result = {"interface": params["interface"], "disabled": False}
+        elif action == "disable_interface":
+            router.disable_interface(params["interface"])
+            result = {"interface": params["interface"], "disabled": True}
+        elif action == "wait_for_wireless_ready":
+            result = {"ready": router.wait_for_wireless_ready(
+                params["interface"], timeout=params.get("timeout", 30))}
+
+        # -- Wireless configuration --
+        elif action == "set_wireless_ssid":
+            result = router.set_wireless_ssid(params["interface"], params["ssid"])
+        elif action == "configure_wireless":
+            result = router.configure_wireless(
+                params["interface"], **(params.get("kwargs") or {}))
+
+        # -- Security profiles --
+        elif action == "create_security_profile":
+            result = router.create_security_profile(
+                name=params["name"],
+                mode=params.get("mode", "dynamic-keys"),
+                authentication_types=params.get("authentication_types", "wpa2-psk"),
+                unicast_ciphers=params.get("unicast_ciphers", "aes-ccm"),
+                wpa2_pre_shared_key=params.get("wpa2_pre_shared_key", ""),
+                wpa_pre_shared_key=params.get("wpa_pre_shared_key", ""),
+            )
+        elif action == "create_open_security_profile":
+            result = router.create_open_security_profile(params.get("name", "open"))
+        elif action == "update_security_profile_password":
+            result = {"updated": router.update_security_profile_password(
+                params["name"], params["new_password"])}
+        elif action == "delete_security_profile":
+            result = {"deleted": router.delete_security_profile(params["name"])}
+
+        # -- DHCP --
+        elif action == "enable_dhcp":
+            router.enable_dhcp()
+            result = {"dhcp": "enabled"}
+        elif action == "disable_dhcp":
+            router.disable_dhcp()
+            result = {"dhcp": "disabled"}
+        elif action == "set_dhcp_lease_time":
+            router.set_dhcp_lease_time(params.get("lease_time", "10m"))
+            result = {"lease_time": params.get("lease_time", "10m")}
+
+        # -- Bandwidth limits --
+        elif action == "add_bandwidth_limit":
+            result = router.add_bandwidth_limit(
+                target=params["target"],
+                max_limit=params["max_limit"],
+                name=params.get("name"),
+            )
+        elif action == "remove_bandwidth_limits":
+            router.remove_bandwidth_limits()
+            result = {"removed": True}
+
+        # -- Firewall --
+        elif action == "add_firewall_rule":
+            result = router.add_firewall_rule(
+                chain=params.get("chain", "forward"),
+                action=params.get("rule_action", "drop"),
+                **_kwargs("chain", "rule_action"),
+            )
+        elif action == "remove_firewall_rules":
+            router.remove_firewall_rules()
+            result = {"removed": True}
+        elif action == "block_internet":
+            router.block_internet()
+            result = {"blocked": "internet"}
+        elif action == "block_dns":
+            router.block_dns()
+            result = {"blocked": "dns"}
+        elif action == "block_port":
+            router.block_port(params["port"], params.get("protocol", "tcp"))
+            result = {"blocked": "%s/%s" % (params.get("protocol", "tcp"),
+                                            params["port"])}
+
+        # -- Access list --
+        elif action == "add_access_list_entry":
+            result = router.add_access_list_entry(
+                mac_address=params["mac_address"],
+                authentication=params.get("authentication", True),
+                interface=params.get("interface", ""),
+                signal_range=params.get("signal_range", ""),
+            )
+        elif action == "remove_access_list_entry":
+            router.remove_access_list_entry(params["mac_address"])
+            result = {"removed": params["mac_address"]}
+        elif action == "clear_access_list":
+            router.clear_access_list()
+            result = {"cleared": True}
+
+        # -- Test reset --
+        elif action == "reset_to_defaults":
+            router.reset_to_defaults(
+                baseline_ssid=params.get("baseline_ssid"),
+                baseline_pass=params.get("baseline_pass"),
+                wireless_interfaces=params.get("wireless_interfaces"),
+            )
+            result = {"reset": True}
+
+        # -- Raw API --
+        elif action == "run":
+            result = router.run(params.get("path", ""),
+                                params=params.get("params"))
+
+        else:
+            raise UnknownAction(action)
+    except (UnknownAction, KeyError, ValueError):
+        raise
+    except (ConnectionFailed, DeviceError, LagerBackendError):
+        raise
+    except Exception as e:
+        # requests transport errors, MikroTik API errors -> 502 hardware error
+        raise DeviceError(str(e))
+
+    return _ok("router %s ok" % action, result)
+
+
 # role string -> handler. Keep aligned with mcp/data/api_reference.py and the
 # control-plane allowlist (NET_PYTHON_ACTIONS / NET_COMMAND_ROUTES).
 ROLE_ACTIONS = {
@@ -478,6 +761,10 @@ ROLE_ACTIONS = {
     "spi": _spi,
     "i2c": _i2c,
     "energy-analyzer": _energy_analyzer,
+    "arm": _arm,
+    "webcam": _webcam,
+    "router": _router,
+    "mikrotik": _router,  # saved-net role alias (NetType.from_role)
 }
 
 
