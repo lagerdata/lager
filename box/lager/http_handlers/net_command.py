@@ -122,12 +122,13 @@ def _find_rec(netname, role, error_class):
     raise error_class("Net '%s' (role %s) not found." % (netname, role))
 
 
-def _hw_proxy(netname, role, module_for_instrument, error_class):
+def _hw_proxy(netname, role, module_for_instrument, error_class, timeout=None):
     """Resolve a VISA net to a hardware_service Device proxy (POST :8080/invoke).
 
     Mirrors resolve_net_proxy's supply/battery flow (resolve record -> VISA
-    address -> instrument->module). Used for eload; the lock is hardware_service's
-    per-VISA-address lock, the single-owner path supply/battery use.
+    address -> instrument->module). Used for eload and solar; the lock is
+    hardware_service's per-VISA-address lock, the single-owner path
+    supply/battery use.
     """
     rec = _find_rec(netname, role, error_class)
     address = _address_from_rec(rec)
@@ -140,7 +141,7 @@ def _hw_proxy(netname, role, module_for_instrument, error_class):
         raise error_class(
             "Unsupported %s instrument '%s' for net '%s'." % (role, instrument, netname))
     net_info = {"name": netname, "address": address, "instrument": instrument}
-    return Device(device_name, net_info)
+    return Device(device_name, net_info, timeout=timeout)
 
 
 def _physical_device_id(role, instrument, rec):
@@ -332,6 +333,60 @@ def _eload(netname, role, action, params):
     else:
         res = dev.read_setpoint(action)
     return _ok(str(res), res)
+
+
+def _solar(netname, role, action, params):
+    # Solar simulation runs PV mode on an EA PSB supply — the same physical
+    # VISA instrument a power-supply net can target — so it routes through
+    # hardware_service (solar_hs adapter) under the per-VISA-address lock. A
+    # solar net and a supply net on the same EA therefore serialize, exactly
+    # like two supply requests would. Every action re-asserts PV mode via the
+    # driver's enable() (matching the old dispatcher), and mode init can be
+    # slow (settle retries), so the proxy timeout is widened well past the
+    # 10s default.
+    from lager.exceptions import SolarBackendError
+
+    if action not in ("set", "stop", "irradiance", "mpp_current",
+                      "mpp_voltage", "resistance", "temperature", "voc"):
+        raise UnknownAction(action)
+
+    value = params.get("value")
+    if value is not None:
+        value = float(value)
+        if action == "irradiance":
+            if value < 0:
+                raise ValueError(
+                    "Irradiance cannot be negative, got: %s W/m^2" % value)
+            if value > 1500:
+                raise ValueError(
+                    "Irradiance too high (max 1500 W/m^2), got: %s W/m^2" % value)
+        elif action == "resistance":
+            if value <= 0:
+                raise ValueError("Resistance must be positive, got: %s Ohm" % value)
+
+    proxy_timeout = 90.0 if action in ("set", "stop") else 60.0
+    dev = _hw_proxy(netname, "solar", helpers._solar_module_for_instrument,
+                    SolarBackendError, timeout=proxy_timeout)
+
+    if action == "set":
+        dev.set_mode()
+        return _ok("Solar simulator '%s' initialized and started in PV "
+                   "simulation mode" % netname)
+    if action == "stop":
+        dev.stop_mode()
+        return _ok("Solar simulator '%s' stopped" % netname)
+
+    if action in ("irradiance", "resistance"):
+        text = str(dev.irradiance(value) if action == "irradiance"
+                   else dev.resistance(value))
+    else:
+        text = str(getattr(dev, action)())
+
+    # Reads come back as the driver's display strings ("1.234 A", "25.0°C",
+    # "4.00", "n/a"); surface a numeric value alongside when parseable.
+    import re as _re
+    m = _re.match(r"^\s*(-?\d+(?:\.\d+)?)", text)
+    return _ok(text, float(m.group(1)) if m else text)
 
 
 def _spi(netname, role, action, params):
@@ -758,6 +813,7 @@ ROLE_ACTIONS = {
     "thermocouple": _thermocouple,
     "watt-meter": _watt_meter,
     "eload": _eload,
+    "solar": _solar,
     "spi": _spi,
     "i2c": _i2c,
     "energy-analyzer": _energy_analyzer,

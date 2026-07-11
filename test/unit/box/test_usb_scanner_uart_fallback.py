@@ -30,9 +30,6 @@ SCANNER_PATH = os.path.normpath(
     os.path.join(HERE, '..', '..', '..', 'box', 'lager', 'http_handlers',
                  'usb_scanner.py')
 )
-QUERY_INSTRUMENTS_PATH = os.path.normpath(
-    os.path.join(HERE, '..', '..', '..', 'cli', 'impl', 'query_instruments.py')
-)
 
 
 def _load_scanner():
@@ -40,20 +37,6 @@ def _load_scanner():
     spec = importlib.util.spec_from_file_location('usb_scanner_under_test', SCANNER_PATH)
     module = importlib.util.module_from_spec(spec)
     sys.modules['usb_scanner_under_test'] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-def _load_query_instruments():
-    """Load the canonical CLI-shipped scanner standalone. It pulls in a
-    couple of optional deps (``pyserial`` for ``_by_handshake``) which
-    are available in the dev env; if a future refactor drops them this
-    test will surface that immediately."""
-    spec = importlib.util.spec_from_file_location(
-        'query_instruments_under_test', QUERY_INSTRUMENTS_PATH
-    )
-    module = importlib.util.module_from_spec(spec)
-    sys.modules['query_instruments_under_test'] = module
     spec.loader.exec_module(module)
     return module
 
@@ -213,38 +196,6 @@ class TestChannelMapDefaults(unittest.TestCase):
         # Pre-existing behaviour; pin it so a future refactor doesn't
         # silently regress the policy.
         self.assertEqual(self.scanner.CHANNEL_MAPS['FTDI_FT232H']['uart'], [])
-
-
-class TestCanonicalQueryInstrumentsParity(unittest.TestCase):
-    """``cli/impl/query_instruments.py`` is the canonical scanner — the
-    box-side ``usb_scanner.py`` is a near-duplicate that mirrors it. The
-    TUI / ``lager instruments`` flow actually pushes
-    ``query_instruments.py`` to the box at runtime, so the same
-    defaults and the same no-serial fallback have to live here too. If
-    these tests fail, the two scanners have drifted and the user-facing
-    UART/debug behaviour will silently regress for serial-less FTDIs."""
-
-    @classmethod
-    def setUpClass(cls):
-        try:
-            cls.qi = _load_query_instruments()
-        except ImportError as exc:
-            raise unittest.SkipTest(
-                f"query_instruments.py optional dep missing: {exc}"
-            )
-
-    def test_ft4232h_uart_default_is_empty(self):
-        self.assertEqual(self.qi.CHANNEL_MAPS['FTDI_FT4232H']['uart'], [])
-
-    def test_ft2232h_uart_default_is_empty(self):
-        self.assertEqual(self.qi.CHANNEL_MAPS['FTDI_FT2232H']['uart'], [])
-
-    def test_no_serial_fallback_helper_exists(self):
-        # Symbol-level guard so a refactor that removes the helper in
-        # one file but not the other fails loudly here instead of in
-        # production at first UART-on-no-serial use.
-        self.assertTrue(hasattr(self.qi, '_get_ttys_for_usb_device'))
-        self.assertTrue(callable(self.qi._get_ttys_for_usb_device))
 
 
 def _rmtree(path):

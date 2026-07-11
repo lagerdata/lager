@@ -436,6 +436,89 @@ class TestRoleSpecificOutput:
 
 
 # --------------------------------------------------------------------------- #
+# Solar command: action dispatch, budget, message passthrough                 #
+# --------------------------------------------------------------------------- #
+
+def _invoke_solar(argv, *, message="ok", value=None):
+    mod = importlib.import_module("cli.commands.power.solar")
+    calls: list[dict] = []
+
+    def fake_post(ctx, box_ip, netname, action, role=None, quiet=False,
+                  http_timeout="default", **params):
+        calls.append({"netname": netname, "action": action, "role": role,
+                      "quiet": quiet, "http_timeout": http_timeout,
+                      "params": params})
+        return {"success": True, "message": message, "value": value}
+
+    with patch.object(mod, "post_net_command", fake_post), \
+            patch.object(mod, "resolve_and_validate_box",
+                         lambda ctx, box: "1.2.3.4"), \
+            patch.object(mod, "resolve_box", lambda ctx, box: "1.2.3.4"), \
+            patch.object(mod, "display_nets", lambda *a, **k: None), \
+            patch.object(mod, "get_default_net", lambda ctx, t: None):
+        result = CliRunner().invoke(mod.solar, argv, obj=_Obj(),
+                                    catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    return result, calls
+
+
+class TestSolarCommand:
+
+    def test_set_dispatches_and_widens_budget(self):
+        result, calls = _invoke_solar(
+            ["solar1", "set", "--box", "b"],
+            message="Solar simulator 'solar1' initialized and started in "
+                    "PV simulation mode")
+        assert calls[0] == {
+            "netname": "solar1", "action": "set", "role": "solar",
+            "quiet": True, "http_timeout": 120, "params": {}}
+        assert "initialized and started in PV simulation mode" in result.output
+
+    def test_stop_dispatches(self):
+        _, calls = _invoke_solar(["solar1", "stop", "--box", "b"],
+                                 message="Solar simulator 'solar1' stopped")
+        assert calls[0]["action"] == "stop"
+        assert calls[0]["http_timeout"] == 120
+
+    def test_irradiance_read(self):
+        result, calls = _invoke_solar(["solar1", "irradiance", "--box", "b"],
+                                      message="1000.0", value=1000.0)
+        assert calls[0]["action"] == "irradiance"
+        assert calls[0]["params"] == {}
+        assert calls[0]["http_timeout"] == 90
+        assert "1000.0" in result.output
+
+    def test_irradiance_set(self):
+        _, calls = _invoke_solar(
+            ["solar1", "irradiance", "800", "--box", "b"],
+            message="800.0", value=800.0)
+        assert calls[0]["params"] == {"value": 800.0}
+
+    def test_irradiance_out_of_range_rejected_client_side(self):
+        mod = importlib.import_module("cli.commands.power.solar")
+        result = CliRunner().invoke(
+            mod.solar, ["solar1", "irradiance", "2000", "--box", "b"],
+            obj=_Obj())
+        assert result.exit_code != 0
+        assert "Irradiance must be between" in result.output
+
+    def test_reads_print_message(self):
+        for cmd, msg in (("mpp-current", "1.234 A"), ("mpp-voltage", "12.345 V"),
+                         ("temperature", "25.0°C"), ("voc", "21.980 V")):
+            result, calls = _invoke_solar(["solar1", cmd, "--box", "b"],
+                                          message=msg)
+            assert calls[0]["action"] == cmd.replace("-", "_")
+            assert msg in result.output
+
+    def test_resistance_set(self):
+        _, calls = _invoke_solar(
+            ["solar1", "resistance", "2.5", "--box", "b"],
+            message="2.50", value=2.5)
+        assert calls[0]["action"] == "resistance"
+        assert calls[0]["params"] == {"value": 2.5}
+
+
+# --------------------------------------------------------------------------- #
 # Energy command: budget, output detail, --json                               #
 # --------------------------------------------------------------------------- #
 
@@ -531,6 +614,7 @@ class TestNo5000Fallback:
         "cli.commands.power.eload",
         "cli.commands.power.supply",
         "cli.commands.power.battery",
+        "cli.commands.power.solar",
         "cli.commands.communication.spi",
         "cli.commands.communication.i2c",
         "cli.commands.communication.usb",

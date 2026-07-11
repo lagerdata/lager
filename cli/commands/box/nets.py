@@ -9,10 +9,8 @@ List all saved nets
 
 from __future__ import annotations
 
-import io
 import json
 import re
-from contextlib import redirect_stdout
 from typing import Any, List, Optional
 from collections import defaultdict
 
@@ -20,39 +18,99 @@ import click
 from texttable import Texttable
 import shutil
 
-from ...context import get_default_box, get_impl_path
+from ...context import get_default_box
 from ...core.net_group import NetGroupHelpMixin
+from ...core.net_helpers import NET_HTTP_PORT
 from ...errors import LagerError
 from ...sort_utils import natural_sort_key as _natural_sort_key
-from ..development.python import run_python_internal
 from .net_tui import launch_tui
 
 
 # --------------------------------------------------------------------------- #
-# Helpers                                                                     #
+# Box HTTP helpers (:9000)                                                    #
+#                                                                             #
+# All net management goes over the box's long-lived HTTP server: /nets/list,  #
+# PUT /nets/<name>, DELETE /nets[/name], /instruments/list, and the           #
+# /custom-devices/* assignment routes. The old path uploaded net.py /         #
+# query_instruments.py / custom_devices.py to the :5000 exec service per      #
+# call; there is intentionally no :5000 fallback.                             #
 # --------------------------------------------------------------------------- #
 
-def _parse_backend_json(raw: str) -> Any:
+_NETS_HTTP_TIMEOUT = 30  # instrument scans probe hardware; give them headroom
+
+
+def _box_request(ctx: click.Context, box_ip: str, method: str, path: str,
+                 json_body=None, params=None) -> Any:
+    """One HTTP round-trip to the box's :9000 API; exits on failure.
+
+    Returns the parsed JSON body. Non-2xx responses print the box's `error`
+    field and exit(1). 404s from missing routes get an "update the box" hint
+    since they usually mean the box image predates the endpoint.
     """
-    Parse JSON response from backend, handling duplicate output from double execution.
+    import requests
 
-    Args:
-        raw: Raw output from backend
-
-    Returns:
-        Parsed JSON data
-
-    Raises:
-        json.JSONDecodeError: If JSON cannot be parsed
-    """
+    url = f"http://{box_ip}:{NET_HTTP_PORT}{path}"
     try:
-        return json.loads(raw or "[]")
-    except json.JSONDecodeError:
-        # Duplicate output from double execution ("[...][...]" / "{...}{...}"):
-        # parse the first complete JSON value and ignore the rest. raw_decode
-        # handles nested brackets correctly — the previous hand-rolled depth
-        # scan misrouted doubled objects that contained arrays.
-        return json.JSONDecoder().raw_decode(raw.strip())[0]
+        resp = requests.request(method, url, json=json_body, params=params,
+                                timeout=_NETS_HTTP_TIMEOUT)
+    except (requests.ConnectionError, requests.Timeout):
+        click.secho(
+            f"Error: cannot reach box at {box_ip}:{NET_HTTP_PORT}. "
+            f"Check network/Tailscale and that the box is online and updated.",
+            fg="red", err=True,
+        )
+        ctx.exit(1)
+    except requests.RequestException as e:
+        click.secho(f"Error: request to box failed: {e}", fg="red", err=True)
+        ctx.exit(1)
+
+    try:
+        body = resp.json()
+    except ValueError:
+        click.secho(
+            f"Error: box returned a non-JSON response (HTTP {resp.status_code}).",
+            fg="red", err=True,
+        )
+        ctx.exit(1)
+
+    if 200 <= resp.status_code < 300:
+        return body
+
+    error = (body.get("error") if isinstance(body, dict) else None) \
+        or f"HTTP {resp.status_code}"
+    click.secho(f"Error: {error}", fg="red", err=True)
+    if resp.status_code == 404 and "not found" not in str(error).lower():
+        click.echo(
+            f"This box image may predate '{path}'; update the box "
+            f"(lager update).", err=True)
+    ctx.exit(1)
+
+
+def _fetch_saved_nets(ctx: click.Context, box_ip: str) -> List[dict]:
+    """GET /nets/list — the full saved-net records."""
+    records = _box_request(ctx, box_ip, "GET", "/nets/list")
+    # Tolerate the older {"nets": [...]} wrapper shape.
+    if isinstance(records, dict):
+        records = records.get("nets", [])
+    return records if isinstance(records, list) else []
+
+
+def _save_net_http(ctx: click.Context, box_ip: str, record: dict,
+                   old_name: str | None = None) -> None:
+    """PUT /nets/<name> — create or replace a net (rename when old_name given).
+
+    Strips `live_path`: it's a list-time annotation on uart nets, not part
+    of the stored record, and round-tripping it would persist a stale path.
+    """
+    record = {k: v for k, v in record.items() if k != "live_path"}
+    _box_request(ctx, box_ip, "PUT",
+                 f"/nets/{old_name or record.get('name')}", json_body=record)
+
+
+def _fetch_instruments(ctx: click.Context, box_ip: str) -> List[dict]:
+    """GET /instruments/list — detected instruments (incl. custom devices)."""
+    result = _box_request(ctx, box_ip, "GET", "/instruments/list")
+    return result if isinstance(result, list) else []
 
 def _debug_channel_suffix(value) -> str:
     """Return the ``@<channel>`` portion of a debug net's device field.
@@ -82,8 +140,8 @@ _VISA_SERIAL_RE = re.compile(
 #                                                                             #
 # Kept duplicated client-side on purpose: detection has to work against any   #
 # box version, including ones older than the smart `set-script` change. The   #
-# only state we need is the net record (which `_run_net_py list` always       #
-# returns) plus the file the user just handed us.                             #
+# only state we need is the net record (from `GET /nets/list`) plus the file  #
+# the user just handed us.                                                    #
 # --------------------------------------------------------------------------- #
 
 _DEBUG_VISA_RE = re.compile(
@@ -336,9 +394,9 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     "Keithley_2281S": ["battery", "power-supply"],
 
     # watt-meter / energy-analyzer
-    # Names mirror the box scanner (box/lager/http_handlers/usb_scanner.py) and
-    # cli/impl/query_instruments.py so `lager nets add` accepts the same roles
-    # the scanner advertises for these instruments.
+    # Names mirror the box scanner (box/lager/http_handlers/usb_scanner.py)
+    # so `lager nets add` accepts the same roles the scanner advertises for
+    # these instruments.
     "Joulescope_JS220": ["watt-meter", "energy-analyzer"],
     "Nordic_PPK2": ["watt-meter", "energy-analyzer"],
     "Yocto_Watt": ["watt-meter"],
@@ -561,37 +619,6 @@ def _labjack_claimed_pins(saved_nets: list, address: str) -> dict[str, tuple[str
     return claimed
 
 
-def _run_net_py(ctx: click.Context, box: str, *net_args: str) -> str:
-    """
-    Run `net.py …` via run_python_internal and capture stdout.
-    """
-    from ..development.python import run_python_internal_get_output
-
-    try:
-        output = run_python_internal_get_output(
-            ctx,
-            get_impl_path("net.py"),
-            box,
-            env=(),
-            passenv=(),
-            kill=False,
-            download=(),
-            allow_overwrite=False,
-            signum="SIGTERM",
-            timeout=30,  # 30 second timeout to prevent hanging
-            detach=False,
-            port=(),
-            org=None,
-            args=net_args,
-        )
-        return output.decode('utf-8') if isinstance(output, bytes) else output
-    except SystemExit as e:
-        # Re-raise non-zero exits (actual errors), return empty for success exits
-        if e.code != 0:
-            raise
-        return ""
-
-
 def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
     """
     Resolve box precedence:
@@ -757,56 +784,34 @@ def _display_table(records):
 
 def _list_nets(ctx: click.Context, box: str) -> None:
     """
-    Fetch nets via net.py and print the table.
+    Fetch nets over HTTP and print the table.
     """
-    raw = _run_net_py(ctx, box, "list")
-    try:
-        records: List[dict[str, Any]] = _parse_backend_json(raw)
-    except json.JSONDecodeError:
-        click.secho("Failed to parse response from backend.", fg="red", err=True)
-        if not raw:
-            click.secho("No output received from backend. Check box connectivity with 'lager hello'.", fg="yellow", err=True)
-        else:
-            click.secho(f"Raw output: {repr(raw)}", fg="yellow", err=True)
-        ctx.exit(1)
-
-    _display_table(records)
+    _display_table(_fetch_saved_nets(ctx, box))
 
 def _save_nets_batch(ctx: click.Context, box: str, nets_data: List[dict]) -> None:
     """
-    Save multiple nets using batch save functionality, with fallback to individual saves.
+    Save multiple nets with one PUT /nets/<name> per record.
     """
     if not nets_data:
         return
 
-    # Try batch save first
-    try:
-        raw = _run_net_py(ctx, box, "save-batch", json.dumps(nets_data))
-
-        if raw and raw.strip():
-            response = _parse_backend_json(raw)
-            # Check if response is a dict with expected format
-            if isinstance(response, dict) and response.get("ok", False):
-                count = response.get("count", len(nets_data))
-                click.secho(f"Successfully saved {count} nets using batch save on box {box}.", fg="green")
-                return
-        else:
-            pass
-    except (json.JSONDecodeError, Exception) as e:
-        click.secho(f"Batch save failed, falling back to individual saves: {e}", fg="yellow", err=True)
-
-    # Fallback to individual saves
-    click.secho(f"Using individual saves for {len(nets_data)} nets...", fg="yellow", err=True)
     saved_count = 0
-
     for net_data in nets_data:
         try:
-            raw = _run_net_py(ctx, box, "save", json.dumps(net_data))
+            _save_net_http(ctx, box, net_data)
             saved_count += 1
-        except Exception as e:
-            click.secho(f"Failed to save net '{net_data.get('name', 'unknown')}': {e}", fg="red", err=True)
+        except (SystemExit, Exception):  # ctx.exit raises Exit/SystemExit
+            click.secho(
+                f"Failed to save net '{net_data.get('name', 'unknown')}'.",
+                fg="red", err=True)
 
-    click.secho(f"Successfully saved {saved_count} of {len(nets_data)} nets on box {box}.", fg="green")
+    if saved_count == len(nets_data):
+        click.secho(f"Successfully saved {saved_count} nets on box {box}.", fg="green")
+    else:
+        click.secho(
+            f"Successfully saved {saved_count} of {len(nets_data)} nets on box {box}.",
+            fg="green")
+        ctx.exit(1)
 
 # --------------------------------------------------------------------------- #
 # Top-level group                                                             #
@@ -850,16 +855,7 @@ def delete_cmd(
     # Accept the same legacy role tokens nets-add does ("supply", "batt").
     net_type = _canonical_role(net_type)
     resolved_box = _resolve_box(ctx, box)
-    raw = _run_net_py(ctx, resolved_box, "list")
-    try:
-        recs = _parse_backend_json(raw)
-    except json.JSONDecodeError:
-        click.secho("Failed to parse response from backend.", fg="red", err=True)
-        if not raw:
-            click.secho("No output received from backend. Check box connectivity with 'lager hello'.", fg="yellow", err=True)
-        else:
-            click.secho(f"Raw output: {repr(raw)}", fg="yellow", err=True)
-        ctx.exit(1)
+    recs = _fetch_saved_nets(ctx, resolved_box)
 
     # Canonicalize BOTH sides of the role match: boxes hold legacy nets saved
     # with the raw short tokens ("supply"/"batt"), and those are exactly the
@@ -877,7 +873,8 @@ def delete_cmd(
         click.secho("Aborted.", fg="yellow")
         return
 
-    _run_net_py(ctx, resolved_box, "delete", name, match[0].get("role", net_type))
+    _box_request(ctx, resolved_box, "DELETE", f"/nets/{name}",
+                 params={"role": match[0].get("role", net_type)})
     click.secho(f"Deleted '{name}' ({net_type}) on box {resolved_box}.", fg="green")
 
 
@@ -894,7 +891,7 @@ def delete_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
         click.secho("Aborted.", fg="yellow")
         return
 
-    _run_net_py(ctx, resolved_box, "delete-all")
+    _box_request(ctx, resolved_box, "DELETE", "/nets")
     click.secho(f"Deleted all nets on box {resolved_box}.", fg="green")
 
 
@@ -921,16 +918,7 @@ def rename_cmd(
     """
     resolved_box = _resolve_box(ctx, box)
 
-    raw = _run_net_py(ctx, resolved_box, "list")
-    try:
-        recs = _parse_backend_json(raw)
-    except json.JSONDecodeError:
-        click.secho("Failed to parse response from backend.", fg="red", err=True)
-        if not raw:
-            click.secho("No output received from backend. Check box connectivity with 'lager hello'.", fg="yellow", err=True)
-        else:
-            click.secho(f"Raw output: {repr(raw)}", fg="yellow", err=True)
-        ctx.exit(1)
+    recs = _fetch_saved_nets(ctx, resolved_box)
 
     src = next((r for r in recs if r.get("name") == name), None)
     if not src:
@@ -945,7 +933,11 @@ def rename_cmd(
         )
         ctx.exit(1)
 
-    _run_net_py(ctx, resolved_box, "rename", name, new_name)
+    # PUT to the old name with the new name in the body = rename semantics.
+    # live_path is a list-time annotation, not part of the stored record.
+    record = {k: v for k, v in src.items() if k != "live_path"}
+    record["name"] = new_name
+    _save_net_http(ctx, resolved_box, record, old_name=name)
     click.secho(
         f"Renamed '{name}' → '{new_name}' on box {resolved_box}.", fg="green"
     )
@@ -1001,86 +993,9 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
     # Resolve and validate the box name
     resolved_box = resolve_and_validate_box(ctx, box)
 
-    def _run_and_json(path: str, args: tuple[str, ...] = ()) -> list:
-        buf = io.StringIO()
-        try:
-            with redirect_stdout(buf):
-                run_python_internal(
-                    ctx, path, resolved_box,
-                    env={}, passenv=(), kill=False, download=(),
-                    allow_overwrite=False, signum="SIGTERM", timeout=30,
-                    detach=False, port=(), org=None, args=args,
-                )
-        except SystemExit as e:
-            # Re-raise non-zero exits (actual errors)
-            if e.code != 0:
-                raw_output = buf.getvalue()
-                if raw_output:
-                    click.secho("Error from backend:", fg="red", err=True)
-                    click.echo(raw_output, err=True)
-                raise
-        raw_output = buf.getvalue()
-        try:
-            return json.loads(raw_output or "[]")
-        except json.JSONDecodeError:
-            if raw_output:
-                click.secho(f"Warning: Could not parse backend response: {repr(raw_output[:200])}", fg="yellow", err=True)
-            return []
-
-    def _get_instrument_from_address(address: str, allow_unknown: bool = False) -> str:
-        buf = io.StringIO()
-        try:
-            with redirect_stdout(buf):
-                run_python_internal(
-                    ctx, get_impl_path("query_instruments.py"), resolved_box,
-                    env={}, passenv=(), kill=False, download=(),
-                    allow_overwrite=False, signum="SIGTERM", timeout=30,
-                    detach=False, port=(), org=None,
-                    args=("get_instrument", address),
-                )
-        except SystemExit as e:
-            # Re-raise non-zero exits (actual errors)
-            if e.code != 0:
-                raw_output = buf.getvalue()
-                if raw_output:
-                    click.secho("Error querying instruments:", fg="red", err=True)
-                    click.echo(raw_output, err=True)
-                raise
-
-        raw_output = buf.getvalue()
-        try:
-            result = json.loads(raw_output)
-        except json.JSONDecodeError:
-            if not allow_unknown:
-                click.secho("Error: Invalid instrument info returned for address", fg="red", err=True)
-                if raw_output:
-                    click.secho(f"Raw output: {repr(raw_output[:200])}", fg="yellow", err=True)
-                ctx.exit(1)
-            return "Unknown_UART_Device"
-
-        if isinstance(result, list):
-            for inst in result:
-                if inst.get("address") == address:
-                    return inst.get("name", "Unknown")
-            click.secho(f"Error: No instrument found for address {address}", fg="red", err=True)
-            if not allow_unknown:
-                ctx.exit(1)
-            return "Unknown_UART_Device"
-        elif isinstance(result, dict):
-            if "name" in result:
-                return result["name"]
-            # Empty dict means instrument not found at address
-            if not result:
-                click.secho(f"Error: No instrument found at address {address}", fg="red", err=True)
-                if not allow_unknown:
-                    ctx.exit(1)
-                return "Unknown_Device"
-
-        if not allow_unknown:
-            click.secho("Error: Unexpected result format from query_instruments.py", fg="red", err=True)
-            ctx.exit(1)
-        return "Unknown_UART_Device"
-
+    # ─────────── load devices and nets ──────────
+    devs       = _fetch_instruments(ctx, resolved_box)
+    saved_nets = _fetch_saved_nets(ctx, resolved_box)
 
     # ─────────── resolve instrument ─────────────
     # For UART nets, allow a direct device path (e.g., /dev/ttyUSB0) when a USB serial is unavailable.
@@ -1088,11 +1003,15 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
         role == "uart" and isinstance(channel, str) and channel.startswith("/dev/")
     )
 
-    instrument = _get_instrument_from_address(address, allow_unknown=is_uart_device_path)
-
-    # ─────────── load devices and nets ──────────
-    devs       = _run_and_json(get_impl_path("query_instruments.py"))
-    saved_nets = _run_and_json(get_impl_path("net.py"), ("list",))
+    instrument = next(
+        (d.get("name", "Unknown") for d in devs if d.get("address") == address),
+        None,
+    )
+    if instrument is None:
+        if not is_uart_device_path:
+            click.secho(f"Error: No instrument found for address {address}", fg="red", err=True)
+            ctx.exit(1)
+        instrument = "Unknown_UART_Device"
 
     # ─────────── multiple hubs restriction ──────
     if not is_uart_device_path:
@@ -1265,29 +1184,7 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
     elif openocd_config and role != "debug":
         click.secho("Warning: --openocd-config is only applicable for debug nets, ignoring.", fg='yellow', err=True)
 
-    try:
-        _buf = io.StringIO()
-        with redirect_stdout(_buf):
-            run_python_internal(
-                ctx,
-                get_impl_path("net.py"),
-                resolved_box,
-                env={}, passenv=(), kill=False, download=(),
-                allow_overwrite=False, signum="SIGTERM", timeout=30,
-                detach=False, port=(), org=None,
-                args=(
-                    "save",
-                    json.dumps(net_data),
-                ),
-            )
-    except SystemExit as e:
-        # Re-raise non-zero exits (actual errors)
-        if e.code != 0:
-            raw_output = _buf.getvalue()
-            if raw_output:
-                click.secho("Error saving net:", fg="red", err=True)
-                click.echo(raw_output, err=True)
-            raise
+    _save_net_http(ctx, resolved_box, net_data)
 
     click.secho(f"Saved new net '{name}' on {resolved_box}.", fg="green")
 
@@ -1386,49 +1283,47 @@ def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net,
                 fixes=["Find both in: lager nets assign --list"],
             )
 
-    def _run_backend(args: tuple[str, ...]) -> dict:
-        buf = io.StringIO()
+    def _run_backend(method: str, path: str, json_body=None) -> dict:
+        """One /custom-devices/* round-trip; box 400s become LagerErrors."""
+        import requests
+
+        url = f"http://{resolved_box}:{NET_HTTP_PORT}{path}"
         try:
-            with redirect_stdout(buf):
-                run_python_internal(
-                    ctx, get_impl_path("custom_devices.py"), resolved_box,
-                    env={}, passenv=(), kill=False, download=(),
-                    allow_overwrite=False, signum="SIGTERM", timeout=30,
-                    detach=False, port=(), org=None, args=args,
-                )
-        except SystemExit as e:
-            if e.code not in (0, None):
-                # The backend's reason arrives on stderr (streamed through to
-                # the terminal already); buf catches anything sent to stdout.
-                raise LagerError(
-                    "The box could not complete the assign command.",
-                    cause=buf.getvalue().strip() or None,
-                    fixes=[
-                        "See live cables and devices: lager nets assign --list",
-                        f"Make sure the box software is current: lager update {resolved_box}",
-                    ],
-                )
-        raw = buf.getvalue()
-        result = None
-        if raw.strip():
-            try:
-                # Duplicate-tolerant parser: the box exec path is known to
-                # emit the payload twice on some boxes ("double execution").
-                result = _parse_backend_json(raw)
-            except json.JSONDecodeError:
-                result = None
+            resp = requests.request(method, url, json=json_body,
+                                    timeout=_NETS_HTTP_TIMEOUT)
+        except requests.RequestException as e:
+            raise LagerError(
+                "The box could not complete the assign command.",
+                cause=str(e),
+                fixes=[
+                    "Check network/Tailscale and that the box is online.",
+                    f"Make sure the box software is current: lager update {resolved_box}",
+                ],
+            )
+        try:
+            result = resp.json()
+        except ValueError:
+            result = None
         if not isinstance(result, dict):
             raise LagerError(
                 "Unexpected response from the box.",
-                cause="The assign backend did not return valid JSON.",
+                cause=f"The assign backend did not return valid JSON (HTTP {resp.status_code}).",
                 fixes=[f"Make sure the box software is current: lager update {resolved_box}"],
-                raw=raw or None,
+            )
+        if not resp.ok:
+            raise LagerError(
+                "The box could not complete the assign command.",
+                cause=result.get("error"),
+                fixes=[
+                    "See live cables and devices: lager nets assign --list",
+                    f"Make sure the box software is current: lager update {resolved_box}",
+                ],
             )
         return result
 
     # ─────────── --list ───────────
     if list_:
-        _print_assign_listing(_run_backend(("list",)))
+        _print_assign_listing(_run_backend("GET", "/custom-devices/list"))
         return
 
     # ─────────── --remove ───────────
@@ -1437,7 +1332,7 @@ def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net,
         if baud is not None or as_net is not None:
             raise LagerError("--baud and --as-net cannot be combined with --remove.")
         payload = {"serial": usb_serial, "port_path": port_path}
-        result = _run_backend(("remove", json.dumps(payload)))
+        result = _run_backend("POST", "/custom-devices/remove", payload)
         if result.get("removed"):
             inst = result.get("instrument") or "device"
             click.secho(f"Removed the {inst} assignment.", fg="green")
@@ -1461,7 +1356,7 @@ def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net,
     payload = {"instrument": device, "serial": usb_serial, "port_path": port_path}
     if baud is not None:
         payload["baud"] = baud
-    result = _run_backend(("assign", json.dumps(payload)))
+    result = _run_backend("POST", "/custom-devices/assign", payload)
 
     inst = result.get("instrument", device)
     address = result.get("address", "")
@@ -1516,32 +1411,6 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
     """
     resolved_box = _resolve_box(ctx, box)
 
-    def _run_and_json(script: str, *args: str) -> list:
-        buf = io.StringIO()
-        try:
-            with redirect_stdout(buf):
-                run_python_internal(
-                    ctx, get_impl_path(script), resolved_box,
-                    env={}, passenv=(), kill=False, download=(),
-                    allow_overwrite=False, signum="SIGTERM", timeout=30,
-                    detach=False, port=(), org=None, args=args,
-                )
-        except SystemExit as e:
-            # Re-raise non-zero exits (actual errors)
-            if e.code != 0:
-                raw_output = buf.getvalue()
-                if raw_output:
-                    click.secho("Error from backend:", fg="red", err=True)
-                    click.echo(raw_output, err=True)
-                raise
-        raw_output = buf.getvalue()
-        try:
-            return _parse_backend_json(raw_output or "[]")
-        except json.JSONDecodeError:
-            if raw_output:
-                click.secho(f"Warning: Could not parse backend response: {repr(raw_output[:200])}", fg="yellow", err=True)
-            return []
-
     def _first_word(role: str) -> str:
         """Return the first part of a hyphenated role name."""
         # Special case: power-supply nets use 'supply' prefix instead of 'power'
@@ -1550,8 +1419,8 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
         return role.split("-")[0]
 
     # Get available instruments and existing nets
-    inst_list = _run_and_json("query_instruments.py")
-    saved_nets = _run_and_json("net.py", "list")
+    inst_list = _fetch_instruments(ctx, resolved_box)
+    saved_nets = _fetch_saved_nets(ctx, resolved_box)
 
     if not inst_list:
         click.secho("No instruments found on the box.", fg="yellow")
@@ -1847,34 +1716,21 @@ def create_batch_cmd(ctx: click.Context, json_file, box: str | None) -> None:
         click.secho("No nets found in JSON file", fg="yellow", err=True)
         return
 
-    # Helper function to get instrument from address (reuse from create_cmd)
+    # One instrument scan for the whole batch; look up by address locally.
+    # Lazy + failure-tolerant: batches that provide "instrument" for every
+    # net never need the scan.
+    _instrument_cache: list | None = None
+
     def _get_instrument_from_address(address: str, fallback_instrument: str = "Unknown") -> str:
-        buf = io.StringIO()
-        try:
-            with redirect_stdout(buf):
-                run_python_internal(
-                    ctx, get_impl_path("query_instruments.py"), resolved_box,
-                    env={}, passenv=(), kill=False, download=(),
-                    allow_overwrite=False, signum="SIGTERM", timeout=0,
-                    detach=False, port=(), org=None,
-                    args=("get_instrument", address),
-                )
-        except SystemExit:
-            pass
-
-        try:
-            result = json.loads(buf.getvalue())
-        except json.JSONDecodeError:
-            return fallback_instrument
-
-        if isinstance(result, list):
-            for inst in result:
-                if inst.get("address") == address:
-                    return inst.get("name", "Unknown")
-            return fallback_instrument
-        elif isinstance(result, dict) and "name" in result:
-            return result["name"]
-
+        nonlocal _instrument_cache
+        if _instrument_cache is None:
+            try:
+                _instrument_cache = _fetch_instruments(ctx, resolved_box)
+            except (SystemExit, Exception):
+                _instrument_cache = []
+        for inst in _instrument_cache:
+            if inst.get("address") == address:
+                return inst.get("name", "Unknown")
         return fallback_instrument
 
     # Validate and normalize each net in the batch
@@ -1927,12 +1783,7 @@ def create_batch_cmd(ctx: click.Context, json_file, box: str | None) -> None:
 
 def _load_debug_net(ctx: click.Context, resolved_box: str, name: str) -> dict:
     """Fetch the named debug net or click-exit with a useful message."""
-    raw = _run_net_py(ctx, resolved_box, "list")
-    try:
-        recs = _parse_backend_json(raw)
-    except json.JSONDecodeError:
-        click.secho("Failed to parse response from backend.", fg="red", err=True)
-        ctx.exit(1)
+    recs = _fetch_saved_nets(ctx, resolved_box)
 
     target = next((r for r in recs if r.get("name") == name), None)
     if not target:
@@ -1984,7 +1835,7 @@ def _set_debug_script_impl(
     cleared_field, cleared_bytes = _clear_other_script_field(target, field)
 
     target[field] = base64.b64encode(raw_bytes).decode("ascii")
-    _run_net_py(ctx, resolved_box, "save", json.dumps(target))
+    _save_net_http(ctx, resolved_box, target)
 
     if cleared_field:
         size = f"{cleared_bytes} bytes" if cleared_bytes >= 0 else "unknown size"
@@ -2092,7 +1943,7 @@ def _remove_debug_script_impl(
 
     for field in present:
         del target[field]
-    _run_net_py(ctx, resolved_box, "save", json.dumps(target))
+    _save_net_http(ctx, resolved_box, target)
 
     removed = ", ".join(present)
     click.secho(
@@ -2205,12 +2056,7 @@ def describe_cmd(
         click.secho("Nothing to update. Provide at least one of --purpose, --notes, or --tag.", fg="yellow")
         return
 
-    raw = _run_net_py(ctx, resolved_box, "list")
-    try:
-        recs = _parse_backend_json(raw)
-    except json.JSONDecodeError:
-        click.secho("Failed to parse response from backend.", fg="red", err=True)
-        ctx.exit(1)
+    recs = _fetch_saved_nets(ctx, resolved_box)
 
     target = next((r for r in recs if r.get("name") == name), None)
     if not target:
@@ -2229,7 +2075,7 @@ def describe_cmd(
         merged = list(dict.fromkeys(existing + list(tags)))
         target["tags"] = merged
 
-    _run_net_py(ctx, resolved_box, "save", json.dumps(target))
+    _save_net_http(ctx, resolved_box, target)
     click.secho(f"Updated metadata for net '{name}' on box {resolved_box}.", fg="green")
 
 
@@ -2247,12 +2093,7 @@ def show_cmd(
     """Display all fields of a net, including user-provided metadata."""
     resolved_box = _resolve_box(ctx, box)
 
-    raw = _run_net_py(ctx, resolved_box, "list")
-    try:
-        recs = _parse_backend_json(raw)
-    except json.JSONDecodeError:
-        click.secho("Failed to parse response from backend.", fg="red", err=True)
-        ctx.exit(1)
+    recs = _fetch_saved_nets(ctx, resolved_box)
 
     target = next((r for r in recs if r.get("name") == name), None)
     if not target:

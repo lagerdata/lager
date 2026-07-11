@@ -1,10 +1,10 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for ``cli/impl/custom_devices.py`` — the box-side backend of
-``lager nets assign``.
+"""Unit tests for ``lager.devices.assign`` and the :9000 ``/custom-devices/*``
+handlers — the box-side backend of ``lager nets assign``.
 
-The script's three commands (``list`` / ``assign`` / ``remove``) read and
+The three operations (``list_state`` / ``assign`` / ``remove``) read and
 write the custom-device store and enumerate live cables. Fully hermetic: the
 real ``lager.devices`` modules load via the bare-namespace trick, the store
 path is redirected to a temp file, and ``serial_id.list_cables`` /
@@ -12,7 +12,6 @@ path is redirected to a temp file, and ``serial_id.list_cables`` /
 """
 
 import importlib.util
-import io
 import json
 import os
 import shutil
@@ -20,11 +19,9 @@ import sys
 import tempfile
 import types
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 BOX_DIR = os.path.join(REPO_ROOT, "box")
-IMPL_PATH = os.path.join(REPO_ROOT, "cli", "impl", "custom_devices.py")
 
 if BOX_DIR not in sys.path:
     sys.path.insert(0, BOX_DIR)
@@ -63,7 +60,9 @@ _lager_devices.catalog = catalog
 _lager_devices.serial_id = serial_id
 _lager_devices.custom_store = cs
 
-cd = _load_module("custom_devices_under_test", IMPL_PATH)
+assign_ops = _load_module(
+    "lager.devices.assign", os.path.join(BOX_DIR, "lager", "devices", "assign.py"))
+_lager_devices.assign = assign_ops
 
 
 class _FakeNet:
@@ -88,7 +87,7 @@ SERIAL_ADDR = f"serial://{VID}:{PID}/serial/{SERIAL}"
 PORT_ADDR = f"serial://{VID}:{PID}/port/1-1.2"
 
 
-class CustomDevicesImplTests(unittest.TestCase):
+class _CustomDevicesBase(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.mkdtemp()
         self._orig_store_path = cs.STORE_PATH
@@ -106,10 +105,8 @@ class CustomDevicesImplTests(unittest.TestCase):
 
         serial_id.resolve_tty = fake_resolve_tty
 
-        self._orig_framework = (cd._catalog, cd._custom_store, cd._serial_id)
-
         # Fake nets module for the assignment->nets cascade. Registered in
-        # sys.modules so the impl's lazy ``from lager.nets.net import Net``
+        # sys.modules so the module's lazy ``from lager.nets.net import Net``
         # never touches the real (heavy) box module.
         _FakeNet.db = []
         self._saved_net_modules = {
@@ -128,33 +125,26 @@ class CustomDevicesImplTests(unittest.TestCase):
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = mod
-        cd._catalog, cd._custom_store, cd._serial_id = self._orig_framework
         serial_id.resolve_tty = self._orig_resolve_tty
         serial_id.list_cables = self._orig_list_cables
         cs.STORE_PATH = self._orig_store_path
         shutil.rmtree(self._tmp, ignore_errors=True)
 
+
+class CustomDevicesAssignTests(_CustomDevicesBase):
+
     # ---- helpers ---------------------------------------------------------
 
-    def _run(self, argv):
-        out = io.StringIO()
-        with redirect_stdout(out):
-            cd.main(list(argv))
-        return json.loads(out.getvalue())
-
-    def _run_expect_failure(self, argv):
-        out, err = io.StringIO(), io.StringIO()
-        with self.assertRaises(SystemExit) as caught:
-            with redirect_stdout(out), redirect_stderr(err):
-                cd.main(list(argv))
-        self.assertNotEqual(caught.exception.code, 0)
-        return err.getvalue()
+    def _assign_error(self, fn, *args):
+        with self.assertRaises(assign_ops.AssignmentError) as caught:
+            fn(*args)
+        return str(caught.exception)
 
     # ---- list --------------------------------------------------------------
 
     def test_list_empty_store_shows_catalog_and_cables(self):
         self.cables = [CABLE]
-        data = self._run(["list"])
+        data = assign_ops.list_state()
         names = [e["name"] for e in data["catalog"]]
         self.assertIn("Rigol_DP711", names)
         dp711 = next(e for e in data["catalog"] if e["name"] == "Rigol_DP711")
@@ -168,7 +158,7 @@ class CustomDevicesImplTests(unittest.TestCase):
         self.resolved[(VID, PID, SERIAL, None)] = TTY
         cs.add("Rigol_DP711", VID, PID, serial=SERIAL)
 
-        data = self._run(["list"])
+        data = assign_ops.list_state()
         self.assertEqual(len(data["assignments"]), 1)
         a = data["assignments"][0]
         self.assertEqual(a["instrument"], "Rigol_DP711")
@@ -178,15 +168,14 @@ class CustomDevicesImplTests(unittest.TestCase):
 
     def test_list_unplugged_assignment_has_null_tty(self):
         cs.add("Rigol_DP711", VID, PID, serial=SERIAL)
-        data = self._run(["list"])
+        data = assign_ops.list_state()
         self.assertIsNone(data["assignments"][0]["tty"])
 
     # ---- assign --------------------------------------------------------------
 
     def test_assign_by_serial(self):
         self.cables = [CABLE]
-        result = self._run(["assign", json.dumps(
-            {"instrument": "Rigol_DP711", "serial": SERIAL})])
+        result = assign_ops.assign({"instrument": "Rigol_DP711", "serial": SERIAL})
         self.assertEqual(result["instrument"], "Rigol_DP711")
         self.assertEqual(result["address"], f"serial://{VID}:{PID}/serial/{SERIAL}")
         self.assertEqual(result["tty"], TTY)
@@ -197,41 +186,41 @@ class CustomDevicesImplTests(unittest.TestCase):
 
     def test_assign_by_port_with_baud(self):
         self.cables = [CABLE]
-        result = self._run(["assign", json.dumps(
-            {"instrument": "rigol_dp711", "port_path": "1-1.2", "baud": 19200})])
+        result = assign_ops.assign(
+            {"instrument": "rigol_dp711", "port_path": "1-1.2", "baud": 19200})
         self.assertEqual(result["instrument"], "Rigol_DP711")  # canonicalized
         self.assertEqual(result["baud"], 19200)
         self.assertEqual(result["address"], f"serial://{VID}:{PID}/port/1-1.2")
 
     def test_assign_unknown_instrument_fails(self):
         self.cables = [CABLE]
-        err = self._run_expect_failure(["assign", json.dumps(
-            {"instrument": "Flux_Capacitor", "serial": SERIAL})])
+        err = self._assign_error(
+            assign_ops.assign, {"instrument": "Flux_Capacitor", "serial": SERIAL})
         self.assertIn("Unknown device", err)
         self.assertIn("Rigol_DP711", err)  # lists the assignable devices
 
     def test_assign_unplugged_cable_fails(self):
         self.cables = []
-        err = self._run_expect_failure(["assign", json.dumps(
-            {"instrument": "Rigol_DP711", "serial": SERIAL})])
+        err = self._assign_error(
+            assign_ops.assign, {"instrument": "Rigol_DP711", "serial": SERIAL})
         self.assertIn("currently connected", err)
         self.assertEqual(cs.load(), [])
 
     def test_assign_requires_exactly_one_identity(self):
         self.cables = [CABLE]
-        err = self._run_expect_failure(["assign", json.dumps(
-            {"instrument": "Rigol_DP711", "serial": SERIAL, "port_path": "1-1.2"})])
+        err = self._assign_error(
+            assign_ops.assign,
+            {"instrument": "Rigol_DP711", "serial": SERIAL, "port_path": "1-1.2"})
         self.assertIn("exactly one", err)
-        err = self._run_expect_failure(["assign", json.dumps(
-            {"instrument": "Rigol_DP711"})])
+        err = self._assign_error(assign_ops.assign, {"instrument": "Rigol_DP711"})
         self.assertIn("exactly one", err)
 
     def test_assign_ambiguous_serial_fails(self):
         # Two clone cables sharing one (fake) serial — the classic Prolific
         # failure mode; the user must pin by port path instead.
         self.cables = [CABLE, {**CABLE, "port_path": "1-1.3", "tty": "/dev/ttyUSB1"}]
-        err = self._run_expect_failure(["assign", json.dumps(
-            {"instrument": "Rigol_DP711", "serial": SERIAL})])
+        err = self._assign_error(
+            assign_ops.assign, {"instrument": "Rigol_DP711", "serial": SERIAL})
         self.assertIn("Multiple", err)
         self.assertIn("port path", err)
 
@@ -239,18 +228,18 @@ class CustomDevicesImplTests(unittest.TestCase):
 
     def test_remove_existing_assignment(self):
         cs.add("Rigol_DP711", VID, PID, serial=SERIAL)
-        result = self._run(["remove", json.dumps({"serial": SERIAL})])
+        result = assign_ops.remove({"serial": SERIAL})
         self.assertTrue(result["removed"])
         self.assertEqual(result["instrument"], "Rigol_DP711")
         self.assertEqual(cs.load(), [])
 
     def test_remove_missing_assignment(self):
-        result = self._run(["remove", json.dumps({"serial": "nope"})])
+        result = assign_ops.remove({"serial": "nope"})
         self.assertEqual(result, {"removed": False})
 
     def test_remove_by_port_path(self):
         cs.add("Rigol_DP711", VID, PID, port_path="1-1.2")
-        result = self._run(["remove", json.dumps({"port_path": "1-1.2"})])
+        result = assign_ops.remove({"port_path": "1-1.2"})
         self.assertTrue(result["removed"])
 
     # ---- assignment -> nets cascade ---------------------------------------------
@@ -277,7 +266,7 @@ class CustomDevicesImplTests(unittest.TestCase):
             {"name": "other", "role": "uart", "address": "USB0::0x10C4::0xEA60::X::INSTR"},
         ]
 
-        result = self._run(["remove", json.dumps({"serial": SERIAL})])
+        result = assign_ops.remove({"serial": SERIAL})
         self.assertTrue(result["removed"])
         self.assertEqual(result["deleted_nets"], ["supply1"])
         # Unrelated nets survive untouched.
@@ -285,20 +274,20 @@ class CustomDevicesImplTests(unittest.TestCase):
 
     def test_remove_without_nets_reports_empty_cascade(self):
         cs.add("Rigol_DP711", VID, PID, serial=SERIAL)
-        result = self._run(["remove", json.dumps({"serial": SERIAL})])
+        result = assign_ops.remove({"serial": SERIAL})
         self.assertTrue(result["removed"])
         self.assertEqual(result["deleted_nets"], [])
 
     def test_remove_missing_assignment_touches_no_nets(self):
         _FakeNet.db = [{"name": "supply1", "address": SERIAL_ADDR}]
-        result = self._run(["remove", json.dumps({"serial": "nope"})])
+        result = assign_ops.remove({"serial": "nope"})
         self.assertEqual(result, {"removed": False})
         self.assertEqual(len(_FakeNet.db), 1)
 
     def test_remove_port_assignment_deletes_port_address_nets(self):
         cs.add("Rigol_DP711", VID, PID, port_path="1-1.2")
         _FakeNet.db = [{"name": "supply1", "address": PORT_ADDR}]
-        result = self._run(["remove", json.dumps({"port_path": "1-1.2"})])
+        result = assign_ops.remove({"port_path": "1-1.2"})
         self.assertEqual(result["deleted_nets"], ["supply1"])
         self.assertEqual(_FakeNet.db, [])
 
@@ -308,7 +297,7 @@ class CustomDevicesImplTests(unittest.TestCase):
         cs.add("Rigol_DP711", VID, PID, serial=SERIAL)
         _FakeNet.db = [{"name": "supply1", "address": SERIAL_ADDR}]
         self.cables = []
-        result = self._run(["remove", json.dumps({"serial": SERIAL})])
+        result = assign_ops.remove({"serial": SERIAL})
         self.assertTrue(result["removed"])
         self.assertEqual(result["deleted_nets"], ["supply1"])
 
@@ -316,11 +305,11 @@ class CustomDevicesImplTests(unittest.TestCase):
         # A --baud update re-assigns with the same identity + instrument:
         # the address and instrument stand, so the nets must survive.
         self.cables = [CABLE]
-        self._run(["assign", json.dumps({"instrument": "Rigol_DP711", "serial": SERIAL})])
+        assign_ops.assign({"instrument": "Rigol_DP711", "serial": SERIAL})
         _FakeNet.db = [{"name": "supply1", "address": SERIAL_ADDR}]
 
-        result = self._run(["assign", json.dumps(
-            {"instrument": "Rigol_DP711", "serial": SERIAL, "baud": 19200})])
+        result = assign_ops.assign(
+            {"instrument": "Rigol_DP711", "serial": SERIAL, "baud": 19200})
         self.assertEqual(result["deleted_nets"], [])
         self.assertEqual(len(_FakeNet.db), 1)
         self.assertEqual(cs.load()[0]["baud"], 19200)
@@ -328,11 +317,10 @@ class CustomDevicesImplTests(unittest.TestCase):
     def test_reassign_different_instrument_deletes_nets(self):
         self._add_second_catalog_device()
         self.cables = [CABLE]
-        self._run(["assign", json.dumps({"instrument": "Rigol_DP711", "serial": SERIAL})])
+        assign_ops.assign({"instrument": "Rigol_DP711", "serial": SERIAL})
         _FakeNet.db = [{"name": "supply1", "address": SERIAL_ADDR}]
 
-        result = self._run(["assign", json.dumps(
-            {"instrument": "Test_PSU", "serial": SERIAL})])
+        result = assign_ops.assign({"instrument": "Test_PSU", "serial": SERIAL})
         self.assertEqual(result["instrument"], "Test_PSU")
         self.assertEqual(result["deleted_nets"], ["supply1"])
         self.assertEqual(_FakeNet.db, [])
@@ -344,11 +332,11 @@ class CustomDevicesImplTests(unittest.TestCase):
         # so its nets go and the old record is dropped (one cable == one
         # assignment, never two records under different identity forms).
         self.cables = [CABLE]
-        self._run(["assign", json.dumps({"instrument": "Rigol_DP711", "serial": SERIAL})])
+        assign_ops.assign({"instrument": "Rigol_DP711", "serial": SERIAL})
         _FakeNet.db = [{"name": "supply1", "address": SERIAL_ADDR}]
 
-        result = self._run(["assign", json.dumps(
-            {"instrument": "Rigol_DP711", "port_path": "1-1.2"})])
+        result = assign_ops.assign(
+            {"instrument": "Rigol_DP711", "port_path": "1-1.2"})
         self.assertEqual(result["address"], PORT_ADDR)
         self.assertEqual(result["deleted_nets"], ["supply1"])
         records = cs.load()
@@ -359,8 +347,7 @@ class CustomDevicesImplTests(unittest.TestCase):
     def test_fresh_assign_deletes_nothing(self):
         self.cables = [CABLE]
         _FakeNet.db = [{"name": "other", "address": "USB0::0x10C4::0xEA60::X::INSTR"}]
-        result = self._run(["assign", json.dumps(
-            {"instrument": "Rigol_DP711", "serial": SERIAL})])
+        result = assign_ops.assign({"instrument": "Rigol_DP711", "serial": SERIAL})
         self.assertEqual(result["deleted_nets"], [])
         self.assertEqual(len(_FakeNet.db), 1)
 
@@ -378,8 +365,7 @@ class CustomDevicesImplTests(unittest.TestCase):
             {"name": "dbg", "role": "debug",
              "address": f"USB0::0x067B::0x23A3::{SERIAL}::INSTR", "pin": "X"},
         ]
-        result = self._run(["assign", json.dumps(
-            {"instrument": "Rigol_DP711", "serial": SERIAL})])
+        result = assign_ops.assign({"instrument": "Rigol_DP711", "serial": SERIAL})
         self.assertEqual(result["deleted_nets"], ["uart1"])
         # Non-uart roles and other cables' uart nets are untouched.
         self.assertEqual(sorted(n["name"] for n in _FakeNet.db), ["dbg", "uart2"])
@@ -389,8 +375,7 @@ class CustomDevicesImplTests(unittest.TestCase):
         self.cables = [CABLE]
         _FakeNet.db = [{"name": "uart1", "role": "uart",
                         "address": "/dev/ttyUSB0", "pin": SERIAL}]
-        result = self._run(["assign", json.dumps(
-            {"instrument": "Rigol_DP711", "serial": SERIAL})])
+        result = assign_ops.assign({"instrument": "Rigol_DP711", "serial": SERIAL})
         self.assertEqual(result["deleted_nets"], ["uart1"])
 
     def test_serial_less_cable_assign_leaves_uart_nets_alone(self):
@@ -401,8 +386,8 @@ class CustomDevicesImplTests(unittest.TestCase):
         self.cables = [cable]
         _FakeNet.db = [{"name": "uart1", "role": "uart",
                         "address": "USB0::0x067B::0x23A3::::INSTR", "pin": TTY}]
-        result = self._run(["assign", json.dumps(
-            {"instrument": "Rigol_DP711", "port_path": "1-1.2"})])
+        result = assign_ops.assign(
+            {"instrument": "Rigol_DP711", "port_path": "1-1.2"})
         self.assertEqual(result["deleted_nets"], [])
         self.assertEqual(len(_FakeNet.db), 1)
 
@@ -411,24 +396,63 @@ class CustomDevicesImplTests(unittest.TestCase):
         # the removal itself must still succeed, just without the cascade.
         cs.add("Rigol_DP711", VID, PID, serial=SERIAL)
         sys.modules["lager.nets.net"] = None
-        result = self._run(["remove", json.dumps({"serial": SERIAL})])
+        result = assign_ops.remove({"serial": SERIAL})
         self.assertTrue(result["removed"])
         self.assertEqual(result["deleted_nets"], [])
 
-    # ---- protocol / degraded mode ---------------------------------------------
 
-    def test_invalid_json_payload_fails(self):
-        err = self._run_expect_failure(["assign", "{not json"])
-        self.assertIn("Invalid JSON", err)
+class CustomDevicesHttpTests(_CustomDevicesBase):
+    """The :9000 /custom-devices/* routes wrap lager.devices.assign."""
 
-    def test_unknown_command_fails(self):
-        err = self._run_expect_failure(["frobnicate"])
-        self.assertIn("Unknown command", err)
+    def setUp(self):
+        super().setUp()
+        from flask import Flask
+        handler = _load_module(
+            "lager.http_handlers.custom_devices_handler",
+            os.path.join(BOX_DIR, "lager", "http_handlers",
+                         "custom_devices_handler.py"))
+        app = Flask(__name__)
+        handler.register_custom_devices_routes(app)
+        self.client = app.test_client()
 
-    def test_degraded_mode_reports_old_box_image(self):
-        cd._catalog = cd._custom_store = cd._serial_id = None
-        err = self._run_expect_failure(["list"])
-        self.assertIn("predates custom serial devices", err)
+    def test_list_route(self):
+        self.cables = [CABLE]
+        r = self.client.get('/custom-devices/list')
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertIn("catalog", data)
+        self.assertEqual(data["cables"], [CABLE])
+
+    def test_assign_route(self):
+        self.cables = [CABLE]
+        r = self.client.post('/custom-devices/assign', json={
+            "instrument": "Rigol_DP711", "serial": SERIAL})
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertEqual(data["instrument"], "Rigol_DP711")
+        self.assertEqual(data["address"], SERIAL_ADDR)
+        self.assertEqual(data["deleted_nets"], [])
+
+    def test_assign_route_user_error_is_400(self):
+        self.cables = []
+        r = self.client.post('/custom-devices/assign', json={
+            "instrument": "Rigol_DP711", "serial": SERIAL})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("currently connected", r.get_json()["error"])
+
+    def test_remove_route(self):
+        cs.add("Rigol_DP711", VID, PID, serial=SERIAL)
+        _FakeNet.db = [{"name": "supply1", "address": SERIAL_ADDR}]
+        r = self.client.post('/custom-devices/remove', json={"serial": SERIAL})
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertTrue(data["removed"])
+        self.assertEqual(data["deleted_nets"], ["supply1"])
+
+    def test_remove_route_bad_identity_is_400(self):
+        r = self.client.post('/custom-devices/remove', json={})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("exactly one", r.get_json()["error"])
 
 
 if __name__ == "__main__":

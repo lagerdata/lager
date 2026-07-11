@@ -37,8 +37,8 @@ roughly like:
 ```
 
 The CLI offers nets to the user based on what the box's USB scanner sees
-(`cli/impl/query_instruments.py`, mirrored on the box at
-`box/lager/http_handlers/usb_scanner.py`). The scanner returns each
+(`box/lager/http_handlers/usb_scanner.py`, served over `GET
+:9000/instruments/list`). The scanner returns each
 instrument's `channels` map (`{role: [channel1, channel2, …]}`); the CLI/TUI
 turns that map into candidate nets, applies the constraint logic below,
 prompts the user where needed, and saves the survivors.
@@ -129,11 +129,11 @@ serial and emits one channel per interface.
 
 ## Adding a new instrument
 
-1. Add the VID/PID/role-list entry to `SUPPORTED_USB` in **both** files:
-   - `box/lager/http_handlers/usb_scanner.py` (box-side scan)
-   - `cli/impl/query_instruments.py` (CLI-side scan — keep in sync)
+1. Add the VID/PID/role-list entry to `SUPPORTED_USB` in
+   `box/lager/http_handlers/usb_scanner.py` (the box-side scan — the only
+   scanner; the CLI reads it over `GET :9000/instruments/list`).
 
-2. Add the `CHANNEL_MAPS` entry in the same two files. For roles where the
+2. Add the `CHANNEL_MAPS` entry in the same file. For roles where the
    user has to pick a target string (e.g. debug nets — the device name),
    use the `"DEVICE_TYPE"` placeholder; the CLI/TUI replaces it via prompt.
 

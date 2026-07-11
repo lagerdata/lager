@@ -30,10 +30,10 @@ boxes). Supply, battery, and USB keep their dedicated `:9000` command endpoints;
 UART uses the `:9000` WebSocket stream plus `:9000` HTTP for discovery/listing.
 
 `ROLE_ACTIONS` currently registers: `gpio`, `adc`, `dac`, `thermocouple`,
-`watt-meter`, `eload`, `spi`, `i2c`, `energy-analyzer`, `arm`, `webcam`,
-`router` (+ `mikrotik` alias). The `/status` capability block advertises the
-role list as `netCommandRoles` so clients can detect arm/webcam/router support
-without version sniffing.
+`watt-meter`, `eload`, `solar`, `spi`, `i2c`, `energy-analyzer`, `arm`,
+`webcam`, `router` (+ `mikrotik` alias). The `/status` capability block
+advertises the role list as `netCommandRoles` so clients can detect
+arm/webcam/router/solar support without version sniffing.
 
 Box-level capabilities that drive the box's own hardware rather than a saved
 net get dedicated endpoints, mirroring `/usb/command`: `POST /ble/command`,
@@ -59,7 +59,12 @@ driver per physical device and serializes every call under a per-device lock, so
 concurrent `:9000` requests (e.g. parallel cargo tests from the Rust crate) can
 never interleave I/O on one instrument.
 
-- **VISA instruments (eload)** lock on the VISA address, like supply/battery.
+- **VISA instruments (eload, solar)** lock on the VISA address, like
+  supply/battery. A solar net drives PV-simulation mode on an EA PSB supply —
+  the same physical unit a supply net can point at — so both roles serialize
+  under one per-address lock (`solar_hs` is a role-unique adapter because
+  hardware_service's import search would otherwise resolve `ea` to the supply
+  driver).
 - **Non-VISA devices (adc/dac/gpio/thermocouple/watt/energy/spi/i2c)** have no
   VISA address, so each net supplies an explicit `device_id` — a stable physical
   identity (e.g. `labjack:…`, `joulescope:…`) that is *shared* by every net and
@@ -92,6 +97,10 @@ ReadTimeout:
   handler to `duration + margin` (energy/watt) or the wait timeout + margin
   (gpio; a 24h stand-in when unbounded).
 
+Solar actions re-assert PV mode on the EA (enable with settle retries) before
+doing their work, so even reads are slow: the handler widens the proxy budget
+to 90s for `set`/`stop` and 60s for reads, and the CLI budgets 120s/90s.
+
 Energy integrations are clamped box-side at 120s (the old :5000 CLI budget).
 Direct :9000 callers are not Nginx-proxied, so long-held requests are safe;
 Stout's dashboard path separately clamps itself to 30s to stay under Nginx's
@@ -104,6 +113,7 @@ Stout's dashboard path separately clamps itself to 30s to stay under Nginx's
 | supply | `lager supply` | `:9000/supply/command` (+ WS TUI) | Removed |
 | battery | `lager battery` | `:9000/battery/command` (+ WS TUI) | Removed |
 | eload | `lager eload` | `:9000/net/command` | Removed |
+| solar | `lager solar` | `:9000/net/command` (`set`/`stop`/PV reads via `solar_hs`) | Removed |
 | adc | `lager adc` | `:9000/net/command` | Removed |
 | dac | `lager dac` | `:9000/net/command` | Removed |
 | gpi | `lager gpi` | `:9000/net/command` (`input`, `wait_for_level`) | Removed |
@@ -139,8 +149,7 @@ same lock state via `lager.lock_state`, plus `/status`, `/hello`, `/health`,
   `heartbeat_box_lock`, `release_box_lock`, `_check_box_lock`).
 - `lager box instruments`
   ([box/instruments.py](../../cli/commands/box/instruments.py)) is a plain
-  `GET :9000/instruments/list` — the `query_instruments.py` exec is gone from
-  this command (the nets add/TUI flows still exec it; see below).
+  `GET :9000/instruments/list`.
 - `lager hello`, `lager boxes` (live listing), and the version-skew warning
   ([box/hello.py](../../cli/commands/box/hello.py),
   [box/boxes.py](../../cli/commands/box/boxes.py),
@@ -152,24 +161,56 @@ same lock state via `lager.lock_state`, plus `/status`, `/hello`, `/health`,
   `/health` on **both** `:9000` and `:5000`, since `lager python` still needs
   the `:5000` service.
 
+## Net management (`lager nets` + TUI) on :9000
+
+`lager nets` ([box/nets.py](../../cli/commands/box/nets.py)), the net TUI
+([box/net_tui.py](../../cli/commands/box/net_tui.py)), and the debug-net
+lookups in [development/debug/commands.py](../../cli/commands/development/debug/commands.py)
+drive the box exclusively over the `:9000` REST routes — the
+`net.py` / `query_instruments.py` / `custom_devices.py` impl-script execs are
+deleted:
+
+- List/save/rename/delete: `GET /nets/list`, `PUT /nets/<name>` (rename
+  semantics when the URL name differs from the body name),
+  `DELETE /nets/<name>?role=`, `DELETE /nets`
+  ([nets_handler.py](../../box/lager/http_handlers/nets_handler.py)).
+- Instrument scans (`nets add`, `create-all`, TUI): `GET /instruments/list`
+  ([usb_scanner.py](../../box/lager/http_handlers/usb_scanner.py) is the
+  single canonical scanner).
+- Custom-device assignment (`lager nets assign`, TUI assign screens):
+  `GET /custom-devices/list`, `POST /custom-devices/assign`,
+  `POST /custom-devices/remove`
+  ([custom_devices_handler.py](../../box/lager/http_handlers/custom_devices_handler.py)
+  wrapping the shared [lager.devices.assign](../../box/lager/devices/assign.py)
+  module), advertised as the `customDevices` capability in `/status`.
+
+## Binaries + /download-file on :9000
+
+`lager binaries add/list/remove`
+([utility/binaries.py](../../cli/commands/utility/binaries.py)) and
+`DirectHTTPSession.download_file`
+([context/session.py](../../cli/context/session.py)) target the `:9000`
+routes served by
+[binaries_handler.py](../../box/lager/http_handlers/binaries_handler.py),
+advertised as the `binaries` capability. The wire contracts are identical to
+the `:5000` versions — both servers shim the shared
+[lager.binaries.store](../../box/lager/binaries/store.py) module (multipart
+`binary`+`name` for add, JSON for remove, streamed octet-stream downloads
+restricted to the `/tmp/lager-output*` allowlist), following the
+`lager.lock_state` precedent. The `:5000` routes stay for older CLIs.
+
 ## What still uses port 5000
 
 `lager python` (and `install-wheel`) — the script-upload/exec service itself —
-stays on `:5000` by design.
+stays on `:5000` by design (`/python/*`, `/pip`, `/python/kill`, and the
+second half of `lager update`'s dual-port health poll).
 
 CLI features still on the `:5000` exec path:
 
 - `lager scope`, `lager scope stream` ([measurement/scope.py](../../cli/commands/measurement/scope.py)) - large streaming/capture workflow (plus the oscilloscope daemon on 8082-8085).
 - `lager logic` ([measurement/logic.py](../../cli/commands/measurement/logic.py)) - logic-analyzer capture/trigger/cursor.
-- `lager solar` ([power/solar.py](../../cli/commands/power/solar.py)) - solar-array emulation mode.
-- `lager net ...` management TUI ([box/net_tui.py](../../cli/commands/box/net_tui.py)) and the `lager nets add` instrument scan (`query_instruments.py` exec) - net CRUD itself already exists on `:9000`.
 - `lager box config` apply/poll ([box/config.py](../../cli/commands/box/config.py)).
 - Debug flash helpers ([development/debug/commands.py](../../cli/commands/development/debug/commands.py)).
-
-`:5000` REST (non-exec) endpoints the CLI still calls: binaries
-add/list/remove ([utility/binaries.py](../../cli/commands/utility/binaries.py)),
-`/download-file`, `/python/kill`, and the second half of `lager update`'s
-dual-port health poll.
 
 Box-side/infra: the `:5000` service itself
 ([box/lager/python/service.py](../../box/lager/python/service.py)), the MCP
@@ -178,10 +219,13 @@ bench loader (`BOX_SERVICE_PORT = 5000`), and the firewall rules for
 
 ## Regression guards
 
-- Box: [test/unit/box/test_net_command_handler.py](../../test/unit/box/test_net_command_handler.py) covers each role/action through a mocked `Device` proxy, including gpio `wait_for_level` (timeout -> 502), watt-meter `current`/`all`, eload `state`, spi `write`/`config`, i2c `config`/`scan` range, arm moves/bounds (502), webcam start/stop/status, and router reads/controls/param pass-through.
+- Box: [test/unit/box/test_net_command_handler.py](../../test/unit/box/test_net_command_handler.py) covers each role/action through a mocked `Device` proxy, including gpio `wait_for_level` (timeout -> 502), watt-meter `current`/`all`, eload `state`, solar `set`/`stop`/reads (numeric-value extraction, range validation), spi `write`/`config`, i2c `config`/`scan` range, arm moves/bounds (502), webcam start/stop/status, and router reads/controls/param pass-through.
+- Box: [test/unit/box/test_custom_devices_assign.py](../../test/unit/box/test_custom_devices_assign.py) covers `lager.devices.assign` (assign/remove semantics incl. the net-deletion cascades) and the `/custom-devices/*` routes.
+- Box: [test/unit/box/test_binaries_store.py](../../test/unit/box/test_binaries_store.py) covers `lager.binaries.store` (name validation, executable bit, download allowlist incl. traversal and sibling-prefix rejection) and the `/binaries/*` + `/download-file` routes.
 - Box: [test/unit/box/test_box_level_command_handlers.py](../../test/unit/box/test_box_level_command_handlers.py) covers the `/ble/command`, `/wifi/command`, and `/blufi/command` handlers with bleak/nmcli/BlufiClient mocked — action contracts, validation (400), and hardware failures (502).
 - Box: [test/unit/box/test_box_http_server_capabilities.py](../../test/unit/box/test_box_http_server_capabilities.py) asserts `/status` capabilities (`netCommand`, `netCommandRoles`, `bleCommand`/`wifiCommand`/`blufiCommand`) mirror actual route registration.
 - Box: [test/unit/box/test_hardware_service_retry.py](../../test/unit/box/test_hardware_service_retry.py) `DeviceIdLockTests` covers the shared `device_id` lock — two roles on one physical device get distinct cache entries but a single shared lock, with fallback to the cache-key lock when no `device_id`/`address` is present.
-- CLI: [test/unit/cli/test_net_9000_migration.py](../../test/unit/cli/test_net_9000_migration.py) covers `post_net_command`/`fetch_nets` HTTP behavior, per-command action dispatch, and a parametrized guard asserting no converted command module (including ble/wifi/router/blufi/arm/webcam) imports `run_python_internal` / `run_impl_script` / `run_backend`.
+- CLI: [test/unit/cli/test_net_9000_migration.py](../../test/unit/cli/test_net_9000_migration.py) covers `post_net_command`/`fetch_nets` HTTP behavior, per-command action dispatch (including solar), and a parametrized guard asserting no converted command module (including ble/wifi/router/blufi/arm/webcam/solar) imports `run_python_internal` / `run_impl_script` / `run_backend`.
+- CLI: [test/unit/cli/test_binaries_9000.py](../../test/unit/cli/test_binaries_9000.py) asserts the binaries commands and `download_file` target `:9000` (and that the exec base URL stays `:5000`); the `lager nets` / TUI suites (`test_nets_*.py`, `test_net_tui_*.py`) run against an in-memory HTTP fake of the box ([nets_http_fake.py](../../test/unit/cli/nets_http_fake.py)).
 - CLI: [test/unit/cli/test_watt_subcommands.py](../../test/unit/cli/test_watt_subcommands.py) covers watt output formatting over the 9000 path.
-- Rust: [lager-rs/tests/mock_api.rs](../../lager-rs/tests/mock_api.rs) pins the request/response contract for every arm/webcam/router/ble/wifi/blufi action; [lager-rs/tests/hardware.rs](../../lager-rs/tests/hardware.rs) has opt-in live-box smoke tests for all six.
+- Rust: [lager-rs/tests/mock_api.rs](../../lager-rs/tests/mock_api.rs) pins the request/response contract for every arm/webcam/router/ble/wifi/blufi/solar action; [lager-rs/tests/hardware.rs](../../lager-rs/tests/hardware.rs) has opt-in live-box smoke tests for all of them.

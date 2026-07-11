@@ -698,6 +698,10 @@ class DirectHTTPSession:
         """
         Download a file from box via direct HTTP.
 
+        Served by the :9000 box HTTP server (same wire contract and
+        /tmp/lager-output* allowlist as the legacy :5000 route; base_url
+        stays :5000 for the /python/* exec endpoints only).
+
         Args:
             box: Box IP (ignored, uses self.box_ip)
             filename: Path to file on box to download
@@ -705,5 +709,5 @@ class DirectHTTPSession:
         Returns:
             requests.Response object with streaming content
         """
-        url = f'{self.base_url}/download-file'
+        url = f'http://{self.box_ip}:9000/download-file'
         return self.session.get(url, params={'filename': filename}, stream=True)

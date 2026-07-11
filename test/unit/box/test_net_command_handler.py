@@ -77,6 +77,8 @@ SAVED_NETS = [
     {"name": "watt1", "role": "watt-meter", "instrument": "joulescope"},
     {"name": "load1", "role": "eload", "instrument": "rigol_dl3021",
      "address": "USB0::0x1AB1::0x0E11::DL3A::INSTR"},
+    {"name": "solar1", "role": "solar", "instrument": "EA_PSB_10080_60",
+     "address": "USB0::0x232E::0x0032::EA123::INSTR"},
     {"name": "spi1", "role": "spi", "instrument": "labjack_t7"},
     {"name": "i2c1", "role": "i2c", "instrument": "labjack_t7"},
     {"name": "energy1", "role": "energy-analyzer", "instrument": "joulescope"},
@@ -297,6 +299,107 @@ class TestNetCommandHandler(unittest.TestCase):
             r = self._post({"netname": "load1", "action": "cc",
                             "params": {"value": 0.5}})
         # ELoadBackendError (LagerBackendError) -> 502 by the dispatch loop.
+        self.assertEqual(r.status_code, 502)
+        self.assertFalse(r.get_json()["success"])
+
+    # ----- solar -----
+
+    def test_solar_set(self):
+        dev = MagicMock()
+        r, dev = self._run({"netname": "solar1", "action": "set"}, dev)
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertTrue(data["success"])
+        self.assertIn("initialized and started in PV simulation mode",
+                      data["message"])
+        dev.set_mode.assert_called_once_with()
+        # Routed to the role-unique solar_hs adapter (NOT lager.power.supply.ea)
+        # keyed on the same VISA address a supply net on this EA would use.
+        device_name, net_info = self._DeviceMock.call_args.args
+        self.assertEqual(device_name, "solar_hs")
+        self.assertEqual(net_info["address"], "USB0::0x232E::0x0032::EA123::INSTR")
+        # Mode init gets a widened proxy budget.
+        self.assertEqual(self._DeviceMock.call_args.kwargs.get("timeout"), 90.0)
+
+    def test_solar_stop(self):
+        dev = MagicMock()
+        r, dev = self._run({"netname": "solar1", "action": "stop"}, dev)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("stopped", r.get_json()["message"])
+        dev.stop_mode.assert_called_once_with()
+
+    def test_solar_irradiance_read(self):
+        dev = MagicMock()
+        dev.irradiance.return_value = "1000.0"
+        r, dev = self._run({"netname": "solar1", "action": "irradiance"}, dev)
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertEqual(data["message"], "1000.0")
+        self.assertAlmostEqual(data["value"], 1000.0, places=3)
+        dev.irradiance.assert_called_once_with(None)
+
+    def test_solar_irradiance_set(self):
+        dev = MagicMock()
+        dev.irradiance.return_value = "800.0"
+        r, dev = self._run({"netname": "solar1", "action": "irradiance",
+                            "params": {"value": 800}}, dev)
+        self.assertEqual(r.status_code, 200)
+        self.assertAlmostEqual(r.get_json()["value"], 800.0, places=3)
+        dev.irradiance.assert_called_once_with(800.0)
+
+    def test_solar_irradiance_out_of_range_is_400(self):
+        dev = MagicMock()
+        r, dev = self._run({"netname": "solar1", "action": "irradiance",
+                            "params": {"value": 2000}}, dev)
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(r.get_json()["success"])
+        dev.irradiance.assert_not_called()
+
+    def test_solar_mpp_reads_parse_numeric_value(self):
+        dev = MagicMock()
+        dev.mpp_current.return_value = "1.234 A"
+        r, dev = self._run({"netname": "solar1", "action": "mpp_current"}, dev)
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertEqual(data["message"], "1.234 A")
+        self.assertAlmostEqual(data["value"], 1.234, places=3)
+
+    def test_solar_resistance_set(self):
+        dev = MagicMock()
+        dev.resistance.return_value = "2.50"
+        r, dev = self._run({"netname": "solar1", "action": "resistance",
+                            "params": {"value": 2.5}}, dev)
+        self.assertEqual(r.status_code, 200)
+        self.assertAlmostEqual(r.get_json()["value"], 2.5, places=3)
+        dev.resistance.assert_called_once_with(2.5)
+
+    def test_solar_resistance_nonpositive_is_400(self):
+        dev = MagicMock()
+        r, dev = self._run({"netname": "solar1", "action": "resistance",
+                            "params": {"value": 0}}, dev)
+        self.assertEqual(r.status_code, 400)
+        dev.resistance.assert_not_called()
+
+    def test_solar_unparseable_read_passes_string_through(self):
+        dev = MagicMock()
+        dev.resistance.return_value = "n/a"
+        r, dev = self._run({"netname": "solar1", "action": "resistance"}, dev)
+        self.assertEqual(r.status_code, 200)
+        data = r.get_json()
+        self.assertEqual(data["message"], "n/a")
+        self.assertEqual(data["value"], "n/a")
+
+    def test_solar_unknown_action_is_400(self):
+        r, _ = self._run({"netname": "solar1", "action": "sunset"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_solar_unsupported_instrument_is_error(self):
+        nets = [{"name": "solar1", "role": "solar",
+                 "instrument": "acme_pv", "address": "USB::x"}]
+        with patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = nets
+            r = self._post({"netname": "solar1", "action": "voc"})
+        # SolarBackendError (LagerBackendError) -> 502 by the dispatch loop.
         self.assertEqual(r.status_code, 502)
         self.assertFalse(r.get_json()["success"])
 

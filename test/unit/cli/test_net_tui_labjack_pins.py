@@ -188,11 +188,11 @@ class TestSaveBatchParams:
         )
         default = _make_net(net='i2c1', type='i2c', chan='FIO4-FIO5')
 
-        with patch.object(tui, '_run_script', return_value='{"ok": true}') as rs:
-            ok = tui._save_nets_batch(ctx=None, dut='box', nets=[custom, default])
+        with patch.object(tui, '_save_net_http') as save:
+            ok = tui._save_nets_batch(dut='box', nets=[custom, default])
 
         assert ok is True
-        payload = json.loads(rs.call_args.args[4])
+        payload = [call.args[1] for call in save.call_args_list]
         by_name = {rec['name']: rec for rec in payload}
         assert by_name['spi1']['params'] == {
             'cs_pin': 6, 'clk_pin': 7, 'mosi_pin': 8, 'miso_pin': 9}

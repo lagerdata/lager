@@ -4,12 +4,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for ``lager nets assign`` (cli/commands/box/nets.py).
 
-The Click command end-to-end with ``run_python_internal`` mocked, so the
-box round-trip is replaced by an in-memory custom-device backend and net DB.
+The Click command end-to-end with ``requests.request`` mocked, so the box
+round-trip is replaced by an in-memory :9000 API fake with a custom-device
+backend and net DB.
 
 These tests pin two contracts:
   * The assign flow round-trips: assign → (optional) --as-net net creation →
-    remove, with the JSON payloads the box-side custom_devices.py expects.
+    remove, with the JSON payloads the box-side /custom-devices/* endpoints
+    expect.
   * REGRESSION: a net created via ``--as-net`` (or suggested by the printed
     hint) carries role ``power-supply`` — the scanner-vocabulary role the
     supply CLI (validate_net_exists) and the box dispatcher (ensure_role)
@@ -40,22 +42,18 @@ TTY = "/dev/ttyUSB0"
 ADDR = f"serial://{VID}:{PID}/serial/{SERIAL}"
 
 
-class FakeBox:
-    """In-memory stand-in for the box-side scripts assign_cmd shells out to."""
+from test.unit.cli.nets_http_fake import FakeBoxHTTP, FakeResponse  # noqa: E402
+
+
+class FakeBox(FakeBoxHTTP):
+    """In-memory stand-in for the box's :9000 API with a custom-device backend."""
 
     def __init__(self):
+        super().__init__()
         self.assignments: list[dict] = []
-        self.saved_nets: list[dict] = []
         # Names the next "assign" should report as cascade-deleted (the
         # replaced-assignment case); tests inject these directly.
         self.pending_deleted_on_assign: list[str] = []
-        # Simulate the known box quirk where the exec path emits the JSON
-        # payload twice ("double execution").
-        self.double_output = False
-
-    def _emit(self, obj) -> None:
-        payload = json.dumps(obj)
-        print(payload * 2 if self.double_output else payload)
 
     # The DP711 record the scanner reports once the cable is assigned.
     def _dp711_record(self) -> dict:
@@ -69,80 +67,63 @@ class FakeBox:
             "custom": True,
         }
 
-    def run_python_internal(self, ctx, runnable, box, *, args=(), **kwargs):
-        script = os.path.basename(str(runnable))
-        args = tuple(args)
+    @property
+    def instruments(self):
+        return [self._dp711_record()] if self.assignments else []
 
-        if script == "custom_devices.py":
-            cmd = args[0]
-            if cmd == "list":
-                self._emit({
-                    "catalog": [{"name": "Rigol_DP711", "display_name": "Rigol DP711",
-                                 "roles": ["power-supply"],
-                                 "channels": {"power-supply": ["1"]},
-                                 "default_baud": 9600}],
-                    "assignments": list(self.assignments),
-                    "cables": [] if self.assignments else [
-                        {"vid": VID, "pid": PID, "serial": SERIAL,
-                         "port_path": "1-1.2", "tty": TTY}],
-                })
-            elif cmd == "assign":
-                payload = json.loads(args[1])
-                # Mirror the impl's replacement cascade: stale nets are
-                # reported via deleted_nets (tests inject them directly).
-                deleted = list(self.pending_deleted_on_assign)
-                self.pending_deleted_on_assign = []
-                rec = {
-                    "instrument": "Rigol_DP711",
-                    "vid": VID, "pid": PID,
-                    "serial": payload.get("serial"),
-                    "port_path": payload.get("port_path"),
-                    "address": ADDR, "tty": TTY,
-                    "roles": ["power-supply"],
-                    "channels": {"power-supply": ["1"]},
-                    "deleted_nets": deleted,
-                }
-                if payload.get("baud") is not None:
-                    rec["baud"] = payload["baud"]
-                self.assignments = [rec]
-                self._emit(rec)
-            elif cmd == "remove":
-                removed = bool(self.assignments)
-                self.assignments = []
-                # Mirror the impl's cascade: nets bound to the assignment's
-                # address are deleted and reported.
-                deleted = [n["name"] for n in self.saved_nets
-                           if n.get("address") == ADDR] if removed else []
-                self.saved_nets = [n for n in self.saved_nets
-                                   if n.get("address") != ADDR or not removed]
-                self._emit({"removed": removed, "instrument": "Rigol_DP711",
-                           "address": ADDR, "deleted_nets": deleted})
-            return
+    @instruments.setter
+    def instruments(self, value):
+        pass  # derived from assignment state
 
-        if script == "query_instruments.py":
-            instruments = [self._dp711_record()] if self.assignments else []
-            if args and args[0] == "get_instrument":
-                match = next((i for i in instruments if i["address"] == args[1]), {})
-                self._emit(match)
-            else:
-                self._emit(instruments)
-            return
+    def custom_list(self) -> FakeResponse:
+        return FakeResponse(200, {
+            "catalog": [{"name": "Rigol_DP711", "display_name": "Rigol DP711",
+                         "roles": ["power-supply"],
+                         "channels": {"power-supply": ["1"]},
+                         "default_baud": 9600}],
+            "assignments": list(self.assignments),
+            "cables": [] if self.assignments else [
+                {"vid": VID, "pid": PID, "serial": SERIAL,
+                 "port_path": "1-1.2", "tty": TTY}],
+        })
 
-        if script == "net.py":
-            cmd = args[0]
-            if cmd == "list":
-                self._emit(self.saved_nets)
-            elif cmd == "save":
-                self.saved_nets.append(json.loads(args[1]))
-            return
+    def custom_assign(self, payload: dict) -> FakeResponse:
+        # Mirror the box's replacement cascade: stale nets are reported via
+        # deleted_nets (tests inject them directly).
+        deleted = list(self.pending_deleted_on_assign)
+        self.pending_deleted_on_assign = []
+        rec = {
+            "instrument": "Rigol_DP711",
+            "vid": VID, "pid": PID,
+            "serial": payload.get("serial"),
+            "port_path": payload.get("port_path"),
+            "address": ADDR, "tty": TTY,
+            "roles": ["power-supply"],
+            "channels": {"power-supply": ["1"]},
+            "deleted_nets": deleted,
+        }
+        if payload.get("baud") is not None:
+            rec["baud"] = payload["baud"]
+        self.assignments = [rec]
+        return FakeResponse(200, rec)
 
-        raise AssertionError(f"unexpected script {script} {args}")
+    def custom_remove(self, payload: dict) -> FakeResponse:
+        removed = bool(self.assignments)
+        self.assignments = []
+        # Mirror the box's cascade: nets bound to the assignment's address
+        # are deleted and reported.
+        deleted = [n["name"] for n in self.saved_nets
+                   if n.get("address") == ADDR] if removed else []
+        self.saved_nets = [n for n in self.saved_nets
+                           if n.get("address") != ADDR or not removed]
+        return FakeResponse(200, {"removed": removed, "instrument": "Rigol_DP711",
+                                  "address": ADDR, "deleted_nets": deleted})
 
 
 @pytest.fixture
 def fake_box():
     box = FakeBox()
-    with patch.object(nets_mod, "run_python_internal", box.run_python_internal), \
+    with patch("requests.request", box.request), \
          patch("cli.box_storage.resolve_and_validate_box",
                lambda ctx, name: name or "testbox"):
         yield box
@@ -278,28 +259,36 @@ class TestNetCascade:
 # backend output robustness                                                   #
 # --------------------------------------------------------------------------- #
 
-class TestDoubledBackendOutput:
-    """REGRESSION: the box exec path is known to emit the JSON payload twice
-    on some boxes ("double execution"); _run_backend must use the
-    duplicate-tolerant parser, not bare json.loads."""
+class TestBackendResponseRobustness:
+    """Box failures must surface as actionable LagerErrors, not tracebacks."""
 
-    def test_assign_tolerates_doubled_json(self, fake_box):
-        fake_box.double_output = True
-        result = _invoke(["assign", "Rigol_DP711", "--serial", SERIAL, "--box", "b"])
-        assert result.exit_code == 0, result.output
-        assert ADDR in result.output
+    def test_box_400_error_is_clean_error(self, fake_box):
+        # AssignmentError on the box (unplugged cable, unknown device, ...)
+        # comes back as 400 + {"error": ...}; the CLI relays the reason.
+        from test.unit.cli.nets_http_fake import FakeResponse
 
-    def test_remove_tolerates_doubled_json(self, fake_box):
-        _invoke(["assign", "Rigol_DP711", "--serial", SERIAL, "--box", "b"])
-        fake_box.double_output = True
-        result = _invoke(["assign", "--remove", "--serial", SERIAL, "--box", "b"])
-        assert result.exit_code == 0, result.output
-        assert "Removed" in result.output
+        with patch.object(
+            fake_box, "custom_assign",
+            lambda payload: FakeResponse(
+                400, {"error": "No USB-serial cable with serial number X"}),
+        ):
+            result = CliRunner().invoke(
+                nets_group,
+                ["assign", "Rigol_DP711", "--serial", SERIAL, "--box", "b"],
+            )
+        assert result.exit_code != 0
+        assert "could not complete the assign command" in result.output
+        assert "No USB-serial cable" in result.output
 
-    def test_empty_backend_output_is_clean_error(self, fake_box):
-        # An empty payload (e.g. backend crashed before printing) must raise
-        # the actionable LagerError, not an AttributeError on a list.
-        with patch.object(fake_box, "_emit", lambda obj: None):
+    def test_non_json_response_is_clean_error(self, fake_box):
+        # A non-JSON body (e.g. an old box image 404ing with HTML) must raise
+        # the actionable LagerError, not an AttributeError.
+        from test.unit.cli.nets_http_fake import FakeResponse
+
+        with patch.object(
+            fake_box, "custom_assign",
+            lambda payload: FakeResponse(404, None),
+        ):
             result = CliRunner().invoke(
                 nets_group,
                 ["assign", "Rigol_DP711", "--serial", SERIAL, "--box", "b"],

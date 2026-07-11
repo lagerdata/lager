@@ -192,6 +192,22 @@ except Exception as e:
     logger.warning("Instruments handlers not available: %s", e)
     _has_instruments = False
 
+# Import custom-devices handler (`lager nets assign` backend)
+try:
+    from lager.http_handlers.custom_devices_handler import register_custom_devices_routes
+    _has_custom_devices = True
+except Exception as e:
+    logger.warning("Custom-devices handlers not available: %s", e)
+    _has_custom_devices = False
+
+# Import binaries + download-file handler
+try:
+    from lager.http_handlers.binaries_handler import register_binaries_routes
+    _has_binaries = True
+except Exception as e:
+    logger.warning("Binaries handlers not available: %s", e)
+    _has_binaries = False
+
 # Import lock handler
 try:
     from lager.http_handlers.lock_handler import register_lock_routes
@@ -303,6 +319,13 @@ def status():
             'bleCommand': _has_ble,
             'wifiCommand': _has_wifi,
             'blufiCommand': _has_blufi,
+            # /custom-devices/* (the `lager nets assign` backend) is served
+            # on :9000; lets the CLI/TUI detect boxes that predate it.
+            'customDevices': _has_custom_devices,
+            # /binaries/* + /download-file are served on :9000 (same wire
+            # contracts as the :5000 python-exec service); lets the CLI
+            # detect boxes that predate them.
+            'binaries': _has_binaries,
         },
     })
 
@@ -371,6 +394,22 @@ if _has_instruments:
     print("[INIT] Instruments REST endpoints registered", flush=True)
 else:
     print("[INIT] Instruments REST endpoints NOT available", flush=True)
+
+# Register custom-devices REST handlers (if available)
+if _has_custom_devices:
+    register_custom_devices_routes(app)
+    logger.info("Custom-devices REST endpoints registered (/custom-devices/*)")
+    print("[INIT] Custom-devices REST endpoints registered", flush=True)
+else:
+    print("[INIT] Custom-devices REST endpoints NOT available", flush=True)
+
+# Register binaries + download-file REST handlers (if available)
+if _has_binaries:
+    register_binaries_routes(app)
+    logger.info("Binaries REST endpoints registered (/binaries/*, /download-file)")
+    print("[INIT] Binaries REST endpoints registered", flush=True)
+else:
+    print("[INIT] Binaries REST endpoints NOT available", flush=True)
 
 # Register lock REST handlers (if available)
 if _has_lock:

@@ -58,70 +58,15 @@ JS220 = {
 }
 
 
-class FakeBox:
-    """In-memory stand-in for the box-side scripts nets-add shells out to.
-
-    Consumers read the payload two ways: add_cmd captures stdout via
-    redirect_stdout, while ``_run_net_py`` (delete, batch save) uses the
-    return value of ``run_python_internal_get_output``. The fake serves
-    both: it prints the payload AND returns it.
-    """
-
-    def __init__(self, instruments):
-        self.instruments = instruments
-        self.saved_nets: list[dict] = []
-
-    def run_python_internal(self, ctx, runnable, box, env=None, passenv=(),
-                            kill=False, download=(), allow_overwrite=False,
-                            signum="SIGTERM", timeout=30, detach=False,
-                            port=(), org=None, args=(), **kwargs):
-        # Positional-friendly: run_python_internal_get_output forwards every
-        # parameter positionally.
-        out = self._dispatch(os.path.basename(str(runnable)), tuple(args))
-        if out:
-            print(out)
-        return out
-
-    def _dispatch(self, script, args) -> str:
-        if script == "query_instruments.py":
-            if args and args[0] == "get_instrument":
-                match = next((i for i in self.instruments
-                              if i["address"] == args[1]), {})
-                return json.dumps(match)
-            return json.dumps(self.instruments)
-
-        if script == "net.py":
-            cmd = args[0]
-            if cmd == "list":
-                return json.dumps(self.saved_nets)
-            if cmd == "save":
-                self.saved_nets.append(json.loads(args[1]))
-                return json.dumps({"ok": True})
-            if cmd == "save-batch":
-                records = json.loads(args[1])
-                self.saved_nets.extend(records)
-                return json.dumps({"ok": True, "count": len(records)})
-            if cmd == "delete":
-                self.saved_nets = [n for n in self.saved_nets
-                                   if not (n.get("name") == args[1]
-                                           and n.get("role") == args[2])]
-                return json.dumps({"ok": True})
-
-        raise AssertionError(f"unexpected script {script} {args}")
+from test.unit.cli.nets_http_fake import FakeBoxHTTP  # noqa: E402
 
 
 @pytest.fixture
 def fake_box():
-    # NB: ``import cli.commands.development.python`` would resolve to the
-    # Click command shadowing the submodule attribute; go via importlib.
-    devpy = importlib.import_module("cli.commands.development.python")
-
-    box = FakeBox([DP811, KEITHLEY, JS220])
-    # add_cmd calls run_python_internal via the nets module's import;
-    # _run_net_py goes through devpy.run_python_internal_get_output, which
-    # resolves run_python_internal from devpy's globals at call time.
-    with patch.object(nets_mod, "run_python_internal", box.run_python_internal), \
-         patch.object(devpy, "run_python_internal", box.run_python_internal), \
+    # nets.py talks to the box over :9000 HTTP (requests.request); replace
+    # the box with the in-memory API fake.
+    box = FakeBoxHTTP([DP811, KEITHLEY, JS220])
+    with patch("requests.request", box.request), \
          patch("cli.box_storage.resolve_and_validate_box",
                lambda ctx, name: name or "testbox"), \
          patch.object(nets_mod, "_resolve_box", lambda ctx, name: name or "testbox"):

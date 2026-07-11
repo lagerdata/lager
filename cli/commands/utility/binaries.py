@@ -101,7 +101,7 @@ def add(ctx, binary_path, box, name, yes):
     click.echo(f"Uploading {binary_name} ({size_str})...")
 
     # Upload via HTTP
-    url = f'http://{resolved_ip}:5000/binaries/add'
+    url = f'http://{resolved_ip}:9000/binaries/add'
     try:
         # Send as multipart form data
         files = {
@@ -136,7 +136,7 @@ def add(ctx, binary_path, box, name, yes):
         click.secho(f"Error: Could not connect to box at {resolved_ip}", fg='red', err=True)
         click.secho("Possible causes:", err=True)
         click.secho("  - Box is offline or unreachable", err=True)
-        click.secho("  - Lager service not running (port 5000)", err=True)
+        click.secho("  - Box HTTP service not running (port 9000)", err=True)
         click.secho("  - Firewall blocking connection", err=True)
         click.secho(f"Try: lager hello --box {box}", err=True)
         ctx.exit(1)
@@ -162,7 +162,7 @@ def list_binaries(ctx, box):
 
     resolved_ip = resolve_and_validate_box(ctx, box)
 
-    url = f'http://{resolved_ip}:5000/binaries/list'
+    url = f'http://{resolved_ip}:9000/binaries/list'
     try:
         response = requests.get(url, timeout=30)
 
@@ -207,7 +207,7 @@ def list_binaries(ctx, box):
         click.secho(f"Error: Could not connect to box at {resolved_ip}", fg='red', err=True)
         click.secho("Possible causes:", err=True)
         click.secho("  - Box is offline or unreachable", err=True)
-        click.secho("  - Lager service not running (port 5000)", err=True)
+        click.secho("  - Box HTTP service not running (port 9000)", err=True)
         click.secho("  - Firewall blocking connection", err=True)
         click.secho(f"Try: lager hello --box {box}", err=True)
         ctx.exit(1)
@@ -235,7 +235,7 @@ def remove(ctx, binary_name, box, yes):
     resolved_ip = resolve_and_validate_box(ctx, box)
 
     # First check if binary exists
-    url = f'http://{resolved_ip}:5000/binaries/list'
+    url = f'http://{resolved_ip}:9000/binaries/list'
     try:
         response = requests.get(url, timeout=30)
         if response.status_code == 200:
@@ -263,7 +263,7 @@ def remove(ctx, binary_name, box, yes):
             return
 
     # Remove via HTTP
-    url = f'http://{resolved_ip}:5000/binaries/remove'
+    url = f'http://{resolved_ip}:9000/binaries/remove'
     try:
         response = requests.post(url, json={'name': binary_name}, timeout=30)
 
@@ -278,7 +278,7 @@ def remove(ctx, binary_name, box, yes):
         click.secho(f"Error: Could not connect to box at {resolved_ip}", fg='red', err=True)
         click.secho("Possible causes:", err=True)
         click.secho("  - Box is offline or unreachable", err=True)
-        click.secho("  - Lager service not running (port 5000)", err=True)
+        click.secho("  - Box HTTP service not running (port 9000)", err=True)
         click.secho("  - Firewall blocking connection", err=True)
         click.secho(f"Try: lager hello --box {box}", err=True)
         ctx.exit(1)

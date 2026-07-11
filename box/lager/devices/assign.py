@@ -1,16 +1,16 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
-"""Box-side backend for ``lager nets assign`` (custom serial devices).
+"""Custom serial-device assignment operations (``lager nets assign``).
 
-Executes on the box via the same mechanism as ``net.py`` /
-``query_instruments.py``. Commands (JSON on stdout; failures exit non-zero
-with a message on stderr, which the CLI surfaces to the user):
+Box-side logic behind the :9000 ``/custom-devices/*`` endpoints (previously
+the ``cli/impl/custom_devices.py`` script executed over :5000). Operations
+(JSON-serializable dict results; user errors raise :class:`AssignmentError`):
 
-    list             -> {"catalog": [...], "assignments": [...], "cables": [...]}
-    assign  <json>   -> the stored assignment record (+ "address", "tty",
-                        "roles", "channels", "deleted_nets")
-    remove  <json>   -> {"removed": true|false, "deleted_nets": [...], ...}
+    list_state()      -> {"catalog": [...], "assignments": [...], "cables": [...]}
+    assign(payload)   -> the stored assignment record (+ "address", "tty",
+                         "roles", "channels", "deleted_nets")
+    remove(payload)   -> {"removed": true|false, "deleted_nets": [...], ...}
 
 ``assign`` payload:  {"instrument", "serial" | "port_path", "baud"?}
 ``remove`` payload:  {"serial" | "port_path"}
@@ -21,29 +21,13 @@ live and die with their assignment: removing (or replacing) an assignment
 deletes the nets bound to its address — ``deleted_nets`` reports them.
 """
 
-import json
-import sys
-
-try:
-    # Custom-device framework; absent on box images that predate it.
-    from lager.devices import catalog as _catalog
-    from lager.devices import custom_store as _custom_store
-    from lager.devices import serial_id as _serial_id
-except Exception:
-    _catalog = _custom_store = _serial_id = None
+from lager.devices import catalog as _catalog
+from lager.devices import custom_store as _custom_store
+from lager.devices import serial_id as _serial_id
 
 
-def _fail(message: str) -> None:
-    print(message, file=sys.stderr)
-    sys.exit(1)
-
-
-def _require_framework() -> None:
-    if _custom_store is None:
-        _fail(
-            "This box's software predates custom serial devices. "
-            "Update the box (lager update) and retry."
-        )
+class AssignmentError(ValueError):
+    """A user-facing assignment failure (bad payload, unplugged cable, …)."""
 
 
 def _safe_address(rec: dict):
@@ -134,7 +118,7 @@ def _catalog_entries() -> list:
     return entries
 
 
-def _cmd_list() -> dict:
+def list_state() -> dict:
     assignments = []
     for rec in _custom_store.load():
         tty = _serial_id.resolve_tty(
@@ -159,15 +143,17 @@ def _identity_from(payload: dict):
     serial = payload.get("serial") or None
     port_path = payload.get("port_path") or None
     if bool(serial) == bool(port_path):
-        _fail("Provide exactly one of a USB serial number or a USB port path.")
+        raise AssignmentError(
+            "Provide exactly one of a USB serial number or a USB port path.")
     return serial, port_path
 
 
-def _cmd_assign(payload: dict) -> dict:
+def assign(payload: dict) -> dict:
     instrument = _catalog.canonical_name(payload.get("instrument"))
     if not instrument:
         known = ", ".join(sorted(_catalog.DEVICE_CATALOG))
-        _fail(f"Unknown device '{payload.get('instrument')}'. Assignable devices: {known}")
+        raise AssignmentError(
+            f"Unknown device '{payload.get('instrument')}'. Assignable devices: {known}")
     serial, port_path = _identity_from(payload)
 
     matches = [
@@ -177,14 +163,14 @@ def _cmd_assign(payload: dict) -> dict:
     ]
     if not matches:
         what = f"serial number {serial}" if serial else f"port path {port_path}"
-        _fail(
+        raise AssignmentError(
             f"No USB-serial cable with {what} is currently connected. "
             f"The cable must be plugged in to assign it (its USB identity is "
             f"captured from the live device)."
         )
     if len(matches) > 1:
         ttys = ", ".join(c["tty"] for c in matches)
-        _fail(
+        raise AssignmentError(
             f"Multiple connected cables match ({ttys}). Unplug the extras, "
             f"or assign by port path instead."
         )
@@ -240,7 +226,7 @@ def _cmd_assign(payload: dict) -> dict:
     }
 
 
-def _cmd_remove(payload: dict) -> dict:
+def remove(payload: dict) -> dict:
     serial, port_path = _identity_from(payload)
     target = None
     for rec in _custom_store.load():
@@ -263,32 +249,3 @@ def _cmd_remove(payload: dict) -> dict:
         "address": address,
         "deleted_nets": deleted_nets,
     }
-
-
-def main(argv=None) -> None:
-    if argv is None:
-        argv = sys.argv[1:]
-    if not argv:
-        _fail("usage: custom_devices.py list | assign <json> | remove <json>")
-    _require_framework()
-
-    cmd = argv[0]
-    if cmd == "list":
-        result = _cmd_list()
-    elif cmd in ("assign", "remove"):
-        if len(argv) < 2:
-            _fail(f"usage: custom_devices.py {cmd} <json>")
-        try:
-            payload = json.loads(argv[1])
-        except json.JSONDecodeError as exc:
-            _fail(f"Invalid JSON payload: {exc}")
-        result = _cmd_assign(payload) if cmd == "assign" else _cmd_remove(payload)
-    else:
-        _fail(f"Unknown command '{cmd}'. Expected: list, assign, remove.")
-
-    json.dump(result, sys.stdout)
-    sys.stdout.write("\n")
-
-
-if __name__ == "__main__":
-    main()

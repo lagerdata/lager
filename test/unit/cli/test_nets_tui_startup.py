@@ -13,7 +13,7 @@ covers assignment flows and worker-thread safety.  This file adds:
   3. Unsaved-placeholder rendering — TUI shows discovered-but-unsaved nets.
 
 All tests pass pre-built nets to NetApp directly (as launch_tui does) and
-patch _run_script so no box round-trips are made.
+patch requests so no box round-trips are made.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ def _unsaved(instrument, chan, role, name, addr="USB0::INSTR") -> tui.Net:
 class TestNetTUIEmptyState:
     def test_composes_with_no_nets(self):
         async def main():
-            with patch.object(tui, "_run_script", return_value="[]"):
+            with patch("requests.request"):
                 app = _make_app(nets=[])
                 async with app.run_test(size=(120, 40)) as pilot:
                     await pilot.pause()
@@ -63,11 +63,13 @@ class TestNetTUIEmptyState:
 
     def test_on_mount_makes_no_box_roundtrip_empty(self):
         async def main():
-            with patch.object(tui, "_run_script") as rs:
+            with patch("requests.request") as rs, \
+                 patch("requests.get") as get, \
+                 patch("requests.post") as post:
                 app = _make_app(nets=[])
                 async with app.run_test(size=(120, 40)) as pilot:
                     await pilot.pause()
-            assert rs.call_count == 0
+            assert rs.call_count == get.call_count == post.call_count == 0
         asyncio.run(main())
 
 
@@ -92,7 +94,7 @@ MIXED_SAVED_NETS = [
 class TestNetTUIWithSavedNets:
     def test_composes_without_error(self):
         async def main():
-            with patch.object(tui, "_run_script", return_value="[]"):
+            with patch("requests.request"):
                 app = _make_app(nets=MIXED_SAVED_NETS)
                 async with app.run_test(size=(120, 40)) as pilot:
                     await pilot.pause()
@@ -100,16 +102,18 @@ class TestNetTUIWithSavedNets:
 
     def test_on_mount_makes_no_box_roundtrip(self):
         async def main():
-            with patch.object(tui, "_run_script") as rs:
+            with patch("requests.request") as rs, \
+                 patch("requests.get") as get, \
+                 patch("requests.post") as post:
                 app = _make_app(nets=MIXED_SAVED_NETS)
                 async with app.run_test(size=(120, 40)) as pilot:
                     await pilot.pause()
-            assert rs.call_count == 0
+            assert rs.call_count == get.call_count == post.call_count == 0
         asyncio.run(main())
 
     def test_saved_nets_reflected_in_app_state(self):
         async def main():
-            with patch.object(tui, "_run_script", return_value="[]"):
+            with patch("requests.request"):
                 app = _make_app(nets=MIXED_SAVED_NETS)
                 async with app.run_test(size=(120, 40)) as pilot:
                     await pilot.pause()
@@ -129,7 +133,7 @@ class TestNetTUIWithSavedNets:
         nets = [_saved("FTDI", "0", "uart", "uart_test",
                         "serial://067b:23a3/serial/DEADBEEF")]
         async def main():
-            with patch.object(tui, "_run_script", return_value="[]"):
+            with patch("requests.request"):
                 app = _make_app(nets=nets)
                 async with app.run_test(size=(120, 40)) as pilot:
                     await pilot.pause()
@@ -147,7 +151,7 @@ class TestNetTUIUnsavedNets:
             _unsaved("LabJack_T7", "AIN0", "adc", "adc1"),
         ]
         async def main():
-            with patch.object(tui, "_run_script", return_value="[]"):
+            with patch("requests.request"):
                 app = _make_app(nets=nets)
                 async with app.run_test(size=(120, 40)) as pilot:
                     await pilot.pause()
@@ -162,7 +166,7 @@ class TestNetTUIUnsavedNets:
             _unsaved("Rigol_DP832", "2", "power-supply", "supply2"),
         ]
         async def main():
-            with patch.object(tui, "_run_script", return_value="[]"):
+            with patch("requests.request"):
                 app = _make_app(nets=nets)
                 async with app.run_test(size=(120, 40)) as pilot:
                     await pilot.pause()
@@ -184,7 +188,7 @@ class TestNetTUIWithInstrumentList:
              "channels": {"adc": ["AIN0", "AIN1"], "gpio": ["EIO0"]}},
         ]
         async def main():
-            with patch.object(tui, "_run_script", return_value="[]"):
+            with patch("requests.request"):
                 app = _make_app(nets=[], inst_list=inst_list)
                 async with app.run_test(size=(120, 40)) as pilot:
                     await pilot.pause()

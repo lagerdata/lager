@@ -12,22 +12,17 @@ Usage:
 """
 from __future__ import annotations
 
-import json
-
 import click
 
 from ...core.net_group import NetGroup
 # Import consolidated helpers from cli.core.net_helpers
 from ...core.net_helpers import (
-    require_netname,
     resolve_box,
     display_nets,
-    run_backend,
-    validate_net_exists,
+    post_net_command,
     NET_ROLES,
 )
-from ...context import get_impl_path, get_default_net
-from ..development.python import run_python_internal
+from ...context import get_default_net
 from ...box_storage import resolve_and_validate_box
 
 
@@ -39,11 +34,15 @@ MIN_RESISTANCE = 0.1    # Ohms - minimum dynamic panel resistance
 MAX_RESISTANCE = 100.0  # Ohms - maximum dynamic panel resistance
 
 
-# ---------- Solar-specific backend runner ----------
-# Uses the standard pattern with LAGER_COMMAND_DATA
+# ---------- Solar backend runner (:9000 /net/command) ----------
 
 def _run_backend(ctx: click.Context, box: str | None, action: str, **params) -> None:
-    """Send action (+ params) for the current solar net to the box backend."""
+    """Send action (+ params) for the current solar net via :9000 /net/command.
+
+    Runs in-process on the box through hardware_service, so a solar net and a
+    supply net on the same EA share one per-VISA-address lock. There is no
+    :5000 script-upload fallback.
+    """
     # Retrieve the net name from context (set by the group callback)
     netname = getattr(ctx.obj, "netname", None)
     if not netname:
@@ -56,37 +55,15 @@ def _run_backend(ctx: click.Context, box: str | None, action: str, **params) -> 
     # Resolve and validate the box name
     resolved_box = resolve_and_validate_box(ctx, box)
 
-    # Validate net exists with correct role
-    net = validate_net_exists(ctx, resolved_box, netname, SOLAR_ROLE)
-    if net is None:
-        return  # Error already displayed by validate_net_exists
-
-    # Prepare command data for solar backend
-    data = {
-        "action": action,
-        "params": {"netname": netname, **params},
-    }
-    try:
-        run_python_internal(
-            ctx,
-            get_impl_path("solar.py"),
-            resolved_box,
-            env=(f"LAGER_COMMAND_DATA={json.dumps(data)}",),
-            passenv=(),
-            kill=False,
-            download=(),
-            allow_overwrite=False,
-            signum="SIGTERM",
-            timeout=0,
-            detach=False,
-            port=(),
-            org=None,
-            args=(),
-        )
-    except SystemExit as e:
-        # If backend exited with error, propagate the non-zero exit code
-        if e.code != 0:
-            raise
+    # Every solar action re-asserts PV mode on the instrument (enable() with
+    # settle retries), so widen the HTTP budget past the box-side proxy
+    # timeout (90s set/stop, 60s reads).
+    http_timeout = 120 if action in ("set", "stop") else 90
+    result = post_net_command(ctx, resolved_box, netname, action, role=SOLAR_ROLE,
+                              quiet=True, http_timeout=http_timeout, **params)
+    message = result.get("message")
+    if message:
+        click.secho(message, fg="green")
 
 
 # ---------- CLI ----------
@@ -132,7 +109,7 @@ solar.net_examples = [
 @click.pass_context
 def set_mode(ctx: click.Context, box: str | None) -> None:
     """Initialize and start the solar simulation mode."""
-    _run_backend(ctx, box, "set_to_solar_mode")
+    _run_backend(ctx, box, "set")
 
 
 @solar.command("stop", help="Stop solar simulation mode")
@@ -140,7 +117,7 @@ def set_mode(ctx: click.Context, box: str | None) -> None:
 @click.pass_context
 def stop_mode(ctx: click.Context, box: str | None) -> None:
     """Stop the solar simulation mode."""
-    _run_backend(ctx, box, "stop_solar_mode")
+    _run_backend(ctx, box, "stop")
 
 
 def _irradiance_range_callback(ctx, param, value):

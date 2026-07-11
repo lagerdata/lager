@@ -177,6 +177,16 @@ def _eload_module_for_instrument(inst: str) -> Optional[str]:
     return None
 
 
+# Mirrors SolarDispatcher._choose_driver (box/lager/power/solar/dispatcher.py).
+# Resolves to the role-unique solar_hs adapter — the raw module name "ea"
+# would hit lager.power.supply.ea first in hardware_service's import search.
+def _solar_module_for_instrument(inst: str) -> Optional[str]:
+    inst = (inst or "").strip()
+    if re.match(r"EA_PSB", inst):
+        return "solar_hs"
+    return None
+
+
 def resolve_net_proxy(
     netname: str,
     role: str,

@@ -127,26 +127,25 @@ class TestSaveNetsBatchGuardrail:
         bad = _make_net(chan='2')
         good = _make_net(net='AUX', chan='/dev/ttyUSB1')
 
-        with patch.object(tui, '_run_script') as run_script:
+        with patch.object(tui, '_save_net_http') as save:
             with pytest.raises(tui.UARTNetSaveValidationError) as exc:
-                tui._save_nets_batch(ctx=None, dut='test-box', nets=[bad, good])
+                tui._save_nets_batch(dut='test-box', nets=[bad, good])
 
         assert "'2'" in str(exc.value)
         # The whole point of the guard is to fail fast — the box must
         # never get the request when validation rejects it.
-        run_script.assert_not_called()
+        save.assert_not_called()
 
     def test_clean_batch_calls_box(self):
         clean = _make_net()
 
-        # Pretend the box returned a success envelope.
-        with patch.object(tui, '_run_script', return_value='{"ok": true}'):
-            ok = tui._save_nets_batch(ctx=None, dut='test-box', nets=[clean])
+        with patch.object(tui, '_save_net_http'):
+            ok = tui._save_nets_batch(dut='test-box', nets=[clean])
 
         assert ok is True
 
     def test_empty_batch_short_circuits(self):
         # No nets to save, no validation needed, no box call.
-        with patch.object(tui, '_run_script') as run_script:
-            assert tui._save_nets_batch(ctx=None, dut='test-box', nets=[]) is True
-        run_script.assert_not_called()
+        with patch.object(tui, '_save_net_http') as save:
+            assert tui._save_nets_batch(dut='test-box', nets=[]) is True
+        save.assert_not_called()
