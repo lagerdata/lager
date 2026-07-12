@@ -164,7 +164,22 @@ def _do_exit(exit_code, box, session, downloads):
                 # Check for HTTP errors
                 if resp.status_code >= 400:
                     if resp.status_code == 404:
-                        click.secho(f'Failed to download {filename}: File not found', fg='red', err=True)
+                        # The :9000 handler's file-missing 404 is JSON with an
+                        # 'error' key; a bare Flask HTML 404 means the route
+                        # itself is absent — an old box image without the
+                        # :9000 download-file endpoint.
+                        try:
+                            error_msg = resp.json().get('error')
+                        except ValueError:
+                            error_msg = None
+                        if error_msg:
+                            click.secho(f'Failed to download {filename}: {error_msg}', fg='red', err=True)
+                        else:
+                            click.secho(
+                                f'Failed to download {filename}: this box image has no '
+                                f'download-file endpoint on :9000 — run: lager box update',
+                                fg='red', err=True,
+                            )
                     else:
                         try:
                             error_msg = resp.json().get('error', resp.text)

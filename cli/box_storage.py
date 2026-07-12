@@ -441,6 +441,11 @@ def get_lock_holder():
     return f'ci:generic:{host}:{pid}'
 
 
+# Boxes we've already warned about missing :9000 lock support (old images);
+# once per CLI process so every command doesn't repeat the warning.
+_lock_check_unsupported_warned = set()
+
+
 def _check_box_lock(ip, box_name):
     """Check if a box is locked by another user. Exits if locked.
 
@@ -453,7 +458,20 @@ def _check_box_lock(ip, box_name):
 
     try:
         resp = requests.get(f'http://{ip}:9000/lock', timeout=3)
-        if resp.status_code == 200:
+        if resp.status_code == 404:
+            # :9000 answered but has no /lock route: the box image predates
+            # the lock API on :9000. Locks can't be enforced against it, so
+            # say so (once per process per box) instead of silently skipping.
+            if ip not in _lock_check_unsupported_warned:
+                _lock_check_unsupported_warned.add(ip)
+                display = box_name or ip
+                click.secho(
+                    f"Warning: Box '{display}' is running an old image without "
+                    f"lock support on its :9000 API — lock checks are skipped. "
+                    f"Run: lager box update --box {display}",
+                    fg='yellow', err=True,
+                )
+        elif resp.status_code == 200:
             data = resp.json()
             if data.get('locked'):
                 locked_by = data.get('user', 'unknown')

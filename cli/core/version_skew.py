@@ -61,6 +61,21 @@ def check_and_warn(box_ip: str, box_name: str | None = None) -> None:
         # it's the same endpoint `lager box hello` uses. 1.5s timeout
         # keeps the latency penalty bounded if the box is briefly slow.
         r = requests.get(f'http://{box_ip}:9000/status', timeout=1.5)
+        if r.status_code == 404:
+            # The :9000 server answered but has no /status route — the box
+            # image predates the :9000 API surface this CLI requires. That is
+            # exactly the skew this module exists to warn about, so don't
+            # fail silent here (unreachable boxes still skip quietly: the
+            # command itself will produce its own error).
+            display = box_name or box_ip
+            print(
+                f'\n[warning] Box {display} does not report a version on its '
+                f':9000 API — it is likely running an image too old for this '
+                f'CLI.\n          Some commands may fail. To update the box:\n'
+                f'          lager box update --box {display}\n',
+                file=sys.stderr,
+            )
+            return
         if r.status_code != 200:
             return
         body = r.json()

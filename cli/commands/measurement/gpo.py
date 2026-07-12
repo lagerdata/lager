@@ -96,9 +96,12 @@ def gpo(ctx, box, netname, level, hold, as_json):
     if hold:
         # Over the stateless HTTP path there is no per-command process whose
         # exit could release the pin: hardware_service keeps the device session
-        # open persistently, so the driven level persists after this command
-        # returns regardless of --hold. The old "hold until Ctrl+C, release on
-        # exit" semantic no longer exists.
+        # open persistently (and FT232H pin state survives reopen via its
+        # /tmp cache), so the driven level persists after this command returns
+        # regardless of --hold. The old "hold until Ctrl+C, release on exit"
+        # semantic no longer exists — see the matching note in the box handler
+        # (box/lager/http_handlers/net_command.py, _gpio "output" action).
+        # The flag is kept (as a no-op) so existing scripts don't break.
         click.echo(
             "Note: --hold is a no-op over the HTTP path. The output level "
             "persists after this command returns (hardware_service keeps the "

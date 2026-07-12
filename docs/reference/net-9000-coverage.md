@@ -117,7 +117,7 @@ Stout's dashboard path separately clamps itself to 30s to stay under Nginx's
 | adc | `lager adc` | `:9000/net/command` | Removed |
 | dac | `lager dac` | `:9000/net/command` | Removed |
 | gpi | `lager gpi` | `:9000/net/command` (`input`, `wait_for_level`) | Removed |
-| gpo | `lager gpo` | `:9000/net/command` (`output`) | Removed |
+| gpo | `lager gpo` | `:9000/net/command` (`output`); `--hold` is now a documented no-op — the level persists without it (see below) | Removed |
 | thermocouple | `lager thermocouple` | `:9000/net/command` | Removed |
 | watt-meter | `lager watt` | `:9000/net/command` (`power`/`current`/`voltage`/`all`) | Removed |
 | energy-analyzer | `lager energy` | `:9000/net/command` | Removed |
@@ -137,6 +137,22 @@ any of these commands; an unreachable or outdated box surfaces a clear error
 rather than silently falling back. The six former impl scripts
 (`cli/impl/communication/{ble,wifi,router,blufi}.py`,
 `cli/impl/device/{webcam,arm}.py`) are deleted.
+
+### `lager gpo --hold` is intentionally a no-op
+
+The old `:5000` exec path (`cli/impl/measurement/gpio.py`) slept until Ctrl+C
+when `--hold` was passed. That existed only because the pin's drive was tied
+to the exec subprocess's lifetime: on exit the process released its USB claim
+and (on FT232H) the pins tristated, so holding the process alive was the only
+way to sustain the level. On the `:9000` warm path the coupling is gone —
+hardware_service keeps the driver cached and its USB handle open after the
+request returns, LabJack outputs latch in hardware, and `FT232HGPIO` persists
+pin state to `/tmp/ft232h_gpio_cache.json` and restores it on every reopen.
+The level therefore persists without any process being held alive; the flag is
+kept CLI-side (printing an explanatory note) so existing scripts don't break.
+There is no hold-then-release-on-exit semantic anymore. See the matching
+comments in `cli/commands/measurement/gpo.py` and the `_gpio` handler in
+`box/lager/http_handlers/net_command.py`.
 
 ## Box-management commands moved to :9000
 
