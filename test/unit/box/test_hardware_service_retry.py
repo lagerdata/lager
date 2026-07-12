@@ -681,31 +681,142 @@ class ReleaseDirectUsbClaimTests(unittest.TestCase):
         The driver class caches one instance per serial with _initialized=True;
         if release only evicted the dispatcher cache, the next /invoke would
         get the dead singleton back from __new__ and fail 'not connected'.
+
+        Uses a hermetic stand-in module instead of the real driver class:
+        test/unit/measurement/conftest.py replaces the joulescope_js220
+        module/class in sys.modules at collection time (it lacks _instances
+        and clear_cache), so importing "the" class here would make this test
+        order-dependent in full-suite runs. The release loop only does
+        sys.modules.get(...) + getattr(...).clear_cache(), which the stand-in
+        reproduces faithfully; the real clear_cache() implementation is
+        exercised by test_release_closes_phidget_thermocouple below.
         """
         import lager.io.labjack_handle as lj
         orig = lj.force_close_labjack
         lj.force_close_labjack = lambda: None
 
-        from lager.measurement.watt.joulescope_js220 import JoulescopeJS220
-
-        class _FakeJS220:
+        class _FakeJS220Instance:
             def __init__(self):
                 self.closed = False
 
             def close(self):
                 self.closed = True
 
-        fake = _FakeJS220()
-        JoulescopeJS220._instances['FAKESERIAL'] = fake
+        class _FakeJS220Class:
+            _instances = {}
+
+            @classmethod
+            def clear_cache(cls):
+                for inst in cls._instances.values():
+                    inst.close()
+                cls._instances.clear()
+
+        mod_name = 'lager.measurement.watt.joulescope_js220'
+        stand_in = types.ModuleType(mod_name)
+        stand_in.JoulescopeJS220 = _FakeJS220Class
+        orig_mod = sys.modules.get(mod_name)
+        sys.modules[mod_name] = stand_in
+
+        fake = _FakeJS220Instance()
+        _FakeJS220Class._instances['FAKESERIAL'] = fake
         try:
             resp = self.client.post('/cache/release_direct_usb')
             self.assertEqual(resp.status_code, 200)
             self.assertIn('JoulescopeJS220', resp.get_json()['released'])
             self.assertTrue(fake.closed)
-            self.assertNotIn('FAKESERIAL', JoulescopeJS220._instances)
+            self.assertNotIn('FAKESERIAL', _FakeJS220Class._instances)
         finally:
             lj.force_close_labjack = orig
-            JoulescopeJS220._instances.pop('FAKESERIAL', None)
+            if orig_mod is not None:
+                sys.modules[mod_name] = orig_mod
+            else:
+                sys.modules.pop(mod_name, None)
+
+    def test_release_closes_phidget_thermocouple(self):
+        """Phidget claims must be yielded before a lager python run.
+
+        Phidget22 direct-USB attachment is exclusive across processes (one
+        attached channel blocks the whole VINT hub for everyone else), so a
+        PhidgetThermocouple cached by hardware_service would make a script's
+        Net.get(..., Thermocouple) -> openWaitForAttachment time out. Release
+        must drain BOTH the dispatcher cache and the per-channel _instances
+        singleton cache, or the next /invoke gets a closed Phidget back.
+        """
+        import lager.io.labjack_handle as lj
+        orig = lj.force_close_labjack
+        lj.force_close_labjack = lambda: None
+
+        from lager.measurement.thermocouple import dispatcher as tc_disp
+        from lager.measurement.thermocouple.phidget import PhidgetThermocouple
+
+        class _FakePhidget:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        disp_fake = _FakePhidget()
+        singleton_fake = _FakePhidget()
+        tc_cls = type(tc_disp._dispatcher)
+        tc_cls._driver_cache['tc0'] = disp_fake
+        PhidgetThermocouple._instances[99] = singleton_fake
+        try:
+            resp = self.client.post('/cache/release_direct_usb')
+            self.assertEqual(resp.status_code, 200)
+            released = resp.get_json()['released']
+            self.assertIn('lager.measurement.thermocouple.dispatcher', released)
+            self.assertIn('PhidgetThermocouple', released)
+            self.assertTrue(disp_fake.closed)
+            self.assertTrue(singleton_fake.closed)
+            self.assertNotIn('tc0', tc_cls._driver_cache)
+            self.assertNotIn(99, PhidgetThermocouple._instances)
+        finally:
+            lj.force_close_labjack = orig
+            tc_cls._driver_cache.pop('tc0', None)
+            PhidgetThermocouple._instances.pop(99, None)
+
+    def test_release_closes_arm_serial_handle_but_keeps_visa(self):
+        """The Dexarm's warm serial handle must be yielded before a script.
+
+        arm_hs caches the open serial port on the adapter in device_cache
+        (not in a dispatcher), so release must close + evict it there — while
+        leaving VISA-backed device_cache entries (supply/battery/eload)
+        untouched, per the shared-session rule.
+        """
+        import lager.io.labjack_handle as lj
+        orig = lj.force_close_labjack
+        lj.force_close_labjack = lambda: None
+
+        class _FakeAdapter:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        arm_key = ('arm_hs', '/dev/ttyACM0')
+        visa_key = ('keithley', 'USB0::0x05E6::0x2281::X::INSTR')
+        arm_fake = _FakeAdapter()
+        visa_fake = _FakeAdapter()
+        hw.device_cache[arm_key] = arm_fake
+        hw.module_cache[arm_key] = MagicMock()
+        hw.device_cache[visa_key] = visa_fake
+        try:
+            resp = self.client.post('/cache/release_direct_usb')
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn('arm_hs', resp.get_json()['released'])
+            self.assertTrue(arm_fake.closed)
+            self.assertNotIn(arm_key, hw.device_cache)
+            self.assertNotIn(arm_key, hw.module_cache)
+            # VISA entry untouched: still cached, never closed.
+            self.assertFalse(visa_fake.closed)
+            self.assertIn(visa_key, hw.device_cache)
+        finally:
+            lj.force_close_labjack = orig
+            hw.device_cache.pop(arm_key, None)
+            hw.module_cache.pop(arm_key, None)
+            hw.device_cache.pop(visa_key, None)
 
 
 if __name__ == '__main__':

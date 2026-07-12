@@ -245,6 +245,18 @@ def _gpio(netname, role, action, params):
         return _ok("Output set LOW")
     # Generic output with an explicit level (supports gpo's toggle/high/low).
     # The adapter resolves toggle (read+write) in one /invoke -> atomic.
+    #
+    # Note: the old :5000 exec path (cli/impl/measurement/gpio.py) had a
+    # "hold" param that slept until Ctrl+C. That existed only because the pin's
+    # drive was tied to the exec subprocess's lifetime: on exit the process
+    # released its USB claim and (on FT232H) the pins tristated. It is
+    # deliberately NOT ported here — hardware_service keeps the driver cached
+    # and its USB handle open after this request returns, LabJack outputs
+    # latch in hardware, and FT232HGPIO persists pin state to
+    # /tmp/ft232h_gpio_cache.json and restores it on every reopen. The level
+    # therefore persists without any process being held alive; `lager gpo
+    # --hold` is a documented no-op on the CLI side (cli/commands/measurement/
+    # gpo.py). There is no hold-then-release-on-exit semantic anymore.
     if action == "output":
         level = params.get("level")
         if level is None:

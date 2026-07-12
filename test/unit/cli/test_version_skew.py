@@ -101,6 +101,24 @@ class VersionSkewTests(unittest.TestCase):
             version_skew.check_and_warn('10.0.0.9', None)
         self.assertIn('Box 10.0.0.9 is on', self.stderr_buf.getvalue())
 
+    def test_warns_when_status_route_missing(self):
+        """404 from :9000/status = box image predates the :9000 API → warn."""
+        with patch('cli.core.version_skew.requests.get',
+                   return_value=MagicMock(status_code=404)), \
+             patch('cli.__version__', '0.20.0'):
+            version_skew.check_and_warn('10.0.0.10', 'old-box')
+        out = self.stderr_buf.getvalue()
+        self.assertIn('old-box', out)
+        self.assertIn('lager box update --box old-box', out)
+
+    def test_silent_on_other_http_errors(self):
+        """A 500 (box present but unhealthy) still fails open silently."""
+        with patch('cli.core.version_skew.requests.get',
+                   return_value=MagicMock(status_code=500)), \
+             patch('cli.__version__', '0.20.0'):
+            version_skew.check_and_warn('10.0.0.11', 'test-box')
+        self.assertEqual(self.stderr_buf.getvalue(), '')
+
     def test_parse_minor_helper(self):
         self.assertEqual(version_skew._parse_minor('0.20.0'), (0, 20))
         self.assertEqual(version_skew._parse_minor('v1.2.3'), (1, 2))

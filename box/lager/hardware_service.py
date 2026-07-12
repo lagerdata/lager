@@ -709,6 +709,12 @@ _DIRECT_USB_DISPATCHERS = [
     ('lager.io.dac.dispatcher', 'class'),
     ('lager.measurement.watt.dispatcher', 'class'),
     ('lager.measurement.energy_analyzer.dispatcher', 'class'),
+    # Phidget22 direct-USB attachment is exclusive across processes (attaching
+    # one channel blocks the whole VINT hub for other processes; only the
+    # Phidget Network Server — which the box does not run — allows sharing),
+    # so a cached PhidgetThermocouple would starve `lager python` scripts that
+    # call Net.get(..., Thermocouple) -> openWaitForAttachment.
+    ('lager.measurement.thermocouple.dispatcher', 'class'),
     ('lager.protocols.spi.dispatcher', 'module'),
     ('lager.protocols.i2c.dispatcher', 'module'),
 ]
@@ -728,7 +734,18 @@ _SINGLETON_DRIVER_CLASSES = [
     ('lager.measurement.watt.yocto_watt', 'YoctoWatt'),
     ('lager.measurement.energy_analyzer.joulescope_energy', 'JoulescopeEnergyAnalyzer'),
     ('lager.measurement.energy_analyzer.ppk2_energy', 'PPK2EnergyAnalyzer'),
+    # Same per-channel singleton pattern (_instances + _initialized): evicting
+    # the dispatcher cache alone would hand the next /invoke a closed Phidget.
+    ('lager.measurement.thermocouple.phidget', 'PhidgetThermocouple'),
 ]
+
+# hardware_service adapters cached directly in `device_cache` (keyed by
+# (device_name, ...)) that hold an open serial/USB handle rather than caching
+# it in a dispatcher. These must be closed and evicted on release so a
+# `lager python` script can open the same port without contending with our
+# warm handle (the adapter reopens lazily on the next /invoke). VISA-backed
+# entries stay untouched — see the shared-session note above.
+_DIRECT_USB_DEVICE_CACHE_NAMES = ('arm_hs',)
 
 
 def _try_close_driver(drv):
@@ -754,10 +771,11 @@ def _release_direct_usb_claims():
     libusb ``Resource busy``) if we don't yield first.
 
     Closes and evicts the cached drivers for LabJack (shared LJM handle),
-    FT232H, Aardvark, USB-202, Joulescope, and PPK2 across the GPIO/ADC/DAC/
-    SPI/I2C/watt/energy subsystems. Shared pyvisa sessions (supply/battery/
-    eload) are NOT touched — tearing those down on every script exit is the
-    v0.16.8 regression that reintroduced ``[Errno 16] Resource busy``.
+    FT232H, Aardvark, USB-202, Joulescope, PPK2, Phidget thermocouples, and
+    the Dexarm arm's serial handle across the GPIO/ADC/DAC/SPI/I2C/watt/
+    energy/thermocouple/arm subsystems. Shared pyvisa sessions (supply/
+    battery/eload) are NOT touched — tearing those down on every script exit
+    is the v0.16.8 regression that reintroduced ``[Errno 16] Resource busy``.
     """
     released = []
 
@@ -824,6 +842,17 @@ def _release_direct_usb_claims():
         except Exception as e:
             logger.warning(f"release: singleton clear failed for {cls_name}: {e}")
 
+    # Adapters holding a direct serial/USB handle in device_cache (e.g. the
+    # Dexarm's serial port via arm_hs). Close + evict so the script can open
+    # the port; the next /invoke recreates the adapter and reopens it.
+    for cache_key in list(device_cache.keys()):
+        if cache_key and cache_key[0] in _DIRECT_USB_DEVICE_CACHE_NAMES:
+            device = device_cache.pop(cache_key, None)
+            module_cache.pop(cache_key, None)
+            if device is not None:
+                _close_device(device, cache_key)
+                released.append(cache_key[0])
+
     logger.info(f"Released direct USB claims for lager python handoff: {released}")
     return released
 
@@ -833,9 +862,10 @@ def release_direct_usb_cache():
     """Release non-VISA USB claims owned by hardware_service.
 
     Scoped alternative to ``/cache/clear``: closes the LabJack/FT232H/Aardvark/
-    USB-202/Joulescope/PPK2 drivers so a ``lager python`` child process can open
-    them directly, while retaining shared pyvisa sessions (supply/battery/eload).
-    Consumed by the python execution service before spawning a script.
+    USB-202/Joulescope/PPK2/Phidget drivers so a ``lager python`` child process
+    can open them directly, while retaining shared pyvisa sessions
+    (supply/battery/eload). Consumed by the python execution service before
+    spawning a script.
     """
     released = _release_direct_usb_claims()
     return jsonify({'released': released})
