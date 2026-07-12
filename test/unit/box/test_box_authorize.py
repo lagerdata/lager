@@ -53,7 +53,11 @@ class EnsureKeypair(unittest.TestCase):
 
     def test_missing_key_runs_ssh_keygen(self):
         run = RecordingRun([_proc(0)])
+        # shutil.which must be pinned: it calls os.path.exists internally, so
+        # the always-False exists patch below would otherwise make it return
+        # None and trip the "ssh-keygen not found" guard before keygen runs.
         with patch.object(_ssh, "subprocess") as sub, \
+             patch.object(_ssh.shutil, "which", lambda _: "ssh-keygen"), \
              patch.object(_ssh.os.path, "exists", lambda p: False), \
              patch.object(_ssh.os, "makedirs", lambda *a, **k: None):
             sub.run = run

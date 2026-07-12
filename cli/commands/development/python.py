@@ -42,10 +42,24 @@ from ...exceptions import OutputFormatNotSupported
 
 MAX_ZIP_SIZE = 20_000_000  # Max size of zipped folder in bytes
 
-# Handle SIGPIPE for pipeline support (e.g., lager python script.py | head)
-# When the downstream process in a pipeline closes, we should exit gracefully
-if hasattr(signal, 'SIGPIPE'):
-    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+def _default_sigpipe():
+    """Restore SIGPIPE's default (fatal) disposition for pipeline support,
+    so `lager python script.py | head` exits gracefully when the downstream
+    process closes.
+
+    Called per-invocation from the command paths, NOT at import: flipping the
+    process-wide disposition as an import side effect meant any process that
+    merely imported this module (pytest most notably) was killed with exit
+    141 whenever any thread later wrote to a closed pipe or socket, instead
+    of getting the normal ignorable BrokenPipeError.
+
+    Main-thread-only for the same reason as the SIGINT handler: the TUI calls
+    run_python_internal from worker threads, and signal.signal() raises
+    ValueError off the main thread (and a TUI is never a shell pipeline).
+    """
+    if (hasattr(signal, 'SIGPIPE')
+            and threading.current_thread() is threading.main_thread()):
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
 _ORIGINAL_SIGINT_HANDLER = signal.getsignal(signal.SIGINT)
 
@@ -265,6 +279,7 @@ def run_python_internal_get_output(ctx, runnable, box, env, passenv, kill, downl
 
 
 def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_overwrite, signum, timeout, detach, port, org, args, extra_files=None, callback=None, dut_name=None, watch_stdin_resume=True):
+    _default_sigpipe()
     if extra_files is None:
         extra_files = []
 
@@ -756,6 +771,7 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
 @click.argument('args', nargs=-1)
 def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_overwrite, signum, timeout, detach, port, org, add_file, reattach, continue_, console, args):
     """Run Python script on box"""
+    _default_sigpipe()
     from ...box_storage import (
         resolve_and_validate_box,
         acquire_box_lock,
