@@ -18,18 +18,16 @@ Usage:
         display_nets,
         display_nets_table,
         run_backend,
-        run_backend_with_env,
-        run_impl_script,
     )
 
 Example:
     @my_command.command()
     @click.pass_context
     @click.option("--box", required=False)
-    def voltage(ctx, box):
+    def start(ctx, box):
         box_ip = resolve_box(ctx, box)
-        netname = require_netname(ctx, "supply")
-        run_backend(ctx, box_ip, "supply.py", "voltage", netname=netname)
+        netname = require_netname(ctx, "scope")
+        run_backend(ctx, box_ip, "scope.py", "start_capture", netname=netname)
 """
 from __future__ import annotations
 
@@ -606,13 +604,12 @@ def run_backend(
     Args:
         ctx: Click context object
         box: Box IP address
-        impl_script: Name of the implementation script (e.g., "scope.py", "supply.py")
+        impl_script: Name of the implementation script (e.g., "scope.py")
         action: Action name to pass to the script
         **params: Additional parameters to pass to the script
 
     Example:
         run_backend(ctx, box_ip, "scope.py", "enable_net", netname="scope1", mcu=None)
-        run_backend(ctx, box_ip, "supply.py", "voltage", netname="supply1", value=3.3)
     """
     from ..context import get_impl_path
     from ..commands.development.python import run_python_internal
@@ -641,121 +638,6 @@ def run_backend(
         port=(),
         org=None,
         args=(),
-    )
-
-
-def run_backend_with_env(
-    ctx: click.Context,
-    box: str,
-    impl_script: str,
-    action: str,
-    extra_env: tuple[str, ...] = (),
-    timeout: int = 0,
-    **params: Any,
-) -> None:
-    """
-    Run a backend script with additional environment variables and options.
-
-    Extended version of run_backend() that supports additional environment
-    variables and custom timeout. Useful for commands that need extra
-    configuration or longer execution times.
-
-    Args:
-        ctx: Click context object
-        box: Box IP address
-        impl_script: Name of the implementation script
-        action: Action name to pass to the script
-        extra_env: Additional environment variables as tuple of "KEY=value" strings
-        timeout: Custom timeout in seconds (0 for no timeout)
-        **params: Additional parameters to pass to the script
-
-    Example:
-        run_backend_with_env(
-            ctx, box_ip, "debug_flash.py", "flash",
-            extra_env=("DEBUG_LEVEL=2",),
-            timeout=120,
-            netname="debug1",
-            hexfile="/path/to/firmware.hex"
-        )
-    """
-    from ..context import get_impl_path
-    from ..commands.development.python import run_python_internal
-
-    mcu = params.pop("mcu", None)
-
-    data = {
-        "action": action,
-        "mcu": mcu,
-        "params": params,
-    }
-
-    env = (f"LAGER_COMMAND_DATA={json.dumps(data)}",) + extra_env
-
-    run_python_internal(
-        ctx,
-        get_impl_path(impl_script),
-        box,
-        env=env,
-        passenv=(),
-        kill=False,
-        download=(),
-        allow_overwrite=False,
-        signum="SIGTERM",
-        timeout=timeout,
-        detach=False,
-        port=(),
-        org=None,
-        args=(),
-    )
-
-
-def run_impl_script(
-    ctx: click.Context,
-    box: str,
-    impl_script: str,
-    args: tuple[str, ...] = (),
-    env: tuple[str, ...] = (),
-    timeout: int | None = 0,
-) -> None:
-    """
-    Run an implementation script with explicit arguments (no LAGER_COMMAND_DATA).
-
-    This function runs an impl script passing arguments directly rather
-    than through the LAGER_COMMAND_DATA environment variable. Useful for
-    scripts that use traditional command-line argument parsing.
-
-    Args:
-        ctx: Click context object
-        box: Box IP address
-        impl_script: Name of the implementation script
-        args: Arguments to pass to the script
-        env: Environment variables as tuple of "KEY=value" strings
-        timeout: Timeout in seconds (None for no timeout, 0 for default)
-
-    Example:
-        run_impl_script(
-            ctx, box_ip, "eload.py",
-            args=("cc", "eload1", "0.5"),
-        )
-    """
-    from ..context import get_impl_path
-    from ..commands.development.python import run_python_internal
-
-    run_python_internal(
-        ctx,
-        get_impl_path(impl_script),
-        box,
-        env=env,
-        passenv=(),
-        kill=False,
-        download=(),
-        allow_overwrite=False,
-        signum="SIGTERM",
-        timeout=timeout,
-        detach=False,
-        port=(),
-        org=None,
-        args=args,
     )
 
 

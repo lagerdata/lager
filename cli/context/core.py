@@ -116,7 +116,7 @@ def get_impl_path(filename):
         then falls back to the root impl/ directory for backward compatibility.
 
         Args:
-            filename: The implementation script filename (e.g., 'supply.py')
+            filename: The implementation script filename (e.g., 'scope.py')
 
         Returns:
             Full path to the implementation script

@@ -122,8 +122,6 @@ from .net_helpers import (
     display_nets_table,
     # Backend execution
     run_backend,
-    run_backend_with_env,
-    run_impl_script,
     # Validation helpers
     validate_positive_float,
     validate_positive_parameters,
@@ -215,8 +213,6 @@ __all__ = [
     'display_nets_table',
     # net_helpers exports - Backend execution
     'run_backend',
-    'run_backend_with_env',
-    'run_impl_script',
     # net_helpers exports - Validation
     'validate_positive_float',
     'validate_positive_parameters',
