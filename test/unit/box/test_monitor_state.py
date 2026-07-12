@@ -126,10 +126,16 @@ class TestSupplyNetGetMonitorState:
     def test_missing_protection_falls_back_to_none(self, supply_net):
         def boom(self, channel=None):
             raise AttributeError
+        # A driver without protection support lacks ALL four methods — the
+        # tripped probes must boom too, or they return real booleans and the
+        # None assertions below can't hold (each field is independently
+        # _safe-guarded; a failing value read doesn't null the tripped read).
         state = _fake_supply(
             supply_net,
             get_overcurrent_protection_value=boom,
             get_overvoltage_protection_value=boom,
+            overcurrent_protection_is_tripped=boom,
+            overvoltage_protection_is_tripped=boom,
         ).get_monitor_state(1)
         assert state["ocp_limit"] is None
         assert state["ocp_tripped"] is None
