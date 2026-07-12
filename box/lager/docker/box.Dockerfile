@@ -236,8 +236,8 @@ RUN cd /app/lager && python3 -c "\
 import importlib, logging, sys; \
 logging.basicConfig(level=logging.WARNING); \
 [importlib.import_module(f'lager.{m}') for m in \
- ('adc_hs','dac_hs','gpio_hs','thermocouple_hs','watt_hs','energy_hs', \
-  'spi_hs','i2c_hs','solar_hs','ble')]; \
+ ('adc_hs','arm_hs','dac_hs','gpio_hs','thermocouple_hs','watt_hs', \
+  'energy_hs','spi_hs','i2c_hs','solar_hs','ble')]; \
 from lager.mcp.data import api_reference; \
 missing = [nt for nt, dotted in api_reference._DRIVER_CLASSES.items() \
            if 'source_module' not in api_reference.API_REFERENCE.get(nt, {})]; \

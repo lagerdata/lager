@@ -629,6 +629,15 @@ def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
     import ipaddress
     from ...box_storage import get_box_ip, list_boxes
 
+    def _warn_version_skew(ip, name):
+        # `lager nets` is :9000-only; warn (once per process) before a
+        # command against an old box image hard-fails. Fails open.
+        try:
+            from ...core.version_skew import check_and_warn
+            check_and_warn(ip, name)
+        except Exception:
+            pass
+
     target_box = None
     if box_opt:
         target_box = box_opt
@@ -641,12 +650,14 @@ def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
         if local_ip:
             from ...box_storage import acquire_command_lock_with_cleanup
             acquire_command_lock_with_cleanup(ctx, local_ip, target_box, ctx.info_name or 'nets')
+            _warn_version_skew(local_ip, target_box)
             return local_ip
 
         # Check if it looks like an IP address
         try:
             ipaddress.ip_address(target_box)
             # It's a valid IP address, use it directly
+            _warn_version_skew(target_box, None)
             return target_box
         except ValueError:
             # Not a valid IP and not in local boxes
@@ -670,7 +681,9 @@ def _resolve_box(ctx: click.Context, box_opt: Optional[str] = None) -> str:
             ctx.exit(1)
 
     # get_default_box already handles local box resolution
-    return get_default_box(ctx)
+    resolved = get_default_box(ctx)
+    _warn_version_skew(resolved, None)
+    return resolved
 
 
 def _channel_display(rec):

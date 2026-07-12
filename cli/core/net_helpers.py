@@ -168,20 +168,30 @@ NET_HTTP_PORT = 9000
 _NET_HTTP_TIMEOUT = 10
 
 
+# Boxes we've already warned about being unreachable during a net listing;
+# once per CLI process so repeated fetch_nets calls (e.g. the TUI) don't spam.
+_fetch_nets_unreachable_warned: set[str] = set()
+
+
 def fetch_nets(box_ip: str) -> list[dict]:
     """Fetch all saved nets from the box over HTTP (:9000/nets/list).
 
     Returns the raw saved-net records (name/role/instrument/pin/address/params).
     This replaces the old `net.py list` exec on :5000 — listing is now a plain
-    read against the long-lived box HTTP server. Returns [] if the box is
-    unreachable or returns nothing.
+    read against the long-lived box HTTP server.
 
     Falls back to the older `/uart/nets/list` shape ({"nets": [...]}) so the CLI
     keeps listing on box images that predate `/nets/list`.
+
+    Returns [] when the box has no nets — and also when it is unreachable, so
+    callers can keep treating the result uniformly. To stop connectivity
+    problems masquerading as "no nets configured", the unreachable case prints
+    a stderr warning (once per box per process) before returning [].
     """
     import requests
 
     base = f"http://{box_ip}:{NET_HTTP_PORT}"
+    connect_failures = 0
     try:
         resp = requests.get(f"{base}/nets/list", timeout=_NET_HTTP_TIMEOUT)
         if resp.status_code == 200:
@@ -191,6 +201,8 @@ def fetch_nets(box_ip: str) -> list[dict]:
                 data = data.get("nets", [])
             if isinstance(data, list):
                 return data
+    except (requests.ConnectionError, requests.Timeout):
+        connect_failures += 1
     except (requests.RequestException, ValueError):
         pass
 
@@ -202,8 +214,19 @@ def fetch_nets(box_ip: str) -> list[dict]:
             nets = data.get("nets", []) if isinstance(data, dict) else data
             if isinstance(nets, list):
                 return nets
+    except (requests.ConnectionError, requests.Timeout):
+        connect_failures += 1
     except (requests.RequestException, ValueError):
         pass
+
+    if connect_failures == 2 and box_ip not in _fetch_nets_unreachable_warned:
+        _fetch_nets_unreachable_warned.add(box_ip)
+        click.secho(
+            f"Warning: could not reach box at {box_ip}:{NET_HTTP_PORT} to list "
+            f"nets — treating as no nets. Check network/Tailscale and that the "
+            f"box is online and updated.",
+            fg="yellow", err=True,
+        )
 
     return []
 

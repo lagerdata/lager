@@ -65,7 +65,12 @@ def _release_hardware_service_direct_usb_claims():
             timeout=5.0,
         )
     except Exception as e:
-        logger.debug("Direct USB claim release skipped: %s", e)
+        # Surface this: if the handoff fails, the user's script is likely to
+        # hit an opaque exclusive-claim error (LJM 1230 / libusb Resource
+        # busy) and this log line is the only clue pointing at the cause.
+        logger.warning("Direct USB claim release failed; script may hit "
+                       "exclusive-claim errors on LabJack/FT232H/Aardvark/"
+                       "Joulescope/PPK2 devices: %s", e)
 
 # Nice-value delta we *try* to apply to scripts so they aren't out-scheduled
 # by the half-dozen other Python services sharing the lager container
