@@ -53,6 +53,10 @@ def _fetch_net_info(
         r = requests.get(f'http://{box_ip}:9000/nets/list', timeout=5)
         r.raise_for_status()
         nets = r.json()
+        # Older box images wrap the list: {"nets": [...]}. Unwrap so the
+        # comprehensions below always iterate dicts.
+        if isinstance(nets, dict):
+            nets = nets.get('nets', [])
     except requests.exceptions.ConnectionError:
         click.echo(click.style(
             f'Box {display_name!r} unreachable at {box_ip}:9000 (connection refused). '
