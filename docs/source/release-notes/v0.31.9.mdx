@@ -1,0 +1,26 @@
+---
+title: "Version 0.31.9"
+description: "July 13, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **UART reconnect can no longer land on a look-alike adapter with a clone serial.** Many USB-serial adapters ship with a non-unique programmed serial (e.g. several CP210x units all reading "0001"). If such a device dropped mid-session, the v0.31.5 reconnect could match a sibling adapter with the same serial while the real device was still off the bus — attaching the session to the wrong hardware. Identity resolution now treats a serial shared by multiple live devices as untrusted: the physical port must match, and reconnection keeps retrying until the real device returns. New identity snapshots record a bus-duplicated serial as null, pinning the net to its physical port outright. Nets on clone-serial adapters that were enriched under v0.31.5 pick up the corrected snapshot on their next re-save — re-save only while every adapter sits on the tty its net expects, since enrichment snapshots whatever device the stored pin currently points at.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.31.9
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.31.9/)
