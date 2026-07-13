@@ -312,17 +312,26 @@ class TestSetModelVerification:
             drv.set_model(7)
         assert "unchanged (no reply)" in str(excinfo.value)
 
-    def test_builtin_success_is_silent_readback(self, keithley_mod):
-        drv = self._drv(keithley_mod, "")
-        drv.set_model("LI-ION4_2")
-        assert drv.writes == [":BATT:MOD:RCL LI-ION4_2"]
-        assert drv._active_model_name == "LI-ION4_2"
+    def test_builtin_success_echoes_name(self, keithley_mod):
+        # RCL? echoes the built-in's name on success (hardware-verified).
+        drv = self._drv(keithley_mod, "LI_ION4_2")
+        drv.set_model("LI_ION4_2")
+        assert drv.writes == [":BATT:MOD:RCL LI_ION4_2"]
+        assert drv._active_model_name == "LI_ION4_2"
+
+    def test_builtin_hyphen_input_sends_underscore(self, keithley_mod):
+        # The manual prints LI-ION4_2, but a hyphen is a SCPI syntax error
+        # (-102, hardware-verified) — accept it and send the underscore form.
+        drv = self._drv(keithley_mod, "LEAD_ACID12")
+        drv.set_model("lead-acid12")
+        assert drv.writes == [":BATT:MOD:RCL LEAD_ACID12"]
+        assert drv._active_model_name == "LEAD_ACID12"
 
     def test_builtin_failure_still_reports_previous_slot(self, keithley_mod):
         drv = self._drv(keithley_mod, "5")
         with pytest.raises(keithley_mod.BatteryBackendError) as excinfo:
-            drv.set_model("LI-ION4_2")
-        assert "still reports model slot 5" in str(excinfo.value)
+            drv.set_model("LI_ION4_2")
+        assert "model slot 5" in str(excinfo.value)
 
 
 class TestListModelsAction:
