@@ -136,10 +136,20 @@ SUPPORTED_USB: Dict[str, Dict] = {
     "YKUSH_Hub":         {"vid": "04d8", "pid": "f2f7", "net_type": ["usb"]},
     # eload
     "Rigol_DL3021":      {"vid": "1ab1", "pid": "0e11", "net_type": ["eload"]},
-    # camera
+    # camera — detection is catalog-driven: any entry with a ``webcam``
+    # net_type is picked up by ``_by_camera`` below, so adding a camera
+    # is a one-line addition here (mirror it in cli/impl/query_instruments.py).
     "Logitech_BRIO_HD":  {"vid": "046d", "pid": "085e", "net_type": ["webcam"]},
     "Logitech_BRIO":     {"vid": "046d", "pid": "0856", "net_type": ["webcam"]},
+    "Logitech_BRIO_4K_Stream": {"vid": "046d", "pid": "086b", "net_type": ["webcam"]},
+    "Logitech_4K_Pro":   {"vid": "046d", "pid": "087f", "net_type": ["webcam"]},
     "Logitech_C930e":    {"vid": "046d", "pid": "0843", "net_type": ["webcam"]},
+    "Logitech_C925e":    {"vid": "046d", "pid": "085b", "net_type": ["webcam"]},
+    "Logitech_C922_Pro": {"vid": "046d", "pid": "085c", "net_type": ["webcam"]},
+    "Logitech_C920":     {"vid": "046d", "pid": "082d", "net_type": ["webcam"]},
+    "Logitech_C615":     {"vid": "046d", "pid": "082c", "net_type": ["webcam"]},
+    "Logitech_C270":     {"vid": "046d", "pid": "0825", "net_type": ["webcam"]},
+    "Logitech_StreamCam": {"vid": "046d", "pid": "0893", "net_type": ["webcam"]},
     # watt-meter
     "Yocto_Watt":        {"vid": "24e0", "pid": "002a", "net_type": ["watt-meter"]},
     "Joulescope_JS220":  {"vid": "16d0", "pid": "10ba", "net_type": ["watt-meter", "energy-analyzer"]},
@@ -545,30 +555,63 @@ def scan_usb() -> List[dict]:
 #  Camera detection
 # ---------------------------------------------------------------------------
 
-_CAM_VID = "046d"
-_CAM_PIDS = {"085e", "0856", "0843"}
+_WEBCAM_VIDPIDS = {
+    (_meta["vid"].lower(), _meta["pid"].lower())
+    for _meta in SUPPORTED_USB.values()
+    if "webcam" in _meta["net_type"]
+}
 
 
-def _by_camera() -> List[dict]:
-    usb_cams = [
-        dev for dev in scan_usb()
-        if dev["vid"] == _CAM_VID and dev["pid"] in _CAM_PIDS
-    ]
-    if not usb_cams:
-        return []
+def _read_sysfs_attr(path: Path) -> Optional[str]:
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return None
 
+
+def _by_camera(v4l_root: Path = Path("/sys/class/video4linux")) -> List[dict]:
+    """Detect supported webcams and their /dev/video capture nodes.
+
+    Each ``/sys/class/video4linux/videoN`` links to the USB interface that
+    owns it; the interface's parent directory is the USB device carrying
+    idVendor/idProduct/serial. Walking that link keeps the node→camera
+    mapping correct when models expose different numbers of video nodes
+    (a C920 exposes two, a BRIO four), which an index-based heuristic
+    cannot get right on mixed setups.
+    """
+    results: List[dict] = []
+    seen_devices: set = set()
     video_nodes = sorted(
-        (Path(p) for p in glob.glob("/dev/video*")),
+        v4l_root.glob("video*"),
         key=lambda p: int(p.name.replace("video", "")),
     )
-
-    results: List[dict] = []
-    for idx, cam in enumerate(usb_cams):
+    for node in video_nodes:
         try:
-            video_dev = str(video_nodes[idx * 4])
-        except IndexError:
+            usb_dev = (node / "device").resolve().parent
+        except OSError:
             continue
-        results.append({**cam, "channels": {"webcam": [video_dev]}})
+        vid = _read_sysfs_attr(usb_dev / "idVendor")
+        pid = _read_sysfs_attr(usb_dev / "idProduct")
+        if not vid or not pid:
+            continue
+        vid, pid = vid.lower(), pid.lower()
+        if (vid, pid) not in _WEBCAM_VIDPIDS:
+            continue
+        if str(usb_dev) in seen_devices:
+            # Higher-numbered nodes on the same camera are metadata/IR
+            # streams; the first node is the capture stream.
+            continue
+        seen_devices.add(str(usb_dev))
+        serial = _read_sysfs_attr(usb_dev / "serial")
+        results.append({
+            "name": _VIDPID_TO_NAME[(vid, pid)],
+            "vid": vid,
+            "pid": pid,
+            "serial": serial,
+            "address": f"USB0::0x{vid.upper()}::0x{pid.upper()}::{serial or ''}::INSTR",
+            "net_type": ["webcam"],
+            "channels": {"webcam": [f"/dev/{node.name}"]},
+        })
     return results
 
 
