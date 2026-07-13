@@ -2,6 +2,36 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.31.10] - 2026-07-13
+
+### Added
+- **`lager battery models` lists the battery models saved on the instrument** —
+  occupied memory slots plus the firmware built-ins, all valid inputs to the
+  existing `model` command. Read-only, and also exposed in the battery TUI and
+  the box's `/battery/command` endpoint (`list_models`).
+- **8 more Logitech webcams are detected and usable as webcam nets**: Logi 4K
+  Pro, BRIO 4K Stream, C925e, C922 Pro, C920, C615, C270, and StreamCam join
+  the existing BRIO/BRIO HD/C930e. Camera detection is now catalog-driven
+  (adding a model is a table entry, not code) and maps each camera to its
+  actual /dev/video capture node via sysfs, so mixed setups with different
+  per-camera node counts resolve correctly.
+
+### Fixed
+- **Battery model readback reports the actual loaded model.** The driver read
+  `:BATT:STAT?`, which reports charge/discharge status rather than the model,
+  so `model`, `state`, and the TUI always showed "DISCHARGE" and successful
+  loads raised a false "slot is empty" error. Readback and verification now
+  use `:BATT:MOD:RCL?`, which also reliably detects the 2281S's silent
+  empty-slot recall failures.
+- **Built-in battery models are loadable over SCPI.** The 2281S rejects the
+  manual's hyphenated names (`LI-ION4_2`) with a syntax error; the driver now
+  sends the underscore spellings the firmware accepts and takes either form
+  as input.
+- **Battery driver errors are no longer masked as "[Errno 16] Resource busy".**
+  The box endpoint returned driver errors as 5xx, tripping the CLI's legacy
+  direct-USB fallback; they now come back as ordinary command failures so the
+  real message is shown.
+
 ## [0.31.9] - 2026-07-13
 
 ### Fixed

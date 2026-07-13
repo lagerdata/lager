@@ -1,0 +1,33 @@
+---
+title: "Version 0.31.10"
+description: "July 13, 2026"
+---
+
+## <u>Features</u>
+
+- **8 more Logitech webcams supported.** The Logi 4K Pro, BRIO 4K Stream, C925e, C922 Pro, C920, C615, C270, and StreamCam now appear in `lager instruments` and can be added as webcam nets, joining the existing BRIO, BRIO HD, and C930e. Detection is catalog-driven — adding a future model is a one-line table entry — and each camera is mapped to its actual `/dev/video` capture node by walking sysfs, so setups mixing cameras with different node counts (a C920 exposes two, a BRIO four) resolve to the right device.
+- **`lager battery models` — list the battery models saved on the instrument.** Battery simulators store models in numbered memory slots, but until now there was no way to see which slots actually held a model without walking to the front panel. The new read-only `models` command (also available in the battery TUI and the box's `/battery/command` HTTP endpoint as `list_models`) prints each occupied slot plus the firmware's built-in models — all valid inputs to the existing `model` command. On the Keithley 2281S the catalog is assembled from query-only slot probes, so listing never changes instrument state.
+
+## <u>Bug Fixes</u>
+
+- **Battery model readback now reports the actual loaded model.** The driver previously read the "current model" with `:BATT:STAT?`, which per the 2281S reference manual reports charge/discharge status — not the model — so `lager battery model`, `state`, and the TUI header showed "DISCHARGE" whenever the output was idle, regardless of what was loaded. The same misread made `model <slot>` raise a false "slot is empty" error after every successful load. Readback and verification now use `:BATT:MOD:RCL?` (e.g. `Model: slot 5` or `Model: LI_ION4_2`), and because the 2281S fails empty-slot recalls silently, a recall that doesn't take effect is now reliably detected and reported with guidance instead of pretending to succeed.
+- **Built-in battery models are now loadable over SCPI.** The 2281S manual prints two built-in model names with hyphens (`LI-ION4_2`, `LEAD-ACID12`), but the instrument's SCPI parser rejects hyphens outright (error -102), so recalling those built-ins through Lager never worked. The driver now sends the underscore spellings the firmware actually accepts (`LI_ION4_2`, `LEAD_ACID12`) and accepts either spelling as input.
+- **Battery command errors no longer masquerade as "Resource busy".** When a battery driver raised a real error (like the empty-slot guidance above), the box's `/battery/command` endpoint returned it as a 5xx, which made the CLI treat the endpoint as unavailable and fall through to its legacy direct-USB path — always failing with `[Errno 16] Resource busy` and burying the actual message. Driver errors are now returned as ordinary command failures, so the CLI and TUI display the real diagnosis.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.31.10
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.31.10/)
