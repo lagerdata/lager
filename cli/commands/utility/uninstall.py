@@ -93,7 +93,10 @@ ETC_LAGER_PRIV_STEP = (
     "sudo rm -rf /etc/lager",
 )
 
-_PRIV_RESULTS_PATH = "/tmp/lager-uninstall-results.txt"
+# Home-dir, not /tmp: a fixed name in the world-writable /tmp would let
+# another user on the box pre-create or symlink the path and swallow (or
+# poison) the per-step results. The remote shell expands the ~.
+_PRIV_RESULTS_PATH = "~/.lager-uninstall-results.txt"
 
 # The pubkey comment ssh-keygen -C sets when setup_and_deploy_box.sh generates
 # ~/.ssh/lager_box; used as the authorized_keys fallback matcher when the
@@ -112,10 +115,11 @@ def lager_key_matcher():
     pub_path = os.path.expanduser("~/.ssh/lager_box.pub")
     if os.path.isfile(pub_path):
         try:
-            fields = open(pub_path).read().strip().split()
+            with open(pub_path, "r", encoding="utf-8") as fh:
+                fields = fh.read().strip().split()
             if len(fields) >= 2:
                 return fields[1]
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             pass
     return _LAGER_KEY_COMMENT
 
@@ -659,7 +663,9 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
         ssh_cmd = ["ssh", "-t"]
         if ssh_pool:
             ssh_cmd.extend(ssh_pool.get_ssh_options(ip))
-        ssh_cmd.extend([ssh_host, "\n".join(wrapped)])
+        # One `;`-joined command line (each element is a complete compound
+        # statement), keeping the -t session's payload a single line.
+        ssh_cmd.extend([ssh_host, "; ".join(wrapped)])
         try:
             # Interactive: may wait on a human typing the box's sudo
             # password. The timeout only guards a genuine hang.
