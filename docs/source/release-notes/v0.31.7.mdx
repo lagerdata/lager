@@ -1,0 +1,33 @@
+---
+title: "Version 0.31.7"
+description: "July 13, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **`lager install` no longer writes a DNS server Docker cannot parse.** The installer copies the box's upstream resolvers into `/etc/docker/daemon.json` so image builds resolve reliably, but it previously trusted every value systemd-resolved reported. On a network that advertises DNS over IPv6 router advertisement, that includes a link-local resolver with a zone id (`fe80::1%3`) — and Docker **refuses to start** when any `dns` entry is not a bare IP address, rather than skipping it. Because `daemon.json` persists, the daemon stayed down across reboots, and re-running the installer undid any manual repair. Resolvers are now validated before they are written; link-local, loopback and unparseable values are dropped and named in the install log.
+- **A Docker DNS change that doesn't take is rolled back.** `daemon.json` is backed up first, and if Docker will not start with the new configuration, the previous file is restored and Docker is restarted on it. Pointing Docker at the box's resolvers is an optimization, and it can no longer leave a box worse off than it found it.
+- **The installer stops when the box's Docker daemon is down.** Previously it continued for six more steps and failed with a bare "Cannot connect to the Docker daemon" from `start_box.sh`, far from the actual cause. It now checks the daemon before deploying and reports the commands needed to diagnose it.
+
+## <u>Improvements</u>
+
+- The Docker DNS logic moved into `configure_docker_dns.sh` / `configure_docker_dns.py` and is covered by unit tests.
+- The install step counter no longer prints `[8/7]`.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.31.7
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.31.7/)
