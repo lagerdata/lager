@@ -18,19 +18,16 @@ runs without root and without a Docker daemon.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-SCRIPT = (
-    Path(__file__).resolve().parents[3]
-    / "cli"
-    / "deployment"
-    / "scripts"
-    / "configure_docker_dns.sh"
-)
+SCRIPTS = Path(__file__).resolve().parents[3] / "cli" / "deployment" / "scripts"
+SCRIPT = SCRIPTS / "configure_docker_dns.sh"
+DEPLOY_SCRIPT = SCRIPTS / "setup_and_deploy_box.sh"
 
 ORIGINAL_CONFIG = {"log-driver": "journald", "dns": ["10.9.9.9"]}
 
@@ -75,6 +72,8 @@ def _run(box, restart_rc, daemon_json_exists=True):
         PATH="{}:{}".format(bin_dir, env["PATH"]),
         DAEMON_JSON=str(daemon_json),
         RESOLV_CONF=str(tmp_path / "resolv.conf"),
+        STAGED=str(tmp_path / "lager_daemon.json"),
+        BACKUP=str(tmp_path / "lager_daemon.json.bak"),
         RESTART_RC=str(restart_rc),
     )
 
@@ -106,10 +105,40 @@ def test_failed_restart_restores_the_previous_config(box):
     assert "Restored the previous" in result.stderr
 
 
+def test_privileged_commands_stay_within_the_sudoers_grant():
+    """Every `sudo` here must match a NOPASSWD rule the installer writes.
+
+    The box's sudoers file grants `install` from one fixed path,
+    /tmp/lager_daemon.json, and nothing else under /etc/docker. Staging elsewhere
+    (a mktemp path, say) or reaching for `sudo cp`/`sudo rm` still *works* -- it
+    just silently falls outside the grant and starts prompting for a password on
+    every run, including on the rollback path, where a prompt means the recovery
+    never happens. That failure is invisible wherever sudo credentials happen to be
+    cached, so pin it here rather than hope a hardware run catches it.
+    """
+    code = "\n".join(
+        line for line in SCRIPT.read_text().splitlines() if not line.strip().startswith("#")
+    )
+    grants = DEPLOY_SCRIPT.read_text()
+
+    assert set(re.findall(r"\bsudo\s+(\S+)", code)) == {"install", "systemctl"}
+    assert 'STAGED="${STAGED:-/tmp/lager_daemon.json}"' in SCRIPT.read_text()
+    assert (
+        "NOPASSWD: /usr/bin/install -m 0644 /tmp/lager_daemon.json /etc/docker/daemon.json"
+        in grants
+    )
+    assert "NOPASSWD: /bin/systemctl restart docker" in grants
+
+
 @pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
-def test_failed_restart_removes_config_that_did_not_exist_before(box):
-    """Rolling back to "no daemon.json" means removing ours, not restoring an empty one."""
+def test_failed_restart_restores_defaults_when_there_was_no_config(box):
+    """With no daemon.json to go back to, roll back to Docker's defaults.
+
+    An empty object is what the absent file meant. We write it rather than deleting
+    the file because `rm` on /etc/docker is not in the box's sudoers grant, and a
+    recovery path that stops to ask for a password is one that does not run.
+    """
     result, daemon_json = _run(box, restart_rc=1, daemon_json_exists=False)
 
     assert result.returncode == 1
-    assert not daemon_json.exists()
+    assert json.loads(daemon_json.read_text()) == {}

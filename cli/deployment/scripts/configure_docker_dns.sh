@@ -14,27 +14,34 @@
 # This is an optimization, so it must never leave the box worse off than it found
 # it: if Docker will not come back with the new config, the previous daemon.json is
 # restored and Docker is restarted on it before we exit non-zero.
+#
+# Every privileged action here is one the box's sudoers file already grants
+# NOPASSWD (see setup_and_deploy_box.sh): `install` from the fixed path
+# /tmp/lager_daemon.json, and `systemctl restart docker`. Staging anywhere else --
+# a mktemp path, say -- silently falls outside the grant and makes every run prompt
+# for a password. Snapshot and restore therefore route through that same path, and
+# the backup lives in /tmp, where no privileges are needed to write it.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DAEMON_JSON="${DAEMON_JSON:-/etc/docker/daemon.json}"
 RESOLV_CONF="${RESOLV_CONF:-/run/systemd/resolve/resolv.conf}"
-BACKUP="${DAEMON_JSON}.lager-bak"
+STAGED="${STAGED:-/tmp/lager_daemon.json}"
+BACKUP="${BACKUP:-/tmp/lager_daemon.json.bak}"
 
-STAGED=$(mktemp)
-trap 'rm -f "$STAGED"' EXIT
+rm -f "$STAGED" "$BACKUP" 2>/dev/null || true
+trap 'rm -f "$STAGED" "$BACKUP" 2>/dev/null || true' EXIT
 
 python3 "${SCRIPT_DIR}/configure_docker_dns.py" \
     --resolv-conf "$RESOLV_CONF" --daemon-json "$DAEMON_JSON" --out "$STAGED"
 
-# Snapshot the current config so a failed restart can be undone. Track whether
-# there was one at all, so we restore the old file or remove ours accordingly.
+# Snapshot the current config so a failed restart can be undone. daemon.json is
+# world-readable, so this needs no sudo. Track whether there was one at all.
 if [ -f "$DAEMON_JSON" ]; then
     HAD_CONFIG=1
-    sudo cp -f "$DAEMON_JSON" "$BACKUP"
+    cp -f "$DAEMON_JSON" "$BACKUP"
 else
     HAD_CONFIG=0
-    sudo rm -f "$BACKUP"
 fi
 
 daemon_is_up() {
@@ -52,11 +59,17 @@ daemon_is_up() {
 }
 
 restore_previous() {
+    # Where there was no daemon.json, an empty object restores Docker's defaults --
+    # which is what the absent file meant. We write that rather than removing the
+    # file because `rm` on /etc/docker is not in the sudoers grant, and a recovery
+    # path that stops to ask for a password is a recovery path that does not run.
     if [ "$HAD_CONFIG" -eq 1 ]; then
-        sudo install -m 0644 "$BACKUP" "$DAEMON_JSON"
+        cp -f "$BACKUP" "$STAGED"
     else
-        sudo rm -f "$DAEMON_JSON"
+        echo '{}' > "$STAGED"
     fi
+    sudo install -m 0644 "$STAGED" "$DAEMON_JSON" \
+        || echo "WARNING: could not restore ${DAEMON_JSON}" >&2
     sudo systemctl restart docker || true
 }
 
