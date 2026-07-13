@@ -83,15 +83,18 @@ def merge_dns(cfg, servers):
 
 
 def load_daemon_json(path):
-    """Existing daemon.json, or {} if it is absent or unreadable."""
+    """Existing daemon.json, or {} if it is absent, unreadable, or not an object."""
     if not os.path.exists(path):
         return {}
     try:
         with open(path) as fh:
-            return json.load(fh) or {}
+            cfg = json.load(fh)
     except (OSError, ValueError):
         # Docker cannot parse it either, so there is nothing worth preserving.
         return {}
+    # Valid JSON that isn't an object (a list, say) is not a config Docker can use,
+    # and would break the merge. Same treatment as unparseable.
+    return cfg if isinstance(cfg, dict) else {}
 
 
 def main():

@@ -148,3 +148,20 @@ def test_load_daemon_json_tolerates_missing_and_corrupt_files(tmp_path):
     valid = tmp_path / "valid.json"
     valid.write_text(json.dumps({"log-driver": "journald"}))
     assert load_daemon_json(str(valid)) == {"log-driver": "journald"}
+
+
+@pytest.mark.parametrize("content", ["[1, 2]", '"a string"', "42", "null"])
+def test_load_daemon_json_rejects_valid_json_that_is_not_an_object(tmp_path, content):
+    """A daemon.json that isn't an object is no more usable to us than to Docker.
+
+    Returning it would blow up the merge rather than fall back cleanly.
+    """
+    path = tmp_path / "daemon.json"
+    path.write_text(content)
+
+    assert load_daemon_json(str(path)) == {}
+    assert merge_dns(load_daemon_json(str(path)), ["192.168.1.1"])["dns"] == [
+        "192.168.1.1",
+        "1.1.1.1",
+        "8.8.8.8",
+    ]
