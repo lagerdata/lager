@@ -465,12 +465,11 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     # rule must grant NOPASSWD up front. The rule content lives in
     # _host_ops.boxcfg_sudoers_rules — it must name the actual login user
     # (it previously hardcoded `lagerdata`, so on boxes with a different
-    # user, e.g. the juultest fleet, the grant never matched and the verify
-    # below always warned "sudo -n apt-get still fails").
+    # login user the grant never matched and the verify below always
+    # warned "sudo -n apt-get still fails").
     #
     # Idempotent: re-running install overwrites the file with the same
-    # content. Failure here is a warning, not fatal — the box is otherwise
-    # installed; the operator can apply the rule manually later.
+    # content. Failure here is a warning, not fatal — the box is otherwise    # installed; the operator can apply the rule manually later.
     click.echo()
     click.secho("Configuring passwordless sudo for `lager box config apply`...", fg='cyan')
     click.echo("(One-time setup. You'll be prompted for the sudo password on the box.)")

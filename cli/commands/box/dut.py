@@ -60,7 +60,7 @@ _BENCH_SUDO_BASE = (
 def _bench_sudoers_bootstrap(user: str = "lagerdata") -> str:
     """Manual-fix text for a box missing the bench.json sudo grant. Names
     the box's actual login user so the pasted rule matches it (a hardcoded
-    `lagerdata` never matched on e.g. juultest boxes)."""
+    `lagerdata` never matched on boxes with a different login user)."""
     # Error-path text renderer: never raise, never interpolate a non-plain
     # username (it comes from local box storage unvalidated) into a
     # paste-into-root-shell snippet. Same rule as _host_ops.sudoers_bootstrap.

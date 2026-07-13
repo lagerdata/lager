@@ -45,8 +45,8 @@ _UDEV_HEADER = (
 # `lager install` and `lager update` write this rule to BOXCFG_SUDOERS_PATH
 # so `lager box config apply` can run apt-get/sysctl/mkdir/chown over
 # BatchMode SSH. The rule must name the actual login user: it used to
-# hardcode `lagerdata`, so on boxes with a different user (e.g. the juultest
-# fleet) the grant never matched — install ended with "Sudoers file installed
+# hardcode `lagerdata`, so on boxes with a different login user the grant
+# never matched — install ended with "Sudoers file installed
 # but `sudo -n apt-get` still fails" and every apply needed manual setup.
 #
 # The username lands inside a root-owned sudoers file, so callers must gate

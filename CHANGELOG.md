@@ -127,8 +127,8 @@ rule names the box's actual login user instead of a hardcoded `lagerdata`.
   diagnostics instead of dying later at the container step.
 - **Box-config passwordless sudo works on boxes whose login user isn't `lagerdata`.**
   The `/etc/sudoers.d/lager-box-config` rule written by `lager install`/`lager update`
-  hardcoded the `lagerdata` username, so on boxes with a different login user (e.g.
-  `juultest`) the grant never matched — install ended with "Sudoers file installed
+  hardcoded the `lagerdata` username, so on boxes with a different login user the
+  grant never matched — install ended with "Sudoers file installed
   but `sudo -n apt-get` still fails" and `lager box config apply` required manual
   setup. The rule now names the box's actual login user (validated before being
   interpolated into sudoers content), already-provisioned wrong-user boxes re-bootstrap
