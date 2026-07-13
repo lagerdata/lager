@@ -207,6 +207,62 @@ class SerialIdCablesTests(unittest.TestCase):
         ident = serial_id.identity_for_tty("/dev/ttyUSB1")
         self.assertEqual(serial_id.resolve_identity(ident), "/dev/ttyUSB1")
 
+    # ---- clone-serial regression (v0.31.5 reconnected to a sibling) ---------
+
+    def test_identity_for_tty_demotes_clone_serial(self):
+        # Two live devices share vid/pid/serial: the serial is not identity.
+        self._add_cable("ttyUSB0", "1-1.2", serial="0001")
+        self._add_cable("ttyUSB1", "1-1.3", serial="0001")
+        ident = serial_id.identity_for_tty("/dev/ttyUSB0")
+        self.assertIsNone(ident["serial"])
+        self.assertEqual(ident["port_path"], "1-1.2")
+
+    def test_identity_for_tty_keeps_unique_serial(self):
+        self._add_cable("ttyUSB0", "1-1.2", serial="UNIQ-A")
+        self._add_cable("ttyUSB1", "1-1.3", serial="UNIQ-B")
+        self.assertEqual(serial_id.identity_for_tty("/dev/ttyUSB0")["serial"],
+                         "UNIQ-A")
+
+    def test_identity_for_tty_multi_interface_keeps_serial(self):
+        # Four ttys of ONE multi-port chip share the device dir; that is not
+        # a clone serial.
+        for n in range(4):
+            self._add_cable(f"ttyUSB{n}", "1-1.3", serial="QUAD", iface=n)
+        self.assertEqual(serial_id.identity_for_tty("/dev/ttyUSB2")["serial"],
+                         "QUAD")
+
+    def test_resolve_identity_clone_absent_never_matches_sibling(self):
+        # The exact v0.31.5 field failure: a legacy snapshot carrying the
+        # clone serial, resolved while the true device is off the bus, must
+        # return None (keep retrying) — NOT a look-alike sibling.
+        self._add_cable("ttyUSB0", "1-1.2", serial="0001")
+        self._add_cable("ttyUSB1", "1-1.3", serial="0001")
+        self._add_cable("ttyUSB2", "1-1.4", serial="0001")
+        legacy_ident = {"vid": VID, "pid": PID, "serial": "0001",
+                        "port_path": "1-1.4", "interface": 0}
+        shutil.rmtree(self._sys_tty / "ttyUSB2")          # our device drops
+        self.assertIsNone(serial_id.resolve_identity(legacy_ident))
+        self._add_cable("ttyUSB5", "1-1.4", serial="0001")  # it returns
+        self.assertEqual(serial_id.resolve_identity(legacy_ident), "/dev/ttyUSB5")
+
+    def test_resolve_identity_clone_serial_without_port_is_unresolvable(self):
+        self._add_cable("ttyUSB0", "1-1.2", serial="0001")
+        self._add_cable("ttyUSB1", "1-1.3", serial="0001")
+        ident = {"vid": VID, "pid": PID, "serial": "0001"}
+        self.assertIsNone(serial_id.resolve_identity(ident))
+
+    def test_reconnect_snapshot_cycle_with_clones(self):
+        # End-to-end shape of the JUL-16 heal: snapshot (serial demoted),
+        # device drops (None while absent), returns renumbered on the same
+        # port (resolved by port).
+        self._add_cable("ttyUSB0", "1-1.2", serial="0001")
+        self._add_cable("ttyUSB1", "1-1.3", serial="0001")
+        ident = serial_id.identity_for_tty("/dev/ttyUSB0")
+        shutil.rmtree(self._sys_tty / "ttyUSB0")
+        self.assertIsNone(serial_id.resolve_identity(ident))
+        self._add_cable("ttyUSB4", "1-1.2", serial="0001")
+        self.assertEqual(serial_id.resolve_identity(ident), "/dev/ttyUSB4")
+
     def test_resolve_identity_multi_interface_picks_channel(self):
         # FT4232H: one USB device (no serial), four ttys on interfaces 0-3.
         for n in range(4):
