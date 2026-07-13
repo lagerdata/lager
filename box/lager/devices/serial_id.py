@@ -165,6 +165,28 @@ def _interface_for_tty(tty_dev: Path) -> Optional[int]:
     return None
 
 
+def _serial_is_unique(vid: str, pid: str, serial: str, own_dir_name: str) -> bool:
+    """False when another live USB device shares vid/pid/serial.
+
+    Clone adapters (e.g. CP210x units all programmed with serial "0001") make
+    the serial worthless as identity. Sibling interfaces of one multi-port
+    chip share a device dir and are not counted as duplicates.
+    """
+    seen = set()
+    for tty_dev in _SYS_TTY.iterdir():
+        if not tty_dev.name.startswith(("ttyUSB", "ttyACM")):
+            continue
+        usb_dir = _usb_device_dir_for_tty(tty_dev)
+        if usb_dir is None or usb_dir.name == own_dir_name or usb_dir.name in seen:
+            continue
+        seen.add(usb_dir.name)
+        if ((_read_sysfs_text(usb_dir / "idVendor") or "").lower() == vid
+                and (_read_sysfs_text(usb_dir / "idProduct") or "").lower() == pid
+                and _read_sysfs_text(usb_dir / "serial") == serial):
+            return False
+    return True
+
+
 def identity_for_tty(tty: str) -> Optional[Dict[str, Optional[str]]]:
     """Snapshot the durable USB identity of a live tty node.
 
@@ -172,6 +194,11 @@ def identity_for_tty(tty: str) -> Optional[Dict[str, Optional[str]]]:
     ``/dev/serial/by-id/...`` path). Returns ``{"vid", "pid", "serial",
     "port_path", "interface"}`` or None when the tty is not backed by a USB
     device (or is gone).
+
+    A serial shared with another live device (clone serials) is recorded as
+    None: it cannot identify the device, so the snapshot pins to the physical
+    port instead. Otherwise a later resolution while this device is briefly
+    off the bus could match a look-alike sibling.
     """
     if not tty or not isinstance(tty, str):
         return None
@@ -187,10 +214,13 @@ def identity_for_tty(tty: str) -> Optional[Dict[str, Optional[str]]]:
     pid = (_read_sysfs_text(usb_dir / "idProduct") or "").lower()
     if not vid or not pid:
         return None
+    serial = _read_sysfs_text(usb_dir / "serial")
+    if serial and not _serial_is_unique(vid, pid, serial, usb_dir.name):
+        serial = None
     return {
         "vid": vid,
         "pid": pid,
-        "serial": _read_sysfs_text(usb_dir / "serial"),
+        "serial": serial,
         "port_path": usb_dir.name,
         "interface": _interface_for_tty(tty_dev),
     }
@@ -200,11 +230,13 @@ def resolve_identity(ident) -> Optional[str]:
     """Resolve an ``identity_for_tty`` snapshot back to the live tty node.
 
     Match rules: vid/pid always; interface when both sides know it; then USB
-    serial when the snapshot has one (falling back to the port path to break
-    ties between clone adapters sharing a serial), else the physical port
-    path. Returns ``/dev/tty...`` or None if the device is not (yet) back.
-    Tolerates arbitrary garbage input — a malformed snapshot resolves to None
-    rather than raising.
+    serial when the snapshot has one. A serial that several live devices
+    share (clone adapters) proves nothing, so the physical port is then
+    REQUIRED — with the true device absent this returns None so callers keep
+    retrying instead of grabbing a look-alike sibling. Serial-less snapshots
+    resolve by physical port path. Returns ``/dev/tty...`` or None if the
+    device is not (yet) back. Tolerates arbitrary garbage input — a malformed
+    snapshot resolves to None rather than raising.
     """
     if not isinstance(ident, dict):
         return None
@@ -245,10 +277,17 @@ def resolve_identity(ident) -> Optional[str]:
         matches = [c for c in candidates if c[2] == serial]
         if not matches:
             return None
-        if len(matches) > 1 and port_path:
-            ported = [c for c in matches if c[1] == port_path]
-            if ported:
-                matches = ported
+        if len(matches) > 1:
+            # Several live devices share this serial (clone serials): the
+            # serial proves nothing, so the physical port is REQUIRED. When
+            # our port's device is absent, fail — the caller keeps retrying —
+            # rather than grabbing a look-alike sibling mid-re-enumeration.
+            if not port_path:
+                return None
+            for c in matches:
+                if c[1] == port_path:
+                    return f"/dev/{c[0]}"
+            return None
         return f"/dev/{matches[0][0]}"
     if port_path:
         for c in candidates:

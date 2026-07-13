@@ -2,6 +2,22 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Fixed
+- **UART reconnect can no longer land on a look-alike adapter with a clone
+  serial.** Many USB-serial adapters ship with a non-unique programmed serial
+  (e.g. several CP210x units all reading "0001"). If such a device dropped
+  mid-session, the v0.31.5 reconnect could match a sibling adapter with the
+  same serial while the real device was still off the bus — attaching the
+  session to the wrong hardware. Identity resolution now treats a serial
+  shared by multiple live devices as untrusted (the physical port must match,
+  and it keeps retrying until the real device returns), and new identity
+  snapshots record a bus-duplicated serial as null so the net is pinned to
+  its physical port outright. Nets on clone-serial adapters that were
+  enriched under v0.31.5 pick up the corrected snapshot on their next
+  re-save.
+
 ## [0.31.8] - 2026-07-13
 
 `lager uninstall` now actually removes what the modern `lager install` creates.
