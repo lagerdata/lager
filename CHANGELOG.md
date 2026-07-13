@@ -2,6 +2,40 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+`lager uninstall` now actually removes what the modern `lager install` creates.
+The `--all` cleanup had not kept pace with several releases of install changes,
+and on boxes without broad passwordless sudo every privileged removal failed
+silently while reporting "done".
+
+### Fixed
+- **`lager uninstall --all` removes the artifacts today's install creates.** The old
+  udev glob (`lager-*.rules`) never matched the shipped `99-instrument.rules`, and
+  the usbtmc modprobe blacklist, the `lager-box-config` sudoers file, the firewall
+  helper script, the lager sysctl config, and the `lager` group were never removed
+  at all. The removal list is now a single spec shared by the confirmation listing,
+  `--dry-run`, the removal session, and the unit tests, so it cannot silently drift
+  from what install creates again. Deliberately left in place: docker itself
+  (packages, buildx, the daemon.json DNS entry) and pip/apt packages.
+- **Privileged removals actually happen (and report honestly) on boxes without
+  passwordless sudo.** Each sudo step used to run over BatchMode SSH with `|| true`,
+  so on such boxes every one failed silently and printed "done" — a plain uninstall
+  left `/etc/lager` behind while claiming success. All privileged steps now run in
+  one interactive session (at most one sudo password prompt) with per-step
+  OK/FAILED results, and failures are summarized at the end instead of hidden.
+- **`--all` removes this machine's key from the box's `authorized_keys`.** The
+  "deploy keys" cleanup only deleted box-side private keys that modern installs
+  never create, while the actual access grant survived. The key is matched exactly
+  by the local `~/.ssh/lager_box.pub` blob (falling back to the default key
+  comment), and the next SSH connection needing a password is called out.
+- **`--keep-config` is honored together with `--all`.** Previously `--all` deleted
+  `/etc/lager` even when `--keep-config` asked to preserve saved nets.
+- **`--dry-run` inspects the real artifact list** (correct udev filenames, modprobe
+  blacklist, both sudoers files, sysctl config, firewall script, `lager` group,
+  authorized_keys state) and no longer reports `/etc/lager` as "(not found)" on
+  boxes where reading it via `sudo` under BatchMode fails.
+
 ## [0.31.7] - 2026-07-13
 
 `lager install` can no longer leave a box with a Docker daemon that will not start,

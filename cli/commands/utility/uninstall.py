@@ -7,6 +7,7 @@
     Uninstall Lager box code from a box
 """
 import click
+import os
 import subprocess
 from ...address_utils import validate_ip_or_hostname, VALID_FORMATS_CHEATSHEET
 from ...box_storage import (
@@ -17,6 +18,122 @@ from ...box_storage import (
     get_box_user,
 )
 from ...core.ssh_utils import host_in_known_hosts, get_ssh_connection_pool
+
+# --- Privileged removal spec -------------------------------------------------
+#
+# Everything `lager install` (and `lager box config apply`) creates on the box
+# that needs root to remove, as (name, description, remote command). The
+# confirmation listing, --dry-run inspection, the privileged session, and the
+# unit tests all share this single source of truth, so the artifact list can't
+# silently drift from what install creates again.
+#
+# All steps run in ONE interactive `ssh -t` session so sudo can prompt on
+# boxes whose login user has no broad passwordless grant (the old per-command
+# BatchMode + `|| true` pattern made every one of these fail silently there
+# while reporting "done"). Order matters: the sudoers files are removed LAST,
+# so the earlier steps can still ride a NOPASSWD grant or the sudo timestamp
+# cached by the session's first prompt.
+#
+# Deliberately NOT removed (the box keeps working infrastructure): docker apt
+# packages, the buildx plugin (including the /usr/local/lib/docker/cli-plugins
+# fallback binary), the `dns` key lager merged into /etc/docker/daemon.json,
+# pip packages (pyOCD etc.), and apt packages from `lager box config apply`.
+UNINSTALL_ALL_PRIV_STEPS = [
+    (
+        "udev_rules",
+        "Removing instrument udev rules",
+        "sudo rm -f /etc/udev/rules.d/99-instrument.rules "
+        "/etc/udev/rules.d/99-lager-user.rules /etc/udev/rules.d/lager-*.rules "
+        "&& sudo udevadm control --reload-rules && sudo udevadm trigger",
+    ),
+    (
+        "modprobe",
+        "Removing usbtmc blacklist",
+        "sudo rm -f /etc/modprobe.d/blacklist-usbtmc.conf",
+    ),
+    (
+        "sysctl",
+        "Removing lager sysctl config",
+        "sudo rm -f /etc/sysctl.d/99-lager-box-config.conf && sudo sysctl --system >/dev/null",
+    ),
+    (
+        "firewall_script",
+        "Removing firewall helper script",
+        "sudo rm -f /usr/local/lib/lager/secure_box_firewall.sh",
+    ),
+    (
+        "ufw_reset",
+        "Resetting UFW firewall to defaults (SSH-only)",
+        "if command -v ufw >/dev/null; then "
+        "sudo ufw --force reset && sudo ufw default deny incoming && "
+        "sudo ufw default allow outgoing && sudo ufw allow ssh && "
+        "sudo ufw --force enable; fi",
+    ),
+    (
+        "lager_group",
+        "Removing 'lager' group",
+        "if getent group lager >/dev/null; then sudo groupdel lager; fi",
+    ),
+    # LAST: removing these grants first would break the steps above on boxes
+    # that rely on them.
+    (
+        "sudoers",
+        "Removing lager sudoers files",
+        "sudo rm -f /etc/sudoers.d/lagerdata-udev /etc/sudoers.d/lager-box-config "
+        "/etc/sudoers.d/lager-bench-json",
+    ),
+]
+
+# /etc/lager is www-data-owned on modern boxes, so its removal needs the same
+# privileged session — but it is governed by --keep-config rather than --all,
+# so it's kept out of UNINSTALL_ALL_PRIV_STEPS and prepended when applicable.
+ETC_LAGER_PRIV_STEP = (
+    "etc_lager",
+    "Removing /etc/lager directory",
+    "sudo rm -rf /etc/lager",
+)
+
+_PRIV_RESULTS_PATH = "/tmp/lager-uninstall-results.txt"
+
+# The pubkey comment ssh-keygen -C sets when setup_and_deploy_box.sh generates
+# ~/.ssh/lager_box; used as the authorized_keys fallback matcher when the
+# local pubkey file is missing.
+_LAGER_KEY_COMMENT = "lager-box-access"
+
+
+def lager_key_matcher():
+    """String identifying this machine's lager key in a box's authorized_keys.
+
+    The base64 key blob from the local ~/.ssh/lager_box.pub when available
+    (exact — key comments vary across old installs; the blob is [A-Za-z0-9+/=]
+    so it is single-quote-safe in a shell command), else the default comment
+    ssh-keygen was invoked with.
+    """
+    pub_path = os.path.expanduser("~/.ssh/lager_box.pub")
+    if os.path.isfile(pub_path):
+        try:
+            fields = open(pub_path).read().strip().split()
+            if len(fields) >= 2:
+                return fields[1]
+        except OSError:
+            pass
+    return _LAGER_KEY_COMMENT
+
+
+def authorized_keys_cleanup_cmd():
+    """Remote command that strips this machine's lager key from the box's
+    ~/.ssh/authorized_keys (user-owned; no sudo needed).
+
+    The `|| true` guards grep's exit-1 when every line matches (an
+    authorized_keys that only held the lager key becomes empty, which is the
+    correct result).
+    """
+    return (
+        "if [ -f ~/.ssh/authorized_keys ]; then "
+        f"{{ grep -vF '{lager_key_matcher()}' ~/.ssh/authorized_keys || true; }} > ~/.ssh/.lager-ak-tmp "
+        "&& mv ~/.ssh/.lager-ak-tmp ~/.ssh/authorized_keys "
+        "&& chmod 600 ~/.ssh/authorized_keys; fi"
+    )
 
 
 @click.command()
@@ -386,9 +503,12 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
         else:
             click.echo("  ~/box: (not found)")
 
-        # /etc/lager directory
+        # /etc/lager directory. Presence-check without sudo (the directory is
+        # world-readable); `sudo du` under BatchMode fails on boxes without a
+        # NOPASSWD grant and misreported "(not found)" for a directory that
+        # was very much there.
         click.secho("Config directory:", fg='cyan')
-        etc_lager = query_ssh("sudo du -sh /etc/lager 2>/dev/null")
+        etc_lager = query_ssh("du -sh /etc/lager 2>/dev/null || ls -d /etc/lager 2>/dev/null")
         if etc_lager:
             click.echo(f"  /etc/lager: {etc_lager.split()[0]}")
         else:
@@ -398,13 +518,41 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
             click.echo()
             click.secho("Extended cleanup items (--all):", fg='cyan')
 
-            # Udev rules
-            udev = query_ssh("ls /etc/udev/rules.d/lager-*.rules /etc/udev/rules.d/*lager*.rules 2>/dev/null")
-            click.echo(f"  Udev rules: {udev if udev else '(none found)'}")
+            # Udev rules (the shipped 99-instrument.rules, box-config user
+            # rules, and legacy lager-*.rules). Trailing `; true`: a
+            # multi-path ls exits non-zero when ANY path is missing, and
+            # query_ssh treats non-zero as no-result — without it, one absent
+            # legacy file hid the files that WERE present.
+            udev = query_ssh(
+                "ls /etc/udev/rules.d/99-instrument.rules "
+                "/etc/udev/rules.d/99-lager-user.rules "
+                "/etc/udev/rules.d/lager-*.rules 2>/dev/null; true"
+            )
+            click.echo(f"  Udev rules: {' '.join(udev.split()) if udev else '(none found)'}")
 
-            # Sudoers
-            sudoers = query_ssh("ls /etc/sudoers.d/lagerdata-udev 2>/dev/null")
-            click.echo(f"  Sudoers file: {'present' if sudoers else '(not found)'}")
+            # usbtmc modprobe blacklist
+            modprobe = query_ssh("ls /etc/modprobe.d/blacklist-usbtmc.conf 2>/dev/null")
+            click.echo(f"  usbtmc blacklist: {'present' if modprobe else '(not found)'}")
+
+            # Sudoers files (`; true` for the same multi-path ls reason as
+            # the udev query above)
+            sudoers = query_ssh(
+                "ls /etc/sudoers.d/lagerdata-udev /etc/sudoers.d/lager-box-config "
+                "/etc/sudoers.d/lager-bench-json 2>/dev/null; true"
+            )
+            click.echo(f"  Sudoers files: {' '.join(sudoers.split()) if sudoers else '(none found)'}")
+
+            # sysctl config (from `lager box config apply`)
+            sysctl_conf = query_ssh("ls /etc/sysctl.d/99-lager-box-config.conf 2>/dev/null")
+            click.echo(f"  Sysctl config: {'present' if sysctl_conf else '(not found)'}")
+
+            # Firewall helper script
+            fw_script = query_ssh("ls /usr/local/lib/lager/secure_box_firewall.sh 2>/dev/null")
+            click.echo(f"  Firewall helper script: {'present' if fw_script else '(not found)'}")
+
+            # lager group (instrument device access)
+            lager_group = query_ssh("getent group lager 2>/dev/null")
+            click.echo(f"  'lager' group: {'present' if lager_group else '(not found)'}")
 
             # Third party
             third_party = query_ssh("du -sh ~/third_party 2>/dev/null")
@@ -413,16 +561,23 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
             else:
                 click.echo("  ~/third_party: (not found)")
 
+            # This machine's key in the box's authorized_keys
+            ak = query_ssh(f"grep -cF '{lager_key_matcher()}' ~/.ssh/authorized_keys 2>/dev/null")
+            click.echo(f"  This machine's key in authorized_keys: {'present' if ak and ak != '0' else '(not found)'}")
+
             # SSH keys (both legacy and current)
             legacy_key = query_ssh("ls ~/.ssh/lager_deploy_key 2>/dev/null")
             current_key = query_ssh("ls ~/.ssh/lager_box 2>/dev/null")
             click.echo(f"  Legacy deploy key (~/.ssh/lager_deploy_key): {'present' if legacy_key else '(not found)'}")
-            click.echo(f"  Current SSH key (~/.ssh/lager_box): {'present' if current_key else '(not found)'}")
+            click.echo(f"  Box-side SSH key (~/.ssh/lager_box): {'present' if current_key else '(not found)'}")
 
-            # UFW status
-            ufw_status = query_ssh("sudo ufw status 2>/dev/null | head -5")
+            # UFW status (no sudo under BatchMode; status read may need root,
+            # so fall back to reporting availability only)
+            ufw_status = query_ssh("sudo -n ufw status 2>/dev/null | head -1")
             if ufw_status:
                 click.echo(f"  UFW firewall: {ufw_status.splitlines()[0]}")
+            elif query_ssh("command -v ufw 2>/dev/null"):
+                click.echo("  UFW firewall: installed (status needs sudo)")
             else:
                 click.echo("  UFW firewall: (not available)")
 
@@ -444,21 +599,27 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
     click.echo("  - Docker containers (lager, pigpio)")
     click.echo("  - Docker network (lagernet)")
     if not keep_docker_images:
-        click.echo("  - Docker images")
+        click.echo("  - Docker images (ALL unused images on the box, not only lager's)")
     click.echo("  - ~/box directory")
+    if not keep_config:
+        click.echo("  - /etc/lager directory (saved nets)")
 
     if remove_all:
-        click.echo("  - /etc/lager directory (saved nets)")
-        click.echo("  - Udev rules (/etc/udev/rules.d/lager-*.rules)")
-        click.echo("  - Sudoers file (/etc/sudoers.d/lagerdata-udev)")
+        click.echo("  - Instrument udev rules (99-instrument.rules, 99-lager-user.rules, lager-*.rules)")
+        click.echo("  - usbtmc modprobe blacklist (/etc/modprobe.d/blacklist-usbtmc.conf)")
+        click.echo("  - Lager sysctl config (/etc/sysctl.d/99-lager-box-config.conf)")
+        click.echo("  - Sudoers files (lagerdata-udev, lager-box-config, lager-bench-json)")
+        click.echo("  - Firewall helper script + UFW rules (reset to SSH-only)")
+        click.echo("  - 'lager' group")
         click.echo("  - ~/third_party directory")
-        click.echo("  - SSH keys (~/.ssh/lager_box*, ~/.ssh/lager_deploy_key*)")
-        click.echo("  - SSH config entries for lager")
-        click.echo("  - UFW firewall rules (reset to SSH-only)")
-    elif not keep_config:
-        click.echo("  - /etc/lager directory (saved nets)")
+        click.echo("  - This machine's key from the box's authorized_keys")
+        click.echo("  - Legacy box-side SSH keys and SSH config entries")
 
     click.echo()
+    if not keep_config or remove_all:
+        click.echo("Privileged removals run in one session; you may be prompted for the")
+        click.echo("box's sudo password once if the login user has no passwordless grant.")
+        click.echo()
 
     if not yes:
         click.secho("WARNING: This action cannot be undone!", fg='red', bold=True)
@@ -470,8 +631,59 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
 
     click.echo()
 
-    # 5. Stop and remove Docker containers (targeted to lager only)
-    #
+    # 5. Assemble the privileged removal steps. /etc/lager is governed by
+    # --keep-config (now honored even with --all); the system artifacts by
+    # --all.
+    priv_results = {}
+    priv_steps = []
+    if not keep_config:
+        priv_steps.append(ETC_LAGER_PRIV_STEP)
+    if remove_all:
+        priv_steps.extend(UNINSTALL_ALL_PRIV_STEPS)
+
+    def run_priv_session(steps):
+        """Run the sudo removal steps in ONE interactive `ssh -t` session.
+
+        Each step runs in a subshell and records name=OK|FAIL to a results
+        file, read back afterward over the captured channel — so sudo can
+        prompt (at most once, thanks to timestamp caching) on boxes whose
+        login user has no passwordless grant, and each step's outcome is
+        reported honestly instead of being masked by BatchMode + `|| true`.
+        """
+        wrapped = [f"rm -f {_PRIV_RESULTS_PATH}"]
+        for name, _desc, snippet in steps:
+            wrapped.append(
+                f'if ( {snippet} ); then echo "{name}=OK" >> {_PRIV_RESULTS_PATH}; '
+                f'else echo "{name}=FAIL" >> {_PRIV_RESULTS_PATH}; fi'
+            )
+        ssh_cmd = ["ssh", "-t"]
+        if ssh_pool:
+            ssh_cmd.extend(ssh_pool.get_ssh_options(ip))
+        ssh_cmd.extend([ssh_host, "\n".join(wrapped)])
+        try:
+            # Interactive: may wait on a human typing the box's sudo
+            # password. The timeout only guards a genuine hang.
+            subprocess.run(ssh_cmd, timeout=600)
+        except subprocess.TimeoutExpired:
+            click.secho("  Privileged session timed out.", fg='yellow', err=True)
+        except Exception as e:
+            click.secho(f"  Privileged session failed: {e}", fg='red', err=True)
+        results_raw = query_ssh(
+            f"cat {_PRIV_RESULTS_PATH} 2>/dev/null; rm -f {_PRIV_RESULTS_PATH}"
+        )
+        results = {}
+        for line in (results_raw or "").splitlines():
+            if "=" in line:
+                k, _, v = line.partition("=")
+                results[k.strip()] = v.strip()
+        for name, desc, _snippet in steps:
+            click.echo(f"  {desc}...", nl=False)
+            if results.get(name) == "OK":
+                click.secho(" done", fg='green')
+            else:
+                click.secho(" FAILED", fg='red')
+        return results
+
     # Acquire the auto-lock for the duration of the destructive steps
     # below — stopping the lager container, removing images, wiping
     # ~/box, /etc/lager, etc. all clobber a running `lager python` test.
@@ -480,82 +692,64 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
     with auto_lock_around_command(ip, box or ip, 'uninstall'):
         click.secho("[Step 1/5] Stopping Docker containers...", fg='cyan')
         run_ssh(
-            "cd ~/box && docker compose down 2>/dev/null || true",
+            "cd ~/box && docker compose down 2>/dev/null",
             "Running docker compose down",
             allow_fail=True
         )
-        run_ssh("docker stop lager 2>/dev/null; docker rm -f lager 2>/dev/null || true", "Removing lager container", allow_fail=True)
-        run_ssh("docker stop pigpio 2>/dev/null; docker rm -f pigpio 2>/dev/null || true", "Removing pigpio container", allow_fail=True)
-        run_ssh("docker network rm lagernet 2>/dev/null || true", "Removing lagernet network", allow_fail=True)
+        run_ssh("docker stop lager 2>/dev/null; docker rm -f lager 2>/dev/null", "Removing lager container", allow_fail=True)
+        run_ssh("docker stop pigpio 2>/dev/null; docker rm -f pigpio 2>/dev/null", "Removing pigpio container", allow_fail=True)
+        run_ssh("docker network rm lagernet 2>/dev/null", "Removing lagernet network", allow_fail=True)
         click.echo()
 
-        # 6. Remove Docker images (unless --keep-docker-images)
+        # Remove Docker images (unless --keep-docker-images)
         click.secho("[Step 2/5] Cleaning Docker...", fg='cyan')
         if not keep_docker_images:
-            run_ssh("docker image prune -af 2>/dev/null || true", "Removing Docker images", allow_fail=True)
-            run_ssh("docker builder prune -af 2>/dev/null || true", "Clearing Docker build cache", allow_fail=True)
+            run_ssh("docker image prune -af 2>/dev/null", "Removing Docker images", allow_fail=True)
+            run_ssh("docker builder prune -af 2>/dev/null", "Clearing Docker build cache", allow_fail=True)
         else:
             click.echo("  Skipping Docker image removal (--keep-docker-images)")
         click.echo()
 
-        # 7. Remove ~/box directory
+        # Remove ~/box directory
         click.secho("[Step 3/5] Removing box code...", fg='cyan')
         run_ssh("rm -rf ~/box", "Removing ~/box directory")
         click.echo()
 
-        # 8. Remove /etc/lager (unless --keep-config, or with --all)
-        click.secho("[Step 4/5] Removing configuration...", fg='cyan')
-        if remove_all or not keep_config:
-            run_ssh("sudo rm -rf /etc/lager 2>/dev/null || true", "Removing /etc/lager directory", allow_fail=True)
+        # Privileged removals — /etc/lager plus (with --all) the system
+        # artifacts install creates — in one interactive session.
+        click.secho("[Step 4/5] Removing system configuration...", fg='cyan')
+        if priv_steps:
+            priv_results = run_priv_session(priv_steps)
         else:
             click.echo("  Skipping /etc/lager removal (--keep-config)")
         click.echo()
 
-        # 9. Remove additional components if --all
+        # Unprivileged --all extras. The authorized_keys strip goes LAST of
+        # all remote operations: once this machine's key is gone, further
+        # BatchMode SSH to the box would need a password.
         click.secho("[Step 5/5] Cleaning up additional components...", fg='cyan')
         if remove_all:
-            # Remove udev rules
-            run_ssh(
-                "sudo rm -f /etc/udev/rules.d/lager-*.rules /etc/udev/rules.d/*lager*.rules 2>/dev/null; "
-                "sudo udevadm control --reload-rules 2>/dev/null || true",
-                "Removing udev rules",
-                allow_fail=True
-            )
-
-            # Remove sudoers file
-            run_ssh(
-                "sudo rm -f /etc/sudoers.d/lagerdata-udev 2>/dev/null || true",
-                "Removing sudoers file",
-                allow_fail=True
-            )
-
-            # Remove third_party directory
             run_ssh("rm -rf ~/third_party", "Removing ~/third_party directory", allow_fail=True)
 
-            # Remove both legacy and current SSH keys
+            # Legacy artifacts: old installs kept a deploy key (and sometimes
+            # a lager_box key) on the box itself; the modern install puts no
+            # private keys there.
             run_ssh(
                 "rm -f ~/.ssh/lager_deploy_key ~/.ssh/lager_deploy_key.pub "
                 "~/.ssh/lager_box ~/.ssh/lager_box.pub",
-                "Removing SSH keys (lager_deploy_key, lager_box)",
+                "Removing legacy box-side SSH keys",
                 allow_fail=True
             )
-
-            # Clean up SSH config (remove both legacy and current lager entries)
             run_ssh(
                 "sed -i '/# Lager deploy key/,/IdentityFile.*lager_deploy_key/d' ~/.ssh/config 2>/dev/null; "
-                "sed -i '/# Lager box key/,/IdentityFile.*lager_box/d' ~/.ssh/config 2>/dev/null || true",
-                "Cleaning SSH config",
+                "sed -i '/# Lager box key/,/IdentityFile.*lager_box/d' ~/.ssh/config 2>/dev/null",
+                "Cleaning box-side SSH config",
                 allow_fail=True
             )
 
-            # Reset UFW firewall to defaults (SSH-only)
             run_ssh(
-                "sudo ufw --force reset 2>/dev/null && "
-                "sudo ufw default deny incoming 2>/dev/null && "
-                "sudo ufw default allow outgoing 2>/dev/null && "
-                "sudo ufw allow ssh 2>/dev/null && "
-                "sudo ufw --force enable 2>/dev/null || true",
-                "Resetting UFW firewall to defaults",
+                authorized_keys_cleanup_cmd(),
+                "Removing this machine's key from authorized_keys",
                 allow_fail=True
             )
         else:
@@ -566,11 +760,19 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
         ssh_pool.close_connection(ip, user)
 
     click.echo()
-    click.secho("Uninstall complete!", fg='green', bold=True)
+    failed_steps = [desc for name, desc, _s in priv_steps if priv_results.get(name) != "OK"]
+    if failed_steps:
+        click.secho("Uninstall finished with FAILED steps:", fg='red', bold=True)
+        for desc in failed_steps:
+            click.echo(f"  - {desc}")
+        click.echo()
+        click.echo("Re-run the uninstall, or perform these manually on the box with sudo.")
+    else:
+        click.secho("Uninstall complete!", fg='green', bold=True)
     click.echo()
     click.echo(f"The lager box code has been removed from {ip}.")
 
-    if not remove_all and keep_config:
+    if keep_config:
         click.echo()
         click.secho("Note: /etc/lager directory was preserved (contains saved nets).", fg='yellow')
 
@@ -584,9 +786,12 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
 
     if remove_all:
         click.echo()
-        click.secho("Note: ~/.ssh/lager_box key pair is shared across boxes and was removed", fg='yellow')
-        click.secho("from this box. If you have other boxes using it, you may need to", fg='yellow')
-        click.secho("re-deploy the key with: ssh-copy-id -i ~/.ssh/lager_box [USERNAME]@[IP_ADDRESS]", fg='yellow')
+        click.secho("Left in place by design: docker itself (packages, the buildx plugin,", fg='yellow')
+        click.secho("the DNS entry in /etc/docker/daemon.json) and pip/apt packages that were", fg='yellow')
+        click.secho("installed for lager workflows.", fg='yellow')
+        click.echo()
+        click.secho("This machine's SSH key was removed from the box's authorized_keys —", fg='yellow')
+        click.secho("the next SSH connection to this box will require a password.", fg='yellow')
 
     # 10. Local config cleanup - offer to remove box from .lager config
     box_name = box
