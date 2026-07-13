@@ -1,0 +1,28 @@
+---
+title: "Version 0.31.6"
+description: "July 13, 2026"
+---
+
+## <u>Improvements</u>
+
+- **Uniform help pages across all net-style commands.** Every usage line now reads positionals-first with the box target last — `lager uart [NET_NAME] --box [BOX_NAME]`, `lager supply [NET_NAME] voltage [VALUE] --box [BOX_NAME]` — matching the examples each help page prints. Previously, standalone commands showed Click's stock `lager uart [OPTIONS] [NET_NAME] [ACTION]` ordering, which contradicted how the commands are actually written. Applies to standalone net commands (`uart`, `adc`, `gpi`, `gpo`, `dac`, `thermocouple`), all net-group subcommands (`supply`, `scope`, `i2c`, `spi`, `debug`, `usb`, `nets`, ...), and the box-scoped `hello`/`instruments`.
+- **`lager uart`'s `serial-port` action is documented and validated.** The help body now explains it (prints the `/dev` path backing the net instead of connecting), and an invalid action fails with a clear error naming the valid value.
+- **Box lock holder types are open-ended.** The Lager Box lock endpoint no longer reclassifies unrecognized `holder_type` values as auto-expiring `ephemeral` locks, so reservations written by newer or third-party services can never be silently reaped. `lager boxes` displays the holder email for any `<origin>:<id>:<email>` reservation string.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.31.6
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.31.6/)

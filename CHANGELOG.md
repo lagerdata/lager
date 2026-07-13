@@ -2,6 +2,36 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.31.6] - 2026-07-13
+
+Help pages now share one usage grammar across every net-style command, and the box
+lock endpoint accepts reservation holder types from any service without
+misclassifying them.
+
+### Changed
+- **Every net-style help page shows the same usage shape: positionals first, then
+  `--box [BOX_NAME]`.** Click's stock leaf usage (`lager uart [OPTIONS] [NET_NAME]
+  [ACTION]`) read backwards next to the net-group usage lines and the examples each
+  page prints. Standalone net commands (`uart`, `adc`, `gpi`, `gpo`, `dac`,
+  `thermocouple`), every subcommand of the net groups (`supply`, `scope`, `i2c`,
+  `spi`, `debug`, `usb`, `nets`, ...), and the box-scoped `hello`/`instruments` now
+  all render `lager <cmd> [NET_NAME] ... --box [BOX_NAME]`. `[OPTIONS]` is omitted —
+  the Options section below the usage line lists every flag — and subcommands added
+  to a net group inherit the format automatically.
+- **`lager uart`'s `serial-port` action is documented and validated.** The bare
+  `[ACTION]` metavar (whose only value is `serial-port`, printing the `/dev` path
+  backing the net) no longer clutters the usage line; the help body documents it,
+  and an invalid action fails with a proper Click error naming the valid value.
+- **Box lock holder types are open-ended.** The box's lock endpoint whitelisted
+  `holder_type` values and silently reclassified anything unrecognized as an
+  auto-expiring `ephemeral` lock — which would give a reservation from a newer or
+  third-party service a TTL and let the reaper drop it behind the holder's back. Any
+  non-empty `holder_type` is now preserved verbatim; only `ephemeral`/`ci` keep
+  auto-lock re-acquire semantics. `lager boxes` likewise recognizes any
+  `<origin>:<id>:<email>` reservation string and displays just the email.
+- Comments, docs, and historical changelog entries use neutral
+  control-plane/web-dashboard terminology throughout.
+
 ## [0.31.5] - 2026-07-10
 
 UART nets survive USB re-enumeration: live sessions heal in place when a device
