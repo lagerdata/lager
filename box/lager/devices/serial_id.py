@@ -173,17 +173,22 @@ def _serial_is_unique(vid: str, pid: str, serial: str, own_dir_name: str) -> boo
     chip share a device dir and are not counted as duplicates.
     """
     seen = set()
-    for tty_dev in _SYS_TTY.iterdir():
-        if not tty_dev.name.startswith(("ttyUSB", "ttyACM")):
-            continue
-        usb_dir = _usb_device_dir_for_tty(tty_dev)
-        if usb_dir is None or usb_dir.name == own_dir_name or usb_dir.name in seen:
-            continue
-        seen.add(usb_dir.name)
-        if ((_read_sysfs_text(usb_dir / "idVendor") or "").lower() == vid
-                and (_read_sysfs_text(usb_dir / "idProduct") or "").lower() == pid
-                and _read_sysfs_text(usb_dir / "serial") == serial):
-            return False
+    try:
+        for tty_dev in _SYS_TTY.iterdir():
+            if not tty_dev.name.startswith(("ttyUSB", "ttyACM")):
+                continue
+            usb_dir = _usb_device_dir_for_tty(tty_dev)
+            if usb_dir is None or usb_dir.name == own_dir_name or usb_dir.name in seen:
+                continue
+            seen.add(usb_dir.name)
+            if ((_read_sysfs_text(usb_dir / "idVendor") or "").lower() == vid
+                    and (_read_sysfs_text(usb_dir / "idProduct") or "").lower() == pid
+                    and _read_sysfs_text(usb_dir / "serial") == serial):
+                return False
+    except OSError:
+        # Unreadable sysfs mid-walk: assume unique (degrades to trusting the
+        # serial, same as the other walkers' missing-_SYS_TTY guards).
+        pass
     return True
 
 

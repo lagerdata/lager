@@ -245,6 +245,12 @@ class SerialIdCablesTests(unittest.TestCase):
         self._add_cable("ttyUSB5", "1-1.4", serial="0001")  # it returns
         self.assertEqual(serial_id.resolve_identity(legacy_ident), "/dev/ttyUSB5")
 
+    def test_serial_is_unique_tolerates_unreadable_sysfs(self):
+        # Best-effort walk: an inaccessible /sys/class/tty must not raise and
+        # assumes the serial is unique (degrades to trusting it).
+        serial_id._SYS_TTY = Path(self._tmp) / "does-not-exist"
+        self.assertTrue(serial_id._serial_is_unique(VID, PID, "0001", "1-1.2"))
+
     def test_resolve_identity_clone_serial_without_port_is_unresolvable(self):
         self._add_cable("ttyUSB0", "1-1.2", serial="0001")
         self._add_cable("ttyUSB1", "1-1.3", serial="0001")
