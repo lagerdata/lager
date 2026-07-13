@@ -345,6 +345,7 @@ class BatteryTUI(App):
             ("ovp [VALUE]              ", "bold yellow", " - Set or read over-voltage protection (e.g., 'ovp 4.5')", ""),
             ("mode [static|dynamic]    ", "bold yellow", " - Set or read simulation mode", ""),
             ("model [NAME]             ", "bold yellow", " - Set or read battery model (e.g., 'model 18650')", ""),
+            ("models                   ", "bold yellow", " - List battery models saved on the instrument", ""),
             ("enable                   ", "bold yellow", " - Enable battery output", ""),
             ("disable                  ", "bold yellow", " - Disable battery output", ""),
             ("state                    ", "bold yellow", " - Display current state", ""),
@@ -529,6 +530,9 @@ class BatteryTUI(App):
             else:
                 partnumber = None
             return ("model", {"partnumber": partnumber}, value_set)
+
+        elif action == "models":
+            return ("models", {}, None)
 
         elif action == "enable":
             return ("enable", {}, None)

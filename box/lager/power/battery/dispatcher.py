@@ -15,7 +15,7 @@ from lager.dispatchers.base import BaseDispatcher
 from lager.exceptions import BatteryBackendError, LibraryMissingError, DeviceNotFoundError
 
 from .battery_net import BatteryNet
-from .keithley import KeithleyBattery
+from .keithley import KeithleyBattery, GREEN, RESET
 
 
 class BatteryDispatcher(BaseDispatcher):
@@ -205,6 +205,36 @@ def set_model(netname: str, partnumber: str | None = None, **_):
     """Set or read battery model."""
     drv, _ = _dispatcher._resolve_net_and_driver(netname)
     drv.model(partnumber=partnumber)
+
+
+def format_model_catalog(models) -> str:
+    """Render a structured model catalog as a small slot/name table.
+
+    Shared by list_models (printed on the impl-script path) and the box's
+    /battery/command HTTP endpoint (returned as the response message) so
+    the two transports never drift.
+    """
+    lines = ["Slot  Model"]
+    for entry in models:
+        slot = entry.get("slot")
+        name = entry.get("name")
+        slot_str = "-" if slot is None else str(slot)
+        if name is None:
+            name = "(custom model)"
+        elif slot is None:
+            name = f"{name} (built-in)"
+        lines.append(f"{slot_str:<4}  {name}")
+    lines.append("")
+    lines.append("Slots and names above are valid inputs to the 'model' command.")
+    return "\n".join(lines)
+
+
+def list_models(netname: str, **_):
+    """List battery models saved on the instrument."""
+    drv, _ = _dispatcher._resolve_net_and_driver(netname)
+    catalog = drv.model_catalog()
+    print(f"{GREEN}{format_model_catalog(catalog)}{RESET}")
+    return {"models": catalog}
 
 
 def enable_battery(netname: str, **_):
