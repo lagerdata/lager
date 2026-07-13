@@ -221,15 +221,15 @@ class WriteBenchJsonCommand(unittest.TestCase):
 
     def test_bootstrap_names_the_boxes_login_user(self):
         # The pasted grant must match the box's actual login user; a
-        # hardcoded `lagerdata` never matched on e.g. juultest boxes.
+        # hardcoded `lagerdata` never matched on boxes with a different user.
         stderr = "sudo: a password is required to run sudo\r\n"
-        with patch.object(box_dut_cli, "resolve_box_user", return_value="juultest"), \
+        with patch.object(box_dut_cli, "resolve_box_user", return_value="benchtest"), \
                 patch.object(box_dut_cli.click, "secho") as secho:
             _, ok = self._run(write_result=(1, "", stderr))
         self.assertFalse(ok)
         msg = secho.call_args[0][0]
         self.assertIn(
-            "juultest ALL=(ALL) NOPASSWD: "
+            "benchtest ALL=(ALL) NOPASSWD: "
             "/bin/cp /tmp/lager-bench.json.tmp /etc/lager/bench.json",
             msg,
         )

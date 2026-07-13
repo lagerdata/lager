@@ -1449,8 +1449,8 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     # where sudo can't prompt. The rule (built in
     # _host_ops.boxcfg_sudoers_bootstrap_cmd) grants narrow NOPASSWD for
     # exactly those operations, and must name the actual login user — it
-    # previously hardcoded `lagerdata`, so on boxes with a different user
-    # (e.g. the juultest fleet) the grant never matched. The probe ran the
+    # previously hardcoded `lagerdata`, so on boxes with a different login
+    # user the grant never matched. The probe ran the
     # functional check (marker file present + `sudo -n apt-get` actually
     # works) as that user, so wrong-user boxes come back negative and
     # re-bootstrap here with the corrected rule. Runs on every update so
