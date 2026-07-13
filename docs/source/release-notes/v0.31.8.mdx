@@ -1,0 +1,30 @@
+---
+title: "Version 0.31.8"
+description: "July 13, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **`lager uninstall --all` removes the artifacts today's install creates.** The old udev glob never matched the shipped `99-instrument.rules`, and the usbtmc modprobe blacklist, the `lager-box-config` sudoers file, the firewall helper script, the lager sysctl config, and the `lager` group were never removed at all. The removal list is now a single specification shared by the confirmation listing, `--dry-run`, the removal session, and the unit tests, so it cannot silently drift from what install creates. Deliberately left in place: docker itself (packages, buildx, the daemon.json DNS entry) and pip/apt packages.
+- **Privileged removals actually happen (and report honestly) on Lager Boxes without passwordless sudo.** Each sudo step used to fail silently and print "done" — a plain uninstall could leave `/etc/lager` behind while claiming success. All privileged steps now run in one interactive session (at most one sudo password prompt) with per-step results, and failures are summarized instead of hidden.
+- **`--all` removes this machine's key from the Lager Box's `authorized_keys`.** Previously the "deploy keys" cleanup deleted box-side private keys that modern installs never create, while the actual access grant survived. The output calls out that the next SSH connection will require a password.
+- **`--keep-config` is honored together with `--all`**, preserving `/etc/lager` (saved nets) through an otherwise complete removal.
+- **`--dry-run` inspects the real artifact list** and no longer reports `/etc/lager` as "(not found)" on Lager Boxes where reading it required sudo.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.31.8
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.31.8/)

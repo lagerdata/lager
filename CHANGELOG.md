@@ -2,7 +2,7 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
-## [Unreleased]
+## [0.31.8] - 2026-07-13
 
 `lager uninstall` now actually removes what the modern `lager install` creates.
 The `--all` cleanup had not kept pace with several releases of install changes,
