@@ -30,8 +30,12 @@ RESET = '\033[0m'
 
 # The five battery models built into 2281S firmware, recallable by name via
 # :BATT:MOD:RCL (reference manual 077114601, section 7-35). They live in
-# firmware, not in the numbered memory slots.
-BUILTIN_MODELS = ("LI-ION4_2", "NIMH1_2", "NICD1_2", "LEAD-ACID12", "NIMH12")
+# firmware, not in the numbered memory slots. NOTE: the manual prints two of
+# them with hyphens (LI-ION4_2, LEAD-ACID12), but a hyphen is unparseable as
+# SCPI character data (-102 "Syntax error;  - :BATT:MOD:RCL LI-",
+# hardware-verified) — the underscore spellings below are what the parser
+# accepts and what :BATT:MOD:RCL? reports back.
+BUILTIN_MODELS = ("LI_ION4_2", "NIMH1_2", "NICD1_2", "LEAD_ACID12", "NIMH12")
 
 
 class KeithleyBattery(BatteryNet):
@@ -258,11 +262,11 @@ class KeithleyBattery(BatteryNet):
         'DISCHARGE' whenever the output is idle regardless of what is
         loaded.)
 
-        The RCL? query only reports numbered slots; with a firmware built-in
-        active it never replies (see _active_model_raw), so fall back to the
-        name cached by the last successful set_model. A model changed from
-        the front panel while a built-in is active can therefore read stale —
-        the instrument offers no query that resolves that case.
+        RCL? answers with the slot number while a numbered slot is active and
+        with the model name while a firmware built-in is active. If it gives
+        no reply (transient — e.g. right after a rejected command corrupts
+        the parser's input buffer), fall back to the name cached by the last
+        successful set_model.
         """
         raw = self._active_model_raw()
         if raw:
@@ -275,11 +279,13 @@ class KeithleyBattery(BatteryNet):
         """Raw :BATT:MOD:RCL? reply, '' when the instrument does not answer.
 
         Hardware-verified 2281S behavior: the query answers with the slot
-        number while a numbered slot (0-9) is active, and never replies while
-        a firmware built-in model is active — the read just times out. Shrink
-        the VISA timeout around the query so that silence costs <1 s instead
-        of the full 5 s (this runs inside the monitor tick and the Device
-        proxy's 10 s /invoke budget).
+        number while a numbered slot (0-9) is active and with the model name
+        while a firmware built-in is active. It can transiently give no reply
+        (e.g. a previously rejected command corrupting the parser's input
+        buffer leaves the next query unanswered) — shrink the VISA timeout
+        around the query so that silence costs <1 s instead of the full 5 s
+        (this runs inside the monitor tick and the Device proxy's 10 s
+        /invoke budget).
         """
         old_timeout = None
         try:
@@ -611,10 +617,12 @@ class KeithleyBattery(BatteryNet):
             if name in model_map:
                 cmd = f":BATT:MOD:RCL {model_map[name]}"
             else:
-                # Check if it's already a valid Keithley built-in
-                keithley_builtins = list(BUILTIN_MODELS) + ["DISCHARGE"]
-                if partnumber_or_index.upper() in keithley_builtins:
-                    cmd = f':BATT:MOD:RCL {partnumber_or_index.upper()}'
+                # Check if it's already a valid Keithley built-in. Accept the
+                # manual's hyphenated spellings (LI-ION4_2) but always SEND
+                # the underscore form — the SCPI parser rejects hyphens.
+                builtin_token = partnumber_or_index.upper().replace("-", "_")
+                if builtin_token in BUILTIN_MODELS + ("DISCHARGE",):
+                    cmd = f':BATT:MOD:RCL {builtin_token}'
                 else:
                     # Provide helpful suggestions for common typos
                     suggestions = []
@@ -644,7 +652,7 @@ class KeithleyBattery(BatteryNet):
         # 2281S behavior: recalling an EMPTY slot fails silently (no error
         # queued, previous model stays active), so readback is the only
         # detection; RCL? answers with the slot number when a numbered slot is
-        # active and never replies while a firmware built-in is active.
+        # active and with the model NAME when a firmware built-in is active.
         # (The old check read :BATT:STAT?, which per the manual reports
         # charge/discharge status — it said "DISCHARGE" for every idle output
         # and made every successful numbered-slot load raise "slot is empty".)
@@ -668,15 +676,17 @@ class KeithleyBattery(BatteryNet):
                     f"    • Save a custom battery model to this slot using the instrument front panel"
                 )
         else:
-            # Built-in recall: silence from RCL? is the SUCCESS signature (a
-            # built-in is active); a numbered answer means the recall did not
-            # take effect and the previous slot is still loaded.
-            if actual:
+            # Built-in recall: RCL? echoes the built-in's name on success; a
+            # numbered answer (or anything else) means the recall did not
+            # take effect and the previous model is still loaded.
+            if actual.upper() != target.upper():
+                shown = (f"model slot {actual}" if actual.isdigit()
+                         else (actual or "no reply"))
                 raise BatteryBackendError(
                     f"Battery model '{partnumber_or_index}' did not load — "
-                    f"the instrument still reports model slot {actual}."
+                    f"the instrument reports: {shown}."
                 )
-            self._active_model_name = target.upper()
+            self._active_model_name = actual
 
 
     # ----------------------------- state dump -----------------------------

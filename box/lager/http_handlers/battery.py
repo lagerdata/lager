@@ -29,6 +29,25 @@ from .state import (
 logger = logging.getLogger(__name__)
 
 
+def _device_error_message(exc) -> str:
+    """Extract the driver's own message from a hardware_service DeviceError.
+
+    Driver exceptions come back from /invoke as
+    DeviceError({'error': 'Function call failed: <msg>', 'details': <tb>});
+    return <msg> so callers see e.g. the set_model empty-slot guidance
+    instead of a JSON blob with a traceback in it.
+    """
+    payload = exc.args[0] if getattr(exc, "args", None) else None
+    if isinstance(payload, dict):
+        msg = (payload.get('error') or '').strip()
+        prefix = 'Function call failed: '
+        if msg.startswith(prefix):
+            msg = msg[len(prefix):]
+        if msg:
+            return msg
+    return describe_error(exc)
+
+
 def _resolve_battery_proxy(netname: str):
     """
     Build a transient battery Device proxy + channel for `netname` by routing
@@ -358,7 +377,18 @@ def register_battery_routes(app: Flask) -> None:
 
                 logger.info(f"[HTTP] Battery command executed: {action} on {netname} (session {session_id})")
                 return jsonify(result)
-            except (ConnectionFailed, DeviceError) as e:
+            except DeviceError as e:
+                # The driver itself raised (e.g. set_model's empty-slot
+                # guidance): that is an ANSWER, not a transport failure.
+                # Return it as success:false at 200 — a 5xx makes the CLI
+                # treat the endpoint as unavailable and fall through to its
+                # legacy direct-USB path, which always fails with
+                # "[Errno 16] Resource busy" while hardware_service holds
+                # the instrument, masking the real message.
+                logger.warning(
+                    f"[HTTP] Battery command {action} on {netname} rejected by driver: {e}")
+                return jsonify({'success': False, 'error': _device_error_message(e)}), 200
+            except ConnectionFailed as e:
                 logger.exception(f"[HTTP] Battery command {action} on {netname} failed at hardware_service")
                 return jsonify({'success': False, 'error': f'Hardware service error: {e}'}), 502
 
@@ -804,7 +834,15 @@ def register_battery_socketio(socketio: SocketIO) -> None:
                 logger.info(f"[BATTERY-COMMAND-{thread_name}] Command completed successfully: {result}")
                 emit('battery_command_response', result)
 
-            except (ConnectionFailed, DeviceError) as e:
+            except DeviceError as e:
+                # Driver-raised error: show the driver's message, not the
+                # /invoke JSON blob (see _device_error_message).
+                logger.warning(f"[BATTERY-COMMAND-{thread_name}] driver error: {e}")
+                emit('battery_command_response', {
+                    'success': False,
+                    'error': _device_error_message(e)
+                })
+            except ConnectionFailed as e:
                 logger.error(f"[BATTERY-COMMAND-{thread_name}] hardware_service error: {e}")
                 emit('battery_command_response', {
                     'success': False,
