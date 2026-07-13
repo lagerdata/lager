@@ -211,6 +211,7 @@
           {
             "group": "Version History",
             "pages": [
+              "source/release-notes/v0.31.7",
               "source/release-notes/v0.31.6",
               "source/release-notes/v0.31.5",
               "source/release-notes/v0.31.4",

@@ -2,6 +2,47 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.31.7] - 2026-07-13
+
+`lager install` can no longer leave a box with a Docker daemon that will not start,
+and it stops rather than deploying into one that isn't running.
+
+### Fixed
+- **`lager install` no longer writes a DNS server Docker cannot parse into
+  `/etc/docker/daemon.json`.** The "Configuring Docker DNS" step reads the box's
+  upstream resolvers from systemd-resolved and merges them into `daemon.json`,
+  but excluded only the `127.0.0.53` stub — every other value was trusted to be a
+  usable IP. On a network that advertises DNS over IPv6 router advertisement,
+  systemd-resolved records a link-local resolver carrying a zone id
+  (`fe80::1%3`). Docker validates each `dns` entry as a bare IP address and
+  **refuses to start** when one does not parse — it does not skip the entry or fall
+  back to the valid resolvers beside it. Because `daemon.json` is persistent, the
+  daemon then stayed down across reboots, and re-running the installer rewrote the
+  file each time, undoing any manual repair. Resolvers are now validated before
+  they are written: link-local, loopback, unspecified, multicast and unparseable
+  values are dropped (a link-local address is unreachable from a container's
+  network namespace regardless), and anything dropped is named in the install log.
+- **A failed Docker DNS change is rolled back instead of left in place.** Pointing
+  Docker at the box's resolvers is an optimization; it must not be able to leave the
+  box worse off. `daemon.json` is now backed up before the change, and if Docker
+  will not come back with the new config, the previous file is restored and Docker
+  restarted on it. A box that cannot be improved is no longer a box that gets broken.
+- **The installer stops when the box's Docker daemon is down, instead of running six
+  more steps against it.** Every Docker command in the container step is
+  best-effort (`|| true`), so a dead daemon left no trace until `start_box.sh` failed
+  on `docker network create` with a bare "Cannot connect to the Docker daemon" —
+  far from whatever actually stopped it, and pointing at the wrong thing. The step
+  now checks the daemon first and fails with the commands needed to diagnose it.
+  Likewise, a DNS step that fails now reports that the box kept its previous Docker
+  configuration and that the install is continuing, rather than a bare warning.
+
+### Changed
+- The deployment script's Docker DNS logic moved out of an inline heredoc into
+  `cli/deployment/scripts/configure_docker_dns.{sh,py}`, shipped to the box like
+  `secure_box_firewall.sh` already is, and is now covered by unit tests.
+- The install step counter reports `[N/8]`; there were eight steps and a total of
+  seven, so the last one printed as `[8/7]`.
+
 ## [0.31.6] - 2026-07-13
 
 Help pages now share one usage grammar across every net-style command, and the box

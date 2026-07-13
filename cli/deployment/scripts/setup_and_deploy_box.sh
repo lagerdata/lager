@@ -202,7 +202,7 @@ echo -e "${BLUE}Time:${NC}    $(date '+%Y-%m-%d %H:%M:%S')"
 echo ""
 
 # Step counter
-TOTAL_STEPS=7
+TOTAL_STEPS=8
 CURRENT_STEP=0
 
 print_step() {
@@ -722,54 +722,20 @@ fi
 # resolver is blocked or flaky, `docker build` can't resolve github.com/pypi
 # and the image build dies on its git/pip clone steps. Point Docker at the
 # box's real uplink resolvers (with public fallbacks) so builds resolve
-# reliably. Requires a docker restart to take effect.
+# reliably. Requires a docker restart to take effect; configure_docker_dns.sh
+# rolls the change back if Docker won't come up with it.
 print_step "Configuring Docker DNS"
 print_info "Pointing Docker's container DNS at the box's real uplink resolvers (you may be prompted for a password)..."
 echo ""
 
-TEMP_DNS_SCRIPT=$(mktemp)
-cat > "$TEMP_DNS_SCRIPT" << SCRIPT_EOF
-#!/bin/bash
-set -e
-# Real upstream resolvers systemd-resolved talks to (its own resolv.conf lists
-# the actual servers, not the 127.0.0.53 stub). Drop the loopback stub if it
-# appears, and cap at three.
-UPSTREAM=\$(awk '/^nameserver/ && \$2 != "127.0.0.53" { print \$2 }' /run/systemd/resolve/resolv.conf 2>/dev/null | head -3 | tr '\n' ' ')
-# Merge a "dns" key into any existing daemon.json (python3 is always present on
-# a lager box) rather than clobbering operator-set options.
-python3 - "\$UPSTREAM" <<'PYEOF'
-import json, os, sys
-servers = [s for s in sys.argv[1].split() if s]
-for fallback in ("1.1.1.1", "8.8.8.8"):
-    if fallback not in servers:
-        servers.append(fallback)
-path = "/etc/docker/daemon.json"
-cfg = {}
-if os.path.exists(path):
-    try:
-        with open(path) as fh:
-            cfg = json.load(fh) or {}
-    except Exception:
-        cfg = {}
-cfg["dns"] = servers
-with open("/tmp/lager_daemon.json", "w") as fh:
-    json.dump(cfg, fh, indent=2)
-    fh.write("\n")
-print("Docker container DNS ->", ", ".join(servers))
-PYEOF
-sudo install -m 0644 /tmp/lager_daemon.json /etc/docker/daemon.json
-rm -f /tmp/lager_daemon.json
-sudo systemctl restart docker
-SCRIPT_EOF
-
-scp $SCP_OPTS "$TEMP_DNS_SCRIPT" "${BOX_USER}@${BOX_IP}:/tmp/setup_docker_dns.sh" >/dev/null
-if ssh_t "${BOX_USER}@${BOX_IP}" "chmod +x /tmp/setup_docker_dns.sh && /tmp/setup_docker_dns.sh && rm /tmp/setup_docker_dns.sh"; then
+scp $SCP_OPTS "${SCRIPT_DIR}/configure_docker_dns.sh" "${SCRIPT_DIR}/configure_docker_dns.py" "${BOX_USER}@${BOX_IP}:/tmp/" >/dev/null
+if ssh_t "${BOX_USER}@${BOX_IP}" "chmod +x /tmp/configure_docker_dns.sh && /tmp/configure_docker_dns.sh; rc=\$?; rm -f /tmp/configure_docker_dns.sh /tmp/configure_docker_dns.py; exit \$rc"; then
     print_success "Docker DNS configured"
 else
-    print_warning "Could not configure Docker DNS automatically"
-    print_info "If image builds fail with 'Could not resolve host', set \"dns\" in /etc/docker/daemon.json on the box and restart docker."
+    print_warning "Could not configure Docker DNS - the box kept its previous Docker configuration"
+    print_info "Docker is still running and the install will continue. If image builds later fail"
+    print_info "with 'Could not resolve host', set \"dns\" in /etc/docker/daemon.json on the box."
 fi
-rm "$TEMP_DNS_SCRIPT"
 echo ""
 
 # Ensure /etc/lager directory exists (always check, even if sudo was already configured)
@@ -1401,6 +1367,25 @@ if [ -n "$VPN_INTERFACE" ]; then
     print_success "VPN interface configured: $VPN_INTERFACE"
     echo ""
 fi
+
+# Every docker command in this step is best-effort (`|| true`), so a daemon that is
+# down leaves no trace here and start_box.sh is the first thing to notice -- failing
+# on `docker network create` with a bare "Cannot connect to the Docker daemon", well
+# after whatever actually stopped it. Check explicitly, while the cause is still near.
+print_info "Verifying the Docker daemon is running..."
+if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker info >/dev/null 2>&1"; then
+    print_error "The Docker daemon is not running on the box"
+    echo ""
+    echo "  Nothing can be deployed until it starts. On the box:"
+    echo "    sudo systemctl status docker"
+    echo "    sudo journalctl -u docker -n 50 --no-pager"
+    echo ""
+    echo "  A daemon that refuses to start usually has a bad /etc/docker/daemon.json."
+    echo ""
+    exit 1
+fi
+print_success "Docker daemon is running"
+echo ""
 
 print_info "Building and starting containers..."
 echo ""
