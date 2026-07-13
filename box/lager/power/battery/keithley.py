@@ -246,12 +246,55 @@ class KeithleyBattery(BatteryNet):
 
     def model(self, partnumber: str | None = None) -> None:
         if partnumber is None:
-            model_str = self._safe_query(":BATT:STAT?", "")
-            if not model_str:
-                model_str = self._safe_query(":BATT:MOD?", "0")
-            print(f"{GREEN}{model_str}{RESET}")
+            print(f"{GREEN}{self.current_model()}{RESET}")
             return
         self.set_model(partnumber)
+
+    def current_model(self) -> str:
+        """Name of the active battery model, via :BATT:MOD:RCL?.
+
+        (:BATT:STAT? — which older code used here — reports charge/discharge
+        status per the reference manual, NOT the model, so it shows
+        'DISCHARGE' whenever the output is idle regardless of what is
+        loaded.)
+
+        The RCL? query only reports numbered slots; with a firmware built-in
+        active it never replies (see _active_model_raw), so fall back to the
+        name cached by the last successful set_model. A model changed from
+        the front panel while a built-in is active can therefore read stale —
+        the instrument offers no query that resolves that case.
+        """
+        raw = self._active_model_raw()
+        if raw:
+            name = ("DISCHARGE" if raw == "0" else f"slot {raw}") if raw.isdigit() else raw
+            self._active_model_name = name
+            return name
+        return getattr(self, "_active_model_name", None) or "Custom"
+
+    def _active_model_raw(self) -> str:
+        """Raw :BATT:MOD:RCL? reply, '' when the instrument does not answer.
+
+        Hardware-verified 2281S behavior: the query answers with the slot
+        number while a numbered slot (0-9) is active, and never replies while
+        a firmware built-in model is active — the read just times out. Shrink
+        the VISA timeout around the query so that silence costs <1 s instead
+        of the full 5 s (this runs inside the monitor tick and the Device
+        proxy's 10 s /invoke budget).
+        """
+        old_timeout = None
+        try:
+            old_timeout = self.instr.timeout
+            self.instr.timeout = 800  # ms
+        except Exception:
+            pass
+        try:
+            return self._safe_query(":BATT:MOD:RCL?", "").strip().strip('"')
+        finally:
+            if old_timeout is not None:
+                try:
+                    self.instr.timeout = old_timeout
+                except Exception:
+                    pass
 
     def model_catalog(self) -> list[dict]:
         """
@@ -597,27 +640,43 @@ class KeithleyBattery(BatteryNet):
         # Use output management since model changes may require output to be off
         self._set_with_output_management(cmd, ignore_codes=(711, -222))
 
-        # Verify something actually loaded; provide helpful guidance
-        model_str = self._safe_query(":BATT:STAT?", "")
-        if not model_str or "DISCHARGE" in model_str:
-            # DISCHARGE is the default/empty state
-            # Only error if user didn't explicitly request DISCHARGE or slot 0
-            requested_discharge = (
-                str(partnumber_or_index).upper() == "DISCHARGE" or 
-                str(partnumber_or_index) == "0" or
-                name == "discharge"
-            )
-            if not requested_discharge:
-                # Provide helpful guidance about model slots
+        # Verify via the active-model query (:BATT:MOD:RCL?). Hardware-verified
+        # 2281S behavior: recalling an EMPTY slot fails silently (no error
+        # queued, previous model stays active), so readback is the only
+        # detection; RCL? answers with the slot number when a numbered slot is
+        # active and never replies while a firmware built-in is active.
+        # (The old check read :BATT:STAT?, which per the manual reports
+        # charge/discharge status — it said "DISCHARGE" for every idle output
+        # and made every successful numbered-slot load raise "slot is empty".)
+        target = cmd.split()[-1]
+        actual = self._active_model_raw()
+        if target.lstrip("+-").isdigit():
+            if actual == str(int(target)):
+                self._active_model_name = (
+                    "DISCHARGE" if int(target) == 0 else f"slot {int(target)}"
+                )
+            else:
+                shown = actual if actual else "unchanged (no reply)"
                 raise BatteryBackendError(
-                    f"Battery model slot '{partnumber_or_index}' is empty.\n"
+                    f"Battery model slot '{partnumber_or_index}' appears to be empty — "
+                    f"the recall did not take effect (active model: {shown}).\n"
                     f"  The Keithley 2281S stores battery models in numbered memory slots (0-9).\n"
-                    f"  This slot doesn't contain a saved model yet.\n"
                     f"  Options:\n"
+                    f"    • Use 'models' to list the slots that hold a saved model\n"
                     f"    • Use 'discharge' for basic constant-voltage simulation\n"
                     f"    • Use '18650', 'liion', 'nimh', 'nicd', or 'lead-acid' for common battery types\n"
                     f"    • Save a custom battery model to this slot using the instrument front panel"
                 )
+        else:
+            # Built-in recall: silence from RCL? is the SUCCESS signature (a
+            # built-in is active); a numbered answer means the recall did not
+            # take effect and the previous slot is still loaded.
+            if actual:
+                raise BatteryBackendError(
+                    f"Battery model '{partnumber_or_index}' did not load — "
+                    f"the instrument still reports model slot {actual}."
+                )
+            self._active_model_name = target.upper()
 
 
     # ----------------------------- state dump -----------------------------
@@ -625,7 +684,7 @@ class KeithleyBattery(BatteryNet):
     def print_state(self) -> None:
         enabled = self._is_batt_output_on()
         mode_str = self._mode_string()
-        model_str = self._safe_query(":BATT:STAT?", "") or "Custom"
+        model_str = self.current_model()
 
         tvol = self._safe_query(":BATT:SIM:TVOL?", "0")
         curr = self._safe_query(":BATT:SIM:CURR?", "0")
@@ -684,7 +743,7 @@ class KeithleyBattery(BatteryNet):
 
         enabled = self._is_batt_output_on()
         mode_str = self._mode_string()
-        model_str = self._safe_query(":BATT:STAT?", "") or "Custom"
+        model_str = self.current_model()
 
         trip = (self._safe_query(":OUTP:PROT:TRIP?", "").upper() or "")
 

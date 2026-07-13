@@ -224,6 +224,107 @@ class TestKeithleyModelCatalog:
         assert drv.commands == [":BATT:MOD1:VOC:STEP?"]
 
 
+class TestCurrentModel:
+    """current_model() reads :BATT:MOD:RCL? — hardware-verified: it answers
+    with the slot number while a numbered slot is active and never replies
+    while a firmware built-in is active. (:BATT:STAT?, which older code used,
+    reports charge/discharge status, not the model.)"""
+
+    def _drv(self, keithley_mod, rcl_reply):
+        drv = object.__new__(keithley_mod.KeithleyBattery)
+
+        class FakeInstr:
+            timeout = 5000
+
+        drv.instr = FakeInstr()
+        drv._safe_query = (
+            lambda cmd, default="": rcl_reply if cmd == ":BATT:MOD:RCL?" else default)
+        return drv
+
+    def test_numbered_slot(self, keithley_mod):
+        drv = self._drv(keithley_mod, "5")
+        assert drv.current_model() == "slot 5"
+        # The shortened query timeout must be restored afterwards.
+        assert drv.instr.timeout == 5000
+
+    def test_slot_zero_reads_as_discharge(self, keithley_mod):
+        assert self._drv(keithley_mod, "0").current_model() == "DISCHARGE"
+
+    def test_name_reply_passes_through(self, keithley_mod):
+        # Future firmware that answers with a name should just work.
+        assert self._drv(keithley_mod, '"LI-ION4_2"').current_model() == "LI-ION4_2"
+
+    def test_silence_falls_back_to_cached_name(self, keithley_mod):
+        drv = self._drv(keithley_mod, "")
+        drv._active_model_name = "LI-ION4_2"
+        assert drv.current_model() == "LI-ION4_2"
+
+    def test_silence_without_cache_reads_custom(self, keithley_mod):
+        assert self._drv(keithley_mod, "").current_model() == "Custom"
+
+
+class TestSetModelVerification:
+    """set_model verifies through :BATT:MOD:RCL? because recalling an empty
+    slot fails silently (hardware-verified: no error queued, previous model
+    stays active). For built-ins, RCL? silence is the success signature."""
+
+    def _drv(self, keithley_mod, rcl_reply):
+        drv = object.__new__(keithley_mod.KeithleyBattery)
+        drv.writes = []
+        drv._set_with_output_management = (
+            lambda cmd, ignore_codes=(): drv.writes.append(cmd))
+        drv._active_model_raw = lambda: rcl_reply
+        return drv
+
+    def test_numeric_slot_success(self, keithley_mod):
+        drv = self._drv(keithley_mod, "5")
+        drv.set_model(5)
+        assert drv.writes == [":BATT:MOD:RCL 5"]
+        assert drv._active_model_name == "slot 5"
+
+    def test_alias_maps_to_slot(self, keithley_mod):
+        drv = self._drv(keithley_mod, "1")
+        drv.set_model("liion")
+        assert drv.writes == [":BATT:MOD:RCL 1"]
+        assert drv._active_model_name == "slot 1"
+
+    def test_discharge_slot_zero(self, keithley_mod):
+        drv = self._drv(keithley_mod, "0")
+        drv.set_model("discharge")
+        assert drv.writes == [":BATT:MOD:RCL 0"]
+        assert drv._active_model_name == "DISCHARGE"
+
+    def test_empty_slot_detected_by_unchanged_readback(self, keithley_mod):
+        # Recall of empty slot 7 fails silently; RCL? still reports slot 5.
+        drv = self._drv(keithley_mod, "5")
+        with pytest.raises(keithley_mod.BatteryBackendError) as excinfo:
+            drv.set_model(7)
+        msg = str(excinfo.value)
+        assert "appears to be empty" in msg
+        assert "active model: 5" in msg
+        assert "'models'" in msg  # points at the new catalog command
+
+    def test_empty_slot_with_builtin_active_gives_no_reply(self, keithley_mod):
+        # Previous model was a built-in, so RCL? is silent both before and
+        # after the failed recall — still a verification failure.
+        drv = self._drv(keithley_mod, "")
+        with pytest.raises(keithley_mod.BatteryBackendError) as excinfo:
+            drv.set_model(7)
+        assert "unchanged (no reply)" in str(excinfo.value)
+
+    def test_builtin_success_is_silent_readback(self, keithley_mod):
+        drv = self._drv(keithley_mod, "")
+        drv.set_model("LI-ION4_2")
+        assert drv.writes == [":BATT:MOD:RCL LI-ION4_2"]
+        assert drv._active_model_name == "LI-ION4_2"
+
+    def test_builtin_failure_still_reports_previous_slot(self, keithley_mod):
+        drv = self._drv(keithley_mod, "5")
+        with pytest.raises(keithley_mod.BatteryBackendError) as excinfo:
+            drv.set_model("LI-ION4_2")
+        assert "still reports model slot 5" in str(excinfo.value)
+
+
 class TestListModelsAction:
     def _fake_resolver(self, dispatcher_mod, catalog):
         class FakeDriver:

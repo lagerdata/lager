@@ -280,7 +280,9 @@ def register_battery_routes(app: Flask) -> None:
                         battery.set_model(partnumber)
                         result['message'] = f'Model set to {partnumber}'
                     else:
-                        model = battery._safe_query(':BATT:STAT?', '') or 'Custom'
+                        # current_model reads :BATT:MOD:RCL? — :BATT:STAT?
+                        # reports charge/discharge status, not the model.
+                        model = battery.current_model()
                         result['message'] = f'Model: {model}'
 
                 elif action in ('list_models', 'models'):
@@ -754,7 +756,9 @@ def register_battery_socketio(socketio: SocketIO) -> None:
                         battery.set_model(partnumber)
                         result['message'] = f'Model set to {partnumber}'
                     else:
-                        model = battery._safe_query(':BATT:STAT?', '') or 'Custom'
+                        # current_model reads :BATT:MOD:RCL? — :BATT:STAT?
+                        # reports charge/discharge status, not the model.
+                        model = battery.current_model()
                         result['message'] = f'Model: {model}'
 
                 elif action == 'models':
