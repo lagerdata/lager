@@ -383,7 +383,15 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     # webcam
     "Logitech_BRIO_HD": ["webcam"],
     "Logitech_BRIO": ["webcam"],
+    "Logitech_BRIO_4K_Stream": ["webcam"],
+    "Logitech_4K_Pro": ["webcam"],
     "Logitech_C930e": ["webcam"],
+    "Logitech_C925e": ["webcam"],
+    "Logitech_C922_Pro": ["webcam"],
+    "Logitech_C920": ["webcam"],
+    "Logitech_C615": ["webcam"],
+    "Logitech_C270": ["webcam"],
+    "Logitech_StreamCam": ["webcam"],
 
     # (robot) arm
     "Rotrix_Dexarm": ["arm"],
