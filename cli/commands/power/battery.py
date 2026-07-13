@@ -371,6 +371,16 @@ def model(ctx, box, partnumber):
 @battery.command()
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
+def models(ctx, box):
+    """List battery models saved on the instrument"""
+    resolved_box = resolve_box(ctx, box)
+    netname = require_netname(ctx, "battery")
+    _run_backend(ctx, resolved_box, 'list_models', netname=netname)
+
+
+@battery.command()
+@click.pass_context
+@click.option("--box", required=False, help="Lagerbox name or IP")
 def state(ctx, box):
     """Get battery state (comprehensive status)"""
     resolved_box = resolve_box(ctx, box)

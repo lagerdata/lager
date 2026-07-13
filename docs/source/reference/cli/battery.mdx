@@ -33,6 +33,7 @@ lager battery [OPTIONS] [NETNAME] COMMAND [ARGS]...
 | `ovp` | Set or read over-voltage protection (V) |
 | `ocp` | Set or read over-current protection (A) |
 | `model` | Set or read battery model |
+| `models` | List battery models saved on the instrument |
 | `state` | Get comprehensive battery state |
 | `enable` | Enable battery simulator output |
 | `disable` | Disable battery simulator output |
@@ -235,6 +236,23 @@ lager battery NETNAME model [PARTNUMBER] [OPTIONS]
 - `nimh` - Nickel-metal hydride
 - `lead-acid` - Lead acid battery
 - Custom part numbers from your battery library
+
+### `models`
+
+List the battery models available on the instrument: memory slots with a
+saved model plus the firmware built-in models. Read-only.
+
+```bash
+lager battery NETNAME models [OPTIONS]
+```
+
+**Arguments:**
+- `NETNAME` - Name of the battery Net
+
+**Options:**
+- `--box TEXT` - Lagerbox name or IP
+
+The printed slots and names are valid inputs to the `model` command.
 
 ### `state`
 

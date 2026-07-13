@@ -156,6 +156,27 @@ class BatteryNet(ABC):
         pass
 
     @abstractmethod
+    def model_catalog(self) -> list:
+        """
+        Read the catalog of battery models available on the instrument.
+
+        Lists the same slot-storage mechanism that model() loads from:
+        numbered memory slots plus any firmware built-in models. Must be
+        read-only — assembling the catalog must not change instrument state.
+
+        Keithley 2281S:
+        - Slot 0 ('discharge') is always available
+        - Slots 1-9 are reported when a model has been saved there
+        - The five firmware built-in models are listed without a slot
+
+        Returns:
+            List of {"slot": int | None, "name": str | None} dicts, one per
+            available model. Slot-less entries are built-in model names;
+            nameless entries are custom models addressed by slot index.
+        """
+        pass
+
+    @abstractmethod
     def enable(self) -> None:
         """
         Enable the battery simulator output.

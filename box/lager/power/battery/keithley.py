@@ -28,6 +28,11 @@ GREEN = '\033[92m'
 RED = '\033[91m'
 RESET = '\033[0m'
 
+# The five battery models built into 2281S firmware, recallable by name via
+# :BATT:MOD:RCL (reference manual 077114601, section 7-35). They live in
+# firmware, not in the numbered memory slots.
+BUILTIN_MODELS = ("LI-ION4_2", "NIMH1_2", "NICD1_2", "LEAD-ACID12", "NIMH12")
+
 
 class KeithleyBattery(BatteryNet):
     """
@@ -247,6 +252,82 @@ class KeithleyBattery(BatteryNet):
             print(f"{GREEN}{model_str}{RESET}")
             return
         self.set_model(partnumber)
+
+    def model_catalog(self) -> list[dict]:
+        """
+        Read the catalog of battery models available on the instrument.
+
+        The 2281S reference manual (077114601, March 2019) defines no catalog
+        query — :BATT:MODel:CATalog? does not exist — so the catalog is
+        assembled from the documented read-only model-memory queries instead:
+
+        - Slot 0 (DISCHARGE, basic constant-voltage simulation) is always
+          available.
+        - Slots 1-9 are probed with :BATT:MOD<n>:VOC:STEPs? (query only),
+          which returns the number of values stored in that model. A slot is
+          occupied when the length is non-zero. Internal memory stores models
+          by index only, so occupied slots have no retrievable name.
+        - The five firmware built-in models (recallable by name via
+          :BATT:MOD:RCL) are appended with slot None.
+
+        Read-only: issues only queries and never forces the Battery entry
+        function — the model memory is not documented as mode-restricted.
+
+        Returns:
+            List of {"slot": int | None, "name": str | None} dicts.
+
+        Raises:
+            BatteryBackendError: If the instrument rejects the model-memory
+                query (older firmware) or does not answer it at all.
+        """
+        models = [{"slot": 0, "name": "DISCHARGE"}]
+        for idx in range(1, 10):
+            try:
+                raw = self._query(f":BATT:MOD{idx}:VOC:STEP?")
+            except Exception as exc:
+                code = self._scpi_error_code(exc)
+                if code is not None and -199 <= code <= -100:
+                    # SCPI command errors (-113 "Undefined header", etc.):
+                    # this firmware has no model-memory queries.
+                    raise BatteryBackendError(
+                        "This instrument does not support the battery model "
+                        f"memory query (:BATT:MOD{idx}:VOC:STEPs?): {exc}"
+                    ) from exc
+                if code is None:
+                    # No response at all (e.g. VISA timeout): bail out on the
+                    # first probe instead of timing out on all nine slots.
+                    raise BatteryBackendError(
+                        f"Battery model catalog query failed: {exc}"
+                    ) from exc
+                # Any other instrument error just means this slot holds no
+                # usable model (e.g. empty slot); keep probing the rest.
+                continue
+            try:
+                steps = int(float(raw.strip() or "0"))
+            except (TypeError, ValueError):
+                steps = 0
+            if steps > 0:
+                models.append({"slot": idx, "name": None})
+        models.extend({"slot": None, "name": name} for name in BUILTIN_MODELS)
+        return models
+
+    @staticmethod
+    def _scpi_error_code(exc) -> int | None:
+        """Extract the SCPI error code from an instrument exception.
+
+        InstrumentError carries (code, message, response) in args; other
+        wrappers stringify to '<code>,"<message>"', possibly behind a
+        prefix (BatteryBackendError renders as '[Battery] <code>,"..."').
+        Returns None when no code can be found (e.g. a transport-level
+        timeout).
+        """
+        args = getattr(exc, "args", ())
+        if args and isinstance(args[0], int):
+            return args[0]
+        match = re.search(r'(-?\d+)\s*,\s*"', str(exc))
+        if match:
+            return int(match.group(1))
+        return None
 
     def terminal_voltage(self) -> float:
         try:
@@ -488,7 +569,7 @@ class KeithleyBattery(BatteryNet):
                 cmd = f":BATT:MOD:RCL {model_map[name]}"
             else:
                 # Check if it's already a valid Keithley built-in
-                keithley_builtins = ["LI-ION4_2", "NIMH1_2", "NICD1_2", "LEAD-ACID12", "NIMH12", "DISCHARGE"]
+                keithley_builtins = list(BUILTIN_MODELS) + ["DISCHARGE"]
                 if partnumber_or_index.upper() in keithley_builtins:
                     cmd = f':BATT:MOD:RCL {partnumber_or_index.upper()}'
                 else:

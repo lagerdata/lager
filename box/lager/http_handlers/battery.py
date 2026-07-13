@@ -283,6 +283,16 @@ def register_battery_routes(app: Flask) -> None:
                         model = battery._safe_query(':BATT:STAT?', '') or 'Custom'
                         result['message'] = f'Model: {model}'
 
+                elif action in ('list_models', 'models'):
+                    # Read-only catalog of battery models available on the
+                    # instrument. Mirrors the 'state' action: the structured
+                    # payload rides in the response ('models') alongside a
+                    # human-readable message rendered by the shared formatter.
+                    from lager.power.battery.dispatcher import format_model_catalog
+                    models = battery.model_catalog()
+                    result['models'] = models
+                    result['message'] = format_model_catalog(models)
+
                 elif action == 'enable_battery':
                     battery.enable()
                     result['message'] = 'Battery output enabled'
@@ -746,6 +756,14 @@ def register_battery_socketio(socketio: SocketIO) -> None:
                     else:
                         model = battery._safe_query(':BATT:STAT?', '') or 'Custom'
                         result['message'] = f'Model: {model}'
+
+                elif action == 'models':
+                    # Read-only model catalog; same payload/message pair as
+                    # the HTTP endpoint's 'list_models' action.
+                    from lager.power.battery.dispatcher import format_model_catalog
+                    models = battery.model_catalog()
+                    result['models'] = models
+                    result['message'] = format_model_catalog(models)
 
                 elif action == 'enable':
                     battery.enable()
