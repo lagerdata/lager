@@ -34,6 +34,8 @@ lager battery [OPTIONS] [NETNAME] COMMAND [ARGS]...
 | `ocp` | Set or read over-current protection (A) |
 | `model` | Set or read battery model |
 | `models` | List battery models saved on the instrument |
+| `model-create` | Create a custom battery model in a memory slot from a CSV file |
+| `model-export` | Export a saved battery model's curve to a CSV file |
 | `state` | Get comprehensive battery state |
 | `enable` | Enable battery simulator output |
 | `disable` | Disable battery simulator output |
@@ -253,6 +255,70 @@ lager battery NETNAME models [OPTIONS]
 - `--box TEXT` - Lagerbox name or IP
 
 The printed slots and names are valid inputs to the `model` command.
+
+### `model-create`
+
+Create a custom battery model in a memory slot (1-9) from a CSV file.
+
+```bash
+lager battery NETNAME model-create SLOT --csv FILE [--force] [OPTIONS]
+```
+
+**Arguments:**
+- `NETNAME` - Name of the battery Net
+- `SLOT` - Target memory slot (1-9); slot 0 is the built-in DISCHARGE mode and cannot be written
+
+**Options:**
+- `--csv FILE` - CSV curve file (required)
+- `--force` - Overwrite the slot if it already holds a model
+- `--box TEXT` - Lagerbox name or IP
+
+**CSV format:**
+Two columns, `voc,resistance` (header row optional), ordered from empty
+battery to full: open-circuit voltage in volts (non-decreasing) and internal
+resistance in ohms (non-increasing). Exactly 11 or 101 data rows — 11-row
+files are interpolated to 101 points by the instrument.
+
+```
+voc,resistance
+3.0,0.25
+3.3,0.24
+...
+```
+
+The file is validated on your machine before anything is sent to the
+instrument. If the slot already holds a model, the command refuses unless
+`--force` is given.
+
+<Warning>
+Saving overwrites the slot's previous model, and the instrument has no way
+to delete a model from a slot — a slot, once written, can only be
+overwritten with a different model.
+</Warning>
+
+After a successful create, `model SLOT` loads the model and `models` lists it.
+
+### `model-export`
+
+Export a saved battery model's curve from a memory slot (1-9) to a CSV file.
+
+```bash
+lager battery NETNAME model-export SLOT --csv FILE [OPTIONS]
+```
+
+**Arguments:**
+- `NETNAME` - Name of the battery Net
+- `SLOT` - Memory slot to export (1-9)
+
+**Options:**
+- `--csv FILE` - Output CSV file to write (required)
+- `--box TEXT` - Lagerbox name or IP
+
+Writes the slot's 101 `voc,resistance` points in the format `model-create`
+accepts, so a saved model can be exported, edited, and written back to a
+slot (`model-export` → edit → `model-create`). Read-only: exporting does not
+recall or change the active model. Exporting an empty slot is an error —
+use `models` to see which slots hold a saved model.
 
 ### `state`
 

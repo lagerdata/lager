@@ -177,6 +177,60 @@ class BatteryNet(ABC):
         pass
 
     @abstractmethod
+    def read_model(self, slot: int) -> dict:
+        """
+        Read a saved battery model's curve points out of a memory slot.
+
+        Exports from the same slot-storage mechanism that model() loads from
+        and model_catalog() lists. Must be read-only: exporting a model must
+        not change which model is active.
+
+        Keithley 2281S:
+        - Slots 1-9 hold saved models; slot 0 (DISCHARGE) has no curve
+        - Each model is 101 points per element (VOC and resistance)
+        - Empty slots are rejected with guidance to the 'models' catalog
+
+        Args:
+            slot: Memory slot to export (1-9).
+
+        Returns:
+            {"slot": int, "points": [{"voc": float, "resistance": float},
+            ...]} in SOC order (index 0 = empty battery).
+
+        Raises:
+            BatteryBackendError: If the slot is invalid or empty.
+        """
+        pass
+
+    @abstractmethod
+    def define_model(self, slot: int, voc: list, resistance: list) -> None:
+        """
+        Write a custom battery model into a memory slot (create/overwrite).
+
+        Persists into the same slot-storage mechanism that model() loads
+        from. Saving to an occupied slot silently overwrites it, and there
+        is no way to delete/empty a slot afterwards (the Keithley 2281S has
+        no SCPI for it — slots can only be overwritten), so callers are
+        expected to gate overwrites behind explicit confirmation.
+
+        Keithley 2281S:
+        - Valid target slots are 1-9 (slot 0 is DISCHARGE, not writable)
+        - A model is two curves indexed by SOC: VOC (non-decreasing) and
+          internal resistance (non-increasing)
+        - Exactly 101 points per element, or exactly 11 points which the
+          instrument interpolates to 101
+
+        Args:
+            slot: Target memory slot (1-9).
+            voc: Open-circuit voltage curve in volts.
+            resistance: Internal resistance curve in ohms, same length.
+
+        Raises:
+            BatteryBackendError: On invalid input or a failed/unverified save.
+        """
+        pass
+
+    @abstractmethod
     def enable(self) -> None:
         """
         Enable the battery simulator output.

@@ -190,7 +190,8 @@ def test_power_module():
     battery_new_exports = [
         "set_mode", "set_to_battery_mode", "set", "set_soc", "set_voc",
         "set_volt_full", "set_volt_empty", "set_capacity", "set_current_limit",
-        "set_ovp", "set_ocp", "set_model", "list_models", "enable_battery", "disable_battery",
+        "set_ovp", "set_ocp", "set_model", "list_models", "export_model",
+        "create_model", "format_model_summary", "enable_battery", "disable_battery",
         "print_state", "clear", "clear_ovp", "clear_ocp", "terminal_voltage",
         "current", "esr", "BatteryNet", "BatteryBackendError", "KeithleyBattery",
         "Keithley", "create_device",
