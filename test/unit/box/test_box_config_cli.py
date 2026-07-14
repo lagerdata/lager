@@ -165,7 +165,7 @@ class ApplyReadinessPolling(unittest.TestCase):
         backend = self._backend_for_apply()
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0), \
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True) as wait_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
@@ -181,7 +181,7 @@ class ApplyReadinessPolling(unittest.TestCase):
         backend = self._backend_for_apply()
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0), \
              patch.object(box_config_cli, "_wait_for_box_api", return_value=False):
             result = self.runner.invoke(
                 box_config_cli.box_config,
@@ -235,6 +235,95 @@ class WaitForBoxApi(unittest.TestCase):
 # Issue 3: rollback on bounce failure
 # ---------------------------------------------------------------------------
 
+class BounceExitCodeClassification(unittest.TestCase):
+    """start_box.sh's exit code decides whether the container is up.
+
+    3 is the "container is up, but box_config did NOT apply" code. It must not
+    be confused with a failed bounce (container possibly down), because the two
+    call for opposite recoveries: roll back vs. don't.
+    """
+
+    def _bounce(self, rc, stdout="", stderr=""):
+        with patch.object(box_config_cli, "default_ssh_runner",
+                          return_value=(rc, stdout, stderr)):
+            return box_config_cli._bounce_container_rc(None, "test-box")
+
+    def test_zero_is_ok(self):
+        self.assertEqual(self._bounce(0), box_config_cli._BOUNCE_OK)
+
+    def test_three_is_config_not_applied(self):
+        self.assertEqual(
+            self._bounce(3), box_config_cli._BOUNCE_CONFIG_NOT_APPLIED
+        )
+
+    def test_other_nonzero_is_failure(self):
+        self.assertEqual(self._bounce(1), box_config_cli._BOUNCE_FAILED)
+        self.assertEqual(self._bounce(2), box_config_cli._BOUNCE_FAILED)
+
+    def test_container_counts_as_up_when_only_the_config_failed(self):
+        # The bool wrapper is what `restart`/`repair`/rollback use to ask "is the
+        # container up?" — a render failure leaves it running, so: yes.
+        with patch.object(box_config_cli, "_bounce_container_rc",
+                          return_value=box_config_cli._BOUNCE_CONFIG_NOT_APPLIED):
+            self.assertTrue(box_config_cli._bounce_container(None, "test-box"))
+        with patch.object(box_config_cli, "_bounce_container_rc",
+                          return_value=box_config_cli._BOUNCE_FAILED):
+            self.assertFalse(box_config_cli._bounce_container(None, "test-box"))
+
+    def test_relays_the_box_side_error_block(self):
+        # start_box.sh's output is captured, so unless we relay it the operator
+        # sees nothing at all about why the config didn't apply.
+        stdout = (
+            "Lager Box container started\n"
+            "[ERROR] cannot write /etc/lager/user_requirements.txt: Permission denied\n"
+            "  /etc/lager must be writable by the user start_box.sh runs as (lagerdata).\n"
+            "Box started successfully!\n"
+        )
+        lines = box_config_cli._render_error_lines(stdout, "")
+        self.assertEqual(len(lines), 2)
+        self.assertIn("Permission denied", lines[0])
+        self.assertIn("/etc/lager must be writable", lines[1])
+        self.assertNotIn("Box started successfully!", lines)
+
+    def test_relay_does_not_swallow_unrelated_pip_warnings(self):
+        """Found on hardware: pip writes to stderr too, and its warnings are
+        indented, so a naive "indented line after an [ERROR]" rule relayed
+        pip's script-not-on-PATH noise as if it were part of the failure."""
+        stderr = (
+            "[ERROR] cannot write /etc/lager/user_requirements.txt: Permission denied\n"
+            "  /etc/lager must be writable by the user start_box.sh runs as (lagerdata).\n"
+            "Installing collected packages: qrcode, Pillow\n"
+            "  WARNING: The script qr is installed in '/home/www-data/.local/bin' "
+            "which is not on PATH.\n"
+            "  Consider adding this directory to PATH.\n"
+        )
+        lines = box_config_cli._render_error_lines("", stderr)
+        self.assertEqual(len(lines), 2)
+        self.assertFalse(
+            [ln for ln in lines if "WARNING" in ln or "PATH" in ln],
+            f"pip noise leaked into the relayed error: {lines}",
+        )
+
+    def test_relay_says_the_repair_once_not_once_per_renderer(self):
+        # All four renderers emit the same repair sentence; the operator needs
+        # to read it once.
+        stderr = "".join(
+            f"[ERROR] cannot write /etc/lager/{name}: Permission denied\n"
+            "  /etc/lager must be writable by the user start_box.sh runs as (lagerdata).\n"
+            for name in (
+                "box_config.docker.sh",
+                "user_requirements.txt",
+                "cargo_packages.txt",
+                "npm_packages.txt",
+            )
+        )
+        lines = box_config_cli._render_error_lines("", stderr)
+        repair = [ln for ln in lines if "must be writable" in ln]
+        self.assertEqual(len(repair), 1, f"repair line repeated: {lines}")
+        # But each distinct file still gets named.
+        self.assertEqual(len([ln for ln in lines if "cannot write" in ln]), 4)
+
+
 class ApplyRollback(unittest.TestCase):
     """Rollback uses direct SSH file ops (not the shim) because the
     container is dead by the time rollback fires — start_box.sh stopped
@@ -272,8 +361,8 @@ class ApplyRollback(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
              patch.object(box_config_cli, "default_ssh_runner",
                           side_effect=self._ssh_runner(snapshot_exists=True)), \
-             patch.object(box_config_cli, "_bounce_container",
-                          side_effect=[False, True]) as bounce_mock:
+             patch.object(box_config_cli, "_bounce_container_rc",
+                          side_effect=[1, 0]) as bounce_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
                 ["apply", "--box", "test-box", "--yes"],
@@ -293,7 +382,7 @@ class ApplyRollback(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
              patch.object(box_config_cli, "default_ssh_runner",
                           side_effect=self._ssh_runner(snapshot_exists=False)), \
-             patch.object(box_config_cli, "_bounce_container", return_value=False) as bounce_mock:
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=1) as bounce_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
                 ["apply", "--box", "test-box", "--yes"],
@@ -312,7 +401,7 @@ class ApplyRollback(unittest.TestCase):
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
              patch.object(box_config_cli, "default_ssh_runner",
                           side_effect=self._ssh_runner(snapshot_exists=True)), \
-             patch.object(box_config_cli, "_bounce_container", return_value=False) as bounce_mock:
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=1) as bounce_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
                 ["apply", "--box", "test-box", "--yes"],
@@ -320,6 +409,37 @@ class ApplyRollback(unittest.TestCase):
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("rollback was not possible", result.output)
         self.assertEqual(bounce_mock.call_count, 2)
+
+    def test_render_failure_does_not_stamp_hash_and_does_not_roll_back(self):
+        """start_box.sh rc 3: container is UP but the config did not apply.
+
+        This is the shape of the /etc/lager-not-writable bug. Two things must
+        hold, and neither did before:
+          - applied-hash is NOT stamped, so the retry after repairing the box
+            actually re-applies instead of short-circuiting on
+            "Config unchanged since last apply; skipping restart".
+          - we do NOT roll back. The container is healthy and the fault is
+            environmental, so restoring the previous config and re-bouncing
+            would fail identically and buy nothing.
+        """
+        backend = self._backend()
+        with _patch_resolve(), \
+             patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
+             patch.object(box_config_cli, "default_ssh_runner",
+                          side_effect=self._ssh_runner(snapshot_exists=True)), \
+             patch.object(box_config_cli, "_bounce_container_rc",
+                          return_value=box_config_cli._BOUNCE_CONFIG_NOT_APPLIED) as bounce_mock:
+            result = self.runner.invoke(
+                box_config_cli.box_config,
+                ["apply", "--box", "test-box", "--yes"],
+            )
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("NOT applied", result.output)
+        # Bounced exactly once: no rollback re-bounce.
+        self.assertEqual(bounce_mock.call_count, 1)
+        verbs = [c[0] for c in backend.calls]
+        self.assertNotIn("set-applied-hash", verbs)
+        self.assertNotIn("restore-applied", verbs)
 
 
 # ---------------------------------------------------------------------------
@@ -669,7 +789,7 @@ class ApplyHostSideOrdering(unittest.TestCase):
         backend = self._backend(current=current, applied=current)
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0), \
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
              patch("cli.commands.box.config.apt_install") as apt_mock, \
              patch("cli.commands.box.config.sysctl_apply") as sysctl_mock:
@@ -695,7 +815,7 @@ class ApplyHostSideOrdering(unittest.TestCase):
         apt_result = HostOpResult(ok=True, action="installed", message="Installed/verified 2 apt package(s).")
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0), \
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
              patch("cli.commands.box.config.apt_install", return_value=apt_result) as apt_mock, \
              patch("cli.commands.box.config.sysctl_apply") as sysctl_mock:
@@ -716,7 +836,7 @@ class ApplyHostSideOrdering(unittest.TestCase):
         apt_result = HostOpResult(ok=False, action="failed", message="sudo not configured")
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container") as bounce_mock, \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0) as bounce_mock, \
              patch("cli.commands.box.config.apt_install", return_value=apt_result):
             result = self.runner.invoke(
                 box_config_cli.box_config,
@@ -741,7 +861,7 @@ class ApplyHostSideOrdering(unittest.TestCase):
         sysctl_result = HostOpResult(ok=True, action="applied", message="Wrote 1 sysctl key.")
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0), \
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
              patch("cli.commands.box.config.sysctl_apply", return_value=sysctl_result) as sysctl_mock:
             result = self.runner.invoke(
@@ -792,7 +912,7 @@ class PostApplyConsistency(unittest.TestCase):
         )
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0), \
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True):
             result = self.runner.invoke(
                 box_config_cli.box_config,
@@ -813,7 +933,7 @@ class PostApplyConsistency(unittest.TestCase):
         )
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0), \
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True):
             result = self.runner.invoke(
                 box_config_cli.box_config,
@@ -835,7 +955,7 @@ class PostApplyConsistency(unittest.TestCase):
         )
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0), \
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
              patch("cli.commands.box.config.apt_install",
                    return_value=__import__("cli.commands.box._host_ops", fromlist=["HostOpResult"]).HostOpResult(
@@ -965,7 +1085,7 @@ class ApplyPreConfirmDiff(unittest.TestCase):
         # Decline at the confirm prompt — we just want to see the diff appear.
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container") as bounce_mock:
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0) as bounce_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
                 ["apply", "--box", "test-box"],
@@ -1122,7 +1242,7 @@ class ApplyDryRun(unittest.TestCase):
         backend = self._backend(current=current, applied=applied)
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container") as bounce_mock, \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0) as bounce_mock, \
              patch.object(box_config_cli, "_preflight_mounts") as prep_mock, \
              patch("cli.commands.box.config.apt_install") as apt_mock, \
              patch("cli.commands.box.config.sysctl_apply") as sysctl_mock:
@@ -1146,7 +1266,7 @@ class ApplyDryRun(unittest.TestCase):
         backend = self._backend(current=snap, applied=snap, cur_hash="x", applied_hash="x")
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container") as bounce_mock:
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0) as bounce_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
                 ["apply", "--box", "test-box", "--yes", "--dry-run"],
@@ -1702,7 +1822,7 @@ class MultiBoxFanout(unittest.TestCase):
         })
         with patch.object(box_config_cli, "_resolve_box", side_effect=["1.2.3.4", "5.6.7.8"]), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0), \
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True):
             result = self.runner.invoke(
                 box_config_cli.box_config,
@@ -1735,7 +1855,7 @@ class RepairCommand(unittest.TestCase):
         with _patch_resolve(), \
              patch.object(box_config_cli, "default_ssh_runner",
                           side_effect=self._ssh_runner(snapshot_exists=True)), \
-             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0), \
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True):
             result = self.runner.invoke(
                 box_config_cli.box_config,
@@ -1776,7 +1896,7 @@ class RepairCommand(unittest.TestCase):
         with _patch_resolve(), \
              patch.object(box_config_cli, "default_ssh_runner",
                           side_effect=self._ssh_runner(snapshot_exists=True)), \
-             patch.object(box_config_cli, "_bounce_container", return_value=False):
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=1):
             result = self.runner.invoke(
                 box_config_cli.box_config,
                 ["repair", "--box", "test-box", "--yes"],
@@ -1927,7 +2047,7 @@ class ApplyPreflightSshWarn(unittest.TestCase):
         backend = self._backend()
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container", return_value=True) as bounce_mock, \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0) as bounce_mock, \
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
              patch("cli.commands.box.config.ensure_host_path_owned",
                    return_value=_SSH_FAILED_PREP):
@@ -1951,7 +2071,7 @@ class ApplyPreflightSshWarn(unittest.TestCase):
         )
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0), \
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
              patch("cli.commands.box.config.ensure_host_path_owned",
                    return_value=_SSH_FAILED_PREP) as prep_mock:
@@ -1966,7 +2086,7 @@ class ApplyPreflightSshWarn(unittest.TestCase):
         backend = self._backend()
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container") as bounce_mock, \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0) as bounce_mock, \
              patch("cli.commands.box.config.ensure_host_path_owned",
                    return_value=_prep(
                        False, "refused_populated",
@@ -1986,7 +2106,7 @@ class ApplyPreflightSshWarn(unittest.TestCase):
         backend = self._backend()
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container") as bounce_mock, \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0) as bounce_mock, \
              patch("cli.commands.box.config.ensure_host_path_owned",
                    return_value=_prep(
                        False, "sudo_failed",
@@ -2041,12 +2161,12 @@ class ApplyPreflightOrdering(unittest.TestCase):
 
         def fake_bounce(*args, **kwargs):
             order.append("bounce")
-            return True
+            return 0
 
         backend = self._backend()
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container", side_effect=fake_bounce), \
+             patch.object(box_config_cli, "_bounce_container_rc", side_effect=fake_bounce), \
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
              patch("cli.commands.box.config.apt_install", side_effect=fake_apt), \
              patch("cli.commands.box.config.ensure_host_path_owned", side_effect=fake_prep):
@@ -2061,7 +2181,7 @@ class ApplyPreflightOrdering(unittest.TestCase):
         backend = self._backend()
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container") as bounce_mock, \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0) as bounce_mock, \
              patch("cli.commands.box.config.ensure_host_path_owned") as prep_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
@@ -2117,12 +2237,12 @@ class ApplyFlagEdges(unittest.TestCase):
 
         def fake_bounce(*args, **kwargs):
             order.append("bounce")
-            return True
+            return 0
 
         backend = self._backend(cur_hash="aaa", applied_hash="aaa")
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container", side_effect=fake_bounce), \
+             patch.object(box_config_cli, "_bounce_container_rc", side_effect=fake_bounce), \
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
              patch("cli.commands.box.config.ensure_host_path_owned", side_effect=fake_prep):
             result = self.runner.invoke(
@@ -2136,7 +2256,7 @@ class ApplyFlagEdges(unittest.TestCase):
         backend = self._backend()
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container") as bounce_mock, \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0) as bounce_mock, \
              patch("cli.commands.box.config.ensure_host_path_owned") as prep_mock:
             result = self.runner.invoke(
                 box_config_cli.box_config,
@@ -2150,7 +2270,7 @@ class ApplyFlagEdges(unittest.TestCase):
         backend = self._backend()
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container", return_value=True) as bounce_mock, \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0) as bounce_mock, \
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
              patch("cli.commands.box.config.ensure_host_path_owned") as prep_mock:
             result = self.runner.invoke(
@@ -2189,7 +2309,7 @@ class ApplyMultiBoxFanout(unittest.TestCase):
         preps = iter([_SSH_FAILED_PREP, _prep(True, "ok_readonly", message="/Hyphen exists.")])
         with patch.object(box_config_cli, "_resolve_boxes", return_value=["1.1.1.1", "2.2.2.2"]), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0), \
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
              patch("cli.commands.box.config.ensure_host_path_owned",
                    side_effect=lambda *a, **k: next(preps)):
@@ -2212,7 +2332,7 @@ class ApplyMultiBoxFanout(unittest.TestCase):
         ])
         with patch.object(box_config_cli, "_resolve_boxes", return_value=["1.1.1.1", "2.2.2.2"]), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container", return_value=True) as bounce_mock, \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0) as bounce_mock, \
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
              patch("cli.commands.box.config.ensure_host_path_owned",
                    side_effect=lambda *a, **k: next(preps)):
@@ -2262,7 +2382,7 @@ class ApplyPreflightMixedResults(unittest.TestCase):
         ])
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container") as bounce_mock, \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0) as bounce_mock, \
              patch("cli.commands.box.config.ensure_host_path_owned",
                    side_effect=lambda *a, **k: next(preps)):
             result = self.runner.invoke(
@@ -2288,7 +2408,7 @@ class ApplyPreflightMixedResults(unittest.TestCase):
         })
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container", return_value=True), \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=0), \
              patch.object(box_config_cli, "_wait_for_box_api", return_value=True), \
              patch("cli.commands.box.config.ensure_host_path_owned") as prep_mock:
             result = self.runner.invoke(
@@ -2302,7 +2422,7 @@ class ApplyPreflightMixedResults(unittest.TestCase):
         backend = self._backend_two_mounts()
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
-             patch.object(box_config_cli, "_bounce_container", return_value=False), \
+             patch.object(box_config_cli, "_bounce_container_rc", return_value=1), \
              patch.object(box_config_cli, "_attempt_rollback", return_value=True) as rb_mock, \
              patch("cli.commands.box.config.ensure_host_path_owned",
                    return_value=_SSH_FAILED_PREP):

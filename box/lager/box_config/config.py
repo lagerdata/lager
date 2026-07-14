@@ -884,3 +884,49 @@ def _atomic_write_json(path: str, payload: Any) -> None:
         if os.path.exists(tmp):
             os.unlink(tmp)
         raise
+
+
+class RenderWriteError(Exception):
+    """A rendered box-config artifact could not be written to disk."""
+
+
+def _current_user() -> str:
+    try:
+        import getpass
+
+        return getpass.getuser()
+    except Exception:
+        return f"uid {os.getuid()}"
+
+
+def write_atomic(path: str, body: str) -> None:
+    """Atomically write `body` to `path`, raising RenderWriteError on failure.
+
+    Shared by the four render_*.py scripts, which start_box.sh runs on the box
+    HOST as the box's login user. Creating the tmp file needs write permission
+    on the *directory*, so a /etc/lager that only the container user (uid 33)
+    can write makes every render fail — silently, because start_box.sh soft-fails
+    renders to guarantee the container still comes up. The result was a box whose
+    box_config.json said one thing and whose container ran another, with the CLI
+    reporting a successful apply. Turn the raw OSError into something an operator
+    can act on.
+    """
+    _ensure_dir(path)
+    tmp = f"{path}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(body)
+        os.replace(tmp, path)
+    except OSError as e:
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        d = os.path.dirname(path) or "."
+        raise RenderWriteError(
+            f"cannot write {path}: {e.strerror or e}\n"
+            f"  {d} must be writable by the user start_box.sh runs as "
+            f"({_current_user()}). Run `lager update --box <BOX>` to repair "
+            f"the permissions on {d}."
+        ) from e

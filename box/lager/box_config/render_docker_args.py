@@ -81,17 +81,10 @@ def _empty_body() -> str:
     )
 
 
-def _atomic_write(path: str, body: str) -> None:
-    d = os.path.dirname(path)
-    if d and not os.path.isdir(d):
-        os.makedirs(d, exist_ok=True)
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(body)
-    os.replace(tmp, path)
+_atomic_write = cfg.write_atomic
 
 
-def main(argv: list) -> int:
+def _render(argv: list) -> int:
     if len(argv) < 3:
         print("usage: render_docker_args.py <box_config.json> <out.sh>", file=sys.stderr)
         return 2
@@ -118,6 +111,18 @@ def main(argv: list) -> int:
 
     _atomic_write(out_path, _render_body(c))
     return 0
+
+
+def main(argv: list) -> int:
+    # A write failure here used to surface as a raw traceback that start_box.sh
+    # swallowed into a one-line warning, so the container came up with none of
+    # the box_config mounts, volumes, or env vars while the CLI reported a
+    # successful apply.
+    try:
+        return _render(argv)
+    except cfg.RenderWriteError as e:
+        print(f"[ERROR] {e}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
