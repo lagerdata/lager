@@ -66,8 +66,22 @@ def lager_excepthook(etype, value, tb):
         Custom exception printer so users get nice tracebacks without
         weird temporary filenames and paths
     """
-    module_folder = os.environ['LAGER_HOST_MODULE_FOLDER']
     error_lines = traceback.format_exception(etype, value, tb)
+
+    # LAGER_HOST_MODULE_FOLDER is set by `lager python`, which is what the path
+    # rewriting below is for. Anything else that execs a script into the
+    # container (an external test runner, `docker exec python3 ...`) leaves it
+    # unset — and reading it with [] made the excepthook itself raise KeyError.
+    # Python then prints "Error in sys.excepthook:" plus a traceback from inside
+    # lager, and only then the user's actual exception, so a one-line
+    # ModuleNotFoundError arrived buried under a stack trace pointing at lager
+    # internals. With no host paths to rewrite, print the traceback as-is.
+    module_folder = os.environ.get('LAGER_HOST_MODULE_FOLDER')
+    if module_folder is None:
+        for line in error_lines:
+            print(line, end='')
+        return
+
     if module_folder == '/tmp':
         # We are just running a standalone script
         regex = re.compile(r'\A(\s*File \")tmp[a-zA-Z0-9_-]+.py(\",.*)')

@@ -2,6 +2,62 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.31.11] - 2026-07-13
+
+### Fixed
+
+- **`lager box config apply` no longer reports success while applying nothing.**
+  `apply` runs `start_box.sh` on the box as the login user, and its four
+  box-config renderers *create* files in `/etc/lager` (`box_config.docker.sh`,
+  `user_requirements.txt`, `cargo_packages.txt`, `npm_packages.txt`). Creating a
+  file needs write permission on the **directory**, and `lager install` left
+  `/etc/lager` owned by the container user only (`33:33`, mode `755`) — so every
+  render failed with `EACCES`. Renders are soft-failed by design (the container
+  must always come up), which turned this into a silent no-op: the install steps
+  read files that were never written, so `apply` skipped them, stamped the
+  applied-hash, and printed "Applied box config". Every `pip`/`cargo`/`npm`
+  package, mount, volume, and env var added through `lager box config` was
+  quietly dropped on any box whose last provisioning step was an install.
+  `/etc/lager` is now `33:<box-user-group>` mode `2775` (setgid), so the
+  container (owner) and `start_box.sh` (group) can both write it.
+
+- **`/etc/lager` is no longer world-writable.** `lager update` granted the box
+  user write access by running `chmod 777` on the directory, which also gave it
+  to every other local account — enough to replace `box_config.json`,
+  `saved_nets.json`, or the org secrets. It now gets the same owner/group/setgid
+  treatment as above, which is what the two writers actually need and nothing
+  more. This is also why the breakage above was invisible for so long: an
+  updated box ended up world-writable and rendered fine, while a freshly
+  *installed* box was owner-only and silently applied nothing — the two paths
+  disagreed.
+
+- **A box-config render failure is now loud, and no longer poisons the retry.**
+  A failed render printed a one-line warning and a raw Python traceback. It now
+  reports which file could not be written, why, and how to repair it.
+  `start_box.sh` exits `3` — a new code meaning "the container is up, but the
+  config on disk was not applied to it" — and `apply` neither stamps the
+  applied-hash nor rolls back on it. Not stamping the hash is the load-bearing
+  half: it previously did, so the retry after a fix short-circuited on "Config
+  unchanged since last apply; skipping restart" and the config could never be
+  applied. Rolling back is wrong here because the container is healthy and the
+  fault is environmental — restoring the previous config and re-bouncing would
+  fail identically. A genuine bounce failure (container possibly down) still
+  rolls back exactly as before. A failed in-container `pip`/`cargo`/`npm`
+  install now exits `3` for the same reason — those steps run *after*
+  `docker run`, so they already reported "container is up but ... may be
+  incomplete" while exiting `1` and triggering a rollback of a healthy
+  container.
+
+- **An uncaught exception in a script run inside the box container no longer
+  buries the real error.** `lager_excepthook` read `LAGER_HOST_MODULE_FOLDER`
+  with `os.environ[...]` in order to rewrite host paths out of tracebacks. That
+  variable is set by `lager python`; anything else that execs a script into the
+  container leaves it unset, so the exception *handler* raised `KeyError` —
+  Python then printed "Error in sys.excepthook:" followed by a traceback from
+  inside lager, and only after that the user's actual exception. A one-line
+  `ModuleNotFoundError` arrived buried under a stack trace pointing at lager
+  internals. With no host paths to rewrite, the traceback is now printed
+  unchanged.
 ## [0.31.10] - 2026-07-13
 
 ### Added

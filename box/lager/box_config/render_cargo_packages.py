@@ -33,17 +33,10 @@ _HEADER = (
 )
 
 
-def _write(path: str, body: str) -> None:
-    tmp = f"{path}.tmp"
-    d = os.path.dirname(path)
-    if d and not os.path.isdir(d):
-        os.makedirs(d, exist_ok=True)
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(body)
-    os.replace(tmp, path)
+_write = cfg.write_atomic
 
 
-def main(argv: list) -> int:
+def _render(argv: list) -> int:
     if len(argv) < 3:
         print("usage: render_cargo_packages.py <box_config.json> <out_path>", file=sys.stderr)
         return 2
@@ -69,6 +62,17 @@ def main(argv: list) -> int:
     body = _HEADER + "".join(f"{p}\n" for p in sorted(c.cargo_packages))
     _write(out_path, body)
     return 0
+
+
+def main(argv: list) -> int:
+    # A write failure here used to surface as a raw traceback that start_box.sh
+    # swallowed into a one-line warning, leaving the container running the old
+    # package set while the CLI reported a successful apply.
+    try:
+        return _render(argv)
+    except cfg.RenderWriteError as e:
+        print(f"[ERROR] {e}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

@@ -1104,7 +1104,18 @@ def restart_cmd(ctx: click.Context, box: Optional[str], yes: bool) -> None:
     ):
         click.secho("Aborted.", fg="yellow")
         return
-    if not _bounce_container(ctx, resolved):
+    bounce_rc = _bounce_container_rc(ctx, resolved)
+    if bounce_rc == _BOUNCE_CONFIG_NOT_APPLIED:
+        # The container did restart, so this is not a restart failure — but it
+        # came up without the box config, which the operator needs to know.
+        click.secho(
+            f"The container restarted on {resolved}, but box_config.json was not "
+            "applied to it (see the errors above). Repair the box with "
+            "`lager update --box <BOX>`, then re-run.",
+            fg="red", err=True,
+        )
+        ctx.exit(1)
+    if bounce_rc != _BOUNCE_OK:
         click.secho(
             "Container restart failed. SSH into the box and run "
             "`~/box/start_box.sh` manually to inspect.",
@@ -1229,7 +1240,28 @@ def _apply_one(
         if not _preflight_mounts(ctx, resolved, recursive=recursive_chown):
             return False
 
-    if not _bounce_container(ctx, resolved):
+    bounce_rc = _bounce_container_rc(ctx, resolved)
+
+    if bounce_rc == _BOUNCE_CONFIG_NOT_APPLIED:
+        # The container is up, but the renderers couldn't write their output, so
+        # it is running the OLD config. Don't roll back: the fault is in the
+        # environment (almost always /etc/lager not writable by the box user),
+        # not in the new config, so restoring the previous config and bouncing
+        # again would fail in exactly the same way and buy nothing. Returning
+        # False here is what matters — it skips SET_APPLIED_HASH below, so a
+        # retry after the repair actually re-applies instead of reporting
+        # "Config unchanged since last apply; skipping restart."
+        click.secho(
+            f"Box config was NOT applied on {resolved} (the container is up and "
+            "running the previous config). The applied-hash was left unchanged, "
+            "so `lager box config apply` will retry this config once the box is "
+            "repaired — typically with `lager update --box <BOX>`.",
+            fg="red",
+            err=True,
+        )
+        return False
+
+    if bounce_rc != _BOUNCE_OK:
         # Bounce of the new config failed. The container may be down (start_box.sh
         # exits between `docker stop` and a successful `docker run` when, e.g.,
         # a mount entry is malformed). Try to restore the last applied snapshot
@@ -1627,11 +1659,23 @@ def _wait_for_box_api(
 
 _BOUNCE_TIMEOUT_SECONDS = 900
 
+# start_box.sh exit codes we distinguish.
+_BOUNCE_OK = 0
+# The container is UP, but one or more box_config renderers failed, so the
+# container is not running the config on disk. Typically /etc/lager is not
+# writable by the box's login user (an older `lager install` left it owner-only),
+# which is environmental: rolling back and re-bouncing would fail identically.
+# Callers must not stamp the applied-hash, and must not roll back.
+_BOUNCE_CONFIG_NOT_APPLIED = 3
+# Anything else: the bounce failed and the container may be DOWN.
+_BOUNCE_FAILED = 1
 
-def _bounce_container(ctx: click.Context, resolved_box: str) -> bool:
+
+def _bounce_container_rc(ctx: click.Context, resolved_box: str) -> int:
+    """Run start_box.sh on the box. Returns one of the _BOUNCE_* codes."""
     click.echo(f"Restarting lager container on {resolved_box} via SSH...")
     try:
-        rc, _stdout, _stderr = default_ssh_runner(
+        rc, stdout, stderr = default_ssh_runner(
             resolved_box,
             "cd ~/box && ./start_box.sh",
             timeout=_BOUNCE_TIMEOUT_SECONDS,
@@ -1643,11 +1687,77 @@ def _bounce_container(ctx: click.Context, resolved_box: str) -> bool:
             "re-run `lager box config apply` once it finishes.",
             fg="red", err=True,
         )
-        return False
+        return _BOUNCE_FAILED
     except FileNotFoundError:
         click.secho("ssh not found on local machine.", fg="red", err=True)
-        return False
-    return rc == 0
+        return _BOUNCE_FAILED
+
+    if rc == _BOUNCE_CONFIG_NOT_APPLIED:
+        # start_box.sh already printed why; relay its diagnosis rather than
+        # inventing a vaguer one. Its output is captured, so without this the
+        # operator sees nothing at all.
+        for line in _render_error_lines(stdout, stderr):
+            click.secho(f"  {line}", fg="red", err=True)
+        return _BOUNCE_CONFIG_NOT_APPLIED
+
+    return _BOUNCE_OK if rc == 0 else _BOUNCE_FAILED
+
+
+_MAX_ERROR_CONTINUATION_LINES = 2
+
+
+def _render_error_lines(stdout: Optional[str], stderr: Optional[str]) -> list:
+    """The [ERROR] blocks start_box.sh emitted, for relaying to the operator.
+
+    An [ERROR] line plus its indented continuation lines — that's the shape both
+    start_box.sh and the renderers use, and the continuations carry the
+    actionable part (which directory, which repair command).
+
+    Bounded and de-duplicated on purpose. The renderers write to stderr, and so
+    does pip, whose indented `WARNING: The script X is installed in ...` lines
+    would otherwise be swept up as continuations of an unrelated earlier error.
+    And all four renderers emit the same repair sentence, which is worth saying
+    once, not four times.
+    """
+    lines = []
+    for stream in (stdout, stderr):
+        continuation = 0
+        for raw in (stream or "").splitlines():
+            stripped = raw.strip()
+            if stripped.startswith("[ERROR]"):
+                lines.append(stripped)
+                continuation = _MAX_ERROR_CONTINUATION_LINES
+            elif (
+                continuation
+                and stripped
+                and raw.startswith((" ", "\t"))
+                and not stripped.startswith("WARNING:")
+            ):
+                lines.append(stripped)
+                continuation -= 1
+            else:
+                continuation = 0
+
+    seen = set()
+    unique = []
+    for line in lines:
+        if line not in seen:
+            seen.add(line)
+            unique.append(line)
+    return unique
+
+
+def _bounce_container(ctx: click.Context, resolved_box: str) -> bool:
+    """True iff the container came up.
+
+    A config-render failure still leaves the container running, so it counts as
+    up here. Only `apply` needs the finer distinction — it uses
+    _bounce_container_rc directly so it can refuse to stamp the applied-hash.
+    """
+    return _bounce_container_rc(ctx, resolved_box) in (
+        _BOUNCE_OK,
+        _BOUNCE_CONFIG_NOT_APPLIED,
+    )
 
 
 @box_config.group("mount", help="Manage host-to-container bind mounts.")

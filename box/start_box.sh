@@ -127,7 +127,11 @@ if [ ! -d /etc/lager ]; then
     exit 1
 fi
 
-# Initialize saved_nets.json if it doesn't exist (no sudo needed since we own /etc/lager)
+# Initialize saved_nets.json if it doesn't exist. No sudo needed: /etc/lager is
+# owned by www-data (the container's uid) and group-writable by this user, which
+# `lager install` / `lager update` set up. On a box whose /etc/lager predates
+# that (owner-only 33:33 755), this and every box_config render below fail —
+# run `lager update --box <BOX>` to repair the permissions.
 if [ ! -f /etc/lager/saved_nets.json ]; then
     echo "Initializing /etc/lager/saved_nets.json..."
     echo "[]" > /etc/lager/saved_nets.json
@@ -296,11 +300,19 @@ NPM_PKGS_FILE="/etc/lager/npm_packages.txt"
 BOX_CONFIG_MOUNTS=()
 BOX_CONFIG_ENV=()
 BOX_CONFIG_HOST_PATHS=()
+# Set by any renderer that fails below. The container still comes up (that is a
+# hard requirement of this script), but the script exits 3 at the end so the
+# caller can tell "box is up AND config applied" from "box is up but the config
+# did NOT apply". See the exit at the bottom of this file.
+BOX_CONFIG_RENDER_FAILED=0
 if [ -f "$BOX_CONFIG_FILE" ]; then
     echo "Lager Box config detected at $BOX_CONFIG_FILE"
     if ! python3 "${SCRIPT_DIR}/lager/box_config/render_docker_args.py" \
             "$BOX_CONFIG_FILE" "$BOX_CONFIG_ARGS_FILE"; then
-        echo "[ERROR] box_config.json failed validation; container will start without applying it. Fix and rerun."
+        echo "[ERROR] Could not render docker args from box_config.json (see above);"
+        echo "        the container will start from the PREVIOUS render if one exists"
+        echo "        (stale mounts/volumes/env), or with none at all if it does not."
+        BOX_CONFIG_RENDER_FAILED=1
     fi
     # Source whether the renderer succeeded or not — on failure it still
     # writes empty arrays, which is the right "no box-config" state. Skipping
@@ -333,18 +345,25 @@ if [ -f "$BOX_CONFIG_FILE" ]; then
     unset _p
 
     # Render pip_packages from box_config.json into the requirements file that
-    # the in-container `pip install -r` step (below) reads. Soft-fail: if render
-    # blows up we leave the existing file alone so the bounce still proceeds.
+    # the in-container `pip install -r` step (below) reads. A render failure is
+    # NOT fatal to the container — it always comes up — but it is fatal to the
+    # apply: the install steps below key off these files, so a failed render
+    # means the box silently runs the previous package set (or none at all).
+    # BOX_CONFIG_RENDER_FAILED makes the script exit non-zero at the end so
+    # `lager box config apply` reports failure instead of stamping the
+    # applied-hash on a config it never actually applied.
     if ! python3 "${SCRIPT_DIR}/lager/box_config/render_pip_requirements.py" \
             "$BOX_CONFIG_FILE" "$PIP_REQS_FILE" 2>&1; then
-        echo "[WARNING] Failed to render pip_packages; using existing $PIP_REQS_FILE."
+        echo "[ERROR] Failed to render pip_packages; using existing $PIP_REQS_FILE."
+        BOX_CONFIG_RENDER_FAILED=1
     fi
 
     # Same idea for cargo_packages: render to a flat file the post-run loop
     # below reads, one crate spec per non-comment line.
     if ! python3 "${SCRIPT_DIR}/lager/box_config/render_cargo_packages.py" \
             "$BOX_CONFIG_FILE" "$CARGO_PKGS_FILE" 2>&1; then
-        echo "[WARNING] Failed to render cargo_packages; using existing $CARGO_PKGS_FILE."
+        echo "[ERROR] Failed to render cargo_packages; using existing $CARGO_PKGS_FILE."
+        BOX_CONFIG_RENDER_FAILED=1
     fi
 
     # Same for npm_packages — flat file the post-run loop reads. Container must
@@ -352,7 +371,8 @@ if [ -f "$BOX_CONFIG_FILE" ]; then
     # `npm` binary fails the install loop with a clear error.
     if ! python3 "${SCRIPT_DIR}/lager/box_config/render_npm_packages.py" \
             "$BOX_CONFIG_FILE" "$NPM_PKGS_FILE" 2>&1; then
-        echo "[WARNING] Failed to render npm_packages; using existing $NPM_PKGS_FILE."
+        echo "[ERROR] Failed to render npm_packages; using existing $NPM_PKGS_FILE."
+        BOX_CONFIG_RENDER_FAILED=1
     fi
     echo ""
 fi
@@ -422,11 +442,11 @@ fi
 #
 # The two `lager-cargo` / `lager-npm-global` named volumes persist
 # user-installed cargo crates and global npm packages across container
-# recreation. Without them, every `lager box update` (or `box config apply`)
+# recreation. Without them, every `lager update` (or `box config apply`)
 # rebuilds the container from scratch and the post-run loops below recompile
 # `cargo install` packages from source — minutes per update. With them, the
 # second-and-onward run sees "already installed" and finishes in seconds.
-# `lager box update` wipes both volumes alongside `docker rmi lager` whenever
+# `lager update` wipes both volumes alongside `docker rmi lager` whenever
 # the build-hash (Dockerfile + requirements.txt) changes, so a Dockerfile
 # rustup/node bump can't leave a stale toolchain in the volume.
 #
@@ -531,7 +551,10 @@ if [ -s "$PIP_REQS_FILE" ] && grep -qvE '^[[:space:]]*(#|$)' "$PIP_REQS_FILE"; t
             echo "[ERROR] User pip install failed (rc=$_rc); container is up but pip_packages may be incomplete."
         fi
         unset _rc
-        exit 1
+        # Exit 3, not 1: the container is UP (these installs run after `docker run`),
+        # the config just didn't fully apply. `lager box config apply` must not roll
+        # back a healthy container, and must not stamp the applied-hash.
+        exit 3
     fi
     echo ""
 fi
@@ -583,7 +606,10 @@ if [ -s "$CARGO_PKGS_FILE" ] && grep -qvE '^[[:space:]]*(#|$)' "$CARGO_PKGS_FILE
     unset _crate_spec _name _ver _args _rc
     if [ "$_cargo_failed" -ne 0 ]; then
         echo "[ERROR] One or more cargo crates failed to install; container is up but cargo_packages may be incomplete."
-        exit 1
+        # Exit 3, not 1: the container is UP (these installs run after `docker run`),
+        # the config just didn't fully apply. `lager box config apply` must not roll
+        # back a healthy container, and must not stamp the applied-hash.
+        exit 3
     fi
     echo ""
 fi
@@ -619,7 +645,10 @@ if [ -s "$NPM_PKGS_FILE" ] && grep -qvE '^[[:space:]]*(#|$)' "$NPM_PKGS_FILE"; t
     unset _npm_spec _rc
     if [ "$_npm_failed" -ne 0 ]; then
         echo "[ERROR] One or more npm packages failed to install; container is up but npm_packages may be incomplete."
-        exit 1
+        # Exit 3, not 1: the container is UP (these installs run after `docker run`),
+        # the config just didn't fully apply. `lager box config apply` must not roll
+        # back a healthy container, and must not stamp the applied-hash.
+        exit 3
     fi
     echo ""
 fi
@@ -643,3 +672,22 @@ echo "IMPORTANT: The controller container is NO LONGER NEEDED!"
 echo "  All functionality has been moved to the lager container."
 echo ""
 docker ps --filter "name=lager"
+
+# The container is up either way — that is deliberate, a box must never be left
+# down by a bad config. But if any box_config renderer failed above, the config
+# on disk is NOT what this container is running, so exit non-zero to say so.
+#
+# Exit 3 specifically, not 1: a failed `docker run` (exit 1) means the container
+# is GONE and `lager box config apply` must roll back to the last good config.
+# Here the container is healthy and the fault is environmental (typically
+# /etc/lager not writable by this user), so rolling back and re-bouncing would
+# fail in exactly the same way. Exit 3 tells apply: report the failure, do not
+# stamp the applied-hash, do not roll back.
+if [ "$BOX_CONFIG_RENDER_FAILED" = "1" ]; then
+    echo ""
+    echo "[ERROR] The container is running, but box_config.json was NOT applied"
+    echo "        (one or more renderers failed above)."
+    echo "        If this is a permissions error on /etc/lager, repair it with:"
+    echo "            lager update --box <BOX>"
+    exit 3
+fi

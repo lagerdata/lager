@@ -106,5 +106,56 @@ class UdevRulesIgnored(unittest.TestCase):
                 self.assertNotIn("1209", body_b)
 
 
+class UnwritableOutputDir(unittest.TestCase):
+    """A renderer that cannot write its output must say so, loudly.
+
+    This is the failure that made `lager box config` a silent no-op fleet-wide:
+    /etc/lager is owned by the container user (uid 33), start_box.sh runs as the
+    box's login user, and creating a file needs write permission on the
+    DIRECTORY. Every renderer died with a bare PermissionError traceback that
+    start_box.sh folded into a one-line warning, so `apply` reported success
+    while installing nothing. Each renderer must now exit non-zero with an
+    actionable message naming the directory.
+    """
+
+    def _render_into_readonly_dir(self, renderer, config_dict):
+        d = tempfile.mkdtemp(prefix="lager-render-ro-")
+        ro_dir = os.path.join(d, "etc-lager")
+        os.mkdir(ro_dir)
+        try:
+            config_path = os.path.join(d, "box_config.json")
+            with open(config_path, "w") as f:
+                json.dump(config_dict, f)
+            out_path = os.path.join(ro_dir, "out.txt")
+            os.chmod(ro_dir, 0o555)  # r-x: cannot create the tmp file
+            proc = subprocess.run(
+                ["python3", os.path.join(_RENDER_DIR, renderer), config_path, out_path],
+                capture_output=True,
+                text=True,
+            )
+            return proc.returncode, proc.stdout, proc.stderr, out_path
+        finally:
+            os.chmod(ro_dir, 0o755)
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_every_renderer_fails_loudly_on_unwritable_dir(self):
+        for renderer, field, specs in _RENDERERS + [
+            ("render_docker_args.py", "pip_packages", []),
+        ]:
+            with self.subTest(renderer=renderer):
+                rc, stdout, stderr, out_path = self._render_into_readonly_dir(
+                    renderer, {"version": 1, field: specs}
+                )
+                out = stdout + stderr
+                self.assertNotEqual(rc, 0, "must not report success")
+                self.assertIn("[ERROR]", out)
+                self.assertIn("cannot write", out)
+                # Actionable: names the directory at fault and the repair.
+                self.assertIn(os.path.dirname(out_path), out)
+                self.assertIn("lager update", out)
+                # A traceback is what we are replacing; it must not resurface.
+                self.assertNotIn("Traceback", out)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -789,9 +789,10 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         (lagerdata) is not in that group, so a plain `echo > /etc/lager/build-hash`
         fails with EACCES and — when the write was unchecked — left a stale hash
         that made every subsequent `lager update` rebuild needlessly. Step 10 has
-        already `chmod 777`'d /etc/lager, so we write a temp file in that dir and
+        already made /etc/lager group-writable by this user (owner www-data,
+        group <box user>, setgid), so we write a temp file in that dir and
         `mv -f` it over the target: unlinking the old file needs only
-        directory-write (granted by 777), and the replacement is owned by
+        directory-write, and the replacement is owned by
         lagerdata, so future runs can overwrite it directly. Same-filesystem mv
         is an atomic rename. The mktemp template's trailing X's must stay at the
         end of the name.
@@ -1856,10 +1857,28 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         progress.update("Setting up directories...")
     log('Setting up directories...', nl=False)
 
-    # Full paths match the sudoers whitelist in the deployment script; mkdir
-    # and chmod are idempotent and passwordless via sudoers.
+    # Full paths match the sudoers whitelist in the deployment script; mkdir,
+    # chown and chmod are idempotent and passwordless via sudoers.
+    #
+    # /etc/lager is written by two users and needs to be writable by both:
+    #   - the container, which runs as www-data (uid 33)     -> owner
+    #   - start_box.sh + this command, which run on the host
+    #     as the box's login user                            -> group
+    # It used to be `chmod 777`, which granted that by making the directory
+    # WORLD-writable — any local account could replace box_config.json,
+    # saved_nets.json or the org secrets. Owner www-data + group <box user> +
+    # setgid gives both writers what they need and nobody else. `chown` before
+    # `chmod` so the setgid bit isn't applied to a group we're about to change.
+    #
+    # Note the 2-argument forms: the sudoers spec is `chown * /etc/lager`, which
+    # matches exactly one argument before the path, so `chown -R ...` would not
+    # match it. Only the directory's own group and mode matter here — the
+    # renderers and store_build_hash replace files via tmp+rename, which needs
+    # permission on the directory, not on the file being replaced.
     dirs_result = run_ssh_command_with_output(
-        'sudo /bin/mkdir -p /etc/lager && sudo /bin/chmod 777 /etc/lager && '
+        'sudo /bin/mkdir -p /etc/lager && '
+        'sudo /bin/chown 33:"$(id -g)" /etc/lager && '
+        'sudo /bin/chmod 2775 /etc/lager && '
         '{ mkdir -p ~/third_party/customer-binaries && '
         'chmod 777 ~/third_party/customer-binaries; } || true',
         timeout_secs=30
@@ -1871,13 +1890,14 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         log_error('Error: Failed to create /etc/lager on the box')
         click.echo('This is usually a sudo permission issue. SSH into the box and run:', err=True)
         click.echo(f'  ssh {ssh_host}', err=True)
-        click.echo('  sudo mkdir -p /etc/lager && sudo chmod 777 /etc/lager', err=True)
+        click.echo('  sudo mkdir -p /etc/lager && sudo chown 33:"$(id -g)" /etc/lager '
+                   '&& sudo chmod 2775 /etc/lager', err=True)
         click.echo('Then run `lager box update` again.', err=True)
         ctx.exit(1)
     log_status('OK', 'green')
 
-    # Persist the build-inputs hash now that /etc/lager is world-writable (Step
-    # 10). This is what lets the next run's cache-validity check short-circuit to
+    # Persist the build-inputs hash now that /etc/lager is group-writable by this
+    # user (Step 10). This is what lets the next run's cache-validity check short-circuit to
     # the no-op fast path instead of rebuilding; a stale hash defeats it. Unlike
     # the old unchecked write, store_build_hash verifies success and we surface a
     # visible warning on failure rather than silently leaving a stale hash.

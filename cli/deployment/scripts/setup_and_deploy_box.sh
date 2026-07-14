@@ -747,13 +747,21 @@ if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -d /etc/lager" 2>/dev/null; the
     TEMP_SCRIPT=$(mktemp)
     cat > "$TEMP_SCRIPT" << 'SCRIPT_EOF'
 #!/bin/bash
-# Create /etc/lager directory for box configuration
-# Docker containers run as www-data (UID 33), so set ownership accordingly
+# Create /etc/lager directory for box configuration.
+#
+# Ownership is shared between two writers, and both need it:
+#   - the container, which runs as www-data (UID 33)  -> owner
+#   - start_box.sh, which runs on the host as the box's login user, and whose
+#     box_config renderers create files here          -> group
+# Owner-only 33:33 755 (the old value) silently broke every renderer: creating
+# a file needs write permission on the DIRECTORY, so `lager box config apply`
+# reported success while none of the pip/cargo/npm/mount config was applied.
+# setgid keeps files created here in the box user's group.
 if [ ! -d /etc/lager ]; then
     sudo mkdir -p /etc/lager
-    sudo chown -R 33:33 /etc/lager
-    sudo chmod 755 /etc/lager
-    echo "[OK] /etc/lager directory created (owned by www-data UID 33)"
+    sudo chown -R 33:"$(id -g)" /etc/lager
+    sudo chmod 2775 /etc/lager
+    echo "[OK] /etc/lager directory created (www-data UID 33, group $(id -gn), group-writable)"
 fi
 
 # Initialize saved_nets.json if it doesn't exist
@@ -773,10 +781,13 @@ else
     print_success "/etc/lager directory exists"
 fi
 
-# Always ensure correct permissions (even if directory existed before)
+# Always ensure correct permissions (even if directory existed before). This
+# also repairs boxes provisioned by an older CLI, which left /etc/lager
+# owner-only and therefore unwritable by start_box.sh's box_config renderers.
+# Single-quoted so $(id -g) is evaluated ON THE BOX, not on the operator's host.
 print_info "Ensuring correct permissions on /etc/lager..."
-ssh_t "${BOX_USER}@${BOX_IP}" "sudo chown -R 33:33 /etc/lager && sudo chmod 755 /etc/lager"
-print_success "Permissions set correctly (owned by www-data UID 33)"
+ssh_t "${BOX_USER}@${BOX_IP}" 'sudo chown -R 33:"$(id -g)" /etc/lager && sudo chmod 2775 /etc/lager'
+print_success "Permissions set correctly (www-data UID 33, group-writable by ${BOX_USER})"
 
 # Ensure saved_nets.json exists and is writable
 if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -f /etc/lager/saved_nets.json" 2>/dev/null; then
