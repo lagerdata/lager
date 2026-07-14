@@ -282,7 +282,7 @@ class TestDefineModelWrites:
         assert len(drv.writes) == 3
         assert drv.writes[0].startswith(':BATT:MOD9:VOC:SIMP "')
         assert drv.writes[1].startswith(':BATT:MOD9:RES:SIMP "')
-        assert drv.writes[2] == ":BATT:MOD:SAVE:INT 9"
+        assert drv.writes[2] == ":BATT:MOD:SAVE:INTERNAL 9"
         # Each SIMP payload carries exactly the 11 points.
         for write in drv.writes[:2]:
             payload = write.split('"')[1]
@@ -297,11 +297,11 @@ class TestDefineModelWrites:
             ":BATT:MOD3:VOC:STEP?": "101", ":BATT:MOD3:RES:STEP?": "101"})
         drv.define_model(3, voc, res)
 
-        assert drv.writes[-1] == ":BATT:MOD:SAVE:INT 3"
+        assert drv.writes[-1] == ":BATT:MOD:SAVE:INTERNAL 3"
         staged = drv.writes[:-1]
         for element, values in (("VOC", voc), ("RES", res)):
             plain = [w for w in staged if w.startswith(f':BATT:MOD3:{element} "')]
-            appends = [w for w in staged if w.startswith(f':BATT:MOD3:{element}:APP "')]
+            appends = [w for w in staged if w.startswith(f':BATT:MOD3:{element}:APPEND "')]
             assert len(plain) == 1, f"{element}: exactly one non-APPend opener"
             assert appends, f"{element}: the 101-point curve must be chunked"
             # The opener must come before every APPend for this element.
@@ -332,7 +332,7 @@ class TestDefineModelWrites:
         drv.define_model(9, voc, res)
         assert drv.writes[0] == ":BATT:OUTP OFF"
         assert drv.writes[-1] == ":BATT:OUTP ON"
-        assert ":BATT:MOD:SAVE:INT 9" in drv.writes
+        assert ":BATT:MOD:SAVE:INTERNAL 9" in drv.writes
 
     def test_output_restored_even_when_a_write_fails(self, keithley_mod):
         voc, res = _curve(11)
