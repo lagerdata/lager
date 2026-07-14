@@ -237,6 +237,47 @@ def list_models(netname: str, **_):
     return {"models": catalog}
 
 
+def format_model_summary(model) -> str:
+    """One-line summary of an exported model ({"slot": N, "points": [...]}).
+
+    Shared by export_model (printed on the impl-script path) and the box's
+    /battery/command HTTP endpoint (returned as the response message) so
+    the two transports never drift.
+    """
+    points = model.get("points") or []
+    voc = [p["voc"] for p in points]
+    res = [p["resistance"] for p in points]
+    ranges = ""
+    if points:
+        ranges = (f", VOC {min(voc):g}-{max(voc):g} V"
+                  f", resistance {min(res):g}-{max(res):g} Ω")
+    return (f"Battery model slot {model.get('slot')}: "
+            f"{len(points)} points{ranges}")
+
+
+def export_model(netname: str, slot: int = None, **_):
+    """Export a saved battery model's curve points."""
+    drv, _ = _dispatcher._resolve_net_and_driver(netname)
+    model = drv.read_model(slot)
+    print(f"{GREEN}{format_model_summary(model)}{RESET}")
+    return model
+
+
+def create_model(netname: str, slot: int = None, voc: list = None,
+                 resistance: list = None, **_):
+    """Write a custom battery model into a memory slot.
+
+    Overwrites the slot if it already holds a model — the 2281S has no SCPI
+    to delete/empty a slot, so occupancy gating (--force) happens in the CLI
+    before this action is invoked.
+    """
+    drv, _ = _dispatcher._resolve_net_and_driver(netname)
+    drv.define_model(slot, voc, resistance)
+    count = len(voc or [])
+    print(f"{GREEN}Battery model saved to slot {slot} ({count} points).{RESET}")
+    return {"slot": slot, "points": count}
+
+
 def enable_battery(netname: str, **_):
     """Enable battery simulator output."""
     drv, _ = _dispatcher._resolve_net_and_driver(netname)

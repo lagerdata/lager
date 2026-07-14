@@ -30,7 +30,9 @@ from ...core.net_helpers import (
     NET_ROLES,
 )
 from ...context import get_impl_path, get_default_net
+from ...errors import LagerError, connection_error, is_connection_error
 from ..development.python import run_python_internal
+from .battery_model_csv import parse_model_csv, write_model_csv
 
 
 BATTERY_ROLE = NET_ROLES["battery"]  # "battery"
@@ -114,6 +116,50 @@ def _run_backend(ctx, box, action: str, **params):
         org=None,
         args=(),
     )
+
+
+def _battery_command_request(ctx, box, action: str, timeout: int = 30, **params):
+    """POST an action to the box's /battery/command endpoint and return the
+    parsed JSON result.
+
+    Unlike _run_backend — which only echoes result['message'] and falls back
+    to the impl-script path — this gives the caller the structured payload
+    (e.g. result['models'], result['model']), which model-create's occupancy
+    guard and model-export's CSV writer need. There is no fallback: these
+    actions require the box HTTP endpoint.
+    """
+    import requests
+    from ...box_storage import resolve_and_validate_box
+
+    box_ip = resolve_and_validate_box(ctx, box)
+    url = f"http://{box_ip}:9000/battery/command"
+    payload = {"netname": params.get('netname'), "action": action, "params": params}
+    try:
+        response = requests.post(url, json=payload, timeout=timeout)
+    except Exception as exc:
+        if is_connection_error(exc):
+            raise connection_error(exc, host=box_ip)
+        raise
+    if response.status_code != 200:
+        body = ""
+        try:
+            body = response.json().get('error', '')
+        except Exception:
+            pass
+        if response.status_code == 400 and 'Unknown action' in body:
+            raise LagerError(
+                f"The box does not support the battery '{action}' action yet.",
+                cause="Its Lager software predates this command.",
+                fixes=[f"lager update --box {box}"],
+            )
+        raise LagerError(
+            f"Box battery endpoint returned HTTP {response.status_code}.",
+            cause=body or None,
+        )
+    result = response.json()
+    if not result.get('success'):
+        raise LagerError(result.get('error', 'Unknown error'))
+    return result
 
 
 # ---------- CLI ----------
@@ -376,6 +422,90 @@ def models(ctx, box):
     resolved_box = resolve_box(ctx, box)
     netname = require_netname(ctx, "battery")
     _run_backend(ctx, resolved_box, 'list_models', netname=netname)
+
+
+@battery.command(name='model-create')
+@click.argument('SLOT', type=click.IntRange(1, 9))
+@click.pass_context
+@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option('--csv', 'csv_path', required=True,
+              type=click.Path(exists=True, dir_okay=False),
+              help='CSV curve file: voc,resistance columns (header optional), '
+                   'exactly 11 or 101 rows')
+@click.option('--force', is_flag=True,
+              help='Overwrite the slot if it already holds a model')
+def model_create(ctx, box, slot, csv_path, force):
+    """Create a custom battery model in a memory slot from a CSV file
+
+    The CSV has two columns, open-circuit voltage (V) and internal
+    resistance (Ω), ordered from empty to full: VOC non-decreasing,
+    resistance non-increasing. 11-row files are interpolated to 101 points
+    on the instrument. Saving overwrites the slot, and slots cannot be
+    emptied afterwards (the instrument has no delete) — only overwritten.
+    """
+    try:
+        voc, resistance = parse_model_csv(csv_path)
+    except ValueError as exc:
+        raise LagerError(
+            "Battery model CSV validation failed.",
+            cause=str(exc),
+            fixes=[f"lager battery [NET_NAME] model-export {slot} --csv example.csv  "
+                   "(an existing slot makes a good template)"],
+        )
+
+    resolved_box = resolve_box(ctx, box)
+    netname = require_netname(ctx, "battery")
+
+    if not force:
+        # Occupancy guard: saving silently overwrites and there is no way to
+        # empty a slot afterwards, so refuse occupied slots without --force.
+        catalog = _battery_command_request(
+            ctx, resolved_box, 'list_models', netname=netname)
+        if any(entry.get('slot') == slot for entry in catalog.get('models', [])):
+            raise LagerError(
+                f"Battery model slot {slot} already holds a model.",
+                cause="Saving would silently overwrite it, and the instrument "
+                      "has no way to delete a model — only overwrite it.",
+                fixes=[
+                    f"lager battery {netname} model-create {slot} --csv {csv_path} --force",
+                    f"lager battery {netname} models   (find a free slot)",
+                ],
+            )
+
+    _run_backend(ctx, resolved_box, 'create_model', netname=netname,
+                 slot=slot, voc=voc, resistance=resistance)
+    click.echo(f"Load it with 'lager battery {netname} model {slot}'; "
+               f"'models' lists all slots.")
+
+
+@battery.command(name='model-export')
+@click.argument('SLOT', type=click.IntRange(1, 9))
+@click.pass_context
+@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option('--csv', 'csv_path', required=True, type=click.Path(dir_okay=False),
+              help='Output CSV file to write')
+def model_export(ctx, box, slot, csv_path):
+    """Export a saved battery model's curve to a CSV file
+
+    Writes the slot's 101 voc,resistance points in the format model-create
+    accepts, for the export → edit → create round-trip. Read-only: exporting
+    does not change the active model.
+    """
+    resolved_box = resolve_box(ctx, box)
+    netname = require_netname(ctx, "battery")
+    result = _battery_command_request(
+        ctx, resolved_box, 'export_model', netname=netname, slot=slot)
+    model = result.get('model') or {}
+    points = model.get('points') or []
+    if not points:
+        raise LagerError(
+            f"The box returned no curve points for battery model slot {slot}.",
+            cause="Its Lager software may predate the model-export command.",
+            fixes=[f"lager update --box {resolved_box}"],
+        )
+    write_model_csv(csv_path, points)
+    click.echo(f"\033[92m{result.get('message', 'Model exported')}\033[0m")
+    click.echo(f"Wrote {len(points)} points to {csv_path}")
 
 
 @battery.command()

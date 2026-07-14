@@ -314,6 +314,30 @@ def register_battery_routes(app: Flask) -> None:
                     result['models'] = models
                     result['message'] = format_model_catalog(models)
 
+                elif action == 'export_model':
+                    # Read-only export of one saved model slot. The full
+                    # point list rides in the response ('model') for the CLI
+                    # to write to CSV client-side; the message is the shared
+                    # one-line summary.
+                    from lager.power.battery.dispatcher import format_model_summary
+                    model = battery.read_model(params.get('slot'))
+                    result['model'] = model
+                    result['message'] = format_model_summary(model)
+
+                elif action == 'create_model':
+                    # Write a custom model into a slot (silently overwrites —
+                    # the 2281S has no delete; the CLI gates occupied slots
+                    # behind --force before sending this action). The driver
+                    # validates everything and raises BatteryBackendError
+                    # with friendly messages, which surfaces below as
+                    # success:false at 200 like every driver rejection.
+                    slot = params.get('slot')
+                    voc = params.get('voc') or []
+                    battery.define_model(slot, voc, params.get('resistance'))
+                    result['model'] = {'slot': slot, 'points': len(voc)}
+                    result['message'] = (
+                        f'Battery model saved to slot {slot} ({len(voc)} points).')
+
                 elif action == 'enable_battery':
                     battery.enable()
                     result['message'] = 'Battery output enabled'

@@ -360,6 +360,243 @@ class KeithleyBattery(BatteryNet):
         models.extend({"slot": None, "name": name} for name in BUILTIN_MODELS)
         return models
 
+    # Model memory geometry (2281S reference manual 077114601): a complete
+    # model holds exactly 101 points per element; :SIMPlify takes exactly 11
+    # points and interpolates to 101; each SCPI program message is capped at
+    # 2048 characters, so full curves are written in :APPend chunks.
+    MODEL_POINTS_FULL = 101
+    MODEL_POINTS_SIMPLE = 11
+    # Values per staged write: 25 values is ~200-350 characters, far under
+    # the 2048-character message cap even with worst-case float formatting.
+    _MODEL_CHUNK_POINTS = 25
+
+    def read_model(self, slot: int) -> dict:
+        """Read a saved battery model's curve out of a memory slot.
+
+        Read-only, hardware-verified: :BATT:MOD<n>:VOC? / :RES? answer with
+        the SAVED slot's points directly (one comma-separated reply per
+        element), independent of which model is active — no :BATT:MOD:RCL is
+        needed, so exporting never changes the active model. An empty slot
+        answers all-zeros rather than erroring, so occupancy is checked with
+        the same :BATT:MOD<n>:VOC:STEPs? probe model_catalog uses.
+
+        Returns:
+            {"slot": slot, "points": [{"voc": float, "resistance": float},
+            ...]} with exactly STEPs? entries, in SOC order (index 0 = empty).
+
+        Raises:
+            BatteryBackendError: If the slot is invalid or empty, or an
+                element reply cannot be parsed into the expected point count.
+        """
+        slot = self._validate_model_slot(slot)
+        steps = self._model_steps(slot)
+        if steps <= 0:
+            raise BatteryBackendError(
+                f"Battery model slot {slot} is empty — there is nothing to export.\n"
+                f"  Use 'models' to list the slots that hold a saved model."
+            )
+        curves = {}
+        for element in ("VOC", "RES"):
+            try:
+                raw = self._query(f":BATT:MOD{slot}:{element}?")
+            except Exception as exc:
+                raise BatteryBackendError(
+                    f"Could not read battery model slot {slot} ({element}): {exc}"
+                ) from exc
+            try:
+                values = [float(v) for v in raw.strip().strip('"').split(",") if v.strip()]
+            except ValueError as exc:
+                raise BatteryBackendError(
+                    f"Unexpected {element} reply for battery model slot {slot}: {raw!r}"
+                ) from exc
+            if len(values) != steps:
+                raise BatteryBackendError(
+                    f"Battery model slot {slot} {element} readback is incomplete: "
+                    f"expected {steps} points, got {len(values)}."
+                )
+            curves[element] = values
+        points = [
+            {"voc": voc, "resistance": res}
+            for voc, res in zip(curves["VOC"], curves["RES"])
+        ]
+        return {"slot": slot, "points": points}
+
+    def define_model(self, slot: int, voc: list, resistance: list) -> None:
+        """Write a custom battery model into a memory slot (create/overwrite).
+
+        The 2281S builds a model from two curves indexed by SOC (index 0 =
+        empty): open-circuit voltage and internal resistance. A complete
+        model is exactly 101 points per element; exactly 11 points are also
+        accepted via :SIMPlify, which interpolates them to 101 on the
+        instrument. :BATT:MOD:SAVE:INTernal then persists the staged model to
+        the slot — SILENTLY OVERWRITING whatever was there. There is no SCPI
+        to delete/empty a slot (verified against the full reference manual);
+        a slot can only be overwritten. Callers gate overwrites (--force).
+
+        Everything is validated here before any instrument write so users get
+        line-of-sight errors instead of raw SCPI 701/702/710 codes. Writes
+        run with the output disabled and restored afterwards (error 704:
+        config writes are not permitted while the model is running), matching
+        _set_with_output_management.
+
+        Args:
+            slot: Target memory slot, 1-9 (slot 0 is DISCHARGE, not writable).
+            voc: Open-circuit voltages in volts, non-decreasing, 0 < v <= 60.
+            resistance: Internal resistances in ohms, non-increasing,
+                0 < r <= 100. Same length as voc: exactly 11 or 101 points.
+
+        Raises:
+            BatteryBackendError: On validation failure, an instrument-rejected
+                write, or a post-save STEPs? verification mismatch.
+        """
+        import math
+
+        slot = self._validate_model_slot(slot)
+        try:
+            voc = [float(v) for v in (voc or [])]
+            resistance = [float(r) for r in (resistance or [])]
+        except (TypeError, ValueError) as exc:
+            raise BatteryBackendError(
+                f"Battery model points must be numbers: {exc}") from exc
+        if len(voc) != len(resistance):
+            raise BatteryBackendError(
+                f"Battery model needs one resistance per VOC point: got "
+                f"{len(voc)} VOC and {len(resistance)} resistance values.")
+        if len(voc) not in (self.MODEL_POINTS_SIMPLE, self.MODEL_POINTS_FULL):
+            raise BatteryBackendError(
+                f"Battery model must have exactly {self.MODEL_POINTS_SIMPLE} points "
+                f"(interpolated on the instrument) or {self.MODEL_POINTS_FULL} points; "
+                f"got {len(voc)}.")
+        for name, values, limit, unit in (
+                ("VOC", voc, 60.0, "V"), ("resistance", resistance, 100.0, "Ω")):
+            for i, v in enumerate(values):
+                if not math.isfinite(v):
+                    raise BatteryBackendError(
+                        f"Battery model {name} point {i + 1} is not a finite number.")
+                if v <= 0 or v > limit:
+                    raise BatteryBackendError(
+                        f"Battery model {name} point {i + 1} ({v:g} {unit}) is out of "
+                        f"range: must be > 0 and <= {limit:g} {unit}.")
+        for i in range(1, len(voc)):
+            if voc[i] < voc[i - 1]:
+                raise BatteryBackendError(
+                    f"Battery model VOC must be non-decreasing (SOC index 0 is the "
+                    f"empty battery): point {i + 1} ({voc[i]:g} V) is below point "
+                    f"{i} ({voc[i - 1]:g} V).")
+            if resistance[i] > resistance[i - 1]:
+                raise BatteryBackendError(
+                    f"Battery model resistance must be non-increasing: point {i + 1} "
+                    f"({resistance[i]:g} Ω) is above point {i} "
+                    f"({resistance[i - 1]:g} Ω).")
+
+        # All validation passed — now touch the instrument. Mirror
+        # _set_with_output_management around the whole write sequence (one
+        # disable/restore, not one per chunk).
+        was_enabled = self._is_batt_output_on()
+        if was_enabled:
+            try:
+                self._write(":BATT:OUTP OFF", check_errors=False)
+            except Exception:
+                pass
+        try:
+            self._ensure_batt_mode()
+            for element, values in (("VOC", voc), ("RES", resistance)):
+                if len(values) == self.MODEL_POINTS_SIMPLE:
+                    payload = ",".join(self._fmt_model_value(v) for v in values)
+                    self._checked_model_write(
+                        f':BATT:MOD{slot}:{element}:SIMP "{payload}"')
+                else:
+                    first = True
+                    for chunk in self._model_chunks(values):
+                        cmd = (f':BATT:MOD{slot}:{element} "{chunk}"' if first
+                               else f':BATT:MOD{slot}:{element}:APP "{chunk}"')
+                        self._checked_model_write(cmd)
+                        first = False
+            self._checked_model_write(f":BATT:MOD:SAVE:INT {slot}")
+        finally:
+            if was_enabled:
+                try:
+                    self._write(":BATT:OUTP ON", check_errors=False)
+                except Exception:
+                    pass
+
+        # Verify the persisted model: both elements must report a complete
+        # 101-point curve (the 11-point :SIMPlify path interpolates to 101).
+        for element in ("VOC", "RES"):
+            steps = self._model_steps(slot, element=element)
+            if steps != self.MODEL_POINTS_FULL:
+                raise BatteryBackendError(
+                    f"Battery model save to slot {slot} did not verify: the "
+                    f"instrument reports {steps} {element} points instead of "
+                    f"{self.MODEL_POINTS_FULL}. The slot may hold an incomplete model."
+                )
+
+    @staticmethod
+    def _validate_model_slot(slot) -> int:
+        """Validate a writable/exportable model slot index (1-9)."""
+        try:
+            value = int(slot)
+        except (TypeError, ValueError):
+            value = None
+        if value is None or str(slot).strip() != str(value) or not 1 <= value <= 9:
+            raise BatteryBackendError(
+                f"Battery model slot must be a number from 1 to 9, got {slot!r}. "
+                f"(Slot 0 is the built-in DISCHARGE mode and cannot be exported "
+                f"or overwritten.)")
+        return value
+
+    def _model_steps(self, slot: int, element: str = "VOC") -> int:
+        """Stored point count for one element of a slot (0 = empty slot).
+
+        Same read-only :BATT:MOD<n>:<el>:STEPs? probe model_catalog uses.
+        """
+        try:
+            raw = self._query(f":BATT:MOD{slot}:{element}:STEP?")
+        except Exception as exc:
+            raise BatteryBackendError(
+                f"Battery model memory query failed for slot {slot}: {exc}"
+            ) from exc
+        try:
+            return int(float(raw.strip() or "0"))
+        except (TypeError, ValueError):
+            return 0
+
+    def _checked_model_write(self, cmd: str) -> None:
+        """Write one model-memory command and surface queued errors friendly.
+
+        The drain doubles as the post-rejection buffer flush: a rejected
+        command can corrupt the parser's input buffer so the NEXT query times
+        out — :SYST:ERR? right after the write clears it either way.
+        """
+        self._write(cmd, check_errors=False)
+        try:
+            self._drain_error_queue()
+        except BatteryBackendError as exc:
+            code = self._scpi_error_code(exc)
+            friendly = {
+                701: "the instrument reports the model data is too short "
+                     "(fewer points arrived than expected)",
+                702: "the instrument reports the model data is too long "
+                     "(more points arrived than expected)",
+                710: "the instrument rejected the model data (VOC must be "
+                     "non-decreasing and resistance non-increasing)",
+            }.get(code)
+            if friendly:
+                raise BatteryBackendError(
+                    f"Battery model write failed: {friendly}.") from exc
+            raise
+
+    @staticmethod
+    def _fmt_model_value(v: float) -> str:
+        """Compact float formatting for SCPI model payloads (%.6g)."""
+        return f"{v:.6g}"
+
+    def _model_chunks(self, values: list[float]):
+        """Split values into comma-joined strings of _MODEL_CHUNK_POINTS."""
+        for i in range(0, len(values), self._MODEL_CHUNK_POINTS):
+            yield ",".join(self._fmt_model_value(v)
+                           for v in values[i:i + self._MODEL_CHUNK_POINTS])
+
     @staticmethod
     def _scpi_error_code(exc) -> int | None:
         """Extract the SCPI error code from an instrument exception.
