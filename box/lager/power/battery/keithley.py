@@ -506,13 +506,19 @@ class KeithleyBattery(BatteryNet):
                     self._checked_model_write(
                         f':BATT:MOD{slot}:{element}:SIMP "{payload}"')
                 else:
+                    # Full :APPEND spelling — the standard SCPI short form
+                    # (:APP) is -113 "Undefined header" on firmware 01.08b
+                    # (hardware-verified), unlike :SIMP/:STEP which abbreviate
+                    # fine. The plain (non-append) opener resets the staging
+                    # area, so a previous partial write can't accumulate.
                     first = True
                     for chunk in self._model_chunks(values):
                         cmd = (f':BATT:MOD{slot}:{element} "{chunk}"' if first
-                               else f':BATT:MOD{slot}:{element}:APP "{chunk}"')
+                               else f':BATT:MOD{slot}:{element}:APPEND "{chunk}"')
                         self._checked_model_write(cmd)
                         first = False
-            self._checked_model_write(f":BATT:MOD:SAVE:INT {slot}")
+            # Full :INTERNAL spelling for the same reason (:INT is -113).
+            self._checked_model_write(f":BATT:MOD:SAVE:INTERNAL {slot}")
         finally:
             if was_enabled:
                 try:
@@ -520,8 +526,11 @@ class KeithleyBattery(BatteryNet):
                 except Exception:
                     pass
 
-        # Verify the persisted model: both elements must report a complete
-        # 101-point curve (the 11-point :SIMPlify path interpolates to 101).
+        # Verify both elements report a complete 101-point curve (the
+        # 11-point :SIMPlify path interpolates to 101). Note STEPs? also
+        # counts staged-but-unsaved data (hardware-verified), so persistence
+        # itself is confirmed by the SAVE write draining no error above;
+        # this catches an element that never reached 101 points.
         for element in ("VOC", "RES"):
             steps = self._model_steps(slot, element=element)
             if steps != self.MODEL_POINTS_FULL:
