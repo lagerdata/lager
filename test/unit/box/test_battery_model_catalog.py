@@ -154,23 +154,24 @@ class TestKeithleyModelCatalog:
             ":BATT:MOD3:VOC:STEP?": "101",
         })
         catalog = drv.model_catalog()
-        assert catalog[0] == {"slot": 0, "name": "DISCHARGE"}
-        assert {"slot": 1, "name": None} in catalog
+        assert catalog[0] == {"slot": 1, "name": None}
         assert {"slot": 3, "name": None} in catalog
-        # Unoccupied slots are omitted.
-        assert not any(entry["slot"] == 2 for entry in catalog)
+        # Unoccupied slots are omitted, and there is no slot-0 DISCHARGE
+        # entry: firmware rejects every SCPI recall form for discharge
+        # (hardware-verified 2026-07-14), so listing it would advertise an
+        # unloadable input to the 'model' command.
+        assert not any(entry["slot"] in (0, 2) for entry in catalog)
         # The five firmware built-ins are always listed, slot-less.
         builtins = [entry["name"] for entry in catalog if entry["slot"] is None]
         assert builtins == list(keithley_mod.BUILTIN_MODELS)
         # All nine slots were probed, read-only.
         assert drv.commands == [f":BATT:MOD{i}:VOC:STEP?" for i in range(1, 10)]
 
-    def test_empty_slots_leave_discharge_and_builtins_only(self, keithley_mod):
+    def test_empty_slots_leave_builtins_only(self, keithley_mod):
         drv = _driver_with_replies(keithley_mod)
         catalog = drv.model_catalog()
-        assert catalog[0] == {"slot": 0, "name": "DISCHARGE"}
-        assert [e for e in catalog if e["slot"] not in (0, None)] == []
-        assert len(catalog) == 1 + len(keithley_mod.BUILTIN_MODELS)
+        assert [e for e in catalog if e["slot"] is not None] == []
+        assert len(catalog) == len(keithley_mod.BUILTIN_MODELS)
 
     def test_odd_step_replies_treated_as_empty(self, keithley_mod):
         drv = _driver_with_replies(keithley_mod, replies={
@@ -288,11 +289,21 @@ class TestSetModelVerification:
         assert drv.writes == [":BATT:MOD:RCL 1"]
         assert drv._active_model_name == "slot 1"
 
-    def test_discharge_slot_zero(self, keithley_mod):
-        drv = self._drv(keithley_mod, "0")
-        drv.set_model("discharge")
-        assert drv.writes == [":BATT:MOD:RCL 0"]
-        assert drv._active_model_name == "DISCHARGE"
+    def test_discharge_spellings_all_rejected_without_writes(self, keithley_mod):
+        # Discharge is not selectable over SCPI on firmware 01.08b — every
+        # recall form is rejected (hardware-verified 2026-07-14:
+        # ':BATT:MOD:RCL 0' is -222 "Data out of range" since only 1-9 are
+        # valid numeric arguments, ':BATT:MOD:RCL DISCHARGE' is -102 Syntax
+        # error, and the quoted/abbreviated forms fail too). set_model must
+        # fail fast with guidance instead of sending a doomed recall.
+        for spelling in ("discharge", "DISCHARGE", 0, "0"):
+            drv = self._drv(keithley_mod, "LEAD_ACID12")
+            with pytest.raises(keithley_mod.BatteryBackendError) as excinfo:
+                drv.set_model(spelling)
+            msg = str(excinfo.value)
+            assert "cannot be selected" in msg, spelling
+            assert "front" in msg and "'models'" in msg, spelling
+            assert drv.writes == [], spelling  # nothing sent to the instrument
 
     def test_empty_slot_detected_by_unchanged_readback(self, keithley_mod):
         # Recall of empty slot 7 fails silently; RCL? still reports slot 5.
@@ -345,7 +356,6 @@ class TestListModelsAction:
 
     def test_returns_structured_payload(self, dispatcher_mod, capsys):
         catalog = [
-            {"slot": 0, "name": "DISCHARGE"},
             {"slot": 1, "name": None},
             {"slot": None, "name": "LI-ION4_2"},
         ]
@@ -355,7 +365,6 @@ class TestListModelsAction:
         # response payload, like the 'state' action's structured dict.
         assert result == {"models": catalog}
         out = capsys.readouterr().out
-        assert "DISCHARGE" in out
         assert "(custom model)" in out
         assert "LI-ION4_2 (built-in)" in out
         assert "valid inputs to the 'model' command" in out
@@ -374,14 +383,12 @@ class TestListModelsAction:
 class TestFormatModelCatalog:
     def test_table_shape(self, dispatcher_mod):
         text = dispatcher_mod.format_model_catalog([
-            {"slot": 0, "name": "DISCHARGE"},
             {"slot": 4, "name": None},
             {"slot": None, "name": "NIMH12"},
         ])
         lines = text.splitlines()
         assert lines[0] == "Slot  Model"
-        assert lines[1].startswith("0") and "DISCHARGE" in lines[1]
-        assert lines[2].startswith("4") and "(custom model)" in lines[2]
-        assert lines[3].startswith("-") and "NIMH12 (built-in)" in lines[3]
+        assert lines[1].startswith("4") and "(custom model)" in lines[1]
+        assert lines[2].startswith("-") and "NIMH12 (built-in)" in lines[2]
         assert lines[-1] == (
             "Slots and names above are valid inputs to the 'model' command.")

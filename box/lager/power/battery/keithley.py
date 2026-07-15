@@ -310,14 +310,18 @@ class KeithleyBattery(BatteryNet):
         query — :BATT:MODel:CATalog? does not exist — so the catalog is
         assembled from the documented read-only model-memory queries instead:
 
-        - Slot 0 (DISCHARGE, basic constant-voltage simulation) is always
-          available.
         - Slots 1-9 are probed with :BATT:MOD<n>:VOC:STEPs? (query only),
           which returns the number of values stored in that model. A slot is
           occupied when the length is non-zero. Internal memory stores models
           by index only, so occupied slots have no retrievable name.
         - The five firmware built-in models (recallable by name via
           :BATT:MOD:RCL) are appended with slot None.
+        - Discharge mode is NOT listed: firmware 01.08b rejects every SCPI
+          recall form for it (numeric 0 is -222, the DISCHARGE name is -102;
+          hardware-verified 2026-07-14), so it is front-panel-only and would
+          be a lie in a catalog whose entries feed the 'model' command.
+          (v0.31.10 hardcoded a slot-0 DISCHARGE entry here on the manual's
+          word; that entry was never loadable.)
 
         Read-only: issues only queries and never forces the Battery entry
         function — the model memory is not documented as mode-restricted.
@@ -329,7 +333,7 @@ class KeithleyBattery(BatteryNet):
             BatteryBackendError: If the instrument rejects the model-memory
                 query (older firmware) or does not answer it at all.
         """
-        models = [{"slot": 0, "name": "DISCHARGE"}]
+        models = []
         for idx in range(1, 10):
             try:
                 raw = self._query(f":BATT:MOD{idx}:VOC:STEP?")
@@ -440,7 +444,7 @@ class KeithleyBattery(BatteryNet):
         _set_with_output_management.
 
         Args:
-            slot: Target memory slot, 1-9 (slot 0 is DISCHARGE, not writable).
+            slot: Target memory slot, 1-9.
             voc: Open-circuit voltages in volts, non-decreasing, 0 < v <= 60.
             resistance: Internal resistances in ohms, non-increasing,
                 0 < r <= 100. Same length as voc: exactly 11 or 101 points.
@@ -549,9 +553,7 @@ class KeithleyBattery(BatteryNet):
             value = None
         if value is None or str(slot).strip() != str(value) or not 1 <= value <= 9:
             raise BatteryBackendError(
-                f"Battery model slot must be a number from 1 to 9, got {slot!r}. "
-                f"(Slot 0 is the built-in DISCHARGE mode and cannot be exported "
-                f"or overwritten.)")
+                f"Battery model slot must be a number from 1 to 9, got {slot!r}.")
         return value
 
     def _model_steps(self, slot: int, element: str = "VOC") -> int:
@@ -794,11 +796,10 @@ class KeithleyBattery(BatteryNet):
         """
         Set the battery model by name or numeric slot index.
 
-        The Keithley 2281S stores battery models in numbered memory slots (0-9).
+        The Keithley 2281S stores battery models in numbered memory slots (1-9).
         Each model defines voltage-SOC discharge curves and internal resistance.
 
         Model Storage Mechanism:
-        - Slot 0: DISCHARGE mode (basic constant-voltage simulation, always available)
         - Slots 1-9: Pre-configured or custom battery models
         - Factory-shipped instruments typically have common battery types in slots 1-4
         - Custom models can be created and saved via the instrument's front panel
@@ -809,10 +810,16 @@ class KeithleyBattery(BatteryNet):
         - Nickel-Metal Hydride: 'nimh', 'ni-mh', 'nickel' -> Slot 2
         - Nickel-Cadmium: 'nicd', 'ni-cd', 'nicad' -> Slot 3
         - Lead-Acid: 'lead', 'leadacid', 'lead-acid', 'sla' -> Slot 4
-        - Discharge mode: 'discharge' -> Slot 0
+
+        Discharge mode ('discharge' / 0) is NOT selectable over SCPI and is
+        rejected with guidance: firmware 01.08b refuses every recall form
+        (':BATT:MOD:RCL 0' is -222 Data out of range — only 1-9 are valid
+        numeric arguments — and ':BATT:MOD:RCL DISCHARGE' is -102 Syntax
+        error; quoted/abbreviated forms fail too; hardware-verified
+        2026-07-14). Discharge is front-panel-only on this firmware.
 
         Args:
-            partnumber_or_index: Battery model name (str) or numeric slot (0-9)
+            partnumber_or_index: Battery model name (str) or numeric slot (1-9)
 
         Raises:
             BatteryBackendError: If model slot is empty or invalid
@@ -837,14 +844,34 @@ class KeithleyBattery(BatteryNet):
             "leadacid": 4,
             "lead-acid": 4,
             "sla": 4,
-            "discharge": 0       # Slot 0: DISCHARGE mode (always available)
         }
-        
+
         cmd = None
-        
+
         # Initialize name variable for proper scope
         name = str(partnumber_or_index).lower().replace("-", "").replace("_", "").strip()
-        
+
+        # Discharge mode is not selectable over SCPI on this hardware:
+        # firmware 01.08b rejects every recall form (':BATT:MOD:RCL 0' is
+        # -222 "Data out of range" — only 1-9 are valid numeric arguments —
+        # ':BATT:MOD:RCL DISCHARGE' is -102 Syntax error, and the quoted /
+        # abbreviated forms fail too; hardware-verified 2026-07-14). Fail
+        # fast with the truth instead of letting a doomed recall no-op.
+        try:
+            is_slot_zero = int(partnumber_or_index) == 0
+        except (TypeError, ValueError):
+            is_slot_zero = False
+        if is_slot_zero or name == "discharge":
+            raise BatteryBackendError(
+                f"Discharge mode ('{partnumber_or_index}') cannot be selected "
+                f"over SCPI on this instrument — the firmware rejects every "
+                f"recall form for it (numeric 0 and the DISCHARGE name).\n"
+                f"  Select the discharge function from the instrument's front "
+                f"panel instead, or load a saved model:\n"
+                f"    • Use 'models' to list the slots and built-in names that "
+                f"can be loaded here"
+            )
+
         # Try numeric first
         try:
             idx = int(partnumber_or_index)
@@ -853,13 +880,13 @@ class KeithleyBattery(BatteryNet):
             cmd = f":BATT:MOD:RCL {idx}"
         except ValueError:
             # Try model name mapping
-            
+
             # Handle empty string case
             if not name:
                 raise BatteryBackendError(
-                    "Empty model name. Use numeric index (0-9) or model name like '18650', 'liion', 'lead-acid'"
+                    "Empty model name. Use numeric index (1-9) or model name like '18650', 'liion', 'lead-acid'"
                 )
-                
+
             if name in model_map:
                 cmd = f":BATT:MOD:RCL {model_map[name]}"
             else:
@@ -867,7 +894,7 @@ class KeithleyBattery(BatteryNet):
                 # manual's hyphenated spellings (LI-ION4_2) but always SEND
                 # the underscore form — the SCPI parser rejects hyphens.
                 builtin_token = partnumber_or_index.upper().replace("-", "_")
-                if builtin_token in BUILTIN_MODELS + ("DISCHARGE",):
+                if builtin_token in BUILTIN_MODELS:
                     cmd = f':BATT:MOD:RCL {builtin_token}'
                 else:
                     # Provide helpful suggestions for common typos
@@ -880,11 +907,11 @@ class KeithleyBattery(BatteryNet):
                         suggestions.append("For nickel-based, try: 'nimh' or 'nicd'")
 
                     suggestion_text = f"\n  {'. '.join(suggestions)}" if suggestions else ""
-                    common_names = ['18650', 'liion', 'nimh', 'nicd', 'lead-acid', 'discharge']
+                    common_names = ['18650', 'liion', 'nimh', 'nicd', 'lead-acid']
                     raise BatteryBackendError(
                         f"Unknown battery model '{partnumber_or_index}'.{suggestion_text}\n"
                         f"  Common model aliases: {common_names}\n"
-                        f"  Or use numeric slot (0-9) for custom models saved in instrument memory.\n"
+                        f"  Or use numeric slot (1-9) for custom models saved in instrument memory.\n"
                         f"  Note: Model slots may be empty if no custom model was saved."
                     )
         
@@ -906,20 +933,17 @@ class KeithleyBattery(BatteryNet):
         actual = self._active_model_raw()
         if target.lstrip("+-").isdigit():
             if actual == str(int(target)):
-                self._active_model_name = (
-                    "DISCHARGE" if int(target) == 0 else f"slot {int(target)}"
-                )
+                self._active_model_name = f"slot {int(target)}"
             else:
                 shown = actual if actual else "unchanged (no reply)"
                 raise BatteryBackendError(
                     f"Battery model slot '{partnumber_or_index}' appears to be empty — "
                     f"the recall did not take effect (active model: {shown}).\n"
-                    f"  The Keithley 2281S stores battery models in numbered memory slots (0-9).\n"
+                    f"  The Keithley 2281S stores battery models in numbered memory slots (1-9).\n"
                     f"  Options:\n"
                     f"    • Use 'models' to list the slots that hold a saved model\n"
-                    f"    • Use 'discharge' for basic constant-voltage simulation\n"
                     f"    • Use '18650', 'liion', 'nimh', 'nicd', or 'lead-acid' for common battery types\n"
-                    f"    • Save a custom battery model to this slot using the instrument front panel"
+                    f"    • Save a custom battery model to this slot with 'model-create'"
                 )
         else:
             # Built-in recall: RCL? echoes the built-in's name on success; a
