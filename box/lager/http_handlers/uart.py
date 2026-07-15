@@ -25,6 +25,18 @@ active_uart_sessions_lock = threading.Lock()
 # before giving up and reporting a terminal error.
 UART_RECONNECT_TIMEOUT = 60.0
 
+# A live read loop refreshes its session's 'last_activity' every iteration
+# (~0.1s, and at least every 0.25s while a device re-enumerates). If a
+# session's heartbeat ages past this, the loop is no longer making progress —
+# wedged in a blocking kernel read on a USB-serial adapter that vanished
+# without raising a device-gone error, so the reconnect/eviction paths never
+# ran. Such a session is a phantom: still registered, still holding its
+# per-net/per-device guard, with no live reader behind it. Reclaiming it lets
+# a fresh `start_uart` for the same net succeed instead of hitting a permanent
+# "already in use". Must stay comfortably above the loop's iteration period so
+# a merely-slow (not wedged) loop is never misjudged.
+STALE_SESSION_TIMEOUT = 30.0
+
 
 def _readable_open_error(netname: str, driver, exc: Exception) -> str:
     """Turn a serial-open failure into a human message.
@@ -86,8 +98,25 @@ def _uart_read_loop(socketio, session_id, netname, driver, stop_event):
         payload.update(extra)
         socketio.emit('uart_status', payload, namespace='/uart', room=session_id)
 
+    def touch():
+        # Heartbeat: prove this session's read loop is still making progress so
+        # a live session is never mistaken for a wedged one. A single dict
+        # get/set is atomic under the GIL, so no lock is needed; identity-guard
+        # so a session that stop_uart/disconnect already replaced under this
+        # sid isn't touched by the old thread.
+        sess = active_uart_sessions.get(session_id)
+        if sess is not None and sess.get('driver') is driver:
+            sess['last_activity'] = time.time()
+
+    def reconnect_stop_check():
+        # reconnect() polls this every <=0.25s; piggyback the heartbeat so a
+        # genuine 60s re-enumeration keeps the session fresh and un-reclaimable.
+        touch()
+        return stop_event.is_set()
+
     try:
         while not stop_event.is_set():
+            touch()
             try:
                 # Read data with consistent buffer size
                 waiting = driver.serial_conn.in_waiting
@@ -137,7 +166,7 @@ def _uart_read_loop(socketio, session_id, netname, driver, stop_event):
                         emit_buffer()
                     emit_status('reconnecting',
                                 message='UART device disconnected; waiting for it to re-enumerate...')
-                    if driver.reconnect(stop_check=stop_event.is_set,
+                    if driver.reconnect(stop_check=reconnect_stop_check,
                                         total_timeout=UART_RECONNECT_TIMEOUT):
                         emit_status('reconnected',
                                     device_path=driver.device_path,
@@ -171,6 +200,63 @@ def _uart_read_loop(socketio, session_id, netname, driver, stop_event):
         except Exception as e:
             logger.error(f"Error cleaning up UART driver for session {session_id}: {e}")
         logger.info(f"UART read thread stopped for session {session_id}")
+
+
+def _session_is_stale(session) -> bool:
+    """True if *session* has no live read loop behind it.
+
+    Either signal is sufficient:
+    - the read thread has exited (belt-and-suspenders: the loop's finally
+      normally evicts on exit, so this catches only an exit that somehow
+      skipped eviction), or
+    - the heartbeat has aged past STALE_SESSION_TIMEOUT, meaning the loop is no
+      longer iterating (thread wedged in a blocking read on a device that went
+      away without raising a device-gone error, so neither the reconnect nor
+      the eviction path ever ran).
+
+    A session still being set up (thread not yet stored, heartbeat seeded at
+    creation) reads as NOT stale, so an in-flight legitimate start is never
+    reclaimed out from under itself.
+    """
+    thread = session.get('thread')
+    if thread is not None and not thread.is_alive():
+        return True
+    last = session.get('last_activity')
+    if last is not None and (time.time() - last) > STALE_SESSION_TIMEOUT:
+        return True
+    return False
+
+
+def _reclaim_if_stale(session_id, session) -> bool:
+    """Tear down *session* if it has no live reader; report whether it blocks.
+
+    Call while holding active_uart_sessions_lock. Returns True when the session
+    was stale and has been reclaimed (its net/device is now free to reuse) so
+    the caller should NOT reject the incoming start; False when the session is
+    genuinely live and must still block a colliding start.
+    """
+    if not _session_is_stale(session):
+        return False
+    logger.warning(
+        "Reclaiming stale UART session %s (netname=%s): no live read loop; "
+        "releasing its device so a new session can start",
+        session_id, session.get('netname'))
+    stop_event = session.get('stop_event')
+    if stop_event is not None:
+        # If the wedged thread ever unblocks, tell it to exit rather than
+        # resume reading a device a new session now owns.
+        stop_event.set()
+    driver = session.get('driver')
+    if driver is not None:
+        try:
+            # Closing the fd here also releases the exclusive flock (and tends
+            # to unblock a thread wedged in read()); _cleanup() is idempotent.
+            driver._cleanup()
+        except Exception as e:
+            logger.error(
+                "Error cleaning up reclaimed UART session %s: %s", session_id, e)
+    active_uart_sessions.pop(session_id, None)
+    return True
 
 
 def register_uart_routes(app: Flask) -> None:
@@ -294,12 +380,17 @@ def register_uart_socketio(socketio: SocketIO) -> None:
             # connection from starting twice; the netname scan stops a *second*
             # connection from grabbing a net another session already holds, and
             # gives a clear error instead of letting the exclusive open race.
+            # A colliding session with no live read loop behind it (thread
+            # wedged/dead) is reclaimed rather than blocking forever — the
+            # phantom "already in use" then heals on the next start.
             with active_uart_sessions_lock:
-                if request.sid in active_uart_sessions:
+                existing = active_uart_sessions.get(request.sid)
+                if existing is not None and not _reclaim_if_stale(request.sid, existing):
                     emit('error', {'message': 'UART session already active'})
                     return
-                for sess in active_uart_sessions.values():
-                    if sess.get('netname') == netname:
+                # list(): _reclaim_if_stale may pop entries as we scan.
+                for sid, sess in list(active_uart_sessions.items()):
+                    if sess.get('netname') == netname and not _reclaim_if_stale(sid, sess):
                         emit('error', {'message': f"UART net '{netname}' is already in use by another session"})
                         return
 
@@ -313,9 +404,12 @@ def register_uart_socketio(socketio: SocketIO) -> None:
                 device_path = getattr(driver, 'device_path', None)
                 if device_path:
                     with active_uart_sessions_lock:
-                        for sess in active_uart_sessions.values():
+                        # list(): _reclaim_if_stale may pop entries as we scan.
+                        for sid, sess in list(active_uart_sessions.items()):
                             other = sess.get('driver')
-                            if other is not None and getattr(other, 'device_path', None) == device_path:
+                            if (other is not None
+                                    and getattr(other, 'device_path', None) == device_path
+                                    and not _reclaim_if_stale(sid, sess)):
                                 emit('error', {'message': f"UART device {device_path} is already in use by another session"})
                                 return
 
@@ -341,7 +435,8 @@ def register_uart_socketio(socketio: SocketIO) -> None:
                 active_uart_sessions[session_id] = {
                     'driver': driver,
                     'stop_event': stop_event,
-                    'netname': netname
+                    'netname': netname,
+                    'last_activity': time.time(),
                 }
 
             # Send connection success

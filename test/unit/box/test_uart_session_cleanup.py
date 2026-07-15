@@ -252,5 +252,131 @@ class UartReadLoopTests(unittest.TestCase):
         self.assertGreaterEqual(driver.cleanup_calls, 1)
 
 
+class StaleSessionReclaimTests(unittest.TestCase):
+    """Auto-reclaim of a phantom UART session (registered, guarding its net,
+    but with no live read loop behind it) so a fresh start_uart heals instead
+    of hitting a permanent "already in use"."""
+
+    SID = 'sid-stale'
+    STALE = None  # set in setUp from the module constant
+
+    def setUp(self):
+        uart_handlers.active_uart_sessions.clear()
+        self.sio = FakeSocketIO()
+        self.STALE = uart_handlers.STALE_SESSION_TIMEOUT
+
+    def tearDown(self):
+        uart_handlers.active_uart_sessions.clear()
+
+    @staticmethod
+    def _dead_thread():
+        t = threading.Thread(target=lambda: None)
+        t.start()
+        t.join()
+        return t
+
+    def test_stale_when_thread_dead(self):
+        # Thread exited but (defensively) the session is still registered.
+        session = {'driver': FakeDriver(threading.Event()), 'netname': 'uart1',
+                   'thread': self._dead_thread(), 'last_activity': time.time()}
+        self.assertTrue(uart_handlers._session_is_stale(session))
+
+    def test_stale_when_heartbeat_aged(self):
+        # Thread technically alive but wedged: heartbeat stopped advancing.
+        session = {'driver': FakeDriver(threading.Event()), 'netname': 'uart1',
+                   'last_activity': time.time() - (self.STALE + 5)}
+        self.assertTrue(uart_handlers._session_is_stale(session))
+
+    def test_live_session_not_stale(self):
+        gate = threading.Event()
+        alive = threading.Thread(target=gate.wait)
+        alive.start()
+        try:
+            session = {'driver': FakeDriver(threading.Event()),
+                       'netname': 'uart1', 'thread': alive,
+                       'last_activity': time.time()}
+            self.assertFalse(uart_handlers._session_is_stale(session))
+        finally:
+            gate.set()
+            alive.join(1.0)
+
+    def test_setup_window_not_stale(self):
+        # Freshly created: heartbeat seeded, thread not yet stored.
+        session = {'driver': FakeDriver(threading.Event()), 'netname': 'uart1',
+                   'last_activity': time.time()}
+        self.assertFalse(uart_handlers._session_is_stale(session))
+
+    def test_reclaim_tears_down_stale(self):
+        stop = threading.Event()
+        driver = FakeDriver(stop)
+        session = {'driver': driver, 'stop_event': stop, 'netname': 'uart1',
+                   'last_activity': time.time() - (self.STALE + 5)}
+        uart_handlers.active_uart_sessions[self.SID] = session
+
+        self.assertTrue(uart_handlers._reclaim_if_stale(self.SID, session))
+        self.assertNotIn(self.SID, uart_handlers.active_uart_sessions)
+        self.assertTrue(stop.is_set())            # wedged thread told to exit
+        self.assertGreaterEqual(driver.cleanup_calls, 1)  # fd + flock released
+
+    def test_reclaim_keeps_live_session(self):
+        gate = threading.Event()
+        alive = threading.Thread(target=gate.wait)
+        alive.start()
+        stop = threading.Event()
+        driver = FakeDriver(threading.Event())
+        try:
+            session = {'driver': driver, 'stop_event': stop, 'netname': 'uart1',
+                       'thread': alive, 'last_activity': time.time()}
+            uart_handlers.active_uart_sessions[self.SID] = session
+
+            self.assertFalse(uart_handlers._reclaim_if_stale(self.SID, session))
+            self.assertIn(self.SID, uart_handlers.active_uart_sessions)
+            self.assertFalse(stop.is_set())       # live session left untouched
+            self.assertEqual(driver.cleanup_calls, 0)
+        finally:
+            gate.set()
+            alive.join(1.0)
+
+    def test_read_loop_refreshes_heartbeat(self):
+        # A running loop must keep last_activity fresh so a live session is
+        # never misjudged stale by the reclaim path.
+        stop = threading.Event()
+        started = threading.Event()
+
+        class BlockingConn:
+            in_waiting = 0
+
+            def read(self, _size):
+                started.set()
+                # emulate the real 0.1s read timeout in short, stoppable slices
+                for _ in range(200):
+                    if stop.is_set():
+                        return b''
+                    time.sleep(0.005)
+                return b''
+
+        driver = FakeDriver(stop)
+        driver.serial_conn = BlockingConn()
+        uart_handlers.active_uart_sessions[self.SID] = {
+            'driver': driver, 'stop_event': stop, 'netname': 'uart1',
+            'last_activity': time.time() - 999,  # begins stale
+        }
+        t = threading.Thread(
+            target=uart_handlers._uart_read_loop,
+            args=(self.sio, self.SID, 'uart1', driver, stop),
+            daemon=True)
+        t.start()
+        try:
+            self.assertTrue(started.wait(2.0), "read loop never started")
+            last = uart_handlers.active_uart_sessions[self.SID].get('last_activity')
+            self.assertIsNotNone(last, "heartbeat was never set")
+            self.assertLess(time.time() - last, self.STALE,
+                            "heartbeat should be fresh while the loop runs")
+        finally:
+            stop.set()
+            t.join(2.0)
+        self.assertFalse(t.is_alive(), "loop did not exit on stop")
+
+
 if __name__ == "__main__":
     unittest.main()
