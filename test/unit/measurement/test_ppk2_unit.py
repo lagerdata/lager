@@ -11,6 +11,8 @@ Run with:
     python -m pytest test/unit/measurement/test_ppk2_unit.py -v
 """
 
+import threading
+
 import pytest
 import numpy as np
 from unittest.mock import patch, MagicMock
@@ -288,6 +290,92 @@ class TestPPK2WattSingleton:
 
         PPK2Watt.clear_cache()
         assert len(PPK2Watt._instances) == 0
+
+
+# ---------------------------------------------------------------------------
+# Section 5b: close() vs instance cache coherence
+# (regression for the "is not connected after first read" bug — see
+# test_joulescope_cache.py; the PPK2 driver shares the singleton pattern)
+# ---------------------------------------------------------------------------
+
+class TestPPK2WattCloseCacheCoherence:
+
+    @pytest.fixture(autouse=True)
+    def cleanup_cache(self):
+        PPK2Watt.clear_cache()
+        PPK2EnergyAnalyzer.clear_cache()
+        yield
+        with PPK2Watt._instance_lock:
+            PPK2Watt._instances.clear()
+        with PPK2EnergyAnalyzer._instance_lock:
+            PPK2EnergyAnalyzer._instances.clear()
+
+    @patch("lager.measurement.watt.ppk2_watt.PPK2_API")
+    def test_close_evicts_and_reconstruct_reprobes(self, mock_api_module):
+        mock_api, mock_device = _make_mock_ppk2_api()
+        mock_api_module.list_devices = mock_api.list_devices
+        mock_api_module.return_value = mock_device
+
+        watt = PPK2Watt("test_net", 0, "ppk2:SN123")
+        watt.close()
+
+        assert PPK2Watt._instances == {}
+        assert watt._initialized is False
+        assert watt._is_connection_alive() is False
+
+        watt2 = PPK2Watt("test_net", 0, "ppk2:SN123")
+        assert watt2 is not watt
+        assert watt2._port == "/dev/ttyACM0"
+        assert watt2._is_connection_alive() is True
+
+    @patch("lager.measurement.watt.ppk2_watt.PPK2_API")
+    def test_stale_close_does_not_evict_replacement(self, mock_api_module):
+        mock_api, mock_device = _make_mock_ppk2_api()
+        mock_api_module.list_devices = mock_api.list_devices
+        mock_api_module.return_value = mock_device
+
+        watt = PPK2Watt("test_net", 0, "ppk2:SN123")
+        watt.close()
+        replacement = PPK2Watt("test_net", 0, "ppk2:SN123")
+
+        watt.close()  # closing the stale handle again
+
+        assert PPK2Watt._instances.get("SN123") is replacement
+        assert replacement._port == "/dev/ttyACM0"
+
+    @patch("lager.measurement.watt.ppk2_watt.PPK2_API")
+    def test_clear_cache_does_not_deadlock(self, mock_api_module):
+        mock_api, mock_device = _make_mock_ppk2_api()
+        mock_api_module.list_devices = mock_api.list_devices
+        mock_api_module.return_value = mock_device
+
+        PPK2Watt("test_net", 0, "ppk2:SN123")
+
+        worker = threading.Thread(target=PPK2Watt.clear_cache, daemon=True)
+        worker.start()
+        worker.join(5.0)
+        assert not worker.is_alive(), "clear_cache deadlocked"
+        assert PPK2Watt._instances == {}
+
+    @patch("lager.measurement.watt.ppk2_watt.time")
+    @patch("lager.measurement.watt.ppk2_watt.PPK2_API")
+    def test_energy_net_self_heals_after_watt_close(self, mock_api_module, mock_time):
+        # Two nets share one physical PPK2: closing via the watt net must not
+        # permanently break the energy net.
+        mock_api, mock_device = _make_mock_ppk2_api()
+        mock_api_module.list_devices = mock_api.list_devices
+        mock_api_module.return_value = mock_device
+        mock_time.sleep = MagicMock()
+
+        analyzer = PPK2EnergyAnalyzer("energy_net", 0, "ppk2:SN123")
+        watt = PPK2Watt("watt_net", 0, "ppk2:SN123")
+        assert analyzer._ppk2 is watt  # one shared device handle
+
+        watt.close()
+
+        stats = analyzer.read_stats(1.0)
+        assert stats["current"]["mean"] == pytest.approx(0.002)
+        assert analyzer._ppk2 is not watt  # re-acquired a live instance
 
 
 # ---------------------------------------------------------------------------

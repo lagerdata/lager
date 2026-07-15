@@ -87,31 +87,24 @@ _load_module(
     os.path.join(BOX_DIR, "lager", "measurement", "watt", "watt_net.py"),
 )
 
-# YoctoWatt and JoulescopeJS220 are imported by the watt dispatcher.
-# Mock them so we don't need yoctopuce/joulescope libs.
-for mod_name in [
-    "lager.measurement.watt.yocto_watt",
-    "lager.measurement.watt.joulescope_js220",
-]:
-    if mod_name not in sys.modules:
-        mock_mod = MagicMock()
-        # Give them a class with the right name
-        cls_name = mod_name.rsplit(".", 1)[-1]
-        setattr(mock_mod, {
-            "yocto_watt": "YoctoWatt",
-            "joulescope_js220": "JoulescopeJS220",
-        }.get(cls_name, cls_name), type(cls_name, (), {}))
-        sys.modules[mod_name] = mock_mod
-
-# Re-create YoctoWatt/JoulescopeJS220 as proper classes for identity checks.
+# YoctoWatt is imported by the watt dispatcher. Mock it so we don't need the
+# yoctopuce lib; give it a proper class for identity checks.
 class _YoctoWatt:
     pass
 
-class _JoulescopeJS220:
-    pass
+if "lager.measurement.watt.yocto_watt" not in sys.modules:
+    _mock_yocto = MagicMock()
+    _mock_yocto.YoctoWatt = _YoctoWatt
+    sys.modules["lager.measurement.watt.yocto_watt"] = _mock_yocto
 
-sys.modules["lager.measurement.watt.yocto_watt"].YoctoWatt = _YoctoWatt
-sys.modules["lager.measurement.watt.joulescope_js220"].JoulescopeJS220 = _JoulescopeJS220
+# Load the real JoulescopeJS220 driver: it imports the joulescope lib behind
+# a guarded try/except (joulescope stays None without it), so tests can
+# exercise the per-serial instance cache by patching the module's
+# `joulescope` attribute.
+_load_module(
+    "lager.measurement.watt.joulescope_js220",
+    os.path.join(BOX_DIR, "lager", "measurement", "watt", "joulescope_js220.py"),
+)
 
 # 6. Mock ppk2_api (hardware library).
 sys.modules.setdefault("ppk2_api", MagicMock())
@@ -129,13 +122,12 @@ _load_module(
     os.path.join(BOX_DIR, "lager", "measurement", "energy_analyzer", "energy_analyzer_net.py"),
 )
 
-# Mock Joulescope energy analyzer (imported by energy dispatcher).
-class _JoulescopeEnergyAnalyzer:
-    pass
-
-_mock_je = MagicMock()
-_mock_je.JoulescopeEnergyAnalyzer = _JoulescopeEnergyAnalyzer
-sys.modules["lager.measurement.energy_analyzer.joulescope_energy"] = _mock_je
+# Load the real Joulescope energy analyzer (imported by energy dispatcher);
+# it only touches the joulescope_js220 driver, which is loaded above.
+_load_module(
+    "lager.measurement.energy_analyzer.joulescope_energy",
+    os.path.join(BOX_DIR, "lager", "measurement", "energy_analyzer", "joulescope_energy.py"),
+)
 
 # 9. Load PPK2 energy analyzer.
 _load_module(

@@ -43,6 +43,7 @@ class PPK2EnergyAnalyzer(EnergyAnalyzerBase):
             inst = super().__new__(cls)
             inst._initializing = threading.Lock()
             inst._initialized = False
+            inst._serial = serial
             cls._instances[serial] = inst
             return inst
 
@@ -55,6 +56,8 @@ class PPK2EnergyAnalyzer(EnergyAnalyzerBase):
 
             super().__init__(name, pin)
 
+            self._location = location
+
             try:
                 self._ppk2 = PPK2Watt(name, pin, location)
             except Exception as e:
@@ -63,6 +66,21 @@ class PPK2EnergyAnalyzer(EnergyAnalyzerBase):
                 ) from e
 
             self._initialized = True
+
+    def _acquire_ppk2(self):
+        """Return a live shared PPK2, re-acquiring it if it was closed.
+
+        The physical PPK2 is shared with the watt-meter role, whose reads
+        close the device afterwards to release it. That close discards the
+        PPK2Watt from its per-serial cache, so constructing again here yields
+        a freshly probed device instead of the closed one we still reference.
+        """
+        from lager.measurement.watt.ppk2_watt import PPK2Watt
+
+        ppk2 = getattr(self, "_ppk2", None)
+        if ppk2 is None or not ppk2._is_connection_alive():
+            self._ppk2 = PPK2Watt(self._name, self._pin, self._location)
+        return self._ppk2
 
     def read_energy(self, duration: float) -> dict:
         """
@@ -76,7 +94,7 @@ class PPK2EnergyAnalyzer(EnergyAnalyzerBase):
             duration_s  - actual duration requested
         """
         try:
-            current_amps, voltage_v = self._ppk2.read_raw(duration)
+            current_amps, voltage_v = self._acquire_ppk2().read_raw(duration)
         except Exception as e:
             raise EnergyAnalyzerBackendError(
                 f"Failed to read energy from PPK2 '{self.name}': {e}"
@@ -110,7 +128,7 @@ class PPK2EnergyAnalyzer(EnergyAnalyzerBase):
             }
         """
         try:
-            current_amps, voltage_v = self._ppk2.read_raw(duration)
+            current_amps, voltage_v = self._acquire_ppk2().read_raw(duration)
         except Exception as e:
             raise EnergyAnalyzerBackendError(
                 f"Failed to read stats from PPK2 '{self.name}': {e}"
