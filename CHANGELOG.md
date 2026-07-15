@@ -2,6 +2,41 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.31.12] - 2026-07-15
+
+### Added
+
+- **`lager battery <NET> model-create <SLOT> --csv <file> [--force]` — create a
+  custom battery model from a CSV file.** Writes a voltage/resistance curve
+  into a Keithley 2281S memory slot (1-9); previously custom models could only
+  be authored at the instrument's front panel. The CSV has two columns
+  (`voc,resistance`, header optional) ordered from empty battery to full, with
+  exactly 11 or 101 data rows — 11-row files are interpolated to 101 points by
+  the instrument (verified exactly linear). Files are validated client-side
+  with line-numbered errors (row count, VOC non-decreasing, resistance
+  non-increasing, value ranges) before anything reaches the box. Saving
+  overwrites the slot, and the instrument has no way to delete a saved model —
+  a slot can only be overwritten — so occupied slots are refused unless
+  `--force`.
+- **`lager battery <NET> model-export <SLOT> --csv <out>` — export a saved
+  battery model's curve to CSV.** Read-only: writes the slot's 101
+  `voc,resistance` points in the exact format `model-create` accepts, enabling
+  the export → edit → create round-trip. Exporting reads the saved slot
+  directly and never changes the active model. Exporting an empty slot is an
+  error that points at `models`.
+
+### Fixed
+
+- **`lager battery <NET> model discharge` no longer fails with a misleading
+  "slot appears to be empty" error.** Discharge mode is not selectable over
+  SCPI on current 2281S firmware: the instrument rejects every recall form
+  (numeric 0 is out of range — only slots 1-9 are valid recall arguments — and
+  the DISCHARGE name and its quoted/abbreviated variants are syntax errors).
+  The command now says so up front, pointing at the front panel and at
+  `models`, and the model catalog no longer advertises a slot-0 DISCHARGE
+  entry that was never actually loadable. A discharge selection made from the
+  front panel still reads back as DISCHARGE.
+
 ## [0.31.11] - 2026-07-13
 
 ### Fixed
