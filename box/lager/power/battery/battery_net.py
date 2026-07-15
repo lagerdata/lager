@@ -144,10 +144,12 @@ class BatteryNet(ABC):
         instrument:
 
         Keithley 2281S:
-        - Stores models in numbered memory slots (0-9)
+        - Stores models in numbered memory slots (1-9)
         - Supports model name aliases: '18650', 'liion', 'nimh', 'nicd', 'lead-acid'
-        - Custom models can be created via instrument front panel
-        - Slot 0 ('discharge') provides basic constant-voltage simulation
+        - Custom models can be created via model-create or the front panel
+        - Discharge mode is front-panel-only: the firmware rejects every
+          SCPI recall form for it, so 'discharge' / 0 is refused with
+          guidance rather than attempted
 
         Args:
             partnumber: Battery model identifier (name or numeric slot).
@@ -165,9 +167,10 @@ class BatteryNet(ABC):
         read-only — assembling the catalog must not change instrument state.
 
         Keithley 2281S:
-        - Slot 0 ('discharge') is always available
         - Slots 1-9 are reported when a model has been saved there
         - The five firmware built-in models are listed without a slot
+        - Discharge mode is not listed (front-panel-only; no SCPI recall
+          form for it exists on current firmware)
 
         Returns:
             List of {"slot": int | None, "name": str | None} dicts, one per
@@ -186,7 +189,7 @@ class BatteryNet(ABC):
         not change which model is active.
 
         Keithley 2281S:
-        - Slots 1-9 hold saved models; slot 0 (DISCHARGE) has no curve
+        - Slots 1-9 hold saved models; there is no exportable slot 0
         - Each model is 101 points per element (VOC and resistance)
         - Empty slots are rejected with guidance to the 'models' catalog
 
@@ -214,7 +217,7 @@ class BatteryNet(ABC):
         expected to gate overwrites behind explicit confirmation.
 
         Keithley 2281S:
-        - Valid target slots are 1-9 (slot 0 is DISCHARGE, not writable)
+        - Valid target slots are 1-9
         - A model is two curves indexed by SOC: VOC (non-decreasing) and
           internal resistance (non-increasing)
         - Exactly 101 points per element, or exactly 11 points which the
