@@ -44,6 +44,7 @@ class JoulescopeEnergyAnalyzer(EnergyAnalyzerBase):
             inst = super().__new__(cls)
             inst._initializing = threading.Lock()
             inst._initialized = False
+            inst._serial = serial
             cls._instances[serial] = inst
             return inst
 
@@ -56,6 +57,8 @@ class JoulescopeEnergyAnalyzer(EnergyAnalyzerBase):
 
             super().__init__(name, pin)
 
+            self._location = location
+
             # Obtain the shared JS220 instance (opens device if not already open)
             try:
                 self._js220 = JoulescopeJS220(name, pin, location)
@@ -65,6 +68,21 @@ class JoulescopeEnergyAnalyzer(EnergyAnalyzerBase):
                 ) from e
 
             self._initialized = True
+
+    def _acquire_js220(self):
+        """Return a live shared JS220, reopening it if it was closed.
+
+        The physical JS220 is shared with the watt-meter role, whose reads
+        close the device afterwards to release USB. That close discards the
+        JS220 from its per-serial cache, so constructing again here yields a
+        freshly opened device instead of the closed one we still reference.
+        """
+        from lager.measurement.watt.joulescope_js220 import JoulescopeJS220
+
+        js220 = getattr(self, "_js220", None)
+        if js220 is None or not js220._is_connection_alive():
+            self._js220 = JoulescopeJS220(self._name, self._pin, self._location)
+        return self._js220
 
     def read_energy(self, duration: float) -> dict:
         """
@@ -78,7 +96,7 @@ class JoulescopeEnergyAnalyzer(EnergyAnalyzerBase):
             duration_s  - actual duration requested
         """
         try:
-            data = self._js220.read_raw(duration)
+            data = self._acquire_js220().read_raw(duration)
         except Exception as e:
             raise EnergyAnalyzerBackendError(
                 f"Failed to read energy from Joulescope '{self.name}': {e}"
@@ -113,7 +131,7 @@ class JoulescopeEnergyAnalyzer(EnergyAnalyzerBase):
             }
         """
         try:
-            data = self._js220.read_raw(duration)
+            data = self._acquire_js220().read_raw(duration)
         except Exception as e:
             raise EnergyAnalyzerBackendError(
                 f"Failed to read stats from Joulescope '{self.name}': {e}"
@@ -138,16 +156,37 @@ class JoulescopeEnergyAnalyzer(EnergyAnalyzerBase):
             "duration_s": duration,
         }
 
-    def close(self) -> None:
-        """Close the shared Joulescope device so its USB stream thread is torn
-        down cleanly. Without this the reading process can hang or crash on exit.
+    def _release_js220(self) -> None:
+        """Close the shared JS220 without touching the analyzer cache.
+
+        Must not acquire _instance_lock (called by clear_cache() while it is
+        held). JoulescopeJS220.close() takes its own class lock, which is
+        never held while ours is acquired, so the ordering is safe.
         """
         js220 = getattr(self, "_js220", None)
         if js220 is not None:
             js220.close()
+            self._js220 = None
+        self._initialized = False
+
+    def close(self) -> None:
+        """Close the shared Joulescope device so its USB stream thread is torn
+        down cleanly. Without this the reading process can hang or crash on exit.
+
+        Also evicts this analyzer from the per-serial cache so the next
+        construction rebuilds it against a freshly opened device.
+        """
+        self._release_js220()
+        cls = type(self)
+        with cls._instance_lock:
+            serial = getattr(self, "_serial", None)
+            if cls._instances.get(serial) is self:
+                del cls._instances[serial]
 
     @classmethod
     def clear_cache(cls) -> None:
-        """Clear all cached instances."""
+        """Clear all cached instances and close their devices."""
         with cls._instance_lock:
+            for inst in cls._instances.values():
+                inst._release_js220()
             cls._instances.clear()

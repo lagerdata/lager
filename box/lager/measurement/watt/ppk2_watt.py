@@ -94,6 +94,7 @@ class PPK2Watt(WattMeterBase):
             instance = super().__new__(cls)
             instance._initializing = threading.Lock()
             instance._initialized = False
+            instance._serial = serial
             cls._instances[serial] = instance
             return instance
 
@@ -285,13 +286,42 @@ class PPK2Watt(WattMeterBase):
             "power": power,
         }
 
-    def close(self) -> None:
-        """Close the connection and release resources."""
+    def _is_connection_alive(self) -> bool:
+        """Health check used by dispatcher driver caches to drop closed devices."""
+        return getattr(self, "_port", None) is not None
+
+    def _close_device(self) -> None:
+        """Release the port without touching the instance cache.
+
+        Must not acquire _instance_lock: it is called by clear_cache() while
+        the lock is held, and from __del__ (which the GC may run in a thread
+        that already holds the lock).
+        """
         self._port = None
+        self._initialized = False
+
+    def close(self) -> None:
+        """Close the connection and release resources.
+
+        Evicts this instance from the per-serial cache so the next
+        construction for the same serial re-probes the port. Without the
+        eviction, a closed instance stays cached with _initialized=True and
+        every later read fails with "is not connected" until the process
+        restarts.
+        """
+        self._close_device()
+        cls = type(self)
+        with cls._instance_lock:
+            # Identity check: don't evict a live replacement instance that
+            # was created for this serial after we were closed.
+            serial = getattr(self, "_serial", None)
+            if cls._instances.get(serial) is self:
+                del cls._instances[serial]
 
     def __del__(self) -> None:
         """Cleanup when instance is garbage collected."""
-        self.close()
+        # _close_device, not close(): __del__ must never take _instance_lock.
+        self._close_device()
 
     @classmethod
     def clear_cache(cls) -> None:
@@ -301,5 +331,5 @@ class PPK2Watt(WattMeterBase):
         """
         with cls._instance_lock:
             for instance in cls._instances.values():
-                instance.close()
+                instance._close_device()
             cls._instances.clear()
