@@ -261,26 +261,38 @@ def _energy_analyzer(netname, role, action, params):
     # next starts on the same device.
     if action not in ("read_stats", "read_energy"):
         raise UnknownAction(action)
-    from lager.measurement.energy_analyzer.dispatcher import read_energy, read_stats
+    from lager.measurement.energy_analyzer.dispatcher import (
+        read_energy, read_stats, close_net,
+    )
     default = 10.0 if action == "read_energy" else 1.0
     duration = float(params.get("duration") or default)
     # Clamp to the box's safe measurement window. The control plane clamps to 30s too,
     # sized so the held connection stays under Nginx's 60s proxy_read_timeout.
     duration = max(0.1, min(duration, 30.0))
     with _get_net_lock(netname):
-        if action == "read_energy":
-            r = read_energy(netname, duration)
-            msg = "%.4f J (%.4f C) over %.1f s" % (
-                float(r.get("energy_j") or 0), float(r.get("charge_c") or 0),
-                float(r.get("duration_s") or duration))
-        else:
-            r = read_stats(netname, duration)
-            c = r.get("current") or {}
-            v = r.get("voltage") or {}
-            p = r.get("power") or {}
-            msg = "I %.6f A, V %.3f V, P %.6f W (mean over %.1f s)" % (
-                float(c.get("mean") or 0), float(v.get("mean") or 0),
-                float(p.get("mean") or 0), duration)
+        try:
+            if action == "read_energy":
+                r = read_energy(netname, duration)
+                msg = "%.4f J (%.4f C) over %.1f s" % (
+                    float(r.get("energy_j") or 0), float(r.get("charge_c") or 0),
+                    float(r.get("duration_s") or duration))
+            else:
+                r = read_stats(netname, duration)
+                c = r.get("current") or {}
+                v = r.get("voltage") or {}
+                p = r.get("power") or {}
+                msg = "I %.6f A, V %.3f V, P %.6f W (mean over %.1f s)" % (
+                    float(c.get("mean") or 0), float(v.get("mean") or 0),
+                    float(p.get("mean") or 0), duration)
+        finally:
+            # Release the device after every read (mirrors _watt_meter): the
+            # JS220 holds an exclusive USB claim while open, so keeping it
+            # open in this long-lived process fails watt-meter reads of the
+            # same physical device (and any external tool) with IN_USE.
+            try:
+                close_net(netname)
+            except Exception:
+                pass
     return _ok(msg, r)
 
 
