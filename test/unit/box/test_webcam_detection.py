@@ -3,8 +3,9 @@
 
 """Unit tests for sysfs-based webcam detection (``_by_camera``).
 
-Covers both copies of the scanner — ``cli/impl/query_instruments.py`` and
-``box/lager/http_handlers/usb_scanner.py`` — against a fake sysfs tree:
+Covers the box scanner — ``box/lager/http_handlers/usb_scanner.py`` — against
+a fake sysfs tree (the CLI copy, ``cli/impl/query_instruments.py``, was
+removed by the :9000 migration; the box scanner is now the only catalog):
 
 * the /dev/videoN node is resolved through the videoN → USB-interface →
   USB-device sysfs chain, not by index arithmetic, so cameras exposing
@@ -12,32 +13,21 @@ Covers both copies of the scanner — ``cli/impl/query_instruments.py`` and
 * only the first (capture) node per camera is reported;
 * the webcam VID:PID set is derived from SUPPORTED_USB, so every catalog
   entry with a ``webcam`` net_type — including the Logi 4K Pro (046d:087f) —
-  is detected without touching the detection code;
-* both catalogs advertise the same webcam set.
+  is detected without touching the detection code.
 
-Fully hermetic: ``serial`` (pyserial) is stubbed before the CLI script loads,
-and ``_by_camera`` reads from a temp-dir sysfs stand-in via its ``v4l_root``
-parameter.
+Fully hermetic: ``_by_camera`` reads from a temp-dir sysfs stand-in via its
+``v4l_root`` parameter.
 """
 
 import importlib.util
 import os
 import sys
 import tempfile
-import types
 import unittest
 from pathlib import Path
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-CLI_IMPL_PATH = os.path.join(REPO_ROOT, "cli", "impl", "query_instruments.py")
 BOX_SCANNER_PATH = os.path.join(REPO_ROOT, "box", "lager", "http_handlers", "usb_scanner.py")
-
-# Stub pyserial before loading the CLI script (top-level ``from serial import``).
-if "serial" not in sys.modules:
-    _serial_stub = types.ModuleType("serial")
-    _serial_stub.Serial = object
-    _serial_stub.SerialException = Exception
-    sys.modules["serial"] = _serial_stub
 
 
 def _load_module(dotted, filepath):
@@ -50,7 +40,6 @@ def _load_module(dotted, filepath):
     return mod
 
 
-qi = _load_module("qi_webcam_test", CLI_IMPL_PATH)
 box_scanner = _load_module("box_usb_scanner_webcam_test", BOX_SCANNER_PATH)
 
 
@@ -94,73 +83,58 @@ class ByCameraTests(unittest.TestCase):
 
     def test_4k_pro_detected(self):
         self.sysfs.add_camera("2-3", "046d", "087f", serial="ABC123", nodes=4)
-        for mod in (qi, box_scanner):
-            cams = self._run(mod)
-            self.assertEqual(len(cams), 1)
-            cam = cams[0]
-            self.assertEqual(cam["name"], "Logitech_4K_Pro")
-            self.assertEqual(cam["vid"], "046d")
-            self.assertEqual(cam["pid"], "087f")
-            self.assertEqual(cam["serial"], "ABC123")
-            self.assertEqual(cam["net_type"], ["webcam"])
-            self.assertEqual(cam["channels"], {"webcam": ["/dev/video0"]})
-            self.assertEqual(cam["address"], "USB0::0x046D::0x087F::ABC123::INSTR")
+        cams = self._run(box_scanner)
+        self.assertEqual(len(cams), 1)
+        cam = cams[0]
+        self.assertEqual(cam["name"], "Logitech_4K_Pro")
+        self.assertEqual(cam["vid"], "046d")
+        self.assertEqual(cam["pid"], "087f")
+        self.assertEqual(cam["serial"], "ABC123")
+        self.assertEqual(cam["net_type"], ["webcam"])
+        self.assertEqual(cam["channels"], {"webcam": ["/dev/video0"]})
+        self.assertEqual(cam["address"], "USB0::0x046D::0x087F::ABC123::INSTR")
 
     def test_mixed_node_counts_map_correctly(self):
         # A C920 exposes two nodes, a BRIO four. The old idx*4 heuristic
         # would have pointed the BRIO at /dev/video4 (nonexistent here).
         self.sysfs.add_camera("1-1", "046d", "082d", serial="C920SER", nodes=2)
         self.sysfs.add_camera("1-2", "046d", "085e", serial="BRIOSER", nodes=4)
-        for mod in (qi, box_scanner):
-            cams = self._run(mod)
-            by_name = {c["name"]: c for c in cams}
-            self.assertEqual(
-                set(by_name), {"Logitech_C920", "Logitech_BRIO_HD"})
-            self.assertEqual(
-                by_name["Logitech_C920"]["channels"], {"webcam": ["/dev/video0"]})
-            self.assertEqual(
-                by_name["Logitech_BRIO_HD"]["channels"], {"webcam": ["/dev/video2"]})
+        cams = self._run(box_scanner)
+        by_name = {c["name"]: c for c in cams}
+        self.assertEqual(
+            set(by_name), {"Logitech_C920", "Logitech_BRIO_HD"})
+        self.assertEqual(
+            by_name["Logitech_C920"]["channels"], {"webcam": ["/dev/video0"]})
+        self.assertEqual(
+            by_name["Logitech_BRIO_HD"]["channels"], {"webcam": ["/dev/video2"]})
 
     def test_unknown_video_device_ignored(self):
         # A capture card / unknown camera should not be reported.
         self.sysfs.add_camera("3-1", "dead", "beef", nodes=2)
-        for mod in (qi, box_scanner):
-            self.assertEqual(self._run(mod), [])
+        self.assertEqual(self._run(box_scanner), [])
 
     def test_no_serial_camera(self):
         self.sysfs.add_camera("4-1", "046d", "0825", nodes=2)  # C270, no serial
-        for mod in (qi, box_scanner):
-            cams = self._run(mod)
-            self.assertEqual(len(cams), 1)
-            self.assertIsNone(cams[0]["serial"])
-            self.assertEqual(
-                cams[0]["address"], "USB0::0x046D::0x0825::::INSTR")
+        cams = self._run(box_scanner)
+        self.assertEqual(len(cams), 1)
+        self.assertIsNone(cams[0]["serial"])
+        self.assertEqual(
+            cams[0]["address"], "USB0::0x046D::0x0825::::INSTR")
 
     def test_missing_v4l_root(self):
-        for mod in (qi, box_scanner):
-            self.assertEqual(
-                mod._by_camera(v4l_root=self.sysfs.root / "nope"), [])
+        self.assertEqual(
+            box_scanner._by_camera(v4l_root=self.sysfs.root / "nope"), [])
 
     def test_every_catalog_webcam_is_detectable(self):
-        for mod in (qi, box_scanner):
-            webcams = {
-                name: meta for name, meta in mod.SUPPORTED_USB.items()
-                if "webcam" in meta["net_type"]
-            }
-            self.assertIn("Logitech_4K_Pro", webcams)
-            self.assertEqual(
-                {(m["vid"], m["pid"]) for m in webcams.values()},
-                mod._WEBCAM_VIDPIDS,
-            )
-
-    def test_catalogs_advertise_same_webcams(self):
-        def webcam_entries(mod):
-            return {
-                name: (meta["vid"], meta["pid"])
-                for name, meta in mod.SUPPORTED_USB.items()
-                if "webcam" in meta["net_type"]
-            }
-        self.assertEqual(webcam_entries(qi), webcam_entries(box_scanner))
+        webcams = {
+            name: meta for name, meta in box_scanner.SUPPORTED_USB.items()
+            if "webcam" in meta["net_type"]
+        }
+        self.assertIn("Logitech_4K_Pro", webcams)
+        self.assertEqual(
+            {(m["vid"], m["pid"]) for m in webcams.values()},
+            box_scanner._WEBCAM_VIDPIDS,
+        )
 
 
 if __name__ == "__main__":
