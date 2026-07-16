@@ -24,6 +24,9 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import Dict, Any
 import traceback
 
+from lager.box_origin import check_request as check_origin_and_host
+from lager.box_auth import guard as check_auth
+
 # Import all debug functions at startup (once!)
 from lager.debug import (
     connect_jlink,
@@ -284,7 +287,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Service configuration
-SERVICE_HOST = '0.0.0.0'  # Listen on all interfaces (container is isolated)
+# Binds all interfaces: start_box.sh publishes this port to the host, so the
+# service is reachable from anything that can route to the box.
+SERVICE_HOST = '0.0.0.0'
 SERVICE_PORT = 8765
 SERVICE_VERSION = '1.0.0'
 
@@ -298,6 +303,35 @@ start_time = None
 
 class DebugServiceHandler(BaseHTTPRequestHandler):
     """HTTP request handler for debug service."""
+
+    def parse_request(self):
+        """Screen requests before any handler runs.
+
+        Hooked here rather than in do_POST because handle_one_request() abandons
+        the request when this returns False, so one override covers every verb,
+        including any added later. self.headers and self.path are populated by
+        the base implementation.
+        """
+        if not super().parse_request():
+            return False
+        rejection = (
+            check_origin_and_host(
+                self.headers.get('Host'),
+                self.headers.get('Origin'),
+                path=self.path,
+                remote_addr=self.client_address[0],
+            )
+            or check_auth(
+                self.headers.get('Authorization'),
+                remote_addr=self.client_address[0],
+                path=self.path,
+            )
+        )
+        if rejection is not None:
+            status, message = rejection
+            self.send_error(status, message)
+            return False
+        return True
 
     def log_message(self, format, *args):
         """Override to use our logger."""

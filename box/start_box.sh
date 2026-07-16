@@ -150,6 +150,31 @@ for secret_file in /etc/lager/org_secrets.json /etc/lager/secret_key; do
     fi
 done
 
+# Authentication config (see box/lager/constants.py). Mounted read-only, and
+# deliberately not under /etc/lager: that directory is owned by www-data, the
+# account user scripts run as, and directory ownership governs deleting a file --
+# so a trust anchor kept there could be removed or swapped by any script the box
+# runs. A read-only mount cannot be written from inside the container at all.
+#
+# No directory means no mount, which means auth stays off. That is the
+# unconfigured default and the state every box is in until a control plane
+# provisions one. This script neither creates nor writes it: it is root-owned by
+# design, and this script does not run as root.
+LAGER_AUTH_MOUNT=""
+if [ -d /etc/lager-auth ]; then
+    LAGER_AUTH_MOUNT="-v /etc/lager-auth:/etc/lager-auth:ro"
+    if [ -f /etc/lager-auth/auth.json ]; then
+        auth_owner=$(stat -c '%U' /etc/lager-auth/auth.json 2>/dev/null || echo 'unknown')
+        if [ "$auth_owner" != "root" ]; then
+            echo "[WARNING] /etc/lager-auth/auth.json is owned by '$auth_owner', not root."
+            echo "          Anything running as that account can replace this box's trust"
+            echo "          anchor and mint its own access. Fix with:"
+            echo "            sudo chown root:root /etc/lager-auth/auth.json"
+            echo "            sudo chmod 644 /etc/lager-auth/auth.json"
+        fi
+    fi
+fi
+
 # /tmp/lager-authorized-keys.d is created on demand by the container process (www-data).
 # /tmp is 1777 on the host so www-data can create the directory there and own it.
 # The poller below reads it as lagerdata (which has "other" read access).
@@ -482,6 +507,7 @@ docker run -d \
     -v /sys/devices:/sys/devices:ro \
     -v /var/run/dbus:/var/run/dbus \
     -v /etc/lager:/etc/lager \
+    ${LAGER_AUTH_MOUNT} \
     -v /home/lagerdata/.ssh:/home/www-data/.ssh \
     -v /etc/hostname:/host/etc/hostname:ro \
     -v /opt/SEGGER:/opt/SEGGER:ro \

@@ -8,6 +8,8 @@
 """
 import click
 import requests
+
+from ... import box_http
 from pathlib import Path
 from ...box_storage import resolve_and_validate_box
 from ...context import get_default_box
@@ -110,7 +112,7 @@ def add(ctx, binary_path, box, name, yes):
         data = {
             'name': binary_name
         }
-        response = requests.post(url, files=files, data=data, timeout=120)
+        response = box_http.post(url, files=files, data=data, timeout=120)
 
         if response.status_code == 200:
             result = response.json()
@@ -164,7 +166,7 @@ def list_binaries(ctx, box):
 
     url = f'http://{resolved_ip}:5000/binaries/list'
     try:
-        response = requests.get(url, timeout=30)
+        response = box_http.get(url, timeout=30)
 
         if response.status_code == 200:
             result = response.json()
@@ -237,7 +239,7 @@ def remove(ctx, binary_name, box, yes):
     # First check if binary exists
     url = f'http://{resolved_ip}:5000/binaries/list'
     try:
-        response = requests.get(url, timeout=30)
+        response = box_http.get(url, timeout=30)
         if response.status_code == 200:
             result = response.json()
             binaries_list = [b.get('name') for b in result.get('binaries', [])]
@@ -265,7 +267,7 @@ def remove(ctx, binary_name, box, yes):
     # Remove via HTTP
     url = f'http://{resolved_ip}:5000/binaries/remove'
     try:
-        response = requests.post(url, json={'name': binary_name}, timeout=30)
+        response = box_http.post(url, json={'name': binary_name}, timeout=30)
 
         if response.status_code == 200:
             click.secho(f"Binary '{binary_name}' removed from {box}", fg='green')

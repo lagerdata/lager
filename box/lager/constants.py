@@ -7,12 +7,14 @@ __all__ = [
     'LOW',
     # Paths
     'LAGER_CONFIG_DIR',
+    'LAGER_AUTH_DIR',
     'SAVED_NETS_PATH',
     'AVAILABLE_INSTRUMENTS_PATH',
     'ORG_SECRETS_PATH',
     'BOX_ID_PATH',
     'VERSION_FILE_PATH',
     'WEBCAM_STREAMS_PATH',
+    'AUTH_CONFIG_PATH',
     # Port numbers
     'HARDWARE_SERVICE_PORT',
     'BOX_HTTP_PORT',
@@ -37,6 +39,14 @@ ORG_SECRETS_PATH = "/etc/lager/org_secrets.json"
 BOX_ID_PATH = "/etc/lager/box_id"
 VERSION_FILE_PATH = "/etc/lager/version"
 WEBCAM_STREAMS_PATH = "/etc/lager/webcam_streams.json"
+
+# Authentication config lives outside LAGER_CONFIG_DIR, and start_box.sh mounts
+# it read-only. /etc/lager is owned by www-data -- the account every user script
+# runs as -- and directory ownership is what governs deleting a file, so a
+# trust anchor stored there could be removed or replaced by any script the box
+# runs. A read-only mount cannot be written from inside the container at all.
+LAGER_AUTH_DIR = "/etc/lager-auth"
+AUTH_CONFIG_PATH = "/etc/lager-auth/auth.json"
 
 # Service port numbers
 HARDWARE_SERVICE_PORT = 8080  # Hardware service for instrument control

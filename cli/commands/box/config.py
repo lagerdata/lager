@@ -21,6 +21,7 @@ from typing import Any, Optional
 
 import click
 import requests
+from ... import box_http
 
 from ...box_storage import get_box_ip, list_boxes
 from ...context import get_default_box, get_impl_path
@@ -1626,7 +1627,7 @@ def _box_api_responding(box_ip: str, *, timeout: float = 2.0) -> bool:
     failures (connection refused, timeout) return False so the caller can
     poll cheaply."""
     try:
-        r = requests.get(f"http://{box_ip}:{_BOX_API_PORT}/hello", timeout=timeout)
+        r = box_http.get(f"http://{box_ip}:{_BOX_API_PORT}/hello", timeout=timeout)
         return r.status_code == 200
     except Exception:
         return False

@@ -8,6 +8,7 @@
 """
 import click
 import requests
+from ... import box_http
 from ...box_storage import resolve_and_validate_box_with_name
 from ...core.net_group import BoxCommand
 
@@ -32,7 +33,7 @@ def hello(ctx, box):
     try:
         # Query the /cli-version endpoint for version info first
         version_url = f'http://{resolved_box}:{port}/cli-version'
-        version_response = requests.get(version_url, timeout=10)
+        version_response = box_http.get(version_url, timeout=10)
 
         if version_response.status_code == 200:
             data = version_response.json()
@@ -49,7 +50,7 @@ def hello(ctx, box):
 
         # Test connectivity with /hello endpoint
         hello_url = f'http://{resolved_box}:{port}/hello'
-        hello_response = requests.get(hello_url, timeout=10)
+        hello_response = box_http.get(hello_url, timeout=10)
 
         click.echo()
         if hello_response.status_code == 200:

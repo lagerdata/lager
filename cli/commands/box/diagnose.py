@@ -29,6 +29,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import click
 import requests
 
+from ... import box_http
+
 from ...box_storage import resolve_and_validate_box_with_name
 
 
@@ -50,7 +52,7 @@ def _fetch_net_info(
     the box. If requested_type != 'auto' and matches the net's role, use
     that — otherwise the returned role wins."""
     try:
-        r = requests.get(f'http://{box_ip}:5000/nets/list', timeout=5)
+        r = box_http.get(f'http://{box_ip}:5000/nets/list', timeout=5)
         r.raise_for_status()
         nets = r.json()
     except requests.exceptions.ConnectionError:
@@ -100,7 +102,7 @@ def _call(url: str, timeout: float = 8.0) -> dict:
     that report their own structured 'error' field) is passed through
     unchanged so the section renderer can show all fields."""
     try:
-        r = requests.get(url, timeout=timeout)
+        r = box_http.get(url, timeout=timeout)
         if r.status_code == 404:
             return {'unavailable': 'endpoint not on this box (pre-0.20 image)'}
         if r.status_code >= 400:

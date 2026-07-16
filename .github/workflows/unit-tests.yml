@@ -37,3 +37,30 @@ jobs:
       - name: Run CLI unit tests
         run: pytest test/unit/cli/ -v
         shell: bash
+
+  box-auth-tests:
+    # The box auth code (Origin/Host checks and offline token verification) runs
+    # inside the box container, but these two modules depend only on the standard
+    # library and `cryptography`, so their tests run on a hosted runner without
+    # the rest of the box's hardware dependencies. Kept a separate job so the
+    # CLI job's install stays minimal.
+    name: Box auth unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        run: pip install pytest 'cryptography>=2.6'
+        shell: bash
+
+      - name: Run box auth unit tests
+        run: pytest test/unit/box/test_box_origin.py test/unit/box/test_box_auth.py -v
+        shell: bash

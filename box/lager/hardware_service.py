@@ -28,6 +28,8 @@ import atexit
 from flask import Flask, request, jsonify, send_from_directory
 
 from lager.util import self_restart as _self_restart
+from lager.box_origin import check_request as check_origin_and_host
+from lager.box_auth import guard as check_auth
 
 # Configure logging
 logging.basicConfig(
@@ -39,6 +41,34 @@ logger = logging.getLogger(__name__)
 # Create Flask app
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10MB max request size
+
+
+@app.before_request
+def _screen_request():
+    """Refuse browser-originated requests, then unauthenticated ones.
+
+    See lager.box_origin and lager.box_auth. Returning a response here
+    short-circuits routing. /web_oscilloscope.html is served from this port, so
+    its own origin is accepted; a page on any other origin is not.
+    """
+    rejection = (
+        check_origin_and_host(
+            request.headers.get('Host'),
+            request.headers.get('Origin'),
+            path=request.path,
+            remote_addr=request.remote_addr,
+        )
+        or check_auth(
+            request.headers.get('Authorization'),
+            remote_addr=request.remote_addr,
+            path=request.path,
+        )
+    )
+    if rejection is not None:
+        status, message = rejection
+        return jsonify({'error': message, 'status': 'error'}), status
+    return None
+
 
 # Service configuration
 SERVICE_HOST = '0.0.0.0'  # Listen on all interfaces for multi-VPN support

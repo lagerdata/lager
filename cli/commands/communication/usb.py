@@ -69,10 +69,11 @@ def _try_fast_path(
             caller should fall through to the slow path
     """
     import requests
+    from ... import box_http
 
     url = f"http://{box_ip}:9000/usb/command"
     try:
-        resp = requests.post(
+        resp = box_http.post(
             url,
             json={"netname": net_name, "action": command},
             timeout=10,

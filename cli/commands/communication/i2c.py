@@ -22,6 +22,7 @@ from typing import List, Optional, Tuple
 
 import click
 import requests
+from ... import box_http
 from texttable import Texttable
 
 from ...core.net_group import NetGroupHelpMixin
@@ -81,7 +82,7 @@ def _fetch_i2c_nets(ctx: click.Context, box_ip: str) -> list[dict]:
     try:
         # This endpoint returns all saved nets; we filter client-side by role.
         box_url = f'http://{box_ip}:9000/uart/nets/list'
-        response = requests.get(box_url, timeout=5)
+        response = box_http.get(box_url, timeout=5)
         if response.status_code == 200:
             data = response.json()
             nets = data.get('nets', [])

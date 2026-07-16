@@ -18,6 +18,7 @@ import click
 import requests
 
 from .. import __version__
+from ..box_token import BoxTokenAuth
 
 
 class DirectIPSession:
@@ -508,7 +509,11 @@ class DirectHTTPSession:
     Direct HTTP session to box over any network (VPN, local, etc.).
 
     Network-agnostic: Works with Tailscale, WireGuard, corporate VPN, local network, or any IP.
-    Authorization: Network-level access (can you reach the IP via HTTP?)
+
+    Authorization: reaching the box is enough, unless the box says otherwise. A
+    box can be configured to require a signed token, in which case one is
+    attached per request if a token_helper is set up -- see lager.box_token.
+    Neither side of that is Lager's business beyond passing the token along.
 
     This bypasses the backend proxy for faster execution.
 
@@ -546,6 +551,11 @@ class DirectHTTPSession:
             'Lager-Version': __version__,
             'Lager-Invocation-Id': str(uuid4()),
         })
+
+        # An auth hook, not a header: this session is pooled and outlives any
+        # token, so a header set here would go stale. The hook runs per request
+        # and sends nothing when no token is configured, which is the default.
+        self.session.auth = BoxTokenAuth(box_ip)
 
     def run_python(self, box, files):
         """

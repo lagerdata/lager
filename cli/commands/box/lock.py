@@ -9,6 +9,8 @@
 import click
 import requests
 
+from ... import box_http
+
 from ...box_storage import resolve_and_validate_box_with_name, get_lager_user, format_lock_user
 
 
@@ -34,7 +36,7 @@ def lock(ctx, box, lock_user):
         # no heartbeat. The server's `holder_type: "user"` branch keeps the
         # lock immune to the new heartbeat-driven auto-reap that ephemeral
         # `lager python` locks participate in.
-        resp = requests.post(
+        resp = box_http.post(
             f'http://{ip}:5000/lock',
             json={
                 'user': user,
@@ -77,7 +79,7 @@ def unlock(ctx, box, force):
     user = get_lager_user()
 
     try:
-        resp = requests.post(
+        resp = box_http.post(
             f'http://{ip}:5000/unlock',
             json={'user': user, 'force': force},
             timeout=5,

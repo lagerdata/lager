@@ -369,6 +369,10 @@ import json
 import threading
 import time
 
+# Runs under the container's python3, so the lager package is importable here.
+from lager.box_origin import check_request as check_origin_and_host
+from lager.box_auth import guard as check_auth
+
 # Current stream info
 CURRENT_NET = "{net_name}"
 BOX_IP = "{box_ip}"
@@ -731,6 +735,34 @@ def start_capture():
     threading.Thread(target=loop, daemon=True).start()
 
 class StreamingHandler(BaseHTTPRequestHandler):
+    def parse_request(self):
+        """Screen requests before any handler runs.
+
+        This server is published on the host and streams a lab camera, so
+        without this any website a user visits could both watch the stream and
+        drive the zoom/focus controls below.
+        """
+        if not super().parse_request():
+            return False
+        rejection = (
+            check_origin_and_host(
+                self.headers.get("Host"),
+                self.headers.get("Origin"),
+                path=self.path,
+                remote_addr=self.client_address[0],
+            )
+            or check_auth(
+                self.headers.get("Authorization"),
+                remote_addr=self.client_address[0],
+                path=self.path,
+            )
+        )
+        if rejection is not None:
+            status, message = rejection
+            self.send_error(status, message)
+            return False
+        return True
+
     def do_HEAD(self):
         """Handle HEAD requests"""
         self.send_response(200)
@@ -752,7 +784,6 @@ class StreamingHandler(BaseHTTPRequestHandler):
 
             self.send_response(200)
             self.send_header("Content-type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json_response.encode("utf-8"))
 
@@ -767,7 +798,6 @@ class StreamingHandler(BaseHTTPRequestHandler):
 
             self.send_response(200)
             self.send_header("Content-type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json_response.encode("utf-8"))
 
@@ -780,7 +810,6 @@ class StreamingHandler(BaseHTTPRequestHandler):
 
             self.send_response(200)
             self.send_header("Content-type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json_response.encode("utf-8"))
 
@@ -802,7 +831,6 @@ class StreamingHandler(BaseHTTPRequestHandler):
 
             self.send_response(200)
             self.send_header("Content-type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json_response.encode("utf-8"))
 
@@ -818,7 +846,6 @@ class StreamingHandler(BaseHTTPRequestHandler):
 
             self.send_response(200)
             self.send_header("Content-type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json_response.encode("utf-8"))
 
@@ -844,7 +871,6 @@ class StreamingHandler(BaseHTTPRequestHandler):
 
             self.send_response(200)
             self.send_header("Content-type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json_response.encode("utf-8"))
 
@@ -868,7 +894,6 @@ class StreamingHandler(BaseHTTPRequestHandler):
 
             self.send_response(200)
             self.send_header("Content-type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(json_response.encode("utf-8"))
 
@@ -888,7 +913,6 @@ class StreamingHandler(BaseHTTPRequestHandler):
 
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
-                self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
                 self.end_headers()
                 self.wfile.write(json_response.encode("utf-8"))
@@ -907,7 +931,6 @@ class StreamingHandler(BaseHTTPRequestHandler):
 
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
-                self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
                 self.end_headers()
                 self.wfile.write(json_response.encode("utf-8"))
@@ -927,7 +950,6 @@ class StreamingHandler(BaseHTTPRequestHandler):
 
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
-                self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
                 self.end_headers()
                 self.wfile.write(json_response.encode("utf-8"))
@@ -946,7 +968,6 @@ class StreamingHandler(BaseHTTPRequestHandler):
 
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
-                self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
                 self.end_headers()
                 self.wfile.write(json_response.encode("utf-8"))
@@ -986,7 +1007,6 @@ class StreamingHandler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-type", "application/json")
                 self.send_header("Content-Length", str(len(json_response)))
-                self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
                 self.send_header("Pragma", "no-cache")
                 self.send_header("Expires", "0")

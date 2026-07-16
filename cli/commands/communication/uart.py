@@ -15,6 +15,7 @@ from contextlib import redirect_stdout
 
 import click
 import requests
+from ... import box_http
 from texttable import Texttable
 
 # Import consolidated helpers from cli.core.net_helpers
@@ -65,7 +66,7 @@ def _fetch_uart_nets(ctx: click.Context, box_ip: str) -> list[dict]:
     try:
         # This endpoint returns all saved nets; UART nets are not filtered here.
         box_url = f'http://{box_ip}:9000/uart/nets/list'
-        response = requests.get(box_url, timeout=5)
+        response = box_http.get(box_url, timeout=5)
         if response.status_code == 200:
             data = response.json()
             return data.get('nets', [])

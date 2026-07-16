@@ -57,7 +57,67 @@ import os
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
+from ..box_origin import check_request as check_origin_and_host
+from ..box_auth import guard as check_auth
+
 logger = logging.getLogger(__name__)
+
+
+class BrowserRejectMiddleware:
+    """ASGI middleware screening requests. See lager.box_origin and lager.box_auth.
+
+    Deliberately raw ASGI rather than Starlette's BaseHTTPMiddleware: this app
+    serves streaming responses, and BaseHTTPMiddleware buffers them.
+
+    This exists instead of the MCP SDK's own DNS-rebinding protection because
+    that feature validates Host against a fixed list of literal values (plus a
+    'host:*' port wildcard). A box's address is not fixed, so any list we could
+    write there would eventually be wrong, and the SDK's check fails closed --
+    on a machine with no console. See main() for the corresponding setting.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] != 'http':
+            # Lifespan and websocket scopes carry no Host/Origin to judge.
+            await self.app(scope, receive, send)
+            return
+
+        headers = {
+            key.decode('latin-1').lower(): value.decode('latin-1')
+            for key, value in scope.get('headers', [])
+        }
+        client = scope.get('client')
+        rejection = (
+            check_origin_and_host(
+                headers.get('host'),
+                headers.get('origin'),
+                path=scope.get('path'),
+                remote_addr=client[0] if client else None,
+            )
+            or check_auth(
+                headers.get('authorization'),
+                remote_addr=client[0] if client else None,
+                path=scope.get('path'),
+            )
+        )
+        if rejection is None:
+            await self.app(scope, receive, send)
+            return
+
+        status, message = rejection
+        body = message.encode('utf-8')
+        await send({
+            'type': 'http.response.start',
+            'status': status,
+            'headers': [
+                (b'content-type', b'text/plain; charset=utf-8'),
+                (b'content-length', str(len(body)).encode('ascii')),
+            ],
+        })
+        await send({'type': 'http.response.body', 'body': body})
 
 
 mcp = FastMCP(
@@ -217,6 +277,11 @@ def main():
 
     mcp.settings.host = host
     mcp.settings.port = MCP_PORT
+    # Host and Origin are enforced by BrowserRejectMiddleware below instead of by
+    # the SDK's own check, which can only match Host against fixed literals and
+    # would need a list of every address this box might answer on. Note the SDK
+    # still requires application/json on POST regardless of this setting, which
+    # is itself a preflight-forcing protection worth keeping.
     mcp.settings.transport_security = TransportSecuritySettings(
         enable_dns_rebinding_protection=False,
     )
@@ -231,7 +296,7 @@ def main():
         lifespan=lifespan,
     )
 
-    uvicorn.run(app, host=host, port=MCP_PORT)
+    uvicorn.run(BrowserRejectMiddleware(app), host=host, port=MCP_PORT)
 
 
 if __name__ == "__main__":

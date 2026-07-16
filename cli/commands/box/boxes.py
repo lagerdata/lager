@@ -18,6 +18,7 @@ from ...sort_utils import natural_sort_key
 def _list_boxes_live(port=5000, timeout=5):
     """Query all boxes for their versions and display status table."""
     import requests
+    from ... import box_http
     import sys
     import threading
     import time
@@ -66,7 +67,7 @@ def _list_boxes_live(port=5000, timeout=5):
         locked_by = ''
         busy_info = ''
         try:
-            lock_resp = requests.get(f'http://{ip}:{port}/lock', timeout=3, headers={'Cache-Control': 'no-cache'})
+            lock_resp = box_http.get(f'http://{ip}:{port}/lock', timeout=3, headers={'Cache-Control': 'no-cache'})
             if lock_resp.status_code == 200:
                 lock_data = lock_resp.json()
                 if lock_data.get('locked'):
@@ -77,7 +78,7 @@ def _list_boxes_live(port=5000, timeout=5):
         try:
             url = f'http://{ip}:{port}/cli-version'
             headers = {'Cache-Control': 'no-cache', 'Pragma': 'no-cache'}
-            response = requests.get(url, timeout=timeout, headers=headers)
+            response = box_http.get(url, timeout=timeout, headers=headers)
 
             if response.status_code == 200:
                 try:

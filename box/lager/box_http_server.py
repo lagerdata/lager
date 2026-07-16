@@ -23,6 +23,9 @@ import signal
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit, disconnect
 
+from lager.box_origin import check_request as check_origin_and_host
+from lager.box_auth import guard as check_auth
+
 # Add box_python to path
 sys.path.insert(0, '/app/box_python')
 
@@ -109,13 +112,47 @@ app.config['SECRET_KEY'] = _load_secret_key()
 # Force threading mode since eventlet 0.35.2 has issues with Python 3.12
 socketio = SocketIO(
     app,
-    cors_allowed_origins="*",  # Allow all origins for now (can restrict later)
+    # cors_allowed_origins is deliberately not passed: Engine.IO's default is
+    # same-origin only, deriving the allowed origin from each request's own Host
+    # header, so there is no list to go stale as the box's address changes.
+    # Engine.IO only applies it when an Origin header is present, so non-browser
+    # clients -- the CLI's socketio client, a control plane -- are unaffected.
+    # The before_request hook below cannot cover this: the Engine.IO handshake is
+    # served by middleware that never reaches Flask routing.
     async_mode='threading',  # Force threading mode (eventlet has Python 3.12 compatibility issues)
     logger=False,
     engineio_logger=False,
     ping_timeout=60,
     ping_interval=25
 )
+
+
+@app.before_request
+def _screen_request():
+    """Refuse browser-originated requests, then unauthenticated ones.
+
+    See lager.box_origin and lager.box_auth. Returning a response here
+    short-circuits routing. /authorize-key is exempt from the token check --
+    it carries its own credential and runs during provisioning; see
+    box_auth.OPEN_PATHS.
+    """
+    rejection = (
+        check_origin_and_host(
+            request.headers.get('Host'),
+            request.headers.get('Origin'),
+            path=request.path,
+            remote_addr=request.remote_addr,
+        )
+        or check_auth(
+            request.headers.get('Authorization'),
+            remote_addr=request.remote_addr,
+            path=request.path,
+        )
+    )
+    if rejection is not None:
+        status, message = rejection
+        return jsonify({'error': message, 'status': 'error'}), status
+    return None
 
 # Import UART handlers from modular http package
 from lager.http_handlers.uart import (

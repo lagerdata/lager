@@ -24,6 +24,7 @@ from __future__ import annotations
 import sys
 import logging
 import requests
+from .. import box_http
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ def check_and_warn(box_ip: str, box_name: str | None = None) -> None:
         # /cli-version is served by lager.python.service on port 5000;
         # it's the same endpoint `lager box hello` uses. 1.5s timeout
         # keeps the latency penalty bounded if the box is briefly slow.
-        r = requests.get(f'http://{box_ip}:5000/cli-version', timeout=1.5)
+        r = box_http.get(f'http://{box_ip}:5000/cli-version', timeout=1.5)
         if r.status_code != 200:
             return
         body = r.json()

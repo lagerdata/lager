@@ -94,7 +94,7 @@ def _run_backend(ctx, box, action: str, **params):
     First tries to use the WebSocket HTTP endpoint if a TUI is running for this net,
     which allows sharing the USB connection. Falls back to direct access if no TUI is active.
     """
-    import requests
+    from ... import box_http
 
     netname = getattr(ctx.obj, "netname", None)
 
@@ -113,7 +113,7 @@ def _run_backend(ctx, box, action: str, **params):
                 "params": params
             }
 
-            response = requests.post(url, json=payload, timeout=10)
+            response = box_http.post(url, json=payload, timeout=10)
 
             if response.status_code == 200:
                 result = response.json()

@@ -450,9 +450,10 @@ def _check_box_lock(ip, box_name):
     """
     import click
     import requests
+    from . import box_http
 
     try:
-        resp = requests.get(f'http://{ip}:5000/lock', timeout=3)
+        resp = box_http.get(f'http://{ip}:5000/lock', timeout=3)
         if resp.status_code == 200:
             data = resp.json()
             if data.get('locked'):
@@ -591,6 +592,7 @@ def acquire_box_lock(
     import time
     import click
     import requests
+    from . import box_http
 
     # Check the lock state BEFORE posting an acquire. If the box is already
     # locked by us (a pre-existing `lager boxes lock`), we must not touch it
@@ -600,7 +602,7 @@ def acquire_box_lock(
     # server the 200-without-previous_user response below would misclassify
     # the pre-existing lock as freshly acquired — and release it on exit.
     try:
-        pre = requests.get(_lock_url(ip), timeout=5)
+        pre = box_http.get(_lock_url(ip), timeout=5)
         if pre.status_code == 200:
             try:
                 pre_data = pre.json()
@@ -625,7 +627,7 @@ def acquire_box_lock(
 
     while True:
         try:
-            resp = requests.post(_lock_url(ip), json=payload, timeout=5)
+            resp = box_http.post(_lock_url(ip), json=payload, timeout=5)
         except requests.exceptions.RequestException as exc:
             if not quiet:
                 click.secho(
@@ -708,9 +710,10 @@ def release_box_lock(ip, holder, *, quiet=True):
     """
     import click
     import requests
+    from . import box_http
 
     try:
-        resp = requests.post(
+        resp = box_http.post(
             f'http://{ip}:5000/unlock',
             json={'user': holder},
             timeout=5,
@@ -749,9 +752,10 @@ def heartbeat_box_lock(ip, holder, *, quiet=True):
     """
     import click
     import requests
+    from . import box_http
 
     try:
-        resp = requests.post(
+        resp = box_http.post(
             _lock_url(ip, '/heartbeat'),
             json={'user': holder},
             timeout=5,

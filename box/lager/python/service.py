@@ -29,6 +29,8 @@ import io
 import warnings
 
 from .executor import PythonExecutor
+from ..box_origin import check_request as check_origin_and_host
+from ..box_auth import guard as check_auth
 
 # Suppress cgi deprecation warning (still works in Python 3.12, removed in 3.13)
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='cgi')
@@ -81,6 +83,35 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
     def address_string(self):
         """Return raw IP instead of resolving hostname — avoids reverse DNS timeouts."""
         return self.client_address[0]
+
+    def parse_request(self):
+        """Screen requests before any handler runs.
+
+        Hooked here rather than in do_POST because handle_one_request() abandons
+        the request when this returns False, so one override covers every verb,
+        including any added later. self.headers and self.path are populated by
+        the base implementation.
+        """
+        if not super().parse_request():
+            return False
+        rejection = (
+            check_origin_and_host(
+                self.headers.get('Host'),
+                self.headers.get('Origin'),
+                path=self.path,
+                remote_addr=self.client_address[0],
+            )
+            or check_auth(
+                self.headers.get('Authorization'),
+                remote_addr=self.client_address[0],
+                path=self.path,
+            )
+        )
+        if rejection is not None:
+            status, message = rejection
+            self.send_error(status, message)
+            return False
+        return True
 
     def log_message(self, format, *args):
         """Override to use our logger"""

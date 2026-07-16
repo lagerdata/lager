@@ -47,7 +47,7 @@ def _run_backend(ctx, box, action: str, **params):
     First tries to use the WebSocket HTTP endpoint if a TUI is running for this net,
     which allows sharing the USB connection. Falls back to direct access if no TUI is active.
     """
-    import requests
+    from ... import box_http
 
     netname = params.get('netname')
 
@@ -66,7 +66,7 @@ def _run_backend(ctx, box, action: str, **params):
                 "params": params
             }
 
-            response = requests.post(url, json=payload, timeout=10)
+            response = box_http.post(url, json=payload, timeout=10)
 
             if response.status_code == 200:
                 result = response.json()
@@ -128,14 +128,14 @@ def _battery_command_request(ctx, box, action: str, timeout: int = 30, **params)
     guard and model-export's CSV writer need. There is no fallback: these
     actions require the box HTTP endpoint.
     """
-    import requests
+    from ... import box_http
     from ...box_storage import resolve_and_validate_box
 
     box_ip = resolve_and_validate_box(ctx, box)
     url = f"http://{box_ip}:9000/battery/command"
     payload = {"netname": params.get('netname'), "action": action, "params": params}
     try:
-        response = requests.post(url, json=payload, timeout=timeout)
+        response = box_http.post(url, json=payload, timeout=timeout)
     except Exception as exc:
         if is_connection_error(exc):
             raise connection_error(exc, host=box_ip)
