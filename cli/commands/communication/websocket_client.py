@@ -261,10 +261,12 @@ class UARTWebSocketClient:
 
             # Connect to WebSocket
             try:
+                from ...gateway_auth import auth_headers_for_url
                 self.sio.connect(
                     self.box_url,
                     namespaces=['/uart'],
-                    wait_timeout=10
+                    wait_timeout=10,
+                    headers=auth_headers_for_url(self.box_url)
                 )
             except Exception as e:
                 # Preserve the return-code contract (don't sys.exit / .die here):

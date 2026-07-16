@@ -547,6 +547,15 @@ class DirectHTTPSession:
             'Lager-Invocation-Id': str(uuid4()),
         })
 
+        # Gateway auth (no-op for plain Lager boxes): attach a bearer token
+        # when this box is known to be gated, and translate gateway denials
+        # into actionable "run `lager login <url>`" errors. The hook only
+        # fires on responses carrying the gateway discovery header.
+        from ..gateway_auth import auth_headers_for_box, gateway_response_hook
+        self.session.headers.pop('Authorization', None)
+        self.session.headers.update(auth_headers_for_box(box_ip))
+        self.session.hooks['response'] = [gateway_response_hook(box_ip)]
+
     def run_python(self, box, files):
         """
         Run python on box via direct HTTP.

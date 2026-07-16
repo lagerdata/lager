@@ -6,10 +6,22 @@
 # - Debug Service (port 8765) - embedded debugging
 # - UART HTTP+WebSocket Server (port 9000) - serial communication
 #
-# Usage: ./start_box.sh
+# Usage: ./start_box.sh [--no-publish]
 # Run this script from the box directory after copying code to the box device
+#
+# --no-publish (or LAGER_NO_PUBLISH=1) skips publishing the container's
+# service ports on the host: the container is reachable only on the lagernet
+# Docker network. Use this when a reverse proxy on the same network owns the
+# host ports and forwards traffic to this container.
 
 set -e
+
+NO_PUBLISH="${LAGER_NO_PUBLISH:-}"
+for arg in "$@"; do
+    case "$arg" in
+        --no-publish) NO_PUBLISH=1 ;;
+    esac
+done
 
 # Ensure standard paths are available (needed when run via SSH or cron)
 export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
@@ -472,6 +484,27 @@ else
     echo "              sudo groupadd lager && sudo udevadm trigger"
 fi
 
+# Host port publishing. Empty under --no-publish: lagernet-only, a reverse
+# proxy on the same network owns the host ports.
+PORT_PUBLISH_ARGS=()
+if [ -z "$NO_PUBLISH" ]; then
+    PORT_PUBLISH_ARGS=(
+        -p 5000:5000
+        -p 8301:5000
+        -p 8080:8080
+        -p 8081-8090:8081-8090
+        -p 8100:8100
+        -p 8765:8765
+        -p 9000:9000
+        -p 2331-2342:2331-2342
+        -p 4444-4447:4444-4447
+        -p 6666-6669:6666-6669
+        -p 9090-9097:9090-9097
+    )
+else
+    echo "Port publishing disabled (--no-publish): container reachable via lagernet only"
+fi
+
 docker run -d \
     --network lagernet \
     --privileged \
@@ -493,17 +526,7 @@ docker run -d \
     ${OSCILLOSCOPE_MOUNT} \
     "${BOX_CONFIG_MOUNTS[@]}" \
     "${BOX_CONFIG_ENV[@]}" \
-    -p 5000:5000 \
-    -p 8301:5000 \
-    -p 8080:8080 \
-    -p 8081-8090:8081-8090 \
-    -p 8100:8100 \
-    -p 8765:8765 \
-    -p 9000:9000 \
-    -p 2331-2342:2331-2342 \
-    -p 4444-4447:4444-4447 \
-    -p 6666-6669:6666-6669 \
-    -p 9090-9097:9090-9097 \
+    "${PORT_PUBLISH_ARGS[@]}" \
     --env "PIGPIO_ADDR=$PIGPIO_ADDR" \
     --env "LAGER_HOST=$DOCKER_IFACE" \
     --env "PYTHONBREAKPOINT=lager.breakpoint.pause" \
