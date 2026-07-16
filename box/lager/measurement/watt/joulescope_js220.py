@@ -36,7 +36,8 @@ _STATS_SETTLE_TIMEOUT = 3.0
 def _parse_serial(location) -> Optional[str]:
     """
     Parse serial number from location.
-    Accept None, string serial number, or 'prefix:serial'.
+    Accept None, string serial number, 'prefix:serial', or a VISA USB
+    resource string ('USB0::0x16D0::0x10BA::004446::INSTR').
     Returns None if no serial specified (use first available device).
     """
     if location is None:
@@ -44,6 +45,18 @@ def _parse_serial(location) -> Optional[str]:
 
     s = str(location).strip()
     if not s:
+        return None
+
+    # VISA resource string. USB format: USB<n>::<vid>::<pid>::<serial>[::INSTR]
+    # — the serial is the 4th field, so the plain ':'-split below would
+    # misparse it (e.g. to 'INSTR'). Non-USB VISA resources carry no USB
+    # serial, so scan for the first available device instead.
+    if "::" in s:
+        parts = [p.strip() for p in s.split("::")]
+        if parts[0].upper().startswith("USB") and len(parts) >= 4:
+            serial = parts[3]
+            if serial and serial.upper() != "INSTR":
+                return serial
         return None
 
     # 'prefix:serial' → take last segment
@@ -58,6 +71,37 @@ def _parse_serial(location) -> Optional[str]:
         return s
 
     return None
+
+
+def _device_serial(device) -> Optional[str]:
+    """Best-effort serial identifier for a scanned device.
+
+    The joulescope v1 Device exposes `serial_number` ('004446') and
+    `device_path` ('u/js220/004446'); its repr is a bare object repr.
+    """
+    for attr in ("serial_number", "device_path"):
+        try:
+            value = getattr(device, attr, None)
+        except Exception:
+            value = None
+        if value:
+            return str(value)
+    return None
+
+
+def _matches_serial(device, serial: str) -> bool:
+    """True if a scanned device matches `serial` (case-insensitive)."""
+    ident = _device_serial(device)
+    if ident is not None:
+        return serial.lower() in ident.lower()
+    # Last resort for API versions without the serial attributes, whose
+    # str() may embed the serial (v1: 'JS220-004446').
+    return serial.lower() in str(device).lower()
+
+
+def _device_serials(devices) -> list:
+    """Serial numbers (not object reprs) for the not-found error message."""
+    return [_device_serial(d) or str(d) for d in devices]
 
 
 class JoulescopeJS220(WattMeterBase):
@@ -118,15 +162,20 @@ class JoulescopeJS220(WattMeterBase):
             # Open the Joulescope device
             try:
                 if serial:
-                    # Find specific device by serial number
-                    devices = joulescope.scan()
-                    matching = [d for d in devices if serial in str(d)]
+                    # Find specific device by serial number. No fallback to
+                    # scan_require_one on a miss: silently measuring the wrong
+                    # device on a multi-Joulescope bench is worse than an error.
+                    devices = joulescope.scan(config='auto')
+                    matching = [d for d in devices if _matches_serial(d, serial)]
                     if not matching:
                         raise WattBackendError(
                             f"Joulescope with serial '{serial}' not found. "
-                            f"Available devices: {devices}"
+                            f"Available devices: {_device_serials(devices)}"
                         )
-                    self._device = joulescope.Device(matching[0])
+                    # scan() returns ready Device objects. The v1 API has no
+                    # top-level joulescope.Device, so re-wrapping broke every
+                    # serial-specified open there.
+                    self._device = matching[0]
                 else:
                     # Use first available device
                     self._device = joulescope.scan_require_one(config='auto')
