@@ -103,8 +103,25 @@ def read_stats(netname: str, duration: float = 1.0) -> dict:
     return driver.read_stats(duration)
 
 
+def close_net(netname: str) -> None:
+    """
+    Close the driver for an energy-analyzer net, releasing its device.
+
+    The JS220 holds an exclusive USB claim while open, so a long-lived
+    process must release it between reads or every other opener — the
+    watt-meter net on the same physical device, external tools — fails
+    with IN_USE. Reads re-acquire the device automatically.
+
+    Args:
+        netname: Name of the saved energy-analyzer net
+    """
+    driver, _ = _dispatcher._resolve_net_and_driver(netname)
+    driver.close()
+
+
 __all__ = [
     'EnergyAnalyzerDispatcher',
     'read_energy',
     'read_stats',
+    'close_net',
 ]

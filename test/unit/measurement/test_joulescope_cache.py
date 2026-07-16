@@ -36,16 +36,29 @@ from lager.exceptions import WattBackendError
 class FakeJoulescopeDevice:
     """Mirrors the joulescope v1 Device: `serial_number` attribute,
     open()/close()/read() with 2 mA @ 3.3 V, and a bare object repr
-    (the v1 Device defines __str__ but not __repr__)."""
+    (the v1 Device defines __str__ but not __repr__).
 
-    def __init__(self, serial):
+    `bus` is a shared set of open serials modeling the JS220's exclusive
+    USB claim: opening a serial that is already open raises IN_USE, like
+    jsdrv does.
+    """
+
+    def __init__(self, serial, bus=None):
         self.serial_number = serial
         self.is_open = False
+        self._bus = bus if bus is not None else set()
 
     def open(self):
+        if self.serial_number in self._bus:
+            raise RuntimeError(
+                "jsdrv_open failed 21 IN_USE | The requested resource is "
+                "currently in use. | u/js220/%s" % self.serial_number
+            )
+        self._bus.add(self.serial_number)
         self.is_open = True
 
     def close(self):
+        self._bus.discard(self.serial_number)
         self.is_open = False
 
     def read(self, contiguous_duration=None):
@@ -62,14 +75,15 @@ def make_fake_joulescope(serials=("SNA",)):
     call and there is no top-level Device class.
     """
     created = []
+    bus = set()  # serials currently held open, shared by all devices
 
     def scan(name=None, config=None):
-        devs = [FakeJoulescopeDevice(s) for s in serials]
+        devs = [FakeJoulescopeDevice(s, bus) for s in serials]
         created.extend(devs)
         return devs
 
     def scan_require_one(name=None, config=None):
-        dev = FakeJoulescopeDevice(serials[0])
+        dev = FakeJoulescopeDevice(serials[0], bus)
         created.append(dev)
         return dev
 
@@ -222,6 +236,24 @@ class TestSharedSerialAcrossNets:
         assert watt.read(0.01) == pytest.approx(0.0066)
         assert watt._device is not dev1
         assert watt._device.is_open and not dev1.is_open
+
+    def test_no_serial_open_conflicts_until_energy_closes(self, fake_joulescope):
+        # STG-1 layout: energy1 resolves by VISA serial, watt1 has no
+        # location (serial None) — different singleton keys, same physical
+        # device. While the energy net holds the exclusive USB claim, a
+        # no-serial open fails with IN_USE; that is why the warm energy
+        # handler must close after every read (net_command does).
+        energy = JoulescopeEnergyAnalyzer("energy1", 0, "JS220:SNA")
+        assert energy.read_stats(0.01)["voltage"]["mean"] == pytest.approx(3.3)
+
+        with pytest.raises(WattBackendError, match="IN_USE"):
+            JoulescopeJS220("watt1", 0, None)
+
+        # Once the energy net releases the device, the no-serial watt path
+        # recovers (the failed init must not poison the None-key cache).
+        energy.close()
+        watt = JoulescopeJS220("watt1", 0, None)
+        assert watt.read(0.01) == pytest.approx(0.0066)
 
     def test_interleaved_reads_with_close_after_each(self, fake_joulescope):
         # Mirrors the hardware verification sequence: watt, watt, watt,

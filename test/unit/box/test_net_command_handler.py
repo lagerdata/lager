@@ -352,7 +352,8 @@ class TestNetCommandHandler(unittest.TestCase):
                 "voltage": {"mean": 3.3},
                 "power": {"mean": 0.004072},
             }),
-            read_energy=MagicMock(return_value={}))
+            read_energy=MagicMock(return_value={}),
+            close_net=MagicMock())
         with ctx, patch('lager.http_handlers.net_command.Net') as NetMock:
             NetMock.get_local_nets.return_value = SAVED_NETS
             r = self._post({"netname": "energy1", "action": "read_stats",
@@ -368,7 +369,8 @@ class TestNetCommandHandler(unittest.TestCase):
             'lager.measurement.energy_analyzer.dispatcher',
             read_energy=MagicMock(return_value={
                 "energy_j": 1.5, "charge_c": 0.5, "duration_s": 30.0}),
-            read_stats=MagicMock(return_value={}))
+            read_stats=MagicMock(return_value={}),
+            close_net=MagicMock())
         with ctx, patch('lager.http_handlers.net_command.Net') as NetMock:
             NetMock.get_local_nets.return_value = SAVED_NETS
             # 99s exceeds the 30s cap -> clamped to 30.0
@@ -381,7 +383,8 @@ class TestNetCommandHandler(unittest.TestCase):
         ctx, fake = self._patch_dispatcher(
             'lager.measurement.energy_analyzer.dispatcher',
             read_stats=MagicMock(return_value={}),
-            read_energy=MagicMock(return_value={}))
+            read_energy=MagicMock(return_value={}),
+            close_net=MagicMock())
         with ctx, patch('lager.http_handlers.net_command.Net') as NetMock:
             NetMock.get_local_nets.return_value = SAVED_NETS
             # 0.001s is below the 0.1s floor -> clamped to 0.1
@@ -390,11 +393,41 @@ class TestNetCommandHandler(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         fake.read_stats.assert_called_once_with("energy1", 0.1)
 
+    def test_energy_read_closes(self):
+        # The JS220 is exclusive-open: the handler must release the device
+        # after every read or watt reads of the same physical device (and
+        # any external tool) fail with IN_USE until the process restarts.
+        ctx, fake = self._patch_dispatcher(
+            'lager.measurement.energy_analyzer.dispatcher',
+            read_stats=MagicMock(return_value={}),
+            read_energy=MagicMock(return_value={}),
+            close_net=MagicMock())
+        with ctx, patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            r = self._post({"netname": "energy1", "action": "read_stats",
+                            "params": {"duration": 1.0}})
+        self.assertEqual(r.status_code, 200)
+        fake.close_net.assert_called_once_with("energy1")
+
+    def test_energy_read_closes_even_when_read_fails(self):
+        from lager.exceptions import LagerBackendError
+        ctx, fake = self._patch_dispatcher(
+            'lager.measurement.energy_analyzer.dispatcher',
+            read_stats=MagicMock(side_effect=LagerBackendError("boom")),
+            read_energy=MagicMock(return_value={}),
+            close_net=MagicMock())
+        with ctx, patch('lager.http_handlers.net_command.Net') as NetMock:
+            NetMock.get_local_nets.return_value = SAVED_NETS
+            r = self._post({"netname": "energy1", "action": "read_stats"})
+        self.assertEqual(r.status_code, 502)
+        fake.close_net.assert_called_once_with("energy1")
+
     def test_energy_unknown_action_is_400(self):
         ctx, _ = self._patch_dispatcher(
             'lager.measurement.energy_analyzer.dispatcher',
             read_stats=MagicMock(return_value={}),
-            read_energy=MagicMock(return_value={}))
+            read_energy=MagicMock(return_value={}),
+            close_net=MagicMock())
         with ctx, patch('lager.http_handlers.net_command.Net') as NetMock:
             NetMock.get_local_nets.return_value = SAVED_NETS
             r = self._post({"netname": "energy1", "action": "bogus"})
