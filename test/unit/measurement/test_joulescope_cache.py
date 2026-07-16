@@ -34,10 +34,12 @@ from lager.exceptions import WattBackendError
 # ---------------------------------------------------------------------------
 
 class FakeJoulescopeDevice:
-    """Stands in for joulescope.Device: open/close/read with 2 mA @ 3.3 V."""
+    """Mirrors the joulescope v1 Device: `serial_number` attribute,
+    open()/close()/read() with 2 mA @ 3.3 V, and a bare object repr
+    (the v1 Device defines __str__ but not __repr__)."""
 
-    def __init__(self, tag):
-        self.tag = tag
+    def __init__(self, serial):
+        self.serial_number = serial
         self.is_open = False
 
     def open(self):
@@ -54,23 +56,24 @@ class FakeJoulescopeDevice:
 
 
 def make_fake_joulescope(serials=("SNA",)):
-    """Build a fake `joulescope` module exposing scan()/Device()."""
+    """Build a fake `joulescope` module exposing scan()/scan_require_one().
+
+    Like the real v1 API, scan() creates fresh Device instances on every
+    call and there is no top-level Device class.
+    """
     created = []
 
-    def scan():
-        return ["JS220-%s" % s for s in serials]
+    def scan(name=None, config=None):
+        devs = [FakeJoulescopeDevice(s) for s in serials]
+        created.extend(devs)
+        return devs
 
-    def make_device(entry):
-        dev = FakeJoulescopeDevice(entry)
+    def scan_require_one(name=None, config=None):
+        dev = FakeJoulescopeDevice(serials[0])
         created.append(dev)
         return dev
 
-    def scan_require_one(config=None):
-        return make_device("JS220-%s" % serials[0])
-
-    fake = types.SimpleNamespace(
-        scan=scan, Device=make_device, scan_require_one=scan_require_one,
-    )
+    fake = types.SimpleNamespace(scan=scan, scan_require_one=scan_require_one)
     return fake, created
 
 
@@ -98,9 +101,8 @@ class TestCloseReopens:
     def test_read_close_reconstruct_read(self, fake_joulescope):
         # The exact Workbench sequence: read, close, then read again via a
         # fresh Net.get-style construction. The second read must succeed.
-        _, created = fake_joulescope
-
         watt = JoulescopeJS220("watt1", 0, "JS220:SNA")
+        dev1 = watt._device
         assert watt.read(0.01) == pytest.approx(0.0066)
         watt.close()
 
@@ -108,8 +110,8 @@ class TestCloseReopens:
         assert watt2 is not watt
         assert watt2.read(0.01) == pytest.approx(0.0066)
         # A second physical open happened
-        assert len(created) == 2
-        assert created[1].is_open
+        assert watt2._device is not dev1
+        assert watt2._device.is_open and not dev1.is_open
 
     def test_close_evicts_cached_instance(self, fake_joulescope):
         watt = JoulescopeJS220("watt1", 0, "JS220:SNA")
@@ -186,10 +188,10 @@ class TestClearCache:
 class TestSharedSerialAcrossNets:
 
     def test_watt_close_does_not_break_energy_net(self, fake_joulescope):
-        _, created = fake_joulescope
         energy = JoulescopeEnergyAnalyzer("energy1", 0, "JS220:SNA")
         watt = JoulescopeJS220("watt1", 0, "JS220:SNA")
         assert energy._js220 is watt  # one shared device handle
+        dev1 = watt._device
 
         assert watt.read(0.01) == pytest.approx(0.0066)
         watt.close()
@@ -198,7 +200,8 @@ class TestSharedSerialAcrossNets:
         # failing on the closed shared handle
         stats = energy.read_stats(0.01)
         assert stats["power"]["mean"] == pytest.approx(0.0066)
-        assert len(created) == 2
+        assert energy._js220._device is not dev1
+        assert energy._js220._device.is_open and not dev1.is_open
 
         # And the watt net converges back onto the same healed instance
         watt2 = JoulescopeJS220("watt1", 0, "JS220:SNA")
@@ -206,8 +209,8 @@ class TestSharedSerialAcrossNets:
         assert watt2.read(0.01) == pytest.approx(0.0066)
 
     def test_energy_close_does_not_break_watt_net(self, fake_joulescope):
-        _, created = fake_joulescope
         energy = JoulescopeEnergyAnalyzer("energy1", 0, "JS220:SNA")
+        dev1 = energy._js220._device
         assert energy.read_stats(0.01)["voltage"]["mean"] == pytest.approx(3.3)
         energy.close()
 
@@ -217,7 +220,8 @@ class TestSharedSerialAcrossNets:
 
         watt = JoulescopeJS220("watt1", 0, "JS220:SNA")
         assert watt.read(0.01) == pytest.approx(0.0066)
-        assert len(created) == 2
+        assert watt._device is not dev1
+        assert watt._device.is_open and not dev1.is_open
 
     def test_interleaved_reads_with_close_after_each(self, fake_joulescope):
         # Mirrors the hardware verification sequence: watt, watt, watt,
