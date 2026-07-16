@@ -134,10 +134,12 @@ class SupplyWebSocketClient:
             True if connected successfully, False otherwise
         """
         try:
+            from ..gateway_auth import auth_headers_for_url
             self.sio.connect(
                 self.box_url,
                 namespaces=['/supply'],
-                wait_timeout=timeout
+                wait_timeout=timeout,
+                headers=auth_headers_for_url(self.box_url)
             )
             return True
         except Exception as e:
