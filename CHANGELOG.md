@@ -2,6 +2,43 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.31.13] - 2026-07-16
+
+### Fixed
+
+- **Joulescope JS220 watt reads no longer fail with "is not connected" after
+  the first read on the warm `/net/command` path.** The handler closes the net
+  after every read to release the USB device, but `close()` left the
+  per-serial driver singleton cached as initialized — every later construction
+  got the dead handle back, and one net's close also broke a sibling net
+  sharing the same physical JS220, until the box runtime restarted. `close()`
+  now evicts the instance so the next read reopens the device, `clear_cache()`
+  can no longer deadlock, the JS220/PPK2 energy analyzers re-acquire the
+  shared watt driver if the other net closed it, and dispatcher driver caches
+  drop closed instances via a health check. (The per-command `/python`
+  executor path had masked all of this: a fresh process per read discarded the
+  poisoned cache.)
+
+- **Energy-analyzer reads work on nets addressed by a VISA resource string.**
+  The energy dispatcher passes the net's VISA address
+  (`USB0::0x16D0::0x10BA::<serial>::INSTR`) as the driver location, which was
+  misparsed to serial `INSTR` — and even with the correct serial, the
+  joulescope v1 API has no top-level `Device` class for the old re-wrap, so
+  every such read failed with "Joulescope with serial 'INSTR' not found"
+  listing unreadable object reprs. VISA USB resource strings now parse to the
+  serial field, devices are matched via their `serial_number`/`device_path`
+  attributes and opened directly, and the not-found error lists device serial
+  numbers. A specified serial that matches nothing still errors instead of
+  silently opening the first device, which would measure the wrong unit on a
+  multi-Joulescope bench.
+
+- **A warm-path energy read no longer blocks subsequent watt reads (and
+  external tools) with `jsdrv IN_USE`.** Once the VISA fix let the in-process
+  energy path actually open the JS220, it held the device's exclusive USB
+  claim indefinitely. The energy handler now releases the device after every
+  read, exactly like the watt handler, and the next read re-acquires it
+  automatically.
+
 ## [0.31.12] - 2026-07-15
 
 ### Added
