@@ -113,7 +113,7 @@ def fake_joulescope(monkeypatch):
 class TestCloseReopens:
 
     def test_read_close_reconstruct_read(self, fake_joulescope):
-        # The exact Workbench sequence: read, close, then read again via a
+        # The exact warm-handler sequence: read, close, then read again via a
         # fresh Net.get-style construction. The second read must succeed.
         watt = JoulescopeJS220("watt1", 0, "JS220:SNA")
         dev1 = watt._device
@@ -196,7 +196,7 @@ class TestClearCache:
 
 
 # ---------------------------------------------------------------------------
-# Section 3: two nets sharing one physical JS220 (watt1 + energy1 on STG-1)
+# Section 3: two nets sharing one physical JS220 (watt + energy roles)
 # ---------------------------------------------------------------------------
 
 class TestSharedSerialAcrossNets:
@@ -238,8 +238,9 @@ class TestSharedSerialAcrossNets:
         assert watt._device.is_open and not dev1.is_open
 
     def test_no_serial_open_conflicts_until_energy_closes(self, fake_joulescope):
-        # STG-1 layout: energy1 resolves by VISA serial, watt1 has no
-        # location (serial None) — different singleton keys, same physical
+        # Common bench layout: the energy net resolves by VISA serial, the
+        # watt net has no location (serial None) — different singleton keys
+        # for the same physical
         # device. While the energy net holds the exclusive USB claim, a
         # no-serial open fails with IN_USE; that is why the warm energy
         # handler must close after every read (net_command does).

@@ -4,14 +4,14 @@
 """
 Unit tests for JS220 location parsing and serial-number device matching.
 
-Regression tests for the Workbench energy-analyzer bug: the energy
+Regression tests for the warm-path energy-analyzer bug: the energy
 dispatcher passes the net's VISA address (USB0::0x16D0::0x10BA::004446::INSTR)
 as `location`, which _parse_serial() misparsed to serial 'INSTR' (last
 ':'-token), and the scan filter matched serials against str(device) — while
 the joulescope v1 API also has no top-level joulescope.Device to re-wrap the
 match with. Result: "Joulescope with serial 'INSTR' not found. Available
-devices: [<...DeviceJs220 object at 0x...>]" on every Workbench read, while
-CLI reads (location unset -> scan_require_one) worked.
+devices: [<...DeviceJs220 object at 0x...>]" on every /net/command read,
+while CLI reads (location unset -> scan_require_one) worked.
 
 Run with:
     python -m pytest test/unit/measurement/test_joulescope_serial.py -v
@@ -42,7 +42,7 @@ VISA_ADDRESS = "USB0::0x16D0::0x10BA::004446::INSTR"
 class TestParseSerial:
 
     @pytest.mark.parametrize("location, expected", [
-        # VISA USB resource strings (the Workbench/dispatcher path)
+        # VISA USB resource strings (the dispatcher path)
         (VISA_ADDRESS, "004446"),
         ("usb0::0x16d0::0x10ba::004446::instr", "004446"),      # case-insensitive
         ("USB0::0x16D0::0x10BA::004446", "004446"),             # no ::INSTR suffix
@@ -111,7 +111,7 @@ class TestMatchesSerial:
 
 
 # ---------------------------------------------------------------------------
-# Section 3: end-to-end open by VISA address (the Workbench path)
+# Section 3: end-to-end open by VISA address (the warm dispatcher path)
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -137,8 +137,8 @@ class TestOpenByVisaAddress:
         assert watt.read(0.01) == pytest.approx(0.0066)
 
     def test_energy_analyzer_reads_via_visa_address(self, two_device_bench):
-        # The exact failing Workbench call: energy dispatcher passes the
-        # net's VISA address as location.
+        # The exact failing warm-path call: the energy dispatcher passes
+        # the net's VISA address as location.
         energy = JoulescopeEnergyAnalyzer("energy1", 0, VISA_ADDRESS)
         stats = energy.read_stats(0.01)
         assert stats["power"]["mean"] == pytest.approx(0.0066)
