@@ -46,6 +46,12 @@ network={{
             else:
                 cmd = ['nmcli', 'dev', 'wifi', 'connect', ssid]
 
+            # Pin the radio only when the caller asked for a non-default one;
+            # otherwise let nmcli pick, since the default radio isn't named
+            # wlan0 on every image. Matches the deleted :5000 impl script.
+            if interface != 'wlan0':
+                cmd.extend(['ifname', interface])
+
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
             if result.returncode == 0:

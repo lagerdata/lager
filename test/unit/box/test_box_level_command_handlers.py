@@ -297,6 +297,38 @@ class TestWifiHandler(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# lager.protocols.wifi.connect_to_wifi — nmcli interface pinning
+# ---------------------------------------------------------------------------
+
+class TestConnectToWifiInterface(unittest.TestCase):
+    """`--interface` must reach nmcli as `ifname <iface>` (parity with the
+    deleted :5000 impl script): pinned for a non-default radio, omitted for
+    the wlan0 default so nmcli picks the device on images where the radio
+    isn't named wlan0."""
+
+    def _connect(self, interface):
+        from lager.protocols.wifi import connect_to_wifi
+
+        with patch('lager.protocols.wifi.connect.subprocess.run',
+                   return_value=MagicMock(returncode=0)) as run:
+            result = connect_to_wifi("labnet", "hunter22", interface)
+        self.assertTrue(result["success"])
+        self.assertEqual(result["method"], "nmcli")
+        return run.call_args_list[0][0][0]
+
+    def test_non_default_interface_pins_nmcli_ifname(self):
+        cmd = self._connect("wlan1")
+        self.assertEqual(cmd[:5],
+                         ['nmcli', 'dev', 'wifi', 'connect', 'labnet'])
+        self.assertIn('ifname', cmd)
+        self.assertEqual(cmd[cmd.index('ifname') + 1], 'wlan1')
+
+    def test_default_interface_omits_ifname(self):
+        cmd = self._connect("wlan0")
+        self.assertNotIn('ifname', cmd)
+
+
+# ---------------------------------------------------------------------------
 # /blufi/command
 # ---------------------------------------------------------------------------
 
