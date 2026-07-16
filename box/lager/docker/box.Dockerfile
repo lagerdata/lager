@@ -185,7 +185,8 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 
 # Copy Python lager package modules (grouped structure)
 # Copy Python files at root level
-COPY __init__.py actuate.py box_http_server.py breakpoint.py cache.py constants.py core.py \
+COPY __init__.py actuate.py box_auth.py box_http_server.py box_origin.py breakpoint.py \
+     cache.py constants.py core.py \
      exceptions.py hardware_service.py lock_state.py log.py rotation.py \
      /app/lager/lager/
 
