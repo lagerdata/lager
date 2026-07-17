@@ -1,0 +1,25 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# Runtime dependencies required to IMPORT the code under test so the
+# non-hardware unit suites can run headless on a GitHub-hosted runner:
+#   test/unit/cli/  test/unit/measurement/  test/unit/blufi/  test/mcp/unit/
+#   test/unit/test_*.py  test/test_*.py
+#
+# Hardware SDKs (joulescope, ppk2_api, yoctopuce, labjack-ljm, brainstem,
+# uldaq, phidget22, pyftdi, ...) are intentionally NOT listed: the test
+# conftests mock them, and the unit tests load individual modules by path to
+# avoid importing them. Everything here is a pure-Python wheel.
+numpy
+simplejson
+pyvisa
+pyvisa-py
+flask
+pyserial
+pyusb
+cryptography
+fastmcp
+pexpect
+# NB: pymupdf (PyMuPDF) is intentionally NOT listed — it is AGPL-3.0, which
+# conflicts with this project's Apache-2.0 license. Without it,
+# test/unit/test_pdf_pages.py skips (it importorskips fitz); that's acceptable.
