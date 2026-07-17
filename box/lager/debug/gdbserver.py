@@ -86,6 +86,38 @@ def _gdbserver_pkill_pattern(serial):
     return 'JLinkGDBServerCLExe'
 
 
+def _free_gdb_port(gdb_port):
+    """Kill any JLinkGDBServer holding *gdb_port*, regardless of probe serial.
+
+    ``stop_jlink_gdbserver`` is serial-anchored, so it cannot reap a gdbserver
+    started under a different ``-select`` tag — e.g. a bare ``-select USB``
+    server left by one caller versus a ``-select USB=<serial>`` server from
+    another. Two such servers then collide on the same ``-port`` and deadlock
+    the probe (JLinkGDBServer logs "Failed to open listener port 2331" on one
+    and "Failed to power up DAP" on the other). Reaping by the exact
+    ``-port <gdb_port>`` argument frees only the port we are about to bind, which
+    is correct for single- and multi-probe boxes alike (each slot owns a
+    distinct port).
+    """
+    # Trailing space anchors the match so port 2331 does not also match 23310,
+    # and ``-port`` (with the leading dash) never matches ``-swoport``/``-telnetport``.
+    pattern = f'JLinkGDBServerCLExe.* -port {gdb_port} '
+    try:
+        check = subprocess.run(
+            ['pgrep', '-f', pattern], capture_output=True, timeout=2.0, check=False
+        )
+        if check.returncode != 0:
+            return  # nothing is holding this port
+    except FileNotFoundError:
+        pass  # no pgrep — fall through to best-effort pkill
+    for sig in ('-TERM', '-KILL'):
+        try:
+            subprocess.run(['pkill', sig, '-f', pattern], timeout=1.0, check=False)
+        except FileNotFoundError:
+            return  # no pkill available
+        time.sleep(0.2)
+
+
 def stop_jlink_gdbserver(serial=None):
     """Stop JLinkGDBServer process.
 
@@ -241,9 +273,12 @@ def start_jlink_gdbserver(device, speed='adaptive', transport='SWD', halt=False,
     pidfile = jlink_gdbserver_pidfile(serial)
     logfile = jlink_gdbserver_logfile(serial)
 
-    # Ensure gdb_port is free: orphan server may hold the port without a PID file.
-    # Phase 1 keeps this stop broad (kills any gdbserver) — Phase 3 narrows to *this* serial.
+    # Ensure gdb_port is free before we bind it. The serial-anchored stop below
+    # only reaps *this* serial's server; a server left under a different -select
+    # tag would keep the port and deadlock the probe. _free_gdb_port() then reaps
+    # whatever holds this exact port so the two cannot collide.
     stop_jlink_gdbserver(serial=serial)
+    _free_gdb_port(gdb_port)
     time.sleep(0.15)
 
     # Build command arguments
@@ -258,7 +293,7 @@ def start_jlink_gdbserver(device, speed='adaptive', transport='SWD', halt=False,
             int(speed)  # Validate it's a number
         except ValueError:
             raise ValueError(f"Invalid speed: {speed}")
-    cmd.extend(['-speed', speed])
+    cmd.extend(['-speed', str(speed)])
 
     select_arg = f'USB={serial}' if serial else 'USB'
     if swo_port is None:

@@ -26,7 +26,7 @@ from .process import (
 )
 from .gdbserver import get_jlink_gdbserver_status, stop_jlink_gdbserver, start_jlink_gdbserver
 from .gdb import get_arch, reset as gdb_reset, read_memory as gdb_read_memory
-from .probes import gdb_port_for_slot, rtt_port_for_slot
+from .probes import gdb_port_for_slot, rtt_port_for_slot, jlink_gdbserver_logfile
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,12 @@ def validate_speed(speed):
             f"Typical speeds: 100-4000 kHz"
         )
 
-    return speed
+    # Return a normalized *string*. Callers may pass an int; the retry ladder and
+    # the gdbserver argv are built from string literals, so returning the original
+    # object unchanged lets an int leak through and make the ladder mixed-type —
+    # which raises "sequence item 0: expected str instance, int found" while
+    # formatting the connection-failure message.
+    return str(speed_int)
 
 
 def clean_logfile_content(logfile_content, max_length=2000):
@@ -438,7 +443,22 @@ def connect_jlink(speed, device, transport, force=False, ignore_if_connected=Fal
 
     # All attempts failed
     stop_jlink_gdbserver(serial=serial)
-    logfile_content = (status.get('logfile') or 'No log available') if 'status' in locals() else 'No log available'
+    # Read the J-Link server's real logfile from disk — it holds the actual
+    # reason (e.g. "Failed to power up DAP", "Failed to open listener port 2331").
+    # `status` is only bound on the success path, so the old `status.get('logfile')`
+    # here was always the 'No log available' fallback, which hid the cause. The
+    # logfile persists on disk after stop_jlink_gdbserver() kills the process.
+    logfile_content = None
+    try:
+        with open(jlink_gdbserver_logfile(serial)) as _logf:
+            logfile_content = _logf.read()
+    except OSError:
+        logfile_content = None
+    if not logfile_content and last_error is not None:
+        # Fallback: the last start error carries the log when the server process
+        # itself exited (rather than starting but failing to reach the target).
+        logfile_content = getattr(last_error, 'logfile', None) or None
+    logfile_content = logfile_content or 'No log available'
     logfile_content_clean = clean_logfile_content(logfile_content)
 
     # Check for locked device (Renesas-specific but keep for compatibility)
@@ -468,7 +488,7 @@ def connect_jlink(speed, device, transport, force=False, ignore_if_connected=Fal
                 )
 
             error_msg = (
-                f"Cannot connect to target device (tried {', '.join(speeds_to_try)} kHz).\n\n"
+                f"Cannot connect to target device (tried {', '.join(str(s) for s in speeds_to_try)} kHz).\n\n"
                 "The J-Link probe was found, but cannot establish communication with the target MCU.\n"
                 f"{pin_info}"
                 "TROUBLESHOOTING CHECKLIST:\n"
