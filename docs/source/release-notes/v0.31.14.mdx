@@ -1,0 +1,26 @@
+---
+title: "Version 0.31.14"
+description: "July 17, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **UART nets no longer get stuck reporting "already in use by another session" after a session's read loop wedges on a disconnected serial adapter.** The box tracks live UART sessions in an in-memory registry guarded per-connection, per-net, and per-device; an entry was only removed by a clean stop, a socket disconnect, or the read thread's exit path. If the read thread wedged inside a blocking serial read — a USB-serial adapter that vanished or re-enumerated without raising a device-gone error — none of those ran, so the net stayed reserved with no live reader behind it until the box restarted. Each session now carries a monotonic heartbeat, and a new connection reclaims a holder whose read thread has died or whose heartbeat has aged past 30s instead of refusing to start. A live or reconnecting session keeps its heartbeat fresh and is never reclaimed.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.31.14
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.31.14/)

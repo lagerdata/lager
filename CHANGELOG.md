@@ -2,6 +2,23 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.31.14] - 2026-07-17
+
+### Fixed
+
+- **A UART net no longer stays stuck at "already in use by another session"
+  after a session's read loop wedges on a disconnected serial adapter.** The
+  box tracks live UART sessions in an in-memory registry guarded
+  per-connection, per-net, and per-device; an entry was only removed by a clean
+  stop, a socket disconnect, or the read thread's exit path. If the read thread
+  wedged inside a blocking serial read (a USB-serial adapter that vanished or
+  re-enumerated without raising a device-gone error), none of those ran, so the
+  net stayed reserved with no live reader until the box restarted. Each session
+  now carries a monotonic heartbeat; a new connection reclaims a holder whose
+  read thread has died or whose heartbeat has aged past 30s, instead of
+  refusing to start. A live or reconnecting session keeps its heartbeat fresh
+  and is never reclaimed.
+
 ## [0.31.13] - 2026-07-16
 
 ### Fixed
