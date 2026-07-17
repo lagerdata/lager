@@ -100,13 +100,16 @@ def _uart_read_loop(socketio, session_id, netname, driver, stop_event):
 
     def touch():
         # Heartbeat: prove this session's read loop is still making progress so
-        # a live session is never mistaken for a wedged one. A single dict
-        # get/set is atomic under the GIL, so no lock is needed; identity-guard
-        # so a session that stop_uart/disconnect already replaced under this
-        # sid isn't touched by the old thread.
+        # a live session is never mistaken for a wedged one. Monotonic clock:
+        # last_activity is only ever read as an elapsed interval, so it must not
+        # step with NTP/manual clock changes (a forward jump could otherwise
+        # falsely age a live session). A single dict get/set is atomic under the
+        # GIL, so no lock is needed; identity-guard so a session that
+        # stop_uart/disconnect already replaced under this sid isn't touched by
+        # the old thread.
         sess = active_uart_sessions.get(session_id)
         if sess is not None and sess.get('driver') is driver:
-            sess['last_activity'] = time.time()
+            sess['last_activity'] = time.monotonic()
 
     def reconnect_stop_check():
         # reconnect() polls this every <=0.25s; piggyback the heartbeat so a
@@ -222,7 +225,7 @@ def _session_is_stale(session) -> bool:
     if thread is not None and not thread.is_alive():
         return True
     last = session.get('last_activity')
-    if last is not None and (time.time() - last) > STALE_SESSION_TIMEOUT:
+    if last is not None and (time.monotonic() - last) > STALE_SESSION_TIMEOUT:
         return True
     return False
 
@@ -436,7 +439,7 @@ def register_uart_socketio(socketio: SocketIO) -> None:
                     'driver': driver,
                     'stop_event': stop_event,
                     'netname': netname,
-                    'last_activity': time.time(),
+                    'last_activity': time.monotonic(),
                 }
 
             # Send connection success
