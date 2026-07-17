@@ -457,7 +457,8 @@ def _check_box_lock(ip, box_name):
     import requests
 
     try:
-        resp = requests.get(f'http://{ip}:9000/lock', timeout=3)
+        resp = requests.get(f'http://{ip}:9000/lock', timeout=3, **_gateway_kwargs(ip))
+        _check_gateway(resp, ip)
         if resp.status_code == 404:
             # :9000 answered but has no /lock route: the box image predates
             # the lock API on :9000. Locks can't be enforced against it, so
@@ -573,6 +574,21 @@ def default_heartbeat_interval():
         return _DEFAULT_HEARTBEAT_INTERVAL
 
 
+def _gateway_kwargs(ip):
+    """Bearer header for boxes behind an authenticating gateway; {} otherwise."""
+    from .gateway_auth import auth_headers_for_box
+    headers = auth_headers_for_box(ip)
+    return {'headers': headers} if headers else {}
+
+
+def _check_gateway(resp, ip):
+    """Turn a gateway denial into the actionable `lager login` error and
+    record the box→auth-server mapping so the next call authenticates."""
+    from .gateway_auth import DISCOVERY_HEADER, handle_gateway_denial
+    if resp.status_code in (401, 403, 503) and DISCOVERY_HEADER in resp.headers:
+        handle_gateway_denial(resp, ip)
+
+
 def _lock_url(ip, suffix=''):
     # Lock state is shared box-wide; both the :5000 and :9000 servers expose
     # it via lager.lock_state. The CLI talks to :9000 (the primary HTTP API).
@@ -620,7 +636,8 @@ def acquire_box_lock(
     # server the 200-without-previous_user response below would misclassify
     # the pre-existing lock as freshly acquired — and release it on exit.
     try:
-        pre = requests.get(_lock_url(ip), timeout=5)
+        pre = requests.get(_lock_url(ip), timeout=5, **_gateway_kwargs(ip))
+        _check_gateway(pre, ip)
         if pre.status_code == 200:
             try:
                 pre_data = pre.json()
@@ -645,7 +662,8 @@ def acquire_box_lock(
 
     while True:
         try:
-            resp = requests.post(_lock_url(ip), json=payload, timeout=5)
+            resp = requests.post(_lock_url(ip), json=payload, timeout=5, **_gateway_kwargs(ip))
+            _check_gateway(resp, ip)
         except requests.exceptions.RequestException as exc:
             if not quiet:
                 click.secho(
@@ -734,6 +752,7 @@ def release_box_lock(ip, holder, *, quiet=True):
             f'http://{ip}:9000/unlock',
             json={'user': holder},
             timeout=5,
+            **_gateway_kwargs(ip),
         )
     except requests.exceptions.RequestException as exc:
         if not quiet:
@@ -775,6 +794,7 @@ def heartbeat_box_lock(ip, holder, *, quiet=True):
             _lock_url(ip, '/heartbeat'),
             json={'user': holder},
             timeout=5,
+            **_gateway_kwargs(ip),
         )
     except requests.exceptions.RequestException as exc:
         if not quiet:
