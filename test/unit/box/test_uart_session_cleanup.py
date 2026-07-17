@@ -278,13 +278,13 @@ class StaleSessionReclaimTests(unittest.TestCase):
     def test_stale_when_thread_dead(self):
         # Thread exited but (defensively) the session is still registered.
         session = {'driver': FakeDriver(threading.Event()), 'netname': 'uart1',
-                   'thread': self._dead_thread(), 'last_activity': time.time()}
+                   'thread': self._dead_thread(), 'last_activity': time.monotonic()}
         self.assertTrue(uart_handlers._session_is_stale(session))
 
     def test_stale_when_heartbeat_aged(self):
         # Thread technically alive but wedged: heartbeat stopped advancing.
         session = {'driver': FakeDriver(threading.Event()), 'netname': 'uart1',
-                   'last_activity': time.time() - (self.STALE + 5)}
+                   'last_activity': time.monotonic() - (self.STALE + 5)}
         self.assertTrue(uart_handlers._session_is_stale(session))
 
     def test_live_session_not_stale(self):
@@ -294,7 +294,7 @@ class StaleSessionReclaimTests(unittest.TestCase):
         try:
             session = {'driver': FakeDriver(threading.Event()),
                        'netname': 'uart1', 'thread': alive,
-                       'last_activity': time.time()}
+                       'last_activity': time.monotonic()}
             self.assertFalse(uart_handlers._session_is_stale(session))
         finally:
             gate.set()
@@ -303,14 +303,14 @@ class StaleSessionReclaimTests(unittest.TestCase):
     def test_setup_window_not_stale(self):
         # Freshly created: heartbeat seeded, thread not yet stored.
         session = {'driver': FakeDriver(threading.Event()), 'netname': 'uart1',
-                   'last_activity': time.time()}
+                   'last_activity': time.monotonic()}
         self.assertFalse(uart_handlers._session_is_stale(session))
 
     def test_reclaim_tears_down_stale(self):
         stop = threading.Event()
         driver = FakeDriver(stop)
         session = {'driver': driver, 'stop_event': stop, 'netname': 'uart1',
-                   'last_activity': time.time() - (self.STALE + 5)}
+                   'last_activity': time.monotonic() - (self.STALE + 5)}
         uart_handlers.active_uart_sessions[self.SID] = session
 
         self.assertTrue(uart_handlers._reclaim_if_stale(self.SID, session))
@@ -326,7 +326,7 @@ class StaleSessionReclaimTests(unittest.TestCase):
         driver = FakeDriver(threading.Event())
         try:
             session = {'driver': driver, 'stop_event': stop, 'netname': 'uart1',
-                       'thread': alive, 'last_activity': time.time()}
+                       'thread': alive, 'last_activity': time.monotonic()}
             uart_handlers.active_uart_sessions[self.SID] = session
 
             self.assertFalse(uart_handlers._reclaim_if_stale(self.SID, session))
@@ -359,7 +359,7 @@ class StaleSessionReclaimTests(unittest.TestCase):
         driver.serial_conn = BlockingConn()
         uart_handlers.active_uart_sessions[self.SID] = {
             'driver': driver, 'stop_event': stop, 'netname': 'uart1',
-            'last_activity': time.time() - 999,  # begins stale
+            'last_activity': time.monotonic() - 999,  # begins stale
         }
         t = threading.Thread(
             target=uart_handlers._uart_read_loop,
@@ -370,7 +370,7 @@ class StaleSessionReclaimTests(unittest.TestCase):
             self.assertTrue(started.wait(2.0), "read loop never started")
             last = uart_handlers.active_uart_sessions[self.SID].get('last_activity')
             self.assertIsNotNone(last, "heartbeat was never set")
-            self.assertLess(time.time() - last, self.STALE,
+            self.assertLess(time.monotonic() - last, self.STALE,
                             "heartbeat should be fresh while the loop runs")
         finally:
             stop.set()
