@@ -242,8 +242,12 @@ class TestSharedSerialAcrossNets:
         # watt net has no location (serial None) — different singleton keys
         # for the same physical
         # device. While the energy net holds the exclusive USB claim, a
-        # no-serial open fails with IN_USE; that is why the warm energy
-        # handler must close after every read (net_command does).
+        # no-serial open fails with IN_USE. On the box this is handled by
+        # hardware_service: nets on one physical device share a device_id
+        # lock (so a mixed serial/no-serial config should be fixed by giving
+        # both nets the device's serial), and handing the USB claim to an
+        # external opener goes through /cache/release_direct_usb, which
+        # drains the warm cache via close().
         energy = JoulescopeEnergyAnalyzer("energy1", 0, "JS220:SNA")
         assert energy.read_stats(0.01)["voltage"]["mean"] == pytest.approx(3.3)
 
