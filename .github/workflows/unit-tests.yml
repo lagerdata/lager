@@ -1,9 +1,19 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 #
-# CLI unit tests. These need no hardware and no box, so they run on a
-# GitHub-hosted runner and are safe to gate pull requests (no self-hosted
-# runner is exposed to fork PRs here).
+# Non-hardware unit tests. They need no bench and no self-hosted runner, so
+# they run on GitHub-hosted ubuntu-latest and gate pull requests.
+#
+# Each suite runs as its OWN matrix job because the suites cannot share a
+# pytest process: test/unit/measurement/conftest.py stubs the `lager` package
+# in sys.modules (to avoid heavy box deps), which breaks box-side collection.
+# `--import-mode=importlib` avoids clashes between same-named test modules
+# across suites, and `-c /dev/null` ignores any repo-level pytest config.
+#
+# test/unit/box/ is NOT in the matrix yet: on GitHub-hosted runners `import
+# lager` resolves as a namespace package ("unknown location") and several
+# files fail collection — not reproducible locally or in a plain
+# python:3.11 container. Wiring it up is tracked as a follow-up.
 
 name: Unit Tests
 
@@ -15,9 +25,29 @@ on:
 
 jobs:
   unit-tests:
-    name: CLI unit tests
+    name: unit (${{ matrix.name }})
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    env:
+      # Some suites import box-side code, and some tests spawn subprocesses
+      # that import `test.*`. Put repo root and box/ on PYTHONPATH so both
+      # resolve consistently — in-process AND in subprocesses — regardless
+      # of how pytest is invoked.
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/box
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: cli
+            path: test/unit/cli/
+          - name: measurement
+            path: test/unit/measurement/
+          - name: blufi
+            path: test/unit/blufi/
+          - name: mcp
+            path: test/mcp/unit/
+          - name: root
+            path: test/unit/test_*.py test/test_*.py
 
     steps:
       - name: Checkout repository
@@ -28,12 +58,13 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install lager CLI (editable) + pytest
+      - name: Install CLI + test deps
         run: |
           pip install -e cli/
-          pip install pytest
+          pip install pytest pytest-timeout
+          pip install -r test/requirements-unit.txt
         shell: bash
 
-      - name: Run CLI unit tests
-        run: pytest test/unit/cli/ -v
+      - name: Run ${{ matrix.name }} unit tests
+        run: pytest ${{ matrix.path }} -v --import-mode=importlib -c /dev/null --timeout=60
         shell: bash
