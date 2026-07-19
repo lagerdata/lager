@@ -196,6 +196,29 @@ class BlufiClient:
         self._bleak_client = client
         return True
 
+    def scan(self, timeout: float = 10.0, name_prefix: Optional[str] = None) -> list:
+        """Scan for nearby BLE devices without connecting.
+
+        Returns a list of dicts with 'name', 'address', and 'rssi' keys,
+        sorted by RSSI descending. Use before connectByName to confirm a
+        device is advertising, e.g. scan(name_prefix="MyDevice-").
+        """
+        return self.await_bleak(self._scan_async(timeout=timeout, name_prefix=name_prefix))
+
+    async def _scan_async(self, timeout: float, name_prefix: Optional[str]) -> list:
+        discovered = await BleakScanner.discover(timeout=timeout, return_adv=True)
+        devices = []
+        for device, adv in discovered.values():
+            if name_prefix and not (device.name or "").startswith(name_prefix):
+                continue
+            devices.append({
+                "name": device.name,
+                "address": device.address,
+                "rssi": adv.rssi,
+            })
+        devices.sort(key=lambda d: d["rssi"], reverse=True)
+        return devices
+
     def generateSendSequence(self):
         self.mSendSequence += 1
         self.mSendSequence = self.mSendSequence & 0xFF
