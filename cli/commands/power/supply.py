@@ -95,12 +95,17 @@ def _run_backend(ctx, box, action: str, **params):
     """
     import requests
 
+    from ...gateway_auth import auth_headers_for_box
+    from ...box_storage import _check_gateway
+
     netname = params.get("netname") or getattr(ctx.obj, "netname", None)
     url = f"http://{box}:{NET_HTTP_PORT}/supply/command"
     payload = {"netname": netname, "action": action, "params": params}
 
     try:
-        response = requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=payload, timeout=10,
+                                 headers=auth_headers_for_box(box))
+        _check_gateway(response, box)
     except (requests.ConnectionError, requests.Timeout):
         click.secho(
             f"Error: cannot reach box at {box}:{NET_HTTP_PORT}. "

@@ -49,12 +49,17 @@ def _run_backend(ctx, box, action: str, **params):
     """
     import requests
 
+    from ...gateway_auth import auth_headers_for_box
+    from ...box_storage import _check_gateway
+
     netname = params.get('netname')
     url = f"http://{box}:{NET_HTTP_PORT}/battery/command"
     payload = {"netname": netname, "action": action, "params": params}
 
     try:
-        response = requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=payload, timeout=10,
+                                 headers=auth_headers_for_box(box))
+        _check_gateway(response, box)
     except (requests.ConnectionError, requests.Timeout):
         click.secho(
             f"Error: cannot reach box at {box}:{NET_HTTP_PORT}. "
@@ -100,11 +105,16 @@ def _battery_command_request(ctx, box, action: str, timeout: int = 30, **params)
     import requests
     from ...box_storage import resolve_and_validate_box
 
+    from ...gateway_auth import auth_headers_for_box
+    from ...box_storage import _check_gateway
+
     box_ip = resolve_and_validate_box(ctx, box)
     url = f"http://{box_ip}:9000/battery/command"
     payload = {"netname": params.get('netname'), "action": action, "params": params}
     try:
-        response = requests.post(url, json=payload, timeout=timeout)
+        response = requests.post(url, json=payload, timeout=timeout,
+                                 headers=auth_headers_for_box(box_ip))
+        _check_gateway(response, box_ip)
     except Exception as exc:
         if is_connection_error(exc):
             raise connection_error(exc, host=box_ip)

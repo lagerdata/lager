@@ -187,11 +187,15 @@ def fetch_nets(box_ip: str) -> list[dict]:
     a stderr warning (once per box per process) before returning [].
     """
     import requests
+    from ..gateway_auth import auth_headers_for_box
+    from ..box_storage import _check_gateway
 
     base = f"http://{box_ip}:{NET_HTTP_PORT}"
+    auth = auth_headers_for_box(box_ip)
     connect_failures = 0
     try:
-        resp = requests.get(f"{base}/nets/list", timeout=_NET_HTTP_TIMEOUT)
+        resp = requests.get(f"{base}/nets/list", timeout=_NET_HTTP_TIMEOUT, headers=auth)
+        _check_gateway(resp, box_ip)
         if resp.status_code == 200:
             data = resp.json()
             # /nets/list returns a bare array; tolerate the {"nets": [...]} shape.
@@ -206,7 +210,8 @@ def fetch_nets(box_ip: str) -> list[dict]:
 
     # Older boxes: /uart/nets/list returns {"nets": [...]}.
     try:
-        resp = requests.get(f"{base}/uart/nets/list", timeout=_NET_HTTP_TIMEOUT)
+        resp = requests.get(f"{base}/uart/nets/list", timeout=_NET_HTTP_TIMEOUT, headers=auth)
+        _check_gateway(resp, box_ip)
         if resp.status_code == 200:
             data = resp.json()
             nets = data.get("nets", []) if isinstance(data, dict) else data
@@ -275,9 +280,14 @@ def post_net_command(
     if role is not None:
         payload["role"] = role
 
+    from ..gateway_auth import auth_headers_for_box
+    from ..box_storage import _check_gateway
+
     url = f"http://{box_ip}:{NET_HTTP_PORT}/net/command"
     try:
-        resp = requests.post(url, json=payload, timeout=http_timeout)
+        resp = requests.post(url, json=payload, timeout=http_timeout,
+                             headers=auth_headers_for_box(box_ip))
+        _check_gateway(resp, box_ip)
     except (requests.ConnectionError, requests.Timeout):
         click.secho(
             f"Error: cannot reach box at {box_ip}:{NET_HTTP_PORT}. "
@@ -347,11 +357,15 @@ def post_box_command(
         The parsed response dict (includes ``message`` and optional ``value``).
     """
     import requests
+    from ..gateway_auth import auth_headers_for_box
+    from ..box_storage import _check_gateway
 
     payload: dict[str, Any] = {"action": action, "params": params}
     url = f"http://{box_ip}:{NET_HTTP_PORT}{endpoint}"
     try:
-        resp = requests.post(url, json=payload, timeout=http_timeout)
+        resp = requests.post(url, json=payload, timeout=http_timeout,
+                             headers=auth_headers_for_box(box_ip))
+        _check_gateway(resp, box_ip)
     except (requests.ConnectionError, requests.Timeout):
         click.secho(
             f"Error: cannot reach box at {box_ip}:{NET_HTTP_PORT}. "
