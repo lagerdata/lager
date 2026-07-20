@@ -182,14 +182,21 @@ def _run_custom_devices(dut: str, action: str, payload: dict | None = None):
     JSON responses, and box images that predate the endpoints (404).
     """
     import requests
+    from ...gateway_auth import auth_headers_for_box
+    from ...box_storage import _check_gateway
+    from ...errors import LagerError
 
     url = f"http://{dut}:{NET_HTTP_PORT}/custom-devices/{action}"
     try:
         if action == "list":
-            resp = requests.get(url, timeout=_HTTP_TIMEOUT)
+            resp = requests.get(url, timeout=_HTTP_TIMEOUT, headers=auth_headers_for_box(dut))
         else:
-            resp = requests.post(url, json=payload or {}, timeout=_HTTP_TIMEOUT)
+            resp = requests.post(url, json=payload or {}, timeout=_HTTP_TIMEOUT,
+                                 headers=auth_headers_for_box(dut))
+        _check_gateway(resp, dut)
         result = resp.json()
+    except LagerError:
+        raise
     except Exception:
         return None
     if resp.status_code == 404:
