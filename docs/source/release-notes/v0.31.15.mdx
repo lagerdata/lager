@@ -1,0 +1,26 @@
+---
+title: "Version 0.31.15"
+description: "July 20, 2026"
+---
+
+## <u>Features</u>
+
+- **`BlufiClient.scan()` — BLE advertisement presence checks from the box Python API.** `scan(timeout=10.0, name_prefix=None)` returns nearby BLE devices as `{name, address, rssi}` dicts sorted by RSSI descending, with an optional exact-prefix name filter. A test suite can now confirm its target device is advertising before attempting a BluFi connection and fail with a clear diagnostic when it is not, instead of driving a never-connected client into a confusing `NoneType` error. The `lager ble scan` and `lager blufi scan` commands already provide the equivalent from the CLI.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.31.15
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.31.15/)
