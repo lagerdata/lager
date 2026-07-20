@@ -69,6 +69,7 @@ if _BOX_ROOT not in sys.path:
     sys.path.insert(0, _BOX_ROOT)
 
 from lager.debug import gdbserver as gdbserver_mod  # noqa: E402
+from lager.debug import api as api_mod  # noqa: E402
 
 
 class _FakeProc:
@@ -105,9 +106,11 @@ class _TmpdirSandbox:
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
 
-def _start(serial, gdb_port, rtt_port, fake_pid, swo_port=None, telnet_port=None):
+def _start(serial, gdb_port, rtt_port, fake_pid, swo_port=None, telnet_port=None,
+           speed='4000'):
     """Drive start_jlink_gdbserver with everything risky mocked out."""
     with patch.object(gdbserver_mod, 'stop_jlink_gdbserver'), \
+         patch.object(gdbserver_mod, '_free_gdb_port'), \
          patch('subprocess.Popen') as mock_popen, \
          patch('os.kill', return_value=None), \
          patch.object(gdbserver_mod, 'time'), \
@@ -115,7 +118,7 @@ def _start(serial, gdb_port, rtt_port, fake_pid, swo_port=None, telnet_port=None
                       return_value='/fake/path/JLinkGDBServerCLExe'):
         mock_popen.return_value = _FakeProc(fake_pid)
         kwargs = dict(
-            device='NRF52840_XXAA', speed='4000', transport='SWD',
+            device='NRF52840_XXAA', speed=speed, transport='SWD',
             serial=serial, gdb_port=gdb_port, rtt_telnet_port=rtt_port,
         )
         if swo_port is not None:
@@ -205,6 +208,61 @@ class LegacyPathStillWorks(unittest.TestCase):
         self.assertEqual(cmd[cmd.index('-swoport') + 1], '2332')
         self.assertEqual(cmd[cmd.index('-telnetport') + 1], '2333')
         self.assertEqual(cmd[cmd.index('-RTTTelnetPort') + 1], '9090')
+
+
+class SpeedNormalization(unittest.TestCase):
+    """`validate_speed` must normalize to a str, and an int speed must not crash
+    the gdbserver argv build."""
+
+    def test_validate_speed_returns_str(self):
+        self.assertEqual(api_mod.validate_speed(4000), '4000')
+        self.assertIsInstance(api_mod.validate_speed(4000), str)
+        self.assertEqual(api_mod.validate_speed('4000'), '4000')
+        self.assertEqual(api_mod.validate_speed('adaptive'), 'adaptive')
+
+    def test_int_speed_produces_str_speed_arg(self):
+        # Regression: an int speed used to reach `' '.join(cmd)` as a non-str and
+        # blow up the retry ladder / argv. It must render as the string '4000'.
+        with _TmpdirSandbox():
+            _, cmd = _start('000051014439', 2331, 9090, 33333, speed=4000)
+        i = cmd.index('-speed')
+        self.assertEqual(cmd[i + 1], '4000')
+        self.assertIsInstance(cmd[i + 1], str)
+
+
+class PortReclaim(unittest.TestCase):
+    """`_free_gdb_port` frees exactly the port about to be bound, regardless of
+    which -select tag the holding server used."""
+
+    def test_kills_by_port_when_a_server_holds_it(self):
+        calls = []
+
+        def fake_run(argv, **kw):
+            calls.append(argv)
+            return types.SimpleNamespace(returncode=0)  # pgrep finds a match
+
+        with patch('subprocess.run', side_effect=fake_run), \
+             patch.object(gdbserver_mod, 'time'):
+            gdbserver_mod._free_gdb_port(2331)
+
+        self.assertEqual(calls[0][0], 'pgrep')
+        pkills = [c for c in calls if c[0] == 'pkill']
+        self.assertTrue(pkills, 'expected pkill when a server holds the port')
+        for c in pkills:
+            pattern = c[-1]
+            self.assertIn('JLinkGDBServerCLExe', pattern)
+            # Trailing space anchors the port so 2331 does not also match 23310.
+            self.assertIn('-port 2331 ', pattern)
+
+    def test_noop_when_port_is_free(self):
+        def fake_run(argv, **kw):
+            if argv[0] == 'pgrep':
+                return types.SimpleNamespace(returncode=1)  # nothing on this port
+            raise AssertionError(f'pkill must not run when port is free: {argv}')
+
+        with patch('subprocess.run', side_effect=fake_run), \
+             patch.object(gdbserver_mod, 'time'):
+            gdbserver_mod._free_gdb_port(2331)
 
 
 if __name__ == '__main__':

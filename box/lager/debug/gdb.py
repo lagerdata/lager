@@ -75,10 +75,27 @@ def get_device():
     Returns:
         Device name string
 
-    Note:
-        Expects LAGER_BOX_COMMANDS environment variable with JSON containing jlink_device
+    Raises:
+        RuntimeError: with an actionable message when LAGER_BOX_COMMANDS is
+            unset or malformed. That variable is set when lager runs a command on
+            the box, and absent when a script is exec'd into the container
+            directly (e.g. an external test runner). Previously this raised a
+            bare ``KeyError('LAGER_BOX_COMMANDS')``, which surfaced as the opaque
+            "RTT auto-detection failed: 'LAGER_BOX_COMMANDS'" warning.
     """
-    return json.loads(os.environ['LAGER_BOX_COMMANDS'])['jlink_device']
+    raw = os.environ.get('LAGER_BOX_COMMANDS')
+    if not raw:
+        raise RuntimeError(
+            "LAGER_BOX_COMMANDS is not set, so the debug device is unknown. "
+            "This is set when lager runs on the box and absent when a script is "
+            "exec'd into the container directly. Pass the device explicitly."
+        )
+    try:
+        return json.loads(raw)['jlink_device']
+    except (ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError(
+            f"LAGER_BOX_COMMANDS is malformed or has no 'jlink_device': {exc}"
+        )
 
 
 def get_arch(device):
