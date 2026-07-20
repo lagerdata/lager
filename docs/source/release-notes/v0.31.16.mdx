@@ -1,0 +1,32 @@
+---
+title: "Version 0.31.16"
+description: "July 20, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **A failed debug connect now shows the real J-Link reason instead of a Python traceback.** `validate_speed()` returned the caller's value unchanged, so an integer speed made the connect-error message's `', '.join(speeds_to_try)` raise `TypeError: sequence item 0: expected str instance, int found` — which replaced the actual diagnosis (e.g. "Failed to power up DAP", "Cannot connect to target") in the console. It now returns a normalized string, and the gdbserver argv stringifies the speed as well.
+
+- **A leftover GDB server can no longer wedge the next connect on its port.** Cleanup before starting a J-Link GDB server was anchored on the probe serial (`-select USB=<serial>`), so a server left running under a different `-select` tag kept holding the GDB port and the two servers collided ("Failed to open listener port 2331" on one, "Failed to power up DAP" on the other), deadlocking the probe. The port itself is now swept before binding, matched on the exact `-port <n>` token so sibling probes on other ports are untouched.
+
+- **The connect-failure message now includes the J-Link server's real log.** The failure path previously always printed "No log available" and hid the server's actual complaint; the server's on-disk logfile is now read back on failure.
+
+- **An opaque "RTT auto-detection failed: 'LAGER_BOX_COMMANDS'" warning is now actionable.** `get_device()` raised a bare `KeyError` when that variable is absent — the state when a script is exec'd into the Lager Box container directly rather than run through lager. It now raises a clear message explaining the variable is unset and the device must be passed explicitly.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.31.16
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.31.16/)
