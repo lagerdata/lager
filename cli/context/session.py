@@ -357,7 +357,9 @@ class DirectIPSession:
         }
 
         try:
-            response = requests.post(url, json=payload, timeout=5)
+            from ..gateway_auth import auth_headers_for_box
+            response = requests.post(url, json=payload, timeout=5,
+                                     headers=auth_headers_for_box(self.ip_address))
             return response
         except requests.exceptions.RequestException as e:
             # Return a mock response with error

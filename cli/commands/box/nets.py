@@ -48,11 +48,15 @@ def _box_request(ctx: click.Context, box_ip: str, method: str, path: str,
     since they usually mean the box image predates the endpoint.
     """
     import requests
+    from ...gateway_auth import auth_headers_for_box
+    from ...box_storage import _check_gateway
 
     url = f"http://{box_ip}:{NET_HTTP_PORT}{path}"
     try:
         resp = requests.request(method, url, json=json_body, params=params,
+                                headers=auth_headers_for_box(box_ip),
                                 timeout=_NETS_HTTP_TIMEOUT)
+        _check_gateway(resp, box_ip)
     except (requests.ConnectionError, requests.Timeout):
         click.secho(
             f"Error: cannot reach box at {box_ip}:{NET_HTTP_PORT}. "
@@ -1299,11 +1303,15 @@ def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net,
     def _run_backend(method: str, path: str, json_body=None) -> dict:
         """One /custom-devices/* round-trip; box 400s become LagerErrors."""
         import requests
+        from ...gateway_auth import auth_headers_for_box
+        from ...box_storage import _check_gateway
 
         url = f"http://{resolved_box}:{NET_HTTP_PORT}{path}"
         try:
             resp = requests.request(method, url, json=json_body,
+                                    headers=auth_headers_for_box(resolved_box),
                                     timeout=_NETS_HTTP_TIMEOUT)
+            _check_gateway(resp, resolved_box)
         except requests.RequestException as e:
             raise LagerError(
                 "The box could not complete the assign command.",
