@@ -6,22 +6,42 @@
 # - Debug Service (port 8765) - embedded debugging
 # - UART HTTP+WebSocket Server (port 9000) - serial communication
 #
-# Usage: ./start_box.sh [--no-publish]
+# Usage: ./start_box.sh [--no-publish | --publish]
 # Run this script from the box directory after copying code to the box device
 #
 # --no-publish (or LAGER_NO_PUBLISH=1) skips publishing the container's
 # service ports on the host: the container is reachable only on the lagernet
 # Docker network. Use this when a reverse proxy on the same network owns the
 # host ports and forwards traffic to this container.
+#
+# The chosen mode persists: --no-publish writes a marker file so later runs
+# without flags keep the container lagernet-only (an update script that
+# doesn't know about the proxy would otherwise republish the ports and
+# collide with it). --publish clears the marker and returns to the default.
 
 set -e
 
 NO_PUBLISH="${LAGER_NO_PUBLISH:-}"
+EXPLICIT_PUBLISH=""
 for arg in "$@"; do
     case "$arg" in
         --no-publish) NO_PUBLISH=1 ;;
+        --publish) EXPLICIT_PUBLISH=1 ;;
     esac
 done
+
+NO_PUBLISH_MARKER="/etc/lager/no_publish"
+if [ -n "$EXPLICIT_PUBLISH" ]; then
+    NO_PUBLISH=""
+    rm -f "$NO_PUBLISH_MARKER" 2>/dev/null || true
+elif [ -z "$NO_PUBLISH" ] && [ -f "$NO_PUBLISH_MARKER" ]; then
+    NO_PUBLISH=1
+    echo "Keeping previous --no-publish mode (marker: $NO_PUBLISH_MARKER; pass --publish to publish ports again)"
+fi
+if [ -n "$NO_PUBLISH" ]; then
+    touch "$NO_PUBLISH_MARKER" 2>/dev/null || \
+        echo "[WARNING] Could not write $NO_PUBLISH_MARKER — no-publish mode will not survive a plain restart"
+fi
 
 # Ensure standard paths are available (needed when run via SSH or cron)
 export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
