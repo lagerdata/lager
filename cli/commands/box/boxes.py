@@ -66,7 +66,9 @@ def _list_boxes_live(port=9000, timeout=5):
         locked_by = ''
         busy_info = ''
         try:
-            lock_resp = requests.get(f'http://{ip}:{port}/lock', timeout=3, headers={'Cache-Control': 'no-cache'})
+            from ...gateway_auth import auth_headers_for_box
+            lock_resp = requests.get(f'http://{ip}:{port}/lock', timeout=3,
+                                     headers={'Cache-Control': 'no-cache', **auth_headers_for_box(ip)})
             if lock_resp.status_code == 200:
                 lock_data = lock_resp.json()
                 if lock_data.get('locked'):

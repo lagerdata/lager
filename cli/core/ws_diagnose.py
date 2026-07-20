@@ -37,7 +37,9 @@ def make_ws_failure_message(box_ip: str, original_error: str | Exception = '') -
         # /health is a cheap, always-present endpoint on box_http_server
         # (port 9000). 2s timeout matches the worst case of a healthy box
         # under temporary load.
-        r = requests.get(f'http://{box_ip}:9000/health', timeout=2.0)
+        from ..gateway_auth import auth_headers_for_box
+        r = requests.get(f'http://{box_ip}:9000/health', timeout=2.0,
+                         headers=auth_headers_for_box(box_ip))
         if r.status_code == 200:
             return (
                 f'{base}{detail}.\n'

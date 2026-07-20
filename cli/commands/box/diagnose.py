@@ -50,7 +50,9 @@ def _fetch_net_info(
     the box. If requested_type != 'auto' and matches the net's role, use
     that — otherwise the returned role wins."""
     try:
-        r = requests.get(f'http://{box_ip}:9000/nets/list', timeout=5)
+        from ...gateway_auth import auth_headers_for_box
+        r = requests.get(f'http://{box_ip}:9000/nets/list', timeout=5,
+                         headers=auth_headers_for_box(box_ip))
         r.raise_for_status()
         nets = r.json()
         # Older box images wrap the list: {"nets": [...]}. Unwrap so the

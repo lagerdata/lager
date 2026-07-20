@@ -73,7 +73,9 @@ def wait_for_box_ready(box_ip, *, timeout_s=60, initial_delay_s=2):
     while time.monotonic() < deadline:
         for port in sorted(pending):
             try:
-                r = requests.get(f'http://{box_ip}:{port}/health', timeout=3)
+                from ...gateway_auth import auth_headers_for_box
+                r = requests.get(f'http://{box_ip}:{port}/health', timeout=3,
+                                 headers=auth_headers_for_box(box_ip))
                 if r.status_code == 200:
                     pending.discard(port)
             except requests.exceptions.RequestException:
