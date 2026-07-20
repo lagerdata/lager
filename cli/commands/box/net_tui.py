@@ -128,11 +128,15 @@ def _box_http(dut: str, method: str, path: str, json_body=None, params=None):
     lands in show_error.
     """
     import requests
+    from ...gateway_auth import auth_headers_for_box
+    from ...box_storage import _check_gateway
 
     url = f"http://{dut}:{NET_HTTP_PORT}{path}"
     try:
         resp = requests.request(method, url, json=json_body, params=params,
+                                headers=auth_headers_for_box(dut),
                                 timeout=_HTTP_TIMEOUT)
+        _check_gateway(resp, dut)
     except requests.RequestException as e:
         raise RuntimeError(f"cannot reach box at {dut}:{NET_HTTP_PORT} ({e})")
     try:
