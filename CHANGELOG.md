@@ -2,6 +2,23 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.31.15] - 2026-07-20
+
+### Added
+
+- **`BlufiClient.scan(timeout=10.0, name_prefix=None)` — BLE advertisement scan
+  on the box Python API.** Returns nearby BLE devices as `{name, address,
+  rssi}` dicts sorted by RSSI descending, with an optional exact-prefix name
+  filter, so a test suite can confirm its target is advertising before
+  attempting a BluFi connection. Previously the API offered no presence check:
+  a suite that missed `connectByName`'s `False` return went on to drive a
+  never-connected client and failed later with a confusing `'NoneType' object
+  has no attribute 'write_gatt_char'`. An empty `scan(name_prefix="MyDevice-")`
+  is now a clean, actionable failure. RSSI is read from `AdvertisementData`
+  (`BLEDevice.rssi` is deprecated in bleak; boxes pin 0.22.2, which supports
+  `return_adv`). The `lager ble scan` and `lager blufi scan` commands already
+  provide the equivalent from the CLI.
+
 ## [0.31.14] - 2026-07-17
 
 ### Fixed
