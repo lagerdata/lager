@@ -60,7 +60,9 @@ def check_and_warn(box_ip: str, box_name: str | None = None) -> None:
         # /status on port 9000 (the box HTTP API) reports the box version;
         # it's the same endpoint `lager box hello` uses. 1.5s timeout
         # keeps the latency penalty bounded if the box is briefly slow.
-        r = requests.get(f'http://{box_ip}:9000/status', timeout=1.5)
+        from ..gateway_auth import auth_headers_for_box
+        r = requests.get(f'http://{box_ip}:9000/status', timeout=1.5,
+                         headers=auth_headers_for_box(box_ip))
         if r.status_code == 404:
             # The :9000 server answered but has no /status route — the box
             # image predates the :9000 API surface this CLI requires. That is

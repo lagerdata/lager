@@ -1626,7 +1626,9 @@ def _box_api_responding(box_ip: str, *, timeout: float = 2.0) -> bool:
     failures (connection refused, timeout) return False so the caller can
     poll cheaply."""
     try:
-        r = requests.get(f"http://{box_ip}:{_BOX_API_PORT}/hello", timeout=timeout)
+        from ...gateway_auth import auth_headers_for_box
+        r = requests.get(f"http://{box_ip}:{_BOX_API_PORT}/hello", timeout=timeout,
+                         headers=auth_headers_for_box(box_ip))
         return r.status_code == 200
     except Exception:
         return False

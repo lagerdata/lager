@@ -95,7 +95,9 @@ def _run_query_instruments(ctx: click.Context, box_ip: str) -> list[dict]:
     (name/address/channels/tty_path), served warm by the box HTTP server.
     """
     try:
-        resp = requests.get(f'http://{box_ip}:9000/instruments/list', timeout=15)
+        from ...gateway_auth import auth_headers_for_box
+        resp = requests.get(f'http://{box_ip}:9000/instruments/list', timeout=15,
+                            headers=auth_headers_for_box(box_ip))
         if resp.status_code == 200:
             data = resp.json()
             if isinstance(data, list):
