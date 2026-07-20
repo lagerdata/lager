@@ -2,6 +2,43 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.31.16] - 2026-07-20
+
+### Fixed
+
+- **A failed debug connect now shows the real J-Link reason instead of a Python
+  traceback.** `validate_speed()` returned the caller's value unchanged, so when
+  a caller passed an integer speed, the connect-error message's
+  `', '.join(speeds_to_try)` raised `TypeError: sequence item 0: expected str
+  instance, int found` — which *replaced* the actual diagnosis (e.g. "Failed to
+  power up DAP", "Cannot connect to target") in the console. It now returns a
+  normalized string, as its docstring already promised, and the gdbserver argv
+  stringifies the speed as well. This is the fix that matters: a debug failure
+  used to lie about why it failed.
+
+- **A leftover GDB server can no longer wedge the next connect on its port.**
+  Cleanup before starting a J-Link GDB server was anchored on the probe serial
+  (`-select USB=<serial>`), so a server left running under a different
+  `-select` tag — e.g. a bare `-select USB` from a fallback path — kept holding
+  the GDB port under `-stayrunning 1`. The two servers then collided ("Failed
+  to open listener port 2331" on one, "Failed to power up DAP" on the other)
+  and deadlocked the probe. The port itself is now swept before binding,
+  matched on the exact `-port <n>` token so sibling probes on other ports are
+  untouched.
+
+- **The connect-failure message now includes the J-Link server's real log.**
+  The failure path read `status.get('logfile')`, but `status` is only bound on
+  the success path — so every failure printed "No log available" and hid the
+  server's actual complaint. The server's on-disk logfile is now read back on
+  failure (falling back to the log captured by the last start error).
+
+- **An opaque "RTT auto-detection failed: 'LAGER_BOX_COMMANDS'" warning is now
+  actionable.** `get_device()` read `LAGER_BOX_COMMANDS` unguarded and raised a
+  bare `KeyError` when that variable is absent — the state when a script is
+  exec'd into the box container directly rather than run through lager. It now
+  raises a clear message explaining the variable is unset and the device must be
+  passed explicitly.
+
 ## [0.31.15] - 2026-07-20
 
 ### Added

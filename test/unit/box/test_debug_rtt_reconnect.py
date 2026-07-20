@@ -83,6 +83,7 @@ def _load_api():
         f"{PKG}.probes",
         gdb_port_for_slot=lambda slot: 2331 + 3 * slot,
         rtt_port_for_slot=lambda slot: 9090 + 2 * slot,
+        jlink_gdbserver_logfile=lambda serial=None: "/tmp/jlink_gdbserver.log",
     )
 
     spec = importlib.util.spec_from_file_location(f"{PKG}.api", API_PATH)
