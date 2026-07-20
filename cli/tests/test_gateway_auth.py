@@ -194,6 +194,34 @@ def test_denial_records_mapping_and_instructs_login():
     assert gateway_auth.auth_server_for_box('10.0.0.5') == 'http://cp:3001'
 
 
+def test_denial_first_contact_with_stored_login_says_rerun():
+    # Logged in proactively, then touched the box before any mapping existed:
+    # the request carried no token, so the fix is a re-run, not a re-login.
+    gateway_auth.save_login('http://cp:3001', make_jwt(time.time() + 900), {'refresh': 'r1'})
+    response = make_response(401, {gateway_auth.DISCOVERY_HEADER: 'http://cp:3001'})
+
+    with pytest.raises(LagerError) as excinfo:
+        gateway_auth.handle_gateway_denial(response, '10.0.0.5')
+
+    assert 'now linked' in excinfo.value.problem
+    assert 'Re-run this command.' in excinfo.value.fixes
+    assert gateway_auth.auth_server_for_box('10.0.0.5') == 'http://cp:3001'
+
+
+def test_denial_with_sent_token_reports_rejected_session():
+    gateway_auth.save_login('http://cp:3001', make_jwt(time.time() + 900), {'refresh': 'r1'})
+    response = make_response(401, {gateway_auth.DISCOVERY_HEADER: 'http://cp:3001'})
+    prepared = requests.PreparedRequest()
+    prepared.headers = {'Authorization': 'Bearer something'}
+    response.request = prepared
+
+    with pytest.raises(LagerError) as excinfo:
+        gateway_auth.handle_gateway_denial(response, '10.0.0.5')
+
+    assert 'was rejected' in excinfo.value.problem
+    assert 'lager login http://cp:3001' in ' '.join(excinfo.value.fixes)
+
+
 def test_denial_403_explains_missing_access():
     response = make_response(403, {gateway_auth.DISCOVERY_HEADER: 'http://cp:3001'})
 

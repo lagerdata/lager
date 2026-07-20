@@ -231,8 +231,19 @@ def handle_gateway_denial(response, box_ip):
     record_box_auth_server(box_ip, url)
 
     if response.status_code == 401:
+        sent_auth = 'Authorization' in getattr(response.request, 'headers', {})
         if access_token_for(url):
-            # We hold a token but the gateway rejected it (e.g. revoked).
+            if not sent_auth:
+                # First contact with this box after logging in proactively:
+                # we hold a valid session but didn't attach it because the
+                # box→auth-server link was only learned from this very
+                # response (recorded above). The next attempt authenticates.
+                raise LagerError(
+                    f'Box {box_ip} requires sign-in. Your existing login for '
+                    f'{url} is now linked to this box.',
+                    fixes=['Re-run this command.'],
+                )
+            # We sent a token and the gateway rejected it (e.g. revoked).
             raise LagerError(
                 f'Your session for {url} was rejected by box {box_ip}.',
                 fixes=[f'lager login {url}'],
