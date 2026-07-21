@@ -26,7 +26,7 @@ from .webcam import webcam
 from .install import install
 from .uninstall import uninstall
 from .install_wheel import install_wheel
-from .login import login, logout
+from .login import login, logout, whoami
 
 __all__ = [
     "defaults",
@@ -40,4 +40,5 @@ __all__ = [
     "install_wheel",
     "login",
     "logout",
+    "whoami",
 ]

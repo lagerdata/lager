@@ -31,6 +31,14 @@ def make_jwt(exp):
     return f'{header.decode()}.{payload.decode()}.sig'
 
 
+def make_jwt_with(exp, **claims):
+    """Unsigned JWT-shaped token carrying exp plus arbitrary claims."""
+    header = base64.urlsafe_b64encode(b'{"alg":"HS256"}').rstrip(b'=')
+    payload = base64.urlsafe_b64encode(
+        json.dumps({'exp': exp, **claims}).encode()).rstrip(b'=')
+    return f'{header.decode()}.{payload.decode()}.sig'
+
+
 def make_response(status, headers=None):
     response = requests.Response()
     response.status_code = status
@@ -252,6 +260,28 @@ def test_check_gateway_retry_still_denied_raises_not_authorized(monkeypatch):
     with pytest.raises(LagerError) as excinfo:
         box_storage._check_gateway(resp, '10.0.0.5')
     assert 'not authorized' in excinfo.value.problem.lower()
+
+
+def test_auth_status_reports_server_user_and_boxes():
+    token = make_jwt_with(exp=time.time() + 600, email='dev@example.com')
+    gateway_auth.save_login('http://cp:3001', token, {'refresh': 'r1'})
+    gateway_auth.record_box_auth_server('10.0.0.5', 'http://cp:3001')
+    gateway_auth.record_box_auth_server('10.0.0.6', 'http://cp:3001')
+    gateway_auth.record_box_auth_server('10.0.0.9', 'http://other:3001')
+
+    status = gateway_auth.auth_status()
+
+    assert len(status) == 1
+    s = status[0]
+    assert s['url'] == 'http://cp:3001'
+    assert s['email'] == 'dev@example.com'
+    assert s['expires_in'] > 0
+    assert s['refreshable'] is True
+    assert s['boxes'] == ['10.0.0.5', '10.0.0.6']   # other server excluded
+
+
+def test_auth_status_empty_when_signed_out():
+    assert gateway_auth.auth_status() == []
 
 
 def test_check_gateway_passes_through_plain_box():
