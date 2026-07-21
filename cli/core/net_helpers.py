@@ -166,6 +166,34 @@ NET_HTTP_PORT = 9000
 _NET_HTTP_TIMEOUT = 10
 
 
+def echo_box_request_failure(box_ip: str, exc, timeout=None) -> None:
+    """Print the right diagnosis for a failed box HTTP call.
+
+    A read timeout means the box accepted the request but the operation
+    outran its budget (first contact with an instrument can take a while)
+    — telling the user to check their network sends them down the wrong
+    path, and the operation may still complete on the box. Anything else
+    (connection refused/reset, connect timeout) is a genuine
+    can't-reach-the-box condition.
+    """
+    import requests
+
+    if isinstance(exc, requests.ReadTimeout):
+        after = f" within {timeout:g}s" if timeout else ""
+        click.secho(
+            f"Error: the box at {box_ip}:{NET_HTTP_PORT} accepted the request "
+            f"but did not answer{after}. The operation may just be slow and "
+            f"may still complete on the box; try again in a moment.",
+            fg="red", err=True,
+        )
+    else:
+        click.secho(
+            f"Error: cannot reach box at {box_ip}:{NET_HTTP_PORT}. "
+            f"Check network/Tailscale and that the box is online and updated.",
+            fg="red", err=True,
+        )
+
+
 # Boxes we've already warned about being unreachable during a net listing;
 # once per CLI process so repeated fetch_nets calls (e.g. the TUI) don't spam.
 _fetch_nets_unreachable_warned: set[str] = set()
@@ -289,12 +317,8 @@ def post_net_command(
         resp = requests.post(url, json=payload, timeout=http_timeout,
                              headers=auth_headers_for_box(box_addr))
         _check_gateway(resp, box_addr)
-    except (requests.ConnectionError, requests.Timeout):
-        click.secho(
-            f"Error: cannot reach box at {box_addr}:{NET_HTTP_PORT}. "
-            f"Check network/Tailscale and that the box is online and updated.",
-            fg="red", err=True,
-        )
+    except (requests.ConnectionError, requests.Timeout) as e:
+        echo_box_request_failure(box_addr, e, timeout=http_timeout)
         raise SystemExit(1)
     except requests.RequestException as e:
         click.secho(f"Error: request to box failed: {e}", fg="red", err=True)
@@ -367,12 +391,8 @@ def post_box_command(
         resp = requests.post(url, json=payload, timeout=http_timeout,
                              headers=auth_headers_for_box(box_ip))
         _check_gateway(resp, box_ip)
-    except (requests.ConnectionError, requests.Timeout):
-        click.secho(
-            f"Error: cannot reach box at {box_ip}:{NET_HTTP_PORT}. "
-            f"Check network/Tailscale and that the box is online and updated.",
-            fg="red", err=True,
-        )
+    except (requests.ConnectionError, requests.Timeout) as e:
+        echo_box_request_failure(box_ip, e, timeout=http_timeout)
         raise SystemExit(1)
     except requests.RequestException as e:
         click.secho(f"Error: request to box failed: {e}", fg="red", err=True)

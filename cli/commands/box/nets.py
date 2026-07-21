@@ -20,7 +20,7 @@ import shutil
 
 from ...context import get_default_box
 from ...core.net_group import NetGroupHelpMixin
-from ...core.net_helpers import NET_HTTP_PORT
+from ...core.net_helpers import NET_HTTP_PORT, echo_box_request_failure
 from ...errors import LagerError
 from ...sort_utils import natural_sort_key as _natural_sort_key
 from .net_tui import launch_tui
@@ -57,12 +57,8 @@ def _box_request(ctx: click.Context, box_ip: str, method: str, path: str,
                                 headers=auth_headers_for_box(box_ip),
                                 timeout=_NETS_HTTP_TIMEOUT)
         _check_gateway(resp, box_ip)
-    except (requests.ConnectionError, requests.Timeout):
-        click.secho(
-            f"Error: cannot reach box at {box_ip}:{NET_HTTP_PORT}. "
-            f"Check network/Tailscale and that the box is online and updated.",
-            fg="red", err=True,
-        )
+    except (requests.ConnectionError, requests.Timeout) as e:
+        echo_box_request_failure(box_ip, e, timeout=_NETS_HTTP_TIMEOUT)
         ctx.exit(1)
     except requests.RequestException as e:
         click.secho(f"Error: request to box failed: {e}", fg="red", err=True)

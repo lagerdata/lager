@@ -159,34 +159,48 @@ class JoulescopeJS220(WattMeterBase):
             self._serial = serial
             self._device = None
 
-            # Open the Joulescope device
-            try:
-                if serial:
-                    # Find specific device by serial number. No fallback to
-                    # scan_require_one on a miss: silently measuring the wrong
-                    # device on a multi-Joulescope bench is worse than an error.
-                    devices = joulescope.scan(config='auto')
-                    matching = [d for d in devices if _matches_serial(d, serial)]
-                    if not matching:
-                        raise WattBackendError(
-                            f"Joulescope with serial '{serial}' not found. "
-                            f"Available devices: {_device_serials(devices)}"
-                        )
-                    # scan() returns ready Device objects. The v1 API has no
-                    # top-level joulescope.Device, so re-wrapping broke every
-                    # serial-specified open there.
-                    self._device = matching[0]
-                else:
-                    # Use first available device
-                    self._device = joulescope.scan_require_one(config='auto')
+            # Open the Joulescope device. A close from a just-exited
+            # `lager python` handoff can leave the device briefly unopenable
+            # (jsdrv_open -4) or missing from an in-process scan while it
+            # settles — retry with a short backoff before declaring it gone
+            # (mirrors hardware_service's pyvisa Resource-busy retry).
+            last_exc: Optional[Exception] = None
+            for delay in (0.0, 0.5, 1.0, 2.0):
+                if delay:
+                    time.sleep(delay)
+                try:
+                    if serial:
+                        # Find specific device by serial number. No fallback to
+                        # scan_require_one on a miss: silently measuring the wrong
+                        # device on a multi-Joulescope bench is worse than an error.
+                        devices = joulescope.scan(config='auto')
+                        matching = [d for d in devices if _matches_serial(d, serial)]
+                        if not matching:
+                            last_exc = WattBackendError(
+                                f"Joulescope with serial '{serial}' not found. "
+                                f"Available devices: {_device_serials(devices)}"
+                            )
+                            continue
+                        # scan() returns ready Device objects. The v1 API has no
+                        # top-level joulescope.Device, so re-wrapping broke every
+                        # serial-specified open there.
+                        candidate = matching[0]
+                    else:
+                        # Use first available device
+                        candidate = joulescope.scan_require_one(config='auto')
 
-                self._device.open()
-            except WattBackendError:
-                raise
-            except Exception as e:
-                raise WattBackendError(
-                    f"Failed to open Joulescope device: {e}"
-                ) from e
+                    candidate.open()
+                    self._device = candidate
+                    break
+                except WattBackendError as e:
+                    last_exc = e
+                except Exception as e:
+                    exc = WattBackendError(f"Failed to open Joulescope device: {e}")
+                    exc.__cause__ = e
+                    last_exc = exc
+            else:
+                assert last_exc is not None
+                raise last_exc
 
             self._read_lock = threading.Lock()  # Thread-safe reads
             self._initialized = True

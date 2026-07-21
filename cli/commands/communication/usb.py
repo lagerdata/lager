@@ -25,6 +25,7 @@ from ...core.net_helpers import (
     list_nets_by_role,
     display_nets_table,
     validate_net_exists,
+    echo_box_request_failure,
     NET_HTTP_PORT,
 )
 from ...context import get_default_net
@@ -67,20 +68,18 @@ def _invoke_remote(
     from ...box_storage import _check_gateway
 
     url = f"http://{target_box}:{NET_HTTP_PORT}/usb/command"
+    # First contact with an Acroname hub runs BrainStem USB discovery on the
+    # box, which can take well over 10s cold; budget for it.
     try:
         resp = requests.post(
             url,
             json={"netname": net_name, "action": command},
-            timeout=10,
+            timeout=30,
             headers=auth_headers_for_box(target_box),
         )
         _check_gateway(resp, target_box)
-    except (requests.ConnectionError, requests.Timeout):
-        click.secho(
-            f"Error: cannot reach box at {target_box}:{NET_HTTP_PORT}. "
-            f"Check network/Tailscale and that the box is online and updated.",
-            fg='red', err=True,
-        )
+    except (requests.ConnectionError, requests.Timeout) as e:
+        echo_box_request_failure(target_box, e, timeout=30)
         ctx.exit(1)
     except requests.RequestException as e:
         click.secho(f"Error: USB request to box failed: {e}", fg='red', err=True)

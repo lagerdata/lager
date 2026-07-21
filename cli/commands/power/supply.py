@@ -29,6 +29,7 @@ from ...core.net_helpers import (
     validate_net,
     validate_net_exists,
     display_nets,
+    echo_box_request_failure,
     validate_positive_parameters,
     validate_protection_limits,
     parse_value_with_negatives,
@@ -106,12 +107,8 @@ def _run_backend(ctx, box, action: str, **params):
         response = requests.post(url, json=payload, timeout=10,
                                  headers=auth_headers_for_box(box))
         _check_gateway(response, box)
-    except (requests.ConnectionError, requests.Timeout):
-        click.secho(
-            f"Error: cannot reach box at {box}:{NET_HTTP_PORT}. "
-            f"Check network/Tailscale and that the box is online and updated.",
-            fg='red', err=True,
-        )
+    except (requests.ConnectionError, requests.Timeout) as e:
+        echo_box_request_failure(box, e, timeout=10)
         raise SystemExit(1)
     except requests.RequestException as e:
         click.secho(f"Error: supply request to box failed: {e}", fg='red', err=True)

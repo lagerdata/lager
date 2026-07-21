@@ -121,22 +121,24 @@ class BaseDispatcher(ABC):
                 return m
         return None
 
-    def _resolve_channel(self, rec: Dict[str, Any], netname: str) -> int:
+    def _resolve_channel(self, rec: Dict[str, Any], netname: str) -> "int | str":
         """
-        Resolve the channel/pin number for the net.
+        Resolve the channel/pin for the net.
 
         Prefers mappings[].pin that matches this net; else falls back to
         top-level pin. Delegates to the helpers module using self.ERROR_CLASS.
+        Returns int for numeric pins, or str for named pins (e.g. "AIN0",
+        "CH3"), which drivers parse with their own pin-naming logic.
 
         Args:
             rec: The net configuration record.
             netname: The net name to resolve channel for.
 
         Returns:
-            The channel number as an integer.
+            The channel as an int, or the named pin as a str.
 
         Raises:
-            ERROR_CLASS: If the channel cannot be resolved.
+            ERROR_CLASS: If no pin is present for the net.
         """
         return helpers.resolve_channel(rec, netname, self.ERROR_CLASS)
 

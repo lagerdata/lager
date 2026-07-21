@@ -24,10 +24,49 @@ adapter = requests.adapters.HTTPAdapter(
 _session.mount('http://', adapter)
 
 class ConnectionFailed(Exception):
-    pass
+    """Raised when hardware_service (:8080/invoke) can't be reached.
+
+    Usually raised bare (``raise ConnectionFailed from exc``); ``__str__``
+    falls back to the cause so messages built with ``f'... {e}'`` never
+    end empty.
+    """
+    def __str__(self):
+        text = super().__str__().strip()
+        if text:
+            return text
+        cause = self.__cause__ or self.__context__
+        if cause is not None:
+            cause_text = str(cause).strip() or type(cause).__name__
+            return f"hardware service did not respond ({cause_text})"
+        return "hardware service did not respond"
+
 
 class DeviceError(Exception):
-    pass
+    """Error response from hardware_service's /invoke.
+
+    Stringifies to the response's one-line 'error' field so user-facing
+    messages stay readable; the box-side traceback stays available on
+    ``.details`` for logs instead of being dumped at the user.
+    """
+    def __init__(self, payload):
+        super().__init__(payload)
+        self.payload = payload
+
+    @property
+    def details(self):
+        if isinstance(self.payload, dict):
+            return self.payload.get('details')
+        return None
+
+    def __str__(self):
+        payload = self.payload
+        if isinstance(payload, dict):
+            error = payload.get('error')
+            if error:
+                return str(error)
+        if isinstance(payload, bytes):
+            payload = payload.decode('utf-8', 'replace')
+        return str(payload)
 
 
 def describe_error(exc: Exception) -> str:

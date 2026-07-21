@@ -237,7 +237,10 @@ class TestSharedSerialAcrossNets:
         assert watt._device is not dev1
         assert watt._device.is_open and not dev1.is_open
 
-    def test_no_serial_open_conflicts_until_energy_closes(self, fake_joulescope):
+    def test_no_serial_open_conflicts_until_energy_closes(self, fake_joulescope, monkeypatch):
+        # Stub the open-retry backoff sleeps: the IN_USE conflict below is a
+        # genuine (non-transient) failure and would otherwise wait ~3.5s.
+        monkeypatch.setattr(js_mod.time, "sleep", lambda _s: None)
         # Common bench layout: the energy net resolves by VISA serial, the
         # watt net has no location (serial None) — different singleton keys
         # for the same physical

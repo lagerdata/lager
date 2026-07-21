@@ -352,8 +352,9 @@ class TestDescribeError:
         return mod
 
     def test_bare_connectionfailed_names_its_cause(self, device_mod):
-        # The Device proxy does `raise ConnectionFailed from exc` — str() is
-        # empty, which used to surface as 'Hardware service unreachable: '.
+        # The Device proxy does `raise ConnectionFailed from exc`.
+        # ConnectionFailed.__str__ now names the failure and its cause, so
+        # messages built with a bare f'... {e}' never end empty.
         try:
             try:
                 raise TimeoutError("read timed out after 10s")
@@ -361,7 +362,10 @@ class TestDescribeError:
                 raise device_mod.ConnectionFailed from exc
         except device_mod.ConnectionFailed as cf:
             text = device_mod.describe_error(cf)
-        assert text == "ConnectionFailed: read timed out after 10s"
+            plain = str(cf)
+        assert text == ("ConnectionFailed: hardware service did not respond "
+                        "(read timed out after 10s)")
+        assert plain == "hardware service did not respond (read timed out after 10s)"
 
     def test_bare_exception_with_messageless_cause(self, device_mod):
         try:
@@ -371,11 +375,27 @@ class TestDescribeError:
                 raise device_mod.ConnectionFailed from exc
         except device_mod.ConnectionFailed as cf:
             text = device_mod.describe_error(cf)
-        assert text == "ConnectionFailed: TimeoutError"
+        assert text == ("ConnectionFailed: hardware service did not respond "
+                        "(TimeoutError)")
 
     def test_message_is_preserved(self, device_mod):
         err = device_mod.DeviceError("device returned -700")
         assert device_mod.describe_error(err) == "DeviceError: device returned -700"
 
     def test_completely_bare_exception(self, device_mod):
-        assert device_mod.describe_error(device_mod.ConnectionFailed()) == "ConnectionFailed"
+        assert device_mod.describe_error(device_mod.ConnectionFailed()) == (
+            "ConnectionFailed: hardware service did not respond")
+
+    def test_deviceerror_dict_payload_stringifies_to_error_field(self, device_mod):
+        # A hardware_service 500 body must surface as its one-line 'error'
+        # field, not the repr of the whole dict with the box traceback.
+        err = device_mod.DeviceError(
+            {'error': 'Function call failed: [Watt] not found',
+             'details': 'Traceback (most recent call last): ...'})
+        assert str(err) == 'Function call failed: [Watt] not found'
+        assert err.details == 'Traceback (most recent call last): ...'
+
+    def test_deviceerror_bytes_payload_decodes(self, device_mod):
+        err = device_mod.DeviceError(b'upstream said no')
+        assert str(err) == 'upstream said no'
+        assert err.details is None
