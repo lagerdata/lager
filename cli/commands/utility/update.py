@@ -296,6 +296,22 @@ def _rebuild_gate_verdict(facts, *, git_sync_confirmed, needs_pull,
     return 'skip'
 
 
+def _deployed_version_stale(tree_version, etc_version_raw):
+    """True when the box tree's version differs from the last version a
+    successful update actually deployed (/etc/lager/version, `box|cli`
+    format — written only after a successful rebuild+restart).
+
+    Catches the tree-ahead-of-deploy state: an update that pulled and then
+    exited before the container stop (BuildKit preflight failure, an
+    interrupt in the pull->stop window) leaves the container serving the
+    previous build while git reads as in sync and the container as running.
+    Unknown on either side fails open (returns False) so legacy boxes with a
+    missing/empty version file don't rebuild forever.
+    """
+    deployed = (etc_version_raw or '').split('|', 1)[0].strip()
+    return bool(tree_version) and bool(deployed) and deployed != tree_version
+
+
 # Progress-bar denominator. 15 steps always run; 3 are conditional (flatten,
 # cached-image wipe, J-Link install). We use the max so the denominator never
 # jumps mid-flight — light paths simply finish below 18/18 and `finish()`
@@ -1150,6 +1166,17 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             click.secho('Could not determine update state (git rev-list failed).', fg='red', err=True)
             ctx.exit(2)
 
+        # Only worth a look when everything else reads clean — any other
+        # divergence already forces the rebuild that would fix it. (Local
+        # import: a later `import re` in this function makes `re` local to
+        # the whole function, so the module-level binding is shadowed here.)
+        deploy_stale = False
+        if not container_down and commits_behind == 0 and commits_ahead == 0:
+            import re
+            _vp = re.match(r'^v?(\d+\.\d+\.\d+)$', target_version)
+            _tree_v = _vp.group(1) if _vp else _read_box_source_version(run_ssh_command_with_output)
+            deploy_stale = _deployed_version_stale(_tree_v, current_version_raw)
+
         if commits_behind == 0 and commits_ahead == 0:
             code_status = 'in sync'
         elif is_rollback:
@@ -1181,6 +1208,12 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             # previous update likely failed after removing the containers.
             container_status = 'NOT RUNNING (will rebuild and restart)'
             est = '~6 min (fresh build possible)' if deps_will_change else '~90s (cached build)'
+        elif deploy_stale:
+            # In sync and running, but the container was deployed from an
+            # older version — a prior update pulled and stopped before the
+            # rebuild.
+            container_status = 'running a STALE build (will rebuild and restart)'
+            est = '~90s (cached build)'
         elif commits_behind == 0 and commits_ahead == 0 and not deps_will_change:
             container_status = 'no restart needed'
             est = '~5s'
@@ -1205,7 +1238,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
 
         will_change = (
             force or commits_behind != 0 or commits_ahead != 0
-            or deps_will_change or container_down
+            or deps_will_change or container_down or deploy_stale
         )
         if will_change:
             click.echo('Run without --check to apply.')
@@ -1639,6 +1672,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         hash_mismatch=hash_mismatch,
         force=force,
     )
+    _box_v = ''  # assigned for real below whenever _gate stays 'skip'
     if _gate == 'skip':
         import re as _re
 
@@ -1650,10 +1684,26 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         _vp = _re.match(r'^v?(\d+\.\d+\.\d+)$', target_version)
         if _vp:
             _box_v = _vp.group(1)
+            _tree_v = _box_v
         else:
             _src_v = _read_box_source_version(run_ssh_command_with_output)
             _box_v = _src_v if _src_v else cli_version
+            # For the staleness check, only trust an actually-read source
+            # version — the cli_version fallback is a display default, and
+            # comparing it against the box would manufacture mismatches.
+            _tree_v = _src_v
 
+        # Liveness alone can't tell whether the RUNNING container was built
+        # from the code now in the tree: an update that pulled and then
+        # exited before the container stop (BuildKit preflight failure, an
+        # interrupt in the pull->stop window) leaves the old build serving
+        # while git reads in sync. The deployed-version record catches that;
+        # fall through and rebuild instead of stamping the new version onto
+        # a box still running the old one.
+        if _deployed_version_stale(_tree_v, facts.get('ETC_VERSION', '')):
+            _gate = 'stale-deploy'
+
+    if _gate == 'skip':
         # Reconcile /etc/lager/version on the box with the local cache.
         # Previously this branch only updated the local ~/.lager file, so if
         # the box's /etc/lager/version was stale (e.g. an earlier update
@@ -1680,15 +1730,22 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         click.echo()
         ctx.exit(0)
 
-    if _gate == 'container-down':
-        _down_msg = (
-            'Code is in sync but the lager container is not running '
-            '(a previous update may have failed mid-rebuild) — rebuilding '
-            'and restarting.'
-        )
+    if _gate in ('container-down', 'stale-deploy'):
+        if _gate == 'container-down':
+            _fall_msg = (
+                'Code is in sync but the lager container is not running '
+                '(a previous update may have failed mid-rebuild) — rebuilding '
+                'and restarting.'
+            )
+        else:
+            _fall_msg = (
+                'Code is in sync but the running container was deployed from '
+                'a previous version (a prior update may have stopped before '
+                'the rebuild) — rebuilding and restarting.'
+            )
         if progress:
             progress.pause()
-        click.echo(_down_msg)
+        click.echo(_fall_msg)
         if progress:
             progress.resume()
 

@@ -5,10 +5,15 @@
 Tests for the update flow's rebuild gate: probe parsing, the build-hash
 mismatch predicate, and the early-exit verdict (including container liveness).
 """
+import os
+import stat
+import subprocess
+
 import pytest
 
 from cli.commands.utility.update import (
     _build_hash_mismatch,
+    _deployed_version_stale,
     _parse_probe_output,
     _probe_shell_script,
     _rebuild_gate_verdict,
@@ -92,3 +97,68 @@ class TestRebuildGateVerdict:
         mismatch = _build_hash_mismatch(SHA_A, 'FAILED')
         args = {**IN_SYNC, 'hash_mismatch': mismatch}
         assert _rebuild_gate_verdict({'LAGER_RUNNING': '1'}, **args) == 'rebuild'
+
+
+class TestDeployedVersionStale:
+    def test_matching_versions_not_stale(self):
+        assert not _deployed_version_stale('0.32.1', '0.32.1|0.32.1')
+
+    def test_tree_ahead_of_deploy_is_stale(self):
+        # The tree-ahead-of-deploy state: a prior update pulled the new code
+        # but exited before the rebuild, so the container still serves the
+        # version last recorded by a successful update.
+        assert _deployed_version_stale('0.32.1', '0.32.0|0.32.1')
+
+    def test_legacy_value_without_cli_part(self):
+        assert not _deployed_version_stale('0.31.0', '0.31.0')
+        assert _deployed_version_stale('0.32.0', '0.31.0')
+
+    @pytest.mark.parametrize('etc_raw', ['', None, '   ', '|0.32.1'])
+    def test_unknown_deployed_fails_open(self, etc_raw):
+        assert not _deployed_version_stale('0.32.1', etc_raw)
+
+    def test_unknown_tree_version_fails_open(self):
+        assert not _deployed_version_stale('', '0.32.0|0.32.0')
+
+
+class TestProbeLivenessSnippet:
+    """Run the real probe script against a stubbed `docker` to pin the
+    liveness fact's tri-state contract at the shell level.
+
+    The script is designed to exit 0 and emit a value (possibly empty) for
+    every fact regardless of what is installed on the host, so executing it
+    verbatim also guards against a syntax error sneaking into the heredoc.
+    """
+
+    def _probe_facts(self, tmp_path, docker_body):
+        shim_dir = tmp_path / 'bin'
+        shim_dir.mkdir()
+        shim = shim_dir / 'docker'
+        shim.write_text(f'#!/bin/sh\n{docker_body}\n')
+        shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
+        env = dict(os.environ, PATH=f'{shim_dir}:{os.environ["PATH"]}')
+        result = subprocess.run(
+            ['sh'], input=_probe_shell_script(), text=True,
+            capture_output=True, env=env, timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        return _parse_probe_output(result.stdout)
+
+    def test_running_container_reports_1(self, tmp_path):
+        facts = self._probe_facts(tmp_path, 'printf "lager\\nstout\\n"')
+        assert facts['LAGER_RUNNING'] == '1'
+
+    def test_substring_named_container_does_not_count(self, tmp_path):
+        # `docker ps --filter name=lager` matches substrings, so a container
+        # named e.g. `lagertest` comes back from the filter; only an exact
+        # `lager` row may count as the box container.
+        facts = self._probe_facts(tmp_path, 'printf "lagertest\\n"')
+        assert facts['LAGER_RUNNING'] == '0'
+
+    def test_no_rows_reports_0(self, tmp_path):
+        facts = self._probe_facts(tmp_path, ':')
+        assert facts['LAGER_RUNNING'] == '0'
+
+    def test_docker_failure_reports_unknown(self, tmp_path):
+        facts = self._probe_facts(tmp_path, 'exit 1')
+        assert facts['LAGER_RUNNING'] == ''
