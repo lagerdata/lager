@@ -34,8 +34,10 @@ def lock(ctx, box, lock_user):
         # no heartbeat. The server's `holder_type: "user"` branch keeps the
         # lock immune to the new heartbeat-driven auto-reap that ephemeral
         # `lager python` locks participate in.
+        from ...gateway_auth import auth_headers_for_box
         resp = requests.post(
             f'http://{ip}:9000/lock',
+            headers=auth_headers_for_box(ip),
             json={
                 'user': user,
                 'holder_type': 'user',
@@ -77,8 +79,10 @@ def unlock(ctx, box, force):
     user = get_lager_user()
 
     try:
+        from ...gateway_auth import auth_headers_for_box
         resp = requests.post(
             f'http://{ip}:9000/unlock',
+            headers=auth_headers_for_box(ip),
             json={'user': user, 'force': force},
             timeout=5,
         )

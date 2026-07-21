@@ -270,6 +270,14 @@ def webcam_start(ctx, box):
     click.secho(f"Webcam URL: {result['url']}", fg="cyan", bold=True)
     click.echo()
     click.echo("Open this URL in your browser to view the live feed.")
+    from ...gateway_auth import auth_server_for_box
+    if auth_server_for_box(box_ip):
+        click.secho(
+            "Note: this box is access-gated and stream ports are not exposed "
+            "on the network, so the URL above is not directly reachable. Use "
+            "your control plane's webcam viewer instead.",
+            fg='yellow',
+        )
     click.echo(f"To stop the stream: lager webcam stop {net_name} --box {box_ip}")
 
 

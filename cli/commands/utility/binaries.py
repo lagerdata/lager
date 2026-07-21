@@ -110,7 +110,11 @@ def add(ctx, binary_path, box, name, yes):
         data = {
             'name': binary_name
         }
-        response = requests.post(url, files=files, data=data, timeout=120)
+        from ...gateway_auth import auth_headers_for_box
+        from ...box_storage import _check_gateway
+        response = requests.post(url, files=files, data=data, timeout=120,
+                                 headers=auth_headers_for_box(resolved_ip))
+        _check_gateway(response, resolved_ip)
 
         if response.status_code == 200:
             result = response.json()
@@ -164,7 +168,11 @@ def list_binaries(ctx, box):
 
     url = f'http://{resolved_ip}:9000/binaries/list'
     try:
-        response = requests.get(url, timeout=30)
+        from ...gateway_auth import auth_headers_for_box
+        from ...box_storage import _check_gateway
+        response = requests.get(url, timeout=30,
+                                headers=auth_headers_for_box(resolved_ip))
+        _check_gateway(response, resolved_ip)
 
         if response.status_code == 200:
             result = response.json()
@@ -237,7 +245,11 @@ def remove(ctx, binary_name, box, yes):
     # First check if binary exists
     url = f'http://{resolved_ip}:9000/binaries/list'
     try:
-        response = requests.get(url, timeout=30)
+        from ...gateway_auth import auth_headers_for_box
+        from ...box_storage import _check_gateway
+        response = requests.get(url, timeout=30,
+                                headers=auth_headers_for_box(resolved_ip))
+        _check_gateway(response, resolved_ip)
         if response.status_code == 200:
             result = response.json()
             binaries_list = [b.get('name') for b in result.get('binaries', [])]
@@ -265,7 +277,11 @@ def remove(ctx, binary_name, box, yes):
     # Remove via HTTP
     url = f'http://{resolved_ip}:9000/binaries/remove'
     try:
-        response = requests.post(url, json={'name': binary_name}, timeout=30)
+        from ...gateway_auth import auth_headers_for_box
+        from ...box_storage import _check_gateway
+        response = requests.post(url, json={'name': binary_name}, timeout=30,
+                                 headers=auth_headers_for_box(resolved_ip))
+        _check_gateway(response, resolved_ip)
 
         if response.status_code == 200:
             click.secho(f"Binary '{binary_name}' removed from {box}", fg='green')

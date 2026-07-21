@@ -27,10 +27,14 @@ def instruments(ctx, box: str | None) -> None:
 
     # The box HTTP server scans USB in-process (same records the old
     # query_instruments.py exec printed: name/address/channels/tty_path).
+    from ...gateway_auth import auth_headers_for_box
+    from ...box_storage import _check_gateway
     try:
         resp = requests.get(
             f'http://{resolved_box}:9000/instruments/list', timeout=30,
+            headers=auth_headers_for_box(resolved_box),
         )
+        _check_gateway(resp, resolved_box)
     except requests.exceptions.RequestException as e:
         click.secho(f"Error querying instruments: {e}", fg="red", err=True)
         click.secho(

@@ -81,9 +81,14 @@ def add_net(ctx, name, address, username, password, instrument, use_ssl, box):
     }
 
     # Nets CRUD already lives on the box HTTP API; no impl script needed.
+    from ...gateway_auth import auth_headers_for_box
+    from ...box_storage import _check_gateway
+
     url = f"http://{box_ip}:{NET_HTTP_PORT}/nets/{name}"
     try:
-        resp = requests.put(url, json=net_data, timeout=10)
+        resp = requests.put(url, json=net_data, timeout=10,
+                            headers=auth_headers_for_box(box_ip))
+        _check_gateway(resp, box_ip)
     except requests.RequestException as e:
         click.secho(f"Error: cannot reach box at {box_ip}:{NET_HTTP_PORT}: {e}",
                     fg="red", err=True)
