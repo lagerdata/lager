@@ -208,6 +208,59 @@ def test_denial_first_contact_with_stored_login_says_rerun():
     assert gateway_auth.auth_server_for_box('10.0.0.5') == 'http://cp:3001'
 
 
+def _first_contact_401(box_ip='10.0.0.5', url='http://cp:3001'):
+    """A 401 carrying the discovery header, with a prepared request that sent
+    no Authorization — i.e. genuine first contact with a gated box."""
+    resp = make_response(401, {gateway_auth.DISCOVERY_HEADER: url})
+    prepared = requests.PreparedRequest()
+    prepared.method, prepared.url, prepared.headers, prepared.body = (
+        'POST', f'http://{box_ip}:9000/nets/list', {}, None)
+    resp.request = prepared
+    return resp
+
+
+def test_check_gateway_retries_transparently_on_first_contact(monkeypatch):
+    from cli import box_storage
+    gateway_auth.save_login('http://cp:3001', make_jwt(time.time() + 900), {'refresh': 'r1'})
+    resp = _first_contact_401()
+
+    sent = {}
+    def fake_send(self, prepared, **kwargs):
+        sent['auth'] = prepared.headers.get('Authorization')
+        return make_response(200)
+    monkeypatch.setattr(requests.Session, 'send', fake_send)
+
+    out = box_storage._check_gateway(resp, '10.0.0.5')
+
+    # Seamless: the token was attached on the retry, and the caller gets the
+    # authenticated 200 — no exception, no "re-run" message.
+    assert out.status_code == 200
+    assert sent['auth'].startswith('Bearer ')
+    assert gateway_auth.auth_server_for_box('10.0.0.5') == 'http://cp:3001'
+
+
+def test_check_gateway_retry_still_denied_raises_not_authorized(monkeypatch):
+    from cli import box_storage
+    gateway_auth.save_login('http://cp:3001', make_jwt(time.time() + 900), {'refresh': 'r1'})
+    resp = _first_contact_401()
+
+    # Token attached, but this user has no grant → gateway answers 403.
+    def fake_send(self, prepared, **kwargs):
+        return make_response(403, {gateway_auth.DISCOVERY_HEADER: 'http://cp:3001'})
+    monkeypatch.setattr(requests.Session, 'send', fake_send)
+
+    with pytest.raises(LagerError) as excinfo:
+        box_storage._check_gateway(resp, '10.0.0.5')
+    assert 'not authorized' in excinfo.value.problem.lower()
+
+
+def test_check_gateway_passes_through_plain_box():
+    from cli import box_storage
+    # No discovery header → plain Lager → untouched passthrough.
+    resp = make_response(200)
+    assert box_storage._check_gateway(resp, '10.0.0.5') is resp
+
+
 def test_denial_with_sent_token_reports_rejected_session():
     gateway_auth.save_login('http://cp:3001', make_jwt(time.time() + 900), {'refresh': 'r1'})
     response = make_response(401, {gateway_auth.DISCOVERY_HEADER: 'http://cp:3001'})

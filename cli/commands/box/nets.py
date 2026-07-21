@@ -56,7 +56,7 @@ def _box_request(ctx: click.Context, box_ip: str, method: str, path: str,
         resp = requests.request(method, url, json=json_body, params=params,
                                 headers=auth_headers_for_box(box_ip),
                                 timeout=_NETS_HTTP_TIMEOUT)
-        _check_gateway(resp, box_ip)
+        resp = _check_gateway(resp, box_ip)
     except (requests.ConnectionError, requests.Timeout) as e:
         echo_box_request_failure(box_ip, e, timeout=_NETS_HTTP_TIMEOUT)
         ctx.exit(1)
@@ -1307,7 +1307,7 @@ def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net,
             resp = requests.request(method, url, json=json_body,
                                     headers=auth_headers_for_box(resolved_box),
                                     timeout=_NETS_HTTP_TIMEOUT)
-            _check_gateway(resp, resolved_box)
+            resp = _check_gateway(resp, resolved_box)
         except requests.RequestException as e:
             raise LagerError(
                 "The box could not complete the assign command.",

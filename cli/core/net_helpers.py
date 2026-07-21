@@ -223,7 +223,7 @@ def fetch_nets(box_ip: str) -> list[dict]:
     connect_failures = 0
     try:
         resp = requests.get(f"{base}/nets/list", timeout=_NET_HTTP_TIMEOUT, headers=auth)
-        _check_gateway(resp, box_ip)
+        resp = _check_gateway(resp, box_ip)
         if resp.status_code == 200:
             data = resp.json()
             # /nets/list returns a bare array; tolerate the {"nets": [...]} shape.
@@ -239,7 +239,7 @@ def fetch_nets(box_ip: str) -> list[dict]:
     # Older boxes: /uart/nets/list returns {"nets": [...]}.
     try:
         resp = requests.get(f"{base}/uart/nets/list", timeout=_NET_HTTP_TIMEOUT, headers=auth)
-        _check_gateway(resp, box_ip)
+        resp = _check_gateway(resp, box_ip)
         if resp.status_code == 200:
             data = resp.json()
             nets = data.get("nets", []) if isinstance(data, dict) else data
@@ -316,7 +316,7 @@ def post_net_command(
     try:
         resp = requests.post(url, json=payload, timeout=http_timeout,
                              headers=auth_headers_for_box(box_addr))
-        _check_gateway(resp, box_addr)
+        resp = _check_gateway(resp, box_addr)
     except (requests.ConnectionError, requests.Timeout) as e:
         echo_box_request_failure(box_addr, e, timeout=http_timeout)
         raise SystemExit(1)
@@ -390,7 +390,7 @@ def post_box_command(
     try:
         resp = requests.post(url, json=payload, timeout=http_timeout,
                              headers=auth_headers_for_box(box_ip))
-        _check_gateway(resp, box_ip)
+        resp = _check_gateway(resp, box_ip)
     except (requests.ConnectionError, requests.Timeout) as e:
         echo_box_request_failure(box_ip, e, timeout=http_timeout)
         raise SystemExit(1)

@@ -458,7 +458,7 @@ def _check_box_lock(ip, box_name):
 
     try:
         resp = requests.get(f'http://{ip}:9000/lock', timeout=3, **_gateway_kwargs(ip))
-        _check_gateway(resp, ip)
+        resp = _check_gateway(resp, ip)
         if resp.status_code == 404:
             # :9000 answered but has no /lock route: the box image predates
             # the lock API on :9000. Locks can't be enforced against it, so
@@ -581,12 +581,57 @@ def _gateway_kwargs(ip):
     return {'headers': headers} if headers else {}
 
 
+def _resend_with_auth(prepared, headers):
+    """Re-send an already-prepared request with extra headers merged in.
+    Returns the new response, or None if the resend itself failed."""
+    import requests
+    req = prepared.copy()
+    for key, value in headers.items():
+        req.headers[key] = value
+    try:
+        return requests.Session().send(req, timeout=30, stream=False)
+    except requests.RequestException:
+        return None
+
+
 def _check_gateway(resp, ip):
-    """Turn a gateway denial into the actionable `lager login` error and
-    record the box→auth-server mapping so the next call authenticates."""
-    from .gateway_auth import DISCOVERY_HEADER, handle_gateway_denial
-    if resp.status_code in (401, 403, 503) and DISCOVERY_HEADER in resp.headers:
-        handle_gateway_denial(resp, ip)
+    """Resolve a gateway response, returning the response the caller should use.
+
+    On a plain (un-gated) box this is a passthrough. On a gated box:
+
+    - First contact — we sent no token (the box→auth-server link is only
+      learned from this very 401's discovery header) but we already hold a
+      session for that server: record the mapping, attach the token, and
+      retry the request once. The caller gets the authenticated response and
+      never sees the round trip. A plain box never receives the token,
+      because only a gateway sends the discovery header.
+    - Genuine denials (revoked session, no access grant, auth server down)
+      raise the actionable `lager login` / "ask your admin" error as before.
+
+    Callers should adopt the return value: ``resp = _check_gateway(resp, ip)``.
+    """
+    from .gateway_auth import (
+        DISCOVERY_HEADER, handle_gateway_denial,
+        record_box_auth_server, auth_headers_for_box,
+    )
+    if not (resp.status_code in (401, 403, 503) and DISCOVERY_HEADER in resp.headers):
+        return resp
+
+    sent_auth = 'Authorization' in getattr(resp.request, 'headers', {})
+    if resp.status_code == 401 and not sent_auth:
+        record_box_auth_server(ip, resp.headers[DISCOVERY_HEADER])
+        headers = auth_headers_for_box(ip)
+        if headers:
+            retried = _resend_with_auth(resp.request, headers)
+            if retried is not None:
+                gated = (retried.status_code in (401, 403, 503)
+                         and DISCOVERY_HEADER in retried.headers)
+                if not gated:
+                    return retried      # transparently authenticated
+                resp = retried          # still refused — report on the retry
+
+    handle_gateway_denial(resp, ip)     # raises the actionable error
+    return resp
 
 
 def _lock_url(ip, suffix=''):
@@ -637,7 +682,7 @@ def acquire_box_lock(
     # the pre-existing lock as freshly acquired — and release it on exit.
     try:
         pre = requests.get(_lock_url(ip), timeout=5, **_gateway_kwargs(ip))
-        _check_gateway(pre, ip)
+        pre = _check_gateway(pre, ip)
         if pre.status_code == 200:
             try:
                 pre_data = pre.json()
@@ -663,7 +708,7 @@ def acquire_box_lock(
     while True:
         try:
             resp = requests.post(_lock_url(ip), json=payload, timeout=5, **_gateway_kwargs(ip))
-            _check_gateway(resp, ip)
+            resp = _check_gateway(resp, ip)
         except requests.exceptions.RequestException as exc:
             if not quiet:
                 click.secho(

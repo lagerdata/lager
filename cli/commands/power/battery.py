@@ -60,7 +60,7 @@ def _run_backend(ctx, box, action: str, **params):
     try:
         response = requests.post(url, json=payload, timeout=10,
                                  headers=auth_headers_for_box(box))
-        _check_gateway(response, box)
+        response = _check_gateway(response, box)
     except (requests.ConnectionError, requests.Timeout) as e:
         echo_box_request_failure(box, e, timeout=10)
         raise SystemExit(1)
@@ -111,7 +111,7 @@ def _battery_command_request(ctx, box, action: str, timeout: int = 30, **params)
     try:
         response = requests.post(url, json=payload, timeout=timeout,
                                  headers=auth_headers_for_box(box_ip))
-        _check_gateway(response, box_ip)
+        response = _check_gateway(response, box_ip)
     except Exception as exc:
         if is_connection_error(exc):
             raise connection_error(exc, host=box_ip)
