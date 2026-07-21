@@ -105,8 +105,13 @@ def _call(url: str, timeout: float = 8.0) -> dict:
     don't have to retry-catch. Endpoint-returned JSON (including endpoints
     that report their own structured 'error' field) is passed through
     unchanged so the section renderer can show all fields."""
+    from urllib.parse import urlparse
+    from ...gateway_auth import auth_headers_for_box
+    from ...box_storage import _check_gateway
+    box_host = urlparse(url).hostname or ''
     try:
-        r = requests.get(url, timeout=timeout)
+        r = requests.get(url, timeout=timeout, headers=auth_headers_for_box(box_host))
+        _check_gateway(r, box_host)
         if r.status_code == 404:
             return {'unavailable': 'endpoint not on this box (pre-0.20 image)'}
         if r.status_code >= 400:

@@ -236,7 +236,7 @@ def fetch_nets(box_ip: str) -> list[dict]:
 
 def post_net_command(
     ctx: click.Context,
-    box_ip: str,
+    box_addr: str,
     netname: str,
     action: str,
     role: str | None = None,
@@ -257,7 +257,8 @@ def post_net_command(
 
     Args:
         ctx: Click context (unused today; kept for a uniform call signature).
-        box_ip: Resolved box IP address.
+        box_addr: Resolved box IP address. (Named box_addr so callers can
+            forward a ``box_ip`` **param to the box, e.g. the webcam viewer URL.)
         netname: Target net name.
         action: Role-specific action (e.g. "input", "read", "voltage").
         role: Optional role hint; the box verifies it against saved_nets.json.
@@ -283,14 +284,14 @@ def post_net_command(
     from ..gateway_auth import auth_headers_for_box
     from ..box_storage import _check_gateway
 
-    url = f"http://{box_ip}:{NET_HTTP_PORT}/net/command"
+    url = f"http://{box_addr}:{NET_HTTP_PORT}/net/command"
     try:
         resp = requests.post(url, json=payload, timeout=http_timeout,
-                             headers=auth_headers_for_box(box_ip))
-        _check_gateway(resp, box_ip)
+                             headers=auth_headers_for_box(box_addr))
+        _check_gateway(resp, box_addr)
     except (requests.ConnectionError, requests.Timeout):
         click.secho(
-            f"Error: cannot reach box at {box_ip}:{NET_HTTP_PORT}. "
+            f"Error: cannot reach box at {box_addr}:{NET_HTTP_PORT}. "
             f"Check network/Tailscale and that the box is online and updated.",
             fg="red", err=True,
         )

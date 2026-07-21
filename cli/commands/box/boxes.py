@@ -80,8 +80,10 @@ def _list_boxes_live(port=9000, timeout=5):
             # /status on :9000 reports the box version (from /etc/lager/version).
             # It predates the newer capability fields, so even older box images
             # answer it — unlike a brand-new endpoint would.
+            from ...gateway_auth import auth_headers_for_box
             url = f'http://{ip}:{port}/status'
-            headers = {'Cache-Control': 'no-cache', 'Pragma': 'no-cache'}
+            headers = {'Cache-Control': 'no-cache', 'Pragma': 'no-cache',
+                       **auth_headers_for_box(ip)}
             response = requests.get(url, timeout=timeout, headers=headers)
 
             if response.status_code == 200:

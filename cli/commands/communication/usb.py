@@ -63,13 +63,18 @@ def _invoke_remote(
     import requests
 
     # target_box is already the resolved IP (see usb() below); no re-resolve.
+    from ...gateway_auth import auth_headers_for_box
+    from ...box_storage import _check_gateway
+
     url = f"http://{target_box}:{NET_HTTP_PORT}/usb/command"
     try:
         resp = requests.post(
             url,
             json={"netname": net_name, "action": command},
             timeout=10,
+            headers=auth_headers_for_box(target_box),
         )
+        _check_gateway(resp, target_box)
     except (requests.ConnectionError, requests.Timeout):
         click.secho(
             f"Error: cannot reach box at {target_box}:{NET_HTTP_PORT}. "
