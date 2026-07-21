@@ -66,7 +66,7 @@ def _fetch_uart_nets(ctx: click.Context, box_ip: str) -> list[dict]:
         box_url = f'http://{box_ip}:9000/uart/nets/list'
         response = requests.get(box_url, timeout=5,
                                 headers=auth_headers_for_box(box_ip))
-        _check_gateway(response, box_ip)
+        response = _check_gateway(response, box_ip)
         if response.status_code == 200:
             data = response.json()
             return data.get('nets', [])

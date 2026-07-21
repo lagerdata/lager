@@ -88,7 +88,7 @@ def add_net(ctx, name, address, username, password, instrument, use_ssl, box):
     try:
         resp = requests.put(url, json=net_data, timeout=10,
                             headers=auth_headers_for_box(box_ip))
-        _check_gateway(resp, box_ip)
+        resp = _check_gateway(resp, box_ip)
     except requests.RequestException as e:
         click.secho(f"Error: cannot reach box at {box_ip}:{NET_HTTP_PORT}: {e}",
                     fg="red", err=True)

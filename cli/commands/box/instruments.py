@@ -34,7 +34,7 @@ def instruments(ctx, box: str | None) -> None:
             f'http://{resolved_box}:9000/instruments/list', timeout=30,
             headers=auth_headers_for_box(resolved_box),
         )
-        _check_gateway(resp, resolved_box)
+        resp = _check_gateway(resp, resolved_box)
     except requests.exceptions.RequestException as e:
         click.secho(f"Error querying instruments: {e}", fg="red", err=True)
         click.secho(

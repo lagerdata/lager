@@ -38,7 +38,7 @@ def hello(ctx, box):
         # /status on :9000 reports the box version (read from /etc/lager/version)
         version_url = f'http://{resolved_box}:{port}/status'
         version_response = requests.get(version_url, timeout=10, **auth)
-        _check_gateway(version_response, resolved_box)
+        version_response = _check_gateway(version_response, resolved_box)
 
         box_version = None
         if version_response.status_code == 200:
@@ -55,7 +55,7 @@ def hello(ctx, box):
         # Test connectivity with /hello endpoint
         hello_url = f'http://{resolved_box}:{port}/hello'
         hello_response = requests.get(hello_url, timeout=10, **auth)
-        _check_gateway(hello_response, resolved_box)
+        hello_response = _check_gateway(hello_response, resolved_box)
 
         click.echo()
         if hello_response.status_code == 200:

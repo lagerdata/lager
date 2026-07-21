@@ -136,7 +136,7 @@ def _box_http(dut: str, method: str, path: str, json_body=None, params=None):
         resp = requests.request(method, url, json=json_body, params=params,
                                 headers=auth_headers_for_box(dut),
                                 timeout=_HTTP_TIMEOUT)
-        _check_gateway(resp, dut)
+        resp = _check_gateway(resp, dut)
     except requests.RequestException as e:
         raise RuntimeError(f"cannot reach box at {dut}:{NET_HTTP_PORT} ({e})")
     try:
@@ -193,7 +193,7 @@ def _run_custom_devices(dut: str, action: str, payload: dict | None = None):
         else:
             resp = requests.post(url, json=payload or {}, timeout=_HTTP_TIMEOUT,
                                  headers=auth_headers_for_box(dut))
-        _check_gateway(resp, dut)
+        resp = _check_gateway(resp, dut)
         result = resp.json()
     except LagerError:
         raise

@@ -77,7 +77,7 @@ def _invoke_remote(
             timeout=30,
             headers=auth_headers_for_box(target_box),
         )
-        _check_gateway(resp, target_box)
+        resp = _check_gateway(resp, target_box)
     except (requests.ConnectionError, requests.Timeout) as e:
         echo_box_request_failure(target_box, e, timeout=30)
         ctx.exit(1)

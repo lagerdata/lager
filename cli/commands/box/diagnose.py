@@ -111,7 +111,7 @@ def _call(url: str, timeout: float = 8.0) -> dict:
     box_host = urlparse(url).hostname or ''
     try:
         r = requests.get(url, timeout=timeout, headers=auth_headers_for_box(box_host))
-        _check_gateway(r, box_host)
+        r = _check_gateway(r, box_host)
         if r.status_code == 404:
             return {'unavailable': 'endpoint not on this box (pre-0.20 image)'}
         if r.status_code >= 400:
