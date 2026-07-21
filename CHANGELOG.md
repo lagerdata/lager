@@ -2,6 +2,61 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.32.1] - 2026-07-21
+
+### Fixed
+
+- **`lager adc` / `lager dac` failed on every named channel.** The migrated
+  dispatchers' channel resolver only accepted integers, but the scanner saves
+  LabJack T7 and MCC USB-202 adc/dac nets with named pins (`AIN0`, `CH0`,
+  `DAC0`) — so every read/write on those nets failed with "Invalid channel
+  pin". Named pins now pass through to the drivers, which already parse them
+  (the gpio dispatcher's long-standing behavior). Hardware-verified on both
+  instrument families.
+
+- **`lager supply <net> set` failed with "Unknown action: set_mode" for every
+  supply model**, and **`--ocp`/`--ovp` on `supply voltage`/`supply current`
+  were silently discarded** — the command reported success but the protection
+  limits never reached the instrument. The handler now implements `set_mode`
+  and forwards `ocp`/`ovp` to the drivers with hardware-limit validation; a
+  protections-only call (e.g. `voltage --ovp 6` with no value) applies the
+  protection instead of falling into the read path. Also, `clear-ocp` /
+  `clear-ovp` now use the uniform driver wrappers, fixing a 502 on EA PSB
+  supplies whose granular clear methods take no channel argument.
+
+- **`set_model('discharge')` on the Keithley 2281S raised
+  `BatteryBackendError` in 0.32.0**, breaking HIL flows that select discharge
+  battery simulation over SCPI. Discharge is the instrument's always-available
+  idle default, not a stored model — the firmware rejects every SCPI recall
+  form for it and `:BATT:MOD:RCL?` never echoes it, so the stricter
+  recall-then-verify introduced for empty-slot detection could only fail.
+  The request is now treated as satisfied: nothing is sent (a rejected recall
+  can corrupt the SCPI parser's input buffer) and the cached active model
+  becomes DISCHARGE. Strict empty-slot detection for slots 1-9 and built-in
+  model verification are unchanged.
+
+- **A Joulescope JS220 could be lost until a container restart after a
+  `lager python` claim handoff.** The box releases its USB claims before a
+  user script runs; right after the script exits, the JS220 can be briefly
+  unopenable (`jsdrv_open -4`) or missing from an in-process scan while it
+  settles, and a re-enumeration could wedge the service's USB context
+  outright. The open path now retries with a short backoff (mirroring the
+  pyvisa Resource-busy retry), and the jsdrv failure signatures are wired
+  into the service's self-restart wedge detection, so an enumerated-but-
+  invisible device recovers with an automatic ~2s service respawn.
+
+- **Hardware errors printed a raw Python dict containing the full box-side
+  traceback**, and an internal proxy failure printed a literally empty
+  "Hardware error: ". Driver errors now surface as their one-line message
+  (the traceback stays in box logs), and connection failures name their
+  cause.
+
+- **A slow box-side operation was misreported as "cannot reach box".** The
+  CLI's request funnels now distinguish a read timeout (box reachable,
+  operation still running — e.g. first contact with a USB hub, which runs
+  discovery that can exceed 10s) from a genuine network connection failure,
+  and the USB commands get a 30s first-contact budget.
+
 ## [0.32.0] - 2026-07-20
 
 ### Added

@@ -1,0 +1,36 @@
+---
+title: "Version 0.32.1"
+description: "July 21, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **`lager adc` / `lager dac` failed on every named channel.** The migrated dispatchers' channel resolver only accepted integers, but adc/dac nets are saved with named pins (`AIN0`, `CH0`, `DAC0`) on LabJack T7 and MCC USB-202 — so every read/write on those nets failed with "Invalid channel pin". Named pins now pass through to the drivers, which already parse them. Hardware-verified on both instrument families.
+
+- **`lager supply <net> set` failed with "Unknown action: set_mode"** for every supply model, and **`--ocp`/`--ovp` on `supply voltage`/`supply current` were silently discarded** — the command reported success but protection limits never reached the instrument. Both work now, with hardware-limit validation; a protections-only call (e.g. `voltage --ovp 6` with no value) applies the protection. `clear-ocp`/`clear-ovp` no longer 502 on EA PSB supplies.
+
+- **`set_model('discharge')` on the Keithley 2281S raised an error in 0.32.0**, breaking HIL flows that select discharge battery simulation over SCPI. Discharge is the instrument's always-available idle default, not a stored model — the request is now treated as satisfied, and strict empty-slot detection for numbered slots is unchanged.
+
+- **A Joulescope JS220 could be lost until a container restart after a `lager python` claim handoff.** The open path now retries transient post-handoff failures with a short backoff, and a wedged USB context recovers with an automatic ~2s service respawn instead of requiring manual intervention.
+
+- **Hardware errors printed a raw Python dict containing the full box-side traceback**, and an internal proxy failure printed a literally empty "Hardware error: ". Driver errors now surface as their one-line message (the traceback stays in box logs), and connection failures name their cause.
+
+- **A slow box-side operation was misreported as "cannot reach box"**. The CLI now distinguishes a read timeout (box reachable, operation still running) from a genuine connection failure, and USB commands get a 30s first-contact budget for slow hub discovery.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.32.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.32.1/)
