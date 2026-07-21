@@ -1,6 +1,8 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "styles": ["./styles.css"],
+  "styles": [
+    "./styles.css"
+  ],
   "theme": "mint",
   "name": "Lager",
   "colors": {
@@ -211,6 +213,7 @@
           {
             "group": "Version History",
             "pages": [
+              "source/release-notes/v0.32.0",
               "source/release-notes/v0.31.16",
               "source/release-notes/v0.31.15",
               "source/release-notes/v0.31.14",
@@ -348,7 +351,9 @@
     ]
   },
   "contextual": {
-    "options": ["copy"]
+    "options": [
+      "copy"
+    ]
   },
   "logo": {
     "light": "/logo/light.png",

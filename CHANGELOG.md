@@ -2,6 +2,46 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.32.0] - 2026-07-20
+
+### Added
+
+- **CLI-to-box communication now runs on the box's :9000 hardware-service API.**
+  Net commands (gpio, uart, watt, energy, battery, supply, usb, and more), plus
+  ble, webcam, arm, wifi, router, blufi, box management, solar, net management,
+  and binaries, all use dedicated HTTP handlers with in-process drivers —
+  replacing the legacy :5000 script-upload model and its per-call subprocess
+  spawn. Commands against a box running an older image now warn clearly
+  ("run: lager box update") instead of degrading silently.
+
+- **Instrument claims are coordinated with `lager python`.** The box releases
+  its direct-USB claims (LabJack, FT232H, Aardvark, Joulescope/PPK2, Phidget,
+  Dexarm) before a user script runs and re-claims afterward, so scripts that
+  open instruments directly no longer fight the warm device cache.
+
+- **`lager login` — authentication for gateway-fronted boxes.** Deployments
+  that place an authenticating reverse proxy in front of a box are now fully
+  supported: the CLI discovers the auth server from the box's 401 response,
+  `lager login` stores a session (0600 on disk, transparent refresh, MFA
+  supported), every CLI-to-box request attaches the session automatically, and
+  denials explain exactly what to run. Boxes without a gateway are completely
+  unaffected — no prompts, no stored tokens, no behavior change.
+
+- **`start_box.sh --no-publish` for reverse-proxy deployments.** Runs the box
+  container reachable only on the internal Docker network, and the chosen mode
+  persists across restarts so an update can't republish ports out from under a
+  proxy that owns them. `--publish` restores the default. Default behavior
+  without either flag is unchanged.
+
+### Fixed
+
+- **Webcam start/url/stop commands crashed with a `TypeError`** after the
+  :9000 migration (an internal parameter collision); all three work again, and
+  `webcam start` on an access-gated box now notes that the stream URL is not
+  directly reachable there.
+
+- The CLI test suite's SIGPIPE crash and several pre-existing test failures.
+
 ## [0.31.16] - 2026-07-20
 
 ### Fixed
