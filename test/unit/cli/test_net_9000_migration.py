@@ -55,7 +55,7 @@ class TestPostNetCommand:
     def test_success_posts_to_9000_net_command(self):
         captured = {}
 
-        def fake_post(url, json=None, timeout=None):
+        def fake_post(url, json=None, timeout=None, headers=None):
             captured["url"] = url
             captured["json"] = json
             captured["timeout"] = timeout
@@ -76,7 +76,7 @@ class TestPostNetCommand:
         # the client timeout; post_net_command must actually pass it through.
         captured = {}
 
-        def fake_post(url, json=None, timeout=None):
+        def fake_post(url, json=None, timeout=None, headers=None):
             captured["timeout"] = timeout
             return _Resp(200, {"success": True, "message": "ok"})
 
@@ -91,7 +91,7 @@ class TestPostNetCommand:
         # gpi --wait-for with no --timeout waits indefinitely (old behavior).
         captured = {"timeout": "unset"}
 
-        def fake_post(url, json=None, timeout=None):
+        def fake_post(url, json=None, timeout=None, headers=None):
             captured["timeout"] = timeout
             return _Resp(200, {"success": True, "message": "ok"})
 
@@ -104,7 +104,7 @@ class TestPostNetCommand:
     def test_params_forwarded_under_params_key(self):
         captured = {}
 
-        def fake_post(url, json=None, timeout=None):
+        def fake_post(url, json=None, timeout=None, headers=None):
             captured["json"] = json
             return _Resp(200, {"success": True, "message": "ok"})
 
@@ -115,7 +115,7 @@ class TestPostNetCommand:
         assert captured["json"]["params"] == {"value": 1.5}
 
     def test_hardware_error_exits_nonzero(self):
-        def fake_post(url, json=None, timeout=None):
+        def fake_post(url, json=None, timeout=None, headers=None):
             return _Resp(502, {"success": False, "error": "Hardware error: busy"})
 
         with patch("requests.post", fake_post):
@@ -123,7 +123,7 @@ class TestPostNetCommand:
                 net_helpers.post_net_command(None, "1.2.3.4", "adc1", "read", role="adc")
 
     def test_unreachable_box_exits_nonzero(self):
-        def fake_post(url, json=None, timeout=None):
+        def fake_post(url, json=None, timeout=None, headers=None):
             raise requests.ConnectionError()
 
         with patch("requests.post", fake_post):
@@ -131,7 +131,7 @@ class TestPostNetCommand:
                 net_helpers.post_net_command(None, "1.2.3.4", "adc1", "read", role="adc")
 
     def test_501_unsupported_role_exits_nonzero(self):
-        def fake_post(url, json=None, timeout=None):
+        def fake_post(url, json=None, timeout=None, headers=None):
             return _Resp(501, {"success": False, "error": "Role 'x' not supported"})
 
         with patch("requests.post", fake_post):
@@ -152,20 +152,20 @@ class TestFetchNets:
     def test_bare_array_from_nets_list(self):
         nets = [{"name": "a", "role": "adc"}]
 
-        def get(url, timeout=None):
+        def get(url, timeout=None, headers=None):
             assert url.endswith(":9000/nets/list")
             return _Resp(200, nets)
 
         assert self._run(get) == nets
 
     def test_dict_shape_from_nets_list(self):
-        def get(url, timeout=None):
+        def get(url, timeout=None, headers=None):
             return _Resp(200, {"nets": [{"name": "b", "role": "dac"}]})
 
         assert self._run(get) == [{"name": "b", "role": "dac"}]
 
     def test_falls_back_to_uart_nets_list(self):
-        def get(url, timeout=None):
+        def get(url, timeout=None, headers=None):
             if url.endswith("/uart/nets/list"):
                 return _Resp(200, {"nets": [{"name": "c", "role": "gpio"}]})
             return _Resp(404, {})
@@ -173,7 +173,7 @@ class TestFetchNets:
         assert self._run(get) == [{"name": "c", "role": "gpio"}]
 
     def test_unreachable_returns_empty(self):
-        def get(url, timeout=None):
+        def get(url, timeout=None, headers=None):
             raise requests.RequestException()
 
         assert self._run(get) == []

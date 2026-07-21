@@ -52,7 +52,7 @@ class TestBinariesAdd:
 
         captured = {}
 
-        def fake_post(url, files=None, data=None, timeout=None):
+        def fake_post(url, files=None, data=None, timeout=None, headers=None):
             captured.update(url=url, files=files, data=data, timeout=timeout)
             return _Resp(200, {"success": True, "name": "my_tool",
                                "path": "/home/www-data/customer-binaries/my_tool",
@@ -87,7 +87,7 @@ class TestBinariesList:
     def test_list_gets_from_9000(self, resolved_box):
         captured = {}
 
-        def fake_get(url, timeout=None):
+        def fake_get(url, timeout=None, headers=None):
             captured["url"] = url
             return _Resp(200, {
                 "binaries": [{"name": "tool_a", "size": 2048, "executable": True}],
@@ -108,11 +108,11 @@ class TestBinariesRemove:
     def test_remove_posts_to_9000(self, resolved_box):
         captured = {}
 
-        def fake_get(url, timeout=None):
+        def fake_get(url, timeout=None, headers=None):
             return _Resp(200, {"binaries": [{"name": "tool_a", "size": 1,
                                              "executable": True}]})
 
-        def fake_post(url, json=None, timeout=None):
+        def fake_post(url, json=None, timeout=None, headers=None):
             captured.update(url=url, json=json)
             return _Resp(200, {"success": True, "name": "tool_a"})
 
@@ -134,7 +134,7 @@ class TestDirectHTTPDownloadFile:
 
         captured = {}
 
-        def fake_get(url, params=None, stream=None):
+        def fake_get(url, params=None, stream=None, headers=None):
             captured.update(url=url, params=params, stream=stream)
             return _Resp(200)
 
