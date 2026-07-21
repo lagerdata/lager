@@ -289,21 +289,25 @@ class TestSetModelVerification:
         assert drv.writes == [":BATT:MOD:RCL 1"]
         assert drv._active_model_name == "slot 1"
 
-    def test_discharge_spellings_all_rejected_without_writes(self, keithley_mod):
-        # Discharge is not selectable over SCPI on firmware 01.08b — every
-        # recall form is rejected (hardware-verified 2026-07-14:
-        # ':BATT:MOD:RCL 0' is -222 "Data out of range" since only 1-9 are
-        # valid numeric arguments, ':BATT:MOD:RCL DISCHARGE' is -102 Syntax
-        # error, and the quoted/abbreviated forms fail too). set_model must
-        # fail fast with guidance instead of sending a doomed recall.
-        for spelling in ("discharge", "DISCHARGE", 0, "0"):
-            drv = self._drv(keithley_mod, "LEAD_ACID12")
-            with pytest.raises(keithley_mod.BatteryBackendError) as excinfo:
-                drv.set_model(spelling)
-            msg = str(excinfo.value)
-            assert "cannot be selected" in msg, spelling
-            assert "front" in msg and "'models'" in msg, spelling
-            assert drv.writes == [], spelling  # nothing sent to the instrument
+    def test_discharge_spellings_all_satisfied_without_writes(self, keithley_mod):
+        # Discharge / slot 0 is the instrument's always-available idle
+        # default, not a stored model. Firmware 01.08b rejects every SCPI
+        # recall form for it (hardware-verified 2026-07-14: ':BATT:MOD:RCL 0'
+        # is -222 "Data out of range" since only 1-9 are valid numeric
+        # arguments, ':BATT:MOD:RCL DISCHARGE' is -102 Syntax error, and the
+        # quoted/abbreviated forms fail too), and :BATT:MOD:RCL? never echoes
+        # it. set_model must treat the request as satisfied — no doomed
+        # recall sent, no readback demanded — so existing
+        # set_model('discharge') callers (HIL cold-boot power cycles) keep
+        # working. Raising here was the 0.32.0 regression. The RCL? readback
+        # is deliberately simulated as NOT '0' (a built-in name / a numbered
+        # slot): success must not depend on it.
+        for rcl_reply in ("LEAD_ACID12", "3", ""):
+            for spelling in ("discharge", "DISCHARGE", 0, "0"):
+                drv = self._drv(keithley_mod, rcl_reply)
+                drv.set_model(spelling)  # must not raise
+                assert drv.writes == [], (rcl_reply, spelling)
+                assert drv._active_model_name == "DISCHARGE", (rcl_reply, spelling)
 
     def test_empty_slot_detected_by_unchanged_readback(self, keithley_mod):
         # Recall of empty slot 7 fails silently; RCL? still reports slot 5.

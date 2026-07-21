@@ -811,12 +811,17 @@ class KeithleyBattery(BatteryNet):
         - Nickel-Cadmium: 'nicd', 'ni-cd', 'nicad' -> Slot 3
         - Lead-Acid: 'lead', 'leadacid', 'lead-acid', 'sla' -> Slot 4
 
-        Discharge mode ('discharge' / 0) is NOT selectable over SCPI and is
-        rejected with guidance: firmware 01.08b refuses every recall form
+        Discharge mode ('discharge' / 0 / 'DISCHARGE') is the instrument's
+        always-available idle default, not a stored model, and it has no
+        working SCPI recall form: firmware 01.08b refuses them all
         (':BATT:MOD:RCL 0' is -222 Data out of range — only 1-9 are valid
         numeric arguments — and ':BATT:MOD:RCL DISCHARGE' is -102 Syntax
         error; quoted/abbreviated forms fail too; hardware-verified
-        2026-07-14). Discharge is front-panel-only on this firmware.
+        2026-07-14). Requesting it is treated as already satisfied: no
+        recall is sent (a rejected command can corrupt the SCPI parser's
+        input buffer) and no readback is demanded, since :BATT:MOD:RCL?
+        never echoes it. This keeps existing set_model('discharge') callers
+        (e.g. HIL cold-boot power cycles) working.
 
         Args:
             partnumber_or_index: Battery model name (str) or numeric slot (1-9)
@@ -851,26 +856,27 @@ class KeithleyBattery(BatteryNet):
         # Initialize name variable for proper scope
         name = str(partnumber_or_index).lower().replace("-", "").replace("_", "").strip()
 
-        # Discharge mode is not selectable over SCPI on this hardware:
-        # firmware 01.08b rejects every recall form (':BATT:MOD:RCL 0' is
-        # -222 "Data out of range" — only 1-9 are valid numeric arguments —
-        # ':BATT:MOD:RCL DISCHARGE' is -102 Syntax error, and the quoted /
-        # abbreviated forms fail too; hardware-verified 2026-07-14). Fail
-        # fast with the truth instead of letting a doomed recall no-op.
+        # Discharge / slot 0 is the always-available idle default, not a
+        # stored model, and firmware 01.08b rejects every SCPI recall form
+        # for it (':BATT:MOD:RCL 0' is -222 "Data out of range" — only 1-9
+        # are valid numeric arguments — ':BATT:MOD:RCL DISCHARGE' is -102
+        # Syntax error, and the quoted / abbreviated forms fail too;
+        # hardware-verified 2026-07-14). Treat the request as satisfied:
+        # sending the doomed recall risks corrupting the SCPI parser's
+        # input buffer, and :BATT:MOD:RCL? never echoes discharge, so a
+        # readback check can only fail. (:BATT:STAT? is no verification
+        # either — it reports charge/discharge STATUS, showing DISCHARGE
+        # for every idle output regardless of what is loaded.) Raising
+        # here broke every existing set_model('discharge') caller in
+        # 0.32.0 — the HIL cold-boot flows that only need the default
+        # discharge behavior, which is what the instrument gives them.
         try:
             is_slot_zero = int(partnumber_or_index) == 0
         except (TypeError, ValueError):
             is_slot_zero = False
         if is_slot_zero or name == "discharge":
-            raise BatteryBackendError(
-                f"Discharge mode ('{partnumber_or_index}') cannot be selected "
-                f"over SCPI on this instrument — the firmware rejects every "
-                f"recall form for it (numeric 0 and the DISCHARGE name).\n"
-                f"  Select the discharge function from the instrument's front "
-                f"panel instead, or load a saved model:\n"
-                f"    • Use 'models' to list the slots and built-in names that "
-                f"can be loaded here"
-            )
+            self._active_model_name = "DISCHARGE"
+            return
 
         # Try numeric first
         try:
