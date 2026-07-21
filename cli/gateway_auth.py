@@ -37,6 +37,8 @@ import requests
 from .errors import LagerError
 
 DISCOVERY_HEADER = 'X-Gateway-Auth-Url'
+# Public troubleshooting page linked from every gateway auth error.
+ACCESS_DOCS_URL = 'https://docs.lagerdata.com/source/reference/cli/login'
 # Refresh the access token when it expires within this many seconds.
 EXPIRY_MARGIN_SECONDS = 60
 AUTH_SERVER_TIMEOUT = 10
@@ -162,6 +164,42 @@ def auth_headers_for_box(box_ip):
     return {'Authorization': f'Bearer {token}'}
 
 
+def _token_claim(access_token, claim):
+    """Read a claim from a JWT payload without verifying it."""
+    try:
+        payload_b64 = access_token.split('.')[1]
+        payload_b64 += '=' * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+        return payload.get(claim)
+    except (IndexError, ValueError, TypeError):
+        return None
+
+
+def auth_status():
+    """Snapshot of the stored auth state, for `lager whoami`.
+
+    Returns a list of per-server dicts: ``url``, ``email`` (from the token),
+    ``expires_in`` (seconds until the access token expires; may be negative),
+    ``refreshable`` (a refresh cookie is stored), and ``boxes`` (box IPs known
+    to be gated by that server). Never raises; reads local state only.
+    """
+    store = _load_store()
+    servers = store.get('authServers', {})
+    box_map = store.get('boxes', {})
+    now = time.time()
+    out = []
+    for url, entry in servers.items():
+        token = entry.get('accessToken') or ''
+        out.append({
+            'url': url,
+            'email': _token_claim(token, 'email'),
+            'expires_in': (_token_expires_at(token) - now) if token else None,
+            'refreshable': bool(entry.get('cookies')),
+            'boxes': sorted(ip for ip, u in box_map.items() if u == url),
+        })
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Login
 # ---------------------------------------------------------------------------
@@ -241,28 +279,33 @@ def handle_gateway_denial(response, box_ip):
                 raise LagerError(
                     f'Box {box_ip} requires sign-in. Your existing login for '
                     f'{url} is now linked to this box.',
-                    fixes=['Re-run this command.'],
+                    fixes=['Re-run this command.', f'Details: {ACCESS_DOCS_URL}'],
                 )
             # We sent a token and the gateway rejected it (e.g. revoked).
             raise LagerError(
                 f'Your session for {url} was rejected by box {box_ip}.',
-                fixes=[f'lager login {url}'],
+                cause='The session may have expired or been revoked.',
+                fixes=[f'lager login {url}', f'Details: {ACCESS_DOCS_URL}'],
             )
         raise LagerError(
-            f'Box {box_ip} requires authorization.',
-            fixes=[f'lager login {url}', 'Then re-run this command.'],
+            f'Box {box_ip} requires sign-in.',
+            fixes=[f'lager login {url}',
+                   'Then re-run this command.',
+                   f'Details: {ACCESS_DOCS_URL}'],
         )
     if response.status_code == 403:
         raise LagerError(
-            f'You are not authorized to use box {box_ip}.',
+            f'You are signed in but not authorized to use box {box_ip}.',
             cause='Your account has no access grant for this box.',
-            fixes=['Ask your admin to grant you access to this box.'],
+            fixes=['Ask an org admin to grant you access to this box.',
+                   f'Details: {ACCESS_DOCS_URL}'],
         )
     if response.status_code == 503:
         raise LagerError(
-            f'Box {box_ip} could not verify authorization: '
+            f'Box {box_ip} could not verify your access right now — '
             'its auth server is unreachable.',
-            fixes=['Try again shortly, or contact your admin.'],
+            fixes=['Try again shortly; if it persists, contact your admin.',
+                   f'Details: {ACCESS_DOCS_URL}'],
         )
 
 

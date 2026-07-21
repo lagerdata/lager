@@ -1,0 +1,69 @@
+---
+title: Signing In
+description: Using lager login for access-controlled boxes
+---
+
+Most Lager Boxes need no sign-in — you run commands and they work. Some
+boxes, though, sit behind an **access gateway**: an authenticating proxy
+that only lets assigned users reach the box. Against one of those, Lager
+asks you to sign in once, then authenticates every command automatically.
+
+A plain Lager box never prompts for this. You only ever see it when a box
+has been deliberately placed behind a gateway.
+
+## Signing in
+
+The first time you run a command against a gated box, it tells you exactly
+what to do — the URL is filled in for you:
+
+```bash
+lager login https://your-control-plane.example.com
+```
+
+You'll be asked for your account email and password (and an MFA code if
+your account uses one). Your session is stored in `~/.lager_gateway_auth`
+(readable only by you) and refreshes on its own, so you rarely sign in more
+than once. From then on, `lager hello`, `lager python`, net commands, and
+everything else just work against that box.
+
+```bash
+lager logout                 # forget every stored session
+lager logout <auth-url>      # forget one server's session
+```
+
+## Checking your status
+
+When something looks off, `lager whoami` is the first thing to run:
+
+```bash
+lager whoami
+```
+
+It shows which servers you're signed in to, as whom, when each session
+expires, and which gated boxes it has seen — enough to tell at a glance
+whether a problem is "not signed in", "signed in as the wrong account", or
+"signed in but no access".
+
+## Common messages and what they mean
+
+| Message | What it means | What to do |
+| --- | --- | --- |
+| **This box requires sign-in** | The box is gated and you have no stored session. | Run the `lager login <url>` it prints, then retry. |
+| **requires sign-in… now linked to this box** | First contact after signing in — the box was just linked to your session. | Re-run the command; it authenticates automatically. |
+| **Your session… was rejected** | Your session expired or was revoked. | Run `lager login <url>` again. |
+| **signed in but not authorized** | Your account is valid but has no access grant for this box. | Ask an org admin to grant you access. |
+| **could not verify your access right now** | The box couldn't reach its auth server. | Try again shortly; if it persists, contact your admin. |
+
+If you hit any of these on an **old** Lager version, upgrade first —
+sign-in support needs a current CLI:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## For administrators
+
+Whether a box requires sign-in, and who may use it, is managed from your
+control-plane dashboard, not the CLI. Assign users to a box, then turn its
+access guard on; denied attempts are logged so you can see who needs
+access.
