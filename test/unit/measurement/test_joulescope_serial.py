@@ -144,9 +144,11 @@ class TestOpenByVisaAddress:
         assert stats["power"]["mean"] == pytest.approx(0.0066)
         assert energy._js220._device.serial_number == "004446"
 
-    def test_unmatched_serial_errors_with_serial_list(self, two_device_bench):
+    def test_unmatched_serial_errors_with_serial_list(self, two_device_bench, monkeypatch):
         # No silent fallback to scan_require_one, and the error lists device
-        # serials instead of object reprs.
+        # serials instead of object reprs. Stub the open-retry backoff sleeps
+        # so the genuine-miss path doesn't slow the suite.
+        monkeypatch.setattr(js_mod.time, "sleep", lambda _s: None)
         with pytest.raises(WattBackendError) as excinfo:
             JoulescopeJS220("watt1", 0, "USB0::0x16D0::0x10BA::999999::INSTR")
         message = str(excinfo.value)
@@ -159,6 +161,80 @@ class TestOpenByVisaAddress:
         a = JoulescopeJS220("energy1", 0, VISA_ADDRESS)
         b = JoulescopeJS220("watt1", 0, "004446")
         assert a is b
+
+
+class TestOpenRetry:
+    """The open path retries transient post-handoff failures: right after a
+    `lager python` script closes its direct claim, the device can be briefly
+    missing from an in-process scan or unopenable (jsdrv_open -4)."""
+
+    @pytest.fixture
+    def clean_caches(self, monkeypatch):
+        monkeypatch.setattr(js_mod.time, "sleep", lambda _s: None)
+        JoulescopeJS220.clear_cache()
+        JoulescopeEnergyAnalyzer.clear_cache()
+        yield
+        with JoulescopeJS220._instance_lock:
+            JoulescopeJS220._instances.clear()
+        with JoulescopeEnergyAnalyzer._instance_lock:
+            JoulescopeEnergyAnalyzer._instances.clear()
+
+    def test_device_missing_from_first_scan_recovers(self, clean_caches, monkeypatch):
+        bus = set()
+        scans = []
+
+        def scan(name=None, config=None):
+            # Empty on the first two scans (device still settling), then back.
+            scans.append(1)
+            if len(scans) <= 2:
+                return []
+            return [FakeJoulescopeDevice("004446", bus)]
+
+        fake = types.SimpleNamespace(scan=scan, scan_require_one=None)
+        monkeypatch.setattr(js_mod, "joulescope", fake)
+
+        watt = JoulescopeJS220("watt1", 0, VISA_ADDRESS)
+        assert watt._device.is_open
+        assert len(scans) == 3
+
+    def test_transient_open_failure_recovers(self, clean_caches, monkeypatch):
+        bus = set()
+        failures = []
+
+        class FlakyDevice(FakeJoulescopeDevice):
+            def open(self):
+                if not failures:
+                    failures.append(1)
+                    raise RuntimeError(
+                        "jsdrv_open failed -4 UNKNOWN | Unknown error | u/js220/004446")
+                return super().open()
+
+        fake = types.SimpleNamespace(
+            scan=lambda name=None, config=None: [FlakyDevice("004446", bus)],
+            scan_require_one=None,
+        )
+        monkeypatch.setattr(js_mod, "joulescope", fake)
+
+        watt = JoulescopeJS220("watt1", 0, VISA_ADDRESS)
+        assert watt._device.is_open
+        assert failures  # first attempt did fail
+
+    def test_persistent_open_failure_still_raises(self, clean_caches, monkeypatch):
+        bus = set()
+
+        class DeadDevice(FakeJoulescopeDevice):
+            def open(self):
+                raise RuntimeError(
+                    "jsdrv_open failed -4 UNKNOWN | Unknown error | u/js220/004446")
+
+        fake = types.SimpleNamespace(
+            scan=lambda name=None, config=None: [DeadDevice("004446", bus)],
+            scan_require_one=None,
+        )
+        monkeypatch.setattr(js_mod, "joulescope", fake)
+
+        with pytest.raises(WattBackendError, match="jsdrv_open failed -4"):
+            JoulescopeJS220("watt1", 0, VISA_ADDRESS)
 
 
 if __name__ == "__main__":

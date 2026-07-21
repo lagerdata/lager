@@ -209,14 +209,27 @@ def register_supply_routes(app: Flask) -> None:
             # Execute the command using the same logic as WebSocket commands
             result = {'success': True, 'action': action}
             value = params.get('value')
+            ocp = params.get('ocp')
+            ovp = params.get('ovp')
 
             try:
                 if action == 'voltage':
                     if value is not None and voltage_max > 0 and value > voltage_max:
                         return jsonify({'success': False, 'error': f'Voltage {value}V exceeds hardware limit {voltage_max}V'}), 400
-                    if value is not None:
-                        supply.voltage(value=value)
-                        result['message'] = f'Voltage set to {value}V'
+                    if ovp is not None and voltage_max > 0 and ovp > voltage_max:
+                        return jsonify({'success': False, 'error': f'OVP {ovp}V exceeds hardware voltage limit {voltage_max}V'}), 400
+                    if ocp is not None and current_max > 0 and ocp > current_max:
+                        return jsonify({'success': False, 'error': f'OCP {ocp}A exceeds hardware current limit {current_max}A'}), 400
+                    if value is not None or ocp is not None or ovp is not None:
+                        supply.voltage(value=value, ocp=ocp, ovp=ovp)
+                        applied = []
+                        if value is not None:
+                            applied.append(f'Voltage set to {value}V')
+                        if ocp is not None:
+                            applied.append(f'OCP {ocp}A')
+                        if ovp is not None:
+                            applied.append(f'OVP {ovp}V')
+                        result['message'] = ', '.join(applied)
                     else:
                         v_set = float(supply.get_channel_voltage(source=channel))
                         result['message'] = f'Voltage setpoint: {v_set}V'
@@ -224,9 +237,20 @@ def register_supply_routes(app: Flask) -> None:
                 elif action == 'current':
                     if value is not None and current_max > 0 and value > current_max:
                         return jsonify({'success': False, 'error': f'Current {value}A exceeds hardware limit {current_max}A'}), 400
-                    if value is not None:
-                        supply.current(value=value)
-                        result['message'] = f'Current limit set to {value}A'
+                    if ovp is not None and voltage_max > 0 and ovp > voltage_max:
+                        return jsonify({'success': False, 'error': f'OVP {ovp}V exceeds hardware voltage limit {voltage_max}V'}), 400
+                    if ocp is not None and current_max > 0 and ocp > current_max:
+                        return jsonify({'success': False, 'error': f'OCP {ocp}A exceeds hardware current limit {current_max}A'}), 400
+                    if value is not None or ocp is not None or ovp is not None:
+                        supply.current(value=value, ocp=ocp, ovp=ovp)
+                        applied = []
+                        if value is not None:
+                            applied.append(f'Current limit set to {value}A')
+                        if ocp is not None:
+                            applied.append(f'OCP {ocp}A')
+                        if ovp is not None:
+                            applied.append(f'OVP {ovp}V')
+                        result['message'] = ', '.join(applied)
                     else:
                         i_set = float(supply.get_channel_current(source=channel))
                         result['message'] = f'Current setpoint: {i_set}A'
@@ -289,12 +313,18 @@ def register_supply_routes(app: Flask) -> None:
                     result['message'] = msg
 
                 elif action == 'clear_ocp':
-                    supply.clear_overcurrent_protection_trip(channel=channel)
+                    # Uniform driver wrapper — takes no channel kwarg (the EA
+                    # driver's granular clear_*_trip methods don't accept one).
+                    supply.clear_ocp()
                     result['message'] = 'OCP trip cleared'
 
                 elif action == 'clear_ovp':
-                    supply.clear_overvoltage_protection_trip(channel=channel)
+                    supply.clear_ovp()
                     result['message'] = 'OVP trip cleared'
+
+                elif action == 'set_mode':
+                    supply.set_mode()
+                    result['message'] = 'Power supply mode set'
 
                 else:
                     return jsonify({'success': False, 'error': f'Unknown action: {action}'}), 400

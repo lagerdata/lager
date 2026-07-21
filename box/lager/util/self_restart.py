@@ -31,10 +31,16 @@ logger = logging.getLogger(__name__)
 DEFAULT_COOLDOWN_S = 60.0
 
 # Substrings that mark an exception/traceback as a failure to OPEN a session
-# (vs. a normal command error on an already-open device).
+# (vs. a normal command error on an already-open device). The joulescope
+# markers cover the jsdrv backend's wedge signatures: open fails with an
+# opaque -4, or the in-process scan stops seeing a device that sysfs still
+# shows on the bus (maybe_self_restart's enumeration gate keeps a genuinely
+# unplugged device from triggering a restart).
 OPEN_FAILURE_MARKERS = (
     'open_resource', 'open_bare_resource', 'after_parsing',
     'could not open instrument',
+    'jsdrv_open failed', 'failed to open joulescope',
+    'joulescope with serial',
 )
 
 # Substrings that mark a USB-hub error as "can't reach the device" (a wedge

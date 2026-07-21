@@ -88,12 +88,15 @@ def resolve_channel(
     rec: Dict[str, Any],
     netname: str,
     error_class: Type[Exception],
-) -> int:
+) -> "int | str":
     """
-    Resolve the channel/pin number for the net.
+    Resolve the channel/pin for the net.
 
     Prefers mappings[].pin that matches this net; else falls back to
-    top-level pin.
+    top-level pin. Returns int for numeric pins, or str for named pins
+    (e.g. "AIN0", "CH3", "DAC0"). Named string pins are passed through
+    directly so hardware drivers can parse them with their own
+    pin-naming logic.
 
     Args:
         rec: The net configuration record.
@@ -101,17 +104,19 @@ def resolve_channel(
         error_class: The exception class to raise on error.
 
     Returns:
-        The channel number as an integer.
+        The channel as an int, or the named pin as a str.
 
     Raises:
-        error_class: If the channel cannot be resolved.
+        error_class: If no pin is present for the net.
     """
     mapping = _find_mapping_for_net(rec, netname)
     pin = (mapping or {}).get("pin", rec.get("pin"))
+    if pin is None:
+        raise error_class(f"Invalid channel pin '{pin}' for net '{netname}'.")
     try:
         return int(pin)
     except (TypeError, ValueError):
-        raise error_class(f"Invalid channel pin '{pin}' for net '{netname}'.")
+        return str(pin)
 
 
 def resolve_address(
