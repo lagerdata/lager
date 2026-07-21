@@ -229,6 +229,15 @@ if test -f /etc/lager/.boxcfg-sudoers-v2 && sudo -n DEBIAN_FRONTEND=noninteracti
 else
   echo "LAGER_PROBE_BOXCFG_SUDOERS_OK=0"
 fi
+# Container liveness: 1 = the `lager` container is running, 0 = docker
+# answered and it is not, empty = docker itself didn't answer (unknown;
+# callers fail open). `docker ps` lists running containers only, and its
+# name filter is a substring match, so exact-match the name on our side.
+if _dps=$(docker ps --filter name=lager --format '{{.Names}}' 2>/dev/null); then
+  echo "LAGER_PROBE_LAGER_RUNNING=$(printf '%s\n' "$_dps" | grep -cx lager)"
+else
+  echo "LAGER_PROBE_LAGER_RUNNING="
+fi
 echo "LAGER_PROBE_ETC_VERSION=$(cat /etc/lager/version 2>/dev/null)"
 '''
     return script.replace('__BUILD_HASH_CMD__', _build_hash_shell_cmd())
@@ -247,6 +256,44 @@ def _parse_probe_output(stdout):
             key, _, value = line[len(_PROBE_PREFIX):].partition('=')
             facts[key] = value
     return facts
+
+
+def _build_hash_mismatch(new_hash, stored_hash):
+    """True when the docker-build inputs changed relative to the last
+    successful build.
+
+    Both values must be non-empty: an empty new hash means the probe couldn't
+    measure the inputs, an empty stored hash means no successful build has
+    recorded one — in either case auto-invalidation is skipped rather than
+    guessed. A failed build stores the sentinel value 'FAILED' (never a real
+    sha256), which forces a mismatch — and therefore a clean rebuild — on the
+    next run.
+    """
+    return bool(new_hash) and bool(stored_hash) and new_hash != stored_hash
+
+
+def _rebuild_gate_verdict(facts, *, git_sync_confirmed, needs_pull,
+                          needs_flatten, hash_mismatch, force):
+    """Decide whether the update can stop before the container rebuild.
+
+    Returns:
+      'rebuild'        — source state demands the full stop/build/start path.
+      'container-down' — source is in sync but the lager container is not
+                         running (e.g. a previous update failed after the
+                         containers were removed): rebuild so the box comes
+                         back up, instead of falsely reporting success.
+      'skip'           — in sync and running; safe to early-exit.
+
+    The probe's LAGER_RUNNING fact is tri-state: '1' running, '0' definitely
+    not running, ''/absent unknown (the docker probe itself failed). Only a
+    definite '0' blocks the skip — unknown fails open, same philosophy as the
+    BuildKit preflight.
+    """
+    if not git_sync_confirmed or needs_pull or needs_flatten or hash_mismatch or force:
+        return 'rebuild'
+    if facts.get('LAGER_RUNNING', '') == '0':
+        return 'container-down'
+    return 'skip'
 
 
 # Progress-bar denominator. 15 steps always run; 3 are conditional (flatten,
@@ -1082,7 +1129,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     # any mutation (no git checkout, no udev install, no docker stop).
     # Exit codes:
     #   0 — already in sync, nothing to do
-    #   1 — would update (code, deps, or both)
+    #   1 — would update (code, deps, or a stopped container to bring back up)
     #   2 — could not determine state (network error, etc.)
     if check:
         if progress:
@@ -1096,10 +1143,8 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         # reflect the tree that would be built — no extra round-trip needed.
         _check_new_hash = facts.get('BUILD_HASH_NEW', '')
         _check_stored_hash = facts.get('BUILD_HASH_STORED', '')
-        deps_will_change = (
-            bool(_check_new_hash) and bool(_check_stored_hash)
-            and _check_new_hash != _check_stored_hash
-        )
+        deps_will_change = _build_hash_mismatch(_check_new_hash, _check_stored_hash)
+        container_down = facts.get('LAGER_RUNNING', '') == '0'
 
         if not git_sync_confirmed:
             click.secho('Could not determine update state (git rev-list failed).', fg='red', err=True)
@@ -1131,6 +1176,11 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         if force:
             container_status = 'will restart (forced clean rebuild)'
             est = '~6 min (fresh build)'
+        elif container_down:
+            # Code may be fully in sync, but there is nothing serving it — a
+            # previous update likely failed after removing the containers.
+            container_status = 'NOT RUNNING (will rebuild and restart)'
+            est = '~6 min (fresh build possible)' if deps_will_change else '~90s (cached build)'
         elif commits_behind == 0 and commits_ahead == 0 and not deps_will_change:
             container_status = 'no restart needed'
             est = '~5s'
@@ -1153,7 +1203,10 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         click.echo(f'  Estimated:  {est}')
         click.echo()
 
-        will_change = force or commits_behind != 0 or commits_ahead != 0 or deps_will_change
+        will_change = (
+            force or commits_behind != 0 or commits_ahead != 0
+            or deps_will_change or container_down
+        )
         if will_change:
             click.echo('Run without --check to apply.')
             ctx.exit(1)
@@ -1256,10 +1309,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         new_build_hash = _read_build_hash(run_ssh_command_with_output)
     else:
         new_build_hash = facts.get('BUILD_HASH_NEW', '')
-    hash_mismatch = (
-        bool(new_build_hash) and bool(stored_build_hash)
-        and new_build_hash != stored_build_hash
-    )
+    hash_mismatch = _build_hash_mismatch(new_build_hash, stored_build_hash)
     # `--force` requests a clean rebuild: wipe the cached image and the
     # cargo/npm volumes so a prior failed/partial run can't leave a stale layer
     # or half-installed toolchain behind on the retry.
@@ -1573,17 +1623,23 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     # but code is in sync); previously this branch ignored the hash and the
     # rebuild silently never happened.
     #
-    # `--force` deliberately skips this early-exit: a box whose previous update
-    # failed can read as "in sync" here (git fetched fine, hash matches) even
-    # though its container never came up, so the user needs a way to push the
-    # rebuild through regardless.
-    if (
-        git_sync_confirmed
-        and not needs_pull
-        and not needs_flatten
-        and not hash_mismatch
-        and not force
-    ):
+    # Source state alone is not enough to declare success: an update that
+    # failed after Step 8 (containers stopped and REMOVED) leaves a box that
+    # reads as "in sync" here — git pulled fine, the stored hash predates the
+    # failure — but has nothing running at all. Early-exiting then reports
+    # success on a dead box, so the verdict also requires the lager container
+    # to be running: 'container-down' falls through to the rebuild path below
+    # and brings the box back up. `--force` still skips the early-exit
+    # unconditionally.
+    _gate = _rebuild_gate_verdict(
+        facts,
+        git_sync_confirmed=git_sync_confirmed,
+        needs_pull=needs_pull,
+        needs_flatten=needs_flatten,
+        hash_mismatch=hash_mismatch,
+        force=force,
+    )
+    if _gate == 'skip':
         import re as _re
 
         # Prefer the box's source-declared `__version__` over the CLI
@@ -1623,6 +1679,18 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         )
         click.echo()
         ctx.exit(0)
+
+    if _gate == 'container-down':
+        _down_msg = (
+            'Code is in sync but the lager container is not running '
+            '(a previous update may have failed mid-rebuild) — rebuilding '
+            'and restarting.'
+        )
+        if progress:
+            progress.pause()
+        click.echo(_down_msg)
+        if progress:
+            progress.resume()
 
     # BuildKit preflight — run BEFORE the lock and the container stop below so a
     # box whose Docker can't build the image fails fast WITHOUT being taken
@@ -1813,12 +1881,71 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
                     "`sudo apt-get install -y docker-buildx`), then re-run `lager update`.",
                     fg='yellow', err=True,
                 )
+            elif "failed to prepare extraction snapshot" in full_output or (
+                "parent snapshot" in full_output and "does not exist" in full_output
+            ):
+                click.secho(
+                    "Hint: the box's Docker build cache is corrupted (a cached snapshot "
+                    "references a parent that no longer exists). Clear it with: "
+                    f"ssh {ssh_host} 'docker builder prune -af' and re-run `lager update`. "
+                    "The next build runs cold and can take 10-15 minutes.",
+                    fg='yellow', err=True,
+                )
             elif "No space left on device" in full_output:
                 click.secho("Hint: Disk space is full on the box. Run: ssh lagerdata@[BOX_NAME] 'docker system prune -af'", fg='yellow', err=True)
             elif "network" in full_output.lower() and ("timeout" in full_output.lower() or "error" in full_output.lower()):
                 click.secho("Hint: Network issue during build. Check box internet connectivity.", fg='yellow', err=True)
             elif "permission denied" in full_output.lower():
                 click.secho("Hint: Permission issue. Check Docker daemon is running and user has access.", fg='yellow', err=True)
+
+        # Poison the stored build-inputs hash so the next run can't read this
+        # box as up to date: the sentinel never equals a recomputed sha256, so
+        # hash_mismatch fires on the retry, blocking the "already at version"
+        # early-exit and forcing a clean image wipe + rebuild. Deleting the
+        # file would NOT do this — _build_hash_mismatch requires both values
+        # non-empty. Best-effort: if the write fails, the liveness gate still
+        # catches the dead-container case.
+        try:
+            store_build_hash('FAILED')
+        except subprocess.SubprocessError:
+            pass
+
+        # Step 8 already stopped and removed the containers, so exiting here
+        # would strand the box with no services — the state that previously
+        # made the next run report "already at version" on a dead box. Unless
+        # this run wiped the image (hash change / --force), the previous image
+        # is still tagged `lager` and its baked-in code matches what was
+        # running before the pull, so restart it: the box stays usable on its
+        # prior version while the operator deals with the build failure.
+        restarted = False
+        if not must_wipe_image:
+            click.echo()
+            click.secho('Restarting the box on its previous version...', fg='yellow', err=True)
+            try:
+                recover = run_ssh_command_with_output(
+                    'cd ~/box && chmod +x start_box.sh && LAGER_SKIP_BUILD=1 ./start_box.sh',
+                    timeout_secs=600,
+                )
+                # Exit 3 = container up but post-start installs failed; the
+                # box is serving, which is all this recovery promises.
+                restarted = recover.returncode in (0, 3)
+            except subprocess.SubprocessError:
+                restarted = False
+            if restarted:
+                restarted = wait_for_box_ready(resolved_box, timeout_s=60)
+        if restarted:
+            click.secho(
+                'The update FAILED and was not applied. The box has been '
+                'restarted on its previous version.',
+                fg='yellow', err=True,
+            )
+        else:
+            click.secho(
+                'The update FAILED and the box was left with its services '
+                'stopped. Bring it back up manually with:',
+                fg='red', err=True,
+            )
+            click.echo(f'  ssh {ssh_host} "cd ~/box && ./start_box.sh"', err=True)
         ctx.exit(1)
     if verbose:
         click.secho('  Build complete', fg='green')
