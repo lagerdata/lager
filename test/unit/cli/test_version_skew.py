@@ -37,7 +37,7 @@ class VersionSkewTests(unittest.TestCase):
     def _mock_box(self, version):
         """Return a side_effect that has requests.get() return a fake 200
         shaped like GET :9000/status."""
-        def _fake_get(url, timeout=None):
+        def _fake_get(url, timeout=None, headers=None):
             assert ':9000/status' in url, f'expected :9000/status, got {url}'
             return MagicMock(status_code=200, json=lambda: {'healthy': True, 'version': version})
         return _fake_get
