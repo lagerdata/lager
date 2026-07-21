@@ -14,15 +14,6 @@ from ... import gateway_auth
 from ...gateway_auth import ACCESS_DOCS_URL
 
 
-def _format_duration(seconds):
-    """Human 'in 12m' / '3m ago' from a signed seconds value."""
-    if seconds is None:
-        return 'unknown'
-    mins = int(abs(seconds) // 60)
-    unit = f'{mins}m' if mins < 60 else f'{mins // 60}h{mins % 60:02d}m'
-    return f'in {unit}' if seconds >= 0 else f'{unit} ago'
-
-
 @click.command(name='login')
 @click.argument('auth_server_url')
 @click.option('--email', prompt=True, help='Account email')
@@ -71,15 +62,15 @@ def whoami():
         who = s['email'] or 'unknown user'
         click.secho(f'{s["url"]}', fg='cyan')
         click.echo(f'  Signed in as: {who}')
+        # Report what the user can act on, not the short-lived access token's
+        # expiry (which lapses every few minutes by design and refreshes
+        # silently). A stored refresh means you're good to go; without one, a
+        # lapsed token can't renew and you must sign in again.
         exp = s['expires_in']
-        if exp is None:
-            state = 'unknown'
-        elif exp >= 0:
-            state = f'valid ({_format_duration(exp)})'
+        if exp is not None and exp >= 0:
+            state = 'active'
         elif s['refreshable']:
-            state = f'expired {_format_duration(exp)} — auto-renews on next use'
+            state = 'active (renews automatically)'
         else:
-            state = f'expired {_format_duration(exp)} — run: lager login {s["url"]}'
+            state = f'expired — run: lager login {s["url"]}'
         click.echo(f'  Session: {state}')
-        if s['boxes']:
-            click.echo(f'  Gated boxes seen: {", ".join(s["boxes"])}')
