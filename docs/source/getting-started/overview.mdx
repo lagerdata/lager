@@ -23,11 +23,15 @@ The **Lager Box** is any x86-64 machine running Ubuntu 22.04 or newer (for examp
 
 Once connected to your instruments and your DUT, the Lager Box exposes them through a consistent programmable interface that you can drive from your desk, from CI, or from an AI agent.
 
-### 2. Lager CLI & Python Library
+### 2. Lager CLI & Client Libraries
 
 To interact with a Lager Box, you'll need the **Lager CLI** - a command-line tool you install on your computer. It gives you a unified interface for working with your instruments and DUT.
 
-You can use the CLI interactively from the terminal or automate entire test suites with the **Lager Python library**.
+Beyond interactive CLI use, there are three equal ways to automate against a box — pick whichever fits your team:
+
+- **[Python library](/source/reference/python/overview)** - automate test suites as Python scripts, run with `lager python`
+- **[Rust crate](/source/reference/rust/overview)** - write your HIL suite as ordinary Rust integration tests and run it with `cargo test`, right next to your firmware
+- **[MCP server](/source/reference/mcp/overview)** - let AI agents discover your bench and run test scenarios directly
 
 Common workflows:
 - Flash and debug embedded devices
@@ -67,3 +71,5 @@ and allows you to toggle on/off your DUT or perform any other function that powe
 Ready to get started? Install the CLI and connect to your first box:
 
 - **[Adding your First Lager Box](/source/getting-started/adding-first-lager-box)** -- Install the CLI and verify connectivity
+
+Already set up and ready to automate? Jump to the [Python API](/source/reference/python/overview) or the [Rust API](/source/reference/rust/overview).

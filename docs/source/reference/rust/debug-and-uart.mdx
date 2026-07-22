@@ -1,0 +1,90 @@
+---
+title: Debug Probes & UART
+description: Flash firmware, stream RTT logs, and drive serial from Rust tests
+---
+
+The two workflows embedded developers usually evaluate first: driving a
+debug probe (flash / erase / reset / memory reads / RTT) and streaming
+UART. Both are fully supported by the crate.
+
+## Flashing and memory access
+
+`DebugNet` drives a J-Link/OpenOCD debug probe through the box's debug
+service (port 8765, published on the box host):
+
+```rust
+let lager = lager::LagerBox::from_env()?;
+let debug = lager.debug("debug1");
+
+debug.connect()?;
+debug.erase()?;
+debug.flash("firmware.hex")?;   // .hex/.elf/.bin inferred from extension
+debug.reset(false)?;            // false = run after reset
+
+let head = debug.read_memory(0x0800_0000, 16)?;
+println!("vector table: {head:02x?}");
+```
+
+`flash_bin(path, address)` places a raw binary at an explicit address, and
+`flash_bytes` uploads an in-memory image — useful when your test builds
+firmware variants on the fly. `info()` and `status()` report probe and
+target state.
+
+## RTT log streaming
+
+`rtt()` returns a blocking byte stream implementing `std::io::Read`, so
+asserting on target output is plain std I/O:
+
+```rust
+use std::io::{BufRead, BufReader};
+
+let mut lines = BufReader::new(debug.rtt()?).lines();
+assert!(lines.next().transpose()?.unwrap().contains("boot ok"));
+```
+
+## Tunneled debug service
+
+If the debug service is reached through an SSH tunnel rather than directly,
+point the crate at it:
+
+```rust
+let lager = lager::LagerBox::builder("192.168.1.42")
+    .debug_service_url("http://127.0.0.1:8765")
+    .build()?;
+```
+
+or set the `LAGER_DEBUG_SERVICE_URL` environment variable.
+
+## Streaming UART
+
+Enable the `uart` feature:
+
+```toml
+lager = { package = "lager-net", version = "0.2", features = ["uart"] }
+```
+
+A `Uart` session streams over the box's Socket.IO `/uart` namespace.
+`wait_for` accumulates output until a needle appears (bytes after the
+needle stay buffered for the next read), which makes boot assertions
+one-liners:
+
+```rust
+use std::time::Duration;
+
+let mut uart = lager.uart("DUT_CONSOLE")?;
+
+// Reboot the DUT and assert on its boot banner.
+debug.reset(false)?;
+let banner = uart.wait_for(b"boot ok", Duration::from_secs(10))?;
+println!("{}", String::from_utf8_lossy(&banner));
+
+// Talk to the DUT's shell.
+uart.write_str("version\r\n")?;
+let reply = uart.read(Duration::from_secs(2))?;
+
+uart.stop()?;
+```
+
+The session reports adapter re-enumeration (hub power-cycle, DUT reflash)
+via `last_status()` — `"reconnecting"` / `"reconnected"` — and keeps
+streaming across it, so power-cycling tests don't need to reopen the port.
