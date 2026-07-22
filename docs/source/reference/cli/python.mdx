@@ -301,22 +301,22 @@ psu.disable()
 ## Installing Python packages
 
 Scripts run inside the Lager Python container on the box. To install packages
-your scripts depend on, use the declarative `lager box config pip` commands,
+your scripts depend on, use the declarative `lager box-config pip` commands,
 which record the packages in the box config and rebuild the container so they
 persist across `lager python` runs and box updates.
 
 ```bash
 # Add one or more packages
-lager box config pip add pandas requests --box my-box
+lager box-config pip add pandas requests --box my-box
 
 # List configured packages
-lager box config pip list --box my-box
+lager box-config pip list --box my-box
 
 # Remove a package
-lager box config pip remove numpy --box my-box
+lager box-config pip remove numpy --box my-box
 
 # Apply the changes (rebuild the container)
-lager box config apply --box my-box
+lager box-config apply --box my-box
 ```
 
 See the [Box Config reference](/source/reference/cli/box-config) for the full
@@ -324,4 +324,4 @@ declarative provisioning workflow (pip/cargo/npm packages, apt, udev, mounts,
 env, and more).
 
 <Note>The standalone `lager pip` command was removed and folded into
-`lager box config pip`.</Note>
+`lager box-config pip`.</Note>

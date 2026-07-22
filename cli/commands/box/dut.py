@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-`lager box dut` -- author the DUT context that the MCP server hands to
+`lager dut` -- author the DUT context that the MCP server hands to
 AI agents.
 
 The DUT context lives in ``/etc/lager/bench.json`` under the
@@ -17,7 +17,7 @@ This module ships three verbs:
 - ``add-doc``-- append a single DocRef to one of the doc-ref lists.
 
 All three operate on ``/etc/lager/bench.json`` over SSH so the
-authoring workflow mirrors ``lager box config``.
+authoring workflow mirrors ``lager box-config``.
 """
 from __future__ import annotations
 

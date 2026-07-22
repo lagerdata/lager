@@ -71,7 +71,9 @@ from .commands.measurement.energy import energy
 
 # Box commands (from commands.box package)
 from .commands.box import hello, boxes, instruments, nets, ssh, box
-from .commands.box.authorize import authorize
+from .commands.box.config import box_config
+from .commands.box.dut import box_dut
+from .commands.box.ssh_setup import ssh_setup, authorize
 from .commands.box.diagnose import diagnose
 
 # Utility commands (from commands.utility package)
@@ -132,8 +134,8 @@ class SectionedGroup(CommandFirstUsageMixin, click.Group):
                                 "gpi", "gpo", "thermocouple", "watt"]),
         ("Communication", ["uart", "usb", "spi", "i2c", "ble", "blufi",
                             "router"]),
-        ("Box setup & management", ["hello", "boxes", "box", "nets",
-                                    "instruments", "ssh", "authorize",
+        ("Box setup & management", ["hello", "boxes", "box-config", "dut",
+                                    "nets", "instruments", "ssh", "ssh-setup",
                                     "defaults", "webcam"]),
         ("Install & maintenance", ["update", "install", "uninstall",
                                    "install-wheel", "binaries", "logs",
@@ -239,9 +241,15 @@ cli.add_command(dac)
 cli.add_command(gpi)
 cli.add_command(gpo)
 cli.add_command(boxes)
+# `lager box` is a hidden, deprecated alias group: its former subcommands
+# now live at top level as `lager box-config` and `lager dut`.
 cli.add_command(box)
+cli.add_command(box_config)
+cli.add_command(box_dut)
 cli.add_command(instruments)
 cli.add_command(ssh)
+cli.add_command(ssh_setup)
+# Hidden, deprecated alias for `lager ssh-setup`.
 cli.add_command(authorize)
 # `lager update` is the canonical box-update command. It previously also
 # existed as `lager box update`; that form was removed in favor of the

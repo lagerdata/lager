@@ -16,7 +16,7 @@ from click.testing import CliRunner
 
 from cli.core.group_usage import LagerGroup
 from cli.commands.box.nets import nets
-from cli.commands.box.authorize import authorize
+from cli.commands.box.ssh_setup import ssh_setup
 from cli.commands.power.supply import supply
 from cli.main import cli
 
@@ -57,10 +57,10 @@ class BoxStyleUsage(unittest.TestCase):
         self.assertNotIn("[NET_NAME]", result.output)
         self.assertNotIn("[ARGS]", result.output)
 
-    def test_authorize_shows_box_name_usage(self):
-        result = CliRunner().invoke(authorize, ["--help"])
+    def test_ssh_setup_shows_box_name_usage(self):
+        result = CliRunner().invoke(ssh_setup, ["--help"])
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("authorize --box [BOX_NAME]", result.output)
+        self.assertIn("ssh-setup --box [BOX_NAME]", result.output)
         self.assertNotIn("[ARGS]", result.output)
 
 

@@ -129,7 +129,7 @@ class SysctlApply(unittest.TestCase):
 class RenderUdevRulesFile(unittest.TestCase):
     def test_permission_only(self):
         body = ops.render_udev_rules_file([{"vid": "1209", "pid": "0001", "mode": "0666"}])
-        self.assertIn("# Managed by `lager box config udev`", body)
+        self.assertIn("# Managed by `lager box-config udev`", body)
         self.assertIn('ATTRS{idVendor}=="1209"', body)
         self.assertIn('ATTRS{idProduct}=="0001"', body)
         self.assertIn('MODE="0666"', body)  # explicit mode override is honored
@@ -151,7 +151,7 @@ class RenderUdevRulesFile(unittest.TestCase):
 
     def test_empty_is_header_only(self):
         body = ops.render_udev_rules_file([])
-        self.assertEqual(body.strip(), "# Managed by `lager box config udev`; manual edits are overwritten on apply.")
+        self.assertEqual(body.strip(), "# Managed by `lager box-config udev`; manual edits are overwritten on apply.")
 
 
 class UdevApply(unittest.TestCase):

@@ -76,7 +76,7 @@ def ssh(ctx, box, command):
     # Build SSH command
     ssh_host = f'{username}@{resolved_box}'
 
-    # Offer the dedicated lager_box key (installed by `lager authorize`) when
+    # Offer the dedicated lager_box key (installed by `lager ssh-setup`) when
     # present. It isn't one of ssh's default identity filenames, so without
     # -i it's never tried and an authorized box still drops to a password
     # prompt. -i appends to the identity list rather than replacing it (no

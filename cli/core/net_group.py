@@ -191,7 +191,7 @@ class BoxCommand(click.Command):
     """A leaf command whose target is a box, not a net.
 
     Renders its usage as ``... --box [BOX_NAME]`` so box-scoped commands
-    (e.g. ``lager authorize``) read consistently with the net-style
+    (e.g. ``lager ssh-setup``) read consistently with the net-style
     commands instead of the bare ``[OPTIONS]``. ``--box`` is still listed
     under Options.
     """

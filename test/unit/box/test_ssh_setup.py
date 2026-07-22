@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 """
-Tests for `lager authorize` and the shared key-provisioning helpers it
+Tests for `lager ssh-setup` and the shared key-provisioning helpers it
 uses from cli/commands/box/_ssh.py.
 
 The keygen/probe logic lives in _ssh (shared with `lager update`); the
@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from cli.commands.box import authorize as mod
+from cli.commands.box import ssh_setup as mod
 from cli.commands.box import _ssh
 from cli.commands.box._ssh import _KEY_FALLBACK_DESTS
 from cli.errors import LagerError
@@ -78,12 +78,12 @@ class EnsureKeypair(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# `lager authorize` command orchestration
+# `lager ssh-setup` command orchestration
 # ---------------------------------------------------------------------------
 
 def _invoke(*, copy_results=None, generated=False, auth_sequence=(),
             which="/usr/bin/ssh-copy-id"):
-    """Run `lager authorize` with the helpers mocked.
+    """Run `lager ssh-setup` with the helpers mocked.
 
     auth_sequence drives successive key_auth_works() return values
     (probe, then post-copy verify). copy_results feeds mod.subprocess.run
@@ -102,7 +102,7 @@ def _invoke(*, copy_results=None, generated=False, auth_sequence=(),
          patch.object(mod, "key_auth_works", fake_auth), \
          patch.object(mod.shutil, "which", lambda name: which):
         sub.run = copy_run
-        result = CliRunner().invoke(mod.authorize, [])
+        result = CliRunner().invoke(mod.ssh_setup, [])
     return result, copy_run
 
 

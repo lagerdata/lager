@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Shared SSH transport for `lager box config` host-side operations.
+Shared SSH transport for `lager box-config` host-side operations.
 
 A single default runner (with optional stdin), and a parameterized
 sudo-error helper. Callers (mount prep, apply-time host ops, container
@@ -23,7 +23,7 @@ from ...errors import LagerError
 SshRunner = Callable[..., Tuple[int, str, str]]
 
 # Dedicated key used by `lager install` / `lager update`. When present,
-# it's tried first for all `lager box config` SSH calls — on boxes
+# it's tried first for all `lager box-config` SSH calls — on boxes
 # provisioned by lager it's the only key authorized for the box user.
 # Passing `-i` replaces ssh's default identity list, so when this key
 # is NOT authorized for the box's user (customer-managed users), a key
@@ -46,7 +46,7 @@ def ensure_lager_box_keypair(key_path: str = _LAGER_BOX_KEY) -> bool:
 
     Returns True if a new key was generated, False if one already existed.
     Raises :class:`LagerError` if ssh-keygen fails. This is the single
-    definition of how the lager_box key is created — ``lager authorize``
+    definition of how the lager_box key is created — ``lager ssh-setup``
     and ``lager update`` both call it, so the key type and comment can
     never drift apart between the two provisioning paths.
     """

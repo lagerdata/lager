@@ -52,7 +52,7 @@ def discover_dut() -> str:
             "dut_slots": [],
             "warning": (
                 "No DUT context has been authored on this box yet. "
-                "Ask the user to run 'lager box dut edit' to describe what "
+                "Ask the user to run 'lager dut edit' to describe what "
                 "this box tests, the DUT MCU and peripherals, and to attach "
                 "references to the schematic / datasheets."
             ),

@@ -21,7 +21,7 @@ from ...core.ssh_utils import host_in_known_hosts, get_ssh_connection_pool
 
 # --- Privileged removal spec -------------------------------------------------
 #
-# Everything `lager install` (and `lager box config apply`) creates on the box
+# Everything `lager install` (and `lager box-config apply`) creates on the box
 # that needs root to remove, as (name, description, remote command). The
 # confirmation listing, --dry-run inspection, the privileged session, and the
 # unit tests all share this single source of truth, so the artifact list can't
@@ -37,7 +37,7 @@ from ...core.ssh_utils import host_in_known_hosts, get_ssh_connection_pool
 # Deliberately NOT removed (the box keeps working infrastructure): docker apt
 # packages, the buildx plugin (including the /usr/local/lib/docker/cli-plugins
 # fallback binary), the `dns` key lager merged into /etc/docker/daemon.json,
-# pip packages (pyOCD etc.), and apt packages from `lager box config apply`.
+# pip packages (pyOCD etc.), and apt packages from `lager box-config apply`.
 UNINSTALL_ALL_PRIV_STEPS = [
     (
         "udev_rules",
@@ -546,7 +546,7 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
             )
             click.echo(f"  Sudoers files: {' '.join(sudoers.split()) if sudoers else '(none found)'}")
 
-            # sysctl config (from `lager box config apply`)
+            # sysctl config (from `lager box-config apply`)
             sysctl_conf = query_ssh("ls /etc/sysctl.d/99-lager-box-config.conf 2>/dev/null")
             click.echo(f"  Sysctl config: {'present' if sysctl_conf else '(not found)'}")
 

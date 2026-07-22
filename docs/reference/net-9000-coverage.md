@@ -225,7 +225,7 @@ CLI features still on the `:5000` exec path:
 
 - `lager scope`, `lager scope stream` ([measurement/scope.py](../../cli/commands/measurement/scope.py)) - large streaming/capture workflow (plus the oscilloscope daemon on 8082-8085).
 - `lager logic` ([measurement/logic.py](../../cli/commands/measurement/logic.py)) - logic-analyzer capture/trigger/cursor.
-- `lager box config` apply/poll ([box/config.py](../../cli/commands/box/config.py)).
+- `lager box-config` apply/poll ([box/config.py](../../cli/commands/box/config.py)).
 - Debug flash helpers ([development/debug/commands.py](../../cli/commands/development/debug/commands.py)).
 
 Box-side/infra: the `:5000` service itself

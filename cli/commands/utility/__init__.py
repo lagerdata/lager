@@ -12,8 +12,8 @@ This package contains utility commands for managing Lager configuration:
 - logs: Manage and inspect box logs
 - webcam: Webcam streaming management
 
-Pip package management lives under `lager box config pip` (declarative,
-applied alongside mounts/volumes/env via `lager box config apply`).
+Pip package management lives under `lager box-config pip` (declarative,
+applied alongside mounts/volumes/env via `lager box-config apply`).
 """
 
 # Import all commands from local files (migrated from original locations)

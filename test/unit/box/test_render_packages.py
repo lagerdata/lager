@@ -109,7 +109,7 @@ class UdevRulesIgnored(unittest.TestCase):
 class UnwritableOutputDir(unittest.TestCase):
     """A renderer that cannot write its output must say so, loudly.
 
-    This is the failure that made `lager box config` a silent no-op fleet-wide:
+    This is the failure that made `lager box-config` a silent no-op fleet-wide:
     /etc/lager is owned by the container user (uid 33), start_box.sh runs as the
     box's login user, and creating a file needs write permission on the
     DIRECTORY. Every renderer died with a bare PermissionError traceback that

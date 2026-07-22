@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-`lager box config` — declarative per-box provisioning.
+`lager box-config` — declarative per-box provisioning.
 
 Reads/writes /etc/lager/box_config.json on the box (via the
 in-container shim cli/impl/box_config.py) and ships an `apply` verb
@@ -141,7 +141,7 @@ def _list_field(
 ) -> None:
     """Resolve box, fetch `show`, pluck `key`, print formatted entries.
 
-    Shared by every `lager box config <group> list` command. List-valued
+    Shared by every `lager box-config <group> list` command. List-valued
     fields (mounts/volumes/pip_packages/...) iterate items; the one dict
     field (sysctl) iterates key/value pairs — the formatter takes a tuple
     in that case, mirroring the diff printer's convention.
@@ -166,7 +166,7 @@ def _list_field(
             click.echo(formatter(item))
 
 
-@click.group(name="config", cls=LagerGroup, invoke_without_command=True, help="Manage declarative box provisioning")
+@click.group(name="box-config", cls=LagerGroup, invoke_without_command=True, help="Manage declarative box provisioning")
 @click.option("--box", help="Lagerbox name or IP")
 @click.pass_context
 def box_config(ctx: click.Context, box: Optional[str]) -> None:
@@ -200,7 +200,7 @@ def show_cmd(
             if i > 0:
                 click.echo()
             click.secho(
-                f"No box_config.json on {resolved}. Run `lager box config init`.",
+                f"No box_config.json on {resolved}. Run `lager box-config init`.",
                 fg="yellow",
             )
             continue
@@ -495,7 +495,7 @@ def init_cmd(ctx: click.Context, box: Optional[str], force: bool) -> None:
                 + ", ".join(imported),
                 fg="green",
             )
-            click.echo("Run `lager box config apply` to (re)install them in the container.")
+            click.echo("Run `lager box-config apply` to (re)install them in the container.")
         skipped = payload.get("skipped") or []
         if skipped:
             click.secho(f"Skipped {len(skipped)} legacy package(s):", fg="yellow")
@@ -653,7 +653,7 @@ def diff_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
 def status_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
     """Quick health check: clean vs. drifted, field counts, last audit entry.
 
-    Designed for `lager box config status --box <BOX>,<BOX>,<BOX>` —
+    Designed for `lager box-config status --box <BOX>,<BOX>,<BOX>` —
     one line of signal per box without needing to read full `show` output.
     """
     targets = _resolve_boxes(ctx, box)
@@ -694,7 +694,7 @@ def _print_status_human(s: dict) -> None:
     state = click.style("clean", fg="green") if s["clean"] else click.style("DRIFT", fg="yellow")
     click.echo(f"{box}: {state}")
     if not s["clean"]:
-        click.echo(f"  run `lager box config diff --box {box}` to see pending changes")
+        click.echo(f"  run `lager box-config diff --box {box}` to see pending changes")
     nonzero = {k: n for k, n in s["counts"].items() if n}
     if nonzero:
         # Compact rendering: "2 mounts, 3 pip, 1 cargo"
@@ -758,7 +758,7 @@ def import_cmd(ctx: click.Context, path: str, box: Optional[str], yes: bool) -> 
         _print_errors(response.get("errors") or [response.get("error", "unknown error")])
         ctx.exit(1)
     click.secho(f"Imported {path} to {resolved}.", fg="green")
-    click.echo("Run `lager box config apply` to put the new config into effect.")
+    click.echo("Run `lager box-config apply` to put the new config into effect.")
 
 
 @box_config.command("edit", help="Open the box's config in $EDITOR for live editing.")
@@ -827,7 +827,7 @@ def edit_cmd(ctx: click.Context, box: Optional[str]) -> None:
             )
             if response.get("ok"):
                 click.secho(f"Saved on {resolved}.", fg="green")
-                click.echo("Run `lager box config apply` to put the new config into effect.")
+                click.echo("Run `lager box-config apply` to put the new config into effect.")
                 return
             click.secho("Config has errors:", fg="red", err=True)
             _print_errors(response.get("errors") or [])
@@ -883,7 +883,7 @@ def copy_cmd(ctx: click.Context, src: str, dst: str, yes: bool) -> None:
     click.secho(
         f"Copied config from {src_resolved} to {dst_resolved}.", fg="green",
     )
-    click.echo(f"Run `lager box config apply --box {dst}` to put the new config into effect.")
+    click.echo(f"Run `lager box-config apply --box {dst}` to put the new config into effect.")
 
 
 @box_config.command(
@@ -897,11 +897,11 @@ def repair_cmd(ctx: click.Context, box: Optional[str], yes: bool) -> None:
     """Recover a box whose box_config.json is broken or whose container
     is wedged on a bad config.
 
-    Does what `lager box config apply`'s rollback path does automatically
+    Does what `lager box-config apply`'s rollback path does automatically
     when a bounce fails — but exposed as a manual verb for situations
     that don't trigger automatic rollback:
     - Operator hand-edited /etc/lager/box_config.json into invalid JSON
-      (bypassing `lager box config edit`'s validation)
+      (bypassing `lager box-config edit`'s validation)
     - First-apply bounce failed AND there's no snapshot yet (rollback
       can't fire) — in that case this command also exits with no-snapshot
     - Container is up but the renderer soft-failed on a stale config and
@@ -925,9 +925,9 @@ def repair_cmd(ctx: click.Context, box: Optional[str], yes: bool) -> None:
     if rc != 0:
         click.secho(
             f"No applied snapshot on {resolved}; cannot repair. This box has "
-            "never had a successful `lager box config apply`. Manual fix: ssh "
+            "never had a successful `lager box-config apply`. Manual fix: ssh "
             "in, delete or hand-edit /etc/lager/box_config.json, then re-run "
-            "`lager box config init`.",
+            "`lager box-config init`.",
             fg="red", err=True,
         )
         ctx.exit(1)
@@ -1084,7 +1084,7 @@ def reset_cmd(ctx: click.Context, box: Optional[str], yes: bool, do_apply: bool)
         # config, even if it happened to already be empty.
         ctx.invoke(apply_cmd, box=box, yes=True, force=True)
     else:
-        click.echo("Run `lager box config apply` to restart the container on the empty config.")
+        click.echo("Run `lager box-config apply` to restart the container on the empty config.")
 
 
 @box_config.command(
@@ -1153,7 +1153,7 @@ def _apply_one(
     payload = _parse_response(raw, ctx)
     if not payload.get("exists", True):
         click.secho(
-            f"No box_config.json on {resolved}. Run `lager box config init` first.",
+            f"No box_config.json on {resolved}. Run `lager box-config init` first.",
             fg="yellow",
         )
         return False
@@ -1254,7 +1254,7 @@ def _apply_one(
         click.secho(
             f"Box config was NOT applied on {resolved} (the container is up and "
             "running the previous config). The applied-hash was left unchanged, "
-            "so `lager box config apply` will retry this config once the box is "
+            "so `lager box-config apply` will retry this config once the box is "
             "repaired — typically with `lager update --box <BOX>`.",
             fg="red",
             err=True,
@@ -1274,7 +1274,7 @@ def _apply_one(
             click.secho(
                 "Rolled back to the previously applied config; the new config "
                 "was rejected. The container is up on the previous config — fix "
-                "/etc/lager/box_config.json and re-run `lager box config apply`.",
+                "/etc/lager/box_config.json and re-run `lager box-config apply`.",
                 fg="yellow",
                 err=True,
             )
@@ -1342,7 +1342,7 @@ def _post_apply_consistency_ok(
         )
         _print_errors(post_validate.get("errors") or [])
         click.secho(
-            "Not updating applied-hash. Fix the file and re-run `lager box config apply`.",
+            "Not updating applied-hash. Fix the file and re-run `lager box-config apply`.",
             fg="yellow",
             err=True,
         )
@@ -1356,7 +1356,7 @@ def _post_apply_consistency_ok(
             "Warning: box_config.json was modified during apply. Container is "
             "running with the snapshot captured at the start of apply; the "
             "latest on-disk changes have NOT been applied. Re-run "
-            "`lager box config apply` to pick them up.",
+            "`lager box-config apply` to pick them up.",
             fg="yellow",
             err=True,
         )
@@ -1602,7 +1602,7 @@ def _preflight_mounts(ctx: click.Context, resolved: str, *, recursive: bool) -> 
             "Warning: could not verify mount host paths over SSH; continuing with "
             "apply. If the container fails to start or a mounted path is missing "
             "or unwritable, fix SSH access to the box host (see above) and re-run "
-            "`lager box config apply`.",
+            "`lager box-config apply`.",
             fg="yellow",
             err=True,
         )
@@ -1686,7 +1686,7 @@ def _bounce_container_rc(ctx: click.Context, resolved_box: str) -> int:
         click.secho(
             f"SSH command timed out after {_BOUNCE_TIMEOUT_SECONDS // 60} minutes. "
             "start_box.sh may still be running on the box (cargo build, etc.); "
-            "re-run `lager box config apply` once it finishes.",
+            "re-run `lager box-config apply` once it finishes.",
             fg="red", err=True,
         )
         return _BOUNCE_FAILED
@@ -1823,7 +1823,7 @@ def mount_add_cmd(
                 # let apply's pre-flight re-check once SSH access is fixed.
                 click.secho(f"Warning: {prep_result.message}", fg="yellow", err=True)
                 click.secho(
-                    "Adding the mount to box_config.json anyway; `lager box config "
+                    "Adding the mount to box_config.json anyway; `lager box-config "
                     "apply` re-checks the host path before restarting the container.",
                     fg="yellow",
                 )
@@ -1868,7 +1868,7 @@ def mount_add_cmd(
         else:
             click.secho(f"Host path: {prep_result.message}", fg="green")
 
-    click.echo("Run `lager box config apply` to restart the container.")
+    click.echo("Run `lager box-config apply` to restart the container.")
 
 
 @mount_group.command("remove", help="Remove a bind mount by host+container path.")
@@ -1892,7 +1892,7 @@ def mount_remove_cmd(
     payload = _parse_response(raw, ctx)
     if payload.get("removed"):
         click.secho(f"Removed mount {host} -> {container} on {resolved}.", fg="green")
-        click.echo("Run `lager box config apply` to restart the container.")
+        click.echo("Run `lager box-config apply` to restart the container.")
     else:
         click.secho(f"No matching mount on {resolved}.", fg="yellow")
 
@@ -1933,7 +1933,7 @@ def volume_add_cmd(
         _print_errors(payload.get("errors") or [payload.get("error", "unknown error")])
         ctx.exit(1)
     click.secho(f"Added volume {name} -> {container} on {resolved}.", fg="green")
-    click.echo("Run `lager box config apply` to restart the container.")
+    click.echo("Run `lager box-config apply` to restart the container.")
 
 
 @volume_group.command("remove", help="Remove a named docker volume by name.")
@@ -1955,7 +1955,7 @@ def volume_remove_cmd(
     payload = _parse_response(raw, ctx)
     if payload.get("removed"):
         click.secho(f"Removed volume {name} on {resolved}.", fg="green")
-        click.echo("Run `lager box config apply` to restart the container.")
+        click.echo("Run `lager box-config apply` to restart the container.")
     else:
         click.secho(f"No volume named {name} on {resolved}.", fg="yellow")
 
@@ -2022,7 +2022,7 @@ def pip_add_cmd(
         ctx.exit(1)
     added = payload.get("added") or list(packages)
     click.secho(f"Added {len(added)} pip package(s) on {resolved}: " + ", ".join(added), fg="green")
-    click.echo("Run `lager box config apply` to install them in the container.")
+    click.echo("Run `lager box-config apply` to install them in the container.")
 
 
 @pip_group.command("remove", help="Remove one or more pip packages from the box config.")
@@ -2040,7 +2040,7 @@ def pip_remove_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> N
     removed = payload.get("removed") or []
     if removed:
         click.secho(f"Removed {len(removed)} pip package(s): " + ", ".join(removed), fg="green")
-        click.echo("Run `lager box config apply` to update the running container.")
+        click.echo("Run `lager box-config apply` to update the running container.")
     else:
         click.secho("No matching pip packages were configured.", fg="yellow")
 
@@ -2063,7 +2063,7 @@ def pip_import_legacy_cmd(ctx: click.Context, box: Optional[str]) -> None:
     skipped = payload.get("skipped") or []
     if imported:
         click.secho(f"Imported {len(imported)} package(s): " + ", ".join(imported), fg="green")
-        click.echo("Run `lager box config apply` to (re)install them.")
+        click.echo("Run `lager box-config apply` to (re)install them.")
     else:
         click.secho("No new packages to import.", fg="yellow")
     if skipped:
@@ -2109,7 +2109,7 @@ def apt_add_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None
         ctx.exit(1)
     added = payload.get("added") or list(packages)
     click.secho(f"Added {len(added)} apt package(s) on {resolved}: " + ", ".join(added), fg="green")
-    click.echo("Run `lager box config apply` to install them on the box host.")
+    click.echo("Run `lager box-config apply` to install them on the box host.")
 
 
 @apt_group.command("remove", help="Remove one or more apt packages from the box config.")
@@ -2128,7 +2128,7 @@ def apt_remove_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> N
     if removed:
         click.secho(f"Removed {len(removed)} apt package(s): " + ", ".join(removed), fg="green")
         click.echo(
-            "Run `lager box config apply` to record the change. Note: existing "
+            "Run `lager box-config apply` to record the change. Note: existing "
             "installs are not auto-uninstalled."
         )
     else:
@@ -2199,7 +2199,7 @@ def udev_add_cmd(
         ctx.exit(1)
     added = payload.get("added") or [f"{r['vid']}:{r['pid']}" for r in rules]
     click.secho(f"Added {len(added)} udev rule(s) on {resolved}: " + ", ".join(added), fg="green")
-    click.echo("Run `lager box config apply` to install them on the box host.")
+    click.echo("Run `lager box-config apply` to install them on the box host.")
 
 
 @udev_group.command("remove", help="Remove udev rules by VID:PID.")
@@ -2218,7 +2218,7 @@ def udev_remove_cmd(ctx: click.Context, devices: tuple, box: Optional[str]) -> N
     removed = payload.get("removed") or []
     if removed:
         click.secho(f"Removed {len(removed)} udev rule(s): " + ", ".join(removed), fg="green")
-        click.echo("Run `lager box config apply` to update udev on the box host.")
+        click.echo("Run `lager box-config apply` to update udev on the box host.")
     else:
         click.secho("No matching udev rules were configured.", fg="yellow")
 
@@ -2281,7 +2281,7 @@ def sysctl_set_cmd(ctx: click.Context, entries: tuple, box: Optional[str]) -> No
         f"Set {len(set_keys)} sysctl key(s) on {resolved}: " + ", ".join(set_keys),
         fg="green",
     )
-    click.echo("Run `lager box config apply` to write /etc/sysctl.d/ and reload.")
+    click.echo("Run `lager box-config apply` to write /etc/sysctl.d/ and reload.")
 
 
 @sysctl_group.command("unset", help="Remove one or more sysctl keys from the box config.")
@@ -2299,7 +2299,7 @@ def sysctl_unset_cmd(ctx: click.Context, keys: tuple, box: Optional[str]) -> Non
     removed = payload.get("removed") or []
     if removed:
         click.secho(f"Removed {len(removed)} sysctl key(s): " + ", ".join(removed), fg="green")
-        click.echo("Run `lager box config apply` to update /etc/sysctl.d/ and reload.")
+        click.echo("Run `lager box-config apply` to update /etc/sysctl.d/ and reload.")
     else:
         click.secho("No matching sysctl keys were configured.", fg="yellow")
 
@@ -2362,7 +2362,7 @@ def env_set_cmd(ctx: click.Context, entries: tuple, box: Optional[str]) -> None:
         f"Set {len(set_keys)} env var(s) on {resolved}: " + ", ".join(set_keys),
         fg="green",
     )
-    click.echo("Run `lager box config apply` to put the new env vars into effect.")
+    click.echo("Run `lager box-config apply` to put the new env vars into effect.")
 
 
 @env_group.command("unset", help="Remove one or more env vars from the box config.")
@@ -2380,7 +2380,7 @@ def env_unset_cmd(ctx: click.Context, keys: tuple, box: Optional[str]) -> None:
     removed = payload.get("removed") or []
     if removed:
         click.secho(f"Removed {len(removed)} env var(s): " + ", ".join(removed), fg="green")
-        click.echo("Run `lager box config apply` to update the running container.")
+        click.echo("Run `lager box-config apply` to update the running container.")
     else:
         click.secho("No matching env vars were configured.", fg="yellow")
 
@@ -2420,7 +2420,7 @@ def cargo_add_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> No
         ctx.exit(1)
     added = payload.get("added") or list(packages)
     click.secho(f"Added {len(added)} cargo crate(s) on {resolved}: " + ", ".join(added), fg="green")
-    click.echo("Run `lager box config apply` to install them in the container.")
+    click.echo("Run `lager box-config apply` to install them in the container.")
 
 
 @cargo_group.command("remove", help="Remove one or more cargo crates from the box config.")
@@ -2439,7 +2439,7 @@ def cargo_remove_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) ->
     if removed:
         click.secho(f"Removed {len(removed)} cargo crate(s): " + ", ".join(removed), fg="green")
         click.echo(
-            "Run `lager box config apply` to record the change. Note: existing "
+            "Run `lager box-config apply` to record the change. Note: existing "
             "installs in the container are not auto-uninstalled."
         )
     else:
@@ -2481,7 +2481,7 @@ def npm_add_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None
         ctx.exit(1)
     added = payload.get("added") or list(packages)
     click.secho(f"Added {len(added)} npm package(s) on {resolved}: " + ", ".join(added), fg="green")
-    click.echo("Run `lager box config apply` to install them in the container.")
+    click.echo("Run `lager box-config apply` to install them in the container.")
 
 
 @npm_group.command("remove", help="Remove one or more npm packages from the box config.")
@@ -2500,7 +2500,7 @@ def npm_remove_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> N
     if removed:
         click.secho(f"Removed {len(removed)} npm package(s): " + ", ".join(removed), fg="green")
         click.echo(
-            "Run `lager box config apply` to record the change. Note: existing "
+            "Run `lager box-config apply` to record the change. Note: existing "
             "installs in the container are not auto-uninstalled."
         )
     else:
