@@ -155,8 +155,8 @@ serial and emits one channel per interface.
 
    > For a one-off "let a tool open this device" permission fix (e.g.
    > `dfu-util` on a generic bootloader vid:pid), a user doesn't need a
-   > release: `lager box config udev add <vid>:<pid> [--usbtmc]` followed by
-   > `lager box config apply` installs a host udev rule to
+   > release: `lager box-config udev add <vid>:<pid> [--usbtmc]` followed by
+   > `lager box-config apply` installs a host udev rule to
    > `/etc/udev/rules.d/99-lager-user.rules`. The shipped
    > `99-instrument.rules` remains the place for first-class supported
    > instruments (it pairs with the `SUPPORTED_USB`/`CHANNEL_MAPS` tables

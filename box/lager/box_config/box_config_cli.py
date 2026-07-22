@@ -53,7 +53,7 @@ def _audit(verb: str, args) -> None:
 def _box_config_lock():
     """Serialize shim invocations against /etc/lager/box_config.json.
 
-    Without this, two near-simultaneous `lager box config X` calls do
+    Without this, two near-simultaneous `lager box-config X` calls do
     read-modify-write and silently lose one update. Held for the whole
     dispatch including reads — reads are sub-millisecond so the extra
     serialization is invisible. Advisory flock; mutual exclusion only
@@ -540,7 +540,7 @@ def _cmd_set_raw(payload: str) -> None:
     """Replace /etc/lager/box_config.json wholesale with a JSON payload.
 
     Validates the payload before writing — on failure the on-disk config
-    is unchanged. Used by `lager box config edit` (round-trip via $EDITOR),
+    is unchanged. Used by `lager box-config edit` (round-trip via $EDITOR),
     `import` (load a file from local disk), and `copy --from --to`
     (clone between boxes). Returns the post-save hash so the host CLI can
     fold it into subsequent `set-applied-hash` calls without an extra

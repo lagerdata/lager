@@ -49,14 +49,14 @@ lager nets describe uart1 \
 
 The DUT context describes the board as a whole: its purpose, MCU, key
 peripherals, subsystems, and references to documents. Author it with the
-[`lager box dut`](/source/reference/cli/box-dut) command group.
+[`lager dut`](/source/reference/cli/dut) command group.
 
 ```bash
 # View current context
-lager box dut show --box my-lager-box
+lager dut show --box my-lager-box
 
 # Edit the whole DUT block in $EDITOR
-lager box dut edit --box my-lager-box
+lager dut edit --box my-lager-box
 ```
 
 A fully authored DUT context looks like this in `bench.json`:
@@ -104,10 +104,10 @@ a PDF or board image.
 Attach a pointer without hand-editing JSON:
 
 ```bash
-lager box dut add-doc --kind schematic \
+lager dut add-doc --kind schematic \
   --title "Main board" --repo-path docs/sch.pdf --pages 3-5 --box my-lager-box
 
-lager box dut add-doc --kind datasheet \
+lager dut add-doc --kind datasheet \
   --title "STM32H7 reference manual" --url "https://..." --pages 150-200 --box my-lager-box
 ```
 
@@ -173,7 +173,7 @@ Once authored, the context drives the whole agent loop:
 
 The MCP server watches `/etc/lager/bench.json`, `/etc/lager/saved_nets.json`,
 and `/etc/lager/box_id` and **auto-reloads when any of them changes on disk**.
-So after `lager box dut edit`, `lager box dut add-doc`, or `lager nets describe`,
+So after `lager dut edit`, `lager dut add-doc`, or `lager nets describe`,
 agents see the new context on their next `discover_dut()`, `discover_bench()`, or
 `lager://dut/overview.md` request — no manual step required.
 

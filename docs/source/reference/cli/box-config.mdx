@@ -3,12 +3,12 @@ title: Box Config
 description: Declaratively provision a Lager Box's container — USB device permissions, packages, mounts, environment, and more
 ---
 
-`lager box config` manages a declarative configuration for a Lager Box's container. You describe what the box should have — USB device permissions (udev rules), apt packages, bind mounts, environment variables, pip/cargo/npm packages, sysctl values — and then `apply` puts it into effect. The configuration persists across container restarts and box updates.
+`lager box-config` manages a declarative configuration for a Lager Box's container. You describe what the box should have — USB device permissions (udev rules), apt packages, bind mounts, environment variables, pip/cargo/npm packages, sysctl values — and then `apply` puts it into effect. The configuration persists across container restarts and box updates.
 
 ## Syntax
 
 ```bash
-lager box config COMMAND [OPTIONS]
+lager box-config COMMAND [OPTIONS]
 ```
 
 ## Global Options
@@ -23,11 +23,11 @@ lager box config COMMAND [OPTIONS]
 Editing the config and putting it into effect are two separate steps:
 
 1. **Change the config** — `udev add`, `apt add`, `mount add`, `env set`, etc. These only edit the stored config; nothing happens on the box yet.
-2. **Apply it** — `lager box config apply` validates the config and restarts ("bounces") the container so the changes take effect. Host-side pieces (apt packages, udev rules, sysctl) are installed on the box host during apply; everything else is mounted into the fresh container.
+2. **Apply it** — `lager box-config apply` validates the config and restarts ("bounces") the container so the changes take effect. Host-side pieces (apt packages, udev rules, sysctl) are installed on the box host during apply; everything else is mounted into the fresh container.
 
 ```bash
-lager box config udev add 1209:0001 --box my-lager-box   # 1. edit
-lager box config apply --box my-lager-box                # 2. apply
+lager box-config udev add 1209:0001 --box my-lager-box   # 1. edit
+lager box-config apply --box my-lager-box                # 2. apply
 ```
 
 ## Commands
@@ -71,9 +71,9 @@ lager box config apply --box my-lager-box                # 2. apply
 Grant a USB device read/write access from inside the container, by USB vendor/product id. Use this when a freshly-plugged device is owned by `root` and a tool inside the container can't open it (for example `dfu-util` failing with *"No DFU capable USB device available"*).
 
 ```bash
-lager box config udev add VID:PID [VID:PID ...] [--mode 0666] [--usbtmc]
-lager box config udev list [--json]
-lager box config udev remove VID:PID [VID:PID ...]
+lager box-config udev add VID:PID [VID:PID ...] [--mode 0666] [--usbtmc]
+lager box-config udev list [--json]
+lager box-config udev remove VID:PID [VID:PID ...]
 ```
 
 | Option | Description |
@@ -85,12 +85,12 @@ VID and PID are 4 hex digits each. A `0x` prefix and uppercase are accepted and 
 
 ```bash
 # Let dfu-util open a generic test device, then apply
-lager box config udev add 1209:0001 --box my-lager-box
-lager box config apply --box my-lager-box
+lager box-config udev add 1209:0001 --box my-lager-box
+lager box-config apply --box my-lager-box
 
 # A SCPI power supply that also needs the usbtmc driver unbound
-lager box config udev add 1ab1:0e11 --usbtmc --box my-lager-box
-lager box config apply --box my-lager-box
+lager box-config udev add 1ab1:0e11 --usbtmc --box my-lager-box
+lager box-config apply --box my-lager-box
 ```
 
 On `apply`, the rules are installed to `/etc/udev/rules.d/99-lager-user.rules` on the box host and udev is reloaded, so existing devices pick up the new permissions.
@@ -100,7 +100,7 @@ On `apply`, the rules are installed to `/etc/udev/rules.d/99-lager-user.rules` o
 Erase the config to a truly empty state. Unlike `init` (which re-seeds the default `box-tools` volume), `reset` clears everything — a clean slate.
 
 ```bash
-lager box config reset [--yes] [--apply]
+lager box-config reset [--yes] [--apply]
 ```
 
 | Option | Description |
@@ -110,7 +110,7 @@ lager box config reset [--yes] [--apply]
 
 ```bash
 # Wipe the config and bring up a fresh container
-lager box config reset --apply --yes --box my-lager-box
+lager box-config reset --apply --yes --box my-lager-box
 ```
 
 ### `restart`
@@ -118,7 +118,7 @@ lager box config reset --apply --yes --box my-lager-box
 Restart the container without changing the config — a fresh container with the same setup. Useful for test isolation between runs. Unlike `apply`, it restarts unconditionally (it does not skip when the config is unchanged).
 
 ```bash
-lager box config restart [--yes] --box my-lager-box
+lager box-config restart [--yes] --box my-lager-box
 ```
 
 ### `apply`
@@ -126,7 +126,7 @@ lager box config restart [--yes] --box my-lager-box
 Validate the config and restart the container so changes take effect.
 
 ```bash
-lager box config apply [OPTIONS] --box my-lager-box
+lager box-config apply [OPTIONS] --box my-lager-box
 ```
 
 | Option | Description |
@@ -145,9 +145,9 @@ lager box config apply [OPTIONS] --box my-lager-box
 Host-side apt packages (installed on the box host during `apply`).
 
 ```bash
-lager box config apt add usbutils dfu-util --box my-lager-box
-lager box config apt list [--json]
-lager box config apt remove dfu-util
+lager box-config apt add usbutils dfu-util --box my-lager-box
+lager box-config apt list [--json]
+lager box-config apt remove dfu-util
 ```
 
 ### `mount`
@@ -155,9 +155,9 @@ lager box config apt remove dfu-util
 Bind-mount a host path into the container.
 
 ```bash
-lager box config mount add HOST_PATH CONTAINER_PATH [--readonly] --box my-lager-box
-lager box config mount list [--json]
-lager box config mount remove HOST_PATH CONTAINER_PATH [--yes]
+lager box-config mount add HOST_PATH CONTAINER_PATH [--readonly] --box my-lager-box
+lager box-config mount list [--json]
+lager box-config mount remove HOST_PATH CONTAINER_PATH [--yes]
 ```
 
 `mount add` options:
@@ -173,9 +173,9 @@ lager box config mount remove HOST_PATH CONTAINER_PATH [--yes]
 Container environment variables.
 
 ```bash
-lager box config env set KEY=VALUE [KEY=VALUE ...] --box my-lager-box
-lager box config env list [--json]
-lager box config env unset KEY [KEY ...]
+lager box-config env set KEY=VALUE [KEY=VALUE ...] --box my-lager-box
+lager box-config env list [--json]
+lager box-config env unset KEY [KEY ...]
 ```
 
 ### `pip` / `cargo` / `npm`
@@ -183,9 +183,9 @@ lager box config env unset KEY [KEY ...]
 In-container language packages, installed when the container starts.
 
 ```bash
-lager box config pip add requests rich --box my-lager-box
-lager box config cargo add ripgrep --box my-lager-box
-lager box config npm add left-pad --box my-lager-box
+lager box-config pip add requests rich --box my-lager-box
+lager box-config cargo add ripgrep --box my-lager-box
+lager box-config npm add left-pad --box my-lager-box
 # each group also supports: list [--json], remove
 ```
 
@@ -196,9 +196,9 @@ lager box config npm add left-pad --box my-lager-box
 Host sysctl values, persisted across reboots.
 
 ```bash
-lager box config sysctl set net.ipv4.ip_forward=1 --box my-lager-box
-lager box config sysctl list [--json]
-lager box config sysctl unset net.ipv4.ip_forward
+lager box-config sysctl set net.ipv4.ip_forward=1 --box my-lager-box
+lager box-config sysctl list [--json]
+lager box-config sysctl unset net.ipv4.ip_forward
 ```
 
 ### `volume`
@@ -206,29 +206,29 @@ lager box config sysctl unset net.ipv4.ip_forward
 Named docker volumes attached to the container (persist data across restarts).
 
 ```bash
-lager box config volume add my-vol /opt/my-vol --box my-lager-box
-lager box config volume list [--json]
-lager box config volume remove my-vol [--yes]
+lager box-config volume add my-vol /opt/my-vol --box my-lager-box
+lager box-config volume list [--json]
+lager box-config volume remove my-vol [--yes]
 ```
 
 ### Inspecting and editing
 
 ```bash
-lager box config show --box my-lager-box        # full config
-lager box config status --box my-lager-box      # one-line summary (clean / drift)
-lager box config diff --box my-lager-box        # pending changes vs. last applied
-lager box config validate --box my-lager-box    # check for errors
-lager box config audit --box my-lager-box       # recent changes (supports --verb, --since, --tail)
-lager box config edit --box my-lager-box        # open in $EDITOR, then apply
+lager box-config show --box my-lager-box        # full config
+lager box-config status --box my-lager-box      # one-line summary (clean / drift)
+lager box-config diff --box my-lager-box        # pending changes vs. last applied
+lager box-config validate --box my-lager-box    # check for errors
+lager box-config audit --box my-lager-box       # recent changes (supports --verb, --since, --tail)
+lager box-config edit --box my-lager-box        # open in $EDITOR, then apply
 ```
 
 ### Backup, restore, and recovery
 
 ```bash
-lager box config export ./box.json --box my-lager-box     # save current config to a file
-lager box config import ./box.json --box my-lager-box      # replace config from a file
-lager box config copy --from BOX_A --to BOX_B              # clone config between boxes
-lager box config repair --box my-lager-box                 # restore the last applied config and restart
+lager box-config export ./box.json --box my-lager-box     # save current config to a file
+lager box-config import ./box.json --box my-lager-box      # replace config from a file
+lager box-config copy --from BOX_A --to BOX_B              # clone config between boxes
+lager box-config repair --box my-lager-box                 # restore the last applied config and restart
 ```
 
 ---

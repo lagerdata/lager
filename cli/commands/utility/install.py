@@ -457,9 +457,9 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
 
     click.echo()
 
-    # 6.7. Bootstrap passwordless sudo for `lager box config apply`.
+    # 6.7. Bootstrap passwordless sudo for `lager box-config apply`.
     #
-    # `lager box config apply` needs root on the host for apt-get install,
+    # `lager box-config apply` needs root on the host for apt-get install,
     # sysctl writes, and mount-path mkdir/chown. Those run over SSH in a
     # non-interactive context (no TTY for sudo to prompt against), so the
     # rule must grant NOPASSWD up front. The rule content lives in
@@ -471,7 +471,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     # Idempotent: re-running install overwrites the file with the same
     # content. Failure here is a warning, not fatal — the box is otherwise    # installed; the operator can apply the rule manually later.
     click.echo()
-    click.secho("Configuring passwordless sudo for `lager box config apply`...", fg='cyan')
+    click.secho("Configuring passwordless sudo for `lager box-config apply`...", fg='cyan')
     click.echo("(One-time setup. You'll be prompted for the sudo password on the box.)")
     click.echo()
 
@@ -480,8 +480,8 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
         # interpolate anything that isn't a plain unix username.
         click.secho(
             f"Warning: username {user!r} is not a plain unix username; skipping the "
-            "passwordless-sudo bootstrap. `lager box config apply` will require "
-            "manual sudoers setup on this box. See `lager box config apply --help` "
+            "passwordless-sudo bootstrap. `lager box-config apply` will require "
+            "manual sudoers setup on this box. See `lager box-config apply --help` "
             "for the snippet to paste.",
             fg='yellow', err=True,
         )
@@ -504,7 +504,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
             already_configured = False
 
         if already_configured:
-            click.secho("Passwordless sudo for `lager box config` already configured", fg='green')
+            click.secho("Passwordless sudo for `lager box-config` already configured", fg='green')
         else:
             sudoers_cmd = boxcfg_sudoers_bootstrap_cmd(user)
 
@@ -519,8 +519,8 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                 )
                 if bootstrap_result.returncode != 0:
                     click.secho(
-                        "Warning: Sudoers rule could not be installed. `lager box config apply` "
-                        "will require manual sudoers setup on this box. See `lager box config "
+                        "Warning: Sudoers rule could not be installed. `lager box-config apply` "
+                        "will require manual sudoers setup on this box. See `lager box-config "
                         "apply --help` for the snippet to paste.",
                         fg='yellow', err=True,
                     )
@@ -537,7 +537,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                         capture_output=True, timeout=15,
                     )
                     if verify_result.returncode == 0:
-                        click.secho("Passwordless sudo for `lager box config` configured", fg='green')
+                        click.secho("Passwordless sudo for `lager box-config` configured", fg='green')
                     else:
                         click.secho(
                             "Warning: Sudoers file installed but `sudo -n apt-get` still fails. "
@@ -546,7 +546,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                         )
             except (subprocess.TimeoutExpired, Exception) as e:
                 click.secho(
-                    f"Warning: Sudoers bootstrap failed: {e}. `lager box config apply` "
+                    f"Warning: Sudoers bootstrap failed: {e}. `lager box-config apply` "
                     "will require manual sudoers setup.",
                     fg='yellow', err=True,
                 )

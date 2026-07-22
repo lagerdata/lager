@@ -1835,7 +1835,7 @@ class MultiBoxFanout(unittest.TestCase):
 
 
 class RepairCommand(unittest.TestCase):
-    """`lager box config repair` is the rollback path exposed as a verb,
+    """`lager box-config repair` is the rollback path exposed as a verb,
     for recovering boxes that didn't trigger automatic rollback (e.g.,
     hand-edited bad JSON, container wedged on stale config)."""
 

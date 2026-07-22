@@ -1,9 +1,9 @@
 ---
-title: Box DUT Context
+title: DUT Context
 description: Author the device-under-test context that the MCP server hands to AI agents
 ---
 
-`lager box dut` manages the **DUT context** stored in `/etc/lager/bench.json` on
+`lager dut` manages the **DUT context** stored in `/etc/lager/bench.json` on
 a Lager Box. This context tells AI agents (via the [MCP
 server](/source/reference/mcp/overview)) what the box tests: purpose, MCU, key
 peripherals, subsystem groupings, and references to schematics and datasheets.
@@ -14,7 +14,7 @@ and workflow.
 ## Syntax
 
 ```bash
-lager box dut [COMMAND] [OPTIONS]
+lager dut [COMMAND] [OPTIONS]
 ```
 
 ## Global Options
@@ -39,7 +39,7 @@ lager box dut [COMMAND] [OPTIONS]
 Print the current DUT context as JSON.
 
 ```bash
-lager box dut show --box my-lager-box
+lager dut show --box my-lager-box
 ```
 
 ### Edit
@@ -48,7 +48,7 @@ Round-trip the DUT context through `$EDITOR` (falls back to `nano`, then `vi`).
 On save, the new JSON is validated and written back to `/etc/lager/bench.json`.
 
 ```bash
-lager box dut edit --box my-lager-box
+lager dut edit --box my-lager-box
 ```
 
 The editable block accepts these fields:
@@ -71,7 +71,7 @@ The box records only a pointer — it does **not** store the file. The agent
 fetches and analyses it with its own tools.
 
 ```bash
-lager box dut add-doc --kind schematic \
+lager dut add-doc --kind schematic \
   --title "Main board" --repo-path docs/sch.pdf --pages 3-5 --box my-lager-box
 ```
 

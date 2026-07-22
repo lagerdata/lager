@@ -9,8 +9,8 @@ during setup/update and pair with the `SUPPORTED_USB` instrument tables.
 > need to edit this file or cut a release — add a user rule directly:
 >
 > ```bash
-> lager box config udev add 1209:0001 --box <BOX>   # add --usbtmc for SCPI
-> lager box config apply --box <BOX>
+> lager box-config udev add 1209:0001 --box <BOX>   # add --usbtmc for SCPI
+> lager box-config apply --box <BOX>
 > ```
 >
 > That installs `/etc/udev/rules.d/99-lager-user.rules` on the box host and

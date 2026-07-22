@@ -532,7 +532,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         """Create lager_box key if needed and copy to box. Returns True if successful."""
         nonlocal use_explicit_key
 
-        # Create key if it doesn't exist. Shared with `lager authorize` via
+        # Create key if it doesn't exist. Shared with `lager ssh-setup` via
         # ensure_lager_box_keypair so the key type/comment can't drift between
         # the two provisioning paths; it raises on failure, which we translate
         # to this function's bool-return contract.
@@ -599,7 +599,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
 
     try:
         # First try with the lager_box key if it exists. Same unattended
-        # probe `lager authorize` uses, so "does the key already work?" is
+        # probe `lager ssh-setup` uses, so "does the key already work?" is
         # answered identically in both commands.
         if os.path.exists(key_file) and key_auth_works(ssh_host):
             use_explicit_key = True
@@ -1450,9 +1450,9 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             _render_sudoers,
         )
 
-    # Step 7: passwordless sudo for `lager box config apply`.
+    # Step 7: passwordless sudo for `lager box-config apply`.
     #
-    # `lager box config apply` needs root on the host for apt-get install,
+    # `lager box-config apply` needs root on the host for apt-get install,
     # sysctl writes, and mount-path mkdir/chown — all over BatchMode SSH
     # where sudo can't prompt. The rule (built in
     # _host_ops.boxcfg_sudoers_bootstrap_cmd) grants narrow NOPASSWD for
@@ -1476,7 +1476,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         if verbose:
             click.echo(
                 f'  Username {username!r} is not a plain unix username; '
-                '`lager box config apply` will need manual sudoers setup.',
+                '`lager box-config apply` will need manual sudoers setup.',
                 err=True,
             )
     else:
@@ -1491,7 +1491,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
                 if verbose:
                     click.echo(
                         '  Warning: box-config sudoers rule could not be installed. '
-                        '`lager box config apply` will need manual sudoers setup on this box.',
+                        '`lager box-config apply` will need manual sudoers setup on this box.',
                         err=True,
                     )
                 return

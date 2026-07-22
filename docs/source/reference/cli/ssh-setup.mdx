@@ -1,6 +1,6 @@
 ---
-title: Authorize
-description: Authorize this machine's SSH key on a Lager Box
+title: SSH Setup
+description: Set up passwordless SSH from this machine to a Lager Box
 ---
 
 Install this machine's Lager SSH key on a Lagerbox so that `lager` commands and
@@ -11,12 +11,15 @@ This wraps the `ssh-keygen` / `ssh-copy-id` dance into a single command, so a
 `Permission denied (publickey,password)` error can be fixed without knowing the
 key path or the `ssh-copy-id` incantation by hand.
 
-<Note>Introduced in **lager 0.27.1**.</Note>
+<Note>Introduced in **lager 0.27.1** as `lager authorize`; renamed to
+`lager ssh-setup` because the old name read like authentication once
+`lager login` (gateway sign-in) arrived. The old spelling still works
+with a deprecation warning.</Note>
 
 ## Syntax
 
 ```bash
-lager authorize [OPTIONS]
+lager ssh-setup [OPTIONS]
 ```
 
 ## Options
@@ -31,10 +34,10 @@ lager authorize [OPTIONS]
 
 ```bash
 # Authorize a specific Lager Box
-lager authorize --box my-lager-box
+lager ssh-setup --box my-lager-box
 
 # Authorize the default Lager Box
-lager authorize
+lager ssh-setup
 ```
 
 You are prompted for the box password **once** (by `ssh-copy-id`). After the key
@@ -65,10 +68,10 @@ key exists (since lager 0.28.1), so authorized boxes connect without a password.
 ```bash
 # First-time setup for a new box
 lager boxes add --name my-lager-box --ip 100.x.y.z
-lager authorize --box my-lager-box
+lager ssh-setup --box my-lager-box
 
 # Re-running against an already-authorized box is safe (no-op)
-lager authorize --box my-lager-box
+lager ssh-setup --box my-lager-box
 # my-lager-box is already authorized — no password needed.
 ```
 

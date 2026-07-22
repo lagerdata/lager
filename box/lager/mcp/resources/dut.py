@@ -49,7 +49,7 @@ def _render_overview(bench) -> str:
     if not bench.dut_slots:
         lines.append(
             "_No DUT context has been authored on this box yet._\n\n"
-            "Ask the user to run `lager box dut edit` to describe what this "
+            "Ask the user to run `lager dut edit` to describe what this "
             "box tests, the DUT MCU/peripherals, and to attach references "
             "to the schematic / datasheets."
         )

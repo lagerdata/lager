@@ -53,7 +53,7 @@
               "source/reference/cli/uninstall",
               "source/reference/cli/update",
               "source/reference/cli/ssh",
-              "source/reference/cli/authorize",
+              "source/reference/cli/ssh-setup",
               "source/reference/cli/logs"
             ]
           },
@@ -65,7 +65,7 @@
               "source/reference/cli/instruments",
               "source/reference/cli/diagnose",
               "source/reference/cli/nets",
-              "source/reference/cli/box-dut",
+              "source/reference/cli/dut",
               "source/reference/cli/defaults"
             ]
           },

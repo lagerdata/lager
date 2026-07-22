@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Auto-prep helper for `lager box config` mounts.
+Auto-prep helper for `lager box-config` mounts.
 
 The lager container runs as uid 33 (www-data). For every host->container
 bind mount, the host path must (a) exist and (b) for read-write mounts,
@@ -49,7 +49,7 @@ def sudoers_bootstrap(user: str = "lagerdata") -> str:
         "    | sudo tee /etc/sudoers.d/lager-box-config\n"
         "  sudo chmod 440 /etc/sudoers.d/lager-box-config\n"
         "\n"
-        "Then re-run `lager box config mount add ...` (or `apply`). The "
+        "Then re-run `lager box-config mount add ...` (or `apply`). The "
         "rule is narrow-scoped (mkdir + chown only)."
     )
 

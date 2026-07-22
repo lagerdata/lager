@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 _bench: BenchDefinition | None = None
 _graph: CapabilityGraph | None = None
 
-# Config files watched for changes so edits (e.g. ``lager box dut edit`` or
+# Config files watched for changes so edits (e.g. ``lager dut edit`` or
 # ``lager nets describe``) are picked up automatically on the next request
 # without an agent calling ``box_manage`` or a service restart.
 _WATCHED_CONFIG_PATHS = (

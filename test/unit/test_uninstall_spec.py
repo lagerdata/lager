@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """
 Pins `lager uninstall`'s privileged removal spec to the artifacts the modern
-`lager install` / `lager box config apply` actually create, so the two can't
+`lager install` / `lager box-config apply` actually create, so the two can't
 silently drift apart again (the old --all glob missed 99-instrument.rules
 across a year of releases, and every sudo step was masked by `|| true`).
 """

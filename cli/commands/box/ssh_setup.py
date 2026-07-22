@@ -2,12 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-`lager authorize` -- install this machine's lager_box SSH key on a box.
+`lager ssh-setup` -- install this machine's lager_box SSH key on a box.
 
 Wraps the ssh-keygen / ssh-copy-id dance (see
 cli/deployment/scripts/setup_ssh_key.sh for the shell ancestor) so a
 user who hits "Permission denied (publickey,password)" can fix it with
 one command instead of knowing the key path and ssh-copy-id incantation.
+
+Formerly `lager authorize`; renamed because "authorize" read like
+authentication once `lager login` (gateway auth) arrived. A hidden
+`authorize` alias warns and forwards.
 """
 from __future__ import annotations
 
@@ -30,14 +34,14 @@ from ...errors import LagerError
 
 
 @click.command(
-    name="authorize",
+    name="ssh-setup",
     cls=BoxCommand,
-    help="Authorize this machine's SSH key on a box (enter the box password "
+    help="Set up passwordless SSH to a box (enter the box password "
          "once; lager commands work passwordless after).",
 )
 @click.option("--box", help="Lagerbox name or IP")
 @click.pass_context
-def authorize(ctx: click.Context, box: Optional[str]) -> None:
+def ssh_setup(ctx: click.Context, box: Optional[str]) -> None:
     ip = resolve_and_validate_box(ctx, box)
     user = resolve_box_user(ip)
     dest = f"{user}@{ip}"
@@ -86,3 +90,16 @@ def authorize(ctx: click.Context, box: Optional[str]) -> None:
     _KEY_FALLBACK_DESTS.discard(dest)
     click.secho(f"Success — {dest} is authorized.", fg="green")
     click.echo("lager commands for this box now work without a password.")
+
+
+@click.command(name="authorize", cls=BoxCommand, hidden=True,
+               help="Deprecated alias for `lager ssh-setup`.")
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def authorize(ctx: click.Context, box: Optional[str]) -> None:
+    click.secho(
+        "DEPRECATED: `lager authorize` is now `lager ssh-setup`. "
+        "The old spelling still works but will be removed in a future release.",
+        fg="yellow", err=True,
+    )
+    ctx.invoke(ssh_setup, box=box)

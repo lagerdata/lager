@@ -5,7 +5,7 @@
 
 The MCP server holds the bench/capability-graph in module-level singletons.
 When a user edits ``bench.json`` / ``saved_nets.json`` (e.g. via
-``lager box dut edit``), the server should pick the change up on the next
+``lager dut edit``), the server should pick the change up on the next
 request without an explicit ``box_manage(action="reload")`` or restart.
 """
 

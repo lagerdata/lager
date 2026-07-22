@@ -252,7 +252,7 @@ class UdevRule:
     udev runs on the box *host*; setting MODE on the device node is what lets
     tools inside the container (which sees /dev and /sys/bus/usb via bind
     mounts) open the device — fixing e.g. `dfu-util`'s "No DFU capable USB
-    device available". Applied host-side during `lager box config apply`.
+    device available". Applied host-side during `lager box-config apply`.
 
     Rules grant access via the "lager" group (the container user joins it via
     --group-add in start_box.sh) rather than world-rw, matching the shipped
@@ -273,7 +273,7 @@ class UdevRule:
         so libusb/PyVISA can claim the interface (see box/udev_rules/README.md).
         """
         lines = [
-            f"# vid:pid {self.vid}:{self.pid} (added via `lager box config udev`)",
+            f"# vid:pid {self.vid}:{self.pid} (added via `lager box-config udev`)",
             f'SUBSYSTEM=="usb", ATTRS{{idVendor}}=="{self.vid}", '
             f'ATTRS{{idProduct}}=="{self.pid}", MODE="{self.mode}", GROUP="lager"',
         ]

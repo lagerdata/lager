@@ -221,10 +221,10 @@ lager devenv terminal
 ### Package Management
 ```bash
 # Add a package to the box's declarative config
-lager box config pip add numpy
+lager box-config pip add numpy
 
 # Apply the change (restarts the lager container, runs pip install)
-lager box config apply
+lager box-config apply
 ```
 
 ## Supported Hardware

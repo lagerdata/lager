@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Host-side helpers for `lager box config pip add`:
+Host-side helpers for `lager box-config pip add`:
   - PyPI existence check (best-effort, network-error tolerant)
 
 Format validation lives box-side only (see box/lager/box_config/config.py).

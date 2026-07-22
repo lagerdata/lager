@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Host-side SSH helpers for `lager box config apply`:
+Host-side SSH helpers for `lager box-config apply`:
   - apt_install: `sudo apt-get install -y` over SSH
   - sysctl_apply: write /etc/sysctl.d/99-lager-box-config.conf + sysctl --system
 
@@ -25,7 +25,7 @@ from ._ssh import SshRunner, default_ssh_runner, sudo_error_message
 
 SYSCTL_CONF_PATH = "/etc/sysctl.d/99-lager-box-config.conf"
 _SYSCTL_HEADER = (
-    "# Managed by `lager box config sysctl`; manual edits are overwritten on apply.\n"
+    "# Managed by `lager box-config sysctl`; manual edits are overwritten on apply.\n"
 )
 
 # User udev rules live in their own file so they never collide with the
@@ -37,13 +37,13 @@ UDEV_RULES_DIR = "/etc/udev/rules.d/"
 UDEV_RULES_PATH = UDEV_RULES_DIR + UDEV_RULES_FILENAME
 _UDEV_TMP_PATH = "/tmp/" + UDEV_RULES_FILENAME
 _UDEV_HEADER = (
-    "# Managed by `lager box config udev`; manual edits are overwritten on apply.\n"
+    "# Managed by `lager box-config udev`; manual edits are overwritten on apply.\n"
 )
 
 # --- Box-config sudoers rule: single source of truth ------------------------
 #
 # `lager install` and `lager update` write this rule to BOXCFG_SUDOERS_PATH
-# so `lager box config apply` can run apt-get/sysctl/mkdir/chown over
+# so `lager box-config apply` can run apt-get/sysctl/mkdir/chown over
 # BatchMode SSH. The rule must name the actual login user: it used to
 # hardcode `lagerdata`, so on boxes with a different login user the grant
 # never matched — install ended with "Sudoers file installed
@@ -69,7 +69,7 @@ def is_valid_unix_username(user: Optional[str]) -> bool:
 
 
 def boxcfg_sudoers_rules(user: str = "lagerdata") -> List[str]:
-    """The NOPASSWD rule lines for `lager box config apply`. tee/rm/sysctl
+    """The NOPASSWD rule lines for `lager box-config apply`. tee/rm/sysctl
     are path-scoped so a compromised account cannot escalate via them;
     apt-get and mkdir/chown are unscoped because the package list and host
     paths are user-defined. SETENV on apt-get is required so
@@ -127,7 +127,7 @@ def udev_sudoers_bootstrap(user: str = "lagerdata") -> str:
         "  SUDOERS\n"
         "  sudo chmod 440 /etc/sudoers.d/lagerdata-udev\n"
         "\n"
-        "Then re-run `lager box config apply`."
+        "Then re-run `lager box-config apply`."
     )
 
 
@@ -150,7 +150,7 @@ def sudoers_bootstrap(user: str = "lagerdata") -> str:
         f"  sudo chmod 440 {BOXCFG_SUDOERS_PATH}\n"
         f"  sudo touch {BOXCFG_SUDOERS_MARKER} && sudo chmod 644 {BOXCFG_SUDOERS_MARKER}\n"
         "\n"
-        "Then re-run `lager box config apply`. tee/rm/sysctl are path-scoped so a "
+        "Then re-run `lager box-config apply`. tee/rm/sysctl are path-scoped so a "
         f"compromised {user} account cannot escalate to root via them; apt-get "
         "and mkdir/chown are unscoped because the package list and host paths are "
         "user-defined. SETENV on apt-get is required so "
@@ -264,7 +264,7 @@ def render_udev_rules_file(rules: List[Dict[str, object]]) -> str:
         vid = str(r.get("vid", ""))
         pid = str(r.get("pid", ""))
         mode = str(r.get("mode", "0660"))
-        body += f"# vid:pid {vid}:{pid} (added via `lager box config udev`)\n"
+        body += f"# vid:pid {vid}:{pid} (added via `lager box-config udev`)\n"
         body += (
             f'SUBSYSTEM=="usb", ATTRS{{idVendor}}=="{vid}", '
             f'ATTRS{{idProduct}}=="{pid}", MODE="{mode}", GROUP="lager"\n'

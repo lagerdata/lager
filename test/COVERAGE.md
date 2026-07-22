@@ -354,11 +354,11 @@ test/
 | File | What it tests |
 |------|---------------|
 | `test_authorize_key_rate_limit.py` | SSH /authorize-key fixed-window rate limiter: per-IP counting and pruning |
-| `test_box_authorize.py` | `lager authorize` command and SSH key provisioning with TTY passthrough |
+| `test_ssh_setup.py` | `lager ssh-setup` command and SSH key provisioning with TTY passthrough |
 | `test_box_config.py` | box_config v1 schema validation rules and idempotency hash |
 | `test_box_config_addverb_idempotency.py` | mount-add/apt-add/udev-add upsert behavior for provisioning re-runs |
-| `test_box_config_cli.py` | `lager box config` CLI: mount prep, readiness polling, rollback on bounce failure |
-| `test_box_dut_cli.py` | `lager box dut` CLI detached-list regression fix |
+| `test_box_config_cli.py` | `lager box-config` CLI: mount prep, readiness polling, rollback on bounce failure |
+| `test_box_dut_cli.py` | `lager dut` CLI detached-list regression fix |
 | `test_box_http_server_capabilities.py` | /status capabilities block advertises netCommand based on route registration |
 | `test_breakpoint_pause.py` | `lager.pause()` interactive breakpoint: timeout handling and resume signaling |
 | `test_custom_devices_impl.py` | Custom-device backend for `lager nets assign` list/assign/remove operations |

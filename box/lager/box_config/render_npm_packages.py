@@ -27,7 +27,7 @@ _spec.loader.exec_module(cfg)
 
 _HEADER = (
     "# User-installed npm packages, rendered from /etc/lager/box_config.json\n"
-    "# Edit via `lager box config npm add/remove`, then `lager box config apply`.\n"
+    "# Edit via `lager box-config npm add/remove`, then `lager box-config apply`.\n"
     "# Manual edits to this file are overwritten on the next apply.\n"
     "\n"
 )
