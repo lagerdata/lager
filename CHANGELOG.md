@@ -2,6 +2,36 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.32.3] - 2026-07-22
+
+### Fixed
+
+- **`lager update` could report "already at version X" on a box that was
+  never actually updated.** The update stops and removes the box's
+  containers before rebuilding the image, so a failed build left the box
+  with no services at all — and the retry's early-exit gate checked only
+  source state (git in sync, docker-build-inputs hash matching), so it
+  printed a green success and exited 0 on a dead box. Found via a field
+  report of an update that failed during Docker image export; the retry
+  claimed the box was up to date and the user had to restart it by hand
+  over SSH. The gate now also requires the lager container to be RUNNING
+  and the last successfully deployed version (`/etc/lager/version`) to
+  match the tree — a box left dead, or left serving an older build by an
+  update interrupted between pull and rebuild, falls through to a real
+  rebuild and restart with an explanatory message. `lager update --check`
+  surfaces both states ("Container: NOT RUNNING" / "running a STALE
+  build") and exits 1. Hardware-validated end to end on a real box.
+
+- **A failed rebuild no longer strands the box with no services.** Unless
+  the cached image was wiped (`--force` / a build-inputs change), the
+  update restarts the previous image, waits for `/health`, and states
+  plainly that the update FAILED and was not applied (exit code stays 1).
+  Every build failure also poisons the stored build-inputs hash with a
+  sentinel so the next run always performs a clean rebuild instead of
+  trusting stale state. New build-failure hint for BuildKit cache
+  corruption ("failed to prepare extraction snapshot ... parent snapshot
+  does not exist"): clear with `docker builder prune -af` and re-run.
+
 ## [0.32.2] - 2026-07-22
 
 ### Added

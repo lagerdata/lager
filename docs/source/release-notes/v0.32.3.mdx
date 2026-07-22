@@ -1,0 +1,32 @@
+---
+title: "Version 0.32.3"
+description: "July 22, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **`lager update` could report "already at version X" on a Lager Box that was never actually updated.** The update stops and removes the box's containers before rebuilding the image, so a failed build left the box with no services at all — and the retry's early-exit check looked only at source state, so it printed a green success on a dead box. The check now also requires the lager container to be running and the last successfully deployed version to match the box's code — a box left dead, or left serving an older build by an interrupted update, gets a real rebuild and restart instead of a false success. `lager update --check` surfaces both states ("Container: NOT RUNNING" / "running a STALE build") and exits 1.
+
+## <u>Improvements</u>
+
+- **A failed rebuild no longer strands the Lager Box with no services.** Unless the cached image was wiped (`--force` / a dependency change), the update restarts the previous image, waits for the box's health endpoint, and states plainly that the update FAILED and was not applied. Every build failure also invalidates the stored build cache marker so the next run always performs a clean rebuild.
+
+- **New build-failure hint for Docker BuildKit cache corruption.** When a build fails with "failed to prepare extraction snapshot ... parent snapshot does not exist", the update now suggests the remedy: clear the box's build cache with `docker builder prune -af` and re-run `lager update` (the next build runs cold and takes longer).
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.32.3
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.32.3/)
