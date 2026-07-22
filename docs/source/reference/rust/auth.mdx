@@ -1,0 +1,77 @@
+---
+title: Authentication
+description: Using the Rust crate with boxes behind an authenticating gateway
+---
+
+Plain (ungated) boxes need none of this: no header is sent and none of
+this code runs. This page applies to deployments that place an
+authenticating reverse proxy (a *gateway*) in front of a box, which
+rejects unauthenticated traffic with 401 + an `X-Gateway-Auth-Url` header
+— the same contract the Lager CLI speaks.
+
+The crate handles gated boxes transparently, in two modes.
+
+## CLI session reuse (zero config)
+
+If you've run `lager login <auth_url>` on the machine, the crate picks up
+that session automatically:
+
+- Reads the CLI's token store (`~/.lager_gateway_auth`, overridable via
+  `LAGER_GATEWAY_AUTH_FILE`).
+- Attaches `Authorization: Bearer` to every request — including
+  debug-service traffic and UART Socket.IO handshakes.
+- Refreshes expired access tokens transparently.
+- Learns which auth server fronts a box from the gateway's discovery
+  header on first contact, and retries the denied request within the same
+  call.
+
+No code changes needed — `LagerBox::from_env()` just works:
+
+```sh
+lager login https://auth.example.com
+LAGER_BOX_HOST=192.168.1.42 cargo test
+```
+
+## Pinned token (CI)
+
+On machines with no CLI login (CI runners), supply a token directly:
+
+```rust
+let lager = lager::LagerBox::builder("192.168.1.42")
+    .bearer_token(std::env::var("MY_CI_TOKEN").unwrap())
+    .build()?;
+```
+
+or set the `LAGER_GATEWAY_TOKEN` environment variable — no code change:
+
+```yaml
+env:
+  LAGER_BOX_HOST: ${{ vars.LAGER_BOX_HOST }}
+  LAGER_GATEWAY_TOKEN: ${{ secrets.LAGER_GATEWAY_TOKEN }}
+```
+
+A pinned token is attached verbatim to every request and is never
+refreshed or written to the token store. If the gateway rejects it, the
+call fails immediately.
+
+## Errors
+
+When a gateway asks for auth and no usable credential exists, calls fail
+with `Error::AuthRequired`, which names the auth server to log into:
+
+| Gateway response | Crate behavior |
+| --- | --- |
+| 401 (no/expired credential) | Resolve or refresh a token and retry once; otherwise `Error::AuthRequired` with the `lager login <url>` fix |
+| 403 (no access grant for this box) | `Error::Box { status: 403, .. }` — ask your admin for access |
+| 503 (gateway can't reach its auth server) | `Error::Box { status: 503, .. }` — retry shortly |
+
+## Environment variables
+
+| Variable | Meaning |
+| --- | --- |
+| `LAGER_GATEWAY_TOKEN` | Pinned bearer token for every request (CI). |
+| `LAGER_GATEWAY_AUTH_FILE` | Overrides the CLI token store path (default `~/.lager_gateway_auth`). |
+
+The full client/gateway contract (discovery header, auth server endpoints,
+store schema, retry semantics) is specified in the monorepo at
+[`docs/reference/gateway-auth-contract.md`](https://github.com/lagerdata/lager/blob/main/docs/reference/gateway-auth-contract.md).

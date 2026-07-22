@@ -1,0 +1,116 @@
+---
+title: Rust SDK Overview
+description: Write your entire hardware-in-the-loop test suite in Rust and run it with cargo test
+---
+
+The Lager Rust crate gives embedded developers first-class access to Lager
+nets, so a hardware-in-the-loop (HIL) test suite can live next to your
+firmware and run with `cargo test` — no Python required.
+
+The crate is a pure HTTP/JSON client of the Lager Box API: power supplies,
+battery simulators, e-loads, solar simulators, GPIO, ADC, DAC,
+thermocouples, watt meters, energy analyzers, SPI, I2C, USB hub ports,
+robot arms, webcams, routers, and streaming UART — plus the box-level
+capabilities (its own BLE adapter, WiFi interface, and BluFi ESP32
+provisioning). Debug-probe nets (flash / erase / reset / memory reads /
+RTT) talk to the box's debug service.
+
+<Info>
+The package publishes on crates.io as
+[**`lager-net`**](https://crates.io/crates/lager-net) (the bare `lager`
+name is taken by an unrelated crate), but the library target is named
+`lager`, so your code reads `use lager::LagerBox;`. Full API reference
+lives on [docs.rs/lager-net](https://docs.rs/lager-net).
+</Info>
+
+## Quickstart
+
+Add the crate to your firmware project's dev-dependencies:
+
+```toml
+# Cargo.toml
+[dev-dependencies]
+lager = { package = "lager-net", version = "0.2" }
+```
+
+Write a test:
+
+```rust
+// tests/boot.rs
+use lager::{LagerBox, Level};
+
+#[test]
+fn dut_boots_at_3v3() -> lager::Result<()> {
+    let lager = LagerBox::from_env()?; // reads LAGER_BOX_HOST
+    let supply = lager.supply("supply1");
+    let boot_ok = lager.gpio("boot_ok");
+
+    supply.set_voltage(3.3)?;
+    supply.enable()?;
+
+    // Hardware-timed wait on the box; returns elapsed seconds.
+    let t = boot_ok.wait_for_level(Level::High, 5.0)?;
+    println!("booted in {t:.3}s");
+
+    supply.disable()
+}
+```
+
+Run it:
+
+```sh
+LAGER_BOX_HOST=192.168.1.42 cargo test
+```
+
+`LagerBox::connect("hostname-or-ip")` also works, with an optional
+`host:port` or full URL.
+
+## Features
+
+| Feature | Default | What you get |
+| --- | --- | --- |
+| `blocking` | yes | `LagerBox` on [`ureq`](https://crates.io/crates/ureq) — tiny dependency tree, no tokio |
+| `async` | no | `AsyncLagerBox` on [`reqwest`](https://crates.io/crates/reqwest)/tokio; same methods, `.await`ed |
+| `uart` | no | `Uart` streaming sessions over the box's Socket.IO `/uart` namespace |
+
+Both clients execute the exact same request builders and response parsers,
+so the two transports cannot drift apart.
+
+```toml
+lager = { package = "lager-net", version = "0.2", features = ["async"] }
+```
+
+## Errors
+
+Everything returns `lager::Result<T>` with a single `Error` enum:
+
+| Variant | Meaning |
+| --- | --- |
+| `Connection` | Box unreachable (network/Tailscale/box offline) |
+| `Timeout` | The box stalled past the (already widened) budget |
+| `Box { status, message }` | The box refused or the hardware failed |
+| `UnsupportedByBox` | HTTP 501: the box image predates this endpoint; update the box |
+| `AuthRequired` | The box's gateway wants a bearer token and none is available |
+| `NotSupportedByBox` | The net type is a documented stub (see the note below) |
+
+## Requirements
+
+- A Lager Box with software new enough to serve `POST /net/command` —
+  check `lager.status()?.capabilities.net_command`, or run
+  `lager box update`.
+- Rust 1.75+.
+
+<Note>
+Oscilloscope / logic-analyzer workflows are not exposed on the box HTTP
+API yet, so `Scope` ships as a documented stub whose methods return
+`Error::NotSupportedByBox`. Support lands when the box API does; the
+endpoint sketch is tracked in the crate's
+[`MISSING_ENDPOINTS.md`](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md).
+</Note>
+
+## Next steps
+
+- **[Net types](/source/reference/rust/net-types)** — every handle the crate exposes
+- **[Testing guide](/source/reference/rust/testing)** — structuring a `cargo test` HIL suite, parallelism, CI
+- **[Debug probes & UART](/source/reference/rust/debug-and-uart)** — flashing, RTT, and streaming serial
+- **[Authentication](/source/reference/rust/auth)** — boxes behind an authenticating gateway

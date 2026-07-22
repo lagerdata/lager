@@ -185,6 +185,26 @@
         ]
       },
       {
+        "tab": "Rust API",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "source/reference/rust/overview",
+              "source/reference/rust/net-types"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "source/reference/rust/testing",
+              "source/reference/rust/debug-and-uart",
+              "source/reference/rust/auth"
+            ]
+          }
+        ]
+      },
+      {
         "tab": "AI Agents (MCP)",
         "groups": [
           {

@@ -3,7 +3,7 @@ title: Your First Test
 description: A complete walkthrough of testing a device with Lager
 ---
 
-This guide walks you through a complete test workflow -- from verifying connectivity to running an automated Python script. By the end, you'll have used the CLI interactively and written your first Lager test script.
+This guide walks you through a complete test workflow -- from verifying connectivity to running an automated test, in Python or Rust. By the end, you'll have used the CLI interactively and written your first Lager test script.
 
 <Note>
 This tutorial assumes you have completed the [Getting Started](/source/getting-started/overview) guide: the CLI is installed, your box is added, and your instruments are configured with nets.
@@ -95,13 +95,15 @@ Always disable power supplies when you're done testing.
 
 ---
 
-## Part 2: Your First Python Script
+## Part 2: Your First Test Script
 
-Now let's convert the manual CLI steps into a repeatable Python script. The key advantage of a script is that it always cleans up after itself (disabling power) even if an error occurs.
+Now let's convert the manual CLI steps into a repeatable test. The key advantage of a script is that it always cleans up after itself (disabling power) even if an error occurs.
 
-Create a file called `my_first_test.py`:
+You can write it in Python (runs on the box via `lager python`) or in Rust (an ordinary `cargo test` in your firmware repo, using the [`lager-net` crate](/source/reference/rust/overview)). Both versions below do the same thing: flash, power on, measure, assert, clean up.
 
-```python
+<CodeGroup>
+
+```python my_first_test.py
 from lager import Net, NetType
 
 def main():
@@ -145,21 +147,68 @@ if __name__ == '__main__':
     main()
 ```
 
+```rust tests/my_first_test.rs
+use lager::LagerBox;
+
+#[test]
+fn sensor_reads_in_range_after_boot() -> lager::Result<()> {
+    // Reads LAGER_BOX_HOST from the environment.
+    let lager = LagerBox::from_env()?;
+    let psu = lager.supply("POWER");
+    let debug = lager.debug("DEBUG_NET");
+    let sensor = lager.adc("SENSOR_1");
+
+    // Flash firmware
+    println!("Flashing firmware...");
+    debug.connect()?;
+    debug.flash("firmware.hex")?;
+    debug.reset(false)?;
+    println!("Flash complete.");
+
+    // Power on the DUT
+    println!("Enabling power supply at 3.3V...");
+    psu.set_voltage(3.3)?;
+    psu.set_current(0.5)?;
+    psu.enable()?;
+    println!("Power enabled.");
+
+    // Take a measurement and check the result; disable power before
+    // asserting so the DUT is never left energized by a failing test.
+    let voltage = sensor.read()?;
+    println!("Sensor reading: {voltage:.4} V");
+    psu.disable()?;
+
+    assert!(
+        (2.0..=3.0).contains(&voltage),
+        "sensor voltage {voltage:.4} V outside range [2.0, 3.0]"
+    );
+    Ok(())
+}
+```
+
+</CodeGroup>
+
 <Note>
-The `try/finally` block ensures the power supply is always disabled, even if the script encounters an error. This is important for protecting your hardware.
+Cleanup matters: the Python version uses `try/finally` to guarantee the power supply is disabled even if an error occurs, and the Rust version disables power before its assertion (any earlier `?` error also ends the test with the supply's state visible in the failure). This is important for protecting your hardware.
 </Note>
 
 ---
 
 ## Part 3: Running It
 
-Execute the script on your Lager Box:
+Execute the Python script on your Lager Box:
 
 ```bash
 lager python my_first_test.py --box my-lager-box
 ```
 
-**Expected output:**
+Or run the Rust test from your project (with `lager = { package = "lager-net", version = "0.2" }` in `[dev-dependencies]`):
+
+```bash
+LAGER_BOX_HOST=<box-ip> cargo test
+```
+
+**Expected output (Python):**
 ```
 Flashing firmware...
 Flash complete.
@@ -185,6 +234,7 @@ You've completed your first test with Lager. Here are some directions to explore
 
 - **[CLI Reference](/source/reference/cli/overview)** -- Full documentation for every CLI command
 - **[Python API](/source/reference/python/overview)** -- Complete Python SDK reference
+- **[Rust API](/source/reference/rust/overview)** -- Write your HIL suite as `cargo test` integration tests
 - **[Troubleshooting](/source/getting-started/troubleshooting)** -- Solutions when things go wrong
 - **[Glossary](/source/getting-started/glossary)** -- Definitions for technical terms used in the docs
 

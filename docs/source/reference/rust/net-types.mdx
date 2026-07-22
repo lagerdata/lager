@@ -1,0 +1,76 @@
+---
+title: Net Types
+description: Every net handle and box-level capability the Rust crate exposes
+---
+
+A `LagerBox` hands out lightweight, cloneable handles keyed by net name.
+Constructing a handle does no I/O — the first method call does — so handles
+are cheap to create in test setup.
+
+Method-level documentation for every handle lives on
+[docs.rs/lager-net](https://docs.rs/lager-net); the tables below map each
+net type to its constructor and highlights.
+
+## Instrument nets
+
+| Handle | Constructor | Highlights |
+| --- | --- | --- |
+| [`Supply`](https://docs.rs/lager-net/latest/lager/nets/supply/) | `lager.supply(name)` | `set_voltage`, `set_current`, `enable`/`disable`, OCP/OVP, `state()` |
+| [`Battery`](https://docs.rs/lager-net/latest/lager/nets/battery/) | `lager.battery(name)` | `set_soc`, `set_voc`, model/capacity/mode, `state()` |
+| [`Eload`](https://docs.rs/lager-net/latest/lager/nets/eload/) | `lager.eload(name)` | `set(EloadMode::Cc, 0.5)`, `setpoint`, `state()` |
+| [`Solar`](https://docs.rs/lager-net/latest/lager/nets/solar/) | `lager.solar(name)` | `set`/`stop` PV simulation, `irradiance`, `voc`, `mpp_voltage`/`mpp_current`, `resistance`, `temperature` |
+| [`Gpio`](https://docs.rs/lager-net/latest/lager/nets/gpio/) | `lager.gpio(name)` | `input`, `output`, `toggle`, `wait_for_level` (hardware-timed) |
+| [`Adc`](https://docs.rs/lager-net/latest/lager/nets/adc/) / [`Dac`](https://docs.rs/lager-net/latest/lager/nets/dac/) | `lager.adc(name)` / `lager.dac(name)` | `read()`; `set(volts)` |
+| [`Thermocouple`](https://docs.rs/lager-net/latest/lager/nets/thermocouple/) | `lager.thermocouple(name)` | `read()` in °C |
+| [`WattMeter`](https://docs.rs/lager-net/latest/lager/nets/watt/) | `lager.watt_meter(name)` | `power/current/voltage/all(duration)` |
+| [`EnergyAnalyzer`](https://docs.rs/lager-net/latest/lager/nets/energy/) | `lager.energy_analyzer(name)` | `read_energy`, `read_stats` |
+| [`Spi`](https://docs.rs/lager-net/latest/lager/nets/spi/) | `lager.spi(name)` | `configure`, `read`, `write`, `read_write`, `transfer` |
+| [`I2c`](https://docs.rs/lager-net/latest/lager/nets/i2c/) | `lager.i2c(name)` | `configure`, `scan`, `read`, `write`, `write_read` |
+| [`UsbPort`](https://docs.rs/lager-net/latest/lager/nets/usb/) | `lager.usb(name)` | `enable`/`disable`/`toggle`/`state` |
+| [`Arm`](https://docs.rs/lager-net/latest/lager/nets/arm/) | `lager.arm(name)` | `position`, `move_to`/`move_by`, `go_home`, motor enable/disable, `set_acceleration` |
+| [`Webcam`](https://docs.rs/lager-net/latest/lager/nets/webcam/) | `lager.webcam(name)` | `start`/`stop` MJPEG stream, `url`, `status` |
+| [`Router`](https://docs.rs/lager-net/latest/lager/nets/router/) | `lager.router(name)` | `system_info`, interfaces/clients/leases, `block_internet`, generic `command(action, params)` |
+| [`DebugNet`](https://docs.rs/lager-net/latest/lager/nets/debug/) | `lager.debug(name)` | `connect`, `flash`, `erase`, `reset`, `read_memory`, `info`/`status`, `rtt` (blocking) |
+| [`Uart`](https://docs.rs/lager-net/latest/lager/nets/uart/) | `lager.uart(name)?` *(feature `uart`)* | streaming `read`, `write`, `wait_for(b"boot ok", ...)` |
+
+See **[Debug probes & UART](/source/reference/rust/debug-and-uart)** for
+worked examples of the last two.
+
+## Box-level capabilities
+
+These drive the box's own hardware and take no net name:
+
+| Handle | Constructor | Highlights |
+| --- | --- | --- |
+| [`Ble`](https://docs.rs/lager-net/latest/lager/nets/ble/) | `lager.ble()` | `scan`/`scan_named`, `info`/`connect` (GATT enumeration), `disconnect` |
+| [`Wifi`](https://docs.rs/lager-net/latest/lager/nets/wifi/) | `lager.wifi()` | `status`, `scan`, `connect(ssid, password)`, `delete` |
+| [`Blufi`](https://docs.rs/lager-net/latest/lager/nets/blufi/) | `lager.blufi()` | `scan`, `connect`, `provision(device, ssid, password)`, `wifi_scan`, `status`, `version` |
+
+## Discovery and box health
+
+```rust
+let lager = lager::LagerBox::from_env()?;
+
+// All nets configured on the box.
+for net in lager.nets()? {
+    println!("{} ({})", net.name, net.role);
+}
+
+// Box health and capability probing.
+lager.health()?;
+let status = lager.status()?;
+assert!(status.capabilities.net_command, "box image too old — run: lager box update");
+```
+
+`status().capabilities` also reports `net_command_roles` (the newer
+arm/webcam/router roles), `ble_command`, `wifi_command`, and
+`blufi_command`, so a suite can skip tests a box image doesn't support
+instead of failing on them.
+
+## Not yet available
+
+`Scope` (oscilloscope / logic analyzer) is a documented stub whose methods
+return `Error::NotSupportedByBox` until the box exposes those workflows
+over its HTTP API. `Rotation`/`Actuate` nets and net CRUD are out of the
+crate's scope for now — see the crate's
+[`MISSING_ENDPOINTS.md`](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md).

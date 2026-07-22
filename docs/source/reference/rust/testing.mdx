@@ -1,0 +1,109 @@
+---
+title: Testing with cargo test
+description: Structuring a Rust hardware-in-the-loop suite, parallelism, and CI
+---
+
+The crate is designed so your HIL suite is just ordinary Rust integration
+tests: files under `tests/`, run by `cargo test`, living in the same
+repository as your firmware.
+
+## Structure
+
+Point tests at a box with the `LAGER_BOX_HOST` environment variable and
+construct the client with `LagerBox::from_env()`:
+
+```rust
+// tests/power.rs
+use lager::LagerBox;
+
+#[test]
+fn dut_draws_less_than_100ma_idle() -> lager::Result<()> {
+    let lager = LagerBox::from_env()?;
+    let supply = lager.supply("DUT_POWER");
+
+    supply.set_voltage(3.3)?;
+    supply.enable()?;
+    let current = supply.state()?.current.expect("supply reports current");
+    assert!(current < 0.1, "idle draw {current} A");
+    supply.disable()
+}
+```
+
+```sh
+LAGER_BOX_HOST=192.168.1.42 cargo test
+```
+
+Group tests by net or by DUT feature — one file per concern (`boot.rs`,
+`power.rs`, `sensors.rs`) keeps `cargo test <name>` filtering useful.
+
+## Parallel tests and instrument safety
+
+`cargo test` runs tests on multiple threads by default. That is safe at the
+instrument level: the box serializes access per physical instrument — every
+net command runs under a per-device lock in the box's single-owner hardware
+service — so parallel tests can never interleave I/O on one instrument
+(e.g. a LabJack shared across GPIO/ADC/SPI nets, or a Keithley shared by
+supply and battery roles).
+
+Tests sharing a *net* still observe each other's state changes (one test's
+`disable()` is visible to another test reading the same supply). Either
+partition nets across tests, or serialize:
+
+```sh
+cargo test -- --test-threads=1
+```
+
+## Timeouts
+
+Timeout budgets mirror the Lager CLI: quick commands use 10 s, and
+operations that block on the box for a caller-controlled duration
+(watt/energy integration windows, `wait_for_level`) widen or drop the
+client timeout automatically, so a healthy long measurement is never
+aborted mid-flight.
+
+## Hermetic tests vs. hardware tests
+
+Tests that always need real hardware should be marked `#[ignore]` so a
+plain `cargo test` (on a laptop with no box, or in a PR check) stays green:
+
+```rust
+#[test]
+#[ignore = "requires a Lager box"]
+fn flash_and_boot() -> lager::Result<()> {
+    // ...
+}
+```
+
+Then opt in explicitly where a box is available:
+
+```sh
+LAGER_BOX_HOST=192.168.1.42 cargo test -- --ignored
+```
+
+This is the convention the crate itself uses: its own suite is hermetic
+(`cargo test` runs against a mock box), and its hardware smoke tests run
+with `cargo test --test hardware -- --ignored`.
+
+## CI
+
+A minimal GitHub Actions job, assuming the runner can reach the box (e.g.
+a self-hosted runner on the lab network or a Tailscale-connected runner):
+
+```yaml
+jobs:
+  hil:
+    runs-on: [self-hosted, lab]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run HIL suite
+        env:
+          LAGER_BOX_HOST: ${{ vars.LAGER_BOX_HOST }}
+          # Only needed for boxes behind an authenticating gateway:
+          LAGER_GATEWAY_TOKEN: ${{ secrets.LAGER_GATEWAY_TOKEN }}
+        run: cargo test -- --ignored
+```
+
+For gateway-fronted boxes, see
+**[Authentication](/source/reference/rust/auth)** for how the token is
+attached and refreshed.
