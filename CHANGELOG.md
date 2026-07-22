@@ -2,6 +2,50 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.32.2] - 2026-07-22
+
+### Added
+
+- **The first command against a freshly-gated box now just works.** The CLI
+  learns a box's auth server from the box's first 401 response, so the very
+  first command against a newly-guarded box used to fail with a "re-run this
+  command" message. That request is now retried once, transparently: the
+  box-to-auth-server mapping is recorded, the stored session token attached,
+  and the request resent — the caller gets the authenticated response and
+  never sees the round trip. A plain box never receives the token (only a
+  gateway sends the discovery header), and genuine denials — revoked
+  session, no access grant, auth server unreachable — still raise their
+  actionable errors.
+
+- **`lager whoami` — access-gateway sign-in status at a glance.** Shows which
+  auth servers you're signed in to, as whom, and whether each session is
+  active, auto-renewing, or expired (with the exact `lager login` command to
+  fix it). It's the first thing to run when a box reports an authorization
+  problem.
+
+- **Clearer gateway auth errors, each linking to a new "Signing In" docs
+  page.** "Signed in but not authorized", "requires sign-in", and "session
+  rejected" are now distinct messages with their own fixes, and the docs
+  page (reference/cli/login) walks through every gateway message and what
+  to do about it.
+
+- **The Rust crate gets a first-class "Rust API" tab on the docs site** —
+  overview, net types, cargo-test guide, debug/UART, and auth — with the
+  getting-started intro reframed so Python, Rust, and MCP read as equal
+  automation paths.
+
+### Changed
+
+- **`lager box config` is now `lager box-config`, `lager box dut` is now
+  `lager dut`, and `lager authorize` is now `lager ssh-setup`.** The `box`
+  group is flattened to top level, and the SSH-key setup command no longer
+  reads like authentication now that `lager login` exists — it installs this
+  machine's SSH key on a box (one-time passwordless-SSH setup), which the
+  new name says plainly. All three old spellings keep working as hidden
+  aliases that print a DEPRECATED warning on stderr; they will be removed in
+  a future release. Help text, error hints, docs pages, and docs navigation
+  all follow the new names.
+
 ## [0.32.1] - 2026-07-21
 
 ### Fixed
