@@ -1964,7 +1964,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         # catches the dead-container case.
         try:
             store_build_hash('FAILED')
-        except subprocess.SubprocessError:
+        except (subprocess.SubprocessError, OSError):
             pass
 
         # Step 8 already stopped and removed the containers, so exiting here
@@ -1986,7 +1986,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
                 # Exit 3 = container up but post-start installs failed; the
                 # box is serving, which is all this recovery promises.
                 restarted = recover.returncode in (0, 3)
-            except subprocess.SubprocessError:
+            except (subprocess.SubprocessError, OSError):
                 restarted = False
             if restarted:
                 restarted = wait_for_box_ready(resolved_box, timeout_s=60)
