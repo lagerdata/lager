@@ -15,6 +15,8 @@
 
     The primitive is generic: any control plane that fronts a box with a
     reverse proxy and honours the small HTTP contract below can drive it.
+    The normative spec (shared with lager-rs and any third-party client)
+    lives at ``docs/reference/gateway-auth-contract.md``.
 
         POST <url>/api/auth/login       {email, password}  -> {accessToken, ...}
         POST <url>/api/auth/login/mfa   {mfaToken, code}   -> {accessToken, ...}
