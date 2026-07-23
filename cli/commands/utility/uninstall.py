@@ -603,7 +603,7 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
     click.echo("  - Docker containers (lager, pigpio)")
     click.echo("  - Docker network (lagernet)")
     if not keep_docker_images:
-        click.echo("  - Docker images (ALL unused images on the box, not only lager's)")
+        click.echo("  - Docker images (the lager image and dangling layers only)")
     click.echo("  - ~/box directory")
     if not keep_config:
         click.echo("  - /etc/lager directory (saved nets)")
@@ -707,10 +707,15 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
         run_ssh("docker network rm lagernet 2>/dev/null", "Removing lagernet network", allow_fail=True)
         click.echo()
 
-        # Remove Docker images (unless --keep-docker-images)
+        # Remove Docker images (unless --keep-docker-images). Scoped to the
+        # lager image plus dangling layers: 'prune -af' would also delete
+        # images belonging to any OTHER stopped container on the box (a
+        # management agent, a user's own services) — infrastructure this
+        # command cannot restore.
         click.secho("[Step 2/5] Cleaning Docker...", fg='cyan')
         if not keep_docker_images:
-            run_ssh("docker image prune -af 2>/dev/null", "Removing Docker images", allow_fail=True)
+            run_ssh("docker rmi -f lager 2>/dev/null", "Removing lager image", allow_fail=True)
+            run_ssh("docker image prune -f 2>/dev/null", "Removing dangling images", allow_fail=True)
             run_ssh("docker builder prune -af 2>/dev/null", "Clearing Docker build cache", allow_fail=True)
         else:
             click.echo("  Skipping Docker image removal (--keep-docker-images)")

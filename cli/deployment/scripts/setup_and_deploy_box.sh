@@ -1339,33 +1339,37 @@ print_info "Ensuring Docker service is enabled (for auto-start on boot)..."
 ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "sudo systemctl enable docker >/dev/null 2>&1 || true"
 print_success "Docker service enabled"
 
-print_info "Stopping and removing all existing containers..."
-# Update restart policy first to prevent auto-restart, then force remove all containers
+print_info "Stopping and removing lager containers..."
+# Scoped to the containers this deployment owns (lager, pigpio, and the
+# legacy controller). A box may run third-party containers alongside lager
+# — a management agent, a user's own services — and removing containers we
+# did not create takes down infrastructure this script cannot restore.
+# Update restart policy first to prevent auto-restart, then force remove.
 ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
-    # Disable auto-restart on all containers first
-    docker update --restart=no \$(docker ps -aq) 2>/dev/null || true
-    # Stop all running containers
-    docker stop \$(docker ps -q) 2>/dev/null || true
-    # Remove all containers (running and stopped)
-    docker rm -f \$(docker ps -aq) 2>/dev/null || true
-    # Prune any leftover containers
-    docker container prune -f 2>/dev/null || true
+    for c in lager pigpio controller; do
+        docker update --restart=no \$c 2>/dev/null || true
+        docker stop \$c 2>/dev/null || true
+        docker rm -f \$c 2>/dev/null || true
+    done
     # Wait a moment for Docker to clean up
     sleep 2
 " 2>/dev/null || true
-print_success "All containers cleaned up"
+print_success "Lager containers cleaned up"
 
-print_info "Cleaning up Docker images and build cache to free disk space..."
+print_info "Cleaning up Docker build cache and dangling images..."
 echo ""
+# Dangling-only (no -a): 'prune -af' would also delete images belonging to
+# third-party containers stopped at this moment, which cannot be re-pulled
+# by this script.
 ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
-    echo 'Removing unused Docker images...'
-    docker image prune -af 2>/dev/null || true
+    echo 'Removing dangling Docker images...'
+    docker image prune -f 2>/dev/null || true
     echo 'Removing Docker build cache...'
     docker builder prune -af 2>/dev/null || true
     echo 'Cleanup complete'
 " 2>/dev/null || true
 echo ""
-print_success "Docker images and build cache cleaned up"
+print_success "Docker build cache and dangling images cleaned up"
 
 print_info "Checking available disk space..."
 ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "df -h / | tail -n 1 | awk '{print \"Available: \" \$4 \" (\" \$5 \" used)\"}'" 2>/dev/null || true
