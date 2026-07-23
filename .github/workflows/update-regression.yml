@@ -84,6 +84,18 @@ jobs:
           fi
           grep -qF "$(cat ~/.ssh/lager_box.pub)" ~/.ssh/authorized_keys 2>/dev/null || \
             cat ~/.ssh/lager_box.pub >> ~/.ssh/authorized_keys
+          # install/uninstall probe SSH with the DEFAULT identity (plain
+          # `ssh user@ip`), unlike update which passes the lager key
+          # explicitly. Point default ssh at the key for this host so the
+          # reinstall phase authenticates non-interactively.
+          touch ~/.ssh/config && chmod 600 ~/.ssh/config
+          if ! grep -q "^# lager lifecycle CI box identity" ~/.ssh/config; then
+            {
+              echo "# lager lifecycle CI box identity"
+              echo "Host ${{ secrets.LAGER_BOX_IP }}"
+              echo "  IdentityFile ~/.ssh/lager_box"
+            } >> ~/.ssh/config
+          fi
         shell: bash
 
       - name: Verify box connectivity
