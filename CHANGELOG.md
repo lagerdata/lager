@@ -20,6 +20,16 @@ All notable changes to the Lager platform are documented here. For detailed rele
   server's rotation replay detection). Found by the box-lifecycle CI's
   first supervised runs.
 
+- **`lager install` and `lager uninstall` no longer remove containers and
+  images they do not own.** The deploy script stopped and force-removed
+  EVERY container on the box and pruned every unused image; uninstall's
+  image cleanup did the same prune. On a box that also runs third-party
+  containers (a management agent, a user's own services) this destroyed
+  infrastructure the tooling cannot restore. Cleanup is now scoped to the
+  containers lager creates (`lager`, `pigpio`, legacy `controller`), the
+  lager image, and dangling layers. Found by the box-lifecycle CI's first
+  supervised reinstall, which took down the box's gateway agent.
+
 ## [0.32.3] - 2026-07-22
 
 ### Fixed
