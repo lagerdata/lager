@@ -1,16 +1,29 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 #
-# Weekly "clean rebuild" regression: force a full `lager update` on the shared
-# self-hosted bench and confirm the box comes back healthy with a smoke test.
-# Distinct from integration-tests.yml (which gates current code on hardware) —
-# this verifies that a from-scratch box rebuild still works.
+# Weekly box-lifecycle regression on the shared self-hosted bench. Exercises
+# every lifecycle path a user actually runs, in an order where each step sets
+# up the next and the box ends the run freshly installed on current main:
+#
+#   dry run (--check) -> downgrade to the previous release tag -> common-path
+#   `lager update` (N-1 -> main, the path users hit most) -> no-op update
+#   (asserts the "already at version" fast path, incl. its container-liveness
+#   gate) -> forced clean rebuild -> hardware smoke -> uninstall -> install
+#   from scratch -> final hardware smoke.
+#
+# Uninstall scope is deliberate and load-bearing:
+#   - NEVER `--all`: it removes this runner's key from the box's
+#     authorized_keys, and CI has no TTY for install's password fallback —
+#     the bench would be stranded until someone re-keys it by hand.
+#   - ALWAYS `--keep-config`: /etc/lager holds the saved bench nets AND
+#     control_plane.json (the box's auth-gateway enrollment). Wiping either
+#     breaks the rest of the run and the box's gateway auth.
 #
 # Shares integration-tests.yml's concurrency group so it never runs at the same
 # time as the hardware suites against the one physical bench. Schedule + manual
 # dispatch only (public repo + self-hosted runner => no pull_request trigger).
 
-name: Update Regression
+name: Box Lifecycle
 
 on:
   schedule:
@@ -23,10 +36,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  update-regression:
-    name: Full lager update on the bench
+  box-lifecycle:
+    name: Box lifecycle on the bench
     runs-on: [self-hosted, lager-bench]
-    timeout-minutes: 30
+    timeout-minutes: 90
 
     env:
       LAGER_BOX: ${{ vars.LAGER_BOX || 'MASTER' }}
@@ -44,6 +57,17 @@ jobs:
         run: pip install -e cli/
         shell: bash
 
+      - name: Sign in to the box access gateway
+        # The box is fronted by an authenticating gateway. The CLI stores the
+        # session in ~/.lager_gateway_auth and silently refreshes it for the
+        # rest of the run, so one login covers the whole job.
+        env:
+          LAGER_AUTH_URL: ${{ vars.LAGER_AUTH_URL }}
+          LAGER_CI_EMAIL: ${{ secrets.LAGER_CI_EMAIL }}
+          LAGER_CI_PASSWORD: ${{ secrets.LAGER_CI_PASSWORD }}
+        run: lager login "$LAGER_AUTH_URL" --email "$LAGER_CI_EMAIL" --password "$LAGER_CI_PASSWORD"
+        shell: bash
+
       - name: Register lager box
         run: |
           lager boxes add \
@@ -53,18 +77,151 @@ jobs:
             --yes
         shell: bash
 
-      - name: Run full update (force rebuild)
-        run: lager update --force --box "$LAGER_BOX"
+      - name: Set up lager SSH key
+        run: |
+          if [ ! -f ~/.ssh/lager_box ]; then
+            ssh-keygen -t ed25519 -f ~/.ssh/lager_box -N "" -C "lager-box-access"
+          fi
+          grep -qF "$(cat ~/.ssh/lager_box.pub)" ~/.ssh/authorized_keys 2>/dev/null || \
+            cat ~/.ssh/lager_box.pub >> ~/.ssh/authorized_keys
         shell: bash
 
-      - name: Verify box recovered
+      - name: Verify box connectivity
+        # First authenticated contact after a fresh login can fail exactly once
+        # while the gateway records the box<->auth-server link; the retry is
+        # then expected to pass.
+        run: lager hello --box "$LAGER_BOX" || lager hello --box "$LAGER_BOX"
+        shell: bash
+
+      - name: Determine previous release tag
+        # The downgrade target: second-newest v* tag, i.e. what a slightly
+        # stale fielded box would be running. Floored at v0.32.0 — a current
+        # CLI cannot drive a pre-migration box (hardware-service :9000 +
+        # gateway auth landed in v0.32.0), so older targets would test an
+        # unsupported skew, not a real upgrade path.
+        run: |
+          PREV_TAG=$(git ls-remote --tags --refs origin 'v*' \
+            | awk -F/ '{print $NF}' | sort -V | tail -2 | head -1)
+          PREV_TAG=$(printf '%s\n' "$PREV_TAG" v0.32.0 | sort -V | tail -1)
+          echo "Previous release tag: $PREV_TAG"
+          echo "PREV_TAG=$PREV_TAG" >> "$GITHUB_ENV"
+        shell: bash
+
+      - name: Update dry run (--check)
+        # rc 0 = up to date, rc 1 = update available; both fine. --check must
+        # not mutate the box; the phases below prove the real paths.
+        run: |
+          rc=0; lager update --check --box "$LAGER_BOX" || rc=$?
+          [ "$rc" -le 1 ] || exit "$rc"
+        shell: bash
+
+      - name: Downgrade to previous release (version pin + rollback path)
+        run: lager update --box "$LAGER_BOX" --version "$PREV_TAG" --yes --verbose
+        shell: bash
+
+      - name: Verify box healthy on previous release
         run: lager hello --box "$LAGER_BOX"
         shell: bash
 
-      - name: Post-update hardware smoke test
+      - name: Common-path update (previous release -> main)
+        # The update invocation users actually run. If a release breaks
+        # upgrading from the previous release, THIS step goes red.
+        run: lager update --box "$LAGER_BOX" --yes --verbose
+        shell: bash
+
+      - name: Verify box healthy on main
+        run: lager hello --box "$LAGER_BOX"
+        shell: bash
+
+      - name: No-op update hits the fast path
+        # Re-running with the box already current must take the "already at
+        # version" early-exit (which also verifies the container-liveness and
+        # version-file reconciliation logic behind it).
+        run: |
+          set -o pipefail
+          lager update --box "$LAGER_BOX" --yes | tee "$RUNNER_TEMP/noop-update.log"
+          grep -q "already at version" "$RUNNER_TEMP/noop-update.log"
+        shell: bash
+
+      - name: Forced clean rebuild (--force)
+        run: lager update --force --box "$LAGER_BOX" --yes --verbose
+        shell: bash
+
+      - name: Verify box healthy after rebuild
+        run: lager hello --box "$LAGER_BOX"
+        shell: bash
+
+      - name: Hardware smoke after update phases
+        # Separate smoke per phase so a red run attributes cleanly to
+        # update-vs-install.
         env:
           SUPPLY_NET: ${{ vars.RIGOL_CH1_NET || 'supply2' }}
           CHANNEL_MAX_VOLTAGE: ${{ vars.RIGOL_CH1_MAX_VOLTAGE || '60.0' }}
           CHANNEL_MAX_CURRENT: ${{ vars.RIGOL_CH1_MAX_CURRENT || '1.0' }}
         run: lager python test/api/power/test_supply_Rigol_DP821.py --box "$LAGER_BOX"
+        shell: bash
+
+      - name: Uninstall box software (scoped — see header)
+        run: lager uninstall --box "$LAGER_BOX" --yes --keep-config
+        shell: bash
+
+      - name: Install box software from scratch
+        # By --ip: uninstall --yes removes the local box entry as part of its
+        # cleanup, so --box would no longer resolve here.
+        run: |
+          lager install \
+            --ip "${{ secrets.LAGER_BOX_IP }}" \
+            --user lagerdata \
+            --version main \
+            --yes
+        shell: bash
+
+      - name: Re-register lager box
+        # install --yes deliberately skips the add-box prompt.
+        run: |
+          lager boxes add \
+            --name "$LAGER_BOX" \
+            --ip "${{ secrets.LAGER_BOX_IP }}" \
+            --user lagerdata \
+            --yes
+        shell: bash
+
+      - name: Verify box healthy after reinstall
+        run: lager hello --box "$LAGER_BOX" || lager hello --box "$LAGER_BOX"
+        shell: bash
+
+      - name: Hardware smoke after reinstall
+        env:
+          SUPPLY_NET: ${{ vars.RIGOL_CH1_NET || 'supply2' }}
+          CHANNEL_MAX_VOLTAGE: ${{ vars.RIGOL_CH1_MAX_VOLTAGE || '60.0' }}
+          CHANNEL_MAX_CURRENT: ${{ vars.RIGOL_CH1_MAX_CURRENT || '1.0' }}
+        run: lager python test/api/power/test_supply_Rigol_DP821.py --box "$LAGER_BOX"
+        shell: bash
+
+      - name: Recovery — leave the bench usable on failure
+        # The uninstall->install window is the one place a failure leaves the
+        # box with nothing. One best-effort reinstall converts "transient
+        # failure strands hardware CI for a week" into "red run, healthy
+        # bench". The run itself stays red.
+        if: failure()
+        run: |
+          lager install \
+            --ip "${{ secrets.LAGER_BOX_IP }}" \
+            --user lagerdata \
+            --version main \
+            --yes || true
+          lager boxes add \
+            --name "$LAGER_BOX" \
+            --ip "${{ secrets.LAGER_BOX_IP }}" \
+            --user lagerdata \
+            --yes || true
+          lager hello --box "$LAGER_BOX" || true
+        shell: bash
+
+      - name: Best-effort lock cleanup
+        # install/`lager python` auto-lock the box; if a step died in a way
+        # that bypassed the CLI's release hook, free the lock rather than
+        # waiting out the server TTL.
+        if: always()
+        run: lager boxes unlock --box "$LAGER_BOX" 2>/dev/null || true
         shell: bash

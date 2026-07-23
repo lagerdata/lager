@@ -63,6 +63,17 @@ jobs:
         run: pip install -e cli/
         shell: bash
 
+      - name: Sign in to the box access gateway
+        # The box is fronted by an authenticating gateway. The CLI stores the
+        # session in ~/.lager_gateway_auth and silently refreshes it for the
+        # rest of the run, so one login covers the whole job.
+        env:
+          LAGER_AUTH_URL: ${{ vars.LAGER_AUTH_URL }}
+          LAGER_CI_EMAIL: ${{ secrets.LAGER_CI_EMAIL }}
+          LAGER_CI_PASSWORD: ${{ secrets.LAGER_CI_PASSWORD }}
+        run: lager login "$LAGER_AUTH_URL" --email "$LAGER_CI_EMAIL" --password "$LAGER_CI_PASSWORD"
+        shell: bash
+
       - name: Register lager box
         run: |
           lager boxes add \
@@ -82,7 +93,10 @@ jobs:
         shell: bash
 
       - name: Verify box connectivity
-        run: lager hello --box "$LAGER_BOX"
+        # First authenticated contact after a fresh login can fail exactly once
+        # while the gateway records the box<->auth-server link; the retry is
+        # then expected to pass.
+        run: lager hello --box "$LAGER_BOX" || lager hello --box "$LAGER_BOX"
         shell: bash
 
       - name: Verify update probe (non-fatal)
