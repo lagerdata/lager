@@ -2,6 +2,24 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Fixed
+
+- **Gated-box sessions no longer die with a spurious "Box requires sign-in"
+  mid-command.** Three hardening fixes in the CLI's gateway-auth refresh
+  path: the refresh-ahead margin now scales with the token's issued
+  lifetime (a fixed 60-second margin against a server issuing 60-second
+  tokens turned every box request into a refresh round-trip — a refresh
+  storm in which each refresh rotated the refresh-token family and any
+  hiccup lost the whole session); a refresh that fails while the stored
+  token is still valid now falls back to that token instead of
+  hard-failing the command; and a refresh whose connection never reached
+  the server is retried once (ambiguous failures such as read timeouts
+  are deliberately not retried — replaying a refresh can trip the
+  server's rotation replay detection). Found by the box-lifecycle CI's
+  first supervised runs.
+
 ## [0.32.3] - 2026-07-22
 
 ### Fixed
