@@ -215,7 +215,13 @@ jobs:
         # box with nothing. One best-effort reinstall converts "transient
         # failure strands hardware CI for a week" into "red run, healthy
         # bench". The run itself stays red.
-        if: failure()
+        #
+        # cancelled() is included deliberately: a run cancelled mid-install
+        # leaves the box stripped, and plain failure() does not fire on
+        # cancellation — the one observed bench stranding happened exactly
+        # this way. Prefer letting this workflow fail over cancelling it
+        # once the uninstall step has started.
+        if: failure() || cancelled()
         run: |
           lager install \
             --ip "${{ secrets.LAGER_BOX_IP }}" \
