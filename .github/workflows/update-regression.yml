@@ -198,8 +198,27 @@ jobs:
             --yes
         shell: bash
 
+      - name: Release the install auto-lock (workaround)
+        # install's lock release can be lost when the deploy restarts the
+        # box's docker daemon (the single-shot release POST races the
+        # gateway coming back up), leaving the box locked against its own
+        # job for the full lock TTL. Force-release our own leaked lock
+        # before verifying. Product follow-up tracked: the release should
+        # retry, and a same-job unlock should match the CI holder identity
+        # without --force.
+        run: lager boxes unlock --box "$LAGER_BOX" --force 2>/dev/null || true
+        shell: bash
+
       - name: Verify box healthy after reinstall
-        run: lager hello --box "$LAGER_BOX" || lager hello --box "$LAGER_BOX"
+        # Fresh containers and the gateway need a settling window after the
+        # deploy's docker-daemon restart; poll for up to two minutes.
+        run: |
+          for _ in $(seq 1 12); do
+            lager hello --box "$LAGER_BOX" && exit 0
+            sleep 10
+          done
+          echo "Box did not become healthy within 120s of reinstall"
+          exit 1
         shell: bash
 
       - name: Hardware smoke after reinstall
@@ -233,13 +252,18 @@ jobs:
             --ip "${{ secrets.LAGER_BOX_IP }}" \
             --user lagerdata \
             --yes || true
+          lager boxes unlock --box "$LAGER_BOX" --force 2>/dev/null || true
           lager hello --box "$LAGER_BOX" || true
         shell: bash
 
       - name: Best-effort lock cleanup
         # install/`lager python` auto-lock the box; if a step died in a way
         # that bypassed the CLI's release hook, free the lock rather than
-        # waiting out the server TTL.
+        # waiting out the server TTL. --force because the lock identity
+        # embeds the acquiring PID — a plain unlock from this (different)
+        # process is refused as a different holder, observed as a 403 in
+        # the box log. This is the end of the job on a CI-owned bench;
+        # there is no other holder to stomp.
         if: always()
-        run: lager boxes unlock --box "$LAGER_BOX" 2>/dev/null || true
+        run: lager boxes unlock --box "$LAGER_BOX" --force 2>/dev/null || true
         shell: bash
