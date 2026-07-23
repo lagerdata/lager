@@ -99,6 +99,27 @@ def _token_expires_at(access_token):
         return 0.0
 
 
+def _refresh_margin(access_token):
+    """Refresh-ahead margin, capped at a quarter of the token's lifetime.
+
+    A fixed margin at least as large as the token lifetime would classify
+    every freshly issued token as already stale, turning each request into
+    a refresh round-trip — a refresh storm against servers issuing
+    short-lived tokens, with each refresh rotating the refresh-token
+    family and multiplying the chances of losing the session.
+    """
+    try:
+        payload_b64 = access_token.split('.')[1]
+        payload_b64 += '=' * (-len(payload_b64) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+        lifetime = float(payload['exp']) - float(payload['iat'])
+    except (IndexError, KeyError, ValueError, TypeError):
+        return EXPIRY_MARGIN_SECONDS
+    if lifetime <= 0:
+        return EXPIRY_MARGIN_SECONDS
+    return min(EXPIRY_MARGIN_SECONDS, max(lifetime / 4.0, 1.0))
+
+
 def save_login(url, access_token, cookies):
     """Store a session: the bearer token plus whatever cookies the auth
     server set at login (typically an httpOnly refresh token)."""
@@ -121,20 +142,35 @@ def clear_login(url=None):
 
 
 def _refresh_access_token(url, entry):
-    """Ask the auth server for a fresh access token, or return None."""
+    """Ask the auth server for a fresh access token, or return None.
+
+    Retries once, but ONLY when the request never reached the server
+    (connection error): the server rotates the refresh token on every
+    successful refresh, so replaying the request after an ambiguous
+    failure (e.g. a read timeout) could trip the server's replay
+    detection and burn the whole session.
+    """
     cookies = entry.get('cookies') or {}
     if not cookies:
         return None
-    try:
-        resp = requests.post(
-            f'{url}/api/auth/refresh',
-            cookies=cookies,
-            timeout=AUTH_SERVER_TIMEOUT,
-        )
-        if resp.status_code != 200:
+    resp = None
+    for _ in range(2):
+        try:
+            resp = requests.post(
+                f'{url}/api/auth/refresh',
+                cookies=cookies,
+                timeout=AUTH_SERVER_TIMEOUT,
+            )
+            break
+        except requests.ConnectionError:
+            continue
+        except requests.RequestException:
             return None
+    if resp is None or resp.status_code != 200:
+        return None
+    try:
         access_token = resp.json().get('accessToken')
-    except (requests.RequestException, ValueError):
+    except ValueError:
         return None
     if not access_token:
         return None
@@ -145,14 +181,26 @@ def _refresh_access_token(url, entry):
 
 
 def access_token_for(url):
-    """Stored access token for an auth server, refreshed if near expiry."""
+    """Stored access token for an auth server, refreshed if near expiry.
+
+    A failed refresh is not immediately fatal: if the stored token has not
+    actually expired, return it anyway and let the gateway judge it — a
+    transient auth-server error should not fail a command whose token is
+    still valid.
+    """
     entry = _load_store().get('authServers', {}).get(url)
     if not entry:
         return None
     access_token = entry.get('accessToken')
-    if access_token and _token_expires_at(access_token) > time.time() + EXPIRY_MARGIN_SECONDS:
+    now = time.time()
+    if access_token and _token_expires_at(access_token) > now + _refresh_margin(access_token):
         return access_token
-    return _refresh_access_token(url, entry)
+    refreshed = _refresh_access_token(url, entry)
+    if refreshed:
+        return refreshed
+    if access_token and _token_expires_at(access_token) > now:
+        return access_token
+    return None
 
 
 def auth_headers_for_box(box_ip):
