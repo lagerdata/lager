@@ -4,6 +4,12 @@
 # Hardware integration tests for the Lager CLI, run against the shared
 # self-hosted "MASTER" bench.
 #
+# Surfaces: most suites here drive the PYTHON API via `lager python`. The
+# J-Link steps additionally run the bash CLI suite, so the debug path is
+# covered on both the API and the CLI. The rest of test/integration/*.sh is
+# still unwired — a CLI-only regression in those areas (argument parsing,
+# output formatting, exit codes) is not yet caught by this workflow.
+#
 # Lock semantics: `lager python` auto-locks the box at the start of each
 # invocation and releases it at the end (see
 # docs/source/reference/cli/locking.mdx). The steps here run sequentially in a
@@ -100,6 +106,22 @@ jobs:
           fi
           grep -qF "$(cat ~/.ssh/lager_box.pub)" ~/.ssh/authorized_keys 2>/dev/null || \
             cat ~/.ssh/lager_box.pub >> ~/.ssh/authorized_keys
+          # The CLI debug suite shells into the box with the DEFAULT identity
+          # (plain `ssh user@host`) to inspect on-box artifacts, so point that
+          # identity at the lager key. Both the IP and the box name are mapped:
+          # the suite derives the IP from `lager boxes` and falls back to the
+          # bare name if that parse comes up empty.
+          touch ~/.ssh/config && chmod 600 ~/.ssh/config
+          if ! grep -q "^# lager integration CI box identity" ~/.ssh/config; then
+            {
+              echo "# lager integration CI box identity"
+              echo "Host ${{ secrets.LAGER_BOX_IP }}"
+              echo "  IdentityFile ~/.ssh/lager_box"
+              echo "Host $LAGER_BOX"
+              echo "  HostName ${{ secrets.LAGER_BOX_IP }}"
+              echo "  IdentityFile ~/.ssh/lager_box"
+            } >> ~/.ssh/config
+          fi
         shell: bash
 
       - name: Verify box connectivity
@@ -117,6 +139,33 @@ jobs:
         run: |
           rc=0; lager update --check --box "$LAGER_BOX" || rc=$?
           [ "$rc" -le 1 ] || exit "$rc"
+        shell: bash
+
+      - name: Stage debug firmware
+        # The debug suites SELF-SKIP when no firmware is present and record
+        # those skips as PASS, so a firmware that never arrives would leave the
+        # nightly green with zero flash coverage. Assert it instead of trusting
+        # the skip. Base64-in-a-secret is the same staging pattern already used
+        # to put this hex on a box; it keeps this PUBLIC repo binary-free and
+        # survives a box reimage.
+        env:
+          FW_B64: ${{ secrets.LAGER_DEBUG_FIRMWARE_HEX }}
+        run: |
+          if [ -z "$FW_B64" ]; then
+            echo "LAGER_DEBUG_FIRMWARE_HEX is not set."
+            echo "Refusing to run debug tests that would silently self-skip"
+            echo "and report green. Set the secret or drop the debug steps."
+            exit 1
+          fi
+          printf '%s' "$FW_B64" | base64 -d > "$RUNNER_TEMP/firmware.hex"
+          # Intel HEX records all start with ':'. Catches a truncated or
+          # double-encoded secret before it reaches the probe.
+          head -1 "$RUNNER_TEMP/firmware.hex" | grep -q '^:' || {
+            echo "staged file is not Intel HEX"; exit 1; }
+          # The CLI suite resolves its firmware argument relative to its
+          # invocation directory, so keep a copy in the workspace too.
+          cp "$RUNNER_TEMP/firmware.hex" firmware.hex
+          echo "staged $(wc -c < firmware.hex) bytes of Intel HEX"
         shell: bash
 
       - name: Test Rigol DP821 CH1 (60V / 1A)
@@ -201,6 +250,53 @@ jobs:
         run: lager python test/api/io/test_usb202.py --box "$LAGER_BOX"
         shell: bash
 
+      # J-Link goes last: it spawns JLinkGDBServer and holds the probe's USB
+      # interface, so a hung probe here cannot mask the other instruments.
+      # Both surfaces are covered — the Python API via `lager python`, and the
+      # CLI via the bash suite. Every other hardware assertion in this workflow
+      # goes through the Python API only.
+
+      - name: Test J-Link debug net (Python API)
+        id: debug-api-test
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          DEBUG_NET: ${{ vars.DEBUG_NET || 'debug1' }}
+          FIRMWARE_PATH: firmware.hex
+          ALLOW_ERASE: "0"  # never chip-erase the bench target
+        run: |
+          lager python test/api/communication/test_debug_comprehensive.py \
+            --box "$LAGER_BOX" --add-file "$RUNNER_TEMP/firmware.hex"
+        shell: bash
+
+      - name: Test J-Link flash to RTT round trip (Python API)
+        id: debug-rtt-test
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          DEBUG_NET: ${{ vars.DEBUG_NET || 'debug1' }}
+          FIRMWARE_PATH: firmware.hex
+        run: |
+          lager python test/api/communication/test_debug_rtt_blink.py \
+            --box "$LAGER_BOX" --add-file "$RUNNER_TEMP/firmware.hex"
+        shell: bash
+
+      - name: Test J-Link script file (CLI)
+        id: debug-cli-test
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          # The suite defaults to ssh user `lager`; this bench logs in as
+          # `lagerdata`.
+          SSH_USER: lagerdata
+        # Pass the box NAME, not the IP: given an IP the suite registers a
+        # `temp_box_<ip>` entry, polluting the box list the lifecycle workflow
+        # also manages.
+        run: |
+          bash test/integration/communication/jlink_script.sh \
+            "$LAGER_BOX" "${{ vars.DEBUG_NET || 'debug1' }}" firmware.hex
+        shell: bash
+
       - name: Fail job if any test failed
         # Every instrument step is continue-on-error so all instruments get
         # exercised in one run; this gate turns any failure into a job failure.
@@ -232,6 +328,16 @@ jobs:
               sys.exit(1)
           print("All instrument suites passed.")
           PY
+        shell: bash
+
+      - name: Best-effort J-Link cleanup
+        # A debug step killed mid-session can leave JLinkGDBServer holding the
+        # probe, which would fail the NEXT night's connect. Tear the session
+        # down explicitly rather than relying on the process exiting.
+        if: always()
+        env:
+          DEBUG_NET: ${{ vars.DEBUG_NET || 'debug1' }}
+        run: lager debug "$DEBUG_NET" disconnect --box "$LAGER_BOX" 2>/dev/null || true
         shell: bash
 
       - name: Best-effort lock cleanup
