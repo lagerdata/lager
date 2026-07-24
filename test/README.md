@@ -24,12 +24,16 @@ test/
 │   ├── peripherals/            # arm.sh
 │   └── infrastructure/         # deployment.sh, generic.sh, python.sh, nets.sh
 │
-├── unit/                       # CLI unit tests (pytest, no hardware)
-│   └── cli/                    # CLI command unit tests
+├── unit/                       # Local unit tests (pytest, no hardware) -- ALL GATED ON PRs
+│   ├── box/                    # 55 files: box-side unit tests
+│   ├── cli/                    # 33 files: CLI command unit tests
+│   ├── measurement/            #  4 files: Joulescope / PPK2 / watt
+│   ├── blufi/                  #  2 files: BluFi protocol
+│   └── test_*.py               #  5 files: root-level unit tests
 │
 ├── mcp/                        # MCP server tests (pytest)
-│   ├── unit/                   # Mocked subprocess tests (~254 tests)
-│   └── integration/            # Real hardware tests (~64 tests)
+│   ├── unit/                   # 11 files, 166 tests: mocked, no hardware -- GATED
+│   └── integration/            #  1 file: real hardware required
 │
 ├── framework/                  # Shared test infrastructure
 │   ├── colors.sh               # Color definitions (GREEN, RED, YELLOW, etc.)
@@ -63,12 +67,21 @@ lager python test/api/sensors/test_joulescope.py --box <YOUR-BOX> -- watt1
 
 ### Unit tests (no hardware)
 
-```bash
-# CLI unit tests
-python -m pytest test/unit/ -v
+These are what CI runs on every pull request. Always use these flags, and run each suite as its
+own pytest process -- `test/unit/box/` and `test/unit/measurement/` need incompatible `lager`
+packages in `sys.modules` and cannot share one. See `COVERAGE.md` for the details.
 
-# MCP unit tests (always use these flags)
-python -m pytest test/mcp/unit/ -v --import-mode=importlib -c /dev/null
+```bash
+export PYTHONPATH="$PWD:$PWD/box"
+PYTEST="pytest -v --import-mode=importlib -c /dev/null --timeout=60"
+
+$PYTEST test/unit/cli/ cli/tests/
+$PYTEST test/unit/box/
+$PYTEST test/unit/measurement/
+$PYTEST test/unit/blufi/
+$PYTEST test/mcp/unit/
+$PYTEST test/unit/test_*.py test/test_*.py
+```
 
 ### MCP integration tests (real hardware)
 

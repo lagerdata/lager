@@ -471,9 +471,17 @@ cargo build --release
 ### Running Tests
 
 ```bash
-# Unit tests
-cd test
-pytest unit/
+# Unit tests -- no hardware, and what CI runs on every PR.
+# Run each suite in its own pytest process; see test/COVERAGE.md for why.
+export PYTHONPATH="$PWD:$PWD/box"
+PYTEST="pytest -v --import-mode=importlib -c /dev/null --timeout=60"
+
+$PYTEST test/unit/cli/ cli/tests/
+$PYTEST test/unit/box/
+$PYTEST test/unit/measurement/
+$PYTEST test/unit/blufi/
+$PYTEST test/mcp/unit/
+$PYTEST test/unit/test_*.py test/test_*.py
 
 # Integration tests (requires box)
 ./integration/power/supply.sh <box-ip> <net-name>
