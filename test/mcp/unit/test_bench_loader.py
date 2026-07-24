@@ -123,9 +123,13 @@ class TestLoadFromFiles:
             saved_nets_path="/nonexistent/saved_nets.json",
             bench_json_path="/nonexistent/bench.json",
             box_id_path="/nonexistent/box_id",
+            version_path="/nonexistent/version",
+            hostname_path="/nonexistent/hostname",
         )
         assert bench.box_id == ""
         assert bench.nets == []
+        assert bench.version == ""
+        assert bench.hostname == ""
 
     def test_real_files(self, tmp_path):
         nets_file = tmp_path / "saved_nets.json"
@@ -146,6 +150,45 @@ class TestLoadFromFiles:
         )
         assert bench.box_id == "HW-99"
         assert len(bench.nets) == 1
+
+    def test_identity_fields_populated_from_files(self, tmp_path):
+        """version + hostname come from their own on-box files, not bench.json.
+
+        Regression: these were only ever sourced from bench_cfg/hello_data, so
+        an unauthored box reported empty version/hostname from discover_bench
+        even though the data sits in /etc/lager/version and the mounted host
+        hostname file.
+        """
+        (tmp_path / "version").write_text("0.32.3|0.32.3\n")  # box|cli form
+        (tmp_path / "hostname").write_text("prd-1\n")
+        (tmp_path / "box_id").write_text("PRD-1")
+
+        bench = load_from_files(
+            saved_nets_path="/nonexistent",
+            bench_json_path="/nonexistent",
+            box_id_path=str(tmp_path / "box_id"),
+            version_path=str(tmp_path / "version"),
+            hostname_path=str(tmp_path / "hostname"),
+        )
+        assert bench.box_id == "PRD-1"
+        assert bench.version == "0.32.3"  # the "|cli" suffix is stripped
+        assert bench.hostname == "prd-1"
+
+    def test_bench_json_overrides_file_identity(self, tmp_path):
+        """An operator who authored version/hostname in bench.json wins."""
+        (tmp_path / "version").write_text("0.32.3")
+        (tmp_path / "bench.json").write_text(
+            json.dumps({"version": "custom-build", "hostname": "authored-name"})
+        )
+        bench = load_from_files(
+            saved_nets_path="/nonexistent",
+            bench_json_path=str(tmp_path / "bench.json"),
+            box_id_path="/nonexistent",
+            version_path=str(tmp_path / "version"),
+            hostname_path="/nonexistent",
+        )
+        assert bench.version == "custom-build"
+        assert bench.hostname == "authored-name"
 
 
 class TestNullTolerance:
