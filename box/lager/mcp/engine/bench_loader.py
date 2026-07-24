@@ -385,21 +385,35 @@ def load_from_files(
     saved_nets_path: str = "/etc/lager/saved_nets.json",
     bench_json_path: str = "/etc/lager/bench.json",
     box_id_path: str = "/etc/lager/box_id",
+    version_path: str = "/etc/lager/version",
+    hostname_path: str = "/host/etc/hostname",
 ) -> BenchDefinition:
     """Build a BenchDefinition from on-disk JSON files (used on-box or in tests)."""
 
     raw_nets = _read_json(saved_nets_path, default=[])
     bench_cfg = _read_json(bench_json_path, default={})
 
-    box_id = ""
-    try:
-        with open(box_id_path, "r") as fh:
-            box_id = fh.read().strip()
-    except FileNotFoundError:
-        pass
+    # Box identity (id / version / hostname) is NOT carried in saved_nets or
+    # bench.json, so on an unauthored box discover_bench previously reported
+    # these as empty even though the values sit in well-known files on disk
+    # (box_manage already reads /etc/lager/version directly). Seed them here so
+    # the two agree. bench.json still wins if it authored any of them (see
+    # _assemble's precedence), so an operator can override.
+    #
+    # hostname's only correct source on-box is /host/etc/hostname (the host's
+    # hostname bind-mounted into the container); the container's own
+    # /etc/hostname is the container id, so we do NOT fall back to it -- an
+    # empty hostname is better than a misleading one.
+    hello_data: dict[str, Any] = {"box_id": _read_line(box_id_path)}
+    version = _read_box_version(version_path)
+    if version:
+        hello_data["version"] = version
+    hostname = _read_line(hostname_path)
+    if hostname:
+        hello_data["hostname"] = hostname
 
     return _assemble(
-        hello_data={"box_id": box_id},
+        hello_data=hello_data,
         raw_nets=raw_nets if isinstance(raw_nets, list) else [],
         raw_instruments=[],
         bench_cfg=bench_cfg if isinstance(bench_cfg, dict) else {},
@@ -578,3 +592,22 @@ def _read_json(path: str, default: Any = None) -> Any:
             return json.load(fh)
     except (FileNotFoundError, json.JSONDecodeError):
         return default if default is not None else {}
+
+
+def _read_line(path: str) -> str:
+    """First line of *path*, stripped; empty string if it can't be read."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return ""
+
+
+def _read_box_version(path: str) -> str:
+    """Box software version from ``/etc/lager/version``.
+
+    Mirrors ``config.get_box_version``: the file may carry a ``<ver>|<ver>``
+    form (box|cli), so keep only the first field. Empty when absent.
+    """
+    content = _read_line(path)
+    return content.split("|", 1)[0] if "|" in content else content
