@@ -15,16 +15,26 @@
 #
 # Security: this repo is PUBLIC and the runner drives real hardware, so this
 # workflow deliberately does NOT trigger on `pull_request` — a fork PR must not
-# be able to execute code on the bench. It runs on push to `main`, on a nightly
-# schedule, and on manual dispatch only.
+# be able to execute code on the bench.
+#
+# No cron of its own. Nightly, nightly-bench.yml invokes this workflow behind
+# the Box Lifecycle run, so the instruments are exercised against a box that
+# was just updated and reinstalled rather than against whatever it happened to
+# be running. It also still runs on every push to `main` — a per-merge sweep
+# that keeps instrument coverage on nights the lifecycle goes red — and on
+# manual dispatch.
 
 name: Integration Tests
 
 on:
   push:
     branches: [main]
-  schedule:
-    - cron: "0 11 * * *"  # ~3 AM PST (GitHub cron is UTC; drifts 1h across DST)
+  workflow_call:
+    inputs:
+      box_name:
+        description: "Lager box name (overrides vars.LAGER_BOX)"
+        required: false
+        type: string
   workflow_dispatch:
     inputs:
       box_name:
@@ -194,24 +204,34 @@ jobs:
       - name: Fail job if any test failed
         # Every instrument step is continue-on-error so all instruments get
         # exercised in one run; this gate turns any failure into a job failure.
-        if: >
-          steps.rigol-ch1-test.outcome == 'failure' ||
-          steps.rigol-ch2-test.outcome == 'failure' ||
-          steps.labjack-test.outcome == 'failure' ||
-          steps.acroname-test.outcome == 'failure' ||
-          steps.keithley-supply-test.outcome == 'failure' ||
-          steps.keithley-battery-test.outcome == 'failure' ||
-          steps.usb202-test.outcome == 'failure'
+        #
+        # It reads the `steps` context rather than enumerating step ids, so
+        # adding an instrument needs no edit here. The previous hand-kept list
+        # named all seven ids twice — in the `if:` and again in the echo block —
+        # and omitting one from the `if:` would have turned a failing instrument
+        # into a silently green job. Steps deliberately left without an `id`
+        # (the non-fatal update probe) remain non-fatal.
+        #
+        # `outcome`, not `conclusion`: outcome is the result BEFORE
+        # continue-on-error is applied. No `if:` key, so — as before — this
+        # gate is skipped when an earlier non-continue-on-error step has
+        # already failed the job.
+        env:
+          # Passed via env, never interpolated into the script body.
+          STEPS_JSON: ${{ toJSON(steps) }}
         run: |
-          echo "One or more hardware tests failed:"
-          echo "  rigol-ch1-test:        ${{ steps.rigol-ch1-test.outcome }}"
-          echo "  rigol-ch2-test:        ${{ steps.rigol-ch2-test.outcome }}"
-          echo "  labjack-test:          ${{ steps.labjack-test.outcome }}"
-          echo "  acroname-test:         ${{ steps.acroname-test.outcome }}"
-          echo "  keithley-supply-test:  ${{ steps.keithley-supply-test.outcome }}"
-          echo "  keithley-battery-test: ${{ steps.keithley-battery-test.outcome }}"
-          echo "  usb202-test:           ${{ steps.usb202-test.outcome }}"
-          exit 1
+          python3 - <<'PY'
+          import json, os, sys
+          steps = json.loads(os.environ["STEPS_JSON"])
+          bad = sorted(k for k, v in steps.items()
+                       if isinstance(v, dict) and v.get("outcome") == "failure")
+          if bad:
+              print("One or more hardware tests failed:")
+              for name in bad:
+                  print(f"  {name}")
+              sys.exit(1)
+          print("All instrument suites passed.")
+          PY
         shell: bash
 
       - name: Best-effort lock cleanup
