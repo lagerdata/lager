@@ -447,7 +447,12 @@ _DRIVER_CLASSES: dict[str, str] = {
     "Thermocouple":   "lager.measurement.thermocouple.thermocouple_net.ThermocoupleBase",
     "WattMeter":      "lager.measurement.watt.watt_net.WattMeterBase",
     "EnergyAnalyzer": "lager.measurement.energy_analyzer.energy_analyzer_net.EnergyAnalyzerBase",
-    "Usb":            "lager.automation.usb_hub.usb_net.USBNet",
+    # USBNetWrapper is what ``Net.get(name, NetType.Usb)`` returns and what a
+    # test script actually calls (zero-arg ``enable()``/``disable()``/...).
+    # Do NOT point this at usb_net.USBNet: that is the backend hub-controller
+    # ABC whose methods take ``(net_name, port)``, so introspecting it hands
+    # agents a calling convention the wrapper rejects.
+    "Usb":            "lager.automation.usb_hub.usb_net_wrapper.USBNetWrapper",
 }
 
 # Methods we never want to expose to agents (private, dunder, base-class
