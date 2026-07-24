@@ -81,7 +81,7 @@ def log_warn(category: str, message: str):
     print(f"  \033[93m[WARN]\033[0m {message}")
 
 
-def test_import(module_path: str) -> bool:
+def _check_import(module_path: str) -> bool:
     """Try to import a module and return True if successful."""
     try:
         importlib.import_module(module_path)
@@ -92,7 +92,7 @@ def test_import(module_path: str) -> bool:
         return False
 
 
-def test_attribute_import(module_path: str, attr_name: str) -> Tuple[bool, Any, Optional[str]]:
+def _check_attribute_import(module_path: str, attr_name: str) -> Tuple[bool, Any, Optional[str]]:
     """Try to import an attribute from a module. Returns (success, value, error)."""
     try:
         mod = importlib.import_module(module_path)
@@ -106,11 +106,11 @@ def test_attribute_import(module_path: str, attr_name: str) -> Tuple[bool, Any, 
         return False, None, f"{type(e).__name__}: {e}"
 
 
-def test_from_import(module_path: str, names: List[str]) -> Dict[str, Tuple[bool, Optional[str]]]:
+def _check_from_import(module_path: str, names: List[str]) -> Dict[str, Tuple[bool, Optional[str]]]:
     """Test importing multiple names from a module."""
     results = {}
     for name in names:
-        success, _, error = test_attribute_import(module_path, name)
+        success, _, error = _check_attribute_import(module_path, name)
         results[name] = (success, error)
     return results
 
@@ -151,7 +151,7 @@ def test_main_lager_init():
         "PortStateError",
     ]
 
-    results = test_from_import("lager", main_exports)
+    results = _check_from_import("lager", main_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("main", f"from lager import {name}")
@@ -170,7 +170,7 @@ def test_power_module():
     ]
 
     print("  [New path] lager.power.supply:")
-    results = test_from_import("lager.power.supply", supply_new_exports)
+    results = _check_from_import("lager.power.supply", supply_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("supply_new", f"from lager.power.supply import {name}")
@@ -179,7 +179,7 @@ def test_power_module():
 
     # --- Supply: Old path (backward compat) ---
     print("  [Old path] lager.supply:")
-    results = test_from_import("lager.supply", supply_new_exports)
+    results = _check_from_import("lager.supply", supply_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("supply_old", f"from lager.supply import {name}")
@@ -198,7 +198,7 @@ def test_power_module():
     ]
 
     print("  [New path] lager.power.battery:")
-    results = test_from_import("lager.power.battery", battery_new_exports)
+    results = _check_from_import("lager.power.battery", battery_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("battery_new", f"from lager.power.battery import {name}")
@@ -207,7 +207,7 @@ def test_power_module():
 
     # --- Battery: Old path ---
     print("  [Old path] lager.battery:")
-    results = test_from_import("lager.battery", battery_new_exports)
+    results = _check_from_import("lager.battery", battery_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("battery_old", f"from lager.battery import {name}")
@@ -222,7 +222,7 @@ def test_power_module():
     ]
 
     print("  [New path] lager.power.solar:")
-    results = test_from_import("lager.power.solar", solar_new_exports)
+    results = _check_from_import("lager.power.solar", solar_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("solar_new", f"from lager.power.solar import {name}")
@@ -231,7 +231,7 @@ def test_power_module():
 
     # --- Solar: Old path ---
     print("  [Old path] lager.solar:")
-    results = test_from_import("lager.solar", solar_new_exports)
+    results = _check_from_import("lager.solar", solar_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("solar_old", f"from lager.solar import {name}")
@@ -247,7 +247,7 @@ def test_power_module():
     ]
 
     print("  [New path] lager.power.eload:")
-    results = test_from_import("lager.power.eload", eload_new_exports)
+    results = _check_from_import("lager.power.eload", eload_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("eload_new", f"from lager.power.eload import {name}")
@@ -256,7 +256,7 @@ def test_power_module():
 
     # --- ELoad: Old path ---
     print("  [Old path] lager.eload:")
-    results = test_from_import("lager.eload", eload_new_exports)
+    results = _check_from_import("lager.eload", eload_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("eload_old", f"from lager.eload import {name}")
@@ -275,7 +275,7 @@ def test_io_module():
     ]
 
     print("  [New path] lager.io.adc:")
-    results = test_from_import("lager.io.adc", adc_new_exports)
+    results = _check_from_import("lager.io.adc", adc_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("adc_new", f"from lager.io.adc import {name}")
@@ -284,7 +284,7 @@ def test_io_module():
 
     # --- ADC: Old path ---
     print("  [Old path] lager.adc:")
-    results = test_from_import("lager.adc", adc_new_exports)
+    results = _check_from_import("lager.adc", adc_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("adc_old", f"from lager.adc import {name}")
@@ -298,7 +298,7 @@ def test_io_module():
     ]
 
     print("  [New path] lager.io.dac:")
-    results = test_from_import("lager.io.dac", dac_new_exports)
+    results = _check_from_import("lager.io.dac", dac_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("dac_new", f"from lager.io.dac import {name}")
@@ -307,7 +307,7 @@ def test_io_module():
 
     # --- DAC: Old path ---
     print("  [Old path] lager.dac:")
-    results = test_from_import("lager.dac", dac_new_exports)
+    results = _check_from_import("lager.dac", dac_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("dac_old", f"from lager.dac import {name}")
@@ -321,7 +321,7 @@ def test_io_module():
     ]
 
     print("  [New path] lager.io.gpio:")
-    results = test_from_import("lager.io.gpio", gpio_new_exports)
+    results = _check_from_import("lager.io.gpio", gpio_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("gpio_new", f"from lager.io.gpio import {name}")
@@ -330,7 +330,7 @@ def test_io_module():
 
     # --- GPIO: Old path ---
     print("  [Old path] lager.gpio:")
-    results = test_from_import("lager.gpio", gpio_new_exports)
+    results = _check_from_import("lager.gpio", gpio_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("gpio_old", f"from lager.gpio import {name}")
@@ -349,7 +349,7 @@ def test_measurement_module():
     ]
 
     print("  [New path] lager.measurement.thermocouple:")
-    results = test_from_import("lager.measurement.thermocouple", thermo_new_exports)
+    results = _check_from_import("lager.measurement.thermocouple", thermo_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("thermo_new", f"from lager.measurement.thermocouple import {name}")
@@ -358,7 +358,7 @@ def test_measurement_module():
 
     # --- Thermocouple: Old path ---
     print("  [Old path] lager.thermocouple:")
-    results = test_from_import("lager.thermocouple", thermo_new_exports)
+    results = _check_from_import("lager.thermocouple", thermo_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("thermo_old", f"from lager.thermocouple import {name}")
@@ -372,7 +372,7 @@ def test_measurement_module():
     ]
 
     print("  [New path] lager.measurement.watt:")
-    results = test_from_import("lager.measurement.watt", watt_new_exports)
+    results = _check_from_import("lager.measurement.watt", watt_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("watt_new", f"from lager.measurement.watt import {name}")
@@ -381,7 +381,7 @@ def test_measurement_module():
 
     # --- Watt: Old path ---
     print("  [Old path] lager.watt:")
-    results = test_from_import("lager.watt", watt_new_exports)
+    results = _check_from_import("lager.watt", watt_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("watt_old", f"from lager.watt import {name}")
@@ -394,7 +394,7 @@ def test_measurement_module():
     ]
 
     print("  [New path] lager.measurement.scope:")
-    results = test_from_import("lager.measurement.scope", scope_new_exports)
+    results = _check_from_import("lager.measurement.scope", scope_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("scope_new", f"from lager.measurement.scope import {name}")
@@ -403,7 +403,7 @@ def test_measurement_module():
 
     # --- Scope: Old path ---
     print("  [Old path] lager.scope:")
-    results = test_from_import("lager.scope", scope_new_exports)
+    results = _check_from_import("lager.scope", scope_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("scope_old", f"from lager.scope import {name}")
@@ -422,7 +422,7 @@ def test_protocols_module():
     ]
 
     print("  [New path] lager.protocols.uart:")
-    results = test_from_import("lager.protocols.uart", uart_new_exports)
+    results = _check_from_import("lager.protocols.uart", uart_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("uart_new", f"from lager.protocols.uart import {name}")
@@ -431,7 +431,7 @@ def test_protocols_module():
 
     # --- UART: Old path ---
     print("  [Old path] lager.uart:")
-    results = test_from_import("lager.uart", uart_new_exports)
+    results = _check_from_import("lager.uart", uart_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("uart_old", f"from lager.uart import {name}")
@@ -444,7 +444,7 @@ def test_protocols_module():
     ]
 
     print("  [New path] lager.protocols.ble:")
-    results = test_from_import("lager.protocols.ble", ble_new_exports)
+    results = _check_from_import("lager.protocols.ble", ble_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("ble_new", f"from lager.protocols.ble import {name}")
@@ -453,7 +453,7 @@ def test_protocols_module():
 
     # --- BLE: Old path ---
     print("  [Old path] lager.ble:")
-    results = test_from_import("lager.ble", ble_new_exports)
+    results = _check_from_import("lager.ble", ble_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("ble_old", f"from lager.ble import {name}")
@@ -467,7 +467,7 @@ def test_protocols_module():
     ]
 
     print("  [New path] lager.protocols.wifi:")
-    results = test_from_import("lager.protocols.wifi", wifi_new_exports)
+    results = _check_from_import("lager.protocols.wifi", wifi_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("wifi_new", f"from lager.protocols.wifi import {name}")
@@ -476,7 +476,7 @@ def test_protocols_module():
 
     # --- WiFi: Old path ---
     print("  [Old path] lager.wifi:")
-    results = test_from_import("lager.wifi", wifi_new_exports)
+    results = _check_from_import("lager.wifi", wifi_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("wifi_old", f"from lager.wifi import {name}")
@@ -495,7 +495,7 @@ def test_automation_module():
     ]
 
     print("  [New path] lager.automation.arm:")
-    results = test_from_import("lager.automation.arm", arm_new_exports)
+    results = _check_from_import("lager.automation.arm", arm_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("arm_new", f"from lager.automation.arm import {name}")
@@ -504,7 +504,7 @@ def test_automation_module():
 
     # --- Arm: Old path ---
     print("  [Old path] lager.arm:")
-    results = test_from_import("lager.arm", arm_new_exports)
+    results = _check_from_import("lager.arm", arm_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("arm_old", f"from lager.arm import {name}")
@@ -518,7 +518,7 @@ def test_automation_module():
     ]
 
     print("  [New path] lager.automation.usb_hub:")
-    results = test_from_import("lager.automation.usb_hub", usb_new_exports)
+    results = _check_from_import("lager.automation.usb_hub", usb_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("usb_new", f"from lager.automation.usb_hub import {name}")
@@ -527,7 +527,7 @@ def test_automation_module():
 
     # --- USB Hub: Old path ---
     print("  [Old path] lager.usb_hub:")
-    results = test_from_import("lager.usb_hub", usb_new_exports)
+    results = _check_from_import("lager.usb_hub", usb_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("usb_old", f"from lager.usb_hub import {name}")
@@ -541,7 +541,7 @@ def test_automation_module():
     ]
 
     print("  [New path] lager.automation.webcam:")
-    results = test_from_import("lager.automation.webcam", webcam_new_exports)
+    results = _check_from_import("lager.automation.webcam", webcam_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("webcam_new", f"from lager.automation.webcam import {name}")
@@ -550,7 +550,7 @@ def test_automation_module():
 
     # --- Webcam: Old path ---
     print("  [Old path] lager.webcam:")
-    results = test_from_import("lager.webcam", webcam_new_exports)
+    results = _check_from_import("lager.webcam", webcam_new_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("webcam_old", f"from lager.webcam import {name}")
@@ -579,7 +579,7 @@ def test_debug_module():
         "start_jlink_gdbserver", "stop_jlink_gdbserver", "get_jlink_gdbserver_status",
     ]
 
-    results = test_from_import("lager.debug", debug_exports)
+    results = _check_from_import("lager.debug", debug_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("debug", f"from lager.debug import {name}")
@@ -596,7 +596,7 @@ def test_http_module():
         "register_uart_routes", "register_uart_socketio", "cleanup_uart_sessions",
     ]
 
-    results = test_from_import("lager.http", http_exports)
+    results = _check_from_import("lager.http", http_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("http", f"from lager.http import {name}")
@@ -613,7 +613,7 @@ def test_pcb_module():
         "Net", "NetType", "InvalidNetError", "SetupFunctionRequiredError",
     ]
 
-    results = test_from_import("lager.nets.net", nets_net_exports)
+    results = _check_from_import("lager.nets.net", nets_net_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("nets_net", f"from lager.nets.net import {name}")
@@ -622,7 +622,7 @@ def test_pcb_module():
 
     # Test nets.constants
     nets_const_exports = ["NetType"]
-    results = test_from_import("lager.nets.constants", nets_const_exports)
+    results = _check_from_import("lager.nets.constants", nets_const_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("nets_constants", f"from lager.nets.constants import {name}")
@@ -639,7 +639,7 @@ def test_dispatchers_module():
         "resolve_address", "resolve_channel",
     ]
 
-    results = test_from_import("lager.dispatchers", dispatcher_exports)
+    results = _check_from_import("lager.dispatchers", dispatcher_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("dispatchers", f"from lager.dispatchers import {name}")
@@ -666,7 +666,7 @@ def test_exceptions_module():
         "GPIOBackendError", "UARTBackendError",
     ]
 
-    results = test_from_import("lager.exceptions", exception_exports)
+    results = _check_from_import("lager.exceptions", exception_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("exceptions", f"from lager.exceptions import {name}")
@@ -680,7 +680,7 @@ def test_cache_module():
 
     cache_exports = ["get_nets_cache", "NetsCache"]
 
-    results = test_from_import("lager.cache", cache_exports)
+    results = _check_from_import("lager.cache", cache_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("cache", f"from lager.cache import {name}")
@@ -698,7 +698,7 @@ def test_constants_module():
         "DEFAULT_VISA_TIMEOUT", "DEFAULT_HTTP_TIMEOUT", "GDB_TIMEOUT",
     ]
 
-    results = test_from_import("lager.constants", constants_exports)
+    results = _check_from_import("lager.constants", constants_exports)
     for name, (success, error) in results.items():
         if success:
             log_pass("constants", f"from lager.constants import {name}")
@@ -713,7 +713,7 @@ def test_power_group_submodule_access():
     submodules = ["supply", "battery", "solar", "eload"]
 
     for submodule in submodules:
-        success, _, error = test_attribute_import("lager.power", submodule)
+        success, _, error = _check_attribute_import("lager.power", submodule)
         if success:
             log_pass("power_submodule", f"from lager.power import {submodule}")
         else:
@@ -727,7 +727,7 @@ def test_io_group_submodule_access():
     submodules = ["adc", "dac", "gpio"]
 
     for submodule in submodules:
-        success, _, error = test_attribute_import("lager.io", submodule)
+        success, _, error = _check_attribute_import("lager.io", submodule)
         if success:
             log_pass("io_submodule", f"from lager.io import {submodule}")
         else:
@@ -741,7 +741,7 @@ def test_protocols_group_submodule_access():
     submodules = ["uart", "ble", "wifi"]
 
     for submodule in submodules:
-        success, _, error = test_attribute_import("lager.protocols", submodule)
+        success, _, error = _check_attribute_import("lager.protocols", submodule)
         if success:
             log_pass("protocols_submodule", f"from lager.protocols import {submodule}")
         else:
