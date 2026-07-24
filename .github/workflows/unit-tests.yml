@@ -4,16 +4,20 @@
 # Non-hardware unit tests. They need no bench and no self-hosted runner, so
 # they run on GitHub-hosted ubuntu-latest and gate pull requests.
 #
-# Each suite runs as its OWN matrix job because the suites cannot share a
-# pytest process: test/unit/measurement/conftest.py stubs the `lager` package
-# in sys.modules (to avoid heavy box deps), which breaks box-side collection.
-# `--import-mode=importlib` avoids clashes between same-named test modules
-# across suites, and `-c /dev/null` ignores any repo-level pytest config.
+# Each suite runs as its OWN matrix job because they want incompatible
+# `sys.modules` states for the name `lager`. test/unit/measurement/conftest.py
+# registers a placeholder `lager` whose __init__ never executes (to skip the
+# heavy box deps); test/unit/box/conftest.py imports the real package. Both
+# load at preparse, so a shared process is correct only if box happens to win
+# — and depending on argument order for correctness is precisely the fragility
+# test/unit/box/conftest.py exists to remove. One suite, one process.
 #
-# test/unit/box/ is NOT in the matrix yet: on GitHub-hosted runners `import
-# lager` resolves as a namespace package ("unknown location") and several
-# files fail collection — not reproducible locally or in a plain
-# python:3.11 container. Wiring it up is tracked as a follow-up.
+# `--import-mode=importlib` avoids clashes between same-named test modules
+# across suites. `-c /dev/null` is a house invariant (test/CONVENTIONS.md):
+# it stops test/mcp from shadowing the `mcp` PyPI package. Note it also sets
+# rootdir and confcutdir to /dev, which WIDENS conftest discovery to every
+# ancestor directory — so if a repo-root conftest.py is ever added, every job
+# here will load it and it must not touch sys.modules['lager'].
 
 name: Unit Tests
 
@@ -38,8 +42,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # cli/tests/ rides in the existing `unit (cli)` context rather than
+          # getting its own: the two share a process cleanly in either order,
+          # and a new context would need a separate branch-ruleset update
+          # before it could block anything.
           - name: cli
-            path: test/unit/cli/
+            path: test/unit/cli/ cli/tests/
+          - name: box
+            path: test/unit/box/
           - name: measurement
             path: test/unit/measurement/
           - name: blufi
@@ -61,7 +71,11 @@ jobs:
       - name: Install CLI + test deps
         run: |
           pip install -e cli/
-          pip install pytest pytest-timeout
+          # Pinned: an unpinned pytest makes every required context float on
+          # whatever released last night. The import-mode=importlib module
+          # naming rules changed in 8.1, which would break collection here
+          # with no repo change to point at.
+          pip install 'pytest>=9,<10' 'pytest-timeout>=2.3,<3'
           pip install -r test/requirements-unit.txt
         shell: bash
 

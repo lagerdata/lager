@@ -2,6 +2,41 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Changed
+
+- **The PR unit-test gate now runs 2287 tests, up from 1066.** Two bodies of
+  hardware-free tests already in the repo were never executed by CI:
+  `test/unit/box/` (55 files, 1138 tests — larger than all previously gated
+  suites combined) and `cli/tests/` (auth, update-gate and box-storage
+  coverage). Both are now gated. The box suite was excluded because roughly a
+  dozen of its modules register a placeholder `lager` in `sys.modules` so they
+  can load single box files without executing the heavy package `__init__`,
+  while twenty-two module-level `from lager ... import` statements require
+  that `__init__` to have run; only alphabetical collection order reconciled
+  the two, so any `-k`, `--ignore`, explicit file list or newly added
+  earlier-sorting file broke collection with `cannot import name ... from
+  'lager' (unknown location)`. A new `test/unit/box/conftest.py` imports the
+  real package once before any test module loads and asserts it resolved to
+  the on-disk package, removing the ordering dependency. pytest is now pinned
+  so the gate cannot go red from an unrelated upstream release.
+
+### Fixed
+
+- **`lock_state.acquire` rejected a valid holder type in test only.** The box
+  unit suite asserted an unrecognized `holder_type` was coerced to
+  `ephemeral`; the implementation deliberately preserves it verbatim, because
+  other services write their own origin token and coercion would attach a TTL
+  and let the reaper drop someone else's reservation. The test encoded the
+  pre-consolidation contract and had never run in CI.
+
+- **`cli/tests/test_io_imports.py` asserted import aliases that no longer
+  exist.** `lager.adc` / `lager.dac` / `lager.gpio` were consolidated under
+  `lager.io.*`; the test still required the old paths to import. It now covers
+  the supported surface, verifies `lager.io` re-exports are the same objects
+  as the submodules, and asserts the removed aliases stay removed.
+
 ## [0.32.4] - 2026-07-24
 
 ### Fixed

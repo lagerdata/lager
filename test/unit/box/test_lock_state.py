@@ -94,10 +94,15 @@ class TestAcquire:
         assert body["holder_type"] == "ci"
         assert body["ttl_seconds"] == 1800
 
-    def test_unknown_holder_type_falls_back_to_ephemeral(self, lock_state):
+    def test_unknown_holder_type_is_preserved_verbatim(self, lock_state):
+        # Unrecognized holder types are reservation origins written by other
+        # services (e.g. the web dashboard), not typos. Coercing one to
+        # `ephemeral` would attach a TTL and let the reaper silently drop
+        # someone else's reservation -- see KNOWN_HOLDER_TYPES in lock_state.py.
         code, body = lock_state.acquire(user="alice", holder_type="bogus")
         assert code == 200
-        assert body["holder_type"] == "ephemeral"
+        assert body["holder_type"] == "bogus"
+        assert body["ttl_seconds"] == 1800
 
     def test_reacquire_same_holder_returns_previous_user(self, lock_state):
         lock_state.acquire(user="alice")
