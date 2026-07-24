@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 #
-# Weekly box-lifecycle regression on the shared self-hosted bench. Exercises
+# Nightly box-lifecycle regression on the shared self-hosted bench. Exercises
 # every lifecycle path a user actually runs, in an order where each step sets
 # up the next and the box ends the run freshly installed on current main:
 #
@@ -20,14 +20,17 @@
 #     breaks the rest of the run and the box's gateway auth.
 #
 # Shares integration-tests.yml's concurrency group so it never runs at the same
-# time as the hardware suites against the one physical bench. Schedule + manual
-# dispatch only (public repo + self-hosted runner => no pull_request trigger).
+# time as the hardware suites against the one physical bench.
+#
+# No cron of its own: nightly-bench.yml invokes this workflow and then gates the
+# instrument sweep on it succeeding, so this run decides whether the night's
+# hardware suites happen at all. Still directly dispatchable on its own. No
+# pull_request trigger — public repo + self-hosted runner driving real hardware.
 
 name: Box Lifecycle
 
 on:
-  schedule:
-    - cron: "0 12 * * 0"  # ~4 AM PST Sundays (GitHub cron is UTC; drifts 1h across DST)
+  workflow_call:
   workflow_dispatch:
 
 concurrency:
@@ -99,10 +102,20 @@ jobs:
         shell: bash
 
       - name: Verify box connectivity
-        # First authenticated contact after a fresh login can fail exactly once
-        # while the gateway records the box<->auth-server link; the retry is
-        # then expected to pass.
-        run: lager hello --box "$LAGER_BOX" || lager hello --box "$LAGER_BOX"
+        # First authenticated contact after a fresh login can fail while the
+        # gateway records the box<->auth-server link, and the gateway itself can
+        # be briefly unreachable. Retrying once with no backoff is not enough:
+        # both attempts land inside the same blip (observed 2026-07-24, two
+        # "auth server is unreachable" failures 1.4s apart). This step gates the
+        # whole night's bench coverage, so poll instead — same window as the
+        # post-reinstall health check below.
+        run: |
+          for _ in $(seq 1 12); do
+            lager hello --box "$LAGER_BOX" && exit 0
+            sleep 10
+          done
+          echo "Box did not become reachable within 120s"
+          exit 1
         shell: bash
 
       - name: Determine previous release tag

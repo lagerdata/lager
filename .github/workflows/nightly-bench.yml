@@ -1,0 +1,44 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# The nightly bench sweep. Proves, in causal order and against ONE commit of
+# main, that the box can be updated and reinstalled and that its instruments
+# still work afterwards:
+#
+#   Box Lifecycle (update paths -> uninstall -> install) -> Integration Tests
+#
+# `needs:` is the whole ordering: integration runs only if lifecycle succeeded.
+# On a red lifecycle the night reads as one red run with integration skipped —
+# one attributable failure rather than two, and no instrument sweep against a
+# box whose install just failed.
+#
+# Both called workflows keep their own triggers and stay independently
+# dispatchable; neither carries a cron of its own any more. A local `uses:`
+# reference runs from the same commit as this workflow, so both jobs exercise
+# the same SHA.
+#
+# NOTE: deliberately no `concurrency:` key here. Both called workflows declare
+# the shared hardware-ci group; a caller sharing that group would hold the slot
+# while waiting on a child that wants the same slot — a deadlock. The bench is
+# still serialized, by that group on the children and by the box's own lock.
+
+name: Nightly Bench
+
+on:
+  schedule:
+    # Off-the-hour deliberately: GitHub's scheduled-event queue is heaviest at
+    # :00 and delays runs — a :00 cron fired 78 minutes late on 2026-07-24.
+    - cron: "17 10 * * *"  # ~3 AM PDT / 2 AM PST (cron is UTC; drifts 1h across DST)
+  workflow_dispatch:
+
+jobs:
+  lifecycle:
+    uses: ./.github/workflows/update-regression.yml
+    secrets: inherit
+
+  integration:
+    # Bare `needs:` already requires lifecycle to have SUCCEEDED — no `if:`
+    # guard needed. A failed or cancelled lifecycle skips this job.
+    needs: lifecycle
+    uses: ./.github/workflows/integration-tests.yml
+    secrets: inherit
