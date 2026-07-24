@@ -1,0 +1,38 @@
+---
+title: "Version 0.32.4"
+description: "July 24, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- Fixed spurious "Box requires sign-in" failures on access-controlled Lager
+  Boxes. The CLI refreshed its sign-in session far too eagerly when the server
+  issued short-lived access tokens — every box command became a refresh
+  round-trip, and rapid command sequences (for example `lager nets add-all` or
+  a verbose `lager update`) could lose the session mid-command. The refresh
+  schedule now adapts to the token lifetime, a failed refresh falls back to the
+  still-valid stored session instead of failing the command, and refreshes are
+  retried only when it is safe to do so.
+- `lager install` and `lager uninstall` no longer remove Docker containers or
+  images they did not create. Previously the deploy stopped and force-removed
+  every container on the Lager Box and pruned every unused image, which could
+  destroy unrelated software running alongside Lager. Cleanup is now scoped to
+  Lager's own containers and images.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.32.4
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.32.4/)
