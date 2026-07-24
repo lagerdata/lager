@@ -519,6 +519,56 @@ class TestPlanFirmwareTestThreading:
         pytest.fail("flash_cs step not found in plan")
 
 
+class TestPlanFirmwareTestSnippetLocalization:
+    """A plan step's example code must address the step's OWN net.
+
+    Regression guard: get_pattern was localized to the real net name but
+    example_snippet was emitted verbatim from the canonical api_reference
+    entry, so a step for a net whose name differed from the example's
+    placeholder (e.g. bench net ``psu1`` vs canonical ``supply1``) shipped
+    a runnable snippet pointing at the wrong hardware.
+    """
+
+    @staticmethod
+    def _net_get_names(text):
+        import re
+        return re.findall(r'Net\.get\("([^"]+)"', text or "")
+
+    def _plan(self, monkeypatch, populated_bench):
+        import lager.mcp.tools.authoring as authoring
+        monkeypatch.setattr("lager.mcp.server_state.get_bench",
+                            lambda: populated_bench)
+        fn = getattr(authoring.plan_firmware_test, "fn",
+                     authoring.plan_firmware_test)
+        body = fn("firmware for a board",
+                  "bring up the main 3V3 power rail and read the debug CLI over uart")
+        return json.loads(body)
+
+    def test_every_snippet_addresses_its_own_net(self, monkeypatch, populated_bench):
+        payload = self._plan(monkeypatch, populated_bench)
+        seen = set()
+        for phase in payload["phases"]:
+            for step in phase["nets"]:
+                seen.add(step["net"])
+                for key in ("get_pattern", "example_snippet"):
+                    for name in self._net_get_names(step.get(key)):
+                        assert name == step["net"], (
+                            f"{key} for step '{step['net']}' references "
+                            f"net '{name}'"
+                        )
+        # The mismatch case must actually be exercised, else the test is vacuous.
+        assert "psu1" in seen, "psu1 step not in plan; fixture/goals drifted"
+
+    def test_canonical_placeholder_does_not_leak(self, monkeypatch, populated_bench):
+        payload = self._plan(monkeypatch, populated_bench)
+        for phase in payload["phases"]:
+            for step in phase["nets"]:
+                if step["net"] == "psu1":
+                    assert '"supply1"' not in step.get("example_snippet", "")
+                    return
+        pytest.fail("psu1 step not found in plan")
+
+
 # ---------------------------------------------------------------------------
 # bench_identity resource enrichment
 # ---------------------------------------------------------------------------

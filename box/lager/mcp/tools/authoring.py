@@ -33,6 +33,33 @@ _PHASE_LABELS = {
 _POWER_SIGNALS = {"power", "power-cycle", "powercycle", "vbus", "vcc", "vdd", "source_power"}
 
 
+def _placeholder_net(get_pattern: str) -> str | None:
+    """The canonical placeholder net name baked into an api_reference entry.
+
+    Every ``get_pattern`` is authored as ``x = Net.get("<name>", type=...)``,
+    so the first double-quoted token is the example's net name. Returns None
+    when there is no quoted token (a future entry without that shape), which
+    tells callers to leave the reference text unmodified rather than guess.
+    """
+    m = re.search(r'"([^"]*)"', get_pattern)
+    return m.group(1) if m else None
+
+
+def _localize(text: str, placeholder: str | None, net_name: str) -> str:
+    """Rewrite an api_reference snippet to address ``net_name``.
+
+    Replaces the quoted placeholder token (``"supply1"``) with the real net's
+    quoted name (``"psu1"``) everywhere it occurs. The surrounding quotes keep
+    the match scoped to the net-name token, so other string literals in a
+    multi-line snippet are preserved. A plain ``str.replace`` (not ``re.sub``)
+    is used so a net name containing regex-special characters or backslashes
+    can't corrupt the output. No-op when there is no placeholder to swap.
+    """
+    if not placeholder:
+        return text
+    return text.replace(f'"{placeholder}"', f'"{net_name}"')
+
+
 def _net_text(net) -> str:
     """Concatenate every freeform field on a net for keyword scoring."""
     parts = [
@@ -206,21 +233,24 @@ def plan_firmware_test(firmware_description: str, test_goals: str) -> str:
                 break
 
         if ref:
-            # Replace the first double-quoted placeholder net name in the
-            # canonical get_pattern with the real net name. Falls back to
-            # the unmodified pattern if it has no quoted placeholder, so
-            # a future api_reference entry without that shape can never
-            # raise IndexError here.
-            step["get_pattern"] = re.sub(
-                r'"[^"]*"', f'"{net.name}"', ref["get_pattern"], count=1
-            )
+            # Both get_pattern and example_snippet are authored with a
+            # canonical placeholder net name (e.g. "supply1", "usb1"). Swap
+            # that placeholder for THIS net's real name everywhere it appears,
+            # so the snippet the agent copies drives the net the step is about
+            # -- not the canonical example's net. Anchoring on the quoted
+            # placeholder token leaves unrelated string literals in the snippet
+            # (b"version\r\n", "utf-8", ...) untouched.
+            placeholder = _placeholder_net(ref["get_pattern"])
+            step["get_pattern"] = _localize(ref["get_pattern"], placeholder, net.name)
             step["methods"] = [
                 {"sig": m["sig"], "desc": m["desc"]} for m in ref["methods"]
             ]
             if ref.get("gotchas"):
                 step["gotchas"] = ref["gotchas"]
             if ref.get("example_snippet"):
-                step["example_snippet"] = ref["example_snippet"]
+                step["example_snippet"] = _localize(
+                    ref["example_snippet"], placeholder, net.name
+                )
 
         phases.setdefault(phase_idx, []).append(step)
 
