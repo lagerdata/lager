@@ -309,6 +309,36 @@ def handle_gateway_denial(response, box_ip):
         )
 
 
+def denial_label(response):
+    """Short, render-friendly label for a gateway denial response.
+
+    For fan-out commands (`lager boxes`) that show one row per box and must
+    not abort the whole table on a single gated box. The full actionable
+    message stays in :func:`handle_gateway_denial`; this is the compact
+    verdict a table cell can hold.
+    """
+    if response.status_code == 403:
+        return 'no access'
+    if response.status_code == 503:
+        return 'auth server down'
+    if 'Authorization' in getattr(response.request, 'headers', {}):
+        return 'session rejected'
+    return 'sign-in required'
+
+
+def plain_error_text(err):
+    """A LagerError flattened to one unstyled line.
+
+    For error callbacks that render inside a TUI, where the ANSI codes
+    from ``LagerError.format_message()`` would show up literally.
+    """
+    parts = [err.problem]
+    if err.cause:
+        parts.append(err.cause)
+    parts.extend(err.fixes)
+    return ' '.join(parts)
+
+
 def gateway_response_hook(box_ip):
     """requests response hook that intercepts gateway denials."""
     def hook(response, *_args, **_kwargs):
@@ -324,3 +354,48 @@ def auth_headers_for_url(box_url):
     if not host:
         return {}
     return auth_headers_for_box(host)
+
+
+def ws_handshake_recovery(box_url, sent_headers=None):
+    """After a failed WebSocket/SocketIO handshake, work out whether an
+    authenticating gateway refused it.
+
+    The SocketIO/engineio handshake exception does not expose the HTTP
+    response headers, so the discovery header can't be read from it. Instead,
+    probe ``/health`` on the same host/port carrying the same auth the
+    handshake did; a gateway answers every path identically, so the probe
+    mirrors what the handshake saw. A plain box answers the probe without
+    the discovery header and is left completely untouched.
+
+    Returns ``(headers, error)``:
+      - ``({'Authorization': ...}, None)`` — the box is gated, the mapping is
+        now recorded, and we hold a session the failed handshake didn't
+        carry: retry the handshake once with these headers.
+      - ``({}, LagerError)`` — genuine gateway denial; show the error, don't
+        retry.
+      - ``({}, None)`` — not a gateway problem; the original error stands.
+    """
+    parsed = urlparse(box_url)
+    host = parsed.hostname
+    if not host:
+        return {}, None
+    port = parsed.port or 80
+    probe_headers = dict(sent_headers or {})
+    try:
+        resp = requests.get(f'http://{host}:{port}/health',
+                            headers=probe_headers, timeout=5)
+    except requests.RequestException:
+        return {}, None
+    if not (resp.status_code in (401, 403, 503)
+            and DISCOVERY_HEADER in resp.headers):
+        return {}, None
+    record_box_auth_server(host, resp.headers[DISCOVERY_HEADER])
+    if resp.status_code == 401 and 'Authorization' not in probe_headers:
+        headers = auth_headers_for_box(host)
+        if headers:
+            return headers, None
+    try:
+        handle_gateway_denial(resp, host)
+    except LagerError as err:
+        return {}, err
+    return {}, None

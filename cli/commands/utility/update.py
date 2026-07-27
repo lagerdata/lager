@@ -74,8 +74,15 @@ def wait_for_box_ready(box_ip, *, timeout_s=60, initial_delay_s=2):
         for port in sorted(pending):
             try:
                 from ...gateway_auth import auth_headers_for_box
+                from ...box_storage import check_gateway_status
                 r = requests.get(f'http://{box_ip}:{port}/health', timeout=3,
                                  headers=auth_headers_for_box(box_ip))
+                # Non-raising gateway check: first contact with a gated box
+                # records the mapping and retries with the stored token so a
+                # healthy gated box reads as ready. A denial reads as
+                # not-ready and falls to the timeout path rather than
+                # aborting the update's readiness poll.
+                r, _gate_verdict = check_gateway_status(r, box_ip)
                 if r.status_code == 200:
                     pending.discard(port)
             except requests.exceptions.RequestException:

@@ -47,6 +47,7 @@ def _list_boxes_live(port=9000, timeout=5):
 
     results = []
     failed_count = 0
+    auth_failed_count = 0
     needs_update_count = 0
     newer_count = 0
 
@@ -67,8 +68,14 @@ def _list_boxes_live(port=9000, timeout=5):
         busy_info = ''
         try:
             from ...gateway_auth import auth_headers_for_box
+            from ...box_storage import check_gateway_status
             lock_resp = requests.get(f'http://{ip}:{port}/lock', timeout=3,
                                      headers={'Cache-Control': 'no-cache', **auth_headers_for_box(ip)})
+            # Non-raising gateway check: one gated box must not abort the
+            # whole table. On first contact this records the box→auth-server
+            # mapping and retries with the stored token, so the /status call
+            # below authenticates normally (no second round trip).
+            lock_resp, _ = check_gateway_status(lock_resp, ip)
             if lock_resp.status_code == 200:
                 lock_data = lock_resp.json()
                 if lock_data.get('locked'):
@@ -81,12 +88,18 @@ def _list_boxes_live(port=9000, timeout=5):
             # It predates the newer capability fields, so even older box images
             # answer it — unlike a brand-new endpoint would.
             from ...gateway_auth import auth_headers_for_box
+            from ...box_storage import check_gateway_status
             url = f'http://{ip}:{port}/status'
             headers = {'Cache-Control': 'no-cache', 'Pragma': 'no-cache',
                        **auth_headers_for_box(ip)}
             response = requests.get(url, timeout=timeout, headers=headers)
+            response, gate_verdict = check_gateway_status(response, ip)
 
-            if response.status_code == 200:
+            if gate_verdict:
+                results.append((name, ip, user, '-', gate_verdict, locked_by, busy_info))
+                auth_failed_count += 1
+
+            elif response.status_code == 200:
                 try:
                     data = response.json()
                     box_version = data.get('version') or data.get('box_version')
@@ -205,6 +218,18 @@ def _list_boxes_live(port=9000, timeout=5):
     if failed_count > 0:
         box_word = 'box' if failed_count == 1 else 'boxes'
         click.secho(f'{failed_count} {box_word} could not be reached', fg='red')
+    if auth_failed_count > 0:
+        from ...gateway_auth import auth_server_for_box
+        box_word = 'box needs' if auth_failed_count == 1 else 'boxes need'
+        click.secho(f'{auth_failed_count} {box_word} sign-in or an access grant', fg='red')
+        # The denial recorded each box's auth server, so we can say exactly
+        # where to sign in. Usually one server covers the whole fleet.
+        signin_urls = sorted({
+            url for r in results if r[4] in ('sign-in required', 'session rejected')
+            for url in [auth_server_for_box(r[1])] if url
+        })
+        for url in signin_urls:
+            click.secho(f'  Sign in with: lager login {url}', fg='red')
 
     root_locked = [r[0] for r in results if r[5] == 'root']
     if root_locked:

@@ -35,6 +35,7 @@ def lock(ctx, box, lock_user):
         # lock immune to the new heartbeat-driven auto-reap that ephemeral
         # `lager python` locks participate in.
         from ...gateway_auth import auth_headers_for_box
+        from ...box_storage import _check_gateway
         resp = requests.post(
             f'http://{ip}:9000/lock',
             headers=auth_headers_for_box(ip),
@@ -45,6 +46,7 @@ def lock(ctx, box, lock_user):
             },
             timeout=5,
         )
+        resp = _check_gateway(resp, ip)
     except requests.exceptions.RequestException as e:
         click.secho(f"Error: Could not reach box '{display_name}': {e}", fg='red', err=True)
         ctx.exit(1)
@@ -80,12 +82,17 @@ def unlock(ctx, box, force):
 
     try:
         from ...gateway_auth import auth_headers_for_box
+        from ...box_storage import _check_gateway
         resp = requests.post(
             f'http://{ip}:9000/unlock',
             headers=auth_headers_for_box(ip),
             json={'user': user, 'force': force},
             timeout=5,
         )
+        # Gateway denials raise here with the actionable sign-in error; the
+        # 403 branch below keeps meaning "locked by another user" only (a
+        # plain box's application 403 has no discovery header).
+        resp = _check_gateway(resp, ip)
     except requests.exceptions.RequestException as e:
         click.secho(f"Error: Could not reach box '{display_name}': {e}", fg='red', err=True)
         ctx.exit(1)

@@ -358,8 +358,10 @@ class DirectIPSession:
 
         try:
             from ..gateway_auth import auth_headers_for_box
+            from ..box_storage import _check_gateway
             response = requests.post(url, json=payload, timeout=5,
                                      headers=auth_headers_for_box(self.ip_address))
+            response = _check_gateway(response, self.ip_address)
             return response
         except requests.exceptions.RequestException as e:
             # Return a mock response with error
@@ -479,12 +481,19 @@ class DirectIPSession:
         url = f'http://{self.ip_address}:5001/run/pip'
 
         try:
+            from ..gateway_auth import auth_headers_for_box
+            from ..box_storage import _check_gateway
             response = requests.post(
                 url,
                 json={'args': args},
                 stream=True,
-                timeout=600  # 10 minute timeout for pip operations
+                timeout=600,  # 10 minute timeout for pip operations
+                headers=auth_headers_for_box(self.ip_address),
             )
+            # Gateway discovery/denial handling; on a gated box's first
+            # contact the request is retried with the stored token so the
+            # caller streams the real pip output.
+            response = _check_gateway(response, self.ip_address)
 
             # Check for HTTP errors
             if response.status_code != 200:
