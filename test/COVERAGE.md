@@ -43,9 +43,20 @@ Each suite gets its own job because they need incompatible `sys.modules` states 
 (to skip the heavy box deps), while `test/unit/box/conftest.py` imports the real package. They
 cannot share a process.
 
-`unit-tests.yml` also runs a **`compat (pyX.Y)`** job on 3.10, 3.12, 3.13 and 3.14 -- the versions
-`cli/setup.py` advertises but the gate above does not exercise. It runs all six suites
-sequentially in one process per version. 3.14 is `continue-on-error` for now.
+`unit-tests.yml` also runs a **`compat (pyX.Y)`** job covering the other versions `cli/setup.py`
+advertises. It runs all six suites sequentially, one process per version.
+
+`cli/setup.py` declares `python_requires=">=3.10"` and lists 3.10 through 3.14. Coverage today:
+
+| Version | Status |
+|---|---|
+| 3.10 | `compat (py3.10)` -- green |
+| 3.11 | the six `unit (...)` jobs |
+| 3.12 | `compat (py3.12)` -- green |
+| 3.13, 3.14 | **not covered.** `box/lager/python/service.py` imports `cgi`, which PEP 594 removed in 3.13, so the box suite cannot be collected. Blocked on migrating that file's multipart parsing off `cgi.FieldStorage`, which touches the box's file-upload path. Add both back to the matrix once that lands. |
+
+That gap is a live product issue, not just a CI one: the box's python service will not import on 3.13
+or later as things stand.
 
 `static-checks.yml` covers what pytest cannot reach:
 

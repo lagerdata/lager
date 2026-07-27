@@ -24,6 +24,26 @@ if BOX_DIR not in sys.path:
     sys.path.insert(0, BOX_DIR)
 
 
+def _bind_to_parent(dotted: str, mod: types.ModuleType) -> None:
+    """Set `mod` as an attribute of its parent package.
+
+    The real import system does this; registering in sys.modules alone does
+    not. `unittest.mock.patch` resolves a dotted target by walking attributes
+    from the root module, so without this a patch of
+    "lager.measurement.watt.ppk2_watt.X" fails with
+
+        AttributeError: module 'lager' has no attribute 'measurement'
+
+    even though sys.modules holds every level. Python 3.11 changed mock's
+    lookup to fall back to an import, which masked the omission there -- so
+    this only ever surfaced on 3.10, a version the package supports but CI
+    did not exercise until the compat job was added.
+    """
+    parent, _, child = dotted.rpartition(".")
+    if parent and parent in sys.modules:
+        setattr(sys.modules[parent], child, mod)
+
+
 def _ensure_package(dotted: str) -> types.ModuleType:
     """Register a bare package (directory with __init__) in sys.modules."""
     if dotted in sys.modules:
@@ -33,6 +53,7 @@ def _ensure_package(dotted: str) -> types.ModuleType:
     mod.__path__ = [os.path.join(BOX_DIR, *parts)]
     mod.__package__ = dotted
     sys.modules[dotted] = mod
+    _bind_to_parent(dotted, mod)
     return mod
 
 
@@ -44,6 +65,7 @@ def _load_module(dotted: str, filepath: str) -> types.ModuleType:
     mod = importlib.util.module_from_spec(spec)
     sys.modules[dotted] = mod
     spec.loader.exec_module(mod)
+    _bind_to_parent(dotted, mod)
     return mod
 
 
