@@ -35,10 +35,14 @@ def _load_module(dotted, filepath):
     return mod
 
 
-# Import the REAL lager package (its __init__ stubs missing third-party deps)
-# rather than installing a bare namespace module: this file collects before
-# test_box_http_server_capabilities.py, whose `from lager import ...` would
-# otherwise resolve against the attribute-less bare module and fail.
+# conftest.py in this directory has already imported the real `lager` before
+# any test module loads, so this is a no-op kept for readability -- the names
+# below come from the real package either way.
+#
+# It used to be load-bearing for the whole suite: this file sorts early, and
+# importing the real package here was what stopped later modules' `from lager
+# import ...` from resolving against an attribute-less placeholder. Collection
+# order no longer decides that. Do not restore the old comment.
 import lager  # noqa: E402,F401
 from lager.binaries import store  # noqa: E402
 

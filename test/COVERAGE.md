@@ -8,56 +8,82 @@ this document in the same change.
 
 ## What runs in CI
 
-Only `.github/workflows/unit-tests.yml` runs on `pull_request`. It is the sole automated gate on a
-PR; every other workflow is push-, schedule-, or dispatch-triggered and needs the bench.
+Two workflows run on `pull_request`: `unit-tests.yml` and `static-checks.yml`. The rest are push-,
+schedule-, or dispatch-triggered and need the bench.
 
 | Workflow | Trigger | Runner | Gates a PR |
 |---|---|---|:---:|
 | `unit-tests.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `ubuntu-latest` | **Yes** |
-| `integration-tests.yml` | push to `main`, nightly, dispatch | self-hosted `lager-bench` | No |
+| `static-checks.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `ubuntu-latest` | Reports (see below) |
+| `integration-tests.yml` | push to `main`, `workflow_call`, dispatch | self-hosted `lager-bench` | No |
 | `update-regression.yml` (Box Lifecycle) | `workflow_call`, dispatch | self-hosted `lager-bench` | No |
 | `nightly-bench.yml` | nightly schedule, dispatch | orchestrator | No |
+
+`nightly-bench.yml` is the only workflow with a schedule; it reaches the other two bench
+workflows through `workflow_call`, which is why neither of those carries a `schedule` trigger of
+its own.
+
+A job only *blocks* a merge once its status context is listed in branch ruleset 14535039. The six
+`unit (...)` contexts are; the `compat`, `static-checks` and `coverage` contexts are not yet.
 
 `unit-tests.yml` runs six matrix jobs, each in its own pytest process, on Python 3.11:
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 708 |
-| `unit (box)` | `test/unit/box/` | 1138 |
+| `unit (box)` | `test/unit/box/` | 1142 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 79 (+4 skipped) |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 91 (+1 skipped) |
-| | **Total gated** | **2287** |
+| | **Total gated** | **2291** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
 (to skip the heavy box deps), while `test/unit/box/conftest.py` imports the real package. They
 cannot share a process.
 
+`unit-tests.yml` also runs a **`compat (pyX.Y)`** job on 3.10, 3.12, 3.13 and 3.14 -- the versions
+`cli/setup.py` advertises but the gate above does not exercise. It runs all six suites
+sequentially in one process per version. 3.14 is `continue-on-error` for now.
+
+`static-checks.yml` covers what pytest cannot reach:
+
+| Check | Scope | Baseline when added |
+|---|---|---|
+| `bash -n` | 42 shell scripts under `test/` | clean |
+| `shellcheck -S error` | same 42 | clean (`-S warning` would be ~181, `-S info` ~4900) |
+| `compileall` | every `.py` in `cli/ box/ test/ tools/` | clean |
+| `pytest --collect-only` | `test/mcp/integration/` | 8 tests collect |
+| `ruff --select E9,F63,F7,F82` | `cli/ box/ test/ tools/`, vendored excluded | clean (default ruleset would be ~6300) |
+| `coverage` | all six unit suites | ~38%, reporting only, no threshold |
+
 ### What CI does NOT run
 
 | Area | Size | Why not |
 |---|---|---|
-| `test/api/` | 81 scripts | Needs real hardware. Only 6 are invoked by the bench workflows; the other 75 run nowhere. |
-| `test/integration/` | 38 bash scripts | Needs a real box and instruments. Nothing validates them, not even syntax. |
-| `test/mcp/integration/` | 1 file | Needs two live boxes. |
-| `test/manual/` | 2 bash scripts | Operator-driven. |
+| `test/api/` | 82 scripts | Needs real hardware. The bench workflows invoke 8 by name; the other 74 execute nowhere -- though all are now syntax-checked. |
+| `test/integration/` | 38 bash scripts | Needs a real box and instruments. One (`communication/jlink_script.sh`) is invoked by `integration-tests.yml`; the rest are syntax-checked and shellchecked but never executed. |
+| `test/mcp/integration/` | 1 file | Needs two live boxes. Import-checked only. |
+| `test/manual/` | 2 bash scripts | Operator-driven. Syntax-checked only. |
 | `cli/tests/test_box_lager_imports.py` | 1 file | Excluded via `cli/tests/conftest.py`: it is a printed report with no `assert` statements, so under pytest its 16 functions pass unconditionally. Still useful run directly. |
 
 Known gaps in the gate itself, in rough priority order:
 
-- **Python versions.** `cli/setup.py` declares `python_requires=">=3.10"` and advertises 3.10
-  through 3.14; CI tests 3.11 only.
 - **Operating systems.** CI is `ubuntu-latest` only. Six `cli/` modules branch on platform, and
   `cli/commands/communication/websocket_client.py` imports `termios`/`tty` unconditionally (unlike
   `cli/status.py`, which guards them) -- so `lager uart` interactive mode is a hard `ImportError`
   on Windows that no test would catch.
-- **No lint, type, coverage, or security gate.** There is no ruff/flake8/mypy/pytest-cov/bandit
-  config anywhere in the repo. `CONTRIBUTING.md` tells contributors to use ShellCheck, but nothing
-  enforces it.
+- **`bson` is an undeclared dependency.** `cli/status.py` imports it; it appears in neither
+  `install_requires` nor any requirements file. The import that reaches it
+  (`cli/commands/development/debug/__init__.py`) is deferred, so nothing fails until that path
+  runs -- which is also why no test caught it.
+- **No type checking or security scanning.** There is no mypy/pyright/bandit/pip-audit config, and
+  no `dependabot.yml` (so no automated version-update PRs for pip, actions, or cargo).
+- **Lint is errors-only.** `ruff` gates real bugs, not style; `shellcheck` is at `-S error`. Both
+  are floors chosen because they were already clean, and both are meant to ratchet up.
 - **`test/requirements-unit.txt` is unpinned** -- 11 bare package names, so a PR can go red from an
-  upstream release with no repo change.
+  upstream release with no repo change. (`pytest` and `ruff` themselves are pinned.)
 
 ## Coverage by Domain
 
@@ -199,7 +225,7 @@ test: `debug`, `defaults`, `webcam`, `scope`, `logic`, `hello`, `boxes`, `box`, 
 
 ## Coverage Strengths
 
-- **Box-side logic**: 55 files / 1138 tests covering the box HTTP handlers, debug and J-Link
+- **Box-side logic**: 56 files / 1142 tests covering the box HTTP handlers, debug and J-Link
   paths, locking, net persistence, and device drivers -- all hardware-free and gated on every PR.
 - **Communication protocols**: I2C and SPI have 18+ Python API files across three hardware
   backends (Aardvark, LabJack, FT232H) with full 3-suite coverage.
@@ -220,8 +246,8 @@ test: `debug`, `defaults`, `webcam`, `scope`, `logic`, `hello`, `boxes`, `box`, 
 
 ```
 test/
-├── api/                  # Python API tests (81 files, run on box via `lager python`)
-│   ├── communication/    # 29 files: I2C, SPI, UART, BLE, BluFi, WiFi, debug
+├── api/                  # Python API tests (82 files, run on box via `lager python`)
+│   ├── communication/    # 30 files: I2C, SPI, UART, BLE, BluFi, WiFi, debug
 │   ├── io/               # 17 files: ADC, DAC, GPIO, PWM, pin conflict, USB-202
 │   ├── peripherals/      #  9 files: scope, arm, webcam, rotation, actuate
 │   ├── power/            #  7 files: supply (3), battery (2), solar, eload
@@ -241,7 +267,7 @@ test/
 │   ├── unit/             # 11 files: mocked, no hardware -- GATED
 │   └── integration/      #  1 file: live hardware required
 ├── unit/                 # Local unit tests (99 files) -- ALL GATED
-│   ├── box/              # 55 files: box-side Python unit tests
+│   ├── box/              # 56 files: box-side Python unit tests
 │   ├── cli/              # 33 files: CLI Python unit tests
 │   ├── measurement/      #  4 files: Joulescope / PPK2 / watt unit tests
 │   ├── blufi/            #  2 files: BluFi protocol unit tests
@@ -261,7 +287,7 @@ cli/tests/                #  5 files: 3 pytest suites + test_io_imports.py (GATE
 
 ### Local Unit Tests (`test/unit/` -- 99 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 55 files)
+#### Box Unit Tests (`test/unit/box/` -- 56 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported, and stubs the two third-party modules that are neither guarded nor installed
@@ -302,6 +328,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_jlink_multi.py` | Multi-probe start_jlink_gdbserver with per-probe serial/port/RTT configuration |
 | `test_jlink_multi_gdbserver_select.py` | Multi-probe GDB slot dispatch |
 | `test_jlink_uncached_verify.py` | DA1469x opt-in uncached QSPI post-program verify to detect false XIP failures |
+| `test_lager_package_identity.py` | Guards this suite's conftest invariant: `lager` must be the real on-disk package with its `__init__` executed, not a placeholder |
 | `test_lock_state.py` | lock_state.py single source of truth for box-side lock behavior |
 | `test_monitor_state.py` | SupplyNet/KeithleyBattery single-call monitor-state helpers reducing lock contention |
 | `test_mount_prep.py` | Mount preparation SSH operations via mocked runner |
@@ -432,7 +459,7 @@ Gated as part of the `unit (cli)` job.
 |------|---------------|
 | `test_agent_loop.py` | End-to-end agent workflow: discovery, suitability, `lager python` execution, verify |
 
-### Python API Tests (`test/api/` -- 81 files)
+### Python API Tests (`test/api/` -- 82 files)
 
 These are **standalone scripts, not pytest** (see `test/CONVENTIONS.md`): each defines `main()`
 and runs on a box via `lager python`. None of them run in the PR gate.
@@ -449,7 +476,7 @@ and runs on a box via `lager python`. None of them run in the PR gate.
 | `test_eload_comprehensive.py` | CC, CV, CR, CP modes, enable/disable, state verification |
 | `test_solar_comprehensive.py` | Set, stop, irradiance, resistance, temperature, VOC, MPP |
 
-#### Communication (29 files)
+#### Communication (30 files)
 
 I2C across three backends (`test_i2c_aardvark.py`, `test_i2c_aardvark_api.py`,
 `test_i2c_labjack.py`, `test_i2c_labjack_api.py`, `test_i2c_ft232h.py`); SPI across three backends

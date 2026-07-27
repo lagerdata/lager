@@ -48,8 +48,6 @@ _HARDWARE_STUBS = [
 for _dep in _HARDWARE_STUBS:
     _stub(_dep)
 
-sys.modules['simplejson'] = sys.modules['json']  # type: ignore[assignment]
-
 _BOX_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..', '..', '..', 'box')
 )
