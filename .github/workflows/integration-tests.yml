@@ -284,24 +284,22 @@ jobs:
       - name: Test J-Link script file (CLI)
         # Gated on a BASELINE, not on raw pass/fail.
         #
-        # The debug CLI reaches the box's debug service directly over
-        # http://<box>:8765 (service_client.py builds its session with only
-        # Content-Type and User-Agent, and commands.py pins ssh_tunnel=False),
-        # so it sends no Authorization header. Against a gateway-gated box every
-        # box-contacting check fails with "Stout authorization required". That
-        # is a product gap, not a defect in this suite: the API tests avoid it
-        # only because `lager python` executes ON the box and talks to
-        # 127.0.0.1, never crossing the gateway.
-        #
         # Gating on raw pass/fail would keep the nightly permanently red;
         # dropping the `id:` reported a bare green tick that could not be told
         # apart from new breakage or from the suite dying on its first line. So
         # instead: tolerate the documented failure count, fail if it GROWS, and
         # fail if no summary was produced at all. The count is surfaced as a
-        # run annotation either way.
+        # run annotation either way. Keep this wrapper even at baseline 0 — the
+        # "no parseable summary" arm is what catches a suite that dies before
+        # reporting.
         #
-        # Lower JLINK_CLI_BASELINE as the gap closes — 0 once the service
-        # client attaches gateway_auth.auth_headers_for_box().
+        # The baseline was 24 while the debug CLI sent no Authorization header
+        # and every box-contacting check failed on a gated box. That is fixed;
+        # the remaining 4 are unrelated and all in the same place: section 4
+        # flashes while a backgrounded `gdbserver` still holds the probe, which
+        # wedges the session and cascades into the rest of the section (the
+        # Python API flash test passes in the same run because it does not flash
+        # underneath a running gdbserver). Lower this as that is addressed.
         id: debug-cli-test
         continue-on-error: true
         timeout-minutes: 15
@@ -309,7 +307,7 @@ jobs:
           # The suite defaults to ssh user `lager`; this bench logs in as
           # `lagerdata`.
           SSH_USER: lagerdata
-          JLINK_CLI_BASELINE: "24"
+          JLINK_CLI_BASELINE: "4"
         # Pass the box NAME, not the IP: given an IP the suite registers a
         # `temp_box_<ip>` entry, polluting the box list the lifecycle workflow
         # also manages.
