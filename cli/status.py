@@ -19,6 +19,14 @@ import threading
 import sys
 import os
 import select
+
+# BaseExceptionGroup is a builtin only from 3.11. setup.py declares
+# python_requires=">=3.10", and the nursery below catches it -- on 3.10 that
+# except clause raises NameError and masks the real exception. trio pulls in
+# the `exceptiongroup` backport on <3.11, so it is always importable here.
+if sys.version_info < (3, 11):  # pragma: no cover - version-dependent
+    from exceptiongroup import BaseExceptionGroup
+
 from functools import partial
 from bson import decode as bson_loads
 import click

@@ -1,0 +1,169 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# Cheap, hardware-free checks over the parts of the tree the unit-test gate
+# cannot reach.
+#
+# unit-tests.yml runs pytest over test/unit/, test/mcp/unit/ and cli/tests/.
+# That leaves large areas with no automated validation at all:
+#
+#   test/integration/  38 bash scripts, run against a real box
+#   test/manual/        2 bash scripts
+#   test/framework/     2 bash scripts, sourced by all 38 integration scripts
+#   test/api/          81 standalone Python scripts, only 6 of which any
+#                      workflow invokes -- the other 75 run nowhere
+#
+# None of it can execute on a hosted runner, but all of it can be checked for
+# syntax, and the shell can be linted. A typo in an integration script
+# currently surfaces only when someone runs it against the bench.
+#
+# Every check here was green on the tree when the workflow was added, so a red
+# run means the change under review broke something -- not that the baseline
+# was already dirty.
+
+name: Static Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  static-checks:
+    name: static-checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/box
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install tooling
+        run: |
+          pip install -e cli/
+          pip install 'pytest>=9,<10' 'pytest-timeout>=2.3,<3' 'ruff==0.16.0'
+          pip install -r test/requirements-unit.txt
+        shell: bash
+
+      # ShellCheck ships in the ubuntu-latest runner image. Print the version
+      # rather than assuming it: if the image ever drops it, this fails loudly
+      # instead of the lint step silently checking nothing.
+      - name: Verify shellcheck is present
+        run: shellcheck --version
+        shell: bash
+
+      - name: Bash syntax (bash -n)
+        if: always()
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            bash -n "$f" || { echo "SYNTAX FAIL: $f"; fail=1; }
+          done < <(find test -name '*.sh')
+          exit $fail
+        shell: bash
+
+      # -S error only, for now. On this tree that is 0 findings, while
+      # -S warning is ~181 and -S info ~4900. Starting at the level that is
+      # already clean means the gate is meaningful from day one; ratchet to
+      # warning once the backlog is worked down.
+      - name: 'ShellCheck (severity: error)'
+        if: always()
+        run: shellcheck -S error -f gcc $(find test -name '*.sh')
+        shell: bash
+
+      # test/api/ is 81 standalone scripts, not pytest (see test/CONVENTIONS.md),
+      # so --collect-only cannot reach them and a real import needs the box
+      # hardware stack. Compiling catches syntax errors and nothing else, which
+      # is still strictly more than the zero coverage they have today.
+      - name: Python syntax (compileall)
+        if: always()
+        run: python -m compileall -q cli box test tools
+        shell: bash
+
+      # This one IS pytest, and test/mcp/conftest.py already handles sys.path
+      # and markers -- so proving it imports without hardware is a real check.
+      - name: MCP integration tests import cleanly
+        if: always()
+        run: |
+          pytest test/mcp/integration/ --collect-only -q \
+            --import-mode=importlib -c /dev/null
+        shell: bash
+
+      # Errors only: undefined names, syntax errors, f-string and assert
+      # mistakes. Not style. The full default ruleset reports ~6300 findings on
+      # this tree, which would be noise, not a gate. Vendored trees are
+      # excluded -- they are third-party code we do not edit.
+      - name: Ruff (errors only)
+        if: always()
+        run: |
+          ruff check --select E9,F63,F7,F82 \
+            --exclude cli/elftools,cli/vendor \
+            cli/ box/ test/ tools/
+        shell: bash
+
+  # Reporting only -- no threshold, and deliberately not a required check.
+  # A coverage number is useful for spotting which modules the gate never
+  # touches; failing a PR on a percentage punishes unrelated work.
+  coverage:
+    name: coverage (report only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/box
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CLI + test deps
+        run: |
+          pip install -e cli/
+          pip install 'pytest>=9,<10' 'pytest-timeout>=2.3,<3' 'pytest-cov>=5,<8'
+          pip install -r test/requirements-unit.txt
+        shell: bash
+
+      # Each suite is a separate pytest process (they need incompatible
+      # sys.modules states for `lager` -- see unit-tests.yml), so coverage is
+      # collected in append mode across all six and combined at the end.
+      - name: Run suites under coverage
+        run: |
+          set -x
+          COV="--cov=cli --cov=box/lager --cov-append --cov-report="
+          BASE="-q --import-mode=importlib -c /dev/null --timeout=60"
+          rm -f .coverage
+          pytest test/unit/cli/ cli/tests/          $BASE $COV
+          pytest test/unit/box/                     $BASE $COV
+          pytest test/unit/measurement/             $BASE $COV
+          pytest test/unit/blufi/                   $BASE $COV
+          pytest test/mcp/unit/                     $BASE $COV
+          pytest test/unit/test_*.py test/test_*.py $BASE $COV
+        shell: bash
+
+      # Omit the test files themselves and the vendored trees: measuring how
+      # well the tests cover the tests inflates the denominator by ~5000
+      # statements and tells you nothing.
+      - name: Report
+        if: always()
+        run: |
+          OMIT='*/tests/*,*/test/*,*/elftools/*,*/vendor/*,*/__pycache__/*'
+          {
+            echo '### Coverage'
+            echo
+            echo 'Lowest-covered first. Reporting only -- there is no threshold.'
+            echo
+            echo '```'
+            python -m coverage report --omit="$OMIT" --skip-covered --sort=cover | tail -40
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        shell: bash
