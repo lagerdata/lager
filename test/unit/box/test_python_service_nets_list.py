@@ -64,9 +64,6 @@ _HARDWARE_STUBS = [
 for _dep in _HARDWARE_STUBS:
     _stub(_dep)
 
-# Make `import simplejson as json` in visa_enum resolve to stdlib json.
-sys.modules['simplejson'] = sys.modules['json']  # type: ignore[assignment]
-
 # Add box/ to path so `import lager.python.service` resolves correctly.
 _BOX_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..', '..', '..', 'box')

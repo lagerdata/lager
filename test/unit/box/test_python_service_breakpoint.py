@@ -45,7 +45,6 @@ for _dep in [
     'spidev', 'smbus', 'smbus2', 'RPi', 'RPi.GPIO', 'gpiod',
 ]:
     _stub(_dep)
-sys.modules['simplejson'] = sys.modules['json']
 
 _BOX_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..', '..', '..', 'box')

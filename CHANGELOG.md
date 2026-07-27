@@ -4,11 +4,33 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ## [Unreleased]
 
+### Added
+
+- **A `Static Checks` workflow covering the parts of the tree pytest cannot
+  reach.** `test/integration/` (38 bash scripts run against a real box),
+  `test/manual/` and `test/framework/` had no validation of any kind, not even
+  syntax; `test/api/` is 81 standalone scripts of which only 6 are ever
+  invoked. The workflow runs `bash -n` and `shellcheck -S error` over all 42
+  shell scripts, `compileall` over every Python file, `--collect-only` over the
+  MCP integration suite, and `ruff` restricted to real errors
+  (`E9,F63,F7,F82`). Each of those was already clean on the tree, so the floors
+  are meaningful from day one and can ratchet upward. A separate report-only
+  `coverage` job publishes per-module line coverage to the job summary, with no
+  threshold.
+
+- **Unit suites now run on every advertised Python version.** `cli/setup.py`
+  declares `python_requires=">=3.10"` and lists 3.10 through 3.14, while CI
+  tested 3.11 only. A separate `compat (pyX.Y)` job covers the other four --
+  separate rather than another dimension on the existing matrix, because that
+  would rename the `unit (...)` contexts the branch ruleset requires and
+  strand every open PR on checks that never report. 3.14 is non-fatal pending
+  the `setuptools<77` pin.
+
 ### Changed
 
-- **The PR unit-test gate now runs 2287 tests, up from 1066.** Two bodies of
+- **The PR unit-test gate now runs 2291 tests, up from 1066.** Two bodies of
   hardware-free tests already in the repo were never executed by CI:
-  `test/unit/box/` (55 files, 1138 tests — larger than all previously gated
+  `test/unit/box/` (56 files, 1142 tests — larger than all previously gated
   suites combined) and `cli/tests/` (auth, update-gate and box-storage
   coverage). Both are now gated. The box suite was excluded because roughly a
   dozen of its modules register a placeholder `lager` in `sys.modules` so they
@@ -36,6 +58,24 @@ All notable changes to the Lager platform are documented here. For detailed rele
   `lager.io.*`; the test still required the old paths to import. It now covers
   the supported surface, verifies `lager.io` re-exports are the same objects
   as the submodules, and asserts the removed aliases stay removed.
+
+- **`lager status` raised `NameError` instead of handling the failure on
+  Python 3.10.** The websocket path catches `BaseExceptionGroup`, a builtin
+  only from 3.11, with no guard -- so on a version the package claims to
+  support, evaluating the except clause failed and masked the original
+  exception. It now imports the `exceptiongroup` backport (already present via
+  trio) below 3.11. Surfaced by adding ruff.
+
+- Box unit tests no longer overwrite `simplejson` with the stdlib `json`
+  module in `sys.modules`. Nine files did this at import time, process-wide and
+  uncleaned, *after* the real module was already bound -- it changed nothing
+  and simply waited to surprise the next reader. `simplejson` is a declared
+  test dependency and is installed.
+
+- Added `test/unit/box/test_lager_package_identity.py`, which asserts the
+  invariant `test/unit/box/conftest.py` establishes: `lager` must resolve to
+  the real in-repo package with its `__init__` executed. Re-stubbing it used to
+  fail far from the cause with `(unknown location)`; it now fails by name.
 
 ## [0.32.4] - 2026-07-24
 

@@ -30,8 +30,6 @@ for _dep in ['pyvisa', 'serial', 'serial.tools', 'serial.tools.list_ports']:
         if key not in sys.modules:
             sys.modules[key] = _make_module(key)
 
-sys.modules.setdefault('simplejson', sys.modules['json'])
-
 _BOX_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..', '..', '..', 'box')
 )
