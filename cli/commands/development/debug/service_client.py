@@ -5,6 +5,16 @@
 Lager Debug Service Client
 
 Client library for communicating with the persistent debug service.
+
+This is the CLI-side client: it runs on the user's machine and reaches the
+box over the network, so it crosses the authenticating gateway and must
+attach a bearer token (see :meth:`DebugServiceClient._request`).
+
+``box/lager/debug/service_client.py`` is a separate, deliberately divergent
+client for the same service. It runs ON the box against ``127.0.0.1``, is
+therefore always on the far side of the gateway, and ``box/`` ships no
+``gateway_auth`` module at all — importing one there would break every
+on-box ``lager python`` script. Do not "sync" these two files.
 """
 import json
 import base64
@@ -21,7 +31,11 @@ class DebugServiceClient:
         Initialize debug service client.
 
         Args:
-            box_host: Lagerbox IP address
+            box_host: Lagerbox IP address. MUST be the resolved IP, not a
+                saved box name: the gateway auth store is keyed by IP, so a
+                name here would silently resolve no token. Every CLI caller
+                arrives via ``_get_service_client`` after
+                ``_resolve_box_with_username``, which guarantees this.
             service_port: Service port (default: 8765)
             ssh_tunnel: If True, use SSH tunnel to reach service
         """
@@ -44,28 +58,69 @@ class DebugServiceClient:
             'User-Agent': 'lager-cli/1.0',
         })
 
-        if not ssh_tunnel:
-            # Direct connection may cross an authenticating gateway: attach
-            # the bearer token when this box is known to be gated, and turn
-            # gateway denials into actionable errors instead of raw 401s.
-            # No-op for plain boxes (the hook only fires on the discovery
-            # header, and no token is sent to an unknown box). Tunneled
-            # connections terminate at 127.0.0.1 and never see the gateway.
-            from ....gateway_auth import auth_headers_for_box, gateway_response_hook
-            self.session.headers.update(auth_headers_for_box(box_host))
-            self.session.hooks['response'] = [gateway_response_hook(box_host)]
+    # NOTE: auth is attached per request in _request(), not here. This client
+    # is long-lived — a `gdbserver --rtt` session issues its first request and
+    # its last hours apart — so a token cached on the session at construction
+    # would be replayed after expiry. See _request()'s docstring.
+
+    def _request(self, method: str, path: str, *, timeout=None, stream=False,
+                 **kwargs) -> requests.Response:
+        """One round trip to the debug service, with gateway auth applied.
+
+        On a box behind an authenticating gateway, the bearer token for
+        ``self.box_host`` is attached to the FIRST attempt (contract §6.2)
+        and a first-contact 401 is recorded and retried once in-call
+        (§6.3). ``docs/reference/gateway-auth-contract.md`` §6.4 requires
+        this for the debug service explicitly, streaming RTT included.
+
+        Plain Lager boxes are unaffected: ``auth_headers_for_box`` returns
+        ``{}`` and ``_check_gateway`` is a passthrough, so no token is
+        stored, sent, or looked up.
+
+        The token is resolved per call and never cached on the session.
+        ``auth_headers_for_box`` refreshes a near-expiry token only when it
+        is called, and this client is long-lived — a ``gdbserver --rtt``
+        session issues its first request and its last hours apart. Caching
+        the header at construction would replay an expired token.
+
+        Known limit: a single request that outlives its token cannot be
+        re-authenticated mid-flight, so a multi-hour RTT stream may end on
+        an expired token. The contract does not require mid-stream refresh;
+        fixing it would mean chunked reconnection.
+        """
+        from ....gateway_auth import auth_headers_for_box
+        from ....box_storage import _check_gateway
+        from ....errors import LagerError
+
+        headers = dict(kwargs.pop('headers', None) or {})
+        headers.update(auth_headers_for_box(self.box_host))
+
+        response = self.session.request(
+            method, f'{self.base_url}{path}',
+            headers=headers, timeout=timeout, stream=stream, **kwargs,
+        )
+        try:
+            # timeout/stream/session mirror the call above: the retry re-sends
+            # this exact prepared request, and replaying an RTT POST with
+            # stream=False would block forever buffering an endless body.
+            response = _check_gateway(response, self.box_host, timeout=timeout,
+                                      stream=stream, session=self.session)
+        except LagerError as denial:
+            # Every debug subcommand wraps its client calls in a broad
+            # `except Exception`, which would flatten the styled "run
+            # `lager login`" block into one bare line. die() exits via
+            # SystemExit, which those handlers do not catch (cli/errors.py).
+            denial.die()
+        response.raise_for_status()
+        return response
 
     def health_check(self) -> Dict[str, Any]:
         """Check if service is healthy."""
-        response = self.session.get(f'{self.base_url}/health', timeout=5)
-        response.raise_for_status()
-        return response.json()
+        return self._request('GET', '/health', timeout=5).json()
 
     def get_status(self) -> Dict[str, Any]:
         """Get debug status."""
-        response = self.session.get(f'{self.base_url}/status', timeout=5)
-        response.raise_for_status()
-        return response.json()
+        return self._request('GET', '/status', timeout=5).json()
 
     def connect(self, net: Dict[str, Any], speed: Optional[str] = None,
                 force: bool = False, halt: bool = False, gdb: bool = False,
@@ -115,13 +170,7 @@ class DebugServiceClient:
         if openocd_config:
             data['openocd_config'] = openocd_config
 
-        response = self.session.post(
-            f'{self.base_url}/debug/connect',
-            json=data,
-            timeout=30
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._request('POST', '/debug/connect', json=data, timeout=30).json()
 
     def disconnect(self, net: Dict[str, Any], keep_jlink_running: bool = False) -> Dict[str, Any]:
         """
@@ -136,13 +185,7 @@ class DebugServiceClient:
             'keep_jlink_running': keep_jlink_running
         }
 
-        response = self.session.post(
-            f'{self.base_url}/debug/disconnect',
-            json=data,
-            timeout=10
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._request('POST', '/debug/disconnect', json=data, timeout=10).json()
 
     def reset(self, net: Dict[str, Any], halt: bool = False) -> Dict[str, Any]:
         """Reset target device."""
@@ -151,13 +194,7 @@ class DebugServiceClient:
             'halt': halt
         }
 
-        response = self.session.post(
-            f'{self.base_url}/debug/reset',
-            json=data,
-            timeout=10
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._request('POST', '/debug/reset', json=data, timeout=10).json()
 
     def flash(self, firmware_file: Path, file_type: str = 'hex',
               address: Optional[int] = None, verbose: bool = False, net: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -181,13 +218,11 @@ class DebugServiceClient:
         else:
             raise ValueError(f"Unknown file type: {file_type}")
 
-        response = self.session.post(
-            f'{self.base_url}/debug/flash',
+        return self._request(
+            'POST', '/debug/flash',
             json=data,
-            timeout=180  # Flash can take a while
-        )
-        response.raise_for_status()
-        return response.json()
+            timeout=180,  # Flash can take a while
+        ).json()
 
     def erase(self, net: Dict[str, Any], speed: str = '4000',
               transport: str = 'SWD') -> Dict[str, Any]:
@@ -198,13 +233,11 @@ class DebugServiceClient:
             'transport': transport,
         }
 
-        response = self.session.post(
-            f'{self.base_url}/debug/erase',
+        return self._request(
+            'POST', '/debug/erase',
             json=data,
-            timeout=120  # Erase can take a while
-        )
-        response.raise_for_status()
-        return response.json()
+            timeout=120,  # Erase can take a while
+        ).json()
 
     def read_memory(self, net: Dict[str, Any], start_addr: int,
                     length: int = 256, no_reset: bool = False) -> bytes:
@@ -220,14 +253,11 @@ class DebugServiceClient:
         if no_reset:
             data['no_reset'] = True
 
-        response = self.session.post(
-            f'{self.base_url}/debug/memrd',
+        result = self._request(
+            'POST', '/debug/memrd',
             json=data,
-            timeout=30  # Increased timeout for GDB memory reads
-        )
-        response.raise_for_status()
-
-        result = response.json()
+            timeout=30,  # Increased timeout for GDB memory reads
+        ).json()
         hex_data = result['data']
         return bytes.fromhex(hex_data)
 
@@ -235,33 +265,16 @@ class DebugServiceClient:
         """Get debug net information."""
         data = {'net': net}
 
-        response = self.session.post(
-            f'{self.base_url}/debug/info',
-            json=data,
-            timeout=5
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._request('POST', '/debug/info', json=data, timeout=5).json()
 
     def get_debug_status(self) -> Dict[str, Any]:
         """Get debugger status."""
-        response = self.session.post(
-            f'{self.base_url}/debug/status',
-            json={},
-            timeout=5
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._request('POST', '/debug/status', json={}, timeout=5).json()
 
     def get_service_health(self, detailed: bool = False) -> Dict[str, Any]:
         """Get service health information."""
         endpoint = '/health/detailed' if detailed else '/health'
-        response = self.session.get(
-            f'{self.base_url}{endpoint}',
-            timeout=5
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._request('GET', endpoint, timeout=5).json()
 
     def rtt(self, net: Optional[Dict[str, Any]] = None, channel: int = 0, timeout: Optional[int] = None,
             search_addr: Optional[int] = None, search_size: Optional[int] = None, chunk_size: Optional[int] = None):
@@ -292,13 +305,12 @@ class DebugServiceClient:
             data['chunk_size'] = chunk_size
 
         # Use streaming response to handle chunked transfer encoding
-        response = self.session.post(
-            f'{self.base_url}/debug/rtt',
+        response = self._request(
+            'POST', '/debug/rtt',
             json=data,
             timeout=None,  # No timeout - stream until done
-            stream=True  # Enable streaming mode
+            stream=True,   # Enable streaming mode
         )
-        response.raise_for_status()
 
         # Stream chunks as they arrive
         for chunk in response.iter_content(chunk_size=4096):

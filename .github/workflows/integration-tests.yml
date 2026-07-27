@@ -320,18 +320,29 @@ jobs:
             "$LAGER_BOX" "${{ vars.DEBUG_NET || 'debug1' }}" firmware.hex \
             2>&1 | tee "$LOG" || rc=$?
 
-          # Strip ANSI so the summary parses regardless of colour output.
-          failed=$(sed 's/\x1b\[[0-9;]*m//g' "$LOG" | awk '/^TOTAL/ {print $NF}' | tail -1)
+          # Strip ANSI so the summary parses regardless of colour output, then
+          # address the columns by position rather than by $NF. harness.sh
+          # print_summary emits
+          #   TOTAL  <total> <passed> <failed>
+          # with an EMPTY description cell, and appends a fifth <excluded>
+          # column whenever GLOBAL_EXCLUDED > 0 -- which any track_test "skip"
+          # triggers (jlink_script.sh skips both flash sections when the hex
+          # file is missing). `$NF` therefore read the SKIP count on exactly
+          # those runs, letting the ratchet pass with an arbitrary number of
+          # real failures.
+          read -r total failed <<<"$(sed 's/\x1b\[[0-9;]*m//g' "$LOG" \
+            | awk '$1 == "TOTAL" && NF >= 4 {print $2, $4}' | tail -1)"
 
-          if ! printf '%s' "$failed" | grep -qE '^[0-9]+$'; then
+          if ! printf '%s' "$failed" | grep -qE '^[0-9]+$' \
+            || ! printf '%s' "$total" | grep -qE '^[0-9]+$'; then
             echo "::error title=J-Link CLI::suite produced no parseable summary (exit $rc) - it likely died before reporting"
             exit 1
           fi
 
           if [ "$failed" -eq 0 ]; then
-            echo "::notice title=J-Link CLI::all checks pass"
+            echo "::notice title=J-Link CLI::all $total checks pass"
           else
-            echo "::warning title=J-Link CLI suite::$failed of 45 checks fail; known gateway-auth gap (baseline $JLINK_CLI_BASELINE)"
+            echo "::warning title=J-Link CLI suite::$failed of $total checks fail (baseline $JLINK_CLI_BASELINE)"
           fi
 
           if [ "$failed" -gt "$JLINK_CLI_BASELINE" ]; then

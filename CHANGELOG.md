@@ -68,6 +68,36 @@ All notable changes to the Lager platform are documented here. For detailed rele
   response headers, discover via an HTTP probe and retry the handshake
   once. Plain boxes are untouched: no token is ever sent without the
   discovery header, and application 401/403s keep their behavior.
+- **`lager debug` could not reach a box behind an authenticating gateway.**
+  The debug service client talks to the box directly over
+  `http://<box>:8765` and attached no `Authorization` header, so every
+  box-contacting subcommand — `status`, `health`, `memrd`, `reset`, `flash`,
+  `erase`, `gdbserver`, `disconnect` — failed with "Stout authorization
+  required". No user action worked around it: the path sent no credential at
+  all, so a correct `lager login` did not help. The client now resolves the
+  bearer token per request and records-and-retries a first-contact denial in
+  call, bringing this path into conformance with sections 6.2, 6.3 and 6.4 of
+  the gateway auth contract, which names the debug service and its streaming
+  RTT requests explicitly. The token is deliberately resolved per call rather
+  than cached on the session: a `gdbserver --rtt` client issues its first and
+  last request hours apart, and a cached header would replay an expired
+  token. The gateway retry helper now forwards the caller's `stream` and
+  `timeout`, without which replaying an RTT request would block forever
+  buffering a body that never ends. Plain un-gated boxes are unaffected — no
+  token is stored, sent, or looked up. Covered by 22 new unit tests; the path
+  previously had none.
+
+  Only the network-side client changed. `box/lager/debug/service_client.py`
+  serves on-box `lager python` scripts over loopback, is always past the
+  gateway, and is now documented as intentionally divergent.
+
+- **The J-Link CLI suite's CI ratchet could read the wrong column.** It took
+  the last field of the harness `TOTAL` row as the failure count, but the
+  harness appends an `Excluded` column whenever any check is skipped — so on
+  a run with skips the ratchet compared the skip count against its baseline
+  and would have passed with an arbitrary number of real failures. It now
+  addresses the column by position and derives the check total from the same
+  row instead of hardcoding it.
 
 - **`lock_state.acquire` rejected a valid holder type in test only.** The box
   unit suite asserted an unrecognized `holder_type` was coerced to
