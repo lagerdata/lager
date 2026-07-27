@@ -9,8 +9,18 @@ with the box Python container.
 """
 import sys
 import threading
-import termios
-import tty
+
+# Guarded exactly as cli/status.py guards them. These are POSIX-only, and an
+# unconditional import made this module -- and so `lager uart` in interactive
+# mode -- a hard ImportError on Windows. CI is ubuntu-only, so no test catches
+# it; the sentinel is checked in _setup_terminal() below.
+try:
+    _TERMIOS_IMPORT_FAILED = False
+    import termios
+    import tty
+except (ImportError, ModuleNotFoundError) as exc:  # pragma: no cover - platform-dependent
+    _TERMIOS_IMPORT_FAILED = exc
+
 import select
 import os
 from typing import Optional
@@ -172,6 +182,18 @@ class UARTWebSocketClient:
         """Set terminal to cbreak mode for character-by-character input."""
         # Only set cbreak mode for interactive sessions
         if self.interactive and sys.stdin.isatty():
+            # Raised OUTSIDE the try below on purpose: that block swallows
+            # everything, so a NameError from the missing import would degrade
+            # silently into a line-buffered session that looks like a UART
+            # fault. Fail with something the user can act on instead.
+            if _TERMIOS_IMPORT_FAILED:
+                from ...errors import LagerError
+                raise LagerError(
+                    'Interactive UART needs a POSIX terminal.',
+                    cause=f'termios/tty are unavailable on {sys.platform}.',
+                    fixes=['Run this from WSL, macOS, or Linux.'],
+                    raw=_TERMIOS_IMPORT_FAILED,
+                )
             try:
                 fd = sys.stdin.fileno()
                 self.old_tty_settings = termios.tcgetattr(fd)

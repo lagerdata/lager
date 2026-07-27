@@ -30,13 +30,13 @@ A job only *blocks* a merge once its status context is listed in branch ruleset 
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 708 |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 998 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 1142 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 79 (+4 skipped) |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 91 (+1 skipped) |
-| | **Total gated** | **2291** |
+| | **Total gated** | **2581** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -81,14 +81,11 @@ or later as things stand.
 
 Known gaps in the gate itself, in rough priority order:
 
-- **Operating systems.** CI is `ubuntu-latest` only. Six `cli/` modules branch on platform, and
-  `cli/commands/communication/websocket_client.py` imports `termios`/`tty` unconditionally (unlike
-  `cli/status.py`, which guards them) -- so `lager uart` interactive mode is a hard `ImportError`
-  on Windows that no test would catch.
-- **`bson` is an undeclared dependency.** `cli/status.py` imports it; it appears in neither
-  `install_requires` nor any requirements file. The import that reaches it
-  (`cli/commands/development/debug/__init__.py`) is deferred, so nothing fails until that path
-  runs -- which is also why no test caught it.
+- **Operating systems.** CI is `ubuntu-latest` only, and six `cli/` modules branch on platform.
+  The `termios`/`tty` case is now fixed and guarded (`websocket_client.py` matches the pattern
+  `cli/status.py` already used, and `test/unit/cli/test_import_surface.py` simulates the missing
+  module with a `meta_path` finder so the guard is exercised on Linux). The remaining platform
+  branches are still unexercised -- a real fix needs a `windows-latest` job.
 - **No type checking or security scanning.** There is no mypy/pyright/bandit/pip-audit config, and
   no `dependabot.yml` (so no automated version-update PRs for pip, actions, or cargo).
 - **Ruff is errors-only.** It gates real bugs, not style. That floor was chosen because it was
@@ -231,10 +228,8 @@ Ranked by risk. These are `cli/` modules that no test in the PR gate exercises a
 | `cli/commands/box/boxes.py` | 773 | `lager boxes` registration, listing, lock/unlock persistence. |
 | `cli/commands/measurement/scope.py` + `cli/impl/measurement/scope*.py` | 3221 | Trigger/timebase argument parsing plus a streaming state machine. |
 | `cli/commands/measurement/logic.py` | 530 | Logic analyzer; 21 subcommands. |
-| `cli/status.py` | 405 | Status/state rendering; also the Windows-guarded termios path. |
+| `cli/status.py` | 405 | Status/state rendering. Now import-tested (`test_import_surface.py`); the rendering itself is still uncovered. |
 | `cli/commands/utility/defaults.py` | 398 | Reads and writes user config defaults -- persistence with no guard. |
-| `cli/core/param_types.py` | 324 | Custom click ParamTypes -- every command's input validation funnels here. |
-| `cli/core/matchers.py` | 258 | Fuzzy net/box name resolution. |
 | `cli/core/net_storage.py` | 239 | Net definition persistence. |
 | `cli/commands/utility/logs.py` | 232 | No tests. |
 | `cli/core/ssh_utils.py` | 203 | SSH invocation and argument building. |
@@ -242,15 +237,36 @@ Ranked by risk. These are `cli/` modules that no test in the PR gate exercises a
 | `cli/context/core.py` | 160 | `LagerContext` construction. |
 | `cli/simple_hdlc.py` | 156 | Frame parser / state machine. |
 | `cli/update_check.py` | 138 | Background update-check thread. |
-| `cli/commands/box/lock.py` | 108 | `lock`/`unlock`/`--force` command layer. The `box_storage` helpers beneath it are well covered; the wrapper is not. |
-| `cli/commands/utility/login.py` | 76 | **Auth entry point** -- `login`/`logout`/`whoami`, writes the session token. |
-| `cli/safe_unpickle.py` | 41 | Deserialization allowlist. Security-relevant. |
 | `cli/terminal/**` | ~800 | The whole interactive REPL. |
 
-Nineteen of roughly forty-nine top-level command groups registered in `cli/main.py` have no gated
+Sixteen of roughly forty-nine top-level command groups registered in `cli/main.py` have no gated
 test: `debug`, `defaults`, `webcam`, `scope`, `logic`, `hello`, `boxes`, `box`, `box-config`,
-`dut`, `instruments`, `ssh`, `ssh-setup`, `authorize`, `logs`, `login`, `logout`, `whoami`,
-`terminal`.
+`dut`, `instruments`, `ssh`, `ssh-setup`, `authorize`, `logs`, `terminal`.
+`login`, `logout` and `whoami` are now covered by `test/unit/cli/test_login_commands.py`.
+
+### Defects found by writing the Phase-F tests
+
+Writing coverage for previously-untested modules surfaced five defects. None are fixed in the
+test-only change that found them; each is pinned by a test so it cannot regress further or be
+"fixed" without the test noticing.
+
+| Where | Defect | How it is pinned |
+|---|---|---|
+| `cli/core/param_types.py` `CanFrameType.convert` | Tests `'#' in value` **before** `'##' in value`, so a CAN-FD frame always takes the CAN-2.0 branch and dies with `ValueError: too many values to unpack`. The `'##'` branch is unreachable. | `xfail(strict=True)` + a test pinning the exact failure mode |
+| `cli/core/param_types.py` `parse_canfd` | Passes `flags=` to the `CanFrame` namedtuple, which has no `flags` field -> `TypeError`, even called directly. So CAN-FD is broken twice over. | same |
+| `cli/core/param_types.py` `ADCChannelType.convert` | `'-1'` contains `'-'`, so it takes the range branch and raises a raw `ValueError` from `int('')`. The `value < 0` guard below it is **unreachable dead code**. | test asserts the actual `ValueError`, not the intended `BadParameter` |
+| `cli/core/matchers.py` `EndsWithMatcher.feed` | When a chunk ends on `\n`, `split()` leaves a trailing `b''` that is still emitted with its own newline -- so every chunk landing on a line boundary appends a blank line to the user's output. | test pins the exact write sequence |
+| `cli/core/matchers.py` `iter_streams` | Line 87 is `elif V1ParseStates.Content:` -- missing `parse_state ==`, so it evaluates an always-truthy enum member. Correct today only because the branches above it are exhaustive; a sixth state would route here silently. | test asserts the source line, and fails once it is fixed |
+
+The three `param_types` defects are all in **export-only** code: the CAN types and
+`ADCChannelType` are re-exported by `cli/core/__init__.py` but no command uses them, and no
+`canbus` group is registered in `cli/main.py`. They are latent, not user-facing. The two
+`matchers` defects are on the live `lager python` output path; the blank-line one is cosmetic and
+the `iter_streams` one is currently benign.
+
+Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `HexArrayType`,
+`BinfileType`) *are* on live paths -- `lager devenv`, `lager python --env/--port`, `lager debug`
+-- and are now covered.
 
 ### Undertested -- a test exists, but thin relative to risk
 
@@ -258,7 +274,7 @@ test: `debug`, `defaults`, `webcam`, `scope`, `logic`, `hello`, `boxes`, `box`, 
 |---|---:|---|---|
 | `cli/commands/utility/update.py` | 2440 | 14 tests | Only version-ref resolution and the probe. Rollback, staging, service restart untested. |
 | `cli/gateway_auth.py` | 376 | 27 tests | Refresh path plus the `cli/tests/` suite. `handle_gateway_denial`, `gateway_response_hook`, `auth_headers_for_box` remain thin. |
-| `cli/config.py` | 435 | 9 tests | Cache only. The configparser round-trip, `read_lager_json`/`write_lager_json`, and `get_debug_script_for_net` are untested. |
+| `cli/config.py` | 435 | 63 tests | Cache, the configparser round-trip and legacy-key migration, `read_lager_json`/`write_lager_json`, `expand_devenv_path` and `get_debug_script_for_net` are covered. `get_includes_from_config` and `_find_config_files` are not. |
 | `cli/commands/utility/install.py` | 575 | indirect | Only `install_wheel` is exercised. |
 | `cli/commands/utility/uninstall.py` | 820 | 10 tests | Spec parsing only; teardown and rollback untested. |
 | `cli/commands/communication/*.py` | — | 1 each | Smoke-only: asserts each posts to `:9000`. `spi.py` (700) and `i2c.py` (551) have no protocol or argument-parsing coverage. |
@@ -320,9 +336,9 @@ test/
 ├── mcp/                  # MCP server tests (pytest)
 │   ├── unit/             # 11 files: mocked, no hardware -- GATED
 │   └── integration/      #  1 file: live hardware required
-├── unit/                 # Local unit tests (99 files) -- ALL GATED
+├── unit/                 # Local unit tests (108 files) -- ALL GATED
 │   ├── box/              # 56 files: box-side Python unit tests
-│   ├── cli/              # 33 files: CLI Python unit tests
+│   ├── cli/              # 41 files: CLI Python unit tests
 │   ├── measurement/      #  4 files: Joulescope / PPK2 / watt unit tests
 │   ├── blufi/            #  2 files: BluFi protocol unit tests
 │   └── test_*.py         #  5 files: root-level unit tests
@@ -339,7 +355,7 @@ cli/tests/                #  5 files: 3 pytest suites + test_io_imports.py (GATE
                           #           `unit (cli)`), plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 99 files)
+### Local Unit Tests (`test/unit/` -- 108 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 56 files)
 
@@ -406,7 +422,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_webcam_detection.py` | sysfs-based webcam detection (`_by_camera`) against a fake sysfs tree |
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 33 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 41 files)
 
 | File | What it tests |
 |------|---------------|
@@ -417,6 +433,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_box_request_failure_messages.py` | `echo_box_request_failure`: distinguishing a slow box-side op from a dead box |
 | `test_configure_docker_dns.py` | `configure_docker_dns`: daemon.json `dns` entries must be bare IPs or Docker refuses to start |
 | `test_configure_docker_dns_rollback.py` | Rollback behaviour of `configure_docker_dns.sh` when the DNS optimization fails |
+| `test_debug_service_client_auth.py` | Gateway auth on the debug service client |
 | `test_devenv_config_commands.py` | `lager devenv mount` / `env`: editing project-local `.lager` volumes and environment keys |
 | `test_devenv_terminal_docker_args.py` | `docker run` args for `devenv terminal` and `exec`; regression for the `--group` bare-flag bug |
 | `test_diagnose_classify.py` | `lager diagnose` classification decision tree for one-line user diagnosis |
@@ -443,6 +460,13 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_version_skew.py` | Version skew warning when CLI minor > box minor with per-process caching |
 | `test_watt_subcommands.py` | `lager watt` NetGroup reading power/current/voltage/all over the box API |
 | `test_ws_diagnose.py` | WebSocket failure message generation pointing to instrument vs. box based on health |
+| `test_box_lock_command.py` | `lager boxes lock`/`unlock` command layer: the no-expiry reservation body (`holder_type`/`ttl_seconds`), exit codes on 409/403, `--force`, and the Docker-root warning |
+| `test_config_roundtrip.py` | `cli/config.py` JSON<->ConfigParser round-trip, legacy-key migration, `read`/`write_lager_json`, `expand_devenv_path`, `get_debug_script_for_net` |
+| `test_import_surface.py` | Import guards: `cli/status.py` needs pymongo's `bson.decode`, and `termios`/`tty` must stay optional (simulated via a `meta_path` finder) |
+| `test_login_commands.py` | `lager login`/`logout`/`whoami`: display-name fallback, MFA prompt wiring, logout URL rstrip, and the four `whoami` session states |
+| `test_matchers.py` | Test-output matchers and the v1 stream framing parser; markers split across chunk boundaries must still set the exit code |
+| `test_param_types.py` | Every custom click ParamType, valid and invalid, incl. the five on live command paths |
+| `test_safe_unpickle.py` | Deserialization allowlist: refused globals must not be imported as a side effect of refusing them |
 
 #### Measurement Unit Tests (`test/unit/measurement/` -- 4 files)
 

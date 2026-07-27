@@ -142,6 +142,20 @@ jobs:
             --import-mode=importlib -c /dev/null
         shell: bash
 
+      # test/COVERAGE.md opens with "Counts here are checked against disk", and
+      # until now nothing checked it. It drifted three times in one afternoon --
+      # two merges added 37 gated tests between them without touching the file,
+      # leaving it understating the gate by 290. An unverified number still
+      # reads as authoritative, which makes it worse than no number.
+      #
+      # This runs each suite and compares against the table. It means a PR that
+      # adds or removes a test must update COVERAGE.md -- which is already the
+      # rule the file states, now enforced. `--fix` rewrites the table.
+      - name: COVERAGE.md counts match reality
+        if: always()
+        run: python tools/check_coverage_counts.py
+        shell: bash
+
       # Errors only: undefined names, syntax errors, f-string and assert
       # mistakes. Not style. The full default ruleset reports ~6300 findings on
       # this tree, which would be noise, not a gate. Vendored trees are

@@ -64,6 +64,7 @@ if __name__ == "__main__":
             textual >= 3.2.0, < 9
             python-socketio >= 5.10.0, < 6
             websocket-client >= 1.0.0
+            pymongo >= 4.0, < 6
         ''',
         extras_require={
             'mcp': ['mcp>=1.20.0'],
