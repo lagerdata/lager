@@ -82,3 +82,75 @@ jobs:
       - name: Run ${{ matrix.name }} unit tests
         run: pytest ${{ matrix.path }} -v --import-mode=importlib -c /dev/null --timeout=60
         shell: bash
+
+  # cli/setup.py declares python_requires=">=3.10" and advertises 3.10 through
+  # 3.14; the gate above tests 3.11 only. This job covers the other four.
+  #
+  # It is deliberately a SEPARATE job rather than another matrix dimension on
+  # unit-tests. Adding `python` to that matrix would rename its contexts from
+  # `unit (cli)` to `unit (cli, 3.11)`, and those names are required in the
+  # branch ruleset -- every open PR would sit forever waiting on checks that no
+  # longer report.
+  #
+  # One context per version, with the suites run sequentially inside it: they
+  # cannot share a pytest process (see the header), and six matrix jobs per
+  # version would be 24 contexts for no extra signal.
+  compat:
+    name: compat (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # 3.14 is expected to be the interesting one: cli/pyproject.toml pins
+    # setuptools<77 and cli/setup.py does a sys.path insert + `from __init__
+    # import __version__` at build time, which newer build isolation breaks.
+    # Land it non-fatal, then drop this once it is green.
+    continue-on-error: ${{ matrix.experimental }}
+    env:
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/box
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: '3.10'
+            experimental: false
+          - python: '3.12'
+            experimental: false
+          - python: '3.13'
+            experimental: false
+          - python: '3.14'
+            experimental: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install CLI + test deps
+        run: |
+          pip install -e cli/
+          pip install 'pytest>=9,<10' 'pytest-timeout>=2.3,<3'
+          pip install -r test/requirements-unit.txt
+        shell: bash
+
+      # Run every suite even if an earlier one fails, then fail once at the
+      # end -- otherwise a break in the first suite hides the state of the
+      # other five, which is the whole point of a version-compat run.
+      - name: Run all unit suites on ${{ matrix.python }}
+        run: |
+          fail=0
+          run() {
+            echo "::group::$1"
+            pytest $2 -q --import-mode=importlib -c /dev/null --timeout=60 || fail=1
+            echo "::endgroup::"
+          }
+          run cli         "test/unit/cli/ cli/tests/"
+          run box         "test/unit/box/"
+          run measurement "test/unit/measurement/"
+          run blufi       "test/unit/blufi/"
+          run mcp         "test/mcp/unit/"
+          run root        "test/unit/test_*.py test/test_*.py"
+          exit $fail
+        shell: bash
