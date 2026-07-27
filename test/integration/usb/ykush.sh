@@ -276,7 +276,7 @@ echo ""
 
 echo "Test 3.5: Rapid operations (testing device cache)"
 FAIL_COUNT=0
-for i in {1..10}; do
+for _ in {1..10}; do
   lager usb $TEST_YKUSH_NET toggle --box $BOX >/dev/null 2>&1 || FAIL_COUNT=$((FAIL_COUNT + 1))
 done
 if [ $FAIL_COUNT -eq 0 ]; then
@@ -403,7 +403,7 @@ echo "Test 5.4: Runtime error handling (set_port_state failure)"
 # We can't easily force this without modifying the hub, but we can
 # verify normal operations don't trigger false errors
 FAIL_COUNT=0
-for i in {1..5}; do
+for _ in {1..5}; do
   lager usb $TEST_YKUSH_NET toggle --box $BOX >/dev/null 2>&1 || FAIL_COUNT=$((FAIL_COUNT + 1))
 done
 if [ $FAIL_COUNT -eq 0 ]; then
@@ -493,7 +493,7 @@ start_section "YKUSH Performance"
 echo "Test 7.1: Rapid cycling performance (20 operations)"
 START_TIME=$(date +%s)
 FAIL_COUNT=0
-for i in {1..20}; do
+for _ in {1..20}; do
   lager usb $TEST_YKUSH_NET toggle --box $BOX >/dev/null 2>&1 || FAIL_COUNT=$((FAIL_COUNT + 1))
 done
 END_TIME=$(date +%s)
@@ -512,7 +512,7 @@ echo ""
 echo "Test 7.2: Device cache efficiency (LRU)"
 # Multiple operations should be fast due to device caching
 START_TIME=$(date +%s)
-for i in {1..5}; do
+for _ in {1..5}; do
   lager usb $TEST_YKUSH_NET enable --box $BOX >/dev/null 2>&1
   lager usb $TEST_YKUSH_NET disable --box $BOX >/dev/null 2>&1
 done
@@ -531,7 +531,7 @@ echo ""
 echo "Test 7.3: Toggle state query performance"
 # Toggle requires reading current state first
 START_TIME=$(date +%s)
-for i in {1..10}; do
+for _ in {1..10}; do
   lager usb $TEST_YKUSH_NET toggle --box $BOX >/dev/null 2>&1
 done
 END_TIME=$(date +%s)
@@ -596,7 +596,7 @@ if [ "$NUM_ACRONAME" -gt 0 ]; then
 
   echo "Test 8.3: Rapid switching between hub types"
   FAIL_COUNT=0
-  for i in {1..5}; do
+  for _ in {1..5}; do
     lager usb $TEST_YKUSH_NET toggle --box $BOX >/dev/null 2>&1 || FAIL_COUNT=$((FAIL_COUNT + 1))
     lager usb $TEST_ACRONAME_NET toggle --box $BOX >/dev/null 2>&1 || FAIL_COUNT=$((FAIL_COUNT + 1))
   done

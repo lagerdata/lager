@@ -561,7 +561,7 @@ fi
 # 5g. WHO_AM_I consistency (5 reads)
 echo -n "Test: WHO_AM_I 5 consecutive reads... "
 CONSISTENT=true
-for i in $(seq 1 5); do
+for _ in $(seq 1 5); do
     OUTPUT=$(lager spi "$NET1" transfer --data "$WHO_AM_I_CMD" 2 --box "$BOX" 2>&1)
     if ! echo "$OUTPUT" | grep -qi "$WHO_AM_I_VAL"; then
         CONSISTENT=false
@@ -820,7 +820,7 @@ fi
 # 9e. Alternating read/write
 echo -n "Test: Alternating read/write... "
 ALT_OK=true
-for i in $(seq 1 5); do
+for _ in $(seq 1 5); do
     lager spi "$NET" read 4 --box "$BOX" >/dev/null 2>&1 || ALT_OK=false
     lager spi "$NET" write 0xFF --box "$BOX" >/dev/null 2>&1 || ALT_OK=false
 done

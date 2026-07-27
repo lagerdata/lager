@@ -625,17 +625,17 @@ echo "========================================================================"
 echo ""
 
 echo "Test 13.1: Verify UART command works after errors"
-lager uart nonexistent_net --box $BOX 2>&1 >/dev/null || true
+lager uart nonexistent_net --box $BOX >/dev/null 2>&1 || true
 lager uart --box $BOX >/dev/null 2>&1 && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 13.2: Verify net listing after failed creation"
-lager nets create "" uart "$UART_SERIAL" "$UART_VISA" --box $BOX 2>&1 >/dev/null || true
+lager nets create "" uart "$UART_SERIAL" "$UART_VISA" --box $BOX >/dev/null 2>&1 || true
 lager uart --box $BOX >/dev/null 2>&1 && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 13.3: Verify net listing after failed deletion"
-lager nets delete "nonexistent_uart_net" uart --box $BOX 2>&1 >/dev/null || true
+lager nets delete "nonexistent_uart_net" uart --box $BOX >/dev/null 2>&1 || true
 lager uart --box $BOX >/dev/null 2>&1 && track_test "pass" || track_test "fail"
 echo ""
 
@@ -666,13 +666,13 @@ echo ""
 
 echo "Removing any test UART nets..."
 for name in "$TEST_UART_NET" "$TEST_UART_NET2" "$TEST_NET_PARAMS" "$TEST_NET_MULTI" "${TEST_UART_NET}_renamed"; do
-  lager nets delete "$name" uart --box $BOX 2>&1 >/dev/null || true
+  lager nets delete "$name" uart --box $BOX >/dev/null 2>&1 || true
 done
 
 # Clean up any remaining stress test nets
 for i in {1..10}; do
-  lager nets delete "stress_uart_${i}" uart --box $BOX 2>&1 >/dev/null || true
-  lager nets delete "stress_multi_${i}" uart --box $BOX 2>&1 >/dev/null || true
+  lager nets delete "stress_uart_${i}" uart --box $BOX >/dev/null 2>&1 || true
+  lager nets delete "stress_multi_${i}" uart --box $BOX >/dev/null 2>&1 || true
 done
 
 echo -e "${GREEN}[OK] Cleanup complete${NC}"

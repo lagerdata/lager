@@ -228,7 +228,7 @@ echo ""
 
 # Ensure clean state - disconnect any existing connection
 echo "Ensuring clean initial state..."
-lager debug $NET disconnect --box $BOX 2>&1 >/dev/null || true
+lager debug $NET disconnect --box $BOX >/dev/null 2>&1 || true
 echo ""
 
 # Clean up any stale J-Link processes from previous test runs
@@ -300,7 +300,7 @@ echo ""
 
 # Cleanup: Disconnect before error tests to ensure clean state
 echo "Cleanup: Disconnecting for Section 2 error tests..."
-lager debug $NET disconnect --box $BOX 2>&1 >/dev/null || true
+lager debug $NET disconnect --box $BOX >/dev/null 2>&1 || true
 echo ""
 
 # ============================================================
@@ -1211,7 +1211,7 @@ fi
 echo ""
 
 echo "Test 13.7: State consistency after errors"
-lager debug $NET memrd --box $BOX 0xFFFFFFFF 64 2>&1 >/dev/null || true  # Trigger error
+lager debug $NET memrd --box $BOX 0xFFFFFFFF 64 >/dev/null 2>&1 || true  # Trigger error
 if lager debug $NET status --box $BOX | grep -q "Connected"; then
     echo "[OK] Connection stable after error"
     mark_test_passed

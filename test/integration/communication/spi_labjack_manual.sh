@@ -162,7 +162,7 @@ fi
 # 2c. Consistency: 5 manual CS chip ID reads
 echo -n "Test: 5 consecutive manual CS chip ID reads... "
 CONSISTENT=true
-for i in $(seq 1 5); do
+for _ in $(seq 1 5); do
     lager gpo "$GPIO_CS" low --box "$BOX" >/dev/null 2>&1
     OUTPUT=$(lager spi "$SPI_NET" transfer --data "$CHIP_ID_CMD" 2 --box "$BOX" 2>&1)
     lager gpo "$GPIO_CS" high --box "$BOX" >/dev/null 2>&1

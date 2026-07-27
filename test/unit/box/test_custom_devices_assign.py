@@ -6,9 +6,10 @@ handlers — the box-side backend of ``lager nets assign``.
 
 The three operations (``list_state`` / ``assign`` / ``remove``) read and
 write the custom-device store and enumerate live cables. Fully hermetic: the
-real ``lager.devices`` modules load via the bare-namespace trick, the store
-path is redirected to a temp file, and ``serial_id.list_cables`` /
-``resolve_tty`` are monkeypatched — no /sys, no hardware.
+real ``lager.devices`` modules are imported from box/ (conftest.py has already
+put it on sys.path), the store path is redirected to a temp file, and
+``serial_id.list_cables`` / ``resolve_tty`` are monkeypatched — no /sys, no
+hardware.
 """
 
 import importlib.util
@@ -27,16 +28,6 @@ if BOX_DIR not in sys.path:
     sys.path.insert(0, BOX_DIR)
 
 
-def _ensure_package(dotted, *parts):
-    if dotted in sys.modules:
-        return sys.modules[dotted]
-    mod = types.ModuleType(dotted)
-    mod.__path__ = [os.path.join(BOX_DIR, *parts)]
-    mod.__package__ = dotted
-    sys.modules[dotted] = mod
-    return mod
-
-
 def _load_module(dotted, filepath):
     if dotted in sys.modules:
         return sys.modules[dotted]
@@ -47,8 +38,7 @@ def _load_module(dotted, filepath):
     return mod
 
 
-_ensure_package("lager", "lager")
-_lager_devices = _ensure_package("lager.devices", "lager", "devices")
+_lager_devices = importlib.import_module("lager.devices")
 catalog = _load_module(
     "lager.devices.catalog", os.path.join(BOX_DIR, "lager", "devices", "catalog.py"))
 serial_id = _load_module(

@@ -9,10 +9,9 @@ tests are fully hermetic: no debug probe, no real ``defmt-print``, and no
 cargo. We stub ``defmt-print`` with a tiny Python script and feed a fake RTT
 session, so we exercise the threading/piping/teardown logic in isolation.
 
-The module is imported without executing ``lager/__init__.py`` (which pulls
-in requests/simplejson and other heavy deps) by registering bare package
-namespaces in ``sys.modules`` first — the same trick the measurement
-conftest uses.
+``conftest.py`` imports the real ``lager`` package once for the whole suite.
+``lager.constants`` is still stubbed here: ``debug_net`` only needs
+``HARDWARE_SERVICE_PORT`` from it.
 """
 
 import collections
@@ -31,16 +30,6 @@ if BOX_DIR not in sys.path:
     sys.path.insert(0, BOX_DIR)
 
 
-def _ensure_package(dotted, *parts):
-    if dotted in sys.modules:
-        return sys.modules[dotted]
-    mod = types.ModuleType(dotted)
-    mod.__path__ = [os.path.join(BOX_DIR, *parts)]
-    mod.__package__ = dotted
-    sys.modules[dotted] = mod
-    return mod
-
-
 def _load_module(dotted, filepath):
     if dotted in sys.modules:
         return sys.modules[dotted]
@@ -51,18 +40,16 @@ def _load_module(dotted, filepath):
     return mod
 
 
-# 1. Bare ``lager`` package (don't run its __init__).
-_ensure_package("lager", "lager")
-
-# 2. Stub ``lager.constants`` — debug_net's constants import only needs
-#    HARDWARE_SERVICE_PORT.
+# 1. Stub ``lager.constants`` — debug_net's constants import only needs
+#    HARDWARE_SERVICE_PORT. (conftest.py has already imported the real
+#    ``lager`` package and put box/ at the front of sys.path.)
 if "lager.constants" not in sys.modules:
     _const = types.ModuleType("lager.constants")
     _const.HARDWARE_SERVICE_PORT = 5000
     sys.modules["lager.constants"] = _const
 
-# 3. ``lager.nets`` package namespace, then the real constants + debug_net.
-_ensure_package("lager.nets", "lager", "nets")
+# 2. The real ``lager.nets`` package, then the real constants + debug_net.
+importlib.import_module("lager.nets")
 _load_module(
     "lager.nets.constants",
     os.path.join(BOX_DIR, "lager", "nets", "constants.py"),

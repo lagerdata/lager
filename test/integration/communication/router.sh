@@ -148,7 +148,7 @@ echo ""
 
 echo "Test 3.2: connect stability (3 iterations)"
 FAILED=0
-for i in {1..3}; do
+for _ in {1..3}; do
   lager router connect "$NET" --box "$BOX" >/dev/null 2>&1 || FAILED=1
 done
 [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
@@ -165,7 +165,7 @@ echo ""
 
 echo "Test 4.2: system-info stability (3 iterations)"
 FAILED=0
-for i in {1..3}; do
+for _ in {1..3}; do
   lager router system-info "$NET" --box "$BOX" >/dev/null 2>&1 || FAILED=1
 done
 [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
@@ -187,7 +187,7 @@ echo ""
 
 echo "Test 5.3: interfaces stability (3 iterations)"
 FAILED=0
-for i in {1..3}; do
+for _ in {1..3}; do
   lager router interfaces "$NET" --box "$BOX" >/dev/null 2>&1 || FAILED=1
 done
 [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
@@ -208,7 +208,7 @@ echo ""
 
 echo "Test 6.3: wireless queries stability (3 iterations each)"
 FAILED=0
-for i in {1..3}; do
+for _ in {1..3}; do
   lager router wireless-interfaces "$NET" --box "$BOX" >/dev/null 2>&1 || FAILED=1
   lager router wireless-clients "$NET" --box "$BOX" >/dev/null 2>&1 || FAILED=1
 done
@@ -226,7 +226,7 @@ echo ""
 
 echo "Test 7.2: DHCP leases stability (3 iterations)"
 FAILED=0
-for i in {1..3}; do
+for _ in {1..3}; do
   lager router dhcp-leases "$NET" --box "$BOX" >/dev/null 2>&1 || FAILED=1
 done
 [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"

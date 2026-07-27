@@ -743,7 +743,7 @@ fi
 # 9e. Rapid transfers (10 chip ID reads)
 echo -n "Test: 10 rapid chip ID reads... "
 RAPID_OK=true
-for i in $(seq 1 10); do
+for _ in $(seq 1 10); do
     OUTPUT=$(lager i2c "$NET" transfer 1 --address "$ADDR" --data "$CHIP_ID_REG" --box "$BOX" 2>&1)
     if ! echo "$OUTPUT" | grep -q "$CHIP_ID_VAL"; then
         RAPID_OK=false

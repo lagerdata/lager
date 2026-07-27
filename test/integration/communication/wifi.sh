@@ -74,7 +74,7 @@ echo ""
 
 echo "Test 2.2: WiFi status stability (5 iterations)"
 FAILED=0
-for i in {1..5}; do
+for _ in {1..5}; do
   lager wifi status --box $BOX >/dev/null 2>&1 || FAILED=1
 done
 [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
@@ -99,7 +99,7 @@ echo ""
 
 echo "Test 3.3: Scan stability (3 iterations)"
 FAILED=0
-for i in {1..3}; do
+for _ in {1..3}; do
   lager wifi access-points --box $BOX >/dev/null 2>&1 || FAILED=1
 done
 [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"

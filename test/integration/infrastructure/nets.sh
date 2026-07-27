@@ -626,7 +626,7 @@ echo ""
 echo "Test 9.1: Rapid net creation (10 nets)"
 START_TIME=$(get_timestamp_ms)
 for i in {1..10}; do
-  lager nets create --box $BOX --name "stress_net_${i}" --visa "TCPIP0::192.168.50.$i::inst0::INSTR" 2>&1 >/dev/null || true
+  lager nets create --box $BOX --name "stress_net_${i}" --visa "TCPIP0::192.168.50.$i::inst0::INSTR" >/dev/null 2>&1 || true
 done
 END_TIME=$(get_timestamp_ms)
 ELAPSED_MS=$(( END_TIME - START_TIME ))
@@ -647,8 +647,8 @@ echo ""
 echo "Test 9.3: Rapid rename operations (5 cycles)"
 for i in {1..5}; do
   if lager nets --box $BOX | grep -q "stress_net_1"; then
-    lager nets rename --box $BOX --name "stress_net_1" --new-name "stress_net_1_temp" 2>&1 >/dev/null || true
-    lager nets rename --box $BOX --name "stress_net_1_temp" --new-name "stress_net_1" 2>&1 >/dev/null || true
+    lager nets rename --box $BOX --name "stress_net_1" --new-name "stress_net_1_temp" >/dev/null 2>&1 || true
+    lager nets rename --box $BOX --name "stress_net_1_temp" --new-name "stress_net_1" >/dev/null 2>&1 || true
   fi
 done
 echo "[OK] Rapid rename cycles completed"
@@ -656,10 +656,10 @@ echo ""
 
 echo "Test 9.4: Create and delete cycle (10 iterations)"
 for i in {1..10}; do
-  lager nets create --box $BOX --name "cycle_net_${i}" --visa "TCPIP0::192.168.60.$i::inst0::INSTR" 2>&1 >/dev/null || true
+  lager nets create --box $BOX --name "cycle_net_${i}" --visa "TCPIP0::192.168.60.$i::inst0::INSTR" >/dev/null 2>&1 || true
   if lager nets --box $BOX | grep -q "cycle_net_${i}"; then
     NET_TYPE=$(lager nets --box $BOX | grep "cycle_net_${i}" | grep -oE "Type: [A-Za-z]+" | cut -d' ' -f2 || echo "Analog")
-    lager nets delete --box $BOX --name "cycle_net_${i}" --type "$NET_TYPE" 2>&1 >/dev/null || true
+    lager nets delete --box $BOX --name "cycle_net_${i}" --type "$NET_TYPE" >/dev/null 2>&1 || true
   fi
 done
 echo "[OK] Create/delete cycles completed"
@@ -690,7 +690,7 @@ echo "Test 10.2: Net creation latency (5 iterations average)"
 TOTAL_TIME=0
 for i in {1..5}; do
   START_TIME=$(get_timestamp_ms)
-  lager nets create --box $BOX --name "perf_net_${i}" --visa "TCPIP0::192.168.70.$i::inst0::INSTR" 2>&1 >/dev/null || true
+  lager nets create --box $BOX --name "perf_net_${i}" --visa "TCPIP0::192.168.70.$i::inst0::INSTR" >/dev/null 2>&1 || true
   END_TIME=$(get_timestamp_ms)
   TOTAL_TIME=$((TOTAL_TIME + (END_TIME - START_TIME)))
 done
@@ -704,7 +704,7 @@ for i in {1..5}; do
   if lager nets --box $BOX | grep -q "perf_net_${i}"; then
     NET_TYPE=$(lager nets --box $BOX | grep "perf_net_${i}" | grep -oE "Type: [A-Za-z]+" | cut -d' ' -f2 || echo "Analog")
     START_TIME=$(get_timestamp_ms)
-    lager nets delete --box $BOX --name "perf_net_${i}" --type "$NET_TYPE" 2>&1 >/dev/null || true
+    lager nets delete --box $BOX --name "perf_net_${i}" --type "$NET_TYPE" >/dev/null 2>&1 || true
     END_TIME=$(get_timestamp_ms)
     TOTAL_TIME=$((TOTAL_TIME + (END_TIME - START_TIME)))
   fi
@@ -716,12 +716,12 @@ echo ""
 echo "Test 10.4: Net rename latency (5 iterations average)"
 TOTAL_TIME=0
 # Create a test net first
-lager nets create --box $BOX --name "rename_perf_net" --visa "TCPIP0::192.168.70.50::inst0::INSTR" 2>&1 >/dev/null || true
+lager nets create --box $BOX --name "rename_perf_net" --visa "TCPIP0::192.168.70.50::inst0::INSTR" >/dev/null 2>&1 || true
 for i in {1..5}; do
   if lager nets --box $BOX | grep -q "rename_perf_net"; then
     START_TIME=$(get_timestamp_ms)
-    lager nets rename --box $BOX --name "rename_perf_net" --new-name "rename_perf_net_temp" 2>&1 >/dev/null || true
-    lager nets rename --box $BOX --name "rename_perf_net_temp" --new-name "rename_perf_net" 2>&1 >/dev/null || true
+    lager nets rename --box $BOX --name "rename_perf_net" --new-name "rename_perf_net_temp" >/dev/null 2>&1 || true
+    lager nets rename --box $BOX --name "rename_perf_net_temp" --new-name "rename_perf_net" >/dev/null 2>&1 || true
     END_TIME=$(get_timestamp_ms)
     TOTAL_TIME=$((TOTAL_TIME + (END_TIME - START_TIME)))
   fi
@@ -740,26 +740,26 @@ echo "========================================================================"
 echo ""
 
 echo "Test 11.1: List after creation errors"
-lager nets create --box $BOX --name "error_net" --visa "INVALID::VISA::ADDRESS" 2>&1 >/dev/null || true
+lager nets create --box $BOX --name "error_net" --visa "INVALID::VISA::ADDRESS" >/dev/null 2>&1 || true
 lager nets --box $BOX >/dev/null && echo "[OK] List works after creation error" || echo "[FAIL] List failed after error"
 echo ""
 
 echo "Test 11.2: Create after deletion errors"
-lager nets delete --box $BOX --name "nonexistent" --type "Analog" 2>&1 >/dev/null || true
+lager nets delete --box $BOX --name "nonexistent" --type "Analog" >/dev/null 2>&1 || true
 lager nets create --box $BOX --name "after_error_net" --visa "TCPIP0::192.168.80.1::inst0::INSTR" 2>&1 || echo "[WARNING] Creation after error may require valid instrument"
 echo ""
 
 echo "Test 11.3: Rename after error"
-lager nets rename --box $BOX --name "nonexistent" --new-name "newname" 2>&1 >/dev/null || true
+lager nets rename --box $BOX --name "nonexistent" --new-name "newname" >/dev/null 2>&1 || true
 if lager nets --box $BOX | grep -q "after_error_net"; then
   lager nets rename --box $BOX --name "after_error_net" --new-name "after_error_net_renamed" 2>&1 || echo "[WARNING] Rename may have failed"
 fi
 echo ""
 
 echo "Test 11.4: Multiple errors followed by valid operation"
-lager nets create --box $BOX --name "" --visa "" 2>&1 >/dev/null || true
-lager nets delete --box $BOX --name "" --type "" 2>&1 >/dev/null || true
-lager nets rename --box $BOX --name "" --new-name "" 2>&1 >/dev/null || true
+lager nets create --box $BOX --name "" --visa "" >/dev/null 2>&1 || true
+lager nets delete --box $BOX --name "" --type "" >/dev/null 2>&1 || true
+lager nets rename --box $BOX --name "" --new-name "" >/dev/null 2>&1 || true
 lager nets --box $BOX >/dev/null && echo "[OK] List works after multiple errors" || echo "[FAIL] List failed"
 echo ""
 
@@ -780,8 +780,10 @@ echo "Test 12.2: Net name with only numbers"
 lager nets create --box $BOX --name "123456" --visa "TCPIP0::192.168.90.2::inst0::INSTR" 2>&1 || echo "[WARNING] Numeric-only name may not be allowed"
 echo ""
 
+# BMP (CJK) plus non-BMP (U+1D400, 4-byte UTF-8) on purpose: different
+# encoding paths, and a CJK-only name would not catch a surrogate-pair bug.
 echo "Test 12.3: Net name with Unicode characters"
-lager nets create --box $BOX --name "net_测试_🔌" --visa "TCPIP0::192.168.90.3::inst0::INSTR" 2>&1 || echo "[WARNING] Unicode may not be supported"
+lager nets create --box $BOX --name "net_测试_𝐀" --visa "TCPIP0::192.168.90.3::inst0::INSTR" 2>&1 || echo "[WARNING] Unicode may not be supported"
 echo ""
 
 echo "Test 12.4: Empty net name"
@@ -874,7 +876,7 @@ lager nets --box $BOX | grep -E "${TEST_NET_NAME}|batch_net|large_batch|stress_n
   NET_TYPE=$(echo "$line" | awk '{print $2}')
   if [ -n "$NET_NAME" ] && [ -n "$NET_TYPE" ]; then
     echo "  Deleting: $NET_NAME (Type: $NET_TYPE)"
-    if lager nets delete "$NET_NAME" "$NET_TYPE" --box $BOX --yes 2>&1 >/dev/null; then
+    if lager nets delete "$NET_NAME" "$NET_TYPE" --box $BOX --yes >/dev/null 2>&1; then
       DELETED_COUNT=$((DELETED_COUNT + 1))
     fi
   fi
@@ -937,7 +939,7 @@ lager nets --box $BOX | grep -E "duplicate_test|partial_fail" | while read -r li
   NET_NAME=$(echo "$line" | grep -oE "Net: [A-Za-z0-9_-]+" | cut -d' ' -f2)
   NET_TYPE=$(echo "$line" | grep -oE "Type: [A-Za-z]+" | cut -d' ' -f2)
   if [ -n "$NET_NAME" ] && [ -n "$NET_TYPE" ]; then
-    lager nets delete --box $BOX --name "$NET_NAME" --type "$NET_TYPE" 2>&1 >/dev/null || true
+    lager nets delete --box $BOX --name "$NET_NAME" --type "$NET_TYPE" >/dev/null 2>&1 || true
   fi
 done
 

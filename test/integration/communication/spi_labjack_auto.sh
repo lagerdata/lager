@@ -154,7 +154,7 @@ fi
 # 2c. 5x consistency
 echo -n "Test: 5 consecutive chip ID reads... "
 CONSISTENT=true
-for i in $(seq 1 5); do
+for _ in $(seq 1 5); do
     OUTPUT=$(lager spi "$SPI_NET" transfer --data "$CHIP_ID_CMD" 2 --box "$BOX" 2>&1)
     if ! echo "$OUTPUT" | grep -qi "$CHIP_ID_VAL"; then
         CONSISTENT=false

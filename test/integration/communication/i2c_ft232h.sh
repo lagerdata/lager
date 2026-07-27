@@ -246,7 +246,7 @@ lager i2c "$NET" scan --start 0x80 --box "$BOX" >/dev/null 2>&1 && track_test "f
 # 2k. Scan consistency (3 consecutive scans)
 echo -n "Test: Scan consistency (3x)... "
 SCAN_OK=true
-for i in 1 2 3; do
+for _ in 1 2 3; do
     OUTPUT=$(lager i2c "$NET" scan --start 0x76 --end 0x76 --box "$BOX" 2>&1)
     if ! echo "$OUTPUT" | grep -qi "76"; then
         SCAN_OK=false
@@ -506,7 +506,7 @@ lager i2c "$NET" transfer 1 --address 0x76 --data "D0" --box "$BOX" >/dev/null 2
 # 5p. Chip ID consistency (5 consecutive reads)
 echo -n "Test: Chip ID consistency (5x)... "
 CONSISTENT=true
-for i in 1 2 3 4 5; do
+for _ in 1 2 3 4 5; do
     OUTPUT=$(lager i2c "$NET" transfer 1 --address 0x76 --data 0xD0 --box "$BOX" 2>&1)
     if ! echo "$OUTPUT" | grep -qi "$BMP280_CHIP_ID"; then
         CONSISTENT=false
@@ -594,7 +594,7 @@ fi
 # 6g. Multiple sensor reads (5 forced measurements)
 echo -n "Test: 5 consecutive forced measurements... "
 MEAS_OK=true
-for i in 1 2 3 4 5; do
+for _ in 1 2 3 4 5; do
     lager i2c "$NET" write 0xF425 --address 0x76 --box "$BOX" >/dev/null 2>&1
     sleep 0.05
     OUTPUT=$(lager i2c "$NET" transfer 6 --address 0x76 --data 0xF7 --box "$BOX" 2>&1)
@@ -626,7 +626,7 @@ lager i2c "$NET" transfer 1 --address 0x76 --data 0xF3 --box "$BOX" >/dev/null 2
 # 6j. Rapid transfers (10 consecutive chip ID reads)
 echo -n "Test: Rapid transfers (10x chip ID)... "
 RAPID_OK=true
-for i in $(seq 1 10); do
+for _ in $(seq 1 10); do
     OUTPUT=$(lager i2c "$NET" transfer 1 --address 0x76 --data 0xD0 --box "$BOX" 2>&1)
     if ! echo "$OUTPUT" | grep -qi "$BMP280_CHIP_ID"; then
         RAPID_OK=false
@@ -777,7 +777,7 @@ fi
 # 9c. Forced measurement cycle (3x)
 echo -n "Test: Forced measurement cycle (3x)... "
 CYCLE_OK=true
-for i in 1 2 3; do
+for _ in 1 2 3; do
     lager i2c "$NET" write 0xF425 --address 0x76 --box "$BOX" >/dev/null 2>&1
     sleep 0.1
     OUTPUT=$(lager i2c "$NET" transfer 6 --address 0x76 --data 0xF7 --box "$BOX" 2>&1)
@@ -822,7 +822,7 @@ fi
 # 9f. Alternating write/read (5 pairs)
 echo -n "Test: Alternating write/read (5x)... "
 ALT_OK=true
-for i in 1 2 3 4 5; do
+for _ in 1 2 3 4 5; do
     lager i2c "$NET" write 0xD0 --address 0x76 --box "$BOX" >/dev/null 2>&1
     lager i2c "$NET" read 1 --address 0x76 --box "$BOX" >/dev/null 2>&1
     if [ $? -ne 0 ]; then

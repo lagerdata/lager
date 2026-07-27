@@ -17,7 +17,6 @@ import os
 import shutil
 import sys
 import tempfile
-import types
 import unittest
 from pathlib import Path
 
@@ -26,16 +25,6 @@ BOX_DIR = os.path.join(REPO_ROOT, "box")
 
 if BOX_DIR not in sys.path:
     sys.path.insert(0, BOX_DIR)
-
-
-def _ensure_package(dotted, *parts):
-    if dotted in sys.modules:
-        return sys.modules[dotted]
-    mod = types.ModuleType(dotted)
-    mod.__path__ = [os.path.join(BOX_DIR, *parts)]
-    mod.__package__ = dotted
-    sys.modules[dotted] = mod
-    return mod
 
 
 def _load_module(dotted, filepath):
@@ -48,8 +37,7 @@ def _load_module(dotted, filepath):
     return mod
 
 
-_ensure_package("lager", "lager")
-_ensure_package("lager.devices", "lager", "devices")
+importlib.import_module("lager.devices")
 serial_id = _load_module(
     "lager.devices.serial_id",
     os.path.join(BOX_DIR, "lager", "devices", "serial_id.py"),
@@ -258,9 +246,10 @@ class SerialIdCablesTests(unittest.TestCase):
         self.assertIsNone(serial_id.resolve_identity(ident))
 
     def test_reconnect_snapshot_cycle_with_clones(self):
-        # End-to-end shape of the JUL-16 heal: snapshot (serial demoted),
-        # device drops (None while absent), returns renumbered on the same
-        # port (resolved by port).
+        # End-to-end shape of the reconnect heal for a cable whose serial is
+        # not unique across the bus: snapshot (serial demoted), device drops
+        # (None while absent), returns renumbered on the same port (resolved
+        # by port).
         self._add_cable("ttyUSB0", "1-1.2", serial="0001")
         self._add_cable("ttyUSB1", "1-1.3", serial="0001")
         ident = serial_id.identity_for_tty("/dev/ttyUSB0")

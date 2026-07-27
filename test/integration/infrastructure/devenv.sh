@@ -71,7 +71,7 @@ echo ""
 
 echo "Test 2.2: List stability (5 iterations)"
 FAILED=0
-for i in {1..5}; do
+for _ in {1..5}; do
   lager devenv list >/dev/null 2>&1 || FAILED=1
 done
 [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
@@ -118,7 +118,7 @@ echo ""
 echo "Test 4.2: Create with invalid image name"
 lager devenv create --name "test_invalid_$$" --image "!!!invalid!!!" 2>&1 | grep -qi "error\|invalid" && track_test "pass" || track_test "pass"
 # Clean up in case it somehow succeeded
-lager devenv remove --name "test_invalid_$$" --yes 2>&1 >/dev/null || true
+lager devenv remove --name "test_invalid_$$" --yes >/dev/null 2>&1 || true
 echo ""
 
 # ============================================================
@@ -126,7 +126,7 @@ echo ""
 # ============================================================
 
 # Final cleanup
-lager devenv remove --name "$TEST_ENV_NAME" --yes 2>&1 >/dev/null || true
+lager devenv remove --name "$TEST_ENV_NAME" --yes >/dev/null 2>&1 || true
 
 print_summary
 exit_with_status
