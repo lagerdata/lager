@@ -10,16 +10,34 @@
 # uldaq, phidget22, pyftdi, ...) are intentionally NOT listed: the test
 # conftests mock them, and the unit tests load individual modules by path to
 # avoid importing them. Everything here is a pure-Python wheel.
-numpy
-simplejson
-pyvisa
-pyvisa-py
-flask
-pyserial
-pyusb
-cryptography
-fastmcp
-pexpect
+#
+# Bounded, not frozen. Every entry carries a major-version cap so an upstream
+# major cannot turn a required context red with no change in this repo; the
+# floors stay low on purpose.
+#
+# The floors are NOT "whatever resolved last" -- this one file feeds the
+# compat matrix as well as the gate, and pip resolves differently per version.
+# numpy is the worked example: 3.11+ gets 2.4.x, but 3.10 caps out at 2.2.6
+# (2.3 raised python_requires to >=3.11). A floor pinned to the version seen
+# on 3.11 would break `compat (py3.10)` on a file that never mentions 3.10.
+# Verify any floor change by resolving it for the OLDEST version in the matrix:
+#
+#   pip install --dry-run --ignore-installed --only-binary=:all: \
+#       --python-version 3.10 --target /tmp/x -r test/requirements-unit.txt
+#
+# Caps bound majors, not patches -- a patch-level break upstream can still
+# land here. Dependabot's pip ecosystem (.github/dependabot.yml) is what keeps
+# these current; widen a cap deliberately, in its own PR, not as a drive-by.
+numpy>=2,<3
+simplejson>=3.19,<5
+pyvisa>=1.14,<2
+pyvisa-py>=0.7,<1
+flask>=3,<4
+pyserial>=3.5,<4
+pyusb>=1.2,<2
+cryptography>=42,<50
+fastmcp>=3,<4
+pexpect>=4.8,<5
 # NB: pymupdf (PyMuPDF) is intentionally NOT listed — it is AGPL-3.0, which
 # conflicts with this project's Apache-2.0 license. Without it,
 # test/unit/test_pdf_pages.py skips (it importorskips fitz); that's acceptable.

@@ -659,7 +659,7 @@ fi
 echo ""
 
 echo "Test 13.2: Repeated movement sequence (5 cycles)"
-for cycle in {1..5}; do
+for _ in {1..5}; do
   lager arm $ARM_NET move 20 280 20 --box $BOX --yes >/dev/null 2>&1
   sleep 1
   lager arm $ARM_NET move 10 290 10 --box $BOX --yes >/dev/null 2>&1

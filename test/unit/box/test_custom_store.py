@@ -9,10 +9,9 @@ scanner consults it to surface an assigned instrument; the assign flow writes
 to it. These tests are fully hermetic: the store path is redirected to a temp
 file and no real hardware or ``/etc/lager`` is touched.
 
-The module is imported without executing ``lager/__init__.py`` (which pulls in
-heavy deps) by registering bare package namespaces in ``sys.modules`` first and
-loading the pure ``catalog`` / ``serial_id`` dependencies directly — the same
-trick the other box unit tests use.
+``conftest.py`` imports the real ``lager`` package once for the whole suite, so
+this module just imports ``lager.devices`` and loads the pure ``catalog`` /
+``serial_id`` dependencies by path before the store under test.
 """
 
 import importlib.util
@@ -20,7 +19,6 @@ import os
 import shutil
 import sys
 import tempfile
-import types
 import unittest
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
@@ -28,16 +26,6 @@ BOX_DIR = os.path.join(REPO_ROOT, "box")
 
 if BOX_DIR not in sys.path:
     sys.path.insert(0, BOX_DIR)
-
-
-def _ensure_package(dotted, *parts):
-    if dotted in sys.modules:
-        return sys.modules[dotted]
-    mod = types.ModuleType(dotted)
-    mod.__path__ = [os.path.join(BOX_DIR, *parts)]
-    mod.__package__ = dotted
-    sys.modules[dotted] = mod
-    return mod
 
 
 def _load_module(dotted, filepath):
@@ -50,10 +38,9 @@ def _load_module(dotted, filepath):
     return mod
 
 
-# Bare ``lager`` / ``lager.devices`` namespaces (don't run their __init__),
-# then the pure dependency modules, then the store under test.
-_ensure_package("lager", "lager")
-_ensure_package("lager.devices", "lager", "devices")
+# The real ``lager.devices`` package, then the pure dependency modules, then
+# the store under test.
+importlib.import_module("lager.devices")
 _load_module("lager.devices.catalog", os.path.join(BOX_DIR, "lager", "devices", "catalog.py"))
 _load_module("lager.devices.serial_id", os.path.join(BOX_DIR, "lager", "devices", "serial_id.py"))
 cs = _load_module(

@@ -738,7 +738,7 @@ lager i2c "$NET" transfer 1 --address 0x76 --data 0xD0 --box "$BOX"
 
 # 9e. Multiple rapid transfers
 echo "--- 9e. Rapid transfers ---"
-for i in $(seq 1 10); do
+for _ in $(seq 1 10); do
     lager i2c "$NET" transfer 1 --address 0x76 --data 0xD0 --box "$BOX"
 done
 # [EXPECT: OK] All 10 should return "58"

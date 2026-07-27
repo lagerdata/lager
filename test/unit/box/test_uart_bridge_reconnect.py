@@ -34,16 +34,6 @@ if 'serial' not in sys.modules:
     sys.modules['serial'] = _serial_stub
 
 
-def _ensure_package(dotted, *parts):
-    if dotted in sys.modules:
-        return sys.modules[dotted]
-    mod = types.ModuleType(dotted)
-    mod.__path__ = [os.path.join(BOX_DIR, *parts)]
-    mod.__package__ = dotted
-    sys.modules[dotted] = mod
-    return mod
-
-
 def _load_module(dotted, filepath):
     if dotted in sys.modules:
         return sys.modules[dotted]
@@ -54,8 +44,7 @@ def _load_module(dotted, filepath):
     return mod
 
 
-_ensure_package("lager", "lager")
-_ensure_package("lager.devices", "lager", "devices")
+importlib.import_module("lager.devices")
 uart_bridge = _load_module(
     "uart_bridge_reconnect_ut",
     os.path.join(BOX_DIR, "lager", "protocols", "uart", "uart_bridge.py"),

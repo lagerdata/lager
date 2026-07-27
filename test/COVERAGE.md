@@ -63,7 +63,7 @@ or later as things stand.
 | Check | Scope | Baseline when added |
 |---|---|---|
 | `bash -n` | 42 shell scripts under `test/` | clean |
-| `shellcheck -S error` | same 42 | clean (`-S warning` would be ~181, `-S info` ~4900) |
+| `shellcheck -S warning`, excluding `SC2034,SC2320,SC2155,SC2164,SC2046` | same 42 | clean. Pinned to `shellcheck-py==0.11.0.1`, not the runner image's binary. See below for what the exclusions cost. |
 | `compileall` | every `.py` in `cli/ box/ test/ tools/` | clean |
 | `pytest --collect-only` | `test/mcp/integration/` | 8 tests collect |
 | `ruff --select E9,F63,F7,F82` | `cli/ box/ test/ tools/`, vendored excluded | clean (default ruleset would be ~6300) |
@@ -91,10 +91,53 @@ Known gaps in the gate itself, in rough priority order:
   runs -- which is also why no test caught it.
 - **No type checking or security scanning.** There is no mypy/pyright/bandit/pip-audit config, and
   no `dependabot.yml` (so no automated version-update PRs for pip, actions, or cargo).
-- **Lint is errors-only.** `ruff` gates real bugs, not style; `shellcheck` is at `-S error`. Both
-  are floors chosen because they were already clean, and both are meant to ratchet up.
-- **`test/requirements-unit.txt` is unpinned** -- 11 bare package names, so a PR can go red from an
-  upstream release with no repo change. (`pytest` and `ruff` themselves are pinned.)
+- **Ruff is errors-only.** It gates real bugs, not style. That floor was chosen because it was
+  already clean, and is meant to ratchet up.
+- **Five shellcheck codes are excluded from the gate** -- 90 findings, all in `test/integration/`
+  and `test/manual/`, which no workflow executes. Detailed below; the ~13 captured-then-ignored
+  values in that set are the part that matters.
+
+### The excluded shellcheck codes
+
+`shellcheck` moved from `-S error` (0 findings) to `-S warning` minus five codes. Of the 181
+findings `-S warning` reported, 91 are fixed:
+
+| Code | Fixed | What it was |
+|---|---:|---|
+| `SC2069` | 76 | `cmd 2>&1 >/dev/null` sent stderr to the terminal instead of discarding it. Swapped to `>/dev/null 2>&1`; exit status was never affected, so no test outcome changes. |
+| `SC2034` | 33 | `for i in ...` loops whose body never reads the counter, renamed to `for _`. |
+
+**A raw finding count is not a backlog size.** Shellcheck reports `SC2034` once per variable name
+per scope, so a file with five unread `i` loops reports one finding until you fix it and the next
+surfaces. Fixing 33 loop counters moved the reported count only 45 -> 30, over five passes. The
+original "181" was an undercount.
+
+The remaining 90 are excluded by name in `static-checks.yml`. They are excluded there rather than
+with inline `# shellcheck disable` comments because a disable directive **cannot be scoped to a
+single variable** -- it silences that code for the rest of the file. Ninety inline suppressions
+would blind 20 files to everything after them.
+
+| Code | Count | Why still open |
+|---|---:|---|
+| `SC2320` | 39 | `$?` reads `echo`/`printf`'s status, not the command's. Fixing turns silently-passing checks into real ones. |
+| `SC2034` | 30 | ~17 intentional constants (BMP280/BME280 register maps, `TEST_DELAY`, a color fallback) and ~13 captured-then-ignored values -- see below. |
+| `SC2155` | 16 | `local x=$(cmd)` masks the command's return value. |
+| `SC2164` | 4 | `cd` without `\|\| exit`. |
+| `SC2046` | 1 | Unquoted command substitution. |
+
+**Latent missing assertions.** The ~13 captured-then-ignored `SC2034` values are not lint noise;
+each is a bench test that computes something and never checks it. Two are worth naming:
+
+- `test/integration/communication/jlink_script.sh:227` assigns `SCRIPT_EXISTS` from an SSH probe
+  for a script on the box, then never reads it -- and **both branches of the following `if` call
+  `track_test "pass"`**, so that test cannot fail.
+- `test/integration/communication/debug.sh` sets `RTT_SUPPORTED` in four branches and reads it
+  nowhere, so the RTT-availability probe is performed and discarded.
+
+Others (`OUTPUT_ORIG` in `sensors/thermocouple.sh`, `DEFAULTS_START` in
+`infrastructure/generic.sh`) capture a *baseline* for a comparison the test then never makes.
+Fixing these means adding the missing assertion, which can legitimately turn a bench test red --
+so they are a bench task, not a lint sweep.
 
 ## Coverage by Domain
 
@@ -574,6 +617,17 @@ Do **not** run `pytest test/unit/` as a single command: `test/unit/box/` and
 a process. Running them together fails with a message from `test/unit/box/conftest.py` saying so.
 
 Dependencies: `pip install -e cli/` plus `pip install -r test/requirements-unit.txt`.
+
+That file's ten entries carry major-version caps so an upstream major cannot turn a required
+context red with no change in this repo. The **floors stay deliberately low**, because the same
+file feeds the compat matrix and pip resolves differently per interpreter -- `numpy` lands on
+2.2.6 for 3.10 but 2.4.6 for 3.11 and 2.5.1 for 3.12, so a floor pinned to whatever 3.11 resolved
+would break `compat (py3.10)`. Verify any floor change against the oldest version in the matrix:
+
+```bash
+pip install --dry-run --ignore-installed --only-binary=:all: \
+    --python-version 3.10 --target /tmp/x -r test/requirements-unit.txt
+```
 
 ### Hardware suites
 

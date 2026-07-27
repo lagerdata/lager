@@ -99,7 +99,7 @@ echo ""
 
 echo "Test 2.5: Export stability (3 iterations)"
 FAILED=0
-for i in {1..3}; do
+for _ in {1..3}; do
   lager boxes export >/dev/null 2>&1 || FAILED=1
 done
 [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
@@ -135,19 +135,19 @@ start_section "Round-Trip"
 
 echo "Test 4.1: Add test boxes, export, delete-all, import, verify"
 # Add test boxes
-lager boxes add --name "roundtrip_test_1" --ip "192.168.200.1" --yes 2>&1 >/dev/null
-lager boxes add --name "roundtrip_test_2" --ip "192.168.200.2" --yes 2>&1 >/dev/null
+lager boxes add --name "roundtrip_test_1" --ip "192.168.200.1" --yes >/dev/null 2>&1
+lager boxes add --name "roundtrip_test_2" --ip "192.168.200.2" --yes >/dev/null 2>&1
 
 # Export
 ROUNDTRIP_FILE="/tmp/lager_roundtrip_$$.json"
-lager boxes export -o "$ROUNDTRIP_FILE" 2>&1 >/dev/null
+lager boxes export -o "$ROUNDTRIP_FILE" >/dev/null 2>&1
 
 # Delete the test boxes
-lager boxes delete --name "roundtrip_test_1" --yes 2>&1 >/dev/null
-lager boxes delete --name "roundtrip_test_2" --yes 2>&1 >/dev/null
+lager boxes delete --name "roundtrip_test_1" --yes >/dev/null 2>&1
+lager boxes delete --name "roundtrip_test_2" --yes >/dev/null 2>&1
 
 # Import
-lager boxes import "$ROUNDTRIP_FILE" --merge --yes 2>&1 >/dev/null
+lager boxes import "$ROUNDTRIP_FILE" --merge --yes >/dev/null 2>&1
 
 # Verify boxes are restored
 FOUND=0
@@ -160,8 +160,8 @@ fi
 [ $FOUND -eq 2 ] && track_test "pass" || track_test "fail"
 
 # Clean up
-lager boxes delete --name "roundtrip_test_1" --yes 2>&1 >/dev/null || true
-lager boxes delete --name "roundtrip_test_2" --yes 2>&1 >/dev/null || true
+lager boxes delete --name "roundtrip_test_1" --yes >/dev/null 2>&1 || true
+lager boxes delete --name "roundtrip_test_2" --yes >/dev/null 2>&1 || true
 rm -f "$ROUNDTRIP_FILE"
 echo ""
 

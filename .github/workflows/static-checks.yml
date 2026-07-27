@@ -49,14 +49,28 @@ jobs:
         run: |
           pip install -e cli/
           pip install 'pytest>=9,<10' 'pytest-timeout>=2.3,<3' 'ruff==0.16.0'
+          # Pinned, and deliberately NOT the runner image's shellcheck. The
+          # step below is now a real gate at -S warning, and its exclusion list
+          # is justified by exact per-code counts -- both of which are only
+          # meaningful against a known version. Taking whatever the image ships
+          # would let a GitHub image bump turn this red with no repo change,
+          # which is the same failure this PR pins requirements-unit.txt against.
+          pip install 'shellcheck-py==0.11.0.1'
           pip install -r test/requirements-unit.txt
         shell: bash
 
-      # ShellCheck ships in the ubuntu-latest runner image. Print the version
-      # rather than assuming it: if the image ever drops it, this fails loudly
-      # instead of the lint step silently checking nothing.
-      - name: Verify shellcheck is present
-        run: shellcheck --version
+      # Assert the pinned binary actually won on PATH. `pip install
+      # shellcheck-py` must shadow /usr/bin/shellcheck from the image; if it
+      # ever does not, fail loudly here rather than silently linting with a
+      # different version than the counts above were measured on.
+      - name: Verify pinned shellcheck is on PATH
+        run: |
+          shellcheck --version
+          shellcheck --version | grep -qx 'version: 0.11.0' || {
+            echo "Expected shellcheck 0.11.0 (from shellcheck-py==0.11.0.1); got the above."
+            echo "which shellcheck: $(which shellcheck)"
+            exit 1
+          }
         shell: bash
 
       - name: Bash syntax (bash -n)
@@ -69,13 +83,45 @@ jobs:
           exit $fail
         shell: bash
 
-      # -S error only, for now. On this tree that is 0 findings, while
-      # -S warning is ~181 and -S info ~4900. Starting at the level that is
-      # already clean means the gate is meaningful from day one; ratchet to
-      # warning once the backlog is worked down.
-      - name: 'ShellCheck (severity: error)'
+      # -S warning, with a named exclusion list. Previously -S error (0
+      # findings); -S warning was 181, of which 91 are now fixed:
+      #
+      #   SC2069  76  `cmd 2>&1 >/dev/null` sent stderr to the terminal
+      #               instead of discarding it. Swapped to `>/dev/null 2>&1`.
+      #               Exit status was never affected, so no test changes result.
+      #   SC2034  33  `for i in ...` loops whose body never reads the counter,
+      #               renamed to `for _`. Note 33 fixes only moved the reported
+      #               count 45 -> 30: shellcheck reports SC2034 once per name
+      #               per scope, so a file with five unread `i` loops counts as
+      #               one finding until you fix it and the next one surfaces.
+      #               Do not read a raw finding count as a backlog size.
+      #
+      # The five excluded codes are the remaining 90. They are excluded HERE,
+      # by name, rather than with inline `# shellcheck disable` comments,
+      # because a disable directive cannot be scoped to a single variable: it
+      # silences that code for the rest of the file (verified), so 90 inline
+      # suppressions would blind 20 files to everything that came after. A
+      # named list is countable, lives in one place, and each code switches
+      # back on by deleting it from the list.
+      #
+      #   SC2320  39  `$?` reads echo/printf's status, not the command's.
+      #   SC2034  30  ~17 intentional constants (BMP280/BME280 register maps,
+      #               TEST_DELAY knobs, a color fallback) and ~13 captured-then-
+      #               ignored values that are latent MISSING ASSERTIONS -- see
+      #               test/COVERAGE.md. Fixing those changes what a test asserts.
+      #   SC2155  16  `local x=$(cmd)` masks the command's return value.
+      #   SC2164   4  `cd` without `|| exit`.
+      #   SC2046   1  Unquoted command substitution.
+      #
+      # All 90 are in test/integration/ and test/manual/, which no workflow
+      # executes -- a fix cannot be proven here, only on the bench. They are
+      # tracked as a bench task rather than churned blind.
+      - name: 'ShellCheck (severity: warning)'
         if: always()
-        run: shellcheck -S error -f gcc $(find test -name '*.sh')
+        run: |
+          shellcheck -S warning \
+            -e SC2034,SC2320,SC2155,SC2164,SC2046 \
+            -f gcc $(find test -name '*.sh')
         shell: bash
 
       # test/api/ is 81 standalone scripts, not pytest (see test/CONVENTIONS.md),

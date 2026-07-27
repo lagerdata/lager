@@ -965,7 +965,7 @@ echo ""
 sleep $TEST_DELAY
 
 echo "Test 12.1: Operations after invalid irradiance (error recovery)"
-lager solar $SOLAR_NET irradiance -100.0 --box $BOX 2>&1 >/dev/null || true
+lager solar $SOLAR_NET irradiance -100.0 --box $BOX >/dev/null 2>&1 || true
 if lager solar $SOLAR_NET irradiance 500.0 --box $BOX >/dev/null 2>&1; then
   echo -e "${GREEN}[OK] Command succeeded after error${NC}"
   track_test "pass"
@@ -977,7 +977,7 @@ echo ""
 sleep $TEST_DELAY
 
 echo "Test 12.2: Operations after invalid net"
-lager solar invalid_net irradiance --box $BOX 2>&1 >/dev/null || true
+lager solar invalid_net irradiance --box $BOX >/dev/null 2>&1 || true
 if lager solar $SOLAR_NET irradiance --box $BOX >/dev/null 2>&1; then
   echo -e "${GREEN}[OK] Command succeeded after error${NC}"
   track_test "pass"
@@ -989,9 +989,9 @@ echo ""
 sleep $TEST_DELAY
 
 echo "Test 12.3: Multiple errors followed by valid commands"
-lager solar $SOLAR_NET irradiance -1.0 --box $BOX 2>&1 >/dev/null || true
-lager solar invalid_net voc --box $BOX 2>&1 >/dev/null || true
-lager solar $SOLAR_NET irradiance abc --box $BOX 2>&1 >/dev/null || true
+lager solar $SOLAR_NET irradiance -1.0 --box $BOX >/dev/null 2>&1 || true
+lager solar invalid_net voc --box $BOX >/dev/null 2>&1 || true
+lager solar $SOLAR_NET irradiance abc --box $BOX >/dev/null 2>&1 || true
 lager solar $SOLAR_NET irradiance 600 --box $BOX >/dev/null
 lager solar $SOLAR_NET voc --box $BOX >/dev/null
 lager solar $SOLAR_NET mpp-voltage --box $BOX >/dev/null
@@ -1001,7 +1001,7 @@ echo ""
 sleep $TEST_DELAY
 
 echo "Test 12.4: State consistency after errors"
-lager solar $SOLAR_NET irradiance -999.0 --box $BOX 2>&1 >/dev/null || true
+lager solar $SOLAR_NET irradiance -999.0 --box $BOX >/dev/null 2>&1 || true
 IRRADIANCE_OUTPUT=$(lager solar $SOLAR_NET irradiance --box $BOX 2>&1)
 echo "Irradiance after error: output captured (should be valid)"
 echo -e "${GREEN}[OK] State query successful after error${NC}"

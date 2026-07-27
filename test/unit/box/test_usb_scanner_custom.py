@@ -8,8 +8,8 @@
 custom-device assignments are surfaced as synthetic instrument records and
 their generic UART cable records suppressed. Fully hermetic — the store path
 is redirected, and ``scan_usb`` / ``_by_handshake`` / ``serial_id.resolve_tty``
-are monkeypatched (no /sys, no hardware, no tty probing). Modules load via the
-bare-namespace import trick (no ``lager/__init__.py``).
+are monkeypatched (no /sys, no hardware, no tty probing). ``conftest.py``
+imports the real ``lager`` package once for the whole suite.
 """
 
 import importlib.util
@@ -18,7 +18,6 @@ import os
 import shutil
 import sys
 import tempfile
-import types
 import unittest
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
@@ -26,16 +25,6 @@ BOX_DIR = os.path.join(REPO_ROOT, "box")
 
 if BOX_DIR not in sys.path:
     sys.path.insert(0, BOX_DIR)
-
-
-def _ensure_package(dotted, *parts):
-    if dotted in sys.modules:
-        return sys.modules[dotted]
-    mod = types.ModuleType(dotted)
-    mod.__path__ = [os.path.join(BOX_DIR, *parts)]
-    mod.__package__ = dotted
-    sys.modules[dotted] = mod
-    return mod
 
 
 def _load_module(dotted, filepath):
@@ -48,9 +37,8 @@ def _load_module(dotted, filepath):
     return mod
 
 
-_ensure_package("lager", "lager")
-_lager_devices = _ensure_package("lager.devices", "lager", "devices")
-_ensure_package("lager.http_handlers", "lager", "http_handlers")
+_lager_devices = importlib.import_module("lager.devices")
+importlib.import_module("lager.http_handlers")
 catalog = _load_module(
     "lager.devices.catalog", os.path.join(BOX_DIR, "lager", "devices", "catalog.py"))
 serial_id = _load_module(

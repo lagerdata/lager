@@ -551,7 +551,7 @@ fi
 # 5f. BMP280 chip ID consistency (5 reads)
 echo -n "Test: BMP280 chip ID 5 consecutive reads... "
 CONSISTENT=true
-for i in $(seq 1 5); do
+for _ in $(seq 1 5); do
     OUTPUT=$(lager spi "$NET" transfer --data "$BMP280_CMD" 2 --box "$BOX" 2>&1)
     if ! echo "$OUTPUT" | grep -qi "$BMP280_CHIP_ID"; then
         CONSISTENT=false
@@ -836,7 +836,7 @@ fi
 # 9e. Alternating read/write
 echo -n "Test: Alternating read/write... "
 ALT_OK=true
-for i in $(seq 1 5); do
+for _ in $(seq 1 5); do
     lager spi "$NET" read 4 --box "$BOX" >/dev/null 2>&1 || ALT_OK=false
     lager spi "$NET" write 0xFF --box "$BOX" >/dev/null 2>&1 || ALT_OK=false
 done
@@ -849,7 +849,7 @@ fi
 # 9f. High-frequency burst (10M, 5 rapid transfers)
 echo -n "Test: High-frequency burst (10M)... "
 BURST_OK=true
-for i in $(seq 1 5); do
+for _ in $(seq 1 5); do
     lager spi "$NET" transfer --data "$BMP280_CMD" --frequency 10M 2 --box "$BOX" >/dev/null 2>&1
     if [ $? -ne 0 ]; then
         BURST_OK=false

@@ -229,7 +229,7 @@ echo ""
 
 echo "Test 4.6: Attempt to add duplicate IP (should show warning)"
 # First add a new box with unique name
-lager boxes add --name "${TEST_BOX_NAME}_unique" --ip "192.168.1.150" --yes 2>&1 >/dev/null || true
+lager boxes add --name "${TEST_BOX_NAME}_unique" --ip "192.168.1.150" --yes >/dev/null 2>&1 || true
 # Try to add another box with same IP but different name
 if lager boxes add --name "${TEST_BOX_NAME}_duplicate_ip" --ip "192.168.1.150" --yes 2>&1 | grep -qi "WARNING.*Duplicate"; then
   track_test "pass"
@@ -250,7 +250,7 @@ echo "Test 4.9: Delete the test boxes"
 FAILED=0
 for name in "$TEST_BOX_NAME" "${TEST_BOX_NAME}_unique" "${TEST_BOX_NAME}_duplicate_ip"; do
   if lager boxes list | grep -q "$name"; then
-    lager boxes delete --name "$name" --yes 2>&1 >/dev/null || FAILED=1
+    lager boxes delete --name "$name" --yes >/dev/null 2>&1 || FAILED=1
   fi
 done
 [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
@@ -263,12 +263,12 @@ echo ""
 echo "Test 4.11: Add and delete multiple boxes"
 FAILED=0
 for i in {1..3}; do
-  lager boxes add --name "${TEST_BOX_NAME}_${i}" --ip "192.168.1.$((100+i))" --yes 2>&1 >/dev/null || FAILED=1
+  lager boxes add --name "${TEST_BOX_NAME}_${i}" --ip "192.168.1.$((100+i))" --yes >/dev/null 2>&1 || FAILED=1
 done
 echo "Added test boxes"
 lager boxes list
 for i in {1..3}; do
-  lager boxes delete --name "${TEST_BOX_NAME}_${i}" --yes 2>&1 >/dev/null || FAILED=1
+  lager boxes delete --name "${TEST_BOX_NAME}_${i}" --yes >/dev/null 2>&1 || FAILED=1
 done
 [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
 echo ""
@@ -279,7 +279,7 @@ echo ""
 
 echo "Test 4.13: Edit box IP address"
 # Add a test box first
-lager boxes add --name "${TEST_BOX_NAME}_edit" --ip "192.168.1.50" --yes 2>&1 >/dev/null || true
+lager boxes add --name "${TEST_BOX_NAME}_edit" --ip "192.168.1.50" --yes >/dev/null 2>&1 || true
 # Edit its IP
 if lager boxes edit --name "${TEST_BOX_NAME}_edit" --ip "192.168.1.51" --yes 2>&1 | grep -q "Updated box"; then
   track_test "pass"
@@ -357,9 +357,9 @@ echo ""
 
 echo "Test 4.20: Clean up edit test boxes"
 FAILED=0
-lager boxes delete --name "${TEST_BOX_NAME}_final" --yes 2>&1 >/dev/null || FAILED=1
-lager boxes delete --name "${TEST_BOX_NAME}_edit" --yes 2>&1 >/dev/null || true
-lager boxes delete --name "${TEST_BOX_NAME}_renamed" --yes 2>&1 >/dev/null || true
+lager boxes delete --name "${TEST_BOX_NAME}_final" --yes >/dev/null 2>&1 || FAILED=1
+lager boxes delete --name "${TEST_BOX_NAME}_edit" --yes >/dev/null 2>&1 || true
+lager boxes delete --name "${TEST_BOX_NAME}_renamed" --yes >/dev/null 2>&1 || true
 [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
 echo ""
 
@@ -370,7 +370,7 @@ echo ""
 echo "Test 4.22: Delete-all with no boxes"
 # Make sure all test boxes are deleted first
 for name in "$TEST_BOX_NAME" "test-box_123.special" "${TEST_BOX_NAME}_1" "${TEST_BOX_NAME}_2" "${TEST_BOX_NAME}_3"; do
-  lager boxes delete --name "$name" --yes 2>&1 >/dev/null || true
+  lager boxes delete --name "$name" --yes >/dev/null 2>&1 || true
 done
 # Get current count
 BOX_COUNT_BEFORE=$(lager boxes list 2>/dev/null | wc -l || echo "0")
@@ -392,10 +392,10 @@ if [ -f "$LAGER_FILE" ]; then
   echo "Backed up .lager file"
 fi
 # Start fresh
-lager boxes delete-all --yes 2>&1 >/dev/null || true
+lager boxes delete-all --yes >/dev/null 2>&1 || true
 # Add test boxes
 for i in {1..5}; do
-  lager boxes add --name "deleteall_test_${i}" --ip "192.168.2.${i}" --yes 2>&1 >/dev/null || true
+  lager boxes add --name "deleteall_test_${i}" --ip "192.168.2.${i}" --yes >/dev/null 2>&1 || true
 done
 DELETEALL_COUNT=$(lager boxes list 2>/dev/null | grep -c "deleteall_test" || echo "0")
 echo "Added $DELETEALL_COUNT test boxes for delete-all test"
@@ -510,7 +510,7 @@ echo ""
 echo "Test 6.7: Rapid default changes (stress test)"
 FAILED=0
 for i in {1..10}; do
-  lager defaults add --box "test_default_box" 2>&1 >/dev/null || FAILED=1
+  lager defaults add --box "test_default_box" >/dev/null 2>&1 || FAILED=1
 done
 [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
 echo ""
@@ -548,7 +548,7 @@ echo "Test 7.4: Common serial port paths"
 FAILED=0
 for path in "/dev/ttyUSB0" "/dev/ttyUSB1" "/dev/ttyACM0" "/dev/ttyS0"; do
   echo "  Setting serial port to: $path"
-  lager defaults add --serial-port "$path" 2>&1 >/dev/null || FAILED=1
+  lager defaults add --serial-port "$path" >/dev/null 2>&1 || FAILED=1
 done
 [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
 echo ""
@@ -577,9 +577,9 @@ lager boxes add --name "test_persist_box" --ip "$BOX" --yes >/dev/null 2>&1 && t
 echo ""
 
 echo "Test 8.2: Set default box and verify persistence"
-lager defaults add --box "test_persist_box" 2>&1 >/dev/null || true
+lager defaults add --box "test_persist_box" >/dev/null 2>&1 || true
 DEFAULTS_1=$(lager defaults 2>&1)
-lager defaults add --box "test_persist_box" 2>&1 >/dev/null || true
+lager defaults add --box "test_persist_box" >/dev/null 2>&1 || true
 DEFAULTS_2=$(lager defaults 2>&1)
 if [ "$DEFAULTS_1" = "$DEFAULTS_2" ]; then
   track_test "pass"
@@ -591,7 +591,7 @@ echo ""
 echo "Test 8.3: Multiple list/add cycles"
 FAILED=0
 for i in {1..5}; do
-  lager defaults add --box "test_persist_box" 2>&1 >/dev/null || FAILED=1
+  lager defaults add --box "test_persist_box" >/dev/null 2>&1 || FAILED=1
   lager defaults >/dev/null 2>&1 || FAILED=1
 done
 [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
@@ -647,8 +647,11 @@ echo "Test 9.6: Box name with spaces"
 lager hello --box "test box with spaces" 2>&1 | grep -qi "error" && track_test "pass" || track_test "pass"
 echo ""
 
+# The name mixes BMP (CJK) and non-BMP (U+1D400, 4-byte UTF-8) codepoints on
+# purpose: they exercise different encoding paths, and a name that is only CJK
+# would not catch a surrogate-pair bug.
 echo "Test 9.7: Box name with Unicode characters"
-lager hello --box "test_设备_🔌" 2>&1 | grep -qi "error" && track_test "pass" || track_test "pass"
+lager hello --box "test_设备_𝐀" 2>&1 | grep -qi "error" && track_test "pass" || track_test "pass"
 echo ""
 
 echo "Test 9.8: Invalid IP address format in box add"
@@ -714,7 +717,7 @@ echo ""
 echo "Test 9.16: Valid IPv4 address acceptance"
 if lager boxes add --name "test_valid_ipv4" --ip "192.168.1.100" --yes 2>&1 | grep -q "Added box"; then
   track_test "pass"
-  lager boxes delete --name "test_valid_ipv4" --yes 2>&1 >/dev/null || true
+  lager boxes delete --name "test_valid_ipv4" --yes >/dev/null 2>&1 || true
 else
   track_test "fail"
 fi
@@ -723,7 +726,7 @@ echo ""
 echo "Test 9.17: Valid IPv6 address acceptance"
 if lager boxes add --name "test_valid_ipv6" --ip "2001:0db8:85a3:0000:0000:8a2e:0370:7334" --yes 2>&1 | grep -q "Added box"; then
   track_test "pass"
-  lager boxes delete --name "test_valid_ipv6" --yes 2>&1 >/dev/null || true
+  lager boxes delete --name "test_valid_ipv6" --yes >/dev/null 2>&1 || true
 else
   track_test "fail"
 fi
@@ -732,7 +735,7 @@ echo ""
 echo "Test 9.18: Localhost IP acceptance"
 if lager boxes add --name "test_localhost" --ip "127.0.0.1" --yes 2>&1 | grep -q "Added box"; then
   track_test "pass"
-  lager boxes delete --name "test_localhost" --yes 2>&1 >/dev/null || true
+  lager boxes delete --name "test_localhost" --yes >/dev/null 2>&1 || true
 else
   track_test "fail"
 fi
@@ -757,13 +760,13 @@ else
   TEST_COMBO_IP="192.168.1.100"
 fi
 FAILED=0
-lager boxes add --name "${TEST_BOX_NAME}_combo" --ip "$TEST_COMBO_IP" --yes 2>&1 >/dev/null || FAILED=1
+lager boxes add --name "${TEST_BOX_NAME}_combo" --ip "$TEST_COMBO_IP" --yes >/dev/null 2>&1 || FAILED=1
 # Only test set/hello if we used the real BOX IP
 if [ "$TEST_COMBO_IP" = "$BOX" ]; then
-  lager defaults add --box "${TEST_BOX_NAME}_combo" 2>&1 >/dev/null || FAILED=1
-  lager hello --box "${TEST_BOX_NAME}_combo" 2>&1 >/dev/null || FAILED=1
+  lager defaults add --box "${TEST_BOX_NAME}_combo" >/dev/null 2>&1 || FAILED=1
+  lager hello --box "${TEST_BOX_NAME}_combo" >/dev/null 2>&1 || FAILED=1
 fi
-lager boxes delete --name "${TEST_BOX_NAME}_combo" --yes 2>&1 >/dev/null || FAILED=1
+lager boxes delete --name "${TEST_BOX_NAME}_combo" --yes >/dev/null 2>&1 || FAILED=1
 [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
 echo ""
 
@@ -771,9 +774,9 @@ echo "Test 10.2: Interleaved list/add operations"
 lager boxes add --name "test_interleave" --ip "$BOX" --yes >/dev/null 2>&1
 FAILED=0
 lager defaults >/dev/null 2>&1 || FAILED=1
-lager defaults add --box "test_interleave" 2>&1 >/dev/null || FAILED=1
+lager defaults add --box "test_interleave" >/dev/null 2>&1 || FAILED=1
 lager defaults >/dev/null 2>&1 || FAILED=1
-lager defaults add --serial-port "/dev/ttyUSB0" 2>&1 >/dev/null || FAILED=1
+lager defaults add --serial-port "/dev/ttyUSB0" >/dev/null 2>&1 || FAILED=1
 lager defaults >/dev/null 2>&1 || FAILED=1
 lager boxes delete --name "test_interleave" --yes >/dev/null 2>&1
 [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
@@ -836,8 +839,8 @@ echo ""
 echo "Test 11.4: Rapid box add/delete cycles (20 iterations)"
 FAILED=0
 for i in {1..20}; do
-  lager boxes add --name "stress_box_${i}" --ip "192.168.100.${i}" --yes 2>&1 >/dev/null || FAILED=1
-  lager boxes delete --name "stress_box_${i}" --yes 2>&1 >/dev/null || FAILED=1
+  lager boxes add --name "stress_box_${i}" --ip "192.168.100.${i}" --yes >/dev/null 2>&1 || FAILED=1
+  lager boxes delete --name "stress_box_${i}" --yes >/dev/null 2>&1 || FAILED=1
 done
 [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
 echo ""
@@ -866,29 +869,29 @@ echo "========================================================================"
 echo ""
 
 echo "Test 12.1: Verify hello works after errors"
-lager hello --box "INVALID" 2>&1 >/dev/null || true
+lager hello --box "INVALID" >/dev/null 2>&1 || true
 lager hello --box "$BOX" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 12.2: Verify hello works after errors (repeat)"
-lager hello --box "INVALID" 2>&1 >/dev/null || true
+lager hello --box "INVALID" >/dev/null 2>&1 || true
 lager hello --box "$BOX" >/dev/null && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 12.3: Verify box list after failed add"
-lager boxes add --name "" --ip "" --yes 2>&1 >/dev/null || true
+lager boxes add --name "" --ip "" --yes >/dev/null 2>&1 || true
 lager boxes list >/dev/null && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 12.4: Verify list defaults after failed add"
-lager defaults add 2>&1 >/dev/null || true
+lager defaults add >/dev/null 2>&1 || true
 lager defaults >/dev/null && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 12.5: Verify configuration consistency after multiple operations"
 lager boxes add --name "test_regression" --ip "$BOX" --yes >/dev/null 2>&1
 DEFAULTS_START=$(lager defaults 2>&1)
-lager defaults add --box "test_regression" 2>&1 >/dev/null || true
+lager defaults add --box "test_regression" >/dev/null 2>&1 || true
 lager hello --box "$BOX" >/dev/null 2>&1
 DEFAULTS_END=$(lager defaults 2>&1)
 if echo "$DEFAULTS_END" | grep -q "test_regression"; then
@@ -909,7 +912,7 @@ echo ""
 
 echo "Removing any test boxes..."
 for name in "$TEST_BOX_NAME" "${TEST_BOX_NAME}_combo" "test-box_123.special"; do
-  lager boxes delete --name "$name" --yes 2>&1 >/dev/null || true
+  lager boxes delete --name "$name" --yes >/dev/null 2>&1 || true
 done
 echo -e "${GREEN}[OK] Cleanup complete${NC}"
 echo ""
