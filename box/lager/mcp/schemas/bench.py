@@ -5,11 +5,19 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
 from .dut import DocRef, DUTContext, SubSystem
+
+if TYPE_CHECKING:
+    # Names used in the quoted annotations below. At runtime these are bound by
+    # _rebuild_refs() after every schema is defined, which is what keeps the
+    # .net / .safety_types import cycle from closing; TYPE_CHECKING never
+    # executes, so declaring them here cannot reintroduce it.
+    from .net import InterfaceDescriptor, NetDescriptor
+    from .safety_types import SafetyConstraints
 
 
 class VoltageRange(BaseModel):

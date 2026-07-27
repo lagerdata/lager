@@ -11,10 +11,13 @@ from __future__ import annotations
 import json
 import sys
 import threading
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from lager.dispatchers import helpers
 from lager.exceptions import I2CBackendError
+
+if TYPE_CHECKING:
+    from lager.protocols.i2c.i2c_base import I2CBase
 
 __all__ = [
     'I2CBackendError',
