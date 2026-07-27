@@ -314,6 +314,166 @@ def test_denial_403_explains_missing_access():
     assert 'not authorized' in excinfo.value.problem.lower()
 
 
+# ---------------------------------------------------------------------------
+# check_gateway_status — non-raising variant for fan-out commands
+# ---------------------------------------------------------------------------
+
+def test_check_gateway_status_first_contact_retries_transparently(monkeypatch):
+    from cli import box_storage
+    gateway_auth.save_login('http://cp:3001', make_jwt(time.time() + 900), {'refresh': 'r1'})
+    resp = _first_contact_401()
+
+    sent = {}
+    def fake_send(self, prepared, **kwargs):
+        sent['auth'] = prepared.headers.get('Authorization')
+        return make_response(200)
+    monkeypatch.setattr(requests.Session, 'send', fake_send)
+
+    out, verdict = box_storage.check_gateway_status(resp, '10.0.0.5')
+
+    assert verdict is None
+    assert out.status_code == 200
+    assert sent['auth'].startswith('Bearer ')
+    assert gateway_auth.auth_server_for_box('10.0.0.5') == 'http://cp:3001'
+
+
+def test_check_gateway_status_sign_in_required_without_token(monkeypatch):
+    from cli import box_storage
+    resp = _first_contact_401()
+
+    def fail_send(self, prepared, **kwargs):
+        raise AssertionError('no retry should be attempted without a token')
+    monkeypatch.setattr(requests.Session, 'send', fail_send)
+
+    out, verdict = box_storage.check_gateway_status(resp, '10.0.0.5')
+
+    assert verdict == 'sign-in required'
+    assert out is resp
+    # Discovery still recorded so the next attempt (post-login) authenticates.
+    assert gateway_auth.auth_server_for_box('10.0.0.5') == 'http://cp:3001'
+
+
+def test_check_gateway_status_403_and_503_do_not_retry(monkeypatch):
+    from cli import box_storage
+    gateway_auth.save_login('http://cp:3001', make_jwt(time.time() + 900), {'refresh': 'r1'})
+
+    def fail_send(self, prepared, **kwargs):
+        raise AssertionError('denials must not trigger a retry loop')
+    monkeypatch.setattr(requests.Session, 'send', fail_send)
+
+    resp_403 = make_response(403, {gateway_auth.DISCOVERY_HEADER: 'http://cp:3001'})
+    _, verdict = box_storage.check_gateway_status(resp_403, '10.0.0.5')
+    assert verdict == 'no access'
+
+    resp_503 = make_response(503, {gateway_auth.DISCOVERY_HEADER: 'http://cp:3001'})
+    _, verdict = box_storage.check_gateway_status(resp_503, '10.0.0.5')
+    assert verdict == 'auth server down'
+
+
+def test_check_gateway_status_rejected_session_label():
+    from cli import box_storage
+    gateway_auth.save_login('http://cp:3001', make_jwt(time.time() + 900), {'refresh': 'r1'})
+    resp = make_response(401, {gateway_auth.DISCOVERY_HEADER: 'http://cp:3001'})
+    prepared = requests.PreparedRequest()
+    prepared.headers = {'Authorization': 'Bearer revoked'}
+    resp.request = prepared
+
+    _, verdict = box_storage.check_gateway_status(resp, '10.0.0.5')
+    assert verdict == 'session rejected'
+
+
+def test_check_gateway_status_plain_401_untouched(monkeypatch):
+    from cli import box_storage
+    # An application 401 with no discovery header must pass through with no
+    # token sent and no mapping written — plain boxes are unaffected.
+    def fail_send(self, prepared, **kwargs):
+        raise AssertionError('plain-box responses must never be re-sent')
+    monkeypatch.setattr(requests.Session, 'send', fail_send)
+
+    resp = make_response(401)
+    out, verdict = box_storage.check_gateway_status(resp, '10.0.0.5')
+
+    assert out is resp
+    assert verdict is None
+    assert gateway_auth.auth_server_for_box('10.0.0.5') is None
+
+
+# ---------------------------------------------------------------------------
+# ws_handshake_recovery — discovery equivalent for WebSocket handshakes
+# ---------------------------------------------------------------------------
+
+def _fake_probe(monkeypatch, response=None, exc=None):
+    """Route gateway_auth's /health probe to a canned response, capturing the
+    headers it carried."""
+    seen = {}
+    def fake_get(url, headers=None, timeout=None):
+        seen['url'] = url
+        seen['headers'] = dict(headers or {})
+        if exc is not None:
+            raise exc
+        prepared = requests.PreparedRequest()
+        prepared.headers = dict(headers or {})
+        response.request = prepared
+        return response
+    monkeypatch.setattr(gateway_auth.requests, 'get', fake_get)
+    return seen
+
+
+def test_ws_recovery_first_contact_returns_retry_headers(monkeypatch):
+    gateway_auth.save_login('http://cp:3001', make_jwt(time.time() + 900), {'refresh': 'r1'})
+    probe = _fake_probe(monkeypatch, make_response(
+        401, {gateway_auth.DISCOVERY_HEADER: 'http://cp:3001'}))
+
+    headers, error = gateway_auth.ws_handshake_recovery('http://10.0.0.5:9000')
+
+    assert error is None
+    assert headers['Authorization'].startswith('Bearer ')
+    assert probe['url'] == 'http://10.0.0.5:9000/health'
+    assert probe['headers'] == {}     # probe mirrors the unauthenticated handshake
+    assert gateway_auth.auth_server_for_box('10.0.0.5') == 'http://cp:3001'
+
+
+def test_ws_recovery_without_token_returns_actionable_error(monkeypatch):
+    _fake_probe(monkeypatch, make_response(
+        401, {gateway_auth.DISCOVERY_HEADER: 'http://cp:3001'}))
+
+    headers, error = gateway_auth.ws_handshake_recovery('http://10.0.0.5:9000')
+
+    assert headers == {}
+    assert isinstance(error, LagerError)
+    assert 'lager login http://cp:3001' in ' '.join(error.fixes)
+
+
+def test_ws_recovery_rejected_session_no_second_retry(monkeypatch):
+    # The retried handshake carried the token and was still refused: the
+    # recovery must not hand back headers again (no retry loop).
+    gateway_auth.save_login('http://cp:3001', make_jwt(time.time() + 900), {'refresh': 'r1'})
+    _fake_probe(monkeypatch, make_response(
+        401, {gateway_auth.DISCOVERY_HEADER: 'http://cp:3001'}))
+
+    headers, error = gateway_auth.ws_handshake_recovery(
+        'http://10.0.0.5:9000', {'Authorization': 'Bearer revoked'})
+
+    assert headers == {}
+    assert isinstance(error, LagerError)
+    assert 'was rejected' in error.problem
+
+
+def test_ws_recovery_plain_box_untouched(monkeypatch):
+    _fake_probe(monkeypatch, make_response(200))
+
+    headers, error = gateway_auth.ws_handshake_recovery('http://10.0.0.5:9000')
+
+    assert (headers, error) == ({}, None)
+    assert gateway_auth.auth_server_for_box('10.0.0.5') is None
+
+
+def test_ws_recovery_unreachable_box_defers_to_original_error(monkeypatch):
+    _fake_probe(monkeypatch, exc=requests.exceptions.ConnectionError('refused'))
+
+    assert gateway_auth.ws_handshake_recovery('http://10.0.0.5:9000') == ({}, None)
+
+
 def test_hook_ignores_plain_401_without_discovery_header():
     hook = gateway_auth.gateway_response_hook('10.0.0.5')
     response = make_response(401)

@@ -30,6 +30,7 @@ import click
 import requests
 
 from ...box_storage import resolve_and_validate_box_with_name
+from ...errors import LagerError
 
 
 # Net-role choices for --type. Mirrors the role strings produced by
@@ -51,8 +52,10 @@ def _fetch_net_info(
     that — otherwise the returned role wins."""
     try:
         from ...gateway_auth import auth_headers_for_box
+        from ...box_storage import _check_gateway
         r = requests.get(f'http://{box_ip}:9000/nets/list', timeout=5,
                          headers=auth_headers_for_box(box_ip))
+        r = _check_gateway(r, box_ip)
         r.raise_for_status()
         nets = r.json()
         # Older box images wrap the list: {"nets": [...]}. Unwrap so the
@@ -72,6 +75,10 @@ def _fetch_net_info(
             f'Check network/Tailscale connectivity, then `lager hello --box {display_name}`.',
             fg='red'), err=True)
         return None, None
+    except LagerError:
+        # A gateway denial from _check_gateway is already actionable — let it
+        # render as-is rather than collapsing into the generic message below.
+        raise
     except Exception as e:
         click.echo(click.style(f'Could not fetch net list from box: {e}', fg='red'), err=True)
         return None, None

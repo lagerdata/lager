@@ -260,23 +260,37 @@ class UARTWebSocketClient:
             self._setup_terminal()
 
             # Connect to WebSocket
-            try:
-                from ...gateway_auth import auth_headers_for_url
-                self.sio.connect(
-                    self.box_url,
-                    namespaces=['/uart'],
-                    wait_timeout=10,
-                    headers=auth_headers_for_url(self.box_url)
-                )
-            except Exception as e:
-                # Preserve the return-code contract (don't sys.exit / .die here):
-                # the caller relies on the return value and the finally-block
-                # terminal restore below.
-                from ...errors import connection_error
-                from urllib.parse import urlparse
-                host = urlparse(self.box_url).hostname or self.box_url
-                connection_error(e, host=host).show()
-                return 1
+            from ...gateway_auth import auth_headers_for_url, ws_handshake_recovery
+            headers = auth_headers_for_url(self.box_url)
+            for attempt in (0, 1):
+                try:
+                    self.sio.connect(
+                        self.box_url,
+                        namespaces=['/uart'],
+                        wait_timeout=10,
+                        headers=headers
+                    )
+                    break
+                except Exception as e:
+                    # The handshake exception hides the HTTP response, so
+                    # probe the box over HTTP: a gated box's first contact
+                    # records the mapping and hands back the token for one
+                    # retry; a genuine denial shows the actionable error.
+                    # Preserve the return-code contract (don't sys.exit /
+                    # .die here): the caller relies on the return value and
+                    # the finally-block terminal restore below.
+                    retry_headers, denial = ws_handshake_recovery(self.box_url, headers)
+                    if denial is not None:
+                        denial.show()
+                        return 1
+                    if attempt == 0 and retry_headers:
+                        headers = retry_headers
+                        continue
+                    from ...errors import connection_error
+                    from urllib.parse import urlparse
+                    host = urlparse(self.box_url).hostname or self.box_url
+                    connection_error(e, host=host).show()
+                    return 1
 
             # Start UART session
             self.sio.emit('start_uart', {

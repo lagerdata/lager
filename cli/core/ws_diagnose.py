@@ -37,9 +37,26 @@ def make_ws_failure_message(box_ip: str, original_error: str | Exception = '') -
         # /health is a cheap, always-present endpoint on box_http_server
         # (port 9000). 2s timeout matches the worst case of a healthy box
         # under temporary load.
-        from ..gateway_auth import auth_headers_for_box
+        from ..gateway_auth import auth_headers_for_box, auth_server_for_box
+        from ..box_storage import check_gateway_status
         r = requests.get(f'http://{box_ip}:9000/health', timeout=2.0,
                          headers=auth_headers_for_box(box_ip))
+        # Non-raising gateway check (this helper promises never to raise):
+        # first contact with a gated box records the mapping and retries with
+        # the stored token; a genuine denial becomes the actionable message.
+        r, gate_verdict = check_gateway_status(r, box_ip)
+        if gate_verdict:
+            url = auth_server_for_box(box_ip) or 'your auth server'
+            if gate_verdict in ('sign-in required', 'session rejected'):
+                action = f'sign in with `lager login {url}` and retry.'
+            elif gate_verdict == 'no access':
+                action = 'ask an org admin to grant you access to this box.'
+            else:  # auth server down
+                action = 'its auth server is unreachable — try again shortly.'
+            return (
+                f'{base}{detail}.\n'
+                f'Action: the box refused the connection ({gate_verdict}) — {action}'
+            )
         if r.status_code == 200:
             return (
                 f'{base}{detail}.\n'

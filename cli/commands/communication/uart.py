@@ -100,8 +100,12 @@ def _run_query_instruments(ctx: click.Context, box_ip: str) -> list[dict]:
     """
     try:
         from ...gateway_auth import auth_headers_for_box
+        from ...box_storage import _check_gateway
         resp = requests.get(f'http://{box_ip}:9000/instruments/list', timeout=15,
                             headers=auth_headers_for_box(box_ip))
+        # A gateway denial raises the actionable LagerError (not caught
+        # below): an auth problem must not be reported as "no instruments".
+        resp = _check_gateway(resp, box_ip)
         if resp.status_code == 200:
             data = resp.json()
             if isinstance(data, list):

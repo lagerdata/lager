@@ -1627,8 +1627,15 @@ def _box_api_responding(box_ip: str, *, timeout: float = 2.0) -> bool:
     poll cheaply."""
     try:
         from ...gateway_auth import auth_headers_for_box
+        from ...box_storage import check_gateway_status
         r = requests.get(f"http://{box_ip}:{_BOX_API_PORT}/hello", timeout=timeout,
                          headers=auth_headers_for_box(box_ip))
+        # Non-raising gateway check: first contact with a gated box records
+        # the mapping and retries with the stored token so the probe sees the
+        # real /hello. A genuine denial reads as not-responding (False) —
+        # this probe sits inside the apply/restart poll loop, which must not
+        # abort mid-restart; the flow's own requests surface auth errors.
+        r, _gate_verdict = check_gateway_status(r, box_ip)
         return r.status_code == 200
     except Exception:
         return False

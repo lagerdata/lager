@@ -61,8 +61,17 @@ def check_and_warn(box_ip: str, box_name: str | None = None) -> None:
         # it's the same endpoint `lager box hello` uses. 1.5s timeout
         # keeps the latency penalty bounded if the box is briefly slow.
         from ..gateway_auth import auth_headers_for_box
+        from ..box_storage import check_gateway_status
         r = requests.get(f'http://{box_ip}:9000/status', timeout=1.5,
                          headers=auth_headers_for_box(box_ip))
+        # Non-raising gateway check: on first contact with a gated box this
+        # records the mapping and retries with the stored token; a genuine
+        # denial just skips the warning (this module is fail-open — the
+        # command's own request will surface the actionable auth error).
+        r, gate_verdict = check_gateway_status(r, box_ip)
+        if gate_verdict:
+            logger.debug('version-skew check: gateway denied (%s)', gate_verdict)
+            return
         if r.status_code == 404:
             # The :9000 server answered but has no /status route — the box
             # image predates the :9000 API surface this CLI requires. That is
