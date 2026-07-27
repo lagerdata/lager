@@ -44,6 +44,17 @@ class DebugServiceClient:
             'User-Agent': 'lager-cli/1.0',
         })
 
+        if not ssh_tunnel:
+            # Direct connection may cross an authenticating gateway: attach
+            # the bearer token when this box is known to be gated, and turn
+            # gateway denials into actionable errors instead of raw 401s.
+            # No-op for plain boxes (the hook only fires on the discovery
+            # header, and no token is sent to an unknown box). Tunneled
+            # connections terminate at 127.0.0.1 and never see the gateway.
+            from ....gateway_auth import auth_headers_for_box, gateway_response_hook
+            self.session.headers.update(auth_headers_for_box(box_host))
+            self.session.hooks['response'] = [gateway_response_hook(box_host)]
+
     def health_check(self) -> Dict[str, Any]:
         """Check if service is healthy."""
         response = self.session.get(f'{self.base_url}/health', timeout=5)

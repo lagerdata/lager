@@ -583,43 +583,49 @@ def _gateway_kwargs(ip):
 
 def _resend_with_auth(prepared, headers):
     """Re-send an already-prepared request with extra headers merged in.
-    Returns the new response, or None if the resend itself failed."""
+    Returns the new response, or None if the resend itself failed.
+
+    Sent with ``stream=True`` so callers that stream the original request
+    (pip/python output) keep streaming on the retried response; non-streaming
+    callers read ``.json()``/``.text`` which consumes it identically."""
     import requests
     req = prepared.copy()
     for key, value in headers.items():
         req.headers[key] = value
     try:
-        return requests.Session().send(req, timeout=30, stream=False)
+        return requests.Session().send(req, timeout=30, stream=True)
     except requests.RequestException:
         return None
 
 
-def _check_gateway(resp, ip):
-    """Resolve a gateway response, returning the response the caller should use.
+def _resolve_gateway(resp, ip):
+    """Record-and-retry core shared by :func:`_check_gateway` and
+    :func:`check_gateway_status` — the single implementation of gateway
+    discovery. Returns ``(resp, denied)``:
 
-    On a plain (un-gated) box this is a passthrough. On a gated box:
-
+    - Non-gateway responses (no discovery header) pass through untouched
+      with ``denied=False`` — plain boxes are never affected.
     - First contact — we sent no token (the box→auth-server link is only
       learned from this very 401's discovery header) but we already hold a
       session for that server: record the mapping, attach the token, and
-      retry the request once. The caller gets the authenticated response and
-      never sees the round trip. A plain box never receives the token,
-      because only a gateway sends the discovery header.
-    - Genuine denials (revoked session, no access grant, auth server down)
-      raise the actionable `lager login` / "ask your admin" error as before.
-
-    Callers should adopt the return value: ``resp = _check_gateway(resp, ip)``.
+      retry the request once. On success the retried, authenticated response
+      is returned with ``denied=False``. A plain box never receives the
+      token, because only a gateway sends the discovery header.
+    - Anything else is a genuine denial: the mapping is still recorded (so
+      the next attempt authenticates) and ``denied=True`` tells the caller
+      to handle ``resp`` as a gateway denial.
     """
     from .gateway_auth import (
-        DISCOVERY_HEADER, handle_gateway_denial,
-        record_box_auth_server, auth_headers_for_box,
+        DISCOVERY_HEADER, record_box_auth_server, auth_headers_for_box,
     )
-    if not (resp.status_code in (401, 403, 503) and DISCOVERY_HEADER in resp.headers):
-        return resp
+    # getattr: tolerate response-shaped fakes without a headers attribute.
+    resp_headers = getattr(resp, 'headers', None) or {}
+    if not (resp.status_code in (401, 403, 503) and DISCOVERY_HEADER in resp_headers):
+        return resp, False
 
+    record_box_auth_server(ip, resp_headers[DISCOVERY_HEADER])
     sent_auth = 'Authorization' in getattr(resp.request, 'headers', {})
     if resp.status_code == 401 and not sent_auth:
-        record_box_auth_server(ip, resp.headers[DISCOVERY_HEADER])
         headers = auth_headers_for_box(ip)
         if headers:
             retried = _resend_with_auth(resp.request, headers)
@@ -627,11 +633,45 @@ def _check_gateway(resp, ip):
                 gated = (retried.status_code in (401, 403, 503)
                          and DISCOVERY_HEADER in retried.headers)
                 if not gated:
-                    return retried      # transparently authenticated
-                resp = retried          # still refused — report on the retry
+                    return retried, False   # transparently authenticated
+                resp = retried              # still refused — report on the retry
 
-    handle_gateway_denial(resp, ip)     # raises the actionable error
+    return resp, True
+
+
+def _check_gateway(resp, ip):
+    """Resolve a gateway response, returning the response the caller should use.
+
+    On a plain (un-gated) box this is a passthrough. On a gated box the
+    first contact is retried transparently (see :func:`_resolve_gateway`);
+    genuine denials (revoked session, no access grant, auth server down)
+    raise the actionable `lager login` / "ask your admin" error as before.
+
+    Callers should adopt the return value: ``resp = _check_gateway(resp, ip)``.
+    """
+    from .gateway_auth import handle_gateway_denial
+    resp, denied = _resolve_gateway(resp, ip)
+    if denied:
+        handle_gateway_denial(resp, ip)     # raises the actionable error
     return resp
+
+
+def check_gateway_status(resp, ip):
+    """Non-raising variant of :func:`_check_gateway` for fan-out and
+    fail-open callers (`lager boxes`, health polls) that must not abort on a
+    single box's denial.
+
+    Performs the same record-and-retry as ``_check_gateway``. Returns
+    ``(resp, label)``: ``label`` is None when the caller should simply use
+    ``resp`` (plain box, or the retry authenticated transparently), else a
+    short user-facing verdict — 'sign-in required', 'session rejected',
+    'no access', or 'auth server down'.
+    """
+    from .gateway_auth import denial_label
+    resp, denied = _resolve_gateway(resp, ip)
+    if not denied:
+        return resp, None
+    return resp, denial_label(resp)
 
 
 def _lock_url(ip, suffix=''):
@@ -807,6 +847,9 @@ def release_box_lock(ip, holder, *, quiet=True):
             )
         return False
 
+    # Non-raising gateway check (this function promises never to raise);
+    # a denial falls through to the failure warning below.
+    resp, _gate_verdict = check_gateway_status(resp, ip)
     if resp.status_code == 200:
         return True
     if not quiet:
@@ -848,6 +891,9 @@ def heartbeat_box_lock(ip, holder, *, quiet=True):
                 fg='yellow', err=True,
             )
         return False
+    # Non-raising gateway check; a denial reads as a failed heartbeat, which
+    # callers already treat as "carry on" (server TTL is authoritative).
+    resp, _gate_verdict = check_gateway_status(resp, ip)
     return resp.status_code == 200
 
 

@@ -133,19 +133,36 @@ class SupplyWebSocketClient:
         Returns:
             True if connected successfully, False otherwise
         """
-        try:
-            from ..gateway_auth import auth_headers_for_url
-            self.sio.connect(
-                self.box_url,
-                namespaces=['/supply'],
-                wait_timeout=timeout,
-                headers=auth_headers_for_url(self.box_url)
-            )
-            return True
-        except Exception as e:
-            if self.on_error:
-                self.on_error(f"Could not connect to box at {self.box_url}: {str(e)}")
-            return False
+        from ..gateway_auth import (
+            auth_headers_for_url, plain_error_text, ws_handshake_recovery,
+        )
+        headers = auth_headers_for_url(self.box_url)
+        for attempt in (0, 1):
+            try:
+                self.sio.connect(
+                    self.box_url,
+                    namespaces=['/supply'],
+                    wait_timeout=timeout,
+                    headers=headers
+                )
+                return True
+            except Exception as e:
+                # The handshake exception hides the HTTP response, so probe
+                # the box over HTTP: a gated box's first contact records the
+                # mapping and hands back the token for one retry; a genuine
+                # denial becomes the actionable message.
+                retry_headers, denial = ws_handshake_recovery(self.box_url, headers)
+                if denial is not None:
+                    if self.on_error:
+                        self.on_error(plain_error_text(denial))
+                    return False
+                if attempt == 0 and retry_headers:
+                    headers = retry_headers
+                    continue
+                if self.on_error:
+                    self.on_error(f"Could not connect to box at {self.box_url}: {str(e)}")
+                return False
+        return False
 
     def start_monitoring(self) -> bool:
         """
