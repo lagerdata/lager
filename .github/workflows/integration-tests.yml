@@ -299,7 +299,8 @@ jobs:
         # flashes while a backgrounded `gdbserver` still holds the probe, which
         # wedges the session and cascades into the rest of the section (the
         # Python API flash test passes in the same run because it does not flash
-        # underneath a running gdbserver). Lower this as that is addressed.
+        # underneath a running gdbserver). Tracked in #162; lower this to 0 when
+        # that is fixed.
         id: debug-cli-test
         continue-on-error: true
         timeout-minutes: 15
