@@ -1,0 +1,41 @@
+---
+title: "Version 0.32.5"
+description: "July 27, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- First contact with an access-controlled Lager Box now signs in
+  automatically everywhere. Previously, the first command to reach a gated
+  box could fail with a raw `HTTP 401` — and `lager boxes` kept failing on
+  every run — because most commands never completed the box discovery step.
+  Every CLI path that talks to a box (HTTP and WebSocket, including the
+  supply/battery/uart monitors) now links the box to its auth server on
+  first contact and retries once with your existing session. When access is
+  genuinely denied, `lager boxes` shows a clear per-box status
+  (`sign-in required`, `no access`, `auth server down`) with the exact
+  `lager login` command to run, instead of a raw status code — and one gated
+  box no longer affects the rest of the table. Boxes without access control
+  are completely unaffected.
+- `lager uart` no longer reports an access-denied box as having no
+  instruments; it now shows the sign-in error instead.
+- `lager status` no longer raises `NameError` on Python 3.10 when a
+  websocket failure occurs; the original error is now reported properly.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.32.5
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.32.5/)

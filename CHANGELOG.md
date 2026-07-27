@@ -2,7 +2,7 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
-## [Unreleased]
+## [0.32.5] - 2026-07-27
 
 ### Added
 
@@ -51,6 +51,23 @@ All notable changes to the Lager platform are documented here. For detailed rele
   so the gate cannot go red from an unrelated upstream release.
 
 ### Fixed
+
+- **First contact with a gated box now authenticates everywhere — `lager
+  boxes` no longer reports `HTTP 401` forever.** The CLI only sends a bearer
+  token to boxes already in its box→auth-server map, and that map is learned
+  from a gateway's discovery 401 — but a dozen call sites attached the auth
+  header without ever running the record-and-retry step, so first contact
+  failed and never self-healed. Every CLI path that talks to a box (HTTP and
+  WebSocket) now records the mapping, retries once with a held token, and
+  surfaces genuine denials actionably. `lager boxes` renders a per-box
+  verdict (`sign-in required`, `no access`, `auth server down`) with a
+  `lager login` hint instead of a raw status code and never aborts the
+  table on one gated box; the uart instrument listing no longer reports an
+  auth denial as an empty instrument list; `run_pip` sends auth at all.
+  SocketIO clients (supply/battery/uart), whose handshake exceptions hide
+  response headers, discover via an HTTP probe and retry the handshake
+  once. Plain boxes are untouched: no token is ever sent without the
+  discovery header, and application 401/403s keep their behavior.
 
 - **`lock_state.acquire` rejected a valid holder type in test only.** The box
   unit suite asserted an unrecognized `holder_type` was coerced to
