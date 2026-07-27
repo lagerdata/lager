@@ -581,24 +581,39 @@ def _gateway_kwargs(ip):
     return {'headers': headers} if headers else {}
 
 
-def _resend_with_auth(prepared, headers):
+def _resend_with_auth(prepared, headers, *, timeout: Optional[float] = 30,
+                      stream: bool = True, session=None):
     """Re-send an already-prepared request with extra headers merged in.
     Returns the new response, or None if the resend itself failed.
 
-    Sent with ``stream=True`` so callers that stream the original request
-    (pip/python output) keep streaming on the retried response; non-streaming
-    callers read ``.json()``/``.text`` which consumes it identically."""
+    ``timeout`` and ``stream`` MUST mirror the original call. Replaying a
+    streaming request with ``stream=False`` blocks inside ``send()``
+    buffering a body that never ends — the debug service's RTT endpoint
+    streams until interrupted, so the read timeout never fires while the
+    target is emitting. ``session`` lets a caller that owns a long-lived
+    Session hand it in, so a retried stream stays on that connection pool
+    rather than on a throwaway that goes out of scope mid-stream.
+
+    ``stream`` defaults to True because that is the safe direction: a
+    buffered caller reads ``.json()``/``.text`` off a streamed response
+    identically, whereas a streaming caller replayed with ``stream=False``
+    hangs. Callers that know they are buffered may pass ``stream=False``.
+
+    Only replayable bodies are safe here: ``prepared.copy()`` cannot rewind
+    a file-like or multipart body. Every current caller sends JSON.
+    """
     import requests
     req = prepared.copy()
     for key, value in headers.items():
         req.headers[key] = value
     try:
-        return requests.Session().send(req, timeout=30, stream=True)
+        return (session or requests.Session()).send(req, timeout=timeout, stream=stream)
     except requests.RequestException:
         return None
 
 
-def _resolve_gateway(resp, ip):
+def _resolve_gateway(resp, ip, *, timeout: Optional[float] = 30,
+                     stream: bool = True, session=None):
     """Record-and-retry core shared by :func:`_check_gateway` and
     :func:`check_gateway_status` — the single implementation of gateway
     discovery. Returns ``(resp, denied)``:
@@ -614,6 +629,11 @@ def _resolve_gateway(resp, ip):
     - Anything else is a genuine denial: the mapping is still recorded (so
       the next attempt authenticates) and ``denied=True`` tells the caller
       to handle ``resp`` as a gateway denial.
+
+    ``timeout``/``stream``/``session`` are forwarded to the retry and must
+    mirror the original call; see :func:`_resend_with_auth`. They exist for
+    the debug service's streaming RTT endpoint, which cannot be replayed
+    buffered.
     """
     from .gateway_auth import (
         DISCOVERY_HEADER, record_box_auth_server, auth_headers_for_box,
@@ -628,7 +648,8 @@ def _resolve_gateway(resp, ip):
     if resp.status_code == 401 and not sent_auth:
         headers = auth_headers_for_box(ip)
         if headers:
-            retried = _resend_with_auth(resp.request, headers)
+            retried = _resend_with_auth(resp.request, headers, timeout=timeout,
+                                        stream=stream, session=session)
             if retried is not None:
                 gated = (retried.status_code in (401, 403, 503)
                          and DISCOVERY_HEADER in retried.headers)
@@ -639,7 +660,8 @@ def _resolve_gateway(resp, ip):
     return resp, True
 
 
-def _check_gateway(resp, ip):
+def _check_gateway(resp, ip, *, timeout: Optional[float] = 30,
+                   stream: bool = True, session=None):
     """Resolve a gateway response, returning the response the caller should use.
 
     On a plain (un-gated) box this is a passthrough. On a gated box the
@@ -648,9 +670,14 @@ def _check_gateway(resp, ip):
     raise the actionable `lager login` / "ask your admin" error as before.
 
     Callers should adopt the return value: ``resp = _check_gateway(resp, ip)``.
+
+    ``timeout``/``stream``/``session`` are forwarded to the retry and must
+    mirror the original call; see :func:`_resend_with_auth`. Existing callers
+    pass none of them and keep the previous behaviour.
     """
     from .gateway_auth import handle_gateway_denial
-    resp, denied = _resolve_gateway(resp, ip)
+    resp, denied = _resolve_gateway(resp, ip, timeout=timeout,
+                                    stream=stream, session=session)
     if denied:
         handle_gateway_denial(resp, ip)     # raises the actionable error
     return resp

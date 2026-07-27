@@ -114,7 +114,12 @@ def is_service_available(box_ip: str, username: str = 'lagerdata') -> bool:
         if not tunnel.establish_tunnel():
             return False
 
-    # Verify service is responding
+    # Verify service is responding.
+    #
+    # Deliberately unauthenticated: this probes the far end of the SSH tunnel
+    # established just above, so it never crosses the gateway. Note this
+    # differs from DebugServiceClient, which reaches the box directly over
+    # the network and does attach a bearer token.
     try:
         response = requests.get('http://127.0.0.1:8765/health', timeout=2)
         return response.status_code == 200
