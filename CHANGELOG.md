@@ -18,13 +18,19 @@ All notable changes to the Lager platform are documented here. For detailed rele
   `coverage` job publishes per-module line coverage to the job summary, with no
   threshold.
 
-- **Unit suites now run on every advertised Python version.** `cli/setup.py`
-  declares `python_requires=">=3.10"` and lists 3.10 through 3.14, while CI
-  tested 3.11 only. A separate `compat (pyX.Y)` job covers the other four --
-  separate rather than another dimension on the existing matrix, because that
-  would rename the `unit (...)` contexts the branch ruleset requires and
-  strand every open PR on checks that never report. 3.14 is non-fatal pending
-  the `setuptools<77` pin.
+- **Unit suites now run on Python 3.10 and 3.12 as well as 3.11.**
+  `cli/setup.py` declares `python_requires=">=3.10"` while CI tested 3.11
+  only. A separate `compat (pyX.Y)` job covers the rest -- separate rather
+  than another dimension on the existing matrix, because that would rename
+  the `unit (...)` contexts the branch ruleset requires and strand every open
+  PR on checks that never report.
+
+  It found two real problems on its first run. 3.13 and 3.14 are deliberately
+  not in the matrix yet: `box/lager/python/service.py` imports `cgi`, which
+  PEP 594 removed in 3.13, so the box suite cannot even be collected there --
+  a forward-compatibility gap in the box's python service, tracked separately
+  because migrating its multipart parsing off `cgi.FieldStorage` touches the
+  file-upload path.
 
 ### Changed
 
@@ -65,6 +71,15 @@ All notable changes to the Lager platform are documented here. For detailed rele
   support, evaluating the except clause failed and masked the original
   exception. It now imports the `exceptiongroup` backport (already present via
   trio) below 3.11. Surfaced by adding ruff.
+
+- **The measurement unit suite failed 21 tests on Python 3.10.** Its conftest
+  loads box modules by path and registers them in `sys.modules`, but never
+  bound each module as an attribute of its parent package -- something the
+  real import system does. `unittest.mock.patch` resolves a dotted target by
+  walking attributes, so patching `lager.measurement.watt.ppk2_watt.*` raised
+  `AttributeError: module 'lager' has no attribute 'measurement'`. Python 3.11
+  changed mock's lookup to fall back to an import, which hid the omission
+  everywhere CI was looking. Found by the new compat job.
 
 - Box unit tests no longer overwrite `simplejson` with the stdlib `json`
   module in `sys.modules`. Nine files did this at import time, process-wide and
