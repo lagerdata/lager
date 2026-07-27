@@ -5,6 +5,17 @@
 Lager Debug Service Client
 
 Client library for communicating with the persistent debug service.
+
+This is the BOX-side client, for ``lager python`` scripts running on the
+box. It talks to ``127.0.0.1``, so it is always on the far side of the
+authenticating gateway and needs no bearer token — and ``box/`` ships no
+``gateway_auth`` module, so importing one here would break every on-box
+script that touches this class.
+
+``cli/commands/development/debug/service_client.py`` is the network-side
+client for the same service. It crosses the gateway and therefore does
+attach a token. The two files have already diverged in their method
+signatures; they are not copies and must not be "synced".
 """
 import json
 import base64

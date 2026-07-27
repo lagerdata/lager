@@ -581,20 +581,34 @@ def _gateway_kwargs(ip):
     return {'headers': headers} if headers else {}
 
 
-def _resend_with_auth(prepared, headers):
+def _resend_with_auth(prepared, headers, *, timeout: Optional[float] = 30,
+                      stream: bool = False, session=None):
     """Re-send an already-prepared request with extra headers merged in.
-    Returns the new response, or None if the resend itself failed."""
+    Returns the new response, or None if the resend itself failed.
+
+    ``timeout`` and ``stream`` MUST mirror the original call. Replaying a
+    streaming request with ``stream=False`` blocks inside ``send()``
+    buffering a body that never ends — the debug service's RTT endpoint
+    streams until interrupted, so the read timeout never fires while the
+    target is emitting. ``session`` lets a caller that owns a long-lived
+    Session hand it in, so a retried stream stays on that connection pool
+    rather than on a throwaway that goes out of scope mid-stream.
+
+    Only replayable bodies are safe here: ``prepared.copy()`` cannot rewind
+    a file-like or multipart body. Every current caller sends JSON.
+    """
     import requests
     req = prepared.copy()
     for key, value in headers.items():
         req.headers[key] = value
     try:
-        return requests.Session().send(req, timeout=30, stream=False)
+        return (session or requests.Session()).send(req, timeout=timeout, stream=stream)
     except requests.RequestException:
         return None
 
 
-def _check_gateway(resp, ip):
+def _check_gateway(resp, ip, *, timeout: Optional[float] = 30,
+                   stream: bool = False, session=None):
     """Resolve a gateway response, returning the response the caller should use.
 
     On a plain (un-gated) box this is a passthrough. On a gated box:
@@ -609,6 +623,10 @@ def _check_gateway(resp, ip):
       raise the actionable `lager login` / "ask your admin" error as before.
 
     Callers should adopt the return value: ``resp = _check_gateway(resp, ip)``.
+
+    ``timeout``/``stream``/``session`` are forwarded to the retry and must
+    mirror the original call; see :func:`_resend_with_auth`. The defaults
+    match what every buffered JSON caller already does.
     """
     from .gateway_auth import (
         DISCOVERY_HEADER, handle_gateway_denial,
@@ -622,7 +640,8 @@ def _check_gateway(resp, ip):
         record_box_auth_server(ip, resp.headers[DISCOVERY_HEADER])
         headers = auth_headers_for_box(ip)
         if headers:
-            retried = _resend_with_auth(resp.request, headers)
+            retried = _resend_with_auth(resp.request, headers, timeout=timeout,
+                                        stream=stream, session=session)
             if retried is not None:
                 gated = (retried.status_code in (401, 403, 503)
                          and DISCOVERY_HEADER in retried.headers)
