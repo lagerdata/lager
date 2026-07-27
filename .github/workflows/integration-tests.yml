@@ -282,36 +282,66 @@ jobs:
         shell: bash
 
       - name: Test J-Link script file (CLI)
-        # Deliberately carries NO `id:`, so the gate below ignores it — the
-        # same mechanism that keeps the update probe non-fatal. The step still
-        # runs and its full output is in the log.
+        # Gated on a BASELINE, not on raw pass/fail.
         #
-        # Why: the debug CLI reaches the box's debug service directly over
+        # The debug CLI reaches the box's debug service directly over
         # http://<box>:8765 (service_client.py builds its session with only
         # Content-Type and User-Agent, and commands.py pins ssh_tunnel=False),
-        # so it sends no Authorization header. Against a gateway-gated box
-        # every box-contacting check fails with "Stout authorization required"
-        # — 24 of 45 on first run; the local config/content/error-handling
-        # checks still pass and are still worth running.
+        # so it sends no Authorization header. Against a gateway-gated box every
+        # box-contacting check fails with "Stout authorization required". That
+        # is a product gap, not a defect in this suite: the API tests avoid it
+        # only because `lager python` executes ON the box and talks to
+        # 127.0.0.1, never crossing the gateway.
         #
-        # This is a product gap, not a defect in the suite: the API tests do
-        # not hit it only because `lager python` executes ON the box and talks
-        # to 127.0.0.1, never crossing the gateway.
+        # Gating on raw pass/fail would keep the nightly permanently red;
+        # dropping the `id:` reported a bare green tick that could not be told
+        # apart from new breakage or from the suite dying on its first line. So
+        # instead: tolerate the documented failure count, fail if it GROWS, and
+        # fail if no summary was produced at all. The count is surfaced as a
+        # run annotation either way.
         #
-        # Re-add `id: debug-cli-test` once the service client attaches
-        # gateway_auth.auth_headers_for_box().
+        # Lower JLINK_CLI_BASELINE as the gap closes — 0 once the service
+        # client attaches gateway_auth.auth_headers_for_box().
+        id: debug-cli-test
         continue-on-error: true
         timeout-minutes: 15
         env:
           # The suite defaults to ssh user `lager`; this bench logs in as
           # `lagerdata`.
           SSH_USER: lagerdata
+          JLINK_CLI_BASELINE: "24"
         # Pass the box NAME, not the IP: given an IP the suite registers a
         # `temp_box_<ip>` entry, polluting the box list the lifecycle workflow
         # also manages.
         run: |
+          LOG="$RUNNER_TEMP/jlink-cli.log"
+          rc=0
           bash test/integration/communication/jlink_script.sh \
-            "$LAGER_BOX" "${{ vars.DEBUG_NET || 'debug1' }}" firmware.hex
+            "$LAGER_BOX" "${{ vars.DEBUG_NET || 'debug1' }}" firmware.hex \
+            2>&1 | tee "$LOG" || rc=$?
+
+          # Strip ANSI so the summary parses regardless of colour output.
+          failed=$(sed 's/\x1b\[[0-9;]*m//g' "$LOG" | awk '/^TOTAL/ {print $NF}' | tail -1)
+
+          if ! printf '%s' "$failed" | grep -qE '^[0-9]+$'; then
+            echo "::error title=J-Link CLI::suite produced no parseable summary (exit $rc) - it likely died before reporting"
+            exit 1
+          fi
+
+          if [ "$failed" -eq 0 ]; then
+            echo "::notice title=J-Link CLI::all checks pass"
+          else
+            echo "::warning title=J-Link CLI suite::$failed of 45 checks fail; known gateway-auth gap (baseline $JLINK_CLI_BASELINE)"
+          fi
+
+          if [ "$failed" -gt "$JLINK_CLI_BASELINE" ]; then
+            echo "::error title=J-Link CLI::failures grew from $JLINK_CLI_BASELINE to $failed - new breakage beyond the known gap"
+            exit 1
+          fi
+
+          if [ "$failed" -lt "$JLINK_CLI_BASELINE" ]; then
+            echo "::notice title=J-Link CLI::only $failed failures (baseline $JLINK_CLI_BASELINE) - lower JLINK_CLI_BASELINE to lock in the improvement"
+          fi
         shell: bash
 
       - name: Fail job if any test failed
