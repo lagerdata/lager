@@ -47,8 +47,14 @@ updates:
         patterns: ['*']
 
   # cli/setup.py install_requires.
+  #
+  # versioning-strategy: see the note on the /test ecosystem below. Same
+  # reasoning applies here -- cli/setup.py declares python_requires=">=3.10",
+  # so a raised floor can make the package uninstallable on a version it
+  # claims to support.
   - package-ecosystem: pip
     directory: /cli
+    versioning-strategy: increase-if-necessary
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -60,11 +66,26 @@ updates:
         applies-to: version-updates
         patterns: ['*']
 
-  # test/requirements-unit.txt. Its entries carry major-version caps
-  # deliberately, and the floors are held low so the compat matrix (3.10-3.12)
-  # still resolves -- see the comment in that file before widening anything.
+  # test/requirements-unit.txt.
+  #
+  # versioning-strategy is load-bearing here, not a preference. Dependabot's
+  # pip default is `increase`, which raises the FLOOR to whatever currently
+  # resolves. That is wrong for a file feeding a five-version compat matrix,
+  # where the floors are held low on purpose: pip resolves differently per
+  # interpreter, so the newest version is frequently unavailable on older ones.
+  #
+  # This is not hypothetical. The first run under the default opened a PR
+  # raising `numpy>=2,<3` to `numpy>=2.5.1,<3`. numpy 2.5 requires Python 3.12,
+  # so that floor is unsatisfiable on both 3.10 AND 3.11 -- and 3.11 is the
+  # version every REQUIRED `unit (...)` context runs on. It failed nine of ten
+  # checks; only `compat (py3.12)` passed.
+  #
+  # `increase-if-necessary` raises a floor only when the existing range cannot
+  # admit the new version. `numpy>=2,<3` already admits 2.5.1, so it is left
+  # alone. Do not change this back to the default.
   - package-ecosystem: pip
     directory: /test
+    versioning-strategy: increase-if-necessary
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
