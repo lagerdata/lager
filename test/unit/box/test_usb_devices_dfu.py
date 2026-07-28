@@ -119,6 +119,13 @@ class EnumerateUsbDevicesTests(unittest.TestCase):
         )
         self.assertEqual([d['sysfs_name'] for d in devices], ['1-1.4'])
 
+    def test_vid_pid_filters_accept_short_hex(self):
+        # Query ``vid=483`` must still match sysfs ``0483``.
+        devices = usb_handler.enumerate_usb_devices(
+            sysfs_root=self.tmp.name, vid='483', pid='df11',
+        )
+        self.assertEqual([d['sysfs_name'] for d in devices], ['1-1.4'])
+
     def test_serial_filter_is_exact(self):
         devices = usb_handler.enumerate_usb_devices(
             sysfs_root=self.tmp.name, serial='STM32-DUT-01',
@@ -243,7 +250,8 @@ class DfuRouteTests(unittest.TestCase):
         self.assertTrue(body['success'])
         self.assertEqual(len(body['value']['devices']), 3)
         run.assert_called_once()
-        self.assertEqual(run.call_args[0][0], ['dfu-util', '-l'])
+        # argv[0] is the resolved which() path, not the bare 'dfu-util'.
+        self.assertEqual(run.call_args[0][0], ['/usr/bin/dfu-util', '-l'])
 
     def test_download_writes_temp_firmware_and_builds_args(self):
         firmware = b'\x00\xff\x10firmware'
@@ -271,7 +279,7 @@ class DfuRouteTests(unittest.TestCase):
         self.assertEqual(body['value']['exit_code'], 0)
         self.assertEqual(captured['firmware'], firmware)
         self.assertEqual(captured['args'][:5],
-                         ['dfu-util', '-d', '0483:df11', '-a', '0'])
+                         ['/usr/bin/dfu-util', '-d', '0483:df11', '-a', '0'])
         # The temp firmware file is removed after the run.
         self.assertFalse(
             os.path.exists(captured['args'][captured['args'].index('-D') + 1]))
@@ -293,6 +301,33 @@ class DfuRouteTests(unittest.TestCase):
         body = resp.get_json()
         self.assertIn('dfu-util-missing', body['error'])
         self.assertIn('lager box-config apt add dfu-util', body['error'])
+
+    def test_missing_dfu_util_on_download_leaves_no_temp_file(self):
+        # Regression: firmware used to be written before the which() check,
+        # leaking a lager-dfu-* file in /tmp on every missing-binary 500.
+        before = {
+            p for p in os.listdir(tempfile.gettempdir())
+            if p.startswith('lager-dfu-')
+        }
+        with patch.object(usb_handler.shutil, 'which', return_value=None):
+            resp = self.client.post('/usb/dfu', json={
+                'action': 'download',
+                'params': {
+                    'firmware': base64.b64encode(b'firmware').decode(),
+                    'filename': 'app.bin',
+                },
+            })
+        self.assertEqual(resp.status_code, 500)
+        after = {
+            p for p in os.listdir(tempfile.gettempdir())
+            if p.startswith('lager-dfu-')
+        }
+        self.assertEqual(after, before)
+
+    def test_non_dict_params_is_400(self):
+        resp = self.client.post(
+            '/usb/dfu', json={'action': 'list', 'params': ['not', 'a', 'dict']})
+        self.assertEqual(resp.status_code, 400)
 
     def test_nonzero_exit_is_502_with_stderr_tail(self):
         with patch.object(

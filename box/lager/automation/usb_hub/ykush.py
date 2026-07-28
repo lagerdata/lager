@@ -104,6 +104,10 @@ class YKUSHUSBNet(USBNet):
     # Per-hub cache: lock key -> HID device path (metadata only, never a
     # live handle).
     _path_cache: dict = {}
+    # Once a pykush build rejects the ``path=`` keyword (TypeError), stop
+    # trying — otherwise every later op would re-cache ``_path``, fail the
+    # path= open, and re-enumerate forever.
+    _path_open_supported: bool = True
 
     @staticmethod
     def _release(dev) -> None:
@@ -139,15 +143,20 @@ class YKUSHUSBNet(USBNet):
         """
         key = self._lock_key()
         path = YKUSHUSBNet._path_cache.get(key)
-        if path is not None:
+        if path is not None and YKUSHUSBNet._path_open_supported:
             try:
                 return _YKUSH_CLS(path=path)
+            except TypeError:
+                # Constructor has no ``path=`` kwarg on this build.
+                YKUSHUSBNet._path_open_supported = False
+                YKUSHUSBNet._path_cache.clear()
             except Exception:
                 YKUSHUSBNet._path_cache.pop(key, None)
         dev = _YKUSH_CLS(serial=self.serial) if self.serial else _YKUSH_CLS()
-        new_path = getattr(dev, "_path", None)
-        if new_path:
-            YKUSHUSBNet._path_cache[key] = new_path
+        if YKUSHUSBNet._path_open_supported:
+            new_path = getattr(dev, "_path", None)
+            if new_path:
+                YKUSHUSBNet._path_cache[key] = new_path
         return dev
 
     def _run_once(self, fn):

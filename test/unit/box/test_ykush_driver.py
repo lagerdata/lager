@@ -113,6 +113,7 @@ class YkushDriverTests(unittest.TestCase):
         ykush._LIBRARY_CHECKED = True
         # The HID-path cache is class-level (per-process); isolate tests.
         ykush.YKUSHUSBNet._path_cache = {}
+        ykush.YKUSHUSBNet._path_open_supported = True
         self.net = ykush.YKUSHUSBNet(
             {"address": "USB0::0x04D8::0xF2F7::YK28339::INSTR"}
         )
@@ -211,6 +212,7 @@ class YkushPathCacheTests(unittest.TestCase):
         ykush._PORT_DOWN = 0
         ykush._LIBRARY_CHECKED = True
         ykush.YKUSHUSBNet._path_cache = {}
+        ykush.YKUSHUSBNet._path_open_supported = True
         self.net = ykush.YKUSHUSBNet(
             {"address": "USB0::0x04D8::0xF2F7::YK28339::INSTR"}
         )
@@ -241,6 +243,52 @@ class YkushPathCacheTests(unittest.TestCase):
         self.net.enable("CLI_USB", 2)
         self.assertEqual(_FakePathPyKush.enumerations, 2)
         self.assertIsNone(_FakePyKush._claim["held_by"])
+
+
+class _FakeNoPathKwargPyKush(_FakePyKush):
+    """pykush stub that exposes ``_path`` but rejects ``path=`` — the shape
+    that would thrash the cache if TypeError weren't sticky."""
+
+    enumerations = 0
+    path_attempts = 0
+
+    def __init__(self, serial=None, path=None):
+        if path is not None:
+            _FakeNoPathKwargPyKush.path_attempts += 1
+            raise TypeError("__init__() got an unexpected keyword argument 'path'")
+        _FakeNoPathKwargPyKush.enumerations += 1
+        super().__init__(serial=serial)
+        self._path = b"/dev/hidraw3"
+
+
+class YkushPathUnsupportedTests(unittest.TestCase):
+    def setUp(self):
+        _FakePyKush._claim = {"held_by": None}
+        _FakePyKush.opened = []
+        _FakePyKush.closed = []
+        _FakePyKush._counter = 0
+        _FakeNoPathKwargPyKush.enumerations = 0
+        _FakeNoPathKwargPyKush.path_attempts = 0
+        ykush._YKUSH_CLS = _FakeNoPathKwargPyKush
+        ykush._PORT_UP = 1
+        ykush._PORT_DOWN = 0
+        ykush._LIBRARY_CHECKED = True
+        ykush.YKUSHUSBNet._path_cache = {}
+        ykush.YKUSHUSBNet._path_open_supported = True
+        self.net = ykush.YKUSHUSBNet(
+            {"address": "USB0::0x04D8::0xF2F7::YK28339::INSTR"}
+        )
+
+    def test_path_kwarg_unsupported_does_not_thrash_cache(self):
+        # Op 1 caches ``_path``; op 2 discovers TypeError and sticks;
+        # later ops must not keep retrying path=.
+        self.net.enable("CLI_USB", 2)
+        self.net.enable("CLI_USB", 2)
+        self.net.enable("CLI_USB", 2)
+        self.net.enable("CLI_USB", 2)
+        self.assertEqual(_FakeNoPathKwargPyKush.path_attempts, 1)
+        self.assertFalse(ykush.YKUSHUSBNet._path_open_supported)
+        self.assertEqual(ykush.YKUSHUSBNet._path_cache, {})
 
 
 if __name__ == "__main__":
