@@ -182,6 +182,9 @@ class AcronameUSBNet(USBNet):
             candidate = cached["cls"]()
             if self._try_connect(candidate, cached["spec"]):
                 return candidate
+            # Failed connectFromSpec can still leave a partial USB claim on
+            # some BrainStem builds — always release before rediscovering.
+            self._close_hub(candidate)
             AcronameUSBNet._conn_cache.pop(key, None)
 
         spec_obj = self._discover_spec()
@@ -197,6 +200,7 @@ class AcronameUSBNet(USBNet):
                         "cls": cls, "spec": attempt_spec,
                     }
                     return candidate
+                self._close_hub(candidate)
 
         serial = self._serial
         where = f" with serial 0x{serial:08X}" if serial is not None else ""

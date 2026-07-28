@@ -103,18 +103,43 @@ _SYSFS_DEVICE_ATTRS = (
 
 
 def _read_sysfs_attr(dev_dir, name):
+    """Best-effort non-blocking read of a sysfs string attribute.
+
+    Mirrors ``usb_scanner._read_sysfs_text``: USB string descriptors
+    (product/manufacturer/serial) can block on a wedged device when read
+    through ordinary buffered I/O, which would make ``GET /usb/devices``
+    hang instead of returning in a few milliseconds.
+    """
+    path = os.path.join(dev_dir, name)
     try:
-        with open(os.path.join(dev_dir, name), "r") as fh:
-            return fh.read().strip() or None
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
     except OSError:
         return None
+    try:
+        data = os.read(fd, 256)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    try:
+        text = data.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return None
+    return text or None
 
 
 def _norm_hex_id(value):
-    """Normalize a vid/pid for comparison: lowercase, no 0x prefix."""
+    """Normalize a vid/pid for comparison: lowercase, no 0x, zero-padded."""
     if value is None:
         return None
-    return str(value).strip().lower().removeprefix("0x") or None
+    raw = str(value).strip().lower().removeprefix("0x")
+    if not raw:
+        return None
+    # Sysfs writes 4-digit hex (``0483``); accept short query forms (``483``).
+    try:
+        return f"{int(raw, 16):04x}"
+    except ValueError:
+        return raw
 
 
 def enumerate_usb_devices(sysfs_root=None, vid=None, pid=None, serial=None):
@@ -164,6 +189,11 @@ def enumerate_usb_devices(sysfs_root=None, vid=None, pid=None, serial=None):
 _DFU_ACTIONS = ("list", "download", "detach")
 _DFU_DEFAULT_TIMEOUT_S = 120
 _DFU_MAX_TIMEOUT_S = 600
+# Soft cap on decoded firmware size. Flask's request body limit is 100MB;
+# DFU images are typically far smaller, and a 100MB base64 body would
+# pin the DFU lock and /tmp for the whole download window.
+_DFU_MAX_FIRMWARE_BYTES = 32 * 1024 * 1024
+_DFU_SAFE_SUFFIX_RE = re.compile(r"^\.[A-Za-z0-9]{1,8}$")
 
 # `dfu-util -l` device lines, e.g.:
 # Found DFU: [0483:df11] ver=2200, devnum=42, cfg=1, intf=0, path="1-1.4",
@@ -385,17 +415,31 @@ def register_usb_routes(app: Flask) -> None:
         Returns the command envelope; `value` carries `devices` for list,
         and `exit_code` / `stdout` / `stderr` for every action.
         """
+        firmware_path = None
         try:
             data = request.get_json() or {}
             action = data.get('action')
             params = data.get('params') or {}
+            if not isinstance(params, dict):
+                return jsonify({
+                    'success': False,
+                    'error': 'params must be a JSON object',
+                }), 400
             if action not in _DFU_ACTIONS:
                 return jsonify({
                     'success': False,
                     'error': 'action (list|download|detach) is required',
                 }), 400
 
-            firmware_path = None
+            dfu_util = shutil.which('dfu-util')
+            if dfu_util is None:
+                return jsonify({
+                    'success': False,
+                    'error': ('dfu-util-missing: dfu-util is not installed on '
+                              'this box. Install it with '
+                              "'lager box-config apt add dfu-util'"),
+                }), 500
+
             if action == 'download':
                 firmware_b64 = params.get('firmware')
                 if not firmware_b64:
@@ -410,21 +454,24 @@ def register_usb_routes(app: Flask) -> None:
                         'success': False,
                         'error': f'invalid base64 firmware: {e}',
                     }), 400
+                if len(firmware) > _DFU_MAX_FIRMWARE_BYTES:
+                    return jsonify({
+                        'success': False,
+                        'error': (f'firmware exceeds '
+                                  f'{_DFU_MAX_FIRMWARE_BYTES} byte limit'),
+                    }), 400
                 suffix = os.path.splitext(params.get('filename') or '')[1] or '.bin'
+                if not _DFU_SAFE_SUFFIX_RE.match(suffix):
+                    suffix = '.bin'
                 fd, firmware_path = tempfile.mkstemp(
                     prefix='lager-dfu-', suffix=suffix)
                 with os.fdopen(fd, 'wb') as fh:
                     fh.write(firmware)
 
-            if shutil.which('dfu-util') is None:
-                return jsonify({
-                    'success': False,
-                    'error': ('dfu-util-missing: dfu-util is not installed on '
-                              'this box. Install it with '
-                              "'lager box-config apt add dfu-util'"),
-                }), 500
-
             args = _build_dfu_args(action, params, firmware_path)
+            # Use the resolved binary path so PATH cannot change between
+            # the which() check and the subprocess.
+            args[0] = dfu_util
             timeout = _dfu_timeout(params)
             try:
                 with _dfu_lock:
@@ -434,12 +481,6 @@ def register_usb_routes(app: Flask) -> None:
                     'success': False,
                     'error': f'dfu-util timed out after {timeout:.0f}s',
                 }), 504
-            finally:
-                if firmware_path:
-                    try:
-                        os.remove(firmware_path)
-                    except OSError:
-                        pass
 
             value = {'exit_code': exit_code, 'stdout': stdout, 'stderr': stderr}
             if exit_code != 0:
@@ -466,3 +507,9 @@ def register_usb_routes(app: Flask) -> None:
         except Exception as e:
             logger.exception("[HTTP] /usb/dfu unexpected error")
             return jsonify({'success': False, 'error': str(e)}), 500
+        finally:
+            if firmware_path:
+                try:
+                    os.remove(firmware_path)
+                except OSError:
+                    pass
