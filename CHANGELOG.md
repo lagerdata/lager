@@ -2,7 +2,7 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
-## [Unreleased]
+## [0.32.6] - 2026-07-27
 
 ### Added
 
@@ -25,6 +25,55 @@ All notable changes to the Lager platform are documented here. For detailed rele
   privileged-operation path (at most one sudo prompt per run). The dedicated
   venv sidesteps PEP 668 (`externally-managed-environment`), which a plain
   `pip3 install --user` hits on Ubuntu 23.04+.
+
+### Fixed
+
+- **`lager debug` subcommands now authenticate against access-controlled
+  boxes.** The debug service client reached the box directly over HTTP and
+  attached no Authorization header, so every box-contacting debug subcommand
+  (status, health, memrd, reset, flash, erase, gdbserver, disconnect) failed
+  against a gateway-gated box with "Stout authorization required", and no user
+  action worked around it. All twelve client methods now resolve a bearer
+  token per call — nothing is cached on the session, because a
+  `gdbserver --rtt` client can issue its first and last request hours apart —
+  and responses run through the gateway check before `raise_for_status`, so a
+  gateway 401 surfaces as an actionable sign-in message instead of a bare
+  `HTTPError`.
+
+- **`pymongo` is now a declared dependency.** `lager status` does
+  `from bson import decode`, which is pymongo's API; the similarly named PyPI
+  `bson` package exports different functions, so installing "bson" to cure
+  the `ImportError` would still fail. Declaring the right package removes the
+  trap.
+
+- **`lager uart` no longer fails to import on Windows.** `websocket_client.py`
+  imported `termios`/`tty` unconditionally, making interactive UART mode a
+  hard `ImportError` there. The import is now guarded, and interactive mode
+  reports an honest "not supported on this platform" error instead of
+  degrading into a silently broken line-buffered session.
+
+### Changed
+
+- **static-checks now enforces `test/COVERAGE.md`'s gated-test counts.**
+  The file states its numbers are checked against disk, but nothing checked
+  them and they drifted three times in one afternoon.
+  `tools/check_coverage_counts.py` runs each suite and compares passed,
+  skipped and xfailed separately. shellcheck also ratchets from `-S error` to
+  `-S warning` (pinned via shellcheck-py), and the unit-test dependency file
+  gains major-version caps so the compat matrix cannot break on an unrelated
+  upstream major release.
+
+### Security
+
+- **quinn-proto bumped to 0.11.15 in the box oscilloscope daemon**, closing
+  GHSA-4w2j-m93h-cj5j (high severity: remote memory exhaustion via unbounded
+  out-of-order stream reassembly). The daemon opens QUIC listeners that start
+  on box boot whenever the binary is present. Merging the bump does not by
+  itself patch a deployed box — the daemon binary is built by hand via
+  `build_daemon.sh` — which is recorded alongside the advisory so a closed
+  alert is not mistaken for a patched fleet. A Dependabot config was added so
+  future advisories produce fix PRs instead of sitting open in the security
+  tab.
 
 ## [0.32.5] - 2026-07-27
 
