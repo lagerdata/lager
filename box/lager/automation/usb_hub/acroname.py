@@ -4,7 +4,7 @@
 """
 AcronameUSBNet – driver for USBHub2x4 / USBHub3p / USBHub3c.
 
-Implements: enable / disable / toggle
+Implements: enable / disable / toggle / state
 Lazy-imports BrainStem to minimise start-up cost.
 """
 
@@ -35,10 +35,21 @@ class AcronameUSBNet(USBNet):
     fresh connection is opened per operation and disconnected immediately after
     (under a cross-process lock), so the hub is never left claimed — which would
     otherwise block another process (e.g. a `lager python` test) from opening it.
+
+    To keep each open cheap, DISCOVERY metadata (the hub's link Spec and the
+    hub class that bound it) is cached per physical hub — never the live
+    connection. A cached open is a direct ``connectFromSpec`` with no USB
+    discovery scan; a stale cache entry (hub re-enumerated, unplugged) fails
+    the connect, is invalidated, and the full discovery path runs again.
     """
 
     _brainstem = None         # cached vendor MODULE (an import, not a handle)
     _Result = None            # brainstem.result.Result alias
+    # Per-hub discovery cache: lock key -> {"cls": hub class, "spec": link
+    # Spec or None}. Metadata only — caching a live handle would pin the
+    # hub's exclusive USB claim and block other processes (the bug fixed by
+    # open/operate/close per op).
+    _conn_cache: dict = {}
 
     # ------------------------------------------------------------------ #
     # helper: import BrainStem only when needed
@@ -101,32 +112,93 @@ class AcronameUSBNet(USBNet):
         serialise but different hubs don't block each other."""
         return self.address or f"acroname::{self._serial}"
 
-    def _open_hub(self):
-        """Discover and connect THIS net's hub. Never cached — the caller
-        disconnects it via ``_close_hub`` as soon as the operation completes."""
-        self._require_library()
-        serial = self._serial
+    def _transport(self):
+        return self._brainstem.link.Spec.USB
 
+    def _ordered_classes(self):
+        """Hub classes to try, port-capable class first: binding an 8-port
+        hub with the 4-port class would truncate ports 4-7. The PID from the
+        address picks the best starting class; the rest are fallbacks."""
         stem = self._brainstem.stem
-        spec = self._brainstem.link.Spec.USB
-
-        # Order the hub classes so a port-capable class is tried first: binding
-        # an 8-port hub with the 4-port class would truncate ports 4-7. The PID
-        # from the address picks the best starting class; the rest are tried as
-        # a fallback. Connecting by serial guarantees we bind THIS net's hub.
         hub3 = (stem.USBHub3p, stem.USBHub3c)   # 8-port families
         hub2 = (stem.USBHub2x4,)                # 4-port family
-        classes = (hub2 + hub3) if self._pid == 0x0011 else (hub3 + hub2)
+        return (hub2 + hub3) if self._pid == 0x0011 else (hub3 + hub2)
 
-        for cls in classes:
-            candidate = cls()
-            if serial is not None:
-                rc = candidate.discoverAndConnect(spec, serial)
-            else:
-                rc = candidate.discoverAndConnect(spec)
-            if rc == self._Result.NO_ERROR:
+    def _discover_spec(self):
+        """One USB discovery scan → THIS hub's link Spec (or None).
+
+        Best-effort: older BrainStem SDKs without ``discover.findAllModules``
+        just return None and the driver falls back to per-class
+        ``discoverAndConnect`` exactly as before.
+        """
+        discover = getattr(self._brainstem, "discover", None)
+        find_all = getattr(discover, "findAllModules", None) if discover else None
+        if find_all is None:
+            return None
+        try:
+            specs = find_all(self._transport()) or []
+        except Exception:
+            return None
+        if self._serial is None:
+            # No address to match against: only safe when exactly one hub.
+            return specs[0] if len(specs) == 1 else None
+        for spec in specs:
+            if getattr(spec, "serial_number", None) == self._serial:
+                return spec
+        return None
+
+    def _try_connect(self, candidate, spec_obj):
+        """Connect one candidate hub object, preferring the scan-free
+        ``connectFromSpec`` path; returns True on success."""
+        if spec_obj is not None and hasattr(candidate, "connectFromSpec"):
+            try:
+                if candidate.connectFromSpec(spec_obj) == self._Result.NO_ERROR:
+                    return True
+            except Exception:
+                pass
+            # A spec that no longer connects is stale (re-enumeration);
+            # let the caller fall back to full discovery.
+            return False
+        if self._serial is not None:
+            rc = candidate.discoverAndConnect(self._transport(), self._serial)
+        else:
+            rc = candidate.discoverAndConnect(self._transport())
+        return rc == self._Result.NO_ERROR
+
+    def _open_hub(self):
+        """Connect THIS net's hub. Never caches the connection — the caller
+        disconnects it via ``_close_hub`` as soon as the operation completes.
+
+        Fast path: reuse the cached discovery metadata (hub class + link
+        Spec) so the open is a direct connect with no USB discovery scan.
+        Slow path (first call, or stale cache): one discovery scan for the
+        Spec, then the class-ordered connect loop; the winner is cached.
+        """
+        self._require_library()
+        key = self._lock_key()
+
+        cached = AcronameUSBNet._conn_cache.get(key)
+        if cached is not None:
+            candidate = cached["cls"]()
+            if self._try_connect(candidate, cached["spec"]):
                 return candidate
+            AcronameUSBNet._conn_cache.pop(key, None)
 
+        spec_obj = self._discover_spec()
+        # Try with the spec first (scan-free connects); if that yields
+        # nothing (e.g. an SDK whose connectFromSpec misbehaves), fall back
+        # to the original per-class discoverAndConnect loop.
+        attempts = [spec_obj, None] if spec_obj is not None else [None]
+        for attempt_spec in attempts:
+            for cls in self._ordered_classes():
+                candidate = cls()
+                if self._try_connect(candidate, attempt_spec):
+                    AcronameUSBNet._conn_cache[key] = {
+                        "cls": cls, "spec": attempt_spec,
+                    }
+                    return candidate
+
+        serial = self._serial
         where = f" with serial 0x{serial:08X}" if serial is not None else ""
         raise DeviceNotFoundError(f"No Acroname hub detected on USB{where}")
 

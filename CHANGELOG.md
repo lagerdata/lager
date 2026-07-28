@@ -2,6 +2,43 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Added
+
+- **`GET /usb/devices` — generic USB bus enumeration on port 9000.** Walks
+  `/sys/bus/usb/devices` and returns every device's vid/pid, iSerial,
+  product, manufacturer, bus/dev numbers, devpath, class, and speed, with
+  optional `vid`/`pid`/`serial` query filters. Pure sysfs reads (a few ms,
+  no exclusive device access), so clients can poll it while waiting for a
+  DUT to re-enumerate after a hub power-cycle or DFU detach. Consumed by
+  `lager-rs`'s new `usb_devices()`.
+
+- **`POST /usb/dfu` — box-side dfu-util.** Actions: `list` (parsed
+  `dfu-util -l` output as structured JSON), `download` (base64 firmware
+  written to a temp file, with optional `-d vid:pid`, `-S serial`, `-a
+  alt`, `-s` DfuSe address, `-R` reset), and `detach` (`-e`). Runs are
+  serialized under their own lock (a long download never blocks hub-port
+  commands), time-bounded (120s default, 600s cap), and a missing binary
+  returns a clear `dfu-util-missing` error pointing at
+  `lager box-config apt add dfu-util`. Consumed by `lager-rs`'s new
+  `dfu()` handle.
+
+### Fixed
+
+- **USB hub-port commands regressed from ~80ms to ~2.1s per op on 0.32.1.**
+  The 0.31.2 contention fix (open/operate/close per call so no process pins
+  the hub's exclusive USB claim) made every Acroname operation pay a full
+  BrainStem `discoverAndConnect` USB discovery scan — up to three when the
+  class-order fallback kicked in. The drivers now cache discovery
+  *metadata* per physical hub — the hub's link Spec and winning hub class
+  (Acroname), the resolved HID device path (YKUSH) — and connect directly
+  from it, skipping the scan. Connections themselves are still never
+  cached: the never-pin-the-hub invariant is untouched, and a stale cache
+  entry (hub re-enumerated) falls back to full discovery automatically.
+  Also fixed the `usb.py` handler docstrings that still claimed the drivers
+  cache hardware handles.
+
 ## [0.32.6] - 2026-07-28
 
 ### Added

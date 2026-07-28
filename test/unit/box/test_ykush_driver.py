@@ -111,6 +111,8 @@ class YkushDriverTests(unittest.TestCase):
         ykush._PORT_UP = 1
         ykush._PORT_DOWN = 0
         ykush._LIBRARY_CHECKED = True
+        # The HID-path cache is class-level (per-process); isolate tests.
+        ykush.YKUSHUSBNet._path_cache = {}
         self.net = ykush.YKUSHUSBNet(
             {"address": "USB0::0x04D8::0xF2F7::YK28339::INSTR"}
         )
@@ -171,6 +173,74 @@ class YkushDriverTests(unittest.TestCase):
         self.assertEqual(
             state["peak"], 1, "hub_access did not serialise concurrent access"
         )
+
+
+# ---------------------------------------------------------------------------
+# HID-path cache (perf: skip pykush's full HID enumeration per op)
+# ---------------------------------------------------------------------------
+
+
+class _FakePathPyKush(_FakePyKush):
+    """pykush stub with a `path=` keyword and a `_path` attribute (like the
+    real library): opening without a path costs a full HID enumeration."""
+
+    enumerations = 0
+    current_path = b"/dev/hidraw3"
+
+    def __init__(self, serial=None, path=None):
+        if path is None:
+            _FakePathPyKush.enumerations += 1  # full HID enumeration
+            path = _FakePathPyKush.current_path
+        elif path != _FakePathPyKush.current_path:
+            raise OSError("open failed: stale path")
+        super().__init__(serial=serial)
+        self._path = path
+
+
+class YkushPathCacheTests(unittest.TestCase):
+    def setUp(self):
+        _FakePyKush._claim = {"held_by": None}
+        _FakePyKush.opened = []
+        _FakePyKush.closed = []
+        _FakePyKush._counter = 0
+        _FakePyKush.set_hook = None
+        _FakePathPyKush.enumerations = 0
+        _FakePathPyKush.current_path = b"/dev/hidraw3"
+        ykush._YKUSH_CLS = _FakePathPyKush
+        ykush._PORT_UP = 1
+        ykush._PORT_DOWN = 0
+        ykush._LIBRARY_CHECKED = True
+        ykush.YKUSHUSBNet._path_cache = {}
+        self.net = ykush.YKUSHUSBNet(
+            {"address": "USB0::0x04D8::0xF2F7::YK28339::INSTR"}
+        )
+
+    def test_enumeration_happens_once_then_opens_by_path(self):
+        self.net.enable("CLI_USB", 2)
+        self.net.disable("CLI_USB", 2)
+        self.net.state("CLI_USB", 2)
+        self.assertEqual(
+            _FakePathPyKush.enumerations, 1,
+            "later opens should reuse the cached HID path",
+        )
+        # Every handle was still released (never-pin invariant).
+        self.assertIsNone(_FakePyKush._claim["held_by"])
+        self.assertEqual(_FakePyKush.opened, _FakePyKush.closed)
+
+    def test_stale_path_falls_back_to_enumeration_and_recaches(self):
+        self.net.enable("CLI_USB", 2)
+        self.assertEqual(_FakePathPyKush.enumerations, 1)
+        # Simulate re-enumeration: the hub moved to a new HID path.
+        _FakePathPyKush.current_path = b"/dev/hidraw7"
+        self.net.enable("CLI_USB", 2)
+        self.assertEqual(
+            _FakePathPyKush.enumerations, 2,
+            "stale cached path should fall back to enumeration",
+        )
+        # And the refreshed path is used from then on.
+        self.net.enable("CLI_USB", 2)
+        self.assertEqual(_FakePathPyKush.enumerations, 2)
+        self.assertIsNone(_FakePyKush._claim["held_by"])
 
 
 if __name__ == "__main__":

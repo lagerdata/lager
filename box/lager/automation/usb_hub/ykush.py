@@ -92,7 +92,18 @@ def _ensure_library() -> None:
 #  concrete driver
 # ────────────────────────────────────────────────────────────────────
 class YKUSHUSBNet(USBNet):
-    """USBNet implementation for Yepkit YKUSH hubs."""
+    """USBNet implementation for Yepkit YKUSH hubs.
+
+    A fresh device handle is opened per operation and released immediately
+    (see ``_release``), so the hub is never pinned. To keep each open cheap
+    the resolved HID device *path* is cached per hub — opening by path skips
+    pykush's full HID enumeration. A stale path (hub re-enumerated) fails
+    the open, is dropped from the cache, and the open-by-serial path runs.
+    """
+
+    # Per-hub cache: lock key -> HID device path (metadata only, never a
+    # live handle).
+    _path_cache: dict = {}
 
     @staticmethod
     def _release(dev) -> None:
@@ -119,13 +130,33 @@ class YKUSHUSBNet(USBNet):
             except Exception:
                 pass
 
+    def _open_device(self):
+        """Open the hub, preferring the cached HID path (no enumeration).
+
+        Best-effort: pykush builds without a ``path`` keyword, or a stale
+        cached path, just fall through to the open-by-serial enumeration
+        (and refresh the cache from the freshly opened device).
+        """
+        key = self._lock_key()
+        path = YKUSHUSBNet._path_cache.get(key)
+        if path is not None:
+            try:
+                return _YKUSH_CLS(path=path)
+            except Exception:
+                YKUSHUSBNet._path_cache.pop(key, None)
+        dev = _YKUSH_CLS(serial=self.serial) if self.serial else _YKUSH_CLS()
+        new_path = getattr(dev, "_path", None)
+        if new_path:
+            YKUSHUSBNet._path_cache[key] = new_path
+        return dev
+
     def _run_once(self, fn):
         """Open a fresh YKUSH connection, run ``fn(dev)``, and always release
         the handle — never cache it (see ``_release``)."""
         _ensure_library()
         dev = None
         try:
-            dev = _YKUSH_CLS(serial=self.serial) if self.serial else _YKUSH_CLS()
+            dev = self._open_device()
             return fn(dev)
         finally:
             self._release(dev)
