@@ -202,7 +202,7 @@ echo -e "${BLUE}Time:${NC}    $(date '+%Y-%m-%d %H:%M:%S')"
 echo ""
 
 # Step counter
-TOTAL_STEPS=8
+TOTAL_STEPS=9
 CURRENT_STEP=0
 
 print_step() {
@@ -892,7 +892,7 @@ print_step "Deploying Box Code"
         # `git fetch origin --tags` is required so release tags are available.
         ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "
             cd ~/box && \
-            git sparse-checkout set box && \
+            git sparse-checkout set box cli && \
             git fetch origin --tags && \
             git reset --hard HEAD && \
             git clean -fd && \
@@ -928,7 +928,7 @@ print_step "Deploying Box Code"
             git clone --filter=blob:none --no-checkout https://github.com/lagerdata/lager.git ~/box && \
             cd ~/box && \
             git sparse-checkout init --cone && \
-            git sparse-checkout set box && \
+            git sparse-checkout set box cli && \
             git checkout ${GIT_VERSION}
         "
 
@@ -1331,6 +1331,76 @@ else
 fi
 
 # =============================================================================
+# STEP 4.6: Install Lager CLI on Box Host
+# =============================================================================
+print_step "Installing Lager CLI on Box Host"
+
+# Installs the CLI from the box's own checkout (~/box/cli, materialized by the
+# sparse checkout above) into a dedicated venv at ~/.lager/venv, with the
+# `lager` entry point symlinked into ~/.local/bin. The venv sidesteps PEP 668
+# (externally-managed system Python on Ubuntu 23.04+/Debian 12+) and works on
+# hosts with no pip3, and installing from the checkout keeps the host CLI
+# version-matched to the deployed box code — so a self-hosted CI runner on the
+# box can invoke `lager` locally. Non-fatal: the box works without it.
+#
+# Mirrors host_cli_install_cmd() in cli/commands/utility/_host_cli.py — keep
+# the two in sync (cli/tests/test_host_cli.py pins the load-bearing literals).
+HOST_CLI_STATUS="not installed"
+HOST_CLI_VERSION=""
+
+print_info "Checking host python3 version..."
+HOST_PY_OK=$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "python3 -c 'import sys; print(1 if sys.version_info >= (3, 10) else 0)'" 2>/dev/null || echo 0)
+if [ "$HOST_PY_OK" != "1" ]; then
+    print_warning "Host python3 is missing or older than 3.10 (the CLI's floor) - skipping host CLI install"
+    HOST_CLI_STATUS="skipped (host python3 too old or missing)"
+else
+    # `python3 -m venv` needs a working ensurepip, which on Debian/Ubuntu
+    # means the python3-venv package. Best-effort: the install below is what
+    # decides, and reports honestly if this didn't take.
+    if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "python3 -Im ensurepip --version >/dev/null 2>&1"; then
+        print_info "Installing python3-venv (needed to create the CLI venv)..."
+        ssh_t "${BOX_USER}@${BOX_IP}" "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3-venv" || true
+    fi
+
+    print_info "Installing lager CLI into ~/.lager/venv on the box host..."
+    # Exit-code based on purpose: pip's stdout is not parsed (the older pyOCD
+    # step above greps pip output through a pipe and loses the exit code).
+    # The distinct codes match HOST_CLI_EXIT_MESSAGES in _host_cli.py.
+    set +e
+    HOST_CLI_OUTPUT=$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" '
+        test -d "$HOME/box/cli" || git -C "$HOME/box" sparse-checkout add cli 2>/dev/null || exit 41
+        "$HOME/.lager/venv/bin/python" -c "import pip" >/dev/null 2>&1 || { rm -rf "$HOME/.lager/venv" && python3 -m venv "$HOME/.lager/venv"; } || exit 42
+        "$HOME/.lager/venv/bin/pip" install --quiet "$HOME/box/cli" || exit 43
+        mkdir -p "$HOME/.local/bin" && ln -sfn "$HOME/.lager/venv/bin/lager" "$HOME/.local/bin/lager" || exit 44
+        { test -x "$HOME/.lager/venv/bin/lager-mcp" && ln -sfn "$HOME/.lager/venv/bin/lager-mcp" "$HOME/.local/bin/lager-mcp"; } || true
+        "$HOME/.lager/venv/bin/python" -c "import cli; print(cli.__version__)"
+    ' 2>&1)
+    HOST_CLI_RC=$?
+    set -e
+
+    if [ "$HOST_CLI_RC" -eq 0 ]; then
+        HOST_CLI_VERSION=$(printf '%s\n' "$HOST_CLI_OUTPUT" | tail -n 1)
+        HOST_CLI_STATUS="installed"
+        print_success "Host CLI installed (version: ${HOST_CLI_VERSION}) -> ~/.local/bin/lager"
+        print_info "~/.local/bin may not be on PATH until the next login; the absolute path always works"
+    else
+        case "$HOST_CLI_RC" in
+            41) HOST_CLI_REASON="could not materialize ~/box/cli (git sparse-checkout add failed)" ;;
+            42) HOST_CLI_REASON="venv creation failed (is python3-venv installed?)" ;;
+            43) HOST_CLI_REASON="pip install of ~/box/cli failed" ;;
+            44) HOST_CLI_REASON="could not symlink lager into ~/.local/bin" ;;
+            *)  HOST_CLI_REASON="install command failed (exit ${HOST_CLI_RC})" ;;
+        esac
+        print_warning "Host CLI install failed: ${HOST_CLI_REASON}"
+        HOST_CLI_STATUS="FAILED (${HOST_CLI_REASON})"
+        echo ""
+        echo "  The box works without it. You can install it manually later:"
+        echo "    ssh ${BOX_USER}@${BOX_IP} 'python3 -m venv ~/.lager/venv && ~/.lager/venv/bin/pip install ~/box/cli'"
+        echo ""
+    fi
+fi
+
+# =============================================================================
 # STEP 5: Start Docker Containers
 # =============================================================================
 print_step "Starting Docker Containers"
@@ -1484,6 +1554,11 @@ echo ""
 echo -e "${GREEN}[OK]${NC} Box is ready to use at: ${BOX_USER}@${BOX_IP}"
 echo -e "${GREEN}[OK]${NC} Deployed with sparse checkout (version: ${GIT_VERSION})"
 echo -e "${GREEN}[OK]${NC} 'lager update' is available for future updates"
+if [ "$HOST_CLI_STATUS" = "installed" ]; then
+    echo -e "${GREEN}[OK]${NC} Host CLI: ~/.local/bin/lager (version: ${HOST_CLI_VERSION})"
+else
+    echo -e "${YELLOW}[WARN]${NC} Host CLI not installed: ${HOST_CLI_STATUS} - see the warning above"
+fi
 echo ""
 
 # Next steps

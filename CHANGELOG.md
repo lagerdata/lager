@@ -2,6 +2,30 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Added
+
+- **`lager install` and `lager update` now install the lager CLI onto the
+  box's host OS, version-matched to the deployed box code.** The box's sparse
+  checkout gains the `cli/` directory, and both flows pip-install it from
+  `~/box/cli` into a dedicated venv at `~/.lager/venv`, with `lager` (and
+  `lager-mcp`) symlinked into `~/.local/bin` — so a self-hosted CI runner on
+  the box can invoke `lager` locally, and the host CLI tracks the box as it is
+  updated. The update path reinstalls whenever box code changed (a branch
+  deploy can change code without bumping the version string), and the
+  "already up to date" fast path still probes the host CLI cheaply and
+  reconciles it when missing, broken, or mismatched — so existing boxes pick
+  the CLI up on any routine update. `lager update --check` reports a
+  `Host CLI:` line and counts a pending install toward its would-change exit
+  code. The step is non-fatal and exit-code verified rather than
+  pip-stdout-grepped: a host whose `python3` predates 3.10 (the CLI's floor)
+  gets an honest warning and an otherwise successful run, and Debian/Ubuntu
+  hosts missing `python3-venv` get it through the existing batched
+  privileged-operation path (at most one sudo prompt per run). The dedicated
+  venv sidesteps PEP 668 (`externally-managed-environment`), which a plain
+  `pip3 install --user` hits on Ubuntu 23.04+.
+
 ## [0.32.5] - 2026-07-27
 
 ### Added

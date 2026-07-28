@@ -16,6 +16,7 @@ from cli.commands.utility.update import (
     _deployed_version_stale,
     _parse_probe_output,
     _probe_shell_script,
+    _pull_shell_script,
     _rebuild_gate_verdict,
 )
 
@@ -162,3 +163,58 @@ class TestProbeLivenessSnippet:
     def test_docker_failure_reports_unknown(self, tmp_path):
         facts = self._probe_facts(tmp_path, 'exit 1')
         assert facts['LAGER_RUNNING'] == ''
+
+
+class TestProbeHostCliFacts:
+    def test_probe_script_emits_all_host_cli_keys(self):
+        script = _probe_shell_script()
+        for key in (
+            'HOST_CLI_VERSION', 'HOST_VENV_DIR', 'HOST_PY_VERSION',
+            'HOST_ENSUREPIP', 'HOST_BOX_CLI_DIR',
+        ):
+            assert f'LAGER_PROBE_{key}=' in script, key
+
+    def test_splice_placeholder_fully_replaced(self):
+        assert '__HOST_CLI_PROBE__' not in _probe_shell_script()
+
+    def test_parser_round_trips_host_keys(self):
+        facts = _parse_probe_output(
+            'LAGER_PROBE_HOST_CLI_VERSION=0.32.5\n'
+            'LAGER_PROBE_HOST_VENV_DIR=1\n'
+        )
+        assert facts['HOST_CLI_VERSION'] == '0.32.5'
+        assert facts['HOST_VENV_DIR'] == '1'
+
+    def test_old_probe_output_leaves_host_keys_absent(self):
+        # Callers must tolerate probe output that predates the host-CLI facts.
+        facts = _parse_probe_output('LAGER_PROBE_ETC_VERSION=1.2.3\n')
+        assert 'HOST_CLI_VERSION' not in facts
+
+
+class TestGateIgnoresHostCliFacts:
+    def test_host_cli_mismatch_never_forces_rebuild(self):
+        # A missing/stale host CLI reconciles on the fast path; it must never
+        # trigger a container rebuild.
+        facts = {
+            'LAGER_RUNNING': '1',
+            'HOST_CLI_VERSION': '',
+            'HOST_VENV_DIR': '0',
+        }
+        assert _rebuild_gate_verdict(facts, **IN_SYNC) == 'skip'
+
+
+class TestPullShellScript:
+    def test_adds_cli_directory_not_single_file(self):
+        script = _pull_shell_script('main', 'origin/main')
+        assert 'git sparse-checkout add cli 2>/dev/null || true' in script
+        assert 'cli/__init__.py' not in script
+
+    def test_udev_rules_add_stays_strict(self):
+        udev_clause = _pull_shell_script('main', 'origin/main').split('modprobe_d')[0]
+        assert 'git sparse-checkout add udev_rules; }' in udev_clause
+        assert '|| true' not in udev_clause
+
+    def test_checkout_and_reset_use_given_refs(self):
+        script = _pull_shell_script('v0.32.5', 'v0.32.5')
+        assert 'git checkout -f v0.32.5' in script
+        assert 'git reset --hard v0.32.5' in script
