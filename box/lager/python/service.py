@@ -24,15 +24,36 @@ import signal
 import threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs
-import cgi
 import io
-import warnings
+
+# Multipart parsing, formerly cgi.FieldStorage. PEP 594 removed `cgi` in
+# Python 3.13, which made this whole module unimportable there -- so the box's
+# python service could not start at all on 3.13+, and the box unit suite could
+# not even be collected.
+#
+# werkzeug.sansio.multipart, NOT werkzeug.formparser. The high-level
+# parse_form_data() decodes every non-file part as TEXT, and the `module` field
+# is a raw zip posted with no filename (cli/commands/development/python.py
+# appends ('module', zipped_folder) with no filename tuple, so it arrives as a
+# non-file part). Measured on a 1024-byte binary payload, parse_form_data
+# returned a str with 512 bytes replaced by U+FFFD and raised nothing -- it
+# would have silently corrupted every directory upload. The sansio decoder is
+# byte-exact and preserves repeated field names.
+#
+# Werkzeug is already present: the box installs Flask (box.Dockerfile), and
+# test/requirements-unit.txt pulls it in via flask, so this adds no dependency
+# and the box unit suite can exercise it in the gate.
+from werkzeug.sansio.multipart import (
+    Data,
+    Epilogue,
+    Field,
+    File,
+    MultipartDecoder,
+)
 
 from .executor import PythonExecutor
 from ..binaries import store as binaries_store
 
-# Suppress cgi deprecation warning (still works in Python 3.12, removed in 3.13)
-warnings.filterwarnings('ignore', category=DeprecationWarning, module='cgi')
 from .exceptions import (
     PythonExecutionError,
     PipInstallError,
@@ -122,70 +143,99 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         except Exception as e:
             logger.exception("Error during streaming", exc_info=e)
 
+    # Filename suffixes that mark a part as a real file upload rather than a
+    # form field. Kept as-is from the cgi implementation: the client posts the
+    # script with a filename and the module zip WITHOUT one, so suffix -- not
+    # the presence of a filename -- is what has always decided this.
+    FILE_UPLOAD_SUFFIXES = ('.py', '.zip')
+
+    @staticmethod
+    def _boundary_from(content_type):
+        """Extract the boundary from a Content-Type header, or None."""
+        for param in content_type.split(';')[1:]:
+            name, _, value = param.strip().partition('=')
+            if name.lower() == 'boundary':
+                return value.strip('"').encode('latin-1')
+        return None
+
     def parse_multipart(self):
         """
         Parse multipart/form-data request.
 
         Returns:
-            dict: Dictionary of field name -> file-like object or string value
+            dict: field name -> bytes, io.BytesIO (for .py/.zip uploads), or a
+                  list of bytes when the name repeats (args, env).
+
+        The return SHAPE is the contract, and it is unchanged from the
+        cgi.FieldStorage implementation this replaces -- downstream code in
+        _handle_python_execute and _handle_binaries_add branches on all three
+        forms (see is_truthy_string, get_field_value, and the
+        `isinstance(module_zip, bytes)` rescue). Non-file parts stay BYTES:
+        the `module` field is a raw zip posted without a filename, so decoding
+        it to str would corrupt every directory upload.
         """
         content_type = self.headers.get('Content-Type', '')
         if not content_type.startswith('multipart/form-data'):
             logger.warning(f"Expected multipart/form-data, got: {content_type}")
             return {}
 
-        content_length = self.headers.get('Content-Length', '0')
+        boundary = self._boundary_from(content_type)
+        if not boundary:
+            logger.warning(f"multipart/form-data with no boundary: {content_type}")
+            return {}
+
+        content_length = int(self.headers.get('Content-Length', '0') or 0)
         logger.info(f"Parsing multipart request: type={content_type}, length={content_length}")
 
-        # Parse the multipart form data
-        form = cgi.FieldStorage(
-            fp=self.rfile,
-            headers=self.headers,
-            environ={
-                'REQUEST_METHOD': 'POST',
-                'CONTENT_TYPE': content_type,
-                'CONTENT_LENGTH': content_length,
-            }
-        )
+        # Read exactly Content-Length. NOT self.rfile.read() with no argument:
+        # this is a keep-alive connection, so reading to EOF would block until
+        # the client goes away.
+        body = self.rfile.read(content_length) if content_length else b''
+        if not body:
+            # An empty body has no parts. Returning {} rather than falling
+            # through: MultipartDecoder raises "cannot parse beyond
+            # State.PREAMBLE" on empty input, and a bodyless request is a
+            # client mistake to report as missing fields, not a parse error.
+            logger.warning("multipart/form-data request with an empty body")
+            return {}
+
+        decoder = MultipartDecoder(boundary)
+        decoder.receive_data(body)
+        decoder.receive_data(None)
+
+        # name -> list of (filename, bytes), preserving order and repeats.
+        collected = []
+        current = None
+        while True:
+            event = decoder.next_event()
+            if event is None or isinstance(event, Epilogue):
+                break
+            if isinstance(event, (Field, File)):
+                current = [event.name, getattr(event, 'filename', None), bytearray()]
+                collected.append(current)
+            elif isinstance(event, Data) and current is not None:
+                current[2].extend(event.data)
+
+        grouped = {}
+        for name, filename, data in collected:
+            grouped.setdefault(name, []).append((filename, bytes(data)))
 
         fields = {}
-        for key in form.keys():
-            item = form[key]
-            if isinstance(item, list):
-                # For lists (multiple values), read content immediately
-                vals = []
-                for i in item:
-                    if hasattr(i, 'file') and i.file:
-                        vals.append(i.file.read())
-                    elif hasattr(i, 'value'):
-                        vals.append(i.value)
-                    else:
-                        vals.append(None)
-                fields[key] = vals
-                logger.info(f"  Field '{key}': list with {len(vals)} items")
-            else:
-                # For single values, read content immediately to avoid closed file issues
-                # Check if this is a "real" file upload (script.py, module.zip) or a form field
-                # by looking at the filename - if it ends with .py or .zip, it's a file
-                is_real_file = (hasattr(item, 'filename') and item.filename and
-                               (item.filename.endswith('.py') or item.filename.endswith('.zip')))
+        for key, parts in grouped.items():
+            if len(parts) > 1:
+                # Repeated name (args, env): a list of raw values, as before.
+                fields[key] = [data for _filename, data in parts]
+                logger.info(f"  Field '{key}': list with {len(parts)} items")
+                continue
 
-                if is_real_file:
-                    # This is a real file upload (script, module) - wrap in BytesIO
-                    # Read content now before cgi closes the file
-                    content = item.file.read()
-                    fields[key] = io.BytesIO(content)
-                    logger.info(f"  Field '{key}': file upload (filename={item.filename}, size={len(content)})")
-                else:
-                    # This is a form field - read value immediately
-                    if hasattr(item, 'file') and item.file:
-                        val = item.file.read()
-                    elif hasattr(item, 'value'):
-                        val = item.value
-                    else:
-                        val = b''
-                    fields[key] = val
-                    logger.info(f"  Field '{key}': value={val!r} (type={type(val).__name__})")
+            filename, data = parts[0]
+            is_real_file = bool(filename) and filename.endswith(self.FILE_UPLOAD_SUFFIXES)
+            if is_real_file:
+                fields[key] = io.BytesIO(data)
+                logger.info(f"  Field '{key}': file upload (filename={filename}, size={len(data)})")
+            else:
+                fields[key] = data
+                logger.info(f"  Field '{key}': value={data!r} (type={type(data).__name__})")
 
         logger.info(f"Parsed fields: {list(fields.keys())}")
         return fields

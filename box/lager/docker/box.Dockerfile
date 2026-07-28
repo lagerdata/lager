@@ -63,6 +63,14 @@ RUN apt-get update && apt-get install -y unzip && rm -rf /var/lib/apt/lists/* \
 # hidapi, ...) instead of re-downloading and recompiling every time. The cache
 # lives in the BuildKit mount (not the image), so `--no-cache-dir` is dropped to
 # let it populate while image size stays unchanged.
+#
+# Werkzeug is pinned explicitly, not left to Flask. lager/python/service.py
+# parses multipart with werkzeug.sansio.multipart -- it replaced
+# cgi.FieldStorage, which PEP 594 removed from the stdlib in 3.13. Flask==3.0.0
+# only requires Werkzeug>=3.0.0 with no ceiling, so without an explicit pin a
+# from-scratch rebuild silently rides the box's file-upload path on whatever
+# Werkzeug is current that day. The sansio API has been stable since 2.3; the
+# cap is a tripwire for a major bump, not distrust of the library.
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 	/usr/local/bin/python -m pip install --upgrade pip \
 && pip3 install --upgrade setuptools \
@@ -98,6 +106,7 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 	'pyftdi' \
 	'uldaq' \
 	'Flask==3.0.0' \
+	'Werkzeug>=3.0,<4' \
 	'flask-socketio==5.3.5' \
 	'python-socketio==5.10.0' \
 	'simple-websocket==1.0.0' \

@@ -31,12 +31,12 @@ A job only *blocks* a merge once its status context is listed in branch ruleset 
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1046 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 1142 |
+| `unit (box)` | `test/unit/box/` | 1172 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 79 (+4 skipped) |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 91 (+1 skipped) |
-| | **Total gated** | **2629** |
+| | **Total gated** | **2659** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -50,13 +50,17 @@ advertises. It runs all six suites sequentially, one process per version.
 
 | Version | Status |
 |---|---|
-| 3.10 | `compat (py3.10)` -- green |
+| 3.10 | `compat (py3.10)` |
 | 3.11 | the six `unit (...)` jobs |
-| 3.12 | `compat (py3.12)` -- green |
-| 3.13, 3.14 | **not covered.** `box/lager/python/service.py` imports `cgi`, which PEP 594 removed in 3.13, so the box suite cannot be collected. Blocked on migrating that file's multipart parsing off `cgi.FieldStorage`, which touches the box's file-upload path. Add both back to the matrix once that lands. |
+| 3.12 | `compat (py3.12)` |
+| 3.13 | `compat (py3.13)` |
+| 3.14 | `compat (py3.14)` |
 
-That gap is a live product issue, not just a CI one: the box's python service will not import on 3.13
-or later as things stand.
+**Every advertised version is now covered.** 3.13 and 3.14 were previously absent because
+`box/lager/python/service.py` imported `cgi`, which PEP 594 removed in 3.13 -- the box suite could
+not even be collected there, and the box's python service would not have started on 3.13 at all.
+That file now parses multipart with `werkzeug.sansio.multipart` and `cgi` no longer appears
+anywhere in the tree.
 
 `static-checks.yml` covers what pytest cannot reach:
 
@@ -343,8 +347,8 @@ test/
 ├── mcp/                  # MCP server tests (pytest)
 │   ├── unit/             # 11 files: mocked, no hardware -- GATED
 │   └── integration/      #  1 file: live hardware required
-├── unit/                 # Local unit tests (108 files) -- ALL GATED
-│   ├── box/              # 56 files: box-side Python unit tests
+├── unit/                 # Local unit tests (109 files) -- ALL GATED
+│   ├── box/              # 57 files: box-side Python unit tests
 │   ├── cli/              # 41 files: CLI Python unit tests
 │   ├── measurement/      #  4 files: Joulescope / PPK2 / watt unit tests
 │   ├── blufi/            #  2 files: BluFi protocol unit tests
@@ -362,9 +366,9 @@ cli/tests/                #  5 files: 3 pytest suites + test_io_imports.py (GATE
                           #           `unit (cli)`), plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 108 files)
+### Local Unit Tests (`test/unit/` -- 109 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 56 files)
+#### Box Unit Tests (`test/unit/box/` -- 57 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported, and stubs the two third-party modules that are neither guarded nor installed
@@ -415,6 +419,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_openocd_dispatch.py` | OpenOCD interface .cfg dispatch and user-cfg override behavior |
 | `test_probes_visa_parsing.py` | VISA address parsing for empty-serial FTDI probes |
 | `test_python_service_breakpoint.py` | Breakpoint endpoints on box python/service.py POST routes |
+| `test_python_service_multipart.py` | `parse_multipart` after the move off `cgi.FieldStorage`: byte-exact binary fields, repeated names, and the `.py`/`.zip` to BytesIO rule |
 | `test_python_service_nets_list.py` | GET /nets/list handler returning saved net array or empty on missing/invalid JSON |
 | `test_render_docker_args.py` | Sourceable bash output preserves docker-run args through array expansion |
 | `test_render_packages.py` | pip/cargo/npm renderers preserve only their own config fields and soft-fail gracefully |

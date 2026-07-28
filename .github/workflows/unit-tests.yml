@@ -95,15 +95,12 @@ jobs:
   # One context per version, with the suites run sequentially inside it: they
   # cannot share a pytest process (see the header), and six matrix jobs per
   # version would be 24 contexts for no extra signal.
-  # 3.13 and 3.14 are NOT here yet, and that is a known gap rather than an
-  # oversight: box/lager/python/service.py imports `cgi`, which PEP 594 removed
-  # in 3.13, so the box suite cannot even be collected there. Migrating the
-  # multipart parsing off cgi.FieldStorage touches the box's file-upload path
-  # and is tracked separately. Add both versions back once that lands.
   #
-  # They are omitted rather than left failing on purpose: a permanently-red
-  # advisory check teaches people to ignore red, and this job has already
-  # delivered the finding it exists to produce.
+  # 3.13 and 3.14 were previously omitted: box/lager/python/service.py imported
+  # `cgi`, which PEP 594 removed in 3.13, so the box suite could not even be
+  # collected there. That file now parses multipart with
+  # werkzeug.sansio.multipart, `cgi` is gone from the tree, and both versions
+  # are in the matrix. Every advertised version is now covered.
   compat:
     name: compat (py${{ matrix.python }})
     runs-on: ubuntu-latest
@@ -113,7 +110,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.10', '3.12']
+        python: ['3.10', '3.12', '3.13', '3.14']
 
     steps:
       - name: Checkout repository
