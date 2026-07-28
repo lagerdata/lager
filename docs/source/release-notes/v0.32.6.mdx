@@ -1,0 +1,58 @@
+---
+title: "Version 0.32.6"
+description: "July 27, 2026"
+---
+
+## <u>Features</u>
+
+- `lager install` and `lager update` now also install the lager CLI onto the
+  Lager Box's host system, version-matched to the box code — so tools running
+  on the box itself, such as a self-hosted CI runner, can invoke `lager`
+  locally. The CLI lands in a dedicated environment at `~/.lager/venv` with
+  `lager` available at `~/.local/bin/lager`, works on hosts where
+  `pip install --user` is blocked by the system Python policy (PEP 668), and
+  stays current automatically: every `lager update` — including one that finds
+  the box already up to date — checks the host CLI and repairs it if it is
+  missing, broken, or on the wrong version. `lager update --check` shows the
+  pending state on a new `Host CLI:` line. If the box host's Python is older
+  than 3.10 the step is skipped with a clear warning and the update still
+  succeeds.
+
+## <u>Bug Fixes</u>
+
+- `lager debug` subcommands (`flash`, `erase`, `memrd`, `reset`, `gdbserver`,
+  `status`, and friends) now sign in correctly against an access-controlled
+  Lager Box. Previously they sent no credentials at all, so every debug
+  command failed on a gated box with an authorization error that no user
+  action could work around.
+- `lager status` no longer depends on an undeclared package: `pymongo` is now
+  installed with the CLI, removing an `ImportError` that suggested installing
+  the wrong similarly-named package.
+- `lager uart` no longer fails to load on Windows. Interactive terminal mode
+  reports clearly that it is not supported on that platform instead of
+  crashing with an `ImportError`.
+
+## <u>Improvements</u>
+
+- Security: a dependency of the Lager Box's oscilloscope daemon was updated in
+  the source tree to close a high-severity advisory (remote memory
+  exhaustion). Deployed daemon binaries are distributed separately from box
+  updates; contact Lager if you use the oscilloscope daemon.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.32.6
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.32.6/)
