@@ -134,6 +134,8 @@ class AcronameDriverTests(unittest.TestCase):
         # Bypass the lazy BrainStem import by pre-seeding the module/Result.
         acroname.AcronameUSBNet._brainstem = _make_brainstem()
         acroname.AcronameUSBNet._Result = _FakeResult
+        # The discovery cache is class-level (per-process); isolate tests.
+        acroname.AcronameUSBNet._conn_cache = {}
         self.net = acroname.AcronameUSBNet(
             {"address": "USB0::0x24FF::0x0013::BFABDDC4::INSTR"}
         )
@@ -198,6 +200,94 @@ class AcronameDriverTests(unittest.TestCase):
         self.assertEqual(
             state["peak"], 1, "hub_access did not serialise concurrent access"
         )
+
+
+# ---------------------------------------------------------------------------
+# Discovery-metadata cache (perf regression fix: 2.1s/op on 0.32.1)
+# ---------------------------------------------------------------------------
+
+_discover_calls: list = []
+_spec_connects: list = []
+
+
+class _FakeSpec:
+    def __init__(self, serial_number):
+        self.serial_number = serial_number
+        self.stale = False
+
+
+class _FakeSpecHub(_FakeHub):
+    """A hub whose SDK supports discover.findAllModules + connectFromSpec."""
+
+    def connectFromSpec(self, spec):
+        _spec_connects.append(self.id)
+        if spec.stale:
+            return 1  # != NO_ERROR
+        return self.discoverAndConnect("usb-spec", spec.serial_number)
+
+
+def _make_spec_brainstem(specs):
+    stem = types.SimpleNamespace(
+        USBHub3p=_FakeSpecHub, USBHub3c=_FakeSpecHub, USBHub2x4=_FakeSpecHub
+    )
+    link = types.SimpleNamespace(Spec=types.SimpleNamespace(USB="usb-spec"))
+
+    def find_all(transport):
+        _discover_calls.append(transport)
+        return list(specs)
+
+    discover = types.SimpleNamespace(findAllModules=find_all)
+    return types.SimpleNamespace(stem=stem, link=link, discover=discover)
+
+
+class AcronameDiscoveryCacheTests(unittest.TestCase):
+    def setUp(self):
+        _claim["held_by"] = None
+        _opened.clear()
+        _closed.clear()
+        _hub_ports.clear()
+        _FakeHub._counter = 0
+        _discover_calls.clear()
+        _spec_connects.clear()
+        self.spec = _FakeSpec(0xBFABDDC4)
+        acroname.AcronameUSBNet._brainstem = _make_spec_brainstem([self.spec])
+        acroname.AcronameUSBNet._Result = _FakeResult
+        acroname.AcronameUSBNet._conn_cache = {}
+        self.net = acroname.AcronameUSBNet(
+            {"address": "USB0::0x24FF::0x0013::BFABDDC4::INSTR"}
+        )
+
+    def test_discovery_runs_once_then_connects_from_cached_spec(self):
+        self.net.enable("CHARGE", 0)
+        self.net.disable("CHARGE", 0)
+        self.net.state("CHARGE", 0)
+        # One discovery scan total; every connect went through the spec.
+        self.assertEqual(len(_discover_calls), 1)
+        self.assertEqual(len(_spec_connects), 3)
+        # The never-pin invariant still holds: nothing left claimed.
+        self.assertIsNone(_claim["held_by"])
+        self.assertEqual(_opened, _closed)
+
+    def test_stale_cached_spec_is_invalidated_and_rediscovered(self):
+        self.net.enable("CHARGE", 0)
+        self.assertEqual(len(_discover_calls), 1)
+        # Simulate a re-enumeration: the cached spec no longer connects,
+        # but a fresh discovery hands out a working one.
+        self.spec.stale = True
+        fresh = _FakeSpec(0xBFABDDC4)
+        acroname.AcronameUSBNet._brainstem = _make_spec_brainstem([fresh])
+        self.net.enable("CHARGE", 0)
+        self.assertEqual(len(_discover_calls), 2, "stale spec should re-discover")
+        self.assertIsNone(_claim["held_by"])
+
+    def test_no_matching_serial_falls_back_to_discover_and_connect(self):
+        # Discovery sees only some other hub: the driver must still connect
+        # via the per-class discoverAndConnect fallback.
+        other = _FakeSpec(0x12345678)
+        acroname.AcronameUSBNet._brainstem = _make_spec_brainstem([other])
+        self.net.enable("CHARGE", 0)
+        self.assertIsNone(_claim["held_by"])
+        self.assertEqual(len(_opened), 1)
 
 
 if __name__ == "__main__":
