@@ -15,6 +15,7 @@ schedule-, or dispatch-triggered and need the bench.
 |---|---|---|:---:|
 | `unit-tests.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `ubuntu-latest` | **Yes** |
 | `static-checks.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `ubuntu-latest` | Reports (see below) |
+| `rust-checks.yml` | `pull_request`, push to `main`, dispatch -- **path-filtered** to `box/oscilloscope-daemon/**` | GitHub-hosted `ubuntu-latest` | Reports (see below) |
 | `integration-tests.yml` | push to `main`, `workflow_call`, dispatch | self-hosted `lager-bench` | No |
 | `update-regression.yml` (Box Lifecycle) | `workflow_call`, dispatch | self-hosted `lager-bench` | No |
 | `nightly-bench.yml` | nightly schedule, dispatch | orchestrator | No |
@@ -73,6 +74,64 @@ anywhere in the tree.
 | `ruff --select E9,F63,F7,F82` | `cli/ box/ test/ tools/`, vendored excluded | clean (default ruleset would be ~6300) |
 | `coverage` | all six unit suites | ~38%, reporting only, no threshold |
 
+### Rust: `rust-checks.yml`
+
+`box/oscilloscope-daemon` is Rust, and until this workflow **no job in this repo referenced
+cargo**. That crate is not a side project: `docker/start-services.sh` launches it on box boot
+whenever the binary is present, and `daemon/src/main.rs` opens QUIC/WebTransport listeners on
+8082-8084 -- network-reachable runtime code on customer hardware.
+
+The gap was not theoretical. Dependabot PR #172 bumped 20 crates across 22 breaking-version
+boundaries, showed a **green tick from twelve checks**, and failed to compile in 74 places --
+because all twelve checks were Python. It broke two ways independently:
+
+- `bindgen` 0.69 -> 0.72 made the generated PicoScope FFI bindings unparseable (70 errors)
+- `tungstenite` 0.20 -> 0.30 changed `Message::Text` to take `Utf8Bytes` instead of `String`
+  (4 errors, at `daemon/src/websocket/handlers.rs:324,385,390` and
+  `daemon/src/webtransport/handlers.rs:297`) -- source edits Dependabot cannot make
+
+| Check | Baseline when added |
+|---|---|
+| `cargo check --workspace --all-targets --locked` | clean |
+| `cargo metadata --locked` (lockfile in sync with manifests) | clean |
+| `cargo clippy -A clippy::all -W clippy::correctness -D warnings` | 0 findings (full default ruleset is 22) |
+| `cargo audit` | 0 vulnerabilities, 3 allowed warnings |
+| `cargo fmt --check` | **48 files differ -- reported to the job summary, not gated** |
+
+`cargo check` rather than `cargo build`: it type-checks the workspace without linking, which is
+what catches API breaks without resolving every link-time symbol.
+
+It still needs the **PicoScope SDK** on the runner. `daemon/build.rs` runs bindgen against
+`/opt/picoscope/include/libps2000/ps2000.h` unconditionally -- no feature flag skips it -- so
+without the headers the build script panics and nothing downstream is checked. The first run of
+this workflow failed exactly there (`wrapper.h:2:10: fatal error: 'ps2000.h' file not found`).
+The job installs `libps2000` from PicoTech's Debian repo, the same one `build_daemon.sh`
+documents for setting up a box, and asserts the header exists before continuing.
+
+That makes the job depend on an external apt host. If `labs.picotech.com` proves flaky, split the
+job so the SDK-free crates (`cli`, `protocol`, `wtransport_test`) keep gating while the daemon
+check degrades to advisory.
+
+The toolchain is pinned to 1.95.0, for the same reason `shellcheck` is pinned in
+`static-checks.yml` -- the clippy and audit baselines were measured against a known version, and
+`stable` moving would turn this red with no change in the repo.
+
+**`cargo audit` is not redundant with Dependabot.** Dependabot reads the GitHub Advisory
+Database; RustSec advisories reach it only once imported. Adding this check surfaced
+`RUSTSEC-2026-0204` (invalid pointer dereference in `crossbeam-epoch` 0.9.18) at a moment when
+Dependabot reported **zero** open alerts. It is fixed in the same change that added the workflow,
+so the step starts clean.
+
+Three advisory *warnings* remain and do not fail the build, because neither has a fixed version
+to move to: `rustls-pemfile` unmaintained (`RUSTSEC-2025-0134`, two versions in the graph) and
+`anyhow` unsound `Error::downcast_mut` (`RUSTSEC-2026-0190`). Add `--deny warnings` once they
+clear.
+
+The workflow is **path-filtered** to `box/oscilloscope-daemon/**`. A path-filtered workflow does
+not report at all when the paths do not match, so making this a required context would leave
+every Python-only PR waiting forever -- drop the filter first, or pair it with an always-runs
+stub.
+
 ### What CI does NOT run
 
 | Area | Size | Why not |
@@ -90,11 +149,12 @@ Known gaps in the gate itself, in rough priority order:
   `cli/status.py` already used, and `test/unit/cli/test_import_surface.py` simulates the missing
   module with a `meta_path` finder so the guard is exercised on Linux). The remaining platform
   branches are still unexercised -- a real fix needs a `windows-latest` job.
-- **No type checking, and no scanning inside CI.** There is no mypy/pyright/bandit/pip-audit
-  config, so nothing in a PR run inspects dependencies. Dependabot now covers the *alerting* half
-  (`.github/dependabot.yml`: cargo, github-actions, and pip for both `cli/` and `test/`, grouped
-  weekly), but it runs on GitHub's schedule rather than in the gate -- a PR that introduces a
-  vulnerable dependency still goes green and is caught afterwards, if at all.
+- **No type checking, and no dependency scanning for Python.** There is no
+  mypy/pyright/bandit/pip-audit config, so nothing in a PR run inspects Python dependencies.
+  Dependabot covers the *alerting* half (`.github/dependabot.yml`), but it runs on GitHub's
+  schedule rather than in the gate -- a PR that introduces a vulnerable Python dependency still
+  goes green and is caught afterwards, if at all. **Rust is now covered in-gate** by
+  `rust-checks.yml`; the Python equivalent is the remaining half.
 - **A merged cargo bump does not patch a deployed box.** No workflow builds
   `box/oscilloscope-daemon`, and `box.Dockerfile` does not copy the binary: it is built by hand
   (`./build_daemon.sh`) and mounted from the host at runtime. Fixing a Rust advisory in the
