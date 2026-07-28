@@ -2,7 +2,7 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
-## [0.32.6] - 2026-07-27
+## [0.32.6] - 2026-07-28
 
 ### Added
 
