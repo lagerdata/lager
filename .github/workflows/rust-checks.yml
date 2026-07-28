@@ -1,0 +1,195 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# Build validation for box/oscilloscope-daemon, which had none.
+#
+# That crate is not a side project: docker/start-services.sh launches it on box
+# boot whenever /usr/local/bin/oscilloscope-daemon is present, and
+# daemon/src/main.rs opens QUIC/WebTransport listeners on 8082-8084. It is
+# network-reachable runtime code on customer hardware, and until this workflow
+# no job in this repo referenced cargo at all.
+#
+# The gap was not theoretical. Dependabot PR #172 bumped 20 crates across 22
+# breaking-version boundaries, showed a GREEN tick from twelve checks, and
+# failed to compile in 74 places -- because all twelve checks were Python. It
+# broke two ways independently: bindgen 0.69 -> 0.72 made the generated
+# PicoScope FFI bindings unparseable (70 errors), and tungstenite 0.20 -> 0.30
+# changed Message::Text to take Utf8Bytes instead of String (4 errors, needing
+# real source edits Dependabot cannot make). Neither was visible without
+# building it by hand.
+#
+# Each check below was measured on this tree before being added, so a red run
+# means the change under review broke something rather than that the baseline
+# was already dirty:
+#
+#   cargo check --workspace --all-targets   clean
+#   cargo clippy -W clippy::correctness     0 findings
+#   cargo audit                             0 vulnerabilities
+#   cargo fmt --check                       48 files differ -- NOT gated, see below
+#
+# `cargo check` rather than `cargo build`: it type-checks the whole workspace
+# without linking, which is what catches API breaks without needing to resolve
+# every link-time symbol.
+#
+# It DOES need the PicoScope SDK regardless. daemon/build.rs runs bindgen
+# against /opt/picoscope/include/libps2000/ps2000.h unconditionally -- there is
+# no feature flag that skips it -- so a build script failure stops the check
+# before any Rust is looked at. The first run of this workflow proved that:
+# `wrapper.h:2:10: fatal error: 'ps2000.h' file not found`. The SDK install
+# below is the same one build_daemon.sh documents for the box.
+
+name: Rust Checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'box/oscilloscope-daemon/**'
+      - '.github/workflows/rust-checks.yml'
+  pull_request:
+    paths:
+      - 'box/oscilloscope-daemon/**'
+      - '.github/workflows/rust-checks.yml'
+  workflow_dispatch:
+
+# Path-filtered on purpose: most PRs here touch no Rust, and a toolchain
+# install plus a cold workspace check is minutes, not seconds. NOTE for whoever
+# makes this a required context later -- a path-filtered workflow does not
+# report at all when the paths do not match, so a required check would leave
+# every Python-only PR waiting forever. Make it required only alongside a
+# always-runs stub job, or drop the filter first.
+
+permissions:
+  contents: read
+
+jobs:
+  rust-checks:
+    name: rust (oscilloscope-daemon)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: box/oscilloscope-daemon
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # daemon/build.rs generates FFI bindings from the PicoScope headers with
+      # bindgen, unconditionally. Without libps2000 the build script panics and
+      # nothing downstream is checked at all, so this is a prerequisite rather
+      # than an optional extra. Same repo and packages build_daemon.sh
+      # documents for setting up a box.
+      #
+      # libclang-dev is bindgen's own requirement (it parses the C headers with
+      # libclang); pkg-config and build-essential match build_daemon.sh.
+      #
+      # NOTE: this makes the job depend on an external apt repo
+      # (labs.picotech.com). If that host is down, this fails for a reason that
+      # has nothing to do with the change under review. If that turns out to
+      # happen in practice, split this job so the SDK-free crates
+      # (cli, protocol, wtransport_test) still gate while the daemon check
+      # degrades to advisory.
+      - name: Install PicoScope SDK and build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libclang-dev
+          wget -qO - https://labs.picotech.com/debian/dists/picoscope/Release.gpg.key \
+            | sudo gpg --dearmor -o /usr/share/keyrings/picoscope-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/picoscope-archive-keyring.gpg] https://labs.picotech.com/debian/ picoscope main" \
+            | sudo tee /etc/apt/sources.list.d/picoscope.list
+          sudo apt-get update
+          sudo apt-get install -y libps2000
+          test -f /opt/picoscope/include/libps2000/ps2000.h \
+            || { echo "ps2000.h missing after install -- daemon/build.rs will panic"; exit 1; }
+          echo "ps2000.h present"
+        shell: bash
+
+      # Pinned, for the same reason shellcheck is pinned in static-checks.yml:
+      # the clippy and audit baselines above were measured against a known
+      # toolchain, and `stable` moving under us would turn this red with no
+      # change in the repo. The workspace declares edition 2024, which needs
+      # 1.85+; this is well past that.
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component clippy
+          rustup default 1.95.0
+          rustc --version
+          cargo --version
+          cargo clippy --version
+        shell: bash
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            box/oscilloscope-daemon/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('box/oscilloscope-daemon/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # The check that would have caught #172. --all-targets so tests, benches
+      # and examples are type-checked too, not just the library and binaries.
+      - name: cargo check
+        run: cargo check --workspace --all-targets --locked
+        shell: bash
+
+      # --locked above is load-bearing: it fails if Cargo.lock would need
+      # updating to satisfy the manifests, which is how a PR that edits a
+      # Cargo.toml without regenerating the lockfile gets caught. Asserted
+      # separately here so the failure reason is unambiguous when it happens.
+      - name: Cargo.lock is in sync with the manifests
+        if: always()
+        run: cargo metadata --locked --format-version 1 > /dev/null
+        shell: bash
+
+      # Correctness lints only -- the tier that flags real bugs, not style.
+      # Measured at 0 on this tree. The full default ruleset is 22 findings
+      # (redundant_pattern_matching, unnecessary_cast, ...), which would be
+      # noise rather than a gate. Same reasoning as `ruff --select E9,F63,F7,F82`
+      # and `shellcheck -S error` elsewhere in this repo: start at a level that
+      # is already clean so the gate means something from day one, then ratchet.
+      - name: cargo clippy (correctness only)
+        if: always()
+        run: cargo clippy --workspace --all-targets -- -A clippy::all -W clippy::correctness -D warnings
+        shell: bash
+
+      # RustSec advisories against Cargo.lock. This is NOT redundant with
+      # Dependabot: Dependabot reads the GitHub Advisory Database, and RustSec
+      # advisories reach it only once imported. Adding this check found
+      # RUSTSEC-2026-0204 (invalid pointer dereference in crossbeam-epoch
+      # 0.9.18) at a moment when Dependabot reported zero open alerts. That is
+      # fixed in this same change, so this step starts clean.
+      #
+      # Fails on vulnerabilities. Does NOT fail on `warning` classes
+      # (unmaintained, unsound), of which this tree currently has three:
+      # rustls-pemfile unmaintained (RUSTSEC-2025-0134, two versions in the
+      # graph) and anyhow unsound Error::downcast_mut (RUSTSEC-2026-0190).
+      # Neither has a fixed version to move to today. Add --deny warnings once
+      # they clear.
+      - name: cargo audit
+        if: always()
+        run: |
+          cargo install cargo-audit --locked --version 0.22.2
+          cargo audit
+        shell: bash
+
+      # NOT gated: `cargo fmt --check` reports 48 files on this tree, so it
+      # would be a permanently-red advisory check, and this repo's position is
+      # that a check people learn to ignore is worse than no check. Reported to
+      # the job summary instead, so the number is visible and can be worked
+      # down deliberately.
+      - name: Formatting (report only)
+        if: always()
+        run: |
+          rustup component add rustfmt
+          n=$(cargo fmt --all --check 2>/dev/null | grep -c '^Diff in' || true)
+          {
+            echo "### Rust formatting"
+            echo
+            echo "\`cargo fmt --all --check\`: **${n}** files differ."
+            echo
+            echo "Not gated -- see the comment in .github/workflows/rust-checks.yml."
+          } >> "$GITHUB_STEP_SUMMARY"
+        shell: bash
