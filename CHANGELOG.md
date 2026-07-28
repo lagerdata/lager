@@ -2,17 +2,17 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
-## [Unreleased]
+## [0.33.0] - 2026-07-28
 
 ### Added
 
 - **`GET /usb/devices` — generic USB bus enumeration on port 9000.** Walks
   `/sys/bus/usb/devices` and returns every device's vid/pid, iSerial,
   product, manufacturer, bus/dev numbers, devpath, class, and speed, with
-  optional `vid`/`pid`/`serial` query filters. Pure sysfs reads (a few ms,
-  no exclusive device access), so clients can poll it while waiting for a
-  DUT to re-enumerate after a hub power-cycle or DFU detach. Consumed by
-  `lager-rs`'s new `usb_devices()`.
+  optional `vid`/`pid`/`serial` query filters. Pure non-blocking sysfs
+  reads (a few ms, no exclusive device access), so clients can poll it
+  while waiting for a DUT to re-enumerate after a hub power-cycle or DFU
+  detach. Consumed by `lager-rs`'s new `usb_devices()`.
 
 - **`POST /usb/dfu` — box-side dfu-util.** Actions: `list` (parsed
   `dfu-util -l` output as structured JSON), `download` (base64 firmware
