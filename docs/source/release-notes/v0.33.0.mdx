@@ -1,0 +1,47 @@
+---
+title: "Version 0.33.0"
+description: "July 28, 2026"
+---
+
+## <u>Features</u>
+
+- **`GET /usb/devices` on the Lager Box** enumerates every USB device on
+  the bus from sysfs (vendor/product id, serial, product, manufacturer,
+  bus/dev numbers, speed) with optional `vid`/`pid`/`serial` filters. The
+  scan is a few milliseconds and takes no exclusive device access, so it
+  is safe to poll while waiting for a DUT to re-enumerate after a hub
+  power-cycle or DFU detach. Consumed by `lager-rs` as `usb_devices()`.
+
+- **`POST /usb/dfu` on the Lager Box** runs `dfu-util` for USB-DFU
+  flashing: `list`, `download` (base64 firmware, with optional
+  vid:pid / serial / alt / DfuSe address / reset), and `detach`. A missing
+  binary returns a clear install hint
+  (`lager box-config apt add dfu-util`). Consumed by `lager-rs` as
+  `dfu()`.
+
+## <u>Bug Fixes</u>
+
+- **USB hub-port commands are fast again.** On 0.32.1 an
+  enable/disable/toggle/state against an Acroname hub took ~2.1s (was
+  ~80ms) because every call re-ran a full BrainStem USB discovery scan.
+  The drivers now cache discovery metadata per physical hub and connect
+  directly from it, while still releasing the hub after every operation
+  so other processes (e.g. a `lager python` test) can claim it.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.33.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.33.0/)
