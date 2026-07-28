@@ -142,7 +142,7 @@ ssh "${BOX_USER}@${BOX_IP}" "
     git clone --filter=blob:none --no-checkout https://github.com/lagerdata/lager.git ~/box && \
     cd ~/box && \
     git sparse-checkout init --cone && \
-    git sparse-checkout set box && \
+    git sparse-checkout set box cli && \
     git checkout ${BRANCH}
 "
 
@@ -199,9 +199,10 @@ echo -e "${BOLD}${GREEN}=========================================${NC}"
 echo -e "${BOLD}${GREEN}  Conversion Complete!${NC}"
 echo -e "${BOLD}${GREEN}=========================================${NC}"
 echo ""
-echo "Box now uses sparse checkout (box code only)"
-echo "Repository only contains: box code and scripts"
-echo "Hidden from box: CLI source, backend, deployment scripts"
+echo "Box now uses sparse checkout (box code + cli)"
+echo "Repository only contains: box code, scripts, and the cli/ source"
+echo "(cli/ feeds the host CLI install; see setup_and_deploy_box.sh)"
+echo "Hidden from box: backend, docs, tests"
 echo ""
 echo "Test update command:"
 echo -e "  ${BLUE}lager update --box <box-ip> --version ${BRANCH}${NC}"

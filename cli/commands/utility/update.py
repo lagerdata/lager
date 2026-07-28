@@ -27,6 +27,15 @@ from ...context import get_default_box
 from ...core.ssh_utils import get_ssh_connection_pool
 from ..box._host_ops import boxcfg_sudoers_bootstrap_cmd, is_valid_unix_username
 from ..box._ssh import ensure_lager_box_keypair, key_auth_works
+from ._host_cli import (
+    HOST_CLI_PROBE_SNIPPET,
+    HOST_VENV_APT_CMD,
+    host_cli_check_status,
+    host_cli_failure_message,
+    host_cli_install_cmd,
+    host_cli_reconcile_action,
+    host_python_supported,
+)
 from ...errors import LagerError
 
 
@@ -245,9 +254,14 @@ if _dps=$(docker ps --filter name=lager --format '{{.Names}}' 2>/dev/null); then
 else
   echo "LAGER_PROBE_LAGER_RUNNING="
 fi
+__HOST_CLI_PROBE__
 echo "LAGER_PROBE_ETC_VERSION=$(cat /etc/lager/version 2>/dev/null)"
 '''
-    return script.replace('__BUILD_HASH_CMD__', _build_hash_shell_cmd())
+    return (
+        script
+        .replace('__BUILD_HASH_CMD__', _build_hash_shell_cmd())
+        .replace('__HOST_CLI_PROBE__\n', HOST_CLI_PROBE_SNIPPET)
+    )
 
 
 def _parse_probe_output(stdout):
@@ -263,6 +277,41 @@ def _parse_probe_output(stdout):
             key, _, value = line[len(_PROBE_PREFIX):].partition('=')
             facts[key] = value
     return facts
+
+
+def _pull_shell_script(target_version, git_ref):
+    """Step 4's git update — sparse-checkout fixups, checkout, and reset,
+    chained into a single SSH call.
+
+    `git checkout -f` so a prior flatten artifact (a root-level tracked
+    file overwritten by box/<same-name>) doesn't block the switch.
+    Observed on one box: flatten of a branch that had both root README.md
+    and box/README.md left the root copy looking modified, and
+    `git checkout main` failed with "local changes would be
+    overwritten". Editing the on-box git tree by hand is not a
+    supported workflow, so discarding such "modifications" is safe.
+
+    The `cli` add materializes `~/box/cli` for the host-OS CLI install
+    (see _host_cli). It is a directory pattern, so cone-mode
+    sparse-checkout accepts it — unlike the single-file
+    `cli/__init__.py` add it replaces, which cone mode (default since
+    git 2.36) rejected with "fatal: ... is not a directory". The
+    `|| true` keeps pre-2.26 git (no `sparse-checkout add` subcommand)
+    from aborting the whole pull; on such a box the host-CLI step later
+    finds `~/box/cli` missing and warns instead. udev_rules predates
+    `add`-less gits in the field and stays strict.
+    """
+    return (
+        'cd ~/box && '
+        '{ git sparse-checkout list | grep -q "^udev_rules$" || '
+        'git sparse-checkout add udev_rules; } && '
+        '{ git sparse-checkout list | grep -q "^modprobe_d$" || '
+        'git sparse-checkout add modprobe_d 2>/dev/null || true; } && '
+        '{ git sparse-checkout list | grep -q "^cli$" || '
+        'git sparse-checkout add cli 2>/dev/null || true; } && '
+        f'git checkout -f {target_version} && '
+        f'git reset --hard {git_ref}'
+    )
 
 
 def _build_hash_mismatch(new_hash, stored_hash):
@@ -319,12 +368,12 @@ def _deployed_version_stale(tree_version, etc_version_raw):
     return bool(tree_version) and bool(deployed) and deployed != tree_version
 
 
-# Progress-bar denominator. 15 steps always run; 3 are conditional (flatten,
+# Progress-bar denominator. 16 steps always run; 3 are conditional (flatten,
 # cached-image wipe, J-Link install). We use the max so the denominator never
-# jumps mid-flight — light paths simply finish below 18/18 and `finish()`
+# jumps mid-flight — light paths simply finish below 19/19 and `finish()`
 # overrides with a full bar. Keep in sync with the `progress.update()` calls
 # in `_update_logic`.
-_PROGRESS_TOTAL_STEPS = 18
+_PROGRESS_TOTAL_STEPS = 19
 
 
 class ProgressBar:
@@ -978,6 +1027,18 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             _sudoers_state = f'fix needed (owned by uid {_owner})'
         click.echo(f'  sudoers:       {_sudoers_state}')
         click.echo(f'  box-config:    {"OK" if facts.get("BOXCFG_SUDOERS_OK") == "1" else "needs bootstrap"}')
+        _host_cli_v = facts.get('HOST_CLI_VERSION', '').strip()
+        if host_python_supported(facts) is False:
+            _host_cli_state = (
+                f'unsupported (host python3 {facts.get("HOST_PY_VERSION", "").strip()} too old)'
+            )
+        elif _host_cli_v:
+            _host_cli_state = _host_cli_v
+        elif facts.get('HOST_VENV_DIR') == '1':
+            _host_cli_state = 'venv broken (will reinstall)'
+        else:
+            _host_cli_state = 'not installed'
+        click.echo(f'  Host CLI:      {_host_cli_state}')
 
     # Step 3: Fetch from origin and measure box-vs-target divergence — one call.
     if progress:
@@ -1177,12 +1238,18 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         # divergence already forces the rebuild that would fix it. (Local
         # import: a later `import re` in this function makes `re` local to
         # the whole function, so the module-level binding is shadowed here.)
+        # The tree version doubles as the host-CLI compare target below, so
+        # it is read whenever code is in sync, not only when the container
+        # is also up.
         deploy_stale = False
-        if not container_down and commits_behind == 0 and commits_ahead == 0:
+        _tree_v = ''
+        code_in_sync = commits_behind == 0 and commits_ahead == 0
+        if code_in_sync:
             import re
             _vp = re.match(r'^v?(\d+\.\d+\.\d+)$', target_version)
             _tree_v = _vp.group(1) if _vp else _read_box_source_version(run_ssh_command_with_output)
-            deploy_stale = _deployed_version_stale(_tree_v, current_version_raw)
+            if not container_down:
+                deploy_stale = _deployed_version_stale(_tree_v, current_version_raw)
 
         if commits_behind == 0 and commits_ahead == 0:
             code_status = 'in sync'
@@ -1233,6 +1300,19 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             container_status = 'will restart'
             est = '~90s (cached build)'
 
+        # Host CLI (~/.lager/venv; see _host_cli). Any pending rebuild
+        # reinstalls it as a matter of course; otherwise compare versions
+        # from the probe facts — no extra round trip.
+        _rebuild_pending = (
+            force or not code_in_sync or deps_will_change
+            or container_down or deploy_stale
+        )
+        host_cli_status, host_cli_will_change = host_cli_check_status(
+            facts, _tree_v, not _rebuild_pending
+        )
+        if host_cli_will_change and not _rebuild_pending:
+            est = '~1 min (host CLI only)'
+
         click.secho('Update preview', fg='blue', bold=True)
         click.echo(f'  Box:        {box_name} ({resolved_box})')
         click.echo(f'  Current:    {current_box_version}')
@@ -1240,12 +1320,14 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         click.echo(f'  Code:       {code_status}')
         click.echo(f'  Deps:       {deps_status}')
         click.echo(f'  Container:  {container_status}')
+        click.echo(f'  Host CLI:   {host_cli_status}')
         click.echo(f'  Estimated:  {est}')
         click.echo()
 
         will_change = (
             force or commits_behind != 0 or commits_ahead != 0
             or deps_will_change or container_down or deploy_stale
+            or host_cli_will_change
         )
         if will_change:
             click.echo('Run without --check to apply.')
@@ -1260,33 +1342,9 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             progress.update("Rolling back..." if is_rollback else "Pulling updates...")
         log(f'{"Rolling back to" if is_rollback else "Pulling"} {git_ref}...', nl=False)
 
-        # `git checkout -f` so a prior flatten artifact (a root-level tracked
-        # file overwritten by box/<same-name>) doesn't block the switch.
-        # Observed on one box: flatten of a branch that had both root README.md
-        # and box/README.md left the root copy looking modified, and
-        # `git checkout main` failed with "local changes would be
-        # overwritten". Editing the on-box git tree by hand is not a
-        # supported workflow, so discarding such "modifications" is safe.
-        # The `cli/__init__.py` add is best-effort: cone-mode sparse-checkout
-        # (default since git 2.36) rejects single-file patterns with
-        # "fatal: 'cli/__init__.py' is not a directory". The pre-batching
-        # version of this code happened to run in a separate SSH call whose
-        # exit was never checked, so the failure was silently swallowed; the
-        # `|| true` here preserves that behavior so a newer-git box (e.g.
-        # one box at 2.43) doesn't abort the whole pull. udev_rules is a
-        # directory and never hits this, so it stays strict.
-        pull_script = (
-            'cd ~/box && '
-            '{ git sparse-checkout list | grep -q "^udev_rules$" || '
-            'git sparse-checkout add udev_rules; } && '
-            '{ git sparse-checkout list | grep -q "^modprobe_d$" || '
-            'git sparse-checkout add modprobe_d 2>/dev/null || true; } && '
-            '{ git sparse-checkout list | grep -q "^cli/__init__.py$" || '
-            'git sparse-checkout add cli/__init__.py 2>/dev/null || true; } && '
-            f'git checkout -f {target_version} && '
-            f'git reset --hard {git_ref}'
+        result = run_ssh_command_with_output(
+            _pull_shell_script(target_version, git_ref)
         )
-        result = run_ssh_command_with_output(pull_script)
         if result.returncode != 0:
             if progress:
                 progress.finish(success=False)
@@ -1604,6 +1662,32 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
 
         enqueue_priv('boxcfg', boxcfg_sudoers_cmd, _render_boxcfg)
 
+    # Step 7b: python3-venv, the host-CLI venv prerequisite (see _host_cli).
+    # Enqueued only when this run will need to CREATE a venv and can't:
+    # no working host CLI (empty probe version), ensurepip absent, and a
+    # host python new enough to run the CLI at all. An existing healthy
+    # venv never needs ensurepip again, so the common path adds nothing.
+    if (facts.get('HOST_ENSUREPIP') == '0'
+            and not facts.get('HOST_CLI_VERSION', '').strip()
+            and host_python_supported(facts)):
+        log('Checking python3-venv (for host CLI)...', nl=False)
+        log_status('install needed', 'yellow')
+
+        def _render_venv_pkg(ok):
+            log('Installing python3-venv...', nl=False)
+            if ok:
+                log_status('OK', 'green')
+            else:
+                log_status('FAILED (host CLI install will be skipped)', 'yellow')
+                if verbose:
+                    click.echo(
+                        '  Warning: could not apt-get install python3-venv; '
+                        'the host CLI cannot be installed without it.',
+                        err=True,
+                    )
+
+        enqueue_priv('python3-venv', HOST_VENV_APT_CMD, _render_venv_pkg)
+
     # Apply all queued privileged operations in ONE interactive `ssh -t`
     # session, so the sudo password (on a box without the passwordless grant)
     # is requested at most once for the whole run. We can't read the interactive
@@ -1679,7 +1763,8 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         hash_mismatch=hash_mismatch,
         force=force,
     )
-    _box_v = ''  # assigned for real below whenever _gate stays 'skip'
+    _box_v = ''   # assigned for real below whenever _gate stays 'skip'
+    _tree_v = ''  # ditto; the host-CLI reconcile compares against it
     if _gate == 'skip':
         import re as _re
 
@@ -1711,6 +1796,57 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             _gate = 'stale-deploy'
 
     if _gate == 'skip':
+        # Host CLI reconcile (~/.lager/venv; see _host_cli). Box code is
+        # unchanged this run, but the host-OS CLI may be missing, broken, or
+        # older — e.g. a box that was already current when this feature
+        # shipped. Fixing it here means boxes pick the CLI up on any routine
+        # update, not only on version bumps. Soft-fail: the box itself is
+        # healthy, so a host-CLI problem must not fail the run — and the
+        # "already at version" message below stays untouched either way
+        # (CI greps for it).
+        _host_note = ''
+        _host_note_color = None
+        _host_action = host_cli_reconcile_action(
+            facts.get('HOST_CLI_VERSION', '').strip(), _tree_v,
+            code_changed=False,
+        )
+        if _host_action == 'install':
+            if host_python_supported(facts):
+                if progress:
+                    progress.update("Reconciling host CLI...")
+                log('Reconciling host CLI...', nl=False)
+                # First install downloads the CLI's deps from PyPI; the
+                # sparse-checkout add in the command lazily fetches the cli/
+                # blobs, with network just proven by the Step 3 fetch.
+                _host_res = run_ssh_command_with_output(
+                    host_cli_install_cmd(), timeout_secs=300
+                )
+                if _host_res.returncode == 0:
+                    _out = (_host_res.stdout or '').strip()
+                    _host_new_v = _out.splitlines()[-1].strip() if _out else ''
+                    log_status(f'OK ({_host_new_v or "version unknown"})', 'green')
+                    _host_note = f'Host CLI updated to {_host_new_v or "(version unknown)"}'
+                else:
+                    log_status('FAILED', 'yellow')
+                    _host_note = (
+                        'Warning: host CLI install failed: '
+                        f'{host_cli_failure_message(_host_res.returncode)}'
+                    )
+                    _host_note_color = 'yellow'
+            else:
+                _raw_py = facts.get('HOST_PY_VERSION', '').strip()
+                _host_note = (
+                    f'Host CLI not installed: host python3 '
+                    f'{_raw_py or "version unknown"} is older than the '
+                    'CLI\'s 3.10 floor.'
+                )
+                _host_note_color = 'yellow'
+        elif _host_action == 'skip-unknown' and verbose:
+            click.echo(
+                '  Host CLI: box version unreadable; leaving the installed '
+                'CLI as is.'
+            )
+
         # Reconcile /etc/lager/version on the box with the local cache.
         # Previously this branch only updated the local ~/.lager file, so if
         # the box's /etc/lager/version was stale (e.g. an earlier update
@@ -1734,6 +1870,8 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             f'{box_name} is already at version {_box_v} ({target_version})',
             fg='green', bold=True,
         )
+        if _host_note:
+            click.secho(_host_note, fg=_host_note_color)
         click.echo()
         ctx.exit(0)
 
@@ -2385,6 +2523,53 @@ fi
                 click.echo('      2. Manually download from https://www.segger.com/downloads/jlink/')
                 click.echo('      3. Use pyOCD (already installed, works with most debug probes)')
                 click.echo()
+
+    # Step 14: Host-OS CLI (~/.lager/venv; see _host_cli). Deployed code
+    # changed this run, so always reinstall — a version compare can't detect
+    # a branch deploy that changed code without bumping `__version__`. Runs
+    # after every fatal gate (build, start, health, container verify), so a
+    # failed update never advances the host CLI. Non-fatal from here on: the
+    # box itself is already updated and healthy.
+    if host_python_supported(facts):
+        if progress:
+            progress.update("Updating host CLI...")
+        log('Updating host CLI...', nl=False)
+        host_res = run_ssh_command_with_output(
+            host_cli_install_cmd(), timeout_secs=300
+        )
+        if host_res.returncode == 0:
+            _out = (host_res.stdout or '').strip()
+            host_cli_v = _out.splitlines()[-1].strip() if _out else ''
+            if host_cli_v and box_cli_version and host_cli_v != box_cli_version:
+                # Claiming success while the versions disagree would hide a
+                # real problem (e.g. a stale ~/box/cli left by a failed add).
+                log_status(f'OK ({host_cli_v}; box tree is {box_cli_version})', 'yellow')
+            else:
+                log_status(f'OK ({host_cli_v or "version unknown"})', 'green')
+        else:
+            log_status('FAILED', 'yellow')
+            click.secho(
+                'Warning: host CLI install failed: '
+                f'{host_cli_failure_message(host_res.returncode)}',
+                fg='yellow', err=True,
+            )
+            if verbose and host_res.stderr and host_res.stderr.strip():
+                for _line in host_res.stderr.strip().splitlines()[-5:]:
+                    click.echo(f'  {_line}', err=True)
+            click.echo(
+                '  The box works without it. Manual fix: '
+                f"ssh {ssh_host} 'python3 -m venv ~/.lager/venv && "
+                "~/.lager/venv/bin/pip install ~/box/cli'",
+                err=True,
+            )
+    else:
+        _raw_py = facts.get('HOST_PY_VERSION', '').strip()
+        click.secho(
+            'Warning: skipping host CLI install — host python3 '
+            f'{_raw_py or "version unknown"} is older than the CLI\'s '
+            '3.10 floor.',
+            fg='yellow', err=True,
+        )
 
     # Update local .lager cache with the box version (already written to the
     # box itself back in the "Storing version" step).
