@@ -1,0 +1,73 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# Until now there was no dependabot.yml, so the security tab produced ALERTS
+# but nothing produced fix PRs -- advisory 13 (quinn-proto, high, runtime) sat
+# open and untouched because closing it required someone to notice the tab.
+#
+# Everything is grouped. Ungrouped, the pip and actions ecosystems alone would
+# open one PR per package per week, and a wall of PRs is how a security feed
+# gets muted. One PR per ecosystem per week is reviewable; security updates are
+# split into their own group so a real advisory is never buried in a routine
+# version-bump PR.
+#
+# Note what this does NOT solve for cargo: no workflow builds
+# box/oscilloscope-daemon, and box.Dockerfile does not copy the binary -- it is
+# built by hand (./build_daemon.sh) and mounted from the host at runtime. So a
+# merged lockfile bump is a source fix only; boxes stay on the old binary until
+# someone rebuilds and redistributes it.
+version: 2
+
+updates:
+  # The daemon's Cargo.lock is where advisory 13 lives. Runtime scope: the
+  # daemon opens QUIC/WebTransport listeners on 8082-8084 when start-services.sh
+  # finds the binary present.
+  - package-ecosystem: cargo
+    directory: /box/oscilloscope-daemon
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      cargo-security:
+        applies-to: security-updates
+        patterns: ['*']
+      cargo-version-updates:
+        applies-to: version-updates
+        patterns: ['*']
+
+  # Pinned action SHAs/tags across the five workflows. These gate every PR, so
+  # a stale or yanked action is a CI outage, not just a staleness problem.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ['*']
+
+  # cli/setup.py install_requires.
+  - package-ecosystem: pip
+    directory: /cli
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      pip-security:
+        applies-to: security-updates
+        patterns: ['*']
+      pip-version-updates:
+        applies-to: version-updates
+        patterns: ['*']
+
+  # test/requirements-unit.txt. Its entries carry major-version caps
+  # deliberately, and the floors are held low so the compat matrix (3.10-3.12)
+  # still resolves -- see the comment in that file before widening anything.
+  - package-ecosystem: pip
+    directory: /test
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      test-deps:
+        patterns: ['*']

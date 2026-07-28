@@ -86,8 +86,15 @@ Known gaps in the gate itself, in rough priority order:
   `cli/status.py` already used, and `test/unit/cli/test_import_surface.py` simulates the missing
   module with a `meta_path` finder so the guard is exercised on Linux). The remaining platform
   branches are still unexercised -- a real fix needs a `windows-latest` job.
-- **No type checking or security scanning.** There is no mypy/pyright/bandit/pip-audit config, and
-  no `dependabot.yml` (so no automated version-update PRs for pip, actions, or cargo).
+- **No type checking, and no scanning inside CI.** There is no mypy/pyright/bandit/pip-audit
+  config, so nothing in a PR run inspects dependencies. Dependabot now covers the *alerting* half
+  (`.github/dependabot.yml`: cargo, github-actions, and pip for both `cli/` and `test/`, grouped
+  weekly), but it runs on GitHub's schedule rather than in the gate -- a PR that introduces a
+  vulnerable dependency still goes green and is caught afterwards, if at all.
+- **A merged cargo bump does not patch a deployed box.** No workflow builds
+  `box/oscilloscope-daemon`, and `box.Dockerfile` does not copy the binary: it is built by hand
+  (`./build_daemon.sh`) and mounted from the host at runtime. Fixing a Rust advisory in the
+  lockfile is therefore a source-only fix until someone rebuilds and redistributes the daemon.
 - **Ruff is errors-only.** It gates real bugs, not style. That floor was chosen because it was
   already clean, and is meant to ratchet up.
 - **Five shellcheck codes are excluded from the gate** -- 90 findings, all in `test/integration/`
