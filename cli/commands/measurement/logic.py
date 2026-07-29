@@ -12,6 +12,7 @@ from ...core.net_group import NetGroup
 from ...core.net_helpers import (
     require_netname,
     resolve_box,
+    resolve_box_locked,
     validate_net,
     display_nets,
     run_backend,
@@ -27,7 +28,7 @@ def _require_netname(ctx) -> str:
 
 
 def _resolve_box(ctx, box):
-    return resolve_box(ctx, box)
+    return resolve_box_locked(ctx, box, 'logic')
 
 
 def _validate_logic_net(ctx, box_ip: str, netname: str) -> bool:

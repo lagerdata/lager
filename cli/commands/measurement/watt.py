@@ -13,6 +13,7 @@ from ...context import get_default_net
 from ...core.net_group import NetGroup
 from ...core.net_helpers import (
     resolve_box,
+    resolve_box_locked,
     display_nets,
     post_net_command,
     validate_net_exists,
@@ -62,7 +63,7 @@ def _run_watt(ctx, box, netname, mode, duration, as_json):
     if box is None:
         box = getattr(ctx.obj, "watt_box", None)
 
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'watt')
 
     # No net resolved (and none configured) -> list available watt meter nets.
     if netname is None:

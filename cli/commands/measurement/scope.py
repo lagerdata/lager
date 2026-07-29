@@ -15,6 +15,7 @@ from ...core.net_group import NetGroup
 from ...core.net_helpers import (
     require_netname,
     resolve_box,
+    resolve_box_locked,
     run_net_py,
     validate_net,
     validate_net_exists,
@@ -90,7 +91,7 @@ def _require_netname(ctx) -> str:
 
 
 def _resolve_box(ctx, box):
-    return resolve_box(ctx, box)
+    return resolve_box_locked(ctx, box, 'scope')
 
 
 def _validate_scope_net(ctx, box_ip: str, netname: str) -> dict | None:

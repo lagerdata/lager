@@ -17,6 +17,7 @@ from ...context import get_default_net
 from ...core.net_group import NetCommand
 from ...core.net_helpers import (
     resolve_box,
+    resolve_box_locked,
     list_nets_by_role,
     display_nets_table,
     post_net_command,
@@ -51,7 +52,7 @@ def gpo(ctx, box, netname, level, hold, as_json):
     if netname is None:
         netname = get_default_net(ctx, 'gpio')
 
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'gpo')
 
     # If still no netname, list available GPIO nets
     if netname is None:

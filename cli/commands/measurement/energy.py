@@ -13,6 +13,7 @@ from ...context import get_default_net
 from ...core.net_group import NetGroup
 from ...core.net_helpers import (
     resolve_box,
+    resolve_box_locked,
     display_nets,
     fmt_si,
     post_net_command,
@@ -56,7 +57,7 @@ def _print_stats(netname, result):
 
 def _run_energy(ctx, box, duration, netname, mode, as_json=False):
     """Shared implementation for energy and stats commands."""
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'energy')
 
     if netname is None:
         display_nets(ctx, box_ip, None, ENERGY_ROLE, "energy analyzer")

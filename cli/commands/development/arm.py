@@ -14,6 +14,7 @@ from ...context import get_default_box, get_default_net
 from ...core.net_group import NetGroup
 from ...core.net_helpers import (
     resolve_box,
+    resolve_box_locked,
     list_nets_by_role,
     validate_net_exists,
     post_net_command,
@@ -88,11 +89,16 @@ def _validate_arm_net(ctx, box, netname) -> bool:
 
 
 def _resolve_box_for_command(ctx, target_box):
-    """Resolve box from command-level --box option or group-level stored box."""
+    """Resolve box from command-level --box option or group-level stored box.
+    Acquires an ephemeral lock for hardware interaction.
+    """
     if target_box:
-        return resolve_box(ctx, target_box)
+        return resolve_box_locked(ctx, target_box, 'arm')
     # Fall back to box stored by the group command
-    return getattr(ctx.obj, "resolved_box", None) or get_default_box(ctx)
+    stored = getattr(ctx.obj, "resolved_box", None)
+    if stored:
+        return stored
+    return resolve_box_locked(ctx, None, 'arm')
 
 
 @click.group(
@@ -125,7 +131,7 @@ def arm(ctx, box, netname):
     # Only resolve box if box is provided at group level
     # Otherwise, let subcommands resolve it
     if box:
-        resolved = resolve_box(ctx, box)
+        resolved = resolve_box_locked(ctx, box, 'arm')
         setattr(ctx.obj, "resolved_box", resolved)
     else:
         # Don't set box - let subcommands handle it
