@@ -41,6 +41,28 @@ class DeviceLockError(Exception):
     pass
 
 
+def _pid_is_alive(pid: int) -> bool:
+    """True if `pid` names a live process.
+
+    Signal 0 performs the existence and permission checks without delivering
+    anything. EPERM means the process exists but belongs to another user, which
+    still counts as alive.
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        # Can't tell. Assume alive: wrongly stealing a live holder's lock puts
+        # two processes on one USB instrument, which is worse than refusing.
+        return True
+    return True
+
+
 class DeviceLockManager:
     """fcntl-based cross-process lock keyed on VISA address.
 
@@ -63,6 +85,24 @@ class DeviceLockManager:
     def _get_lock_path(self, address: str) -> str:
         safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', address)
         return os.path.join(self.lock_dir, f'device_{safe_name}.lock')
+
+    @staticmethod
+    def _read_holder_pid(lock_file) -> int | None:
+        """Read the PID the current holder recorded, or None if unreadable.
+
+        The file is written by `_record_pid` after a successful flock and is
+        never truncated on the failure path, so under contention it still
+        holds the winner's PID.
+        """
+        try:
+            lock_file.seek(0)
+            raw = lock_file.read(32).strip()
+        except Exception:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
 
     def acquire_lock(self, address: str, timeout: float = 2.0) -> bool:
         """Acquire an exclusive advisory lock on `address`.
@@ -112,11 +152,36 @@ class DeviceLockManager:
                 except (IOError, OSError):
                     time.sleep(0.05)
 
-            # Timeout — release the file handle and signal failure.
+            # Timed out. Read back the PID the holder recorded so the error can
+            # name it. This is diagnostics, NOT a stale-lock steal.
+            #
+            # A steal would be dead code here. The kernel drops a flock when
+            # the last fd on the open file description closes, so a holder that
+            # simply died -- even by SIGKILL -- has already released the lock
+            # and we would have taken it in the poll loop above. The only way
+            # to reach this point with a dead recorded PID is that the holder
+            # forked and exited while a descendant kept the inherited fd. The
+            # lock is then genuinely still held by a live process, so there is
+            # nothing safe to steal: forcing it would put two processes on one
+            # USB instrument, which is the failure this lock exists to prevent.
+            #
+            # What is actually useful is saying which of those two situations
+            # this is, because the remedy differs: kill the named process, or
+            # hunt the orphaned descendant it left behind.
+            holder_pid = self._read_holder_pid(lock_file)
+
             if lock_file:
                 lock_file.close()
+
+            if holder_pid is None:
+                who = 'another process'
+            elif _pid_is_alive(holder_pid):
+                who = f'pid {holder_pid}, which is still running'
+            else:
+                who = (f'an orphaned child of pid {holder_pid} -- that process has '
+                       f'exited but left the lock fd open in a descendant')
             raise DeviceLockError(
-                f'Device at {address} is locked by another process '
+                f'Device at {address} is locked by {who} '
                 f'(waited {timeout:.1f}s). Another lager-box process likely has '
                 f'this USB instrument open. Inspect with: '
                 f"sudo lsof | grep '{self.lock_dir}'"

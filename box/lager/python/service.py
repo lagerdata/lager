@@ -142,6 +142,21 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
             logger.info("Client disconnected during streaming")
         except Exception as e:
             logger.exception("Error during streaming", exc_info=e)
+        finally:
+            # Close the generator here rather than leaving it to garbage
+            # collection. Closing runs its `finally`, which is what reaps the
+            # child process when we broke out of the loop early on a client
+            # disconnect. Relying on refcounting made teardown depend on when
+            # the last reference happened to drop -- and under an exception
+            # that reference can be held alive by the traceback, so the child
+            # outlived the request. close() is idempotent and a no-op on a
+            # generator that already ran to completion.
+            close = getattr(generator, 'close', None)
+            if close is not None:
+                try:
+                    close()
+                except Exception:
+                    logger.exception("Error closing output generator")
 
     # Filename suffixes that mark a part as a real file upload rather than a
     # form field. Kept as-is from the cgi implementation: the client posts the

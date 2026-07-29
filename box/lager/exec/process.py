@@ -332,6 +332,33 @@ def stream_process_output(proc, output_channel, cleanup_fns):
         logger.exception('stream_process_output failed', exc_info=exc)
     finally:
         stop_event.set()
+        # Reap the child here, not only on the normal path above.
+        #
+        # When the client disconnects mid-run (Ctrl-C that never reached
+        # /python/kill, a killed CLI, a dropped network, a cancelled CI job)
+        # the consumer stops iterating and this generator is closed, raising
+        # GeneratorExit at the `yield from emit(...)` inside the read loop.
+        # That skips the terminate_process() after the loop, and GeneratorExit
+        # derives from BaseException so the `except Exception` above does not
+        # catch it either -- the child was never signalled. It survived as an
+        # orphan, spinning at 100% CPU, holding its device flock and blocking
+        # every later run on that instrument until someone killed it by hand.
+        #
+        # terminate_process() is SIGTERM, wait 2s, then SIGKILL. The poll()
+        # guard keeps the normal path from double-terminating an already-reaped
+        # child. Non-detached runs are wrapped in /usr/bin/timeout, so the
+        # signal reaches the python child through the wrapper; detached runs
+        # (start_new_session=True) are meant to outlive the client and are
+        # reaped through /python/kill instead.
+        try:
+            if proc.poll() is None:
+                logger.info(
+                    'stream ended with the child still running (client likely '
+                    'disconnected) - terminating pid %s', proc.pid,
+                )
+                terminate_process(proc)
+        except Exception:
+            logger.exception('failed to terminate child process %s', getattr(proc, 'pid', '?'))
         # Best-effort thread join with a short timeout; drains are daemons
         # so they won't keep the interpreter alive if join times out.
         for t in drain_threads:
