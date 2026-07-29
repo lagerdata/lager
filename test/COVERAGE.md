@@ -32,12 +32,12 @@ A job only *blocks* a merge once its status context is listed in branch ruleset 
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1114 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 1282 |
+| `unit (box)` | `test/unit/box/` | 1288 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 79 (+4 skipped) |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 91 (+1 skipped) |
-| | **Total gated** | **2837** |
+| | **Total gated** | **2843** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -437,7 +437,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | File | What it tests |
 |------|---------------|
 | `test_acroname_driver.py` | Acroname USB hub driver: device-contention regression from indefinitely cached hub handles |
-| `test_authorize_key_rate_limit.py` | SSH /authorize-key fixed-window rate limiter: per-IP counting and pruning |
+| `test_authorized_keys_sync.py` | `start_box.sh` authorized_keys marker-block rebuild (revocation, no duplicates, foreign keys preserved) and its single-instance lock |
 | `test_battery_model_authoring.py` | Battery model authoring (create/export of 2281S memory slots), against hardware-verified ground truth |
 | `test_battery_model_catalog.py` | Read-only battery model catalog; the 2281S has no `:BATT:MODel:CATalog?` query |
 | `test_binaries_store.py` | `lager.binaries.store` plus the `:9000` `/binaries/*` and `/download-file` handlers |

@@ -216,14 +216,6 @@ except Exception as e:
     logger.warning("Lock handlers not available: %s", e)
     _has_lock = False
 
-# Import SSH authorization handler
-try:
-    from lager.http_handlers.ssh_handler import register_ssh_routes
-    _has_ssh = True
-except Exception as e:
-    logger.warning("SSH handlers not available: %s", e)
-    _has_ssh = False
-
 # Import diagnose handler (0.20.0+)
 try:
     from lager.http_handlers.diagnose import register_diagnose_routes
@@ -418,14 +410,6 @@ if _has_lock:
     print("[INIT] Lock REST endpoints registered", flush=True)
 else:
     print("[INIT] Lock REST endpoints NOT available", flush=True)
-
-# Register SSH authorization REST handlers (if available)
-if _has_ssh:
-    register_ssh_routes(app)
-    logger.info("SSH authorization REST endpoints registered")
-    print("[INIT] SSH authorization REST endpoints registered", flush=True)
-else:
-    print("[INIT] SSH authorization REST endpoints NOT available", flush=True)
 
 # Register diagnose REST handlers (0.20.0+)
 if _has_diagnose:

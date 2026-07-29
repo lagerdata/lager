@@ -30,6 +30,39 @@ for arg in "$@"; do
     esac
 done
 
+# --- BEGIN single-instance guard (extracted verbatim by test/unit/box/test_authorized_keys_sync.py) ---
+# Only one start_box.sh may run at a time. Concurrent copies race each other:
+# competing `docker run`s, and (historically) multiple key-sync loops appending
+# to authorized_keys at once. Orphaned copies also accumulate across restarts,
+# so boxes have been found running ten-plus instances at once.
+#
+# The lock is an fd held for this process's lifetime and released by the kernel
+# when it exits, so a killed or crashed run can never leave a stale lock behind
+# (a PID file can). fd 9 is explicit rather than flock(1)'s own fd because the
+# background poller below inherits open descriptors — it closes fd 9 with `9>&-`
+# so a long-lived poller cannot pin the lock after this script exits.
+#
+# Failure to open the lock file is a warning, never fatal: this script's
+# standing rule is that environmental problems must not stop a box coming up.
+# Overridable only so the unit tests can lock a temp path instead of the real
+# one; production always uses the default.
+LOCK_FILE="${LAGER_START_BOX_LOCK:-/tmp/lager-start-box.lock}"
+if ( : >>"$LOCK_FILE" ) 2>/dev/null; then
+    exec 9>>"$LOCK_FILE"
+    if command -v flock >/dev/null 2>&1; then
+        if ! flock -n 9; then
+            echo "ERROR: another start_box.sh is already running (lock: $LOCK_FILE)."
+            echo "       Wait for it to finish, or stop it and retry."
+            exit 1
+        fi
+    else
+        echo "[WARNING] flock not found — cannot enforce single-instance startup."
+    fi
+else
+    echo "[WARNING] Could not open $LOCK_FILE; single-instance guard disabled."
+fi
+# --- END single-instance guard ---
+
 NO_PUBLISH_MARKER="/etc/lager/no_publish"
 if [ -n "$EXPLICIT_PUBLISH" ]; then
     NO_PUBLISH=""
@@ -182,42 +215,129 @@ for secret_file in /etc/lager/org_secrets.json /etc/lager/secret_key; do
     fi
 done
 
-# /tmp/lager-authorized-keys.d is created on demand by the container process (www-data).
-# /tmp is 1777 on the host so www-data can create the directory there and own it.
-# The poller below reads it as lagerdata (which has "other" read access).
+# --- BEGIN authorized-keys sync (extracted verbatim by test/unit/box/test_authorized_keys_sync.py) ---
+# Publish SSH keys from the key directory into ~/.ssh/authorized_keys.
+#
+# ONE key directory: /etc/lager/authorized_keys.d, durable across reboots. An
+# external key manager — e.g. a control plane completing a first-time install
+# from inside the container, before it has any SSH access to the box — drops
+# <name>.pub files there via the /etc/lager bind mount, and this loop publishes
+# them within ~5s. That is the bootstrap path and it must keep working.
+#
+# MARKER-BLOCK CONVENTION. This loop owns only the lines between the two
+# sentinels below, and rewrites that region wholesale on every pass:
+#   * deleting a .pub now actually REVOKES the key (the old append-only sync
+#     could add keys but never remove them),
+#   * a key can never be appended twice, so concurrent passes cannot duplicate
+#     lines the way the old grep-then-append race did.
+# Every line OUTSIDE the block is preserved byte-for-byte. That is what keeps
+# keys installed by `lager ssh-setup` / ssh-copy-id / cloud-init — which never
+# create a .pub here — from being revoked by this loop.
+#
+# Any other system that manages this file must claim its OWN distinct sentinel
+# pair. Two managers sharing one pair would each rebuild the other's region from
+# its own source and fight on every pass; distinct pairs is what lets them
+# coexist, since each preserves everything outside its own block.
+_AK_BEGIN="# BEGIN LAGER MANAGED KEYS (managed by start_box.sh — do not edit by hand)"
+_AK_END="# END LAGER MANAGED KEYS"
 
-# Sync SSH keys into ~/.ssh/authorized_keys.
-# Checks two directories:
-#   /etc/lager/authorized_keys.d  — durable, persists across reboots
-#   /tmp/lager-authorized-keys.d  — staging area written by the container process
-#                                    (www-data can always write to /tmp)
-# Runs as lagerdata (no sudo needed). After the first successful control-plane-driven
-# install, systemd units handle this automatically; this is the bootstrap path for
-# first install.
+# Overridable only so the unit tests can point it at a temp dir; production
+# always uses the default.
+LAGER_AUTHORIZED_KEYS_D="${LAGER_AUTHORIZED_KEYS_D:-/etc/lager/authorized_keys.d}"
+
 _sync_authorized_keys() {
     local auth_keys="$HOME/.ssh/authorized_keys"
-    mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
-    touch "$auth_keys" && chmod 600 "$auth_keys"
-    local added=0
-    for keys_dir in "/etc/lager/authorized_keys.d" "/tmp/lager-authorized-keys.d"; do
-        [ -d "$keys_dir" ] || continue
+    local keys_dir="$LAGER_AUTHORIZED_KEYS_D"
+
+    # A MISSING key directory is ambiguous — a transient /etc/lager mount or
+    # permissions problem looks identical to "no keys" — so do nothing rather
+    # than risk revoking every managed key. An existing but EMPTY directory is
+    # unambiguous and does revoke, which is the point of the rebuild.
+    [ -d "$keys_dir" ] || return 0
+
+    mkdir -p "$HOME/.ssh" 2>/dev/null && chmod 700 "$HOME/.ssh" 2>/dev/null
+    [ -f "$auth_keys" ] || { touch "$auth_keys" && chmod 600 "$auth_keys"; }
+
+    local staged tmp count
+    staged=$(mktemp) || return 0
+    tmp=$(mktemp "$HOME/.ssh/.authorized_keys.XXXXXX") || { rm -f "$staged"; return 0; }
+    chmod 600 "$tmp"
+
+    (
+        shopt -s nullglob
         for f in "$keys_dir"/*.pub; do
             [ -f "$f" ] || continue
-            local key
-            key=$(cat "$f")
-            grep -qxF "$key" "$auth_keys" || { echo "$key" >> "$auth_keys"; added=$((added + 1)); }
+            # Read line-by-line instead of `cat`: a .pub with no trailing
+            # newline (common in generated files) would otherwise run straight
+            # into the next key's line and corrupt both entries. The
+            # `|| [ -n "$ak_line" ]` clause is what emits that final
+            # newline-less line.
+            while IFS= read -r ak_line || [ -n "$ak_line" ]; do
+                case "$ak_line" in ''|\#*) continue ;; esac
+                printf '%s\n' "$ak_line"
+            done < "$f"
         done
-    done
-    [ "$added" -gt 0 ] && echo "  Synced $added SSH key(s) into authorized_keys"
+    ) | awk '!seen[$0]++' > "$staged"
+
+    # Rebuild in two parts:
+    #  1. every line outside our block, minus any line that is itself a
+    #     currently-staged key. Dropping those adopts copies that a previous
+    #     append-only sync left loose in the file, and collapses the duplicate
+    #     lines that the old race produced — without touching keys we do not
+    #     manage (they are not in the key directory, so they are not dropped).
+    #  2. our block, regenerated from the key directory.
+    # The staged keys are loaded in BEGIN rather than with the usual two-file
+    # `NR == FNR` idiom: when the key directory is empty the staged file is
+    # empty too, and `NR == FNR` then stays true for every line of the SECOND
+    # file — which swallows the whole of authorized_keys and revokes keys we do
+    # not manage. Reading it here keeps the empty case correct.
+    if ! awk -v b="$_AK_BEGIN" -v e="$_AK_END" -v staged_file="$staged" '
+            BEGIN { while ((getline line < staged_file) > 0) staged[line] = 1 }
+            $0 == b { inblock = 1; next }
+            $0 == e { inblock = 0; next }
+            inblock { next }
+            ($0 in staged) { next }
+            { print }
+        ' "$auth_keys" > "$tmp"; then
+        rm -f "$staged" "$tmp"
+        return 0
+    fi
+    if [ -s "$staged" ]; then
+        { printf '%s\n' "$_AK_BEGIN"; cat "$staged"; printf '%s\n' "$_AK_END"; } >> "$tmp"
+    fi
+
+    # No-op passes must not churn the file (this runs every 5 seconds).
+    if cmp -s "$tmp" "$auth_keys"; then
+        rm -f "$staged" "$tmp"
+        return 0
+    fi
+
+    count=$(wc -l < "$staged" | tr -d '[:space:]')
+    chmod 600 "$tmp"
+    # Rename, never rewrite in place: sshd must only ever see a complete file.
+    # Same directory, so this is atomic.
+    if mv -f "$tmp" "$auth_keys"; then
+        echo "  Rebuilt authorized_keys from $keys_dir ($count managed key(s))"
+    else
+        rm -f "$tmp"
+    fi
+    rm -f "$staged"
     return 0
 }
+# --- END authorized-keys sync ---
 
 echo "Syncing SSH authorized keys..."
 _sync_authorized_keys
 
-# Background poller: catches keys written to authorized_keys.d while the box is running
-# (e.g., during a control-plane-driven install). Exits on next start_box.sh run via
-# PID file cleanup.
+# Background poller: publishes keys written to the key directory while the box
+# is running (e.g. during a control-plane-driven first install, which waits a
+# few seconds for exactly this). The single-instance guard at the top of this
+# script means only one poller can be started; the PID file additionally stops
+# the poller left behind by a PREVIOUS run, which outlives its parent.
+#
+# `9>&-` closes the inherited single-instance lock fd — without it this
+# long-lived child would hold the lock forever and every later start_box.sh
+# would refuse to run.
 _SSH_SYNC_PID_FILE="/tmp/lager-ssh-sync.pid"
 if [ -f "$_SSH_SYNC_PID_FILE" ]; then
     _old_pid=$(cat "$_SSH_SYNC_PID_FILE" 2>/dev/null || true)
@@ -229,7 +349,7 @@ fi
         sleep 5
         _sync_authorized_keys 2>/dev/null
     done
-) > /dev/null 2>&1 &
+) 9>&- > /dev/null 2>&1 &
 echo "$!" > "$_SSH_SYNC_PID_FILE"
 disown "$!"
 echo ""
