@@ -1,7 +1,7 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 """
-Tests for the ``lager nets state`` display table (_display_table_with_state).
+Tests for the ``lager nets state`` display table.
 
 Validates that the State column shows live state strings, "–" for unknown,
 and that the table still renders instrument groupings correctly.
@@ -10,7 +10,7 @@ import io
 import unittest
 from contextlib import redirect_stdout
 
-from cli.commands.box.nets import _display_table_with_state
+from cli.commands.box.nets import _display_table
 
 _LONG_ADDR = "USB0::0x10C4::0xEA60::3e6fe522e591ef11a56e3ec5cc16735d::INSTR"
 
@@ -19,7 +19,7 @@ class DisplayTableWithStateTest(unittest.TestCase):
     def _render(self, records, state_map):
         buf = io.StringIO()
         with redirect_stdout(buf):
-            _display_table_with_state(records, state_map)
+            _display_table(records, state_map=state_map)
         return buf.getvalue()
 
     def test_state_column_shown(self):
