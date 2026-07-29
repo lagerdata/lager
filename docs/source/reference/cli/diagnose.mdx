@@ -94,8 +94,8 @@ The decision tree, in order (first match wins):
 | `TRANSIENT: device disappeared from USB` | VISA `nodev` (re-enumeration) |
 | `INSTRUMENT WEDGED` | VISA `timeout` — enumerates and opens, but won't answer `*IDN?` |
 | `NOT ENUMERATED` | the device does not show up on USB (check power/cable) |
-| `HEALTHY` | `*IDN?` returned (IDN string shown) |
-| `HEALTHY (shared session)` | the open was skipped because hw_service holds an active session |
+| `REACHABLE` | `*IDN?` returned (IDN string shown) |
+| `REACHABLE (shared session)` | the open was skipped because hw_service holds an active session |
 | `TRANSIENT: enumerated as USB-TMC but fresh open failed` | USB-TMC class but the fresh pyvisa open failed |
 | `NOT USB-TMC` | a vendor-SDK instrument (LabJack/LJM, Picoscope, Acroname, …), not pyvisa |
 | `UNCLEAR` | fallback — review the per-section output |
@@ -122,7 +122,7 @@ lager diagnose — my-lager-box → battery1
    cached_session:  False
    shared_pool:     0 entry/entries
 
-Classification: HEALTHY — IDN: KEITHLEY INSTRUMENTS,MODEL 2281S-20-6,4518305,01.08b
+Classification: REACHABLE — IDN: KEITHLEY INSTRUMENTS,MODEL 2281S-20-6,4518305,01.08b. USB, the VISA session and *IDN? are all good. This does not exercise the instrument's function (e.g. whether a supply will actually enable its output).
 ```
 
 A wedged instrument surfaces clearly so you stop trying software-only recoveries:

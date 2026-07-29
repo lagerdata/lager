@@ -92,20 +92,37 @@ class ClassifyTests(unittest.TestCase):
         self.assertIn('power', msg.lower())
         self.assertIn('cable', msg.lower())
 
-    def test_healthy_when_idn_returned(self):
+    def test_reachable_when_idn_returned(self):
         color, msg = _classify(
             usb_info={'enumerated': True, 'usbtmc_loaded': False, 'lsof': []},
             visa_info={'idn': 'KEITHLEY INSTRUMENTS,MODEL 2281S-20-6,4518305,01.08b'},
             disp_info={'cached_session': True},
         )
         self.assertEqual(color, 'green')
-        self.assertIn('HEALTHY', msg)
+        self.assertIn('REACHABLE', msg)
         self.assertIn('2281S', msg)
 
-    def test_visa_skipped_with_dispatcher_active_is_healthy(self):
+    def test_idn_success_does_not_claim_the_instrument_is_healthy(self):
+        """A green classification must not read as a verdict on the instrument.
+
+        REGRESSION: this path checks USB enumeration, a VISA session and
+        *IDN?, none of which touch the instrument's output. A supply that
+        answered *IDN? while refusing to enable its output was reported
+        HEALTHY, which is the first thing an operator reads and sent an
+        hour of debugging away from the actual fault.
+        """
+        _color, msg = _classify(
+            usb_info={'enumerated': True, 'usbtmc_loaded': False, 'lsof': []},
+            visa_info={'idn': 'KEITHLEY INSTRUMENTS,MODEL 2281S-20-6,4518305,01.08b'},
+            disp_info={'cached_session': True},
+        )
+        self.assertNotIn('HEALTHY', msg)
+        self.assertIn('does not exercise', msg.lower())
+
+    def test_visa_skipped_with_dispatcher_active_is_reachable(self):
         """When the bare pyvisa probe is skipped (hw_service already has
         a shared session) and the dispatcher reports cached drivers, that
-        means the path-of-real-use is alive — classify healthy."""
+        means the path-of-real-use is alive — classify reachable."""
         color, msg = _classify(
             usb_info={'enumerated': True, 'usbtmc_loaded': False, 'lsof': []},
             visa_info={'skipped': True, 'reason': 'hw_service has a shared session'},
@@ -113,7 +130,8 @@ class ClassifyTests(unittest.TestCase):
                        'cached_drivers': [{'device_name': 'keithley_battery', 'driver_class': 'KeithleyBattery'}]},
         )
         self.assertEqual(color, 'green')
-        self.assertIn('HEALTHY', msg)
+        self.assertIn('REACHABLE', msg)
+        self.assertNotIn('HEALTHY', msg)
         self.assertIn('shared session', msg.lower())
 
     def test_non_usb_tmc_instrument_gets_clear_message(self):

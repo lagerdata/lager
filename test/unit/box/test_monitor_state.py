@@ -154,37 +154,38 @@ class TestSupplyNetGetMonitorState:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture()
+def keithley_cls(supply_net):
+    stubs = _lager_exceptions_stub()
+    wrap = types.ModuleType("lager.instrument_wrappers.instrument_wrap")
+    wrap.InstrumentWrapKeithley = object
+    pkg = types.ModuleType("lager.instrument_wrappers")
+    stubs.update({
+        "lager.instrument_wrappers": pkg,
+        "lager.instrument_wrappers.instrument_wrap": wrap,
+    })
+    # keithley.py does `from .supply_net import ...`; loading it as a
+    # standalone module needs the relative import resolvable. Register
+    # a tiny package whose supply_net is the already-loaded module.
+    pkg_name = "ks_pkg"
+    package = types.ModuleType(pkg_name)
+    package.__path__ = [os.path.join(_REPO_ROOT, "box/lager/power/supply")]
+    sys.modules[pkg_name] = package
+    sys.modules[pkg_name + ".supply_net"] = supply_net
+    for stub_name, stub in stubs.items():
+        sys.modules.setdefault(stub_name, stub)
+    path = os.path.join(_REPO_ROOT, "box/lager/power/supply/keithley.py")
+    spec = importlib.util.spec_from_file_location(pkg_name + ".keithley", path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[pkg_name + ".keithley"] = mod
+    spec.loader.exec_module(mod)
+    return mod.Keithley2281S
+
+
 class TestKeithleyMonitorStateIsNonIntrusive:
     """The override must never issue mode-enforcing queries: in battery
     mode those fail at VISA-timeout speed and blow the Device proxy's
     HTTP budget (the original supply-TUI failure)."""
-
-    @pytest.fixture()
-    def keithley_cls(self, supply_net):
-        stubs = _lager_exceptions_stub()
-        wrap = types.ModuleType("lager.instrument_wrappers.instrument_wrap")
-        wrap.InstrumentWrapKeithley = object
-        pkg = types.ModuleType("lager.instrument_wrappers")
-        stubs.update({
-            "lager.instrument_wrappers": pkg,
-            "lager.instrument_wrappers.instrument_wrap": wrap,
-        })
-        # keithley.py does `from .supply_net import ...`; loading it as a
-        # standalone module needs the relative import resolvable. Register
-        # a tiny package whose supply_net is the already-loaded module.
-        pkg_name = "ks_pkg"
-        package = types.ModuleType(pkg_name)
-        package.__path__ = [os.path.join(_REPO_ROOT, "box/lager/power/supply")]
-        sys.modules[pkg_name] = package
-        sys.modules[pkg_name + ".supply_net"] = supply_net
-        for stub_name, stub in stubs.items():
-            sys.modules.setdefault(stub_name, stub)
-        path = os.path.join(_REPO_ROOT, "box/lager/power/supply/keithley.py")
-        spec = importlib.util.spec_from_file_location(pkg_name + ".keithley", path)
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[pkg_name + ".keithley"] = mod
-        spec.loader.exec_module(mod)
-        return mod.Keithley2281S
 
     def test_uses_only_no_mode_queries(self, keithley_cls):
         drv = object.__new__(keithley_cls)
@@ -222,7 +223,15 @@ class TestKeithleyMonitorStateIsNonIntrusive:
         # Every query went through the no-mode path.
         assert all(q.startswith(":") for q in queries)
 
-    def test_disabled_output_uses_setpoints(self, keithley_cls):
+    def test_disabled_output_reports_no_measurement(self, keithley_cls):
+        """A disabled output has nothing to measure, so voltage/current/power
+        are None -- which the state handler renders as "n/a".
+
+        REGRESSION: these used to fall back to the setpoints, so
+        `lager supply <net> state` printed "Set: 5.0V/1.0A, Measured:
+        5.0V/1.0A" for an output that was off. That is physically
+        impossible, and it reads as confirmation the supply is working.
+        """
         drv = object.__new__(keithley_cls)
         drv._safe_query_no_mode = lambda cmd, default="n/a": {
             ":OUTP?": "0",
@@ -237,9 +246,116 @@ class TestKeithleyMonitorStateIsNonIntrusive:
 
         state = drv.get_monitor_state()
         assert state["enabled"] is False
-        assert state["voltage"] == 5.0
+        assert state["voltage"] is None
+        assert state["current"] is None
+        assert state["power"] is None
         assert state["mode"] == "CV"
-        assert state["power"] == pytest.approx(5.0)
+        # The setpoints are still reported -- they are known, unlike the
+        # measurements. Only the measured fields go None.
+        assert state["voltage_set"] == pytest.approx(5.0)
+        assert state["current_set"] == pytest.approx(1.0)
+
+    def test_failed_measurement_query_reports_none_not_setpoint(self, keithley_cls):
+        """A failed :MEAS: query must not render as a reading.
+
+        REGRESSION: the default was the setpoint, so a failed measurement was
+        indistinguishable from the instrument genuinely measuring exactly its
+        setpoint -- the sentinel was inside the value domain.
+        """
+        drv = object.__new__(keithley_cls)
+
+        def no_mode(cmd, default="n/a"):
+            # Everything answers except the two measurement queries, which
+            # fail and therefore return whatever default the caller passed.
+            return {
+                ":OUTP?": "1",
+                ":SOUR1:VOLT?": "5.0",
+                ":SOUR1:CURR?": "1.0",
+                ":SOUR1:CURR:PROT?": "2.0",
+                ":SOUR1:VOLT:PROT?": "21.0",
+                ":OUTP:PROT:TRIP?": "NONE",
+            }.get(cmd, default)
+
+        drv._safe_query_no_mode = no_mode
+        drv._determine_operating_mode_no_mode = lambda: "CV"
+
+        state = drv.get_monitor_state()
+        assert state["enabled"] is True
+        assert state["voltage"] is None
+        assert state["current"] is None
+        assert state["power"] is None
+        # "NONE" is not a trip.
+        assert state["ovp_tripped"] is False
+        assert state["ocp_tripped"] is False
+
+
+# ---------------------------------------------------------------------------
+# Keithley 2281S enable(): the failure message must match the instrument
+# ---------------------------------------------------------------------------
+
+
+class TestKeithleyEnableFailureMessage:
+    """When the output will not come on, the error has to say what the
+    instrument actually reported.
+
+    ``:OUTP:PROT:TRIP?`` answers the literal string "NONE" when nothing has
+    tripped. Testing it for truthiness made every enable failure claim a
+    protection trip -- naming a trip the instrument explicitly denied, and
+    making the honest "no protection trip detected" branch unreachable.
+    """
+
+    def _driver(self, keithley_cls, trip_reply):
+        """A driver whose output refuses to enable, with a given trip reply."""
+        drv = object.__new__(keithley_cls)
+        drv._ensure_ps_mode = lambda *a, **k: None
+        drv._write = lambda *a, **k: None
+        drv.output_is_enabled = lambda *a, **k: False
+        drv._get_vset = lambda *a, **k: "5.0"
+        drv._determine_operating_mode_no_mode = lambda: "CV"
+        drv._safe_query = lambda cmd, default="n/a": {
+            ":SOUR1:VOLT:PROT?": "20.0",
+        }.get(cmd, default)
+        drv._safe_query_no_mode = lambda cmd, default="n/a": {
+            ":OUTP:PROT:TRIP?": trip_reply,
+        }.get(cmd, default)
+        return drv
+
+    def test_no_trip_is_not_reported_as_a_trip(self, keithley_cls, supply_net):
+        """REGRESSION: "NONE" is truthy, so this reported "Protection trip
+        detected (NONE)" -- an hour of clearing a trip that never existed."""
+        drv = self._driver(keithley_cls, "NONE")
+
+        with pytest.raises(Exception) as excinfo:
+            drv.enable()
+
+        msg = str(excinfo.value)
+        assert "no protection trip detected" in msg
+        assert "NONE" not in msg
+        assert "Protection trip detected" not in msg
+
+    @pytest.mark.parametrize("reply", ["NONE", "none", " None ", ""])
+    def test_non_trip_replies_all_report_no_trip(self, keithley_cls, reply):
+        """Empty means the query failed; "NONE" in any casing means no trip.
+        Neither is a protection trip."""
+        drv = self._driver(keithley_cls, reply)
+
+        with pytest.raises(Exception) as excinfo:
+            drv.enable()
+
+        assert "no protection trip detected" in str(excinfo.value)
+
+    @pytest.mark.parametrize("trip", ["OVP", "OCP"])
+    def test_real_trip_is_still_named(self, keithley_cls, trip):
+        """The accurate branch must keep working -- a real trip is actionable
+        and the operator needs to know which one."""
+        drv = self._driver(keithley_cls, trip)
+
+        with pytest.raises(Exception) as excinfo:
+            drv.enable()
+
+        msg = str(excinfo.value)
+        assert "Protection trip detected" in msg
+        assert trip in msg
 
 
 # ---------------------------------------------------------------------------

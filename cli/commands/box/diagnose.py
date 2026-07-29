@@ -164,16 +164,27 @@ def _classify(usb_info: dict, visa_info: dict, disp_info: dict) -> tuple[str, st
                 'NOT ENUMERATED: device does not show up on USB. Check power, cable, '
                 'and (if behind an Acroname hub) the upstream port.')
 
+    # These two say REACHABLE, not HEALTHY. Everything this command probes --
+    # USB enumeration, a VISA session, *IDN? -- tests the path to the
+    # instrument, never what the instrument does when asked to work. A supply
+    # that enumerates, answers *IDN?, and then refuses to enable its output
+    # lands here; calling that "healthy" is what the operator reads first, and
+    # it sends them looking anywhere but at the instrument.
     if visa_info.get('idn'):
-        return ('green', f'HEALTHY — IDN: {visa_info["idn"]}')
+        return ('green',
+                f'REACHABLE — IDN: {visa_info["idn"]}. '
+                'USB, the VISA session and *IDN? are all good. This does not '
+                'exercise the instrument\'s function (e.g. whether a supply '
+                'will actually enable its output).')
 
     if visa_info.get('skipped'):
         # hw_service holds a shared session, so the visa probe was skipped.
         # Use the dispatcher info to judge instead.
         if disp_info.get('cached_session') and disp_info.get('cached_drivers'):
             return ('green',
-                    'HEALTHY (hw_service has an active shared session for this address; '
-                    'fresh pyvisa probe skipped to avoid colliding with it).')
+                    'REACHABLE (hw_service has an active shared session for this address; '
+                    'fresh pyvisa probe skipped to avoid colliding with it). '
+                    'This does not exercise the instrument\'s function.')
 
     # Probe couldn't open the device. Two distinct cases here that the
     # endpoint's `is_usbtmc` flag disambiguates:

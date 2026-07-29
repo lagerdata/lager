@@ -91,8 +91,22 @@ class FakeSupply:
         self._record('get_channel_current', source=source)
         return 1.0
 
+    def get_monitor_state(self, channel=None):
+        self._record('get_monitor_state', channel=channel)
+        return dict(self.monitor_state)
+
     def named(self, name):
         return [c for c in self.calls if c[0] == name]
+
+    # Default monitor state: output off, so nothing is measurable.
+    monitor_state = {
+        'voltage': None, 'current': None, 'power': None,
+        'enabled': False, 'mode': 'CV',
+        'voltage_set': 5.0, 'current_set': 1.0,
+        'voltage_max': 32.0, 'current_max': 5.0,
+        'ocp_limit': 2.0, 'ocp_tripped': False,
+        'ovp_limit': 6.0, 'ovp_tripped': False,
+    }
 
 
 class SupplyCommandHandlerTest(unittest.TestCase):
@@ -193,6 +207,37 @@ class SupplyCommandHandlerTest(unittest.TestCase):
         (_, args, kwargs), = self.supply.named('clear_ovp')
         self.assertEqual(args, ())
         self.assertEqual(kwargs, {})
+
+    # ---- state: a failed or absent measurement must read as n/a --------
+
+    def test_state_renders_missing_measurements_as_na(self):
+        """REGRESSION: with the output off there is nothing to measure, so the
+        driver reports None. The message must say "n/a", not echo the
+        setpoints back as if they had been measured -- `Set: 5.0V/1.0A,
+        Measured: 5.0V/1.0A` for a disabled output is physically impossible
+        and reads as confirmation the supply is working."""
+        resp = self._post('state')
+        self.assertEqual(resp.status_code, 200)
+        msg = resp.get_json()['message']
+
+        self.assertIn('Measured: n/a/n/a', msg)
+        # Setpoints are known and still reported.
+        self.assertIn('Set: 5.0V/1.0A', msg)
+        self.assertIn('OFF', msg)
+
+    def test_state_renders_real_measurements_when_present(self):
+        """The n/a path must not swallow genuine readings."""
+        self.supply.monitor_state = dict(
+            FakeSupply.monitor_state,
+            enabled=True, voltage=3.29, current=0.49, power=1.61,
+        )
+        resp = self._post('state')
+        self.assertEqual(resp.status_code, 200)
+        msg = resp.get_json()['message']
+
+        self.assertIn('Measured: 3.29V/0.49A', msg)
+        self.assertIn('ON', msg)
+        self.assertNotIn('n/a', msg)
 
     # ---- guardrails ---------------------------------------------------
 
