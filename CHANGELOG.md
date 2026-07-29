@@ -24,18 +24,26 @@ All notable changes to the Lager platform are documented here. For detailed rele
   `lager box-config apt add dfu-util`. Consumed by `lager-rs`'s new
   `dfu()` handle.
 
-### Fixed
+### Changed
 
-- **USB hub-port commands regressed from ~80ms to ~2.1s per op on 0.32.1.**
-  The 0.31.2 contention fix (open/operate/close per call so no process pins
-  the hub's exclusive USB claim) made every Acroname operation pay a full
-  BrainStem `discoverAndConnect` USB discovery scan — up to three when the
-  class-order fallback kicked in. The drivers now cache discovery
-  *metadata* per physical hub — the hub's link Spec and winning hub class
-  (Acroname), the resolved HID device path (YKUSH) — and connect directly
-  from it, skipping the scan. Connections themselves are still never
-  cached: the never-pin-the-hub invariant is untouched, and a stale cache
-  entry (hub re-enumerated) falls back to full discovery automatically.
+- **USB hub drivers now cache discovery metadata per physical hub.** The
+  0.31.2 contention fix (open/operate/close per call so no process pins the
+  hub's exclusive USB claim) made every Acroname operation re-run BrainStem
+  discovery, and up to three scans when the class-order fallback ran. The
+  drivers now cache discovery *metadata* — the hub's link Spec and winning
+  hub class (Acroname), the resolved HID device path (YKUSH) — and connect
+  directly from it. Connections themselves are still never cached: the
+  never-pin-the-hub invariant is untouched, and a stale cache entry (hub
+  re-enumerated) falls back to full discovery automatically.
+
+  This removes redundant discovery scans but does not restore the ~80ms
+  hub-port timings seen before 0.32.1. Measured on a USBHub3p, one hub-port
+  operation costs ~2.1s: ~1.8s is the per-operation `disconnect()` required
+  to leave the hub unclaimed, ~0.3s is discovery, and the port read itself
+  is ~2ms. Where the hub class is identified correctly on the first
+  attempt, the cache saves no measurable time. Reducing the disconnect cost
+  is tracked separately.
+
   Also fixed the `usb.py` handler docstrings that still claimed the drivers
   cache hardware handles.
 
