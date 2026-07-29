@@ -321,7 +321,7 @@ fn handle_command_internal(
         },
     };
 
-    Ok(Message::Text(serde_json::to_string(&response)?))
+    Ok(Message::text(serde_json::to_string(&response)?))
 }
 
 pub async fn handle_scope_streaming(
@@ -382,12 +382,12 @@ pub async fn handle_outgoing_messages(
             let message = match &websocket_message {
                 WebSocketMessage::Response(response) => {
                     println!("[DEBUG handle_outgoing_messages] Sending Response");
-                    Message::Text(serde_json::to_string(&response)?)
+                    Message::text(serde_json::to_string(&response)?)
                 }
                 WebSocketMessage::TriggeredData(data) => {
                     println!("[DEBUG handle_outgoing_messages] Sending TriggeredData with {} samples",
                         data.samples.len());
-                    Message::Text(serde_json::to_string(&websocket_message)?)
+                    Message::text(serde_json::to_string(&websocket_message)?)
                 }
                 WebSocketMessage::Command(_) => {
                     // Commands shouldn't be sent back to client, skip
