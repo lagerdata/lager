@@ -27,6 +27,7 @@ from ...core.net_helpers import (
     box_command_error,
     require_netname,
     resolve_box,
+    resolve_box_locked,
     validate_net,
     validate_net_exists,
     display_nets,
@@ -173,7 +174,7 @@ supply.net_examples = [
 @click.option("--yes", is_flag=True, default=False, help="Confirm the action without prompting")
 def voltage(ctx, box, value, ocp, ovp, yes):
     """Set (or read) voltage in volts (V)"""
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'supply')
     netname = require_netname(ctx, "supply")
 
     # Validate net exists BEFORE prompting for confirmation
@@ -210,7 +211,7 @@ def voltage(ctx, box, value, ocp, ovp, yes):
 @click.option("--yes", is_flag=True, default=False, help="Confirm the action without prompting")
 def current(ctx, box, value, ocp, ovp, yes):
     """Set (or read) current in amps (A)"""
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'supply')
     netname = require_netname(ctx, "supply")
 
     # Validate net exists BEFORE prompting for confirmation
@@ -247,7 +248,7 @@ def disable(ctx, box, yes):
     if not yes and not click.confirm("Disable Net?", default=False):
         click.echo("Aborting")
         return
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'supply')
     netname = require_netname(ctx, "supply")
     _run_backend(ctx, resolved_box, action="disable", netname=netname)
 
@@ -261,7 +262,7 @@ def enable(ctx, box, yes):
     if not yes and not click.confirm("Enable Net?", default=False):
         click.echo("Aborting")
         return
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'supply')
     netname = require_netname(ctx, "supply")
     _run_backend(ctx, resolved_box, action="enable", netname=netname)
 
@@ -271,7 +272,7 @@ def enable(ctx, box, yes):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def state(ctx, box):
     """Read power state"""
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'supply')
     netname = require_netname(ctx, "supply")
     _run_backend(ctx, resolved_box, action="state", netname=netname)
 
@@ -283,7 +284,7 @@ def set_mode(ctx, box):
     """
         Set power supply mode
     """
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'supply')
     netname = require_netname(ctx, "supply")
     _run_backend(ctx, resolved_box, action="set_mode", netname=netname)
 
@@ -293,7 +294,7 @@ def set_mode(ctx, box):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def clear_ovp(ctx, box):
     """Clear over-voltage protection trip condition"""
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'supply')
     netname = require_netname(ctx, "supply")
     _run_backend(ctx, resolved_box, action="clear_ovp", netname=netname)
 
@@ -303,7 +304,7 @@ def clear_ovp(ctx, box):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def clear_ocp(ctx, box):
     """Clear over-current protection trip condition"""
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'supply')
     netname = require_netname(ctx, "supply")
     _run_backend(ctx, resolved_box, action="clear_ocp", netname=netname)
 
@@ -313,7 +314,7 @@ def clear_ocp(ctx, box):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def tui(ctx, box):
     """Launch interactive supply control TUI"""
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'supply')
     netname = require_netname(ctx, "supply")
 
     if not validate_net(ctx, box, netname, SUPPLY_ROLE):

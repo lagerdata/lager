@@ -17,7 +17,7 @@ from texttable import Texttable
 
 # Import consolidated helpers from cli.core.net_helpers
 from ...core.net_group import NetCommand, HiddenArgument
-from ...core.net_helpers import resolve_box
+from ...core.net_helpers import resolve_box, resolve_box_locked
 from ...context import get_default_net
 from ...errors import net_not_specified_error
 
@@ -40,8 +40,8 @@ def _resolve_box_with_name(ctx, box):
     """
     from ...box_storage import get_box_name_by_ip
 
-    # Use the shared resolve_box helper
-    resolved_ip = resolve_box(ctx, box)
+    # Use the shared resolve_box_locked helper (auto-acquires ephemeral lock)
+    resolved_ip = resolve_box_locked(ctx, box, 'uart')
 
     # Try to find box name for username lookup
     # If box was provided and is not an IP, it's the box name

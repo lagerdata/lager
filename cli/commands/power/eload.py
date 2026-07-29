@@ -23,6 +23,7 @@ from ...core.net_group import NetGroup
 from ...core.net_helpers import (
     require_netname,
     resolve_box,
+    resolve_box_locked,
     display_nets,
     post_net_command,
     NET_ROLES,
@@ -188,7 +189,7 @@ def _mode_options(func):
 def cc(ctx, value, box, as_json):
     """Set (or read) constant current mode in amps (A)"""
     _validate_eload_value(ctx, "cc", value)
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'eload')
     netname = require_netname(ctx, "eload")
     _run_eload(ctx, resolved_box, netname, "cc", value, as_json)
 
@@ -200,7 +201,7 @@ def cc(ctx, value, box, as_json):
 def cv(ctx, value, box, as_json):
     """Set (or read) constant voltage mode in volts (V)"""
     _validate_eload_value(ctx, "cv", value)
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'eload')
     netname = require_netname(ctx, "eload")
     _run_eload(ctx, resolved_box, netname, "cv", value, as_json)
 
@@ -212,7 +213,7 @@ def cv(ctx, value, box, as_json):
 def cr(ctx, value, box, as_json):
     """Set (or read) constant resistance mode in ohms"""
     _validate_eload_value(ctx, "cr", value)
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'eload')
     netname = require_netname(ctx, "eload")
     _run_eload(ctx, resolved_box, netname, "cr", value, as_json)
 
@@ -224,7 +225,7 @@ def cr(ctx, value, box, as_json):
 def cp(ctx, value, box, as_json):
     """Set (or read) constant power mode in watts (W)"""
     _validate_eload_value(ctx, "cp", value)
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'eload')
     netname = require_netname(ctx, "eload")
     _run_eload(ctx, resolved_box, netname, "cp", value, as_json)
 
@@ -236,7 +237,7 @@ def cp(ctx, value, box, as_json):
 @click.pass_context
 def state(ctx, box, as_json):
     """Display electronic load state"""
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'eload')
     netname = require_netname(ctx, "eload")
     result = post_net_command(ctx, resolved_box, netname, "state",
                               role="eload", quiet=True)
