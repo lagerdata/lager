@@ -60,10 +60,23 @@ def _release_hardware_service_direct_usb_claims():
     try:
         import requests
         from lager.constants import HARDWARE_SERVICE_PORT
-        requests.post(
+        resp = requests.post(
             f'http://127.0.0.1:{HARDWARE_SERVICE_PORT}/cache/release_direct_usb',
             timeout=5.0,
         )
+        # requests only raises on transport failures, so an HTTP 500 from the
+        # release endpoint would otherwise pass for success and the script
+        # would be spawned into a still-claimed device with nothing logged.
+        if resp.status_code != 200:
+            logger.warning(
+                "Direct USB claim release returned HTTP %s; hardware_service may "
+                "still hold LabJack/FT232H/Aardvark/Joulescope/PPK2 claims and "
+                "this script may fail with an exclusive-claim error "
+                "(LJM 1230 / libusb Resource busy). Body: %.200s",
+                resp.status_code, resp.text,
+            )
+        else:
+            logger.debug("Released direct USB claims: %.200s", resp.text)
     except Exception as e:
         # Surface this: if the handoff fails, the user's script is likely to
         # hit an opaque exclusive-claim error (LJM 1230 / libusb Resource

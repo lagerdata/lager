@@ -13,6 +13,7 @@ meaningfully unit-tested with mocks.
 
 import json
 import os
+import signal
 import sys
 import time
 import types
@@ -227,6 +228,121 @@ class CrossProcessContentionTests(unittest.TestCase):
             if holder.is_alive():
                 holder.terminate()
                 holder.join()
+
+
+class HolderIdentityInErrorTests(unittest.TestCase):
+    """The timeout error must say WHO holds the lock.
+
+    Two situations reach the timeout, and they need different remedies, so
+    "another process" is not a useful thing to tell an operator:
+
+      1. The recorded holder is alive        -> kill that pid.
+      2. The recorded holder has exited but a descendant kept the inherited
+         fd -> hunt the orphan; the pid in the message is already gone.
+
+    Note there is deliberately no stale-lock *steal*. The kernel releases a
+    flock when the last fd on the open file description closes, so a holder
+    that merely died has already freed it and the poll loop would have won.
+    Case 2 is the only way to see a dead recorded pid here, and there the
+    lock is genuinely still held by a live descendant -- forcing it would put
+    two processes on one USB instrument.
+    """
+
+    def setUp(self):
+        self.subdir = f'lager_test_holder_{os.getpid()}_{id(self)}'
+        self.address = 'USB0::0xDEAD::0xBEEF::HOLDER::INSTR'
+        self.lock_dir = os.path.join(tempfile.gettempdir(), self.subdir)
+        self.kids = []
+
+    def tearDown(self):
+        for pid in self.kids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+                os.waitpid(pid, 0)
+            except (ProcessLookupError, ChildProcessError, OSError):
+                pass
+        if os.path.isdir(self.lock_dir):
+            for f in os.listdir(self.lock_dir):
+                try:
+                    os.unlink(os.path.join(self.lock_dir, f))
+                except OSError:
+                    pass
+            try:
+                os.rmdir(self.lock_dir)
+            except OSError:
+                pass
+
+    def test_error_names_a_live_holder_pid(self):
+        holder = multiprocessing.Process(
+            target=_hold_lock_for_seconds,
+            args=(self.subdir, self.address, 5.0, os.path.join(
+                tempfile.gettempdir(), f'ready_{self.subdir}')),
+        )
+        holder.start()
+        try:
+            ready = os.path.join(tempfile.gettempdir(), f'ready_{self.subdir}')
+            deadline = time.time() + 5.0
+            while not os.path.exists(ready) and time.time() < deadline:
+                time.sleep(0.02)
+
+            contender = DeviceLockManager(lock_subdir=self.subdir)
+            with self.assertRaises(DeviceLockError) as ctx:
+                contender.acquire_lock(self.address, timeout=0.5)
+
+            msg = str(ctx.exception)
+            self.assertIn(str(holder.pid), msg,
+                          f'error should name the holding pid: {msg}')
+            self.assertIn('still running', msg)
+        finally:
+            holder.terminate()
+            holder.join(timeout=5.0)
+            try:
+                os.unlink(os.path.join(tempfile.gettempdir(), f'ready_{self.subdir}'))
+            except OSError:
+                pass
+
+    def test_error_identifies_an_orphaned_descendant(self):
+        """REGRESSION: this is the shape a cancelled `lager python` leaves.
+
+        The recorded holder exits, but a descendant it forked still has the
+        inherited lock fd, so the flock outlives the pid in the file. The old
+        message said only "another process", sending the operator to lsof with
+        no idea the named pid was already gone.
+        """
+        # Child acquires, forks a grandchild that keeps the fd, then exits.
+        pid = os.fork()
+        if pid == 0:  # pragma: no cover - child process
+            os.close(0)
+            os.close(1)
+            os.close(2)
+            try:
+                mgr = DeviceLockManager(lock_subdir=self.subdir)
+                mgr.acquire_lock(self.address, timeout=1.0)
+                if os.fork() == 0:
+                    time.sleep(10)  # grandchild holds the inherited fd
+                    os._exit(0)
+            finally:
+                os._exit(0)
+
+        os.waitpid(pid, 0)  # recorded holder is now dead
+        self.kids.append(pid)
+        time.sleep(0.3)
+
+        contender = DeviceLockManager(lock_subdir=self.subdir)
+        with self.assertRaises(DeviceLockError) as ctx:
+            contender.acquire_lock(self.address, timeout=0.5)
+
+        msg = str(ctx.exception)
+        self.assertIn('orphaned child', msg,
+                      f'error should identify the orphan case: {msg}')
+        self.assertIn(str(pid), msg,
+                      f'error should name the exited pid so it can be traced: {msg}')
+
+    def test_uncontended_acquire_is_unaffected(self):
+        """The diagnostics must not cost anything on the happy path."""
+        mgr = DeviceLockManager(lock_subdir=self.subdir)
+        self.assertTrue(mgr.acquire_lock(self.address, timeout=0.5))
+        mgr.release_lock(self.address)
 
 
 if __name__ == '__main__':
