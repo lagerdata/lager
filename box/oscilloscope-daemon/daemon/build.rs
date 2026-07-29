@@ -32,8 +32,20 @@ fn main() {
         .generate()
         .expect("Unable to generate bindings");
 
+    // This crate is edition 2024, which rejects a safe `extern "C" {` block.
+    //
+    // bindgen 0.70 and earlier emit the safe form, so it has to be patched to
+    // `unsafe extern "C" {`. bindgen 0.71+ emits the unsafe form already, and
+    // an unconditional prepend turned that into `unsafe unsafe extern "C" {` --
+    // one parse error, which (because ps2000.rs glob-imports the generated
+    // module) evaporated all 43 bindgen symbols and produced ~70 errors.
+    //
+    // Normalising to the safe form first makes the substitution idempotent, so
+    // this works on either generation and a future bindgen bump cannot
+    // reintroduce the doubling.
     let raw = bindings
         .to_string()
+        .replace("unsafe extern \"C\" {", "extern \"C\" {")
         .replace("extern \"C\" {", "unsafe extern \"C\" {");
 
     let out_path = Path::new(&env::var("OUT_DIR").unwrap()).join("ps2000_bindings.rs");

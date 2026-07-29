@@ -294,5 +294,5 @@ pub fn handle_command_internal(
         },
     };
 
-    Ok(Message::Text(serde_json::to_string(&response)?))
+    Ok(Message::text(serde_json::to_string(&response)?))
 }
