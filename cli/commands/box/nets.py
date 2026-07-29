@@ -2096,6 +2096,135 @@ def describe_cmd(
     click.secho(f"Updated metadata for net '{name}' on box {resolved_box}.", fg="green")
 
 
+@nets.command("state", help="Show live hardware state for all saved nets")
+@click.option("--box", help="Lagerbox name or IP")
+@click.option("--json", "as_json", is_flag=True, help="Output as raw JSON")
+@click.pass_context
+def state_cmd(ctx: click.Context, box: str | None, as_json: bool) -> None:
+    """Query every net's current hardware state and display it alongside
+    the standard net listing.
+
+    Each instrument is probed in parallel on the box; the result is a brief
+    one-line summary per net (e.g. ``enabled``, ``HIGH (1)``,
+    ``CH1/on/3.30V/0.12A``).  Roles without a live probe show ``–``.
+    """
+    resolved_box = _resolve_box(ctx, box)
+    records = _fetch_saved_nets(ctx, resolved_box)
+
+    # Fetch live state from /nets/state (box-side parallel probes).
+    state_map: dict[str, str | None] = {}
+    try:
+        state_list = _box_request(ctx, resolved_box, "GET", "/nets/state")
+        if isinstance(state_list, list):
+            for entry in state_list:
+                state_map[entry.get("name", "")] = entry.get("state")
+    except SystemExit:
+        # Older box without /nets/state — fall through with empty map.
+        pass
+
+    if as_json:
+        merged = []
+        for rec in records:
+            merged.append({
+                **rec,
+                "live_state": state_map.get(rec.get("name", "")),
+            })
+        click.echo(json.dumps(merged, indent=2))
+        return
+
+    _display_table_with_state(records, state_map)
+
+
+def _display_table_with_state(records, state_map: dict[str, str | None]):
+    """Render the grouped net table with an extra State column."""
+    if not records:
+        click.secho("No saved nets found.", fg="yellow")
+        return
+
+    by_instrument: dict[str, list[dict]] = {}
+    for rec in records:
+        instrument = rec.get("instrument", "") or ""
+        address = rec.get("address", "") or ""
+        key = f"{instrument}|{address}"
+        by_instrument.setdefault(key, []).append(rec)
+
+    has_any_script = any(rec.get("jlink_script") for rec in records)
+    has_any_openocd = any(rec.get("openocd_config") for rec in records)
+
+    headers = ["Name", "Net Type", "Channel", "State"]
+    if has_any_script:
+        headers.append("Script")
+    if has_any_openocd:
+        headers.append("OpenOCD")
+
+    all_rows = []
+    grouped_rows: list[tuple[str, list[list[str]]]] = []
+
+    for key in sorted(by_instrument.keys(), key=_natural_sort_key):
+        instrument, addr = key.split("|", 1)
+        display_name = instrument.replace("_", " ")
+        if addr and addr != "NA":
+            group_label = (display_name, f" [{addr}]")
+        else:
+            group_label = (display_name, "")
+
+        nets = sorted(
+            by_instrument[key],
+            key=lambda r: (r.get("role", ""), _natural_sort_key(r.get("name", ""))),
+        )
+        rows = []
+        for rec in nets:
+            brief = state_map.get(rec.get("name", ""))
+            state_str = brief if brief else "–"
+            row = [
+                rec.get("name", ""),
+                rec.get("role", ""),
+                _channel_display(rec),
+                state_str,
+            ]
+            if has_any_script:
+                row.append("yes" if rec.get("jlink_script") else "")
+            if has_any_openocd:
+                row.append("yes" if rec.get("openocd_config") else "")
+            rows.append(row)
+        all_rows.extend(rows)
+        grouped_rows.append((group_label, rows))
+
+    term_w = shutil.get_terminal_size((120, 24)).columns
+    min_w = [8, 10, 7, 5]
+    if has_any_script:
+        min_w.append(6)
+    if has_any_openocd:
+        min_w.append(7)
+    col_w = [
+        max(min_w[i], len(headers[i]), max(len(str(r[i])) for r in all_rows))
+        for i in range(len(headers))
+    ]
+
+    def fmt(row):
+        return "  ".join(f"{row[i]:<{col_w[i]}}" for i in range(len(col_w)))
+
+    total_width = sum(col_w) + 2 * (len(col_w) - 1)
+    separator_width = min(total_width, term_w)
+
+    indent = "    "
+    click.echo(indent + fmt(headers))
+    click.echo("=" * (separator_width + len(indent)))
+
+    for i, (group_label, rows) in enumerate(grouped_rows):
+        if i > 0:
+            click.echo()
+        label_bold, label_rest = group_label
+        click.secho(label_bold, bold=True, nl=False)
+        click.echo(label_rest)
+        for j, row in enumerate(rows):
+            is_last = j == len(rows) - 1
+            prefix = "└── " if is_last else "├── "
+            click.echo(prefix, nl=False)
+            click.secho(f"{row[0]:<{col_w[0]}}", bold=True, nl=False)
+            click.echo("  " + "  ".join(f"{row[i]:<{col_w[i]}}" for i in range(1, len(col_w))))
+
+
 @nets.command("show", help="Show full details of a saved net, including metadata")
 @click.argument("name")
 @click.option("--box", help="Lagerbox name or IP")
