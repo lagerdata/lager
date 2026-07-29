@@ -284,6 +284,58 @@ def test_every_json_method_attaches_the_bearer(monkeypatch, call):
     assert rec.auth_on(0) == f'Bearer {token}'
 
 
+# ---------------------------------------------------------------------------
+# /debug/status must carry the net (#162)
+# ---------------------------------------------------------------------------
+
+def test_get_debug_status_sends_the_net(monkeypatch):
+    """REGRESSION: this posted `{}`.
+
+    The box resolves the probe serial from the net and checks that probe's
+    pidfile. With no net it fell back to the legacy un-suffixed pidfile, which
+    a serial-aware box never writes -- so a running gdbserver reported
+    `connected: False`. `flash` believed it, erased and reconnected, killed the
+    live session, and wedged the probe for every later command on that net.
+    """
+    rec = install(monkeypatch, Recorder(ok()))
+    net = {'name': 'debug1', 'instrument': 'jlink', 'address': 'USB::123456'}
+
+    client().get_debug_status(net)
+
+    body = json.loads(rec.sent[0].body)
+    assert body['net'] == net, f'/debug/status must carry the net, got {body!r}'
+
+
+def test_get_debug_status_without_a_net_still_sends_a_dict(monkeypatch):
+    """The box does `data.get('net') or {}`, so None must not reach the wire
+    as a null that later indexing would trip over."""
+    rec = install(monkeypatch, Recorder(ok()))
+
+    client().get_debug_status()
+
+    body = json.loads(rec.sent[0].body)
+    assert body['net'] == {}
+
+
+def test_flash_sends_the_jlink_script(monkeypatch, tmp_path):
+    """REGRESSION: `flash` sent no script.
+
+    The box's last-resort resolution is a single shared temp file written by
+    whichever net connected most recently, so flashing net A could silently
+    run net B's script.
+    """
+    rec = install(monkeypatch, Recorder(ok()))
+    fw = tmp_path / 'fw.hex'
+    fw.write_bytes(b':00000001FF\n')
+
+    client().flash(fw, file_type='hex', net={'name': 'debug1'},
+                   jlink_script='YmFzZTY0')
+
+    body = json.loads(rec.sent[0].body)
+    assert body['jlink_script'] == 'YmFzZTY0'
+    assert body['net'] == {'name': 'debug1'}
+
+
 def test_read_memory_attaches_bearer_and_decodes(monkeypatch):
     token = gated_session()
     rec = install(monkeypatch, Recorder(ok(b'{"data": "deadbeef"}')))
