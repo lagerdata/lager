@@ -216,7 +216,8 @@ cargo build --release
 ```
 test/
 ├── framework/              # harness.sh, colors.sh, test_utils.py, fixtures.py
-├── assets/                 # Test firmware (*.elf, *.hex) and data files
+├── assets/                 # Test data, and a placeholder for firmware
+│                           # (binaries are excluded; see assets/firmware/README.md)
 │
 ├── unit/                   # Unit tests - no hardware
 │   ├── cli/                # CLI unit tests
