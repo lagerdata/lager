@@ -53,6 +53,8 @@ from lager.debug.probes import (
     rtt_port_for_slot,
     openocd_telnet_port_for_slot,
     openocd_tcl_port_for_slot,
+    jlink_gdbserver_pidfile,
+    openocd_pidfile,
     BACKEND_JLINK,
     BACKEND_OPENOCD,
 )
@@ -171,6 +173,34 @@ def _gdbserver_running_for_net(net, serial):
         return (st['running'], st.get('pid'), backend)
     st = get_jlink_gdbserver_status(serial=serial)
     return (st['running'], st.get('pid'), backend)
+
+
+def _clear_stale_pidfile(backend, serial):
+    """Remove this probe's pidfile when no live server is behind it.
+
+    ``start_jlink_gdbserver`` unlinks the pidfile on one of its failure arms
+    but not the other, so a failed connect could leave a file naming a PID
+    that never started -- and every later status check believed it. Only
+    unlink when nothing is actually listening, so this can never delete a
+    healthy server's pidfile.
+    """
+    import os
+
+    if backend == BACKEND_OPENOCD:
+        pidfile = openocd_pidfile(serial)
+        running = get_openocd_status(serial=serial).get('running')
+    else:
+        pidfile = jlink_gdbserver_pidfile(serial)
+        running = get_jlink_gdbserver_status(serial=serial).get('running')
+
+    if running:
+        return
+
+    try:
+        os.unlink(pidfile)
+        logger.info('Removed stale pidfile %s after a failed connect', pidfile)
+    except FileNotFoundError:
+        pass
 
 
 def _get_openocd_config_file(net=None):
@@ -669,10 +699,45 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
         except Exception as e:
             logger.error(f"Connect failed: {e}", exc_info=True)
 
+            # Drop tracking state for this net before answering.
+            #
+            # A failed connect used to leave `active_connections` holding the
+            # PID of a server we had just killed on the way in, plus a pidfile
+            # for a process that never started. Every later command on this net
+            # then matched that dead entry and reported "Failed to connect to
+            # target device" -- one failure wedged the net until someone
+            # cleaned up by hand. Clearing here means a failure costs you the
+            # one command, not the session.
+            try:
+                net_name = net.get('name', 'unknown')
+                with connections_lock:
+                    active_connections.pop(f"{net_name}:{device_type}", None)
+            except Exception:
+                logger.exception('failed to clear connection tracking after a failed connect')
+            try:
+                _clear_stale_pidfile(backend, serial)
+            except Exception:
+                logger.exception('failed to clear the pidfile after a failed connect')
+
             # Provide more specific error messages based on the exception
             error_msg = str(e)
             if "Could not connect to target" in error_msg or "Connecting to target failed" in error_msg:
                 error_msg = "Failed to connect to target device. Check that debug probe is connected and target is powered."
+                # Name the contention when that is what this is. Starting a
+                # second server against a probe another one already owns is a
+                # different problem from a loose cable, and the generic message
+                # sent people to check cabling on a perfectly good bench.
+                try:
+                    running, holder_pid, _backend = _gdbserver_running_for_net(net, serial)
+                except Exception:
+                    running, holder_pid = False, None
+                if running:
+                    error_msg = (
+                        f"Debug probe {serial or ''} is already held by a running "
+                        f"gdbserver (PID {holder_pid}). Stop it first with "
+                        f"`lager debug <net> disconnect`, or pass --force-reconnect "
+                        f"to take the probe over.".replace('  ', ' ')
+                    )
             elif "No J-Link device found" in error_msg or "JLinkGDBServerCLExe not found" in error_msg:
                 error_msg = "JLinkGDBServer not found. Check that J-Link is installed on box."
             elif "device" in error_msg.lower() and "not found" in error_msg.lower():
@@ -1005,8 +1070,20 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 else:
                     raise ValueError("No firmware file provided")
 
-                # Ensure J-Link script temp file exists for flash operation
-                script_path = _get_script_file(net)
+                # Ensure J-Link script temp file exists for flash operation.
+                #
+                # A script in the POST body wins, exactly as it does for
+                # /debug/connect. The client only recently began sending one;
+                # without it the resolution ladder's last resort is a single
+                # shared temp file written by whichever net connected most
+                # recently, so flashing net A could quietly run net B's
+                # script. Folding it into `net` reuses the existing ladder
+                # rather than duplicating the decode here.
+                body_script = data.get('jlink_script')
+                script_net = net
+                if body_script and isinstance(net, dict):
+                    script_net = {**net, 'jlink_script': body_script}
+                script_path = _get_script_file(script_net)
 
                 # Call flash_device with correct parameters
                 # files parameter is a tuple: (hexfiles, binfiles, elffiles)

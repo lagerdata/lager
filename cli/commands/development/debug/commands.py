@@ -271,18 +271,26 @@ def _get_service_client(box):
             click.secho(f"Error: Failed to create debug service client: {e}", fg='red', err=True)
         return None
 
-def _is_connected(client):
+def _is_connected(client, debug_net=None):
     """
-    Check if debugger is currently connected.
+    Check if a debugger is currently connected for `debug_net`'s probe.
+
+    Passing the net is what makes this answer correct on a box with more than
+    one probe: the box resolves the probe serial from it and checks that
+    probe's pidfile. Called without a net it reports on the legacy
+    un-suffixed pidfile instead, which a serial-aware box never writes -- so
+    a running gdbserver read as "not connected", and callers responded by
+    erasing and reconnecting, killing the live session and wedging the probe.
 
     Args:
         client: DebugServiceClient instance
+        debug_net: the debug net dict, so the box can resolve the probe
 
     Returns:
         True if connected, False otherwise
     """
     try:
-        status = client.get_debug_status()
+        status = client.get_debug_status(debug_net)
         return status.get('connected', False)
     except Exception:
         return False
@@ -335,8 +343,9 @@ def _auto_connect_if_needed(client, debug_net, ctx, quiet=False,
     Returns:
         True if connected (either already or newly), False on failure
     """
-    # Check if already connected
-    if _is_connected(client):
+    # Check if already connected. Pass the net so the box checks THIS
+    # probe's gdbserver, not the legacy un-suffixed pidfile.
+    if _is_connected(client, debug_net):
         return True
 
     # Not connected, auto-connect
@@ -936,6 +945,11 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
                 except Exception:
                     pass
                 time.sleep(0.5)
+                # NOTE: this reconnect fails against a just-erased nRF5340 --
+                # /debug/connect answers 500 and leaves the net unusable for
+                # every later command. Tracked separately; halting here does
+                # NOT fix it (measured), so the cause is not simply that the
+                # core is unattachable while running.
                 client.connect(
                     debug_net, force=True, halt=False,
                     jlink_script=jlink_script, openocd_config=openocd_config,
@@ -979,15 +993,19 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
 
         # Flash the appropriate file type
         if hex:
-            result = client.flash(Path(hex), file_type='hex', verbose=verbose, net=debug_net)
+            result = client.flash(Path(hex), file_type='hex', verbose=verbose, net=debug_net,
+                                  jlink_script=jlink_script, openocd_config=openocd_config)
         elif elf:
-            result = client.flash(Path(elf), file_type='elf', verbose=verbose, net=debug_net)
+            result = client.flash(Path(elf), file_type='elf', verbose=verbose, net=debug_net,
+                                  jlink_script=jlink_script, openocd_config=openocd_config)
         elif bin:
             if len(bin) > 1:
                 click.secho("Multiple binary files not supported yet", fg='red', err=True)
                 ctx.exit(1)
             bf = bin[0]
-            result = client.flash(Path(bf.path), file_type='bin', address=bf.address, verbose=verbose, net=debug_net)
+            result = client.flash(Path(bf.path), file_type='bin', address=bf.address, verbose=verbose,
+                                      net=debug_net, jlink_script=jlink_script,
+                                      openocd_config=openocd_config)
 
         # Display flash output if available
         output = result.get('output', '')
@@ -1281,7 +1299,7 @@ def memrd(ctx, start_addr, length, box, json_output, halt, no_halt, no_reset):
         )
 
     # Ensure halted attach when we need it (reconnect if already connected running).
-    if effective_halt and _is_connected(client):
+    if effective_halt and _is_connected(client, debug_net):
         try:
             client.connect(
                 debug_net, speed=None, force=True, halt=True,
@@ -1291,7 +1309,7 @@ def memrd(ctx, start_addr, length, box, json_output, halt, no_halt, no_reset):
             click.secho(f"Warning: could not re-connect halted for memrd: {e}", fg='yellow', err=True)
 
     # Auto-connect if not already connected
-    if not _is_connected(client):
+    if not _is_connected(client, debug_net):
         if effective_halt:
             click.secho("Auto-connecting to debugger (with halt for memory read)...", fg='cyan', dim=True)
         else:

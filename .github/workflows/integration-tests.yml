@@ -293,14 +293,32 @@ jobs:
         # "no parseable summary" arm is what catches a suite that dies before
         # reporting.
         #
-        # The baseline was 24 while the debug CLI sent no Authorization header
-        # and every box-contacting check failed on a gated box. That is fixed;
-        # the remaining 4 are unrelated and all in the same place: section 4
-        # flashes while a backgrounded `gdbserver` still holds the probe, which
-        # wedges the session and cascades into the rest of the section (the
-        # Python API flash test passes in the same run because it does not flash
-        # underneath a running gdbserver). Tracked in #162; lower this to 0 when
-        # that is fixed.
+        # Baseline history:
+        #   24 -> 4  the debug CLI began sending an Authorization header, so
+        #            box-contacting checks stopped failing on auth first.
+        #    4 -> 6  NOT a regression -- the number went UP because the checks
+        #            got honest. 4.2/4.3 and smoke 2/3/4 matched loose keywords
+        #            against combined stdout+stderr, so the CLI's own failure
+        #            text ("Verify target device is powered on") satisfied a
+        #            check looking for "Device"; smoke step 2 called
+        #            track_test "pass" in both arms. Those recorded passes
+        #            while printing failures. Tightening them converts four
+        #            false passes into two visible failures (the other two now
+        #            pass legitimately).
+        #
+        # Measured on a real bench from a known-good target -- the precondition
+        # matters, because a failed flash leaves the chip erased and every
+        # later connect on that net then fails for the same reason, which
+        # inflates the count on any rerun that starts dirty.
+        #
+        # The remaining 6 are one defect and its blast radius: `flash` erases,
+        # then its post-erase `/debug/connect` answers 500 ("Failed to power up
+        # DAP"), so section 4 loses all five checks and smoke loses its flash.
+        # Tracked separately -- that is a different bug from the net-blind
+        # status check fixed here, and halting the reconnect does not fix it.
+        #
+        # This value must move in the SAME commit as the assertion repairs;
+        # lowering it separately would trip the `-gt` arm.
         id: debug-cli-test
         continue-on-error: true
         timeout-minutes: 15
@@ -308,7 +326,7 @@ jobs:
           # The suite defaults to ssh user `lager`; this bench logs in as
           # `lagerdata`.
           SSH_USER: lagerdata
-          JLINK_CLI_BASELINE: "4"
+          JLINK_CLI_BASELINE: "6"
         # Pass the box NAME, not the IP: given an IP the suite registers a
         # `temp_box_<ip>` entry, polluting the box list the lifecycle workflow
         # also manages.

@@ -115,6 +115,38 @@ cleanup_jlink() {
     sleep 2
 }
 
+# Did a lager command actually succeed?
+#
+# Loose keyword matching over combined stdout+stderr is not an assertion: the
+# CLI's own failure text contains the very words these checks looked for. A
+# failed reset prints "Check that debug probe is connected and target is
+# powered" and "Verify target device is powered on", so
+# `grep -qi "Reset\|complete\|success\|Device"` matched on "device" -- and
+# tests recorded a pass while printing the failure. Require a zero exit AND
+# the absence of an error banner before looking for the success keyword.
+#
+# Usage:  OUTPUT=$(cmd 2>&1); RC=$?
+#         if cmd_succeeded "$RC" "$OUTPUT" "keyword|keyword"; then ...
+cmd_succeeded() {
+    local rc="$1"
+    local output="$2"
+    local expect="${3:-}"
+
+    [ "$rc" -eq 0 ] || return 1
+    if echo "$output" | grep -qiE "(^|[[:space:]])Error:|Failed to (connect|auto-connect|flash)|Traceback"; then
+        return 1
+    fi
+    if [ -n "$expect" ]; then
+        echo "$output" | grep -qiE "$expect" || return 1
+    fi
+    return 0
+}
+
+# Print the tail of a failing command's output so CI logs show why.
+show_failure() {
+    echo "$1" | tail -3 | sed 's/^/      /'
+}
+
 cleanup_script_file() {
     # Remove script file from box
     ssh ${SSH_USER}@$BOX_IP "rm -f /tmp/lager_jlink_script.JLinkScript" 2>/dev/null || true
@@ -635,7 +667,13 @@ echo "CATEGORY 4: OPERATION TESTS (With Script)"
 echo "========================================================================"
 echo ""
 
-# Create standard test script for operations
+# Create standard test script for operations.
+#
+# Naming note: section 4 checks each operation while a script is CONFIGURED
+# for the net -- it does not prove the operation itself carried the script.
+# `connect` is what sends it; the box then resolves the same script for the
+# following operation. So "flash with script" means "flash with a script
+# configured", not "flash sent the script".
 create_test_script "ops_script.JLinkScript" 'int InitTarget(void) { Report("*** OPS SCRIPT ***"); return 0; }'
 echo '{"DEBUG": {"'$NET'": "./ops_script.JLinkScript"}}' > .lager
 
@@ -671,11 +709,12 @@ GDB_PID=$!
 sleep 5
 
 echo -n "  Reset with script... "
-OUTPUT=$(lager debug $NET reset --box $BOX 2>&1)
-if echo "$OUTPUT" | grep -qi "Reset\|complete\|success\|Device"; then
+OUTPUT=$(lager debug $NET reset --box $BOX 2>&1); RC=$?
+if cmd_succeeded "$RC" "$OUTPUT" "reset|complete|success"; then
     track_test "pass"
 else
     track_test "fail"
+    show_failure "$OUTPUT"
 fi
 
 kill $GDB_PID 2>/dev/null || true
@@ -689,11 +728,12 @@ GDB_PID=$!
 sleep 5
 
 echo -n "  Reset --halt with script... "
-OUTPUT=$(lager debug $NET reset --halt --box $BOX 2>&1)
-if echo "$OUTPUT" | grep -qi "Reset\|halt\|success\|Device"; then
+OUTPUT=$(lager debug $NET reset --halt --box $BOX 2>&1); RC=$?
+if cmd_succeeded "$RC" "$OUTPUT" "reset|halt|success"; then
     track_test "pass"
 else
     track_test "fail"
+    show_failure "$OUTPUT"
 fi
 
 kill $GDB_PID 2>/dev/null || true
@@ -1097,8 +1137,12 @@ if [ -n "$LOG_OUTPUT" ]; then
     echo "  Log entries:"
     echo "$LOG_OUTPUT" | head -3 | sed 's/^/    /'
 else
-    track_test "pass"  # Log may not exist
-    echo "  No script log entries found (may be normal)"
+    # Was `track_test "pass"` in both arms -- an assertion that could not
+    # fail. Every preceding section connects with a script, so by the time we
+    # get here the service log must mention one; an empty result means either
+    # the log is unreadable or scripts are not reaching the box at all.
+    track_test "fail"
+    echo "  No script log entries found in /tmp/lager-debug-service.log"
 fi
 echo ""
 
@@ -1134,29 +1178,34 @@ echo -n "  2. Verify process args... "
 if check_process_args "JLinkScriptFile"; then
     track_test "pass"
 else
-    track_test "pass"  # May have exited
+    # Was `track_test "pass"` in both arms -- an assertion that could not
+    # fail. The gdbserver from step 1 is expected to still be running here,
+    # so not finding it means the session died.
+    track_test "fail"
+    echo "  (no JLinkGDBServer with JLinkScriptFile in its args)"
 fi
 
 # Step 3: Reset operation
 echo -n "  3. Reset operation... "
-OUTPUT=$(lager debug $NET reset --box $BOX 2>&1)
-if echo "$OUTPUT" | grep -qi "Reset\|Device\|complete"; then
+OUTPUT=$(lager debug $NET reset --box $BOX 2>&1); RC=$?
+if cmd_succeeded "$RC" "$OUTPUT" "reset|complete|success"; then
     track_test "pass"
 else
     track_test "fail"
+    show_failure "$OUTPUT"
 fi
 
 # Step 4: Memory read
 echo -n "  4. Memory read... "
-OUTPUT=$(lager debug $NET memrd --box $BOX 0x00000000 16 2>&1)
-# Accept any non-empty output that looks like memory data
-if echo "$OUTPUT" | grep -qiE "0x|[0-9a-f]{2}[[:space:]]|data|bytes|:"; then
+OUTPUT=$(lager debug $NET memrd --box $BOX 0x00000000 16 2>&1); RC=$?
+# Must look like memory data. The old pattern accepted a bare ":", which
+# appears in "Details:", "Error:" and "Troubleshooting steps:", and then fell
+# back to passing on ANY non-empty output -- so this could not fail.
+if cmd_succeeded "$RC" "$OUTPUT" "0x[0-9a-f]|[0-9a-f]{2}[[:space:]]+[0-9a-f]{2}"; then
     track_test "pass"
-elif [ -n "$OUTPUT" ]; then
-    track_test "pass"
-    echo "  (Output received but format differs)"
 else
     track_test "fail"
+    show_failure "$OUTPUT"
 fi
 
 # Step 5: Flash (if hex file available)

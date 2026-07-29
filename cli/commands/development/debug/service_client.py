@@ -197,8 +197,17 @@ class DebugServiceClient:
         return self._request('POST', '/debug/reset', json=data, timeout=10).json()
 
     def flash(self, firmware_file: Path, file_type: str = 'hex',
-              address: Optional[int] = None, verbose: bool = False, net: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Flash firmware to target."""
+              address: Optional[int] = None, verbose: bool = False, net: Optional[Dict[str, Any]] = None,
+              jlink_script: Optional[str] = None, openocd_config: Optional[str] = None) -> Dict[str, Any]:
+        """Flash firmware to target.
+
+        `jlink_script` / `openocd_config` are sent for the same reason
+        `connect` sends them. Without them the box resolves the script itself
+        and its last resort is a single shared temp file
+        (``/tmp/lager_jlink_script.JLinkScript``) written by whichever net
+        connected most recently -- so flashing net A could silently run net
+        B's script. Sending it makes the flash use this net's script.
+        """
         # Read and base64-encode file content
         with open(firmware_file, 'rb') as f:
             content = base64.b64encode(f.read()).decode('ascii')
@@ -206,6 +215,10 @@ class DebugServiceClient:
         data = {'verbose': verbose}
         if net:
             data['net'] = net
+        if jlink_script:
+            data['jlink_script'] = jlink_script
+        if openocd_config:
+            data['openocd_config'] = openocd_config
         if file_type == 'hex':
             data['hexfile'] = {'content': content}
         elif file_type == 'elf':
@@ -267,9 +280,18 @@ class DebugServiceClient:
 
         return self._request('POST', '/debug/info', json=data, timeout=5).json()
 
-    def get_debug_status(self) -> Dict[str, Any]:
-        """Get debugger status."""
-        return self._request('POST', '/debug/status', json={}, timeout=5).json()
+    def get_debug_status(self, net: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Get debugger status for `net`'s probe.
+
+        `net` is what makes the answer trustworthy, and omitting it is not a
+        harmless default. The box resolves the probe serial from the net and
+        checks `/tmp/jlink_gdbserver_<serial>.pid`; with no net it falls back
+        to the legacy un-suffixed pidfile, which a serial-aware box never
+        writes. The status then comes back `connected: False` while a
+        gdbserver is very much running -- and callers act on that by tearing
+        down the session and reconnecting, which is what wedged the probe.
+        """
+        return self._request('POST', '/debug/status', json={'net': net or {}}, timeout=5).json()
 
     def get_service_health(self, detailed: bool = False) -> Dict[str, Any]:
         """Get service health information."""
