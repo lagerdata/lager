@@ -128,11 +128,15 @@ class SupplyNet(abc.ABC):
         # Every field read is individually _safe-guarded: one failing query
         # (unsupported SCPI on a given firmware, a transient bus error) costs
         # only that field, never the whole gather.
+        #
+        # Measurements fall back to None, not 0.0. A failed read is not a
+        # reading of zero, and rendering it as one is indistinguishable from a
+        # genuinely idle rail. None reaches the operator as "n/a".
         limits = _safe(lambda: self.get_channel_limits(channel), {}) or {}
         return {
-            'voltage': _safe(lambda: float(self.measure_voltage(channel)), 0.0),
-            'current': _safe(lambda: float(self.measure_current(channel)), 0.0),
-            'power': _safe(lambda: float(self.measure_power(channel)), 0.0),
+            'voltage': _safe(lambda: float(self.measure_voltage(channel))),
+            'current': _safe(lambda: float(self.measure_current(channel))),
+            'power': _safe(lambda: float(self.measure_power(channel))),
             'enabled': _safe(lambda: self.output_is_enabled(channel)),
             'mode': _safe(lambda: self.get_output_mode(channel), 'CV')
                     if hasattr(self, 'get_output_mode') else 'CV',

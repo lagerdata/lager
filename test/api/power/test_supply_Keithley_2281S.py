@@ -679,7 +679,8 @@ def test_monitor_state():
             if not present:
                 ok = False
 
-        numeric_keys = ["voltage", "current", "power", "voltage_set", "current_set",
+        # Setpoints and limits are always known, so they must be numeric.
+        numeric_keys = ["voltage_set", "current_set",
                         "voltage_max", "current_max", "ocp_limit", "ovp_limit"]
         for key in numeric_keys:
             if key in state:
@@ -687,6 +688,30 @@ def test_monitor_state():
                 _record(f"state['{key}'] is numeric", passed_num, f"value={state[key]!r}")
                 if not passed_num:
                     ok = False
+
+        # Measurements are numeric OR None. None means "not measured" — the
+        # output is off, or the query failed — and renders as "n/a". It is
+        # deliberately not 0.0, which would be indistinguishable from a real
+        # reading of zero.
+        measured_keys = ["voltage", "current", "power"]
+        for key in measured_keys:
+            if key in state:
+                passed_meas = state[key] is None or isinstance(state[key], (int, float))
+                _record(f"state['{key}'] is numeric or None", passed_meas,
+                        f"value={state[key]!r}")
+                if not passed_meas:
+                    ok = False
+
+        # This test enables the output first, so the measurements should be
+        # present. If they are None here, the instrument did not answer.
+        if state.get("enabled"):
+            for key in measured_keys:
+                if key in state:
+                    passed_live = isinstance(state[key], (int, float))
+                    _record(f"state['{key}'] is present while output is enabled",
+                            passed_live, f"value={state[key]!r}")
+                    if not passed_live:
+                        ok = False
 
         bool_keys = ["enabled", "ocp_tripped", "ovp_tripped"]
         for key in bool_keys:
@@ -725,9 +750,23 @@ def main():
     except Exception as e:
         print(f"\nERROR: Failed to load net '{KEITHLEY_SUPPLY_NET}': {e}")
         print("Fix: check the net's instrument type in saved_nets.json (e.g. 'Keithley_2281S').")
-        print(f"  lager nets list --box <box>")
+        print(f"  lager nets --box <box>")
         print(f"  lager nets tui --box <box>")
         sys.exit(1)
+
+    # Put protection at the channel maxima before anything enables the output.
+    # Without this the suite inherits whatever OVP/OCP the bench was left at:
+    # a previous run that lowered OVP to the 5.0 V setpoint makes every test
+    # below enable into a trip, failing for reasons unrelated to the code
+    # under test. Only test_protection_pre_enable sets its own limits, and it
+    # restores them on the way out.
+    try:
+        psu.set_ovp(CHANNEL_MAX_VOLTAGE)
+        psu.set_ocp(CHANNEL_MAX_CURRENT)
+    except Exception as e:
+        print(f"\nWARNING: could not set protection limits to the channel maxima: {e}")
+        print("The suite will run, but a bench left with a low OVP/OCP may fail")
+        print("tests for reasons unrelated to the code under test.")
 
     try:
         psu.state()

@@ -30,6 +30,11 @@ RESET = '\033[0m'
 # Conservative default current limit (amps) to keep things safe after connect
 LAGER_CURRENT_LIMIT = 0.3
 
+# Sentinel default for queries whose failure must stay distinguishable from a
+# reading. It contains a NUL, so no SCPI response can collide with it. See
+# Keithley2281S._measure_or_none.
+_QUERY_FAILED = "\x00lager:query-failed"
+
 # Keithley 2281S-20-6 specifications
 # Model: 2281S-20-6 = 20V, 6A, 120W
 KEITHLEY_2281S_MAX_VOLTAGE = 20.0  # Volts
@@ -284,8 +289,14 @@ class Keithley2281S(SupplyNet):
         if not self.output_is_enabled():
             # Check for protection trips
             try:
-                trip = self._safe_query_no_mode(":OUTP:PROT:TRIP?", default="")
-                if trip:
+                # ``:OUTP:PROT:TRIP?`` answers the literal string "NONE" when
+                # nothing has tripped, which is truthy. Testing membership --
+                # as every other trip check in this file does -- is what lets
+                # the "no protection trip" branch surface at all. Reporting a
+                # trip the instrument denies sends the operator off clearing a
+                # protection state that was never set.
+                trip = self._safe_query_no_mode(":OUTP:PROT:TRIP?", default="").strip().upper()
+                if trip in ("OVP", "OCP"):
                     raise SupplyBackendError(f"Failed to enable output: Protection trip detected ({trip})")
                 else:
                     raise SupplyBackendError("Failed to enable output after 3 retries (no protection trip detected)")
@@ -531,12 +542,19 @@ class Keithley2281S(SupplyNet):
         v_set = self._safe_float(self._safe_query_no_mode(":SOUR1:VOLT?", default="0.0"))
         i_set = self._safe_float(self._safe_query_no_mode(":SOUR1:CURR?", default="0.0"))
         if enabled:
-            v_raw = self._safe_query_no_mode(":MEAS:VOLT?", default=str(v_set))
-            v = self._safe_float(self._parse_voltage_from_response(v_raw))
-            i = self._safe_float(self._safe_query_no_mode(":MEAS:CURR?", default=str(i_set)))
+            # default=None so a failed measurement is distinguishable from a
+            # reading. Defaulting to the setpoint made a failed query render as
+            # a plausible measurement, which reads as confirmation the supply is
+            # working. None travels to the wire as "n/a" via the state handler.
+            v_raw = self._measure_or_none(":MEAS:VOLT?")
+            v = None if v_raw is None else self._safe_float(self._parse_voltage_from_response(v_raw))
+            i_raw = self._measure_or_none(":MEAS:CURR?")
+            i = None if i_raw is None else self._safe_float(i_raw)
             mode = self._determine_operating_mode_no_mode()
         else:
-            v, i = v_set, i_set
+            # Output off: there is nothing to measure. Reporting the setpoints
+            # as "Measured" claimed current flowing through a disabled output.
+            v, i = None, None
             mode = "CV"
 
         ocp_limit = self._safe_float(self._safe_query_no_mode(":SOUR1:CURR:PROT?", default="0"))
@@ -546,7 +564,7 @@ class Keithley2281S(SupplyNet):
         return {
             'voltage': v,
             'current': i,
-            'power': v * i,
+            'power': None if (v is None or i is None) else v * i,
             'enabled': enabled,
             'mode': mode,
             'voltage_set': v_set,
@@ -1253,6 +1271,18 @@ class Keithley2281S(SupplyNet):
                 except Exception:
                     return default
             return default
+
+    def _measure_or_none(self, cmd: str) -> str | None:
+        """Read a measurement query, or ``None`` if the query failed.
+
+        ``_safe_query_no_mode`` signals failure by returning ``default``, so a
+        caller can only tell a failure from a reading when ``default`` lies
+        outside the response domain. For a measurement, no numeric default
+        does: passing the setpoint made a failed read render as a plausible
+        measurement. Route measurements through here instead.
+        """
+        raw = self._safe_query_no_mode(cmd, default=_QUERY_FAILED)
+        return None if raw == _QUERY_FAILED else raw
 
     def _safe_query_no_mode(self, cmd: str, default: str = "n/a") -> str:
         """
