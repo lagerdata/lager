@@ -19,14 +19,22 @@ description: "July 28, 2026"
   (`lager box-config apt add dfu-util`). Consumed by `lager-rs` as
   `dfu()`.
 
-## <u>Bug Fixes</u>
+## <u>Improvements</u>
 
-- **USB hub-port commands are fast again.** On 0.32.1 an
-  enable/disable/toggle/state against an Acroname hub took ~2.1s (was
-  ~80ms) because every call re-ran a full BrainStem USB discovery scan.
-  The drivers now cache discovery metadata per physical hub and connect
-  directly from it, while still releasing the hub after every operation
-  so other processes (e.g. a `lager python` test) can claim it.
+- **USB hub drivers cache discovery metadata per physical hub.** Each
+  Acroname or YKUSH operation previously re-ran a full device discovery
+  scan. The drivers now cache the discovery result — the hub's link
+  specification and hub class for Acroname, the resolved HID device path
+  for YKUSH — and connect directly from it, while still releasing the hub
+  after every operation so other processes (for example a `lager python`
+  test) can claim it.
+
+  This removes redundant discovery scans. It does not restore the ~80ms
+  hub-port timings seen before 0.32.1: measured on a USBHub3p, a hub-port
+  operation costs ~2.1s, of which ~1.8s is the per-operation disconnect
+  required to leave the hub unclaimed and ~0.3s is discovery. Where the hub
+  class is identified correctly on the first attempt, the cache saves no
+  measurable time.
 
 ## <u>Installation</u>
 
