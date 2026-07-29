@@ -31,13 +31,13 @@ A job only *blocks* a merge once its status context is listed in branch ruleset 
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1055 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1063 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 1247 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 79 (+4 skipped) |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 91 (+1 skipped) |
-| | **Total gated** | **2743** |
+| | **Total gated** | **2751** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -407,9 +407,9 @@ test/
 ├── mcp/                  # MCP server tests (pytest)
 │   ├── unit/             # 11 files: mocked, no hardware -- GATED
 │   └── integration/      #  1 file: live hardware required
-├── unit/                 # Local unit tests (113 files) -- ALL GATED
-│   ├── box/              # 60 files: box-side Python unit tests
-│   ├── cli/              # 42 files: CLI Python unit tests
+├── unit/                 # Local unit tests (115 files) -- ALL GATED
+│   ├── box/              # 61 files: box-side Python unit tests
+│   ├── cli/              # 43 files: CLI Python unit tests
 │   ├── measurement/      #  4 files: Joulescope / PPK2 / watt unit tests
 │   ├── blufi/            #  2 files: BluFi protocol unit tests
 │   └── test_*.py         #  5 files: root-level unit tests
@@ -426,9 +426,9 @@ cli/tests/                #  5 files: 3 pytest suites + test_io_imports.py (GATE
                           #           `unit (cli)`), plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 113 files)
+### Local Unit Tests (`test/unit/` -- 115 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 60 files)
+#### Box Unit Tests (`test/unit/box/` -- 61 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported, and stubs the two third-party modules that are neither guarded nor installed
@@ -498,7 +498,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_webcam_detection.py` | sysfs-based webcam detection (`_by_camera`) against a fake sysfs tree |
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 42 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 43 files)
 
 | File | What it tests |
 |------|---------------|
@@ -509,6 +509,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_box_request_failure_messages.py` | `echo_box_request_failure`: distinguishing a slow box-side op from a dead box |
 | `test_configure_docker_dns.py` | `configure_docker_dns`: daemon.json `dns` entries must be bare IPs or Docker refuses to start |
 | `test_configure_docker_dns_rollback.py` | Rollback behaviour of `configure_docker_dns.sh` when the DNS optimization fails |
+| `test_debug_flash_erase_reconnect.py` | `lager debug flash`'s default erase step: no reconnect between `/debug/erase` and `/debug/flash`, and a failing `/debug/connect` cannot abort the flash |
 | `test_debug_service_client_auth.py` | Gateway auth on the debug service client |
 | `test_devenv_config_commands.py` | `lager devenv mount` / `env`: editing project-local `.lager` volumes and environment keys |
 | `test_devenv_terminal_docker_args.py` | `docker run` args for `devenv terminal` and `exec`; regression for the `--group` bare-flag bug |

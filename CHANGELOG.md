@@ -53,6 +53,30 @@ All notable changes to the Lager platform are documented here. For detailed rele
   endpoint was introduced to remove. Both sides now key on the identity the
   caller resolves.
 
+- **`lager debug <net> flash` no longer leaves the target blank when the
+  post-erase reconnect fails.** `flash` erases by default, and it used to
+  disconnect and reconnect the debugger between the erase and the flash. That
+  reconnect sat inside the erase's own `try`, so when it failed the command
+  printed `Flash erase failed`, exited 1, and never called `/debug/flash` -- on
+  a part it had just wiped. When that connect fails -- it answers 500, "Failed
+  to power up DAP" -- a plain `lager debug NET flash --hex fw.hex` left the
+  target it was asked to program erased, and every later command on that net
+  failed until someone restored a valid image by hand.
+
+  The reconnect is now gone for every device family, because it was never
+  load-bearing for either backend. On J-Link, `/debug/flash` runs its own
+  `JLinkExe` session: `flash_device` stops the gdbserver on entry and
+  re-establishes one after programming, so anything the CLI started here was
+  torn down moments later. On OpenOCD it was actively harmful -- `/debug/erase`
+  leaves the daemon running and `/debug/flash` programs over that same daemon,
+  answering 400 when it is missing, so the disconnect removed the session the
+  flash depended on. The DA1469x path already skipped the reconnect and is
+  unchanged.
+
+  `--force-reconnect` still requests a clean session before flashing, and still
+  warns and continues rather than aborting if that reconnect fails. A failed
+  erase is still fatal.
+
 ## [0.33.1] - 2026-07-29
 
 ### Fixed

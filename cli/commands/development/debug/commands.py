@@ -926,34 +926,37 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
 
     device_type = str(_debug_net_jlink_device(debug_net) or '').upper()
 
-    # Erase flash before flashing (default behavior; skip with --no-erase)
+    # Erase flash before flashing (default behavior; skip with --no-erase).
+    #
+    # Nothing reconnects between the erase and the flash, for either backend.
+    #
+    # This used to disconnect and `connect(force=True)` here for non-DA1469x
+    # parts, inside this try -- so a failed connect hit the handler below:
+    # "Flash erase failed", exit 1, with the chip already erased and
+    # /debug/flash never called. Against a just-erased nRF5340 that connect
+    # answers 500 every time, and because `flash` erases by default, a plain
+    # `lager debug NET flash --hex fw.hex` bricked the part it was asked to
+    # program.
+    #
+    # The reconnect was never load-bearing:
+    #
+    #   J-Link  -- /debug/flash runs its own JLinkExe session. flash_device()
+    #     opens with stop_jlink() + stop_jlink_gdbserver(), tearing down
+    #     anything we start here ~0.5s later, then re-establishes a gdbserver
+    #     itself after programming.
+    #   OpenOCD -- /debug/erase leaves the daemon running and /debug/flash
+    #     programs over that same daemon, answering 400 when it is gone. The
+    #     disconnect actively removed the session the flash needed.
+    #
+    # The waits went with it: only a box-side delay can serialise the probe's
+    # USB handle, and chip_erase() and flash_device() each already sleep after
+    # releasing it. --force-reconnect still asks for a clean session, and that
+    # path warns and continues rather than aborting.
     if not no_erase:
         try:
             click.echo("Erasing flash memory...", err=True)
             client.erase(debug_net, speed='4000', transport='SWD')
             click.secho("Erase complete!", fg='green', err=True)
-            if 'DA1469' in device_type:
-                # DA1469x: keep detach state after erase and let /debug/flash run JLinkExe directly.
-                # This avoids an extra attach/halt cycle before loadfile.
-                pass
-            else:
-                # Non-DA1469x: preserve existing reconnect behavior.
-                import time
-                time.sleep(0.5)
-                try:
-                    client.disconnect(debug_net)
-                except Exception:
-                    pass
-                time.sleep(0.5)
-                # NOTE: this reconnect fails against a just-erased nRF5340 --
-                # /debug/connect answers 500 and leaves the net unusable for
-                # every later command. Tracked separately; halting here does
-                # NOT fix it (measured), so the cause is not simply that the
-                # core is unattachable while running.
-                client.connect(
-                    debug_net, force=True, halt=False,
-                    jlink_script=jlink_script, openocd_config=openocd_config,
-                )
         except Exception as e:
             click.secho(f"Flash erase failed: {e}", fg='red', err=True)
             client.close()
@@ -1016,7 +1019,7 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
             click.echo(output)
 
         click.secho("\nFlashed!", fg='green')
-        if erase and 'DA1469' in str(_debug_net_jlink_device(debug_net) or '').upper():
+        if erase and 'DA1469' in device_type:
             click.secho(
                 "DA1469x: after erase, a cold halted attach before loadfile can fail. "
                 "If boot fails after erase+flash, power cycle and flash again.",
