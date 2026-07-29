@@ -141,9 +141,14 @@ LAGERBOX HOST (x86-64, Ubuntu 22.04+)
 
 ## Optional Control Plane Integration
 
-Lager boxes expose an authenticated SSH-key-sync endpoint (`POST /authorize-key` on port 9000) that an external control plane can use to provision access without a human typing SSH commands. If `/etc/lager/control_plane.json` is present with an `authorize_token`, requests carrying that token as a Bearer token can add public keys to `/etc/lager/authorized_keys.d/`, which the box's startup script and systemd path unit merge into `~/.ssh/authorized_keys`.
+Lager boxes publish SSH keys from a key directory, `/etc/lager/authorized_keys.d/`, so an external control plane can provision access without a human typing SSH commands. Dropping a `<name>.pub` file there gets the key into the box account's `~/.ssh/authorized_keys` within about five seconds. Because `/etc/lager` is bind-mounted into the runtime container, a control plane can write that file from inside the container — which is how it bootstraps before it has any SSH access to the box at all.
 
-Lager itself does not require or run a control plane -- this is a hook, not a dependency. Leaving `control_plane.json` absent simply disables the endpoint.
+`start_box.sh` owns only the region of `authorized_keys` between its `# BEGIN LAGER MANAGED KEYS` and `# END LAGER MANAGED KEYS` markers, and rebuilds that region from the key directory on every pass. Two consequences worth knowing:
+
+- **Deleting a `.pub` revokes the key.** Nothing else does; editing `authorized_keys` by hand inside the marked region is undone on the next pass.
+- **Keys installed by other means are untouched.** `lager ssh-setup`, `ssh-copy-id`, and cloud-init all append outside the marked region, and are preserved verbatim. Any other system that manages this file must claim its own distinct marker pair — two managers sharing one pair would each rebuild the other's region on every pass.
+
+Lager itself does not require or run a control plane -- this is a hook, not a dependency. Leaving the key directory absent or empty simply means no keys are published from it.
 
 Commercial control planes that build on this hook — for fleets that need org/RBAC/SSO, audit logging, and scheduling on top of Lager — are listed on the [Professional Services directory](https://lagerdata.com/professional-services).
 

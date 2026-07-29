@@ -2,6 +2,69 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Removed
+
+- **The HTTP SSH key-authorization endpoint (`POST /authorize-key` on port
+  9000) is gone**, along with its handler, rate limiter, and the
+  `/tmp/lager-authorized-keys.d` staging directory it wrote to. The endpoint
+  let any caller with the bearer token create an arbitrarily-labelled `.pub`
+  file, and the keys it created could never be removed — the old sync only
+  appended. It was also the first link in a privilege-escalation chain: a
+  container-side file write became host SSH access, and from there host root
+  via the privileged runtime container.
+
+  **If you provision boxes through this endpoint, switch to writing
+  `<name>.pub` into `/etc/lager/authorized_keys.d/` directly.** That directory
+  is bind-mounted into the runtime container, so a control plane can still
+  write it from inside the container before it has SSH access — the bootstrap
+  path is unchanged, and keys still appear in `~/.ssh/authorized_keys` within
+  about five seconds. No CLI or MCP command called this endpoint, so
+  command-line workflows are unaffected. The `authorize_token` field in
+  `/etc/lager/control_plane.json` now has no reader; the file is still used for
+  auth-gateway enrollment and should not be deleted.
+
+### Changed
+
+- **`~/.ssh/authorized_keys` is now rebuilt from the key directory, not
+  appended to.** `start_box.sh` owns only the region between its
+  `# BEGIN LAGER MANAGED KEYS` / `# END LAGER MANAGED KEYS` markers and
+  regenerates that region from `/etc/lager/authorized_keys.d` on every pass,
+  writing a temp file and renaming so sshd never sees a partial file. Deleting
+  a `.pub` now revokes the key, which was previously impossible, and the old
+  check-then-append race can no longer duplicate lines — boxes have been found
+  with five `authorized_keys` entries built from three key files.
+
+  Keys installed by any other route — `lager ssh-setup`, `ssh-copy-id`,
+  cloud-init — live outside the marked region and are preserved byte-for-byte;
+  they are never revoked by this loop. Loose copies of a key that *is* in the
+  key directory get adopted into the block, which collapses historical
+  duplicates. Note what adoption implies: a key installed by another route
+  that is *also* published through the key directory becomes managed, so
+  deleting its `.pub` later removes it outright — including the copy that
+  other route installed, which nobody intended the key directory to own. Use a
+  distinct key per access path when the two must be revoked independently.
+
+  A key whose `.pub` was already gone before this release stays put as an
+  unmanaged line: it cannot be told apart from an operator's own key, so
+  removing it is a manual step. A missing key directory is treated as
+  ambiguous and revokes nothing; an empty one revokes the managed keys.
+
+  Another system that manages this file must claim its own distinct marker
+  pair. Two managers sharing one pair would each rebuild the other's region
+  from its own source on every pass.
+
+### Fixed
+
+- **`start_box.sh` is single-instance.** Concurrent copies raced each other and
+  accumulated across restarts — boxes have been found running ten-plus copies
+  at once, some months old, each having burned hours of CPU, with their
+  key-sync loops appending over each other. The script now takes a non-blocking
+  `flock` for its lifetime and exits with a clear message if another copy holds
+  it. The background key-sync poller closes the inherited lock descriptor, so a
+  long-lived poller cannot pin the lock against later runs.
+
 ## [0.34.1] - 2026-08-02
 
 ### Fixed
