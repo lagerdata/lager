@@ -104,6 +104,7 @@ def _resolve_box_with_username(ctx, box):
     """
     Resolve box parameter to (IP, username) tuple.
     Handles both box names and direct IPs, looking up username from storage.
+    Also acquires an ephemeral lock for the duration of the debug session.
 
     Args:
         ctx: Click context
@@ -112,10 +113,10 @@ def _resolve_box_with_username(ctx, box):
     Returns:
         Tuple of (ip_address, username)
     """
-    from ....box_storage import resolve_and_validate_box
+    from ....core.net_helpers import resolve_box_locked
 
-    # Resolve and validate the box name/IP
-    box_ip = resolve_and_validate_box(ctx, box)
+    # Resolve, validate, and auto-lock the box
+    box_ip = resolve_box_locked(ctx, box, 'debug')
 
     # Determine box name for username lookup
     # If box was provided and is not an IP, it's the box name

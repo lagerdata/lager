@@ -25,7 +25,7 @@ import click
 from texttable import Texttable
 
 from ...core.net_group import NetGroupHelpMixin
-from ...core.net_helpers import resolve_box, fetch_nets, post_net_command
+from ...core.net_helpers import resolve_box, resolve_box_locked, fetch_nets, post_net_command
 from ...context import get_default_net
 from ...errors import net_not_specified_error
 
@@ -62,12 +62,12 @@ class SPIGroup(NetGroupHelpMixin, click.Group):
 
 def _resolve_box_with_name(ctx, box):
     """
-    Resolve box parameter to IP address.
+    Resolve box parameter to IP address and acquire an ephemeral lock.
     Returns tuple of (ip_address, box_name) where box_name is used for username lookup.
     """
     from ...box_storage import get_box_name_by_ip
 
-    resolved_ip = resolve_box(ctx, box)
+    resolved_ip = resolve_box_locked(ctx, box, 'spi')
 
     if box and not box.replace('.', '').isdigit():
         resolved_name = box

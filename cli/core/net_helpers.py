@@ -70,6 +70,57 @@ def resolve_box(ctx: click.Context, box: str | None) -> str:
     return resolve_and_validate_box(ctx, box)
 
 
+def resolve_box_locked(
+    ctx: click.Context,
+    box: str | None,
+    command_name: str,
+) -> str:
+    """Resolve box IP *and* acquire an ephemeral auto-lock for this command.
+
+    Behaves identically to :func:`resolve_box` but additionally acquires a
+    short-lived (TTL-based, heartbeat-refreshed) lock for the duration of the
+    CLI process. The lock is released on normal exit, exception, or signal.
+
+    If the box is already locked by the same user (e.g. via ``lager boxes
+    lock``), the pre-existing lock is preserved and no release is registered.
+
+    Args:
+        ctx: Click context object.
+        box: Box name or IP, or None for the default box.
+        command_name: Human-readable command name for heartbeat warnings
+            (e.g. ``'gpi'``, ``'debug flash'``).
+
+    Returns:
+        Resolved and validated box IP address.
+    """
+    from ..box_storage import (
+        resolve_and_validate_box_with_name,
+        auto_lock_acquire_for_command,
+    )
+    import os
+
+    ip, box_name = resolve_and_validate_box_with_name(ctx, box)
+
+    if not os.getenv('LAGER_AUTO_LOCK_DISABLE'):
+        release = auto_lock_acquire_for_command(
+            ip, box_name or ip, command_name,
+        )
+        # Stash the release callable on the Click context so downstream code
+        # (or test fixtures) can access it if needed. The atexit hook inside
+        # auto_lock_acquire_for_command handles process-death paths.
+        if not hasattr(ctx, 'obj') or ctx.obj is None:
+            ctx.ensure_object(dict)
+        if isinstance(ctx.obj, dict):
+            ctx.obj.setdefault('_lock_releases', []).append(release)
+        else:
+            existing = getattr(ctx.obj, '_lock_releases', None)
+            if existing is None:
+                ctx.obj._lock_releases = []
+            ctx.obj._lock_releases.append(release)
+
+    return ip
+
+
 # =============================================================================
 # Netname Handling
 # =============================================================================

@@ -23,6 +23,7 @@ from ...core.net_group import NetGroup
 from ...core.net_helpers import (
     require_netname,
     resolve_box,
+    resolve_box_locked,
     validate_net,
     display_nets,
     echo_box_request_failure,
@@ -174,7 +175,7 @@ battery.net_examples = [
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def mode(ctx, box, mode_type):
     """Set (or read) battery simulation mode type"""
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
     _run_backend(ctx, resolved_box, 'set_mode', netname=netname, mode_type=mode_type)
 
@@ -184,7 +185,7 @@ def mode(ctx, box, mode_type):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def set_mode(ctx, box):
     """Initialize battery simulator mode"""
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
     _run_backend(ctx, resolved_box, 'set_to_battery_mode', netname=netname)
 
@@ -207,7 +208,7 @@ def soc(ctx, box, value):
             click.secho(f"Error: SOC must be between 0 and 100%, got {parsed_value}%", fg='red', err=True)
             ctx.exit(1)
 
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
     _run_backend(ctx, resolved_box, 'set_soc', netname=netname, value=parsed_value)
 
@@ -230,7 +231,7 @@ def voc(ctx, box, value):
             click.secho(f"Error: VOC must be positive, got {parsed_value} V", fg='red', err=True)
             ctx.exit(1)
 
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
     _run_backend(ctx, resolved_box, 'set_voc', netname=netname, value=parsed_value)
 
@@ -253,7 +254,7 @@ def batt_full(ctx, box, value):
             click.secho(f"Error: Battery full voltage must be positive, got {parsed_value} V", fg='red', err=True)
             ctx.exit(1)
 
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
     _run_backend(ctx, resolved_box, 'set_volt_full', netname=netname, value=parsed_value)
 
@@ -276,7 +277,7 @@ def batt_empty(ctx, box, value):
             click.secho(f"Error: Battery empty voltage must be positive, got {parsed_value} V", fg='red', err=True)
             ctx.exit(1)
 
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
     _run_backend(ctx, resolved_box, 'set_volt_empty', netname=netname, value=parsed_value)
 
@@ -299,7 +300,7 @@ def capacity(ctx, box, value):
             click.secho(f"Error: Capacity must be positive, got {parsed_value} Ah", fg='red', err=True)
             ctx.exit(1)
 
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
     _run_backend(ctx, resolved_box, 'set_capacity', netname=netname, value=parsed_value)
 
@@ -328,7 +329,7 @@ def current_limit(ctx, box, value):
             click.secho(f"Error: Current limit must not exceed {MAX_CURRENT} A, got {parsed_value} A", fg='red', err=True)
             ctx.exit(1)
 
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
     _run_backend(ctx, resolved_box, 'set_current_limit', netname=netname, value=parsed_value)
 
@@ -351,7 +352,7 @@ def ovp(ctx, box, value):
             click.secho(f"Error: OVP must be positive, got {parsed_value} V", fg='red', err=True)
             ctx.exit(1)
 
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
     _run_backend(ctx, resolved_box, 'set_ovp', netname=netname, value=parsed_value)
 
@@ -374,7 +375,7 @@ def ocp(ctx, box, value):
             click.secho(f"Error: OCP must be positive, got {parsed_value} A", fg='red', err=True)
             ctx.exit(1)
 
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
     _run_backend(ctx, resolved_box, 'set_ocp', netname=netname, value=parsed_value)
 
@@ -385,7 +386,7 @@ def ocp(ctx, box, value):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def model(ctx, box, partnumber):
     """Set (or read) battery model (18650, nimh, lead-acid, etc.)"""
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
     _run_backend(ctx, resolved_box, 'set_model', netname=netname, partnumber=partnumber)
 
@@ -395,7 +396,7 @@ def model(ctx, box, partnumber):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def models(ctx, box):
     """List battery models saved on the instrument"""
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
     _run_backend(ctx, resolved_box, 'list_models', netname=netname)
 
@@ -429,7 +430,7 @@ def model_create(ctx, box, slot, csv_path, force):
                    "(an existing slot makes a good template)"],
         )
 
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
 
     if not force:
@@ -467,7 +468,7 @@ def model_export(ctx, box, slot, csv_path):
     accepts, for the export → edit → create round-trip. Read-only: exporting
     does not change the active model.
     """
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
     result = _battery_command_request(
         ctx, resolved_box, 'export_model', netname=netname, slot=slot)
@@ -489,7 +490,7 @@ def model_export(ctx, box, slot, csv_path):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def state(ctx, box):
     """Get battery state (comprehensive status)"""
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
     _run_backend(ctx, resolved_box, 'print_state', netname=netname)
 
@@ -500,7 +501,7 @@ def state(ctx, box):
 @click.option('--yes', is_flag=True, help='Confirm the action without prompting.')
 def enable(ctx, box, yes):
     """Enable battery simulator output"""
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
 
     if yes or click.confirm(f"Enable Net?", default=False):
@@ -518,7 +519,7 @@ def enable(ctx, box, yes):
 @click.option('--yes', is_flag=True, help='Confirm the action without prompting.')
 def disable(ctx, box, yes):
     """Disable battery simulator output"""
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
 
     if yes or click.confirm(f"Disable Net?", default=True):
@@ -537,7 +538,7 @@ def disable(ctx, box, yes):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def clear_both(ctx, box):
     """Clear protection trip conditions (OVP/OCP)"""
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
     _run_backend(ctx, resolved_box, 'clear', netname=netname)
 
@@ -547,7 +548,7 @@ def clear_both(ctx, box):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def clear_ovp(ctx, box):
     """Clear OVP trip condition"""
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
     _run_backend(ctx, resolved_box, 'clear_ovp', netname=netname)
 
@@ -557,7 +558,7 @@ def clear_ovp(ctx, box):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def clear_ocp(ctx, box):
     """Clear OCP trip condition"""
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
     _run_backend(ctx, resolved_box, 'clear_ocp', netname=netname)
 
@@ -567,7 +568,7 @@ def clear_ocp(ctx, box):
 @click.option("--box", required=False, help="Lagerbox name or IP")
 def tui(ctx, box):
     """Launch interactive battery control TUI"""
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'battery')
     netname = require_netname(ctx, "battery")
 
     if not validate_net(ctx, resolved_box, netname, BATTERY_ROLE):

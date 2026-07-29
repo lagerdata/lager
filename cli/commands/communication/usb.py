@@ -22,6 +22,7 @@ from ...core.net_group import NetGroup
 from ...core.net_helpers import (
     require_netname,
     resolve_box,
+    resolve_box_locked,
     list_nets_by_role,
     display_nets_table,
     validate_net_exists,
@@ -129,7 +130,7 @@ def usb(ctx, netname, box):
 def _run_usb_action(ctx, box, action: str) -> None:
     """Shared body for the enable/disable/toggle subcommands."""
     netname = require_netname(ctx, "usb")
-    resolved_box = resolve_box(ctx, box)
+    resolved_box = resolve_box_locked(ctx, box, 'usb')
 
     # Validate net exists before invoking remote command
     if _validate_usb_net(ctx, resolved_box, netname) is None:

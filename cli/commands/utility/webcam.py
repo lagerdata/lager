@@ -25,7 +25,7 @@ WEBCAM_TIMEOUT = 30
 
 def _get_box_ip_address(ctx: click.Context, box: str = None) -> str:
     """
-    Get the box IP address from various sources.
+    Get the box IP address from various sources, acquiring an ephemeral lock.
 
     Priority:
     1. Explicit --box option (check local boxes first)
@@ -34,9 +34,9 @@ def _get_box_ip_address(ctx: click.Context, box: str = None) -> str:
     Returns:
         IP address string
     """
-    from ...box_storage import resolve_and_validate_box
+    from ...core.net_helpers import resolve_box_locked
 
-    return resolve_and_validate_box(ctx, box)
+    return resolve_box_locked(ctx, box, 'webcam')
 
 
 def _resolve_box(ctx, box):

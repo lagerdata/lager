@@ -13,7 +13,7 @@ import json
 import click
 
 from ...core.group_usage import LagerGroup
-from ...core.net_helpers import resolve_box, post_box_command
+from ...core.net_helpers import resolve_box_locked, post_box_command
 
 
 @click.group(name='blufi', cls=LagerGroup)
@@ -43,7 +43,7 @@ def _print_json(value: dict) -> None:
 @click.option('--name-contains', required=False, help='Filter devices to those whose name contains this string')
 def scan(ctx, box, timeout, name_contains):
     """Scan for BluFi-capable BLE devices"""
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'blufi')
 
     click.secho(f"Scanning for BluFi devices for {timeout} seconds...", fg='green')
     result = _post_blufi(
@@ -79,7 +79,7 @@ def scan(ctx, box, timeout, name_contains):
 @click.argument('device_name', required=True)
 def connect(ctx, box, timeout, device_name):
     """Connect to a BluFi device and retrieve version and status"""
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'blufi')
 
     click.secho(f"Connecting to BluFi device: {device_name}", fg='green')
     result = _post_blufi(
@@ -108,7 +108,7 @@ def connect(ctx, box, timeout, device_name):
 @click.argument('device_name', required=True)
 def provision(ctx, box, timeout, ssid, password, device_name):
     """Provision WiFi credentials to a BluFi device"""
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'blufi')
 
     click.secho(f"Provisioning '{ssid}' to BluFi device: {device_name}", fg='green')
     # Provisioning blocks box-side through connect + security negotiation +
@@ -135,7 +135,7 @@ def provision(ctx, box, timeout, ssid, password, device_name):
 @click.argument('device_name', required=True)
 def wifi_scan(ctx, box, timeout, scan_timeout, device_name):
     """Scan for WiFi networks via a BluFi device"""
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'blufi')
 
     click.secho(f"Requesting WiFi scan via {device_name} (timeout={scan_timeout}s)...", fg='green')
     result = _post_blufi(
@@ -169,7 +169,7 @@ def wifi_scan(ctx, box, timeout, scan_timeout, device_name):
 @click.argument('device_name', required=True)
 def status(ctx, box, timeout, device_name):
     """Get WiFi connection status from a BluFi device"""
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'blufi')
 
     result = _post_blufi(
         ctx, box_ip, 'status',
@@ -193,7 +193,7 @@ def status(ctx, box, timeout, device_name):
 @click.argument('device_name', required=True)
 def version(ctx, box, timeout, device_name):
     """Get firmware version from a BluFi device"""
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'blufi')
 
     result = _post_blufi(
         ctx, box_ip, 'version',

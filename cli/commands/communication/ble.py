@@ -14,7 +14,7 @@ import json
 import click
 
 from ...core.group_usage import LagerGroup
-from ...core.net_helpers import resolve_box, post_box_command
+from ...core.net_helpers import resolve_box, resolve_box_locked, post_box_command
 
 
 @click.group(name='ble', cls=LagerGroup)
@@ -107,7 +107,7 @@ def scan(ctx, box, timeout, name_contains, name_exact, verbose):
         click.secho(f"Error: Timeout must be between {MIN_TIMEOUT} and {MAX_TIMEOUT} seconds, got {timeout}", fg='red', err=True)
         ctx.exit(1)
 
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'ble')
 
     click.secho(f"Scanning for BLE devices for {timeout} seconds...", fg='green')
     result = _post_ble(
@@ -149,7 +149,7 @@ def scan(ctx, box, timeout, name_contains, name_exact, verbose):
 def _info_or_connect(ctx, box, address, connect_style: bool):
     """Shared body for the info and connect commands (same box action)."""
     _validate_ble_address(ctx, address)
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'ble')
 
     verb = "Connecting to" if connect_style else "Getting info for"
     click.secho(f"{verb} BLE device: {address}", fg='green')
@@ -214,7 +214,7 @@ def disconnect(ctx, box, address):
         Disconnect from a BLE device
     """
     _validate_ble_address(ctx, address)
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'ble')
 
     click.secho(f"Disconnecting from BLE device: {address}", fg='green')
     result = _post_ble(ctx, box_ip, 'disconnect', http_timeout=45.0, address=address)

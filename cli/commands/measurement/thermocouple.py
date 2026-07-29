@@ -13,6 +13,7 @@ from ...context import get_default_net
 from ...core.net_group import NetCommand
 from ...core.net_helpers import (
     resolve_box,
+    resolve_box_locked,
     display_nets,
     post_net_command,
     validate_net_exists,
@@ -32,7 +33,7 @@ def thermocouple(ctx, box, netname, as_json):
     if netname is None:
         netname = get_default_net(ctx, 'thermocouple')
 
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'thermocouple')
 
     # If still no netname, list available thermocouple nets
     if netname is None:

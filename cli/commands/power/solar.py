@@ -18,12 +18,12 @@ from ...core.net_group import NetGroup
 # Import consolidated helpers from cli.core.net_helpers
 from ...core.net_helpers import (
     resolve_box,
+    resolve_box_locked,
     display_nets,
     post_net_command,
     NET_ROLES,
 )
 from ...context import get_default_net
-from ...box_storage import resolve_and_validate_box
 
 
 SOLAR_ROLE = NET_ROLES["solar"]  # "solar"
@@ -52,8 +52,8 @@ def _run_backend(ctx: click.Context, box: str | None, action: str, **params) -> 
     if box is None:
         box = ctx.obj.box
 
-    # Resolve and validate the box name
-    resolved_box = resolve_and_validate_box(ctx, box)
+    # Resolve and validate the box name, acquiring an ephemeral lock
+    resolved_box = resolve_box_locked(ctx, box, 'solar')
 
     # Every solar action re-asserts PV mode on the instrument (enable() with
     # settle retries), so widen the HTTP budget past the box-side proxy

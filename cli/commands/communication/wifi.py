@@ -14,7 +14,7 @@ import click
 
 # Import consolidated helpers from cli.core.net_helpers
 from ...core.group_usage import LagerGroup
-from ...core.net_helpers import resolve_box, post_box_command
+from ...core.net_helpers import resolve_box, resolve_box_locked, post_box_command
 
 # WiFi constraints
 MAX_SSID_LENGTH = 32  # IEEE 802.11 maximum SSID length
@@ -117,7 +117,7 @@ def status(ctx, box):
     """
         Get the current WiFi Status of the box
     """
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'wifi')
 
     result = _post_wifi(ctx, box_ip, 'status')
     interfaces = (result.get('value') or {}).get('interfaces', [])
@@ -145,7 +145,7 @@ def access_points(ctx, box, interface='wlan0'):
     # Validate interface name
     _validate_interface(ctx, interface)
 
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'wifi')
 
     click.secho(f"Scanning for WiFi networks on {interface}...", fg='green')
     result = _post_wifi(ctx, box_ip, 'scan', interface=interface)
@@ -173,7 +173,7 @@ def connect(ctx, box, ssid, interface, password=''):
     _validate_password(ctx, password)
     _validate_interface(ctx, interface)
 
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'wifi')
 
     click.secho(f"Connecting to WiFi network: {ssid}", fg='green')
     result = _post_wifi(ctx, box_ip, 'connect',
@@ -200,7 +200,7 @@ def delete_connection(ctx, box, yes, ssid):
         click.echo("Aborting")
         return
 
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'wifi')
 
     click.secho(f"Deleting WiFi connection: {ssid}", fg='green')
     result = _post_wifi(ctx, box_ip, 'delete', ssid=ssid, connection_name=ssid)

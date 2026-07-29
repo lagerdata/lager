@@ -13,7 +13,7 @@ import json
 import click
 
 from ...core.group_usage import LagerGroup
-from ...core.net_helpers import resolve_box, post_net_command, NET_HTTP_PORT
+from ...core.net_helpers import resolve_box, resolve_box_locked, post_net_command, NET_HTTP_PORT
 
 ROUTER_ROLE = "router"
 
@@ -64,7 +64,7 @@ def add_net(ctx, name, address, username, password, instrument, use_ssl, box):
     """
     import requests
 
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'router')
 
     net_data = {
         "name": name,
@@ -117,7 +117,7 @@ def connect(ctx, netname, box):
 
         lager router connect router1 --box mybox
     """
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'router')
     _run_router(ctx, box_ip, {"action": "connect", "netname": netname})
 
 
@@ -133,7 +133,7 @@ def interfaces(ctx, netname, box):
 
         lager router interfaces router1 --box mybox
     """
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'router')
     _run_router(ctx, box_ip, {"action": "interfaces", "netname": netname})
 
 
@@ -149,7 +149,7 @@ def wireless_interfaces(ctx, netname, box):
 
         lager router wireless-interfaces router1 --box mybox
     """
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'router')
     _run_router(ctx, box_ip, {"action": "wireless_interfaces", "netname": netname})
 
 
@@ -165,7 +165,7 @@ def wireless_clients(ctx, netname, box):
 
         lager router wireless-clients router1 --box mybox
     """
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'router')
     _run_router(ctx, box_ip, {"action": "wireless_clients", "netname": netname})
 
 
@@ -181,7 +181,7 @@ def dhcp_leases(ctx, netname, box):
 
         lager router dhcp-leases router1 --box mybox
     """
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'router')
     _run_router(ctx, box_ip, {"action": "dhcp_leases", "netname": netname})
 
 
@@ -197,7 +197,7 @@ def system_info(ctx, netname, box):
 
         lager router system-info router1 --box mybox
     """
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'router')
     _run_router(ctx, box_ip, {"action": "system_info", "netname": netname})
 
 
@@ -218,7 +218,7 @@ def reboot(ctx, netname, yes, box):
         click.secho("Aborted.", fg="yellow")
         return
 
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'router')
     _run_router(ctx, box_ip, {"action": "reboot", "netname": netname})
 
 
@@ -235,7 +235,7 @@ def enable_interface(ctx, netname, interface, box):
 
         lager router enable-interface router1 wlan1 --box mybox
     """
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'router')
     _run_router(ctx, box_ip, {"action": "enable_interface", "netname": netname,
                                "interface": interface})
 
@@ -253,7 +253,7 @@ def disable_interface(ctx, netname, interface, box):
 
         lager router disable-interface router1 wlan1 --box mybox
     """
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'router')
     _run_router(ctx, box_ip, {"action": "disable_interface", "netname": netname,
                                "interface": interface})
 
@@ -272,7 +272,7 @@ def block_internet(ctx, netname, box):
 
         lager router block-internet router1 --box mybox
     """
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'router')
     _run_router(ctx, box_ip, {"action": "block_internet", "netname": netname})
 
 
@@ -300,7 +300,7 @@ def reset(ctx, netname, ssid, password, yes, box):
         click.secho("Aborted.", fg="yellow")
         return
 
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'router')
     _run_router(ctx, box_ip, {
         "action": "reset_to_defaults",
         "netname": netname,
@@ -325,5 +325,5 @@ def run_cmd(ctx, netname, path, box):
 
         lager router run router1 /ip/address --box mybox
     """
-    box_ip = resolve_box(ctx, box)
+    box_ip = resolve_box_locked(ctx, box, 'router')
     _run_router(ctx, box_ip, {"action": "run", "netname": netname, "path": path})
