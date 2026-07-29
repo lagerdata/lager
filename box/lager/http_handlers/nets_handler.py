@@ -340,7 +340,7 @@ def register_nets_routes(app: Flask) -> None:
 
         Probes run in parallel (thread pool) with a per-probe timeout so one
         slow/offline instrument doesn't block the others. Roles without a
-        probe (debug, uart, spi, i2c, …) return ``state: null``.
+        dedicated probe (uart, spi, i2c, …) return ``state: null``.
         """
         try:
             nets = Net.list_saved()

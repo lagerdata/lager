@@ -86,6 +86,37 @@ def _box_request(ctx: click.Context, box_ip: str, method: str, path: str,
     ctx.exit(1)
 
 
+def _fetch_net_state(box_ip: str):
+    """GET /nets/state — live state for every saved net.
+
+    Returns the parsed list on success, or ``None`` when the box does not
+    serve the endpoint (HTTP 404/405 — older box image). Returns ``[]`` on
+    transient errors so the caller can still render the table with ``–``
+    placeholders.
+    """
+    import requests
+    from ...gateway_auth import auth_headers_for_box
+
+    url = f"http://{box_ip}:{NET_HTTP_PORT}/nets/state"
+    try:
+        resp = requests.get(url, headers=auth_headers_for_box(box_ip),
+                            timeout=_NETS_HTTP_TIMEOUT)
+    except (requests.ConnectionError, requests.Timeout):
+        return []
+    except requests.RequestException:
+        return []
+
+    if resp.status_code in (404, 405):
+        return None  # endpoint missing → signal caller to show upgrade hint
+
+    try:
+        data = resp.json()
+    except ValueError:
+        return []
+
+    return data if isinstance(data, list) else []
+
+
 def _fetch_saved_nets(ctx: click.Context, box_ip: str) -> List[dict]:
     """GET /nets/list — the full saved-net records."""
     records = _box_request(ctx, box_ip, "GET", "/nets/list")
@@ -704,11 +735,19 @@ def _channel_display(rec):
     return pin
 
 
-def _display_table(records):
+def _display_table(records, state_map: dict[str, str | None] | None = None):
+    """Render the grouped net table.
+
+    When *state_map* is provided an extra **State** column is inserted
+    after Channel showing the brief live state for each net (or ``–``
+    when unknown).
+    """
 
     if not records:
         click.secho("No saved nets found.", fg="yellow")
         return
+
+    show_state = state_map is not None
 
     # ----- group records by instrument|address ------------------------------
     by_instrument: dict[str, list[dict]] = {}
@@ -724,6 +763,8 @@ def _display_table(records):
 
     # ----- gather all rows for column width computation --------------------
     headers = ["Name", "Net Type", "Channel"]
+    if show_state:
+        headers.append("State")
     if has_any_script:
         headers.append("Script")
     if has_any_openocd:
@@ -750,6 +791,9 @@ def _display_table(records):
                 rec.get("role", ""),
                 _channel_display(rec),
             ]
+            if show_state:
+                brief = state_map.get(rec.get("name", ""))
+                row.append(brief if brief else "–")
             if has_any_script:
                 row.append("yes" if rec.get("jlink_script") else "")
             if has_any_openocd:
@@ -761,6 +805,8 @@ def _display_table(records):
     # ----- compute column widths --------------------------------------------
     term_w = shutil.get_terminal_size((120, 24)).columns
     min_w = [8, 10, 7]
+    if show_state:
+        min_w.append(5)
     if has_any_script:
         min_w.append(6)
     if has_any_openocd:
@@ -2113,14 +2159,16 @@ def state_cmd(ctx: click.Context, box: str | None, as_json: bool) -> None:
 
     # Fetch live state from /nets/state (box-side parallel probes).
     state_map: dict[str, str | None] = {}
-    try:
-        state_list = _box_request(ctx, resolved_box, "GET", "/nets/state")
-        if isinstance(state_list, list):
-            for entry in state_list:
-                state_map[entry.get("name", "")] = entry.get("state")
-    except SystemExit:
-        # Older box without /nets/state — fall through with empty map.
-        pass
+    state_list = _fetch_net_state(resolved_box)
+    if state_list is None:
+        click.secho(
+            "Note: this box does not support 'lager nets state' "
+            "(requires box version ≥ 0.33). Update with: lager update",
+            fg="yellow", err=True,
+        )
+    elif isinstance(state_list, list):
+        for entry in state_list:
+            state_map[entry.get("name", "")] = entry.get("state")
 
     if as_json:
         merged = []
@@ -2132,97 +2180,7 @@ def state_cmd(ctx: click.Context, box: str | None, as_json: bool) -> None:
         click.echo(json.dumps(merged, indent=2))
         return
 
-    _display_table_with_state(records, state_map)
-
-
-def _display_table_with_state(records, state_map: dict[str, str | None]):
-    """Render the grouped net table with an extra State column."""
-    if not records:
-        click.secho("No saved nets found.", fg="yellow")
-        return
-
-    by_instrument: dict[str, list[dict]] = {}
-    for rec in records:
-        instrument = rec.get("instrument", "") or ""
-        address = rec.get("address", "") or ""
-        key = f"{instrument}|{address}"
-        by_instrument.setdefault(key, []).append(rec)
-
-    has_any_script = any(rec.get("jlink_script") for rec in records)
-    has_any_openocd = any(rec.get("openocd_config") for rec in records)
-
-    headers = ["Name", "Net Type", "Channel", "State"]
-    if has_any_script:
-        headers.append("Script")
-    if has_any_openocd:
-        headers.append("OpenOCD")
-
-    all_rows = []
-    grouped_rows: list[tuple[str, list[list[str]]]] = []
-
-    for key in sorted(by_instrument.keys(), key=_natural_sort_key):
-        instrument, addr = key.split("|", 1)
-        display_name = instrument.replace("_", " ")
-        if addr and addr != "NA":
-            group_label = (display_name, f" [{addr}]")
-        else:
-            group_label = (display_name, "")
-
-        nets = sorted(
-            by_instrument[key],
-            key=lambda r: (r.get("role", ""), _natural_sort_key(r.get("name", ""))),
-        )
-        rows = []
-        for rec in nets:
-            brief = state_map.get(rec.get("name", ""))
-            state_str = brief if brief else "–"
-            row = [
-                rec.get("name", ""),
-                rec.get("role", ""),
-                _channel_display(rec),
-                state_str,
-            ]
-            if has_any_script:
-                row.append("yes" if rec.get("jlink_script") else "")
-            if has_any_openocd:
-                row.append("yes" if rec.get("openocd_config") else "")
-            rows.append(row)
-        all_rows.extend(rows)
-        grouped_rows.append((group_label, rows))
-
-    term_w = shutil.get_terminal_size((120, 24)).columns
-    min_w = [8, 10, 7, 5]
-    if has_any_script:
-        min_w.append(6)
-    if has_any_openocd:
-        min_w.append(7)
-    col_w = [
-        max(min_w[i], len(headers[i]), max(len(str(r[i])) for r in all_rows))
-        for i in range(len(headers))
-    ]
-
-    def fmt(row):
-        return "  ".join(f"{row[i]:<{col_w[i]}}" for i in range(len(col_w)))
-
-    total_width = sum(col_w) + 2 * (len(col_w) - 1)
-    separator_width = min(total_width, term_w)
-
-    indent = "    "
-    click.echo(indent + fmt(headers))
-    click.echo("=" * (separator_width + len(indent)))
-
-    for i, (group_label, rows) in enumerate(grouped_rows):
-        if i > 0:
-            click.echo()
-        label_bold, label_rest = group_label
-        click.secho(label_bold, bold=True, nl=False)
-        click.echo(label_rest)
-        for j, row in enumerate(rows):
-            is_last = j == len(rows) - 1
-            prefix = "└── " if is_last else "├── "
-            click.echo(prefix, nl=False)
-            click.secho(f"{row[0]:<{col_w[0]}}", bold=True, nl=False)
-            click.echo("  " + "  ".join(f"{row[i]:<{col_w[i]}}" for i in range(1, len(col_w))))
+    _display_table(records, state_map=state_map)
 
 
 @nets.command("show", help="Show full details of a saved net, including metadata")
