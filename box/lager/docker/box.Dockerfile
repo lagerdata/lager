@@ -114,7 +114,12 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 	'rich' \
 	'cbor2' \
 	'websocket-client>=1.6.0' \
-	'mcp>=1.0.0' \
+	# Cap below 2.x: server.py still uses the v1 FastMCP surface
+	# (mcp.settings.host/port/transport_security + streamable_http_app()
+	# with no kwargs). mcp 2.0 moved those onto run()/streamable_http_app()
+	# and renamed FastMCP → MCPServer; an unconstrained `>=1.0.0` started
+	# resolving to 2.0.0 and crash-looping the on-box MCP service.
+	'mcp>=1.0.0,<2' \
 	'git+https://github.com/Vaskivskyi/asusrouter.git@8de97bfa8ffe3efa2f6d1ec30bb95187d13ab37a'
 
 RUN git config --global http.version HTTP/1.1

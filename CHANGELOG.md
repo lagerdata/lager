@@ -2,6 +2,22 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [0.33.1] - 2026-07-29
+
+### Fixed
+
+- **The box's MCP server no longer fails to start after `mcp` 2.0.0 was
+  published.** The box image asked for `mcp>=1.0.0` with no upper bound, so
+  any image built after the SDK's 2.0.0 release installed it. Version 2.0
+  renamed `FastMCP` to `MCPServer` and moved transport configuration
+  (`host`, `port`, `transport_security`) off `mcp.settings` and onto
+  `run()` / `streamable_http_app()`; `box/lager/mcp/server.py` still uses
+  the 1.x form, so the service raised on startup and nothing ever listened
+  on port 8100. Agent clients pointed at `http://<box-ip>:8100/mcp` saw
+  connection timeouts. Both the box image and the CLI's optional `mcp`
+  extra now cap the dependency below 2.0 until the server is ported to the
+  new API. Boxes pick the fix up on the next `lager update`.
+
 ## [0.33.0] - 2026-07-28
 
 ### Added
