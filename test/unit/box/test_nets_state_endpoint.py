@@ -120,13 +120,21 @@ class GroupingTests(unittest.TestCase):
             {"role": "usb", "instrument": "Acroname_8Port", "address": "USB0::B"})
         self.assertNotEqual(a, b)
 
-    def test_role_is_part_of_the_key(self):
-        # Batch probes are per-role, so a gpio and an adc net on one LabJack
-        # cannot share a work unit even though they share a device.
+    def test_labjack_gpio_adc_dac_share_one_group(self):
         gpio = nets_handler._group_key(
             {"role": "gpio", "instrument": "LabJack_T7", "address": "ANY"})
         adc = nets_handler._group_key(
             {"role": "adc", "instrument": "LabJack_T7", "address": "ANY"})
+        dac = nets_handler._group_key(
+            {"role": "dac", "instrument": "LabJack_T7", "address": "ANY"})
+        self.assertEqual(gpio, adc)
+        self.assertEqual(adc, dac)
+
+    def test_non_labjack_roles_keep_separate_groups(self):
+        gpio = nets_handler._group_key(
+            {"role": "gpio", "instrument": "RaspberryPi", "address": "ANY"})
+        adc = nets_handler._group_key(
+            {"role": "adc", "instrument": "RaspberryPi", "address": "ANY"})
         self.assertNotEqual(gpio, adc)
 
 
@@ -150,17 +158,20 @@ class ProbeGroupTests(unittest.TestCase):
         self.assertEqual([e["state"] for e in out], ["enabled"] * 3)
 
     def test_falls_back_to_per_net_probe_without_a_batch_form(self):
+        """Non-LabJack GPIO nets fall through to per-net probes."""
         seen = []
 
-        def fake_probe(name, rec):
+        def fake_probe(name):
             seen.append(name)
             return "HIGH (1)"
 
+        rpi_gpio = {"name": "rpi1", "role": "gpio", "instrument": "RaspberryPi",
+                     "address": "ANY", "pin": "GPIO17"}
         with patch.dict(nets_handler._BRIEF_PROBES, {"gpio": fake_probe}), \
              patch.dict(nets_handler._BATCH_PROBES, {}, clear=True):
-            out = nets_handler._probe_group([SAVED_NETS[4]])
+            out = nets_handler._probe_group([rpi_gpio])
 
-        self.assertEqual(seen, ["gpi1"])
+        self.assertEqual(seen, ["rpi1"])
         self.assertEqual(out[0]["state"], "HIGH (1)")
 
     def test_raising_batch_probe_yields_nulls_not_an_exception(self):
@@ -173,6 +184,21 @@ class ProbeGroupTests(unittest.TestCase):
 
         self.assertEqual([e["state"] for e in out], [None, None, None])
         self.assertEqual([e["name"] for e in out], ["usb1", "usb2", "usb3"])
+
+    def test_labjack_batch_called_for_cross_role_group(self):
+        recs = [
+            {"name": "g1", "role": "gpio", "instrument": "LabJack_T7",
+             "address": "ANY", "pin": "EIO0"},
+            {"name": "a1", "role": "adc", "instrument": "LabJack_T7",
+             "address": "ANY", "pin": "0"},
+        ]
+        with patch.object(nets_handler, "_brief_labjack_batch",
+                          return_value={"g1": "HIGH (1)", "a1": "3.3V"}) as mock:
+            out = nets_handler._probe_group(recs)
+
+        mock.assert_called_once_with(recs)
+        self.assertEqual(out[0]["state"], "HIGH (1)")
+        self.assertEqual(out[1]["state"], "3.3V")
 
     def test_role_with_no_probe_at_all_is_null(self):
         out = nets_handler._probe_group([SAVED_NETS[5]])  # uart
@@ -202,8 +228,8 @@ class EndpointTests(unittest.TestCase):
         with patch.object(nets_handler.Net, "list_saved", return_value=SAVED_NETS), \
              patch.dict(nets_handler._BATCH_PROBES,
                         {"usb": lambda names: {n: "enabled" for n in names}}), \
-             patch.dict(nets_handler._BRIEF_PROBES,
-                        {"gpio": lambda n, rec: "LOW (0)"}):
+             patch.object(nets_handler, "_brief_labjack_batch",
+                          return_value={"gpi1": "LOW (0)"}):
             resp = self.client.get('/nets/state')
 
         self.assertEqual(resp.status_code, 200)
@@ -231,7 +257,8 @@ class EndpointTests(unittest.TestCase):
             with patch.object(nets_handler, "_STATE_TIMEOUT", 0.4), \
                  patch.object(nets_handler.Net, "list_saved", return_value=SAVED_NETS), \
                  patch.dict(nets_handler._BATCH_PROBES, {"usb": wedged}), \
-                 patch.dict(nets_handler._BRIEF_PROBES, {"gpio": lambda n, rec: "LOW (0)"}):
+                 patch.object(nets_handler, "_brief_labjack_batch",
+                             return_value={"gpi1": "LOW (0)"}):
                 started = time.monotonic()
                 resp = self.client.get('/nets/state')
                 elapsed = time.monotonic() - started
@@ -260,7 +287,8 @@ class EndpointTests(unittest.TestCase):
 
         with patch.object(nets_handler.Net, "list_saved", return_value=SAVED_NETS), \
              patch.dict(nets_handler._BATCH_PROBES, {"usb": boom}), \
-             patch.dict(nets_handler._BRIEF_PROBES, {"gpio": lambda n, rec: "HIGH (1)"}):
+             patch.object(nets_handler, "_brief_labjack_batch",
+                         return_value={"gpi1": "HIGH (1)"}):
             resp = self.client.get('/nets/state')
 
         self.assertEqual(resp.status_code, 200)
@@ -294,82 +322,90 @@ class EndpointTests(unittest.TestCase):
                                 "the two hubs should have been probed in parallel")
 
 
-class GpioReadSafetyTests(unittest.TestCase):
-    """A state *display* must not reconfigure a pin.
+class LabJackBatchProbeTests(unittest.TestCase):
+    """_brief_labjack_batch delegates to hardware_service /labjack/batch_read.
 
-    On a LabJack T7, eReadName on a DIO channel reconfigures that pin as an
-    input. io/gpio/labjack_t7.py guards only FIO pins (direction check, then
-    DIO_STATE when the pin is an output); _get_pin_number returns None for
-    anything not FIO<n>, so EIO/CIO/MIO take the unguarded direct read. A pin
-    holding a target in reset would be silently released by a state sweep.
-
-    Pin names below are a real bench layout: 23 GPIO nets on one T7, of which
-    only FIO0-7 are safe to read.
+    The batch probe sends one HTTP POST to hardware_service (port 8080) which
+    owns the LabJack handle.  This avoids the cross-process USB contention
+    that would occur if box_http_server (port 9000) opened its own LJM handle.
     """
 
-    def _rec(self, pin, instrument="LabJack_T7"):
-        return {"name": "g", "role": "gpio", "instrument": instrument,
-                "address": "ANY", "pin": pin}
+    MIXED_BENCH = [
+        {"name": "gpio1", "role": "gpio", "instrument": "LabJack_T7",
+         "address": "ANY", "pin": "EIO0"},
+        {"name": "gpio2", "role": "gpio", "instrument": "LabJack_T7",
+         "address": "ANY", "pin": "CIO3"},
+        {"name": "adc1", "role": "adc", "instrument": "LabJack_T7",
+         "address": "ANY", "pin": "0"},
+        {"name": "dac1", "role": "dac", "instrument": "LabJack_T7",
+         "address": "ANY", "pin": "0"},
+    ]
 
-    def test_fio_pins_are_safe(self):
-        for pin in ["FIO0", "FIO7", "fio3"]:
-            self.assertTrue(
-                nets_handler._gpio_read_is_side_effect_free(self._rec(pin)), pin)
+    def _mock_post(self, return_json, status_code=200):
+        resp = MagicMock()
+        resp.ok = (status_code == 200)
+        resp.json.return_value = return_json
+        return resp
 
-    def test_bare_index_is_treated_as_fio(self):
-        self.assertTrue(
-            nets_handler._gpio_read_is_side_effect_free(self._rec("5")))
+    def test_sends_one_http_call_with_all_nets(self):
+        expected = {"gpio1": "HIGH (1)", "gpio2": "LOW (0)",
+                    "adc1": "3.3012V", "dac1": "1.5000V"}
+        import requests as _req
+        with patch.object(_req, "post",
+                          return_value=self._mock_post(expected)) as mock:
+            out = nets_handler._brief_labjack_batch(self.MIXED_BENCH)
 
-    def test_eio_cio_mio_are_not_safe(self):
-        for pin in ["EIO0", "EIO7", "CIO0", "CIO3", "MIO0", "MIO2", "cio1"]:
-            self.assertFalse(
-                nets_handler._gpio_read_is_side_effect_free(self._rec(pin)), pin)
+        self.assertEqual(out, expected)
+        mock.assert_called_once()
+        payload = mock.call_args[1]["json"]["nets"]
+        self.assertEqual(len(payload), 4)
 
-    def test_non_labjack_backends_are_left_alone(self):
-        # The hazard is specific to the T7 driver's unguarded path.
-        self.assertTrue(nets_handler._gpio_read_is_side_effect_free(
-            self._rec("GPIO17", instrument="RaspberryPi")))
+    def test_http_failure_returns_all_none(self):
+        import requests as _req
+        with patch.object(_req, "post", side_effect=_req.ConnectionError("refused")):
+            out = nets_handler._brief_labjack_batch(self.MIXED_BENCH)
 
-    def test_unsafe_pin_reports_null_without_touching_the_device(self):
-        called = []
+        for rec in self.MIXED_BENCH:
+            self.assertIsNone(out[rec["name"]])
 
-        def should_not_run(netname, role):
-            called.append(netname)
-            raise AssertionError("the probe must not open the device")
+    def test_non_200_returns_all_none(self):
+        import requests as _req
+        with patch.object(_req, "post",
+                          return_value=self._mock_post({}, status_code=500)):
+            out = nets_handler._brief_labjack_batch(self.MIXED_BENCH)
 
-        with patch.object(nets_handler, "_proxy", should_not_run, create=True):
-            out = nets_handler._brief_gpio("gpio5", "gpio", self._rec("EIO0"))
+        for rec in self.MIXED_BENCH:
+            self.assertIsNone(out[rec["name"]])
 
-        self.assertIsNone(out)
-        self.assertEqual(called, [], "no device access for an unsafe pin")
-
-    def test_endpoint_reports_null_for_unsafe_pins_and_reads_safe_ones(self):
-        nets = [
-            {"name": "gpio1", "role": "gpio", "instrument": "LabJack_T7",
-             "address": "ANY", "pin": "CIO0"},
-            {"name": "gpio5", "role": "gpio", "instrument": "LabJack_T7",
-             "address": "ANY", "pin": "EIO0"},
-            {"name": "gpio16", "role": "gpio", "instrument": "LabJack_T7",
-             "address": "ANY", "pin": "FIO0"},
-        ]
-        reads = []
-
-        def fake_proxy(netname, role, timeout=None):
-            reads.append(netname)
-            dev = MagicMock()
-            dev.input.return_value = 1
-            return dev
+    def test_endpoint_routes_labjack_to_batch(self):
+        """Full endpoint test: LabJack nets go through the batch path."""
+        nets = self.MIXED_BENCH
+        batch_result = {"gpio1": "HIGH (1)", "gpio2": "LOW (0)",
+                        "adc1": "3.3012V", "dac1": "1.5000V"}
 
         with patch.object(nets_handler.Net, "list_saved", return_value=nets), \
-             patch("lager.http_handlers.net_command._proxy", fake_proxy):
+             patch.object(nets_handler, "_brief_labjack_batch",
+                          return_value=batch_result) as mock_batch:
             resp = _make_client().get('/nets/state')
 
+        self.assertEqual(resp.status_code, 200)
+        mock_batch.assert_called_once()
         by_name = {e["name"]: e["state"] for e in resp.get_json()}
-        self.assertIsNone(by_name["gpio1"])
-        self.assertIsNone(by_name["gpio5"])
-        self.assertEqual(by_name["gpio16"], "HIGH (1)")
-        # Only the FIO net was ever read.
-        self.assertEqual(reads, ["gpio16"])
+        self.assertEqual(by_name["gpio1"], "HIGH (1)")
+        self.assertEqual(by_name["gpio2"], "LOW (0)")
+        self.assertEqual(by_name["adc1"], "3.3012V")
+        self.assertEqual(by_name["dac1"], "1.5000V")
+
+    def test_batch_failure_yields_nulls_not_500(self):
+        nets = self.MIXED_BENCH
+        with patch.object(nets_handler.Net, "list_saved", return_value=nets), \
+             patch.object(nets_handler, "_brief_labjack_batch",
+                          side_effect=RuntimeError("T7 gone")):
+            resp = _make_client().get('/nets/state')
+
+        self.assertEqual(resp.status_code, 200)
+        for entry in resp.get_json():
+            self.assertIsNone(entry["state"])
 
 
 class UsbBatchProbeTests(unittest.TestCase):
