@@ -264,6 +264,28 @@ class YKUSHUSBNet(USBNet):
         self._validate_port(port)
         return self._with_device(lambda dev: self._read_enabled(dev, port))
 
+    def states(self, ports) -> dict:                           # type: ignore[override]
+        """Read every requested port inside ONE device session.
+
+        ``_with_device`` opens a fresh handle, operates, and closes, all under
+        this hub's lock. Reading ports one net at a time therefore pays that
+        whole cycle per port; here it is paid once.
+
+        A port that fails validation or reads badly comes back as None rather
+        than taking the other ports down with it.
+        """
+        def _read_all(dev):
+            out = {}
+            for port in ports:
+                try:
+                    self._validate_port(port)
+                    out[port] = self._read_enabled(dev, port)
+                except Exception:
+                    out[port] = None
+            return out
+
+        return self._with_device(_read_all)
+
     def toggle(self, net_name: str, port: int) -> bool:        # type: ignore[override]
         self._validate_port(port)
 

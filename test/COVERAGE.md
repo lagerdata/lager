@@ -31,13 +31,13 @@ A job only *blocks* a merge once its status context is listed in branch ruleset 
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1050 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 1215 |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1055 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 1237 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 79 (+4 skipped) |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 91 (+1 skipped) |
-| | **Total gated** | **2706** |
+| | **Total gated** | **2733** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -407,9 +407,9 @@ test/
 ├── mcp/                  # MCP server tests (pytest)
 │   ├── unit/             # 11 files: mocked, no hardware -- GATED
 │   └── integration/      #  1 file: live hardware required
-├── unit/                 # Local unit tests (109 files) -- ALL GATED
-│   ├── box/              # 57 files: box-side Python unit tests
-│   ├── cli/              # 41 files: CLI Python unit tests
+├── unit/                 # Local unit tests (113 files) -- ALL GATED
+│   ├── box/              # 60 files: box-side Python unit tests
+│   ├── cli/              # 42 files: CLI Python unit tests
 │   ├── measurement/      #  4 files: Joulescope / PPK2 / watt unit tests
 │   ├── blufi/            #  2 files: BluFi protocol unit tests
 │   └── test_*.py         #  5 files: root-level unit tests
@@ -426,9 +426,9 @@ cli/tests/                #  5 files: 3 pytest suites + test_io_imports.py (GATE
                           #           `unit (cli)`), plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 109 files)
+### Local Unit Tests (`test/unit/` -- 113 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 57 files)
+#### Box Unit Tests (`test/unit/box/` -- 60 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported, and stubs the two third-party modules that are neither guarded nor installed
@@ -476,6 +476,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_net_command_handler.py` | Generic POST /net/command Flask handler dispatch by role and error handling |
 | `test_net_save_uart_identity.py` | `usb_identity_for_net_record`: durable USB identity snapshot at UART net save time |
 | `test_nets_display.py` | `lager nets` table no-truncation for long UART pins and VISA addresses |
+| `test_nets_state_endpoint.py` | `GET /nets/state`: a wedged instrument yields nulls rather than a 500 or a blocked request, and nets are probed per instrument rather than per net |
 | `test_openocd_dispatch.py` | OpenOCD interface .cfg dispatch and user-cfg override behavior |
 | `test_probes_visa_parsing.py` | VISA address parsing for empty-serial FTDI probes |
 | `test_python_service_breakpoint.py` | Breakpoint endpoints on box python/service.py POST routes |
@@ -486,15 +487,17 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_serial_id_cables.py` | tty enumeration and resolution via fake /sys tree lookup |
 | `test_ssh_runner.py` | SSH key selection and auth fallback logic |
 | `test_ssh_setup.py` | `lager ssh-setup` command and SSH key provisioning with TTY passthrough |
+| `test_stream_teardown.py` | `lager python` child reaped when the client disconnects mid-run, instead of orphaning at 100% CPU holding a device flock |
 | `test_supply_command_handler.py` | `POST /supply/command` handler, covering v0.32.0 hardware-found regressions |
 | `test_uart_bridge_reconnect.py` | UARTBridge re-enumeration healing after an adapter changes its /dev/tty node |
 | `test_uart_session_cleanup.py` | Websocket UART read loop heals in place instead of stopping on a failed read |
+| `test_usb_devices_dfu.py` | `GET /usb/devices` sysfs enumeration and `POST /usb/dfu` list/download/detach argument building |
 | `test_usb_scanner_custom.py` | Custom-device surfacing in box HTTP scanner GET /instruments/list |
 | `test_usb_scanner_uart_fallback.py` | UART enumeration without USB serial by matching sysfs path |
 | `test_webcam_detection.py` | sysfs-based webcam detection (`_by_camera`) against a fake sysfs tree |
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 41 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 42 files)
 
 | File | What it tests |
 |------|---------------|
@@ -521,6 +524,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_nets_assign.py` | `lager nets assign` flow with custom-device backend and net creation |
 | `test_nets_channel_display.py` | `lager nets` Channel column rule for uart nets carrying a durable `live_path` |
 | `test_nets_debug_scripts.py` | Smart `lager nets set-script` auto-detection and probe/file reconciliation |
+| `test_nets_state_display.py` | `lager nets state` State column rendering, including the dash shown for a net whose state is unknown |
 | `test_nets_tui_startup.py` | Nets TUI startup regressions: mixed net types, empty state, unsaved placeholders |
 | `test_performance_improvements.py` | Config caching, connection pooling |
 | `test_python_auto_lock.py` | `lager python` auto-lock wrapper idempotency, atexit, and heartbeat thread |
