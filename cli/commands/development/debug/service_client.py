@@ -202,11 +202,10 @@ class DebugServiceClient:
         """Flash firmware to target.
 
         `jlink_script` / `openocd_config` are sent for the same reason
-        `connect` sends them. Without them the box resolves the script itself
-        and its last resort is a single shared temp file
-        (``/tmp/lager_jlink_script.JLinkScript``) written by whichever net
-        connected most recently -- so flashing net A could silently run net
-        B's script. Sending it makes the flash use this net's script.
+        `connect` sends them: without them the box resolves the script itself,
+        and its last resort is whatever this net wrote on a previous connect --
+        which may be older than the caller thinks. Sending it makes the flash
+        use the script this invocation actually resolved.
         """
         # Read and base64-encode file content
         with open(firmware_file, 'rb') as f:

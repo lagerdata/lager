@@ -119,6 +119,13 @@ class MaterialiseUserScriptTests(unittest.TestCase):
             debug_net._SHARED_PATH_FOR_SUFFIX[suffix] = os.path.join(
                 self._tmpdir, f'lager_user{suffix}',
             )
+        # J-Link scripts are per net now (issue #195), resolved through
+        # api.script_path_for_net rather than the shared map, so that template
+        # needs redirecting too or these tests write to the real /tmp.
+        from lager.debug import api as _api
+        self._real_tmpl = _api._SCRIPT_PATH_TEMPLATE
+        _api._SCRIPT_PATH_TEMPLATE = os.path.join(
+            self._tmpdir, 'lager_jlink_script_{}.JLinkScript')
 
     def _addCleanup_remove(self, path):
         import shutil
@@ -127,6 +134,8 @@ class MaterialiseUserScriptTests(unittest.TestCase):
     def tearDown(self):
         for suffix, real in self._patched.items():
             debug_net._SHARED_PATH_FOR_SUFFIX[suffix] = real
+        from lager.debug import api as _api
+        _api._SCRIPT_PATH_TEMPLATE = self._real_tmpl
 
     def _b64(self, blob):
         return base64.b64encode(blob).decode('ascii')
@@ -144,16 +153,18 @@ class MaterialiseUserScriptTests(unittest.TestCase):
         with open(path, 'rb') as f:
             self.assertEqual(f.read(), cfg_bytes)
 
-    def test_jlink_script_b64_writes_shared_script(self):
+    def test_jlink_script_b64_writes_per_net_script(self):
         # J-Link scripts are usually short ASCII; bytes round-trip is what
         # matters, not the file format.
         script_bytes = b'/* JLink script */\nh\n'
-        net = {'jlink_script': self._b64(script_bytes)}
+        net = {'name': 'debug1', 'jlink_script': self._b64(script_bytes)}
         path = debug_net.materialise_user_script(
             net, explicit_key='jlink_script_path',
             b64_key='jlink_script', suffix='.JLinkScript',
         )
-        self.assertTrue(path.endswith('lager_user.JLinkScript'))
+        # Per net (issue #195), not one file every net and every later
+        # operation shares.
+        self.assertTrue(path.endswith('lager_jlink_script_debug1.JLinkScript'))
         with open(path, 'rb') as f:
             self.assertEqual(f.read(), script_bytes)
 
@@ -400,13 +411,25 @@ class RepointJlinkScriptTests(unittest.TestCase):
             debug_net._SHARED_PATH_FOR_SUFFIX[suffix] = os.path.join(
                 self._tmpdir, f'lager_user{suffix}',
             )
+        # J-Link scripts are per net now (issue #195), resolved through
+        # api.script_path_for_net rather than the shared map, so that template
+        # needs redirecting too or these tests write to the real /tmp.
+        from lager.debug import api as _api
+        self._real_tmpl = _api._SCRIPT_PATH_TEMPLATE
+        _api._SCRIPT_PATH_TEMPLATE = os.path.join(
+            self._tmpdir, 'lager_jlink_script_{}.JLinkScript')
 
     def tearDown(self):
         for suffix, real in self._patched.items():
             debug_net._SHARED_PATH_FOR_SUFFIX[suffix] = real
+        from lager.debug import api as _api
+        _api._SCRIPT_PATH_TEMPLATE = self._real_tmpl
 
-    def _shared(self):
-        return debug_net._SHARED_PATH_FOR_SUFFIX['.JLinkScript']
+    def _shared(self, net=None):
+        """This net's script path. Named _shared for history; it is per net
+        now -- that change is the point of issue #195."""
+        from lager.debug import api as _api
+        return _api.script_path_for_net(net)
 
     def _write_source(self, blob):
         path = os.path.join(self._tmpdir, 'override.JLinkScript')
@@ -414,54 +437,54 @@ class RepointJlinkScriptTests(unittest.TestCase):
             f.write(blob)
         return path
 
-    def test_existing_path_copies_bytes_to_shared(self):
+    def test_existing_path_copies_bytes_to_per_net_path(self):
         blob = b'/* per-connect */\nvoid ResetTarget(void) {}\n'
         src = self._write_source(blob)
-        result = debug_net._repoint_jlink_script(src)
-        # Copy-not-alias: the return is the SHARED path, never the input path.
-        self.assertEqual(result, self._shared())
+        result = debug_net._repoint_jlink_script(src, 'debug1')
+        # Copy-not-alias: the return is THIS NET's path, never the input path.
+        self.assertEqual(result, self._shared('debug1'))
         self.assertNotEqual(result, src)
-        with open(self._shared(), 'rb') as f:
+        with open(self._shared('debug1'), 'rb') as f:
             self.assertEqual(f.read(), blob)
 
-    def test_base64_blob_writes_shared(self):
+    def test_base64_blob_writes_per_net(self):
         blob = b'void InitTarget(void) {}\n'
         result = debug_net._repoint_jlink_script(
-            base64.b64encode(blob).decode('ascii'))
-        self.assertEqual(result, self._shared())
-        with open(self._shared(), 'rb') as f:
+            base64.b64encode(blob).decode('ascii'), 'debug1')
+        self.assertEqual(result, self._shared('debug1'))
+        with open(self._shared('debug1'), 'rb') as f:
             self.assertEqual(f.read(), blob)
 
-    def test_long_base64_blob_writes_shared(self):
+    def test_long_base64_blob_writes_per_net(self):
         # A realistic full script blob far exceeds NAME_MAX (255); the
         # os.path.exists() probe must not choke on it (it swallows OSError and
         # returns False), so the base64 branch still runs.
         blob = (b'/* big script */\n' + b'void ResetTarget(void) {}\n' * 300)
         encoded = base64.b64encode(blob).decode('ascii')
         self.assertGreater(len(encoded), 4096)
-        result = debug_net._repoint_jlink_script(encoded)
-        self.assertEqual(result, self._shared())
-        with open(self._shared(), 'rb') as f:
+        result = debug_net._repoint_jlink_script(encoded, 'debug1')
+        self.assertEqual(result, self._shared('debug1'))
+        with open(self._shared('debug1'), 'rb') as f:
             self.assertEqual(f.read(), blob)
 
     def test_none_and_empty_are_noops(self):
         for bad in (None, '', '   ', 42):
             with self.subTest(value=bad):
-                self.assertIsNone(debug_net._repoint_jlink_script(bad))
-                self.assertFalse(os.path.exists(self._shared()))
+                self.assertIsNone(debug_net._repoint_jlink_script(bad, 'debug1'))
+                self.assertFalse(os.path.exists(self._shared('debug1')))
 
     def test_nonexistent_path_preserves_prior_content(self):
-        with open(self._shared(), 'wb') as f:
+        with open(self._shared('debug1'), 'wb') as f:
             f.write(b'OLD')
         # The '.' is outside the base64 alphabet, so validate=True rejects it.
         self.assertIsNone(
-            debug_net._repoint_jlink_script('/does/not/exist.JLinkScript'))
-        with open(self._shared(), 'rb') as f:
+            debug_net._repoint_jlink_script('/does/not/exist.JLinkScript', 'debug1'))
+        with open(self._shared('debug1'), 'rb') as f:
             self.assertEqual(f.read(), b'OLD')
 
     def test_garbage_not_base64_is_noop(self):
-        self.assertIsNone(debug_net._repoint_jlink_script('not base64 at all!!!'))
-        self.assertFalse(os.path.exists(self._shared()))
+        self.assertIsNone(debug_net._repoint_jlink_script('not base64 at all!!!', 'debug1'))
+        self.assertFalse(os.path.exists(self._shared('debug1')))
 
     def test_existing_path_wins_over_base64_lookalike(self):
         # 'YWJj' is valid base64 ('abc') — but if a file by that name exists,
@@ -472,10 +495,10 @@ class RepointJlinkScriptTests(unittest.TestCase):
         cwd = os.getcwd()
         os.chdir(self._tmpdir)
         try:
-            self.assertEqual(debug_net._repoint_jlink_script('YWJj'), self._shared())
+            self.assertEqual(debug_net._repoint_jlink_script('YWJj', 'debug1'), self._shared('debug1'))
         finally:
             os.chdir(cwd)
-        with open(self._shared(), 'rb') as f:
+        with open(self._shared('debug1'), 'rb') as f:
             self.assertEqual(f.read(), b'X')
 
 
@@ -565,16 +588,26 @@ class DebugNetConnectScriptTests(unittest.TestCase):
             self.full._SHARED_PATH_FOR_SUFFIX[suffix] = os.path.join(
                 self._tmpdir, f'lager_user{suffix}',
             )
+        # J-Link scripts resolve per net through api.script_path_for_net now
+        # (issue #195), so redirect that template too.
+        from lager.debug import api as _api
+        self._real_tmpl = _api._SCRIPT_PATH_TEMPLATE
+        _api._SCRIPT_PATH_TEMPLATE = os.path.join(
+            self._tmpdir, 'lager_jlink_script_{}.JLinkScript')
         self.debug_stub.connect_jlink.reset_mock()
 
     def tearDown(self):
         for suffix, real in self._patched.items():
             self.full._SHARED_PATH_FOR_SUFFIX[suffix] = real
+        from lager.debug import api as _api
+        _api._SCRIPT_PATH_TEMPLATE = self._real_tmpl
 
-    def _shared(self):
-        return self.full._SHARED_PATH_FOR_SUFFIX['.JLinkScript']
+    def _shared(self, net=None):
+        """This net's script path (per net since issue #195)."""
+        from lager.debug import api as _api
+        return _api.script_path_for_net(net)
 
-    def test_connect_repoints_and_passes_shared_path(self):
+    def test_connect_repoints_and_passes_per_net_path(self):
         blob = b'void ResetTarget(void) { /* halt in place */ }\n'
         src = os.path.join(self._tmpdir, 'override.JLinkScript')
         with open(src, 'wb') as f:
@@ -582,8 +615,9 @@ class DebugNetConnectScriptTests(unittest.TestCase):
         dbg = self.full.DebugNet('dbg', {'channel': 'DA14695'})
         dbg.connect(script=src, force=True)
         kwargs = self.debug_stub.connect_jlink.call_args.kwargs
-        self.assertEqual(kwargs['script_file'], self._shared())
-        with open(self._shared(), 'rb') as f:
+        # Scoped to the net that connected, not to a path every net shares.
+        self.assertEqual(kwargs['script_file'], self._shared('dbg'))
+        with open(self._shared('dbg'), 'rb') as f:
             self.assertEqual(f.read(), blob)
 
     def test_connect_without_script_keeps_existing(self):
@@ -592,7 +626,7 @@ class DebugNetConnectScriptTests(unittest.TestCase):
         dbg.connect()
         kwargs = self.debug_stub.connect_jlink.call_args.kwargs
         self.assertEqual(kwargs['script_file'], '/some/prior.JLinkScript')
-        self.assertFalse(os.path.exists(self._shared()))
+        self.assertFalse(os.path.exists(self._shared('dbg')))
 
     def test_connect_bad_script_keeps_existing(self):
         dbg = self.full.DebugNet('dbg', {'channel': 'DA14695'})
@@ -600,6 +634,77 @@ class DebugNetConnectScriptTests(unittest.TestCase):
         dbg.connect(script='/missing/override.JLinkScript')
         kwargs = self.debug_stub.connect_jlink.call_args.kwargs
         self.assertEqual(kwargs['script_file'], '/some/prior.JLinkScript')
+
+
+class DebugNetDisconnectClearsScriptTests(unittest.TestCase):
+    """``DebugNet.disconnect()`` drops this net's script.
+
+    The HTTP ``/debug/disconnect`` path clears it; this in-box Python API path
+    did not, so a ``lager python`` run left its script behind for whatever ran
+    on the net next. Same leak, same fix (issue #195).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.full, cls.debug_stub = _load_debug_net_full()
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        import shutil
+        self.addCleanup(lambda: shutil.rmtree(self._tmpdir, ignore_errors=True))
+        from lager.debug import api as _api
+        self._real_tmpl = _api._SCRIPT_PATH_TEMPLATE
+        _api._SCRIPT_PATH_TEMPLATE = os.path.join(
+            self._tmpdir, 'lager_jlink_script_{}.JLinkScript')
+        self.debug_stub.disconnect.reset_mock()
+        self.debug_stub.disconnect.side_effect = None
+        self.debug_stub.disconnect.return_value = {'stopped': True}
+
+    def tearDown(self):
+        from lager.debug import api as _api
+        _api._SCRIPT_PATH_TEMPLATE = self._real_tmpl
+
+    def _write_script_for(self, net):
+        from lager.debug import api as _api
+        path = _api.script_path_for_net(net)
+        with open(path, 'wb') as f:
+            f.write(b'int InitTarget(void) { return 0; }\n')
+        return path
+
+    def test_disconnect_clears_this_nets_script(self):
+        path = self._write_script_for('dbg')
+        dbg = self.full.DebugNet('dbg', {'channel': 'DA14695'})
+        dbg._jlink_script_path = path
+        dbg.disconnect()
+        self.assertFalse(os.path.exists(path),
+                         'disconnect left the script behind for the next caller')
+        self.assertIsNone(dbg._jlink_script_path)
+
+    def test_disconnect_leaves_another_nets_script_alone(self):
+        mine = self._write_script_for('dbg')
+        theirs = self._write_script_for('other')
+        self.full.DebugNet('dbg', {'channel': 'DA14695'}).disconnect()
+        self.assertFalse(os.path.exists(mine))
+        self.assertTrue(os.path.exists(theirs),
+                        "cleared the wrong net's script")
+
+    def test_disconnect_returns_the_backend_result(self):
+        dbg = self.full.DebugNet('dbg', {'channel': 'DA14695'})
+        self.assertEqual(dbg.disconnect(), {'stopped': True})
+
+    def test_script_is_cleared_even_when_the_stop_fails(self):
+        # The clear is in a finally: a gdbserver that would not stop must not
+        # also leave the script in force.
+        path = self._write_script_for('dbg')
+        self.debug_stub.disconnect.side_effect = RuntimeError('gdbserver wedged')
+        dbg = self.full.DebugNet('dbg', {'channel': 'DA14695'})
+        with self.assertRaises(RuntimeError):
+            dbg.disconnect()
+        self.assertFalse(os.path.exists(path))
+
+    def test_disconnect_is_safe_with_no_script_present(self):
+        dbg = self.full.DebugNet('dbg', {'channel': 'DA14695'})
+        dbg.disconnect()  # must not raise
 
 
 if __name__ == '__main__':

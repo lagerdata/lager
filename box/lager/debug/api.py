@@ -11,6 +11,7 @@ connect, disconnect, reset, flash, and erase operations.
 import os
 import json
 import logging
+import re
 import subprocess
 import tempfile
 import time
@@ -30,15 +31,91 @@ from .probes import gdb_port_for_slot, rtt_port_for_slot, jlink_gdbserver_logfil
 
 logger = logging.getLogger(__name__)
 
-# Temp path for J-Link script file (written during connect)
+# Legacy shared path. Kept ONLY so an upgrade can clean up a file an older
+# build left behind (see purge_legacy_script_file); nothing writes here now.
+#
+# It used to be the one path every debug operation read from, which is the bug
+# fixed here: an operation that never asked for a script silently inherited
+# whichever script was written last -- by a different net, a different session,
+# or a test suite that had since finished. Combined with an erased target that
+# made the debugger unable to attach, so one scripted flash could take a bench
+# out of service until somebody deleted this file by hand.
 JLINK_SCRIPT_TEMP_PATH = '/tmp/lager_jlink_script.JLinkScript'
 
+_SCRIPT_PATH_TEMPLATE = '/tmp/lager_jlink_script_{}.JLinkScript'
 
-def _get_script_file():
-    """Return script file path if it exists, None otherwise."""
-    if os.path.exists(JLINK_SCRIPT_TEMP_PATH):
-        return JLINK_SCRIPT_TEMP_PATH
+
+def _net_slug(net_name):
+    """Filesystem-safe form of a net name, or None.
+
+    Net names come from user config, so they are not safe to interpolate into a
+    path unchecked. Anything outside [A-Za-z0-9._-] becomes '_'.
+    """
+    if not net_name or not str(net_name).strip():
+        return None
+    return re.sub(r'[^A-Za-z0-9._-]', '_', str(net_name).strip())
+
+
+def script_path_for_net(net_name):
+    """Where this net's J-Link script lives, or None if the net is unknown.
+
+    Per net, deliberately. A script describes how to attach to one target; it is
+    not a property of the box.
+    """
+    slug = _net_slug(net_name)
+    return _SCRIPT_PATH_TEMPLATE.format(slug) if slug else None
+
+
+def _get_script_file(net_name=None):
+    """Return this net's script path if it exists, else None.
+
+    Returns None when *net_name* is None. There is deliberately no fall back to
+    "whatever script happens to be on disk" -- an operation that did not ask for
+    a script must not silently get one. Callers that legitimately have a script
+    pass it down explicitly as ``script_file=``.
+    """
+    path = script_path_for_net(net_name)
+    if path and os.path.exists(path):
+        return path
     return None
+
+
+def clear_script_file(net_name):
+    """Remove this net's script. Called when its debug session ends.
+
+    Without this a script outlives the session that established it, so the next
+    operation on the net -- possibly days later, possibly from a different
+    caller -- silently runs under it.
+    """
+    path = script_path_for_net(net_name)
+    if not path:
+        return False
+    try:
+        os.remove(path)
+        logger.info('Cleared J-Link script for net %s (%s)', net_name, path)
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as e:
+        logger.warning('Could not clear J-Link script %s: %s', path, e)
+        return False
+
+
+def purge_legacy_script_file():
+    """Delete the pre-per-net shared script if an older build left one.
+
+    A box upgrading into this fix can still be carrying the poisoned file, and
+    nothing reads it any more -- so it would sit there confusing whoever next
+    goes looking. Best effort.
+    """
+    try:
+        os.remove(JLINK_SCRIPT_TEMP_PATH)
+        logger.info('Removed legacy shared J-Link script %s', JLINK_SCRIPT_TEMP_PATH)
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return False
 
 
 class DebugError(Exception):
@@ -577,7 +654,7 @@ def disconnect(mcu=None, keep_jlink_running=False, serial=None, gdb_port=2331):
         return {'stop': 'ok'}
 
 
-def reset_device(halt=False, mcu=None, serial=None, gdb_port=2331):
+def reset_device(halt=False, mcu=None, serial=None, gdb_port=2331, script_file=None):
     """
     Reset connected device (J-Link only)
 
@@ -597,7 +674,7 @@ def reset_device(halt=False, mcu=None, serial=None, gdb_port=2331):
     jlink_status = get_jlink_status(serial=serial, gdb_port=gdb_port)
     if jlink_status['running'] and jlink_status.get('cmdline'):
         try:
-            jlink = JLink(jlink_status['cmdline'], script_file=_get_script_file(), serial=serial)
+            jlink = JLink(jlink_status['cmdline'], script_file=script_file, serial=serial)
             return jlink.reset(halt)
         except (ValueError, KeyError):
             pass  # Fall through to gdbserver path
@@ -610,7 +687,7 @@ def reset_device(halt=False, mcu=None, serial=None, gdb_port=2331):
             try:
                 with open(f'/proc/{pid}/cmdline', 'rb') as f:
                     cmdline = [part.decode() for part in f.read().split(b'\x00')]
-                jlink = JLink(cmdline, script_file=_get_script_file(), serial=serial)
+                jlink = JLink(cmdline, script_file=script_file, serial=serial)
                 return jlink.reset(halt)
             except (OSError, IOError, ValueError, KeyError):
                 pass  # Fall through to error
@@ -618,7 +695,7 @@ def reset_device(halt=False, mcu=None, serial=None, gdb_port=2331):
     raise JLinkNotRunning()
 
 
-def erase_flash(start_addr, length, mcu=None, serial=None, gdb_port=2331):
+def erase_flash(start_addr, length, mcu=None, serial=None, gdb_port=2331, script_file=None):
     """
     Erase flash memory (J-Link only)
 
@@ -639,7 +716,7 @@ def erase_flash(start_addr, length, mcu=None, serial=None, gdb_port=2331):
     jlink_status = get_jlink_status(serial=serial, gdb_port=gdb_port)
     if jlink_status['running'] and jlink_status.get('cmdline'):
         try:
-            jlink = JLink(jlink_status['cmdline'], script_file=_get_script_file(), serial=serial)
+            jlink = JLink(jlink_status['cmdline'], script_file=script_file, serial=serial)
             return jlink.erase(start_addr, length)
         except (ValueError, KeyError):
             pass  # Fall through to gdbserver path
@@ -651,7 +728,7 @@ def erase_flash(start_addr, length, mcu=None, serial=None, gdb_port=2331):
             try:
                 with open(f'/proc/{pid}/cmdline', 'rb') as f:
                     cmdline = [part.decode() for part in f.read().split(b'\x00')]
-                jlink = JLink(cmdline, script_file=_get_script_file(), serial=serial)
+                jlink = JLink(cmdline, script_file=script_file, serial=serial)
                 return jlink.erase(start_addr, length)
             except (OSError, IOError, ValueError, KeyError):
                 pass  # Fall through to error
@@ -716,7 +793,7 @@ def chip_erase(device, speed='4000', transport='SWD', mcu=None, script_file=None
             self.script_file = script_file
             self.serial = serial
 
-    resolved_script = script_file if (script_file and os.path.exists(script_file)) else _get_script_file()
+    resolved_script = script_file if (script_file and os.path.exists(script_file)) else None
     if not resolved_script:
         logger.warning(
             'chip_erase: no J-Link script file; DA1469x external QSPI may not be erased'
@@ -791,7 +868,7 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
             self.script_file = script_file
             self.serial = serial
 
-    resolved_script = script_file if (script_file and os.path.exists(script_file)) else _get_script_file()
+    resolved_script = script_file if (script_file and os.path.exists(script_file)) else None
     jlink = TempJLink(jlink_args, script_file=resolved_script, serial=serial)
     jlink.__class__ = JLink
 
@@ -847,7 +924,7 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
 
 
 
-def read_memory(address, length, mcu=None, serial=None, gdb_port=2331):
+def read_memory(address, length, mcu=None, serial=None, gdb_port=2331, script_file=None):
     """
     Read memory from target device via J-Link monitor command
 
@@ -886,7 +963,7 @@ def read_memory(address, length, mcu=None, serial=None, gdb_port=2331):
         jlink = None
         if jlink_status['running'] and jlink_status.get('cmdline'):
             try:
-                jlink = JLink(jlink_status['cmdline'], script_file=_get_script_file(), serial=serial)
+                jlink = JLink(jlink_status['cmdline'], script_file=script_file, serial=serial)
             except (ValueError, KeyError):
                 pass
 
@@ -896,7 +973,7 @@ def read_memory(address, length, mcu=None, serial=None, gdb_port=2331):
                 try:
                     with open(f'/proc/{pid}/cmdline', 'rb') as f:
                         cmdline = [part.decode() for part in f.read().split(b'\x00')]
-                    jlink = JLink(cmdline, script_file=_get_script_file(), serial=serial)
+                    jlink = JLink(cmdline, script_file=script_file, serial=serial)
                 except (OSError, IOError, ValueError, KeyError):
                     pass
 
