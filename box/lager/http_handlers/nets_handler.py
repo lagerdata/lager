@@ -116,6 +116,41 @@ def _brief_usb_batch(netnames):
     return out
 
 
+def _is_labjack(rec):
+    """True if this net's instrument is a LabJack device."""
+    return "labjack" in (rec.get("instrument") or "").lower()
+
+
+_LABJACK_BATCH_ROLES = {"gpio", "adc", "dac"}
+
+
+def _brief_labjack_batch(recs):
+    """Batch probe for all GPIO/ADC/DAC nets on one LabJack T7.
+
+    Delegates to hardware_service ``POST /labjack/batch_read`` which owns
+    the LabJack USB handle.  One HTTP call, register-level reads for GPIO
+    (no direction mutation), batched eReadNames for AIN/DAC.
+
+    Returns dict[netname, brief_str | None].
+    """
+    import requests as _req
+
+    payload = [
+        {"name": r.get("name", ""), "role": r.get("role", ""),
+         "pin": r.get("pin") or r.get("channel") or ""}
+        for r in recs
+    ]
+    try:
+        resp = _req.post("http://localhost:8080/labjack/batch_read",
+                         json={"nets": payload}, timeout=5.0)
+        if resp.ok:
+            return resp.json()
+    except Exception as e:
+        logger.debug("labjack batch_read call failed: %s", e)
+
+    return {r.get("name", ""): None for r in recs}
+
+
 # Roles that can answer for several nets in one instrument session. Anything
 # absent here falls back to the per-net probe in _BRIEF_PROBES.
 _BATCH_PROBES = {
@@ -123,54 +158,15 @@ _BATCH_PROBES = {
 }
 
 
-def _gpio_read_is_side_effect_free(rec):
-    """True if this GPIO net can be read without changing the pin's direction.
+def _brief_gpio(netname):
+    """GPIO net: HIGH (1) / LOW (0) — fallback for non-LabJack instruments.
 
-    On a LabJack T7, ``eReadName`` on a DIO channel **reconfigures that pin as an
-    input**. ``io/gpio/labjack_t7.py`` guards against that only for FIO pins: it
-    reads ``DIO_DIRECTION`` first and, when the pin is an output, reads
-    ``DIO_STATE`` instead so the direction survives. ``_get_pin_number`` returns
-    None for anything that is not ``FIO<n>``, and EIO/CIO/MIO then take the
-    unguarded "direct read" path.
-
-    A command whose whole job is to *display* state must never mutate hardware.
-    A pin driving a target's reset, boot-mode or enable line would be silently
-    released by a state sweep -- the caller asked what the state was, not to
-    change it. So those pins report unknown instead.
-
-    Lifting this means teaching the driver the direction check for the rest of
-    the DIO range (EIO<n> is DIO8+n, CIO<n> is DIO16+n, MIO<n> is DIO20+n on the
-    T7). That changes ``lager gpi`` behaviour too, so it wants its own change and
-    its own bench validation rather than riding along here.
+    LabJack GPIO nets are handled by ``_brief_labjack_batch`` (routed through
+    hardware_service) and never reach this function.
     """
-    instrument = (rec.get("instrument") or "").lower()
-    if "labjack" not in instrument:
-        # Other GPIO backends are not known to have this hazard; leave them be.
-        return True
-    pin = str(rec.get("pin") or rec.get("channel") or "").strip()
-    if not pin:
-        return False
-    if pin.isdigit():
-        return True                       # bare index == FIO<n>
-    return bool(re.match(r"^FIO\d+$", pin, re.IGNORECASE))
-
-
-def _brief_gpio(netname, role, rec=None):
-    """GPIO net: HIGH (1) / LOW (0), read without disturbing the pin.
-
-    Returns None for a pin that cannot be read side-effect-free -- see
-    ``_gpio_read_is_side_effect_free``.
-    """
-    if rec is not None and not _gpio_read_is_side_effect_free(rec):
-        logger.debug(
-            "brief_gpio %s: skipped, reading pin %r would reconfigure it as an "
-            "input", netname, rec.get("pin") or rec.get("channel"),
-        )
-        return None
-
     from .net_command import _proxy
     try:
-        dev = _proxy(netname, role)
+        dev = _proxy(netname, "gpio")
         v = int(dev.input())
         return "HIGH (1)" if v else "LOW (0)"
     except Exception as e:
@@ -179,6 +175,7 @@ def _brief_gpio(netname, role, rec=None):
 
 
 def _brief_adc(netname):
+    """ADC read — fallback for non-LabJack instruments."""
     from .net_command import _proxy
     try:
         v = float(_proxy(netname, "adc").input())
@@ -189,6 +186,7 @@ def _brief_adc(netname):
 
 
 def _brief_dac(netname):
+    """DAC read — fallback for non-LabJack instruments."""
     from .net_command import _proxy
     try:
         v = float(_proxy(netname, "dac").input())
@@ -350,12 +348,25 @@ def _brief_router(netname):
         return None
 
 
+def _brief_i2c(netname):
+    """I2C bus: list detected device addresses."""
+    from .net_command import _proxy
+    try:
+        addrs = _proxy(netname, "i2c").scan()
+        if not addrs:
+            return "no devices"
+        return ",".join("0x%02X" % a for a in sorted(addrs))
+    except Exception as e:
+        logger.debug("brief_i2c %s: %s", netname, e)
+        return None
+
+
 # Map role -> probe function (netname) -> Optional[str]
 _BRIEF_PROBES = {
     "power-supply": _brief_supply,
     "battery": _brief_battery,
     "usb": _brief_usb,
-    "gpio": lambda n, rec: _brief_gpio(n, "gpio", rec),
+    "gpio": _brief_gpio,
     "adc": _brief_adc,
     "dac": _brief_dac,
     "thermocouple": _brief_thermocouple,
@@ -368,12 +379,8 @@ _BRIEF_PROBES = {
     "solar": _brief_solar,
     "router": _brief_router,
     "mikrotik": _brief_router,
+    "i2c": _brief_i2c,
 }
-
-
-# Probes that need the whole saved record, not just the net name -- because the
-# record is what says whether the read is safe (see _brief_gpio).
-_PROBES_WANTING_REC = {"gpio"}
 
 
 def _probe_net_state(net_rec):
@@ -384,9 +391,7 @@ def _probe_net_state(net_rec):
     if probe is None:
         return {"name": name, "role": role, "state": None}
     try:
-        state = (probe(name, net_rec) if role in _PROBES_WANTING_REC
-                 else probe(name))
-        return {"name": name, "role": role, "state": state}
+        return {"name": name, "role": role, "state": probe(name)}
     except Exception as e:
         logger.debug("probe %s (%s) failed: %s", name, role, e)
         return {"name": name, "role": role, "state": None}
@@ -407,32 +412,58 @@ def _group_key(net_rec):
     Probing is per-instrument, not per-net, because instruments serialise: every
     net on one hub, LabJack or scope contends for the same lock and the same USB
     claim, so N nets on one device cost N sequential sessions no matter how wide
-    the thread pool is. Grouping by (role, instrument, address) means the pool's
-    workers land on *different* devices, which is where the parallelism
-    actually is.
+    the thread pool is.
 
-    Role is part of the key because the batch probes are per-role.
+    For LabJack devices with batchable roles (GPIO/ADC/DAC), we drop role from
+    the key so all three land in a single work unit — one HTTP call to
+    hardware_service's ``/labjack/batch_read``.  Other instruments keep role in
+    the key because their batch probes are per-role.
     """
-    return (
-        net_rec.get("role", ""),
-        net_rec.get("instrument", "") or "",
-        net_rec.get("address", "") or "",
-    )
+    role = net_rec.get("role", "")
+    instrument = net_rec.get("instrument", "") or ""
+    address = net_rec.get("address", "") or ""
+    if _is_labjack(net_rec) and role in _LABJACK_BATCH_ROLES:
+        return ("_labjack_", instrument, address)
+    return (role, instrument, address)
 
 
 def _probe_group(recs):
     """Probe every net in one instrument group. Returns a list of results.
 
-    Uses the role's batch probe when there is one (a single instrument session
-    for the whole group); otherwise falls back to probing each net in turn,
-    which is still correct, just no faster than before.
+    Three dispatch paths, checked in order:
+
+    1. **LabJack batch** — the group was keyed with ``"_labjack_"`` (see
+       ``_group_key``), so it may contain GPIO + ADC + DAC nets on one T7.
+       ``_brief_labjack_batch`` makes one HTTP call to hardware_service's
+       ``/labjack/batch_read`` which reads registers without direction
+       mutation.
+    2. **Per-role batch** (``_BATCH_PROBES``) — e.g. USB hub ports.
+    3. **Per-net fallback** — one ``_probe_net_state`` call per net.
     """
     if not recs:
         return []
 
+    # Path 1: cross-role LabJack batch
+    if recs[0].get("role", "") in _LABJACK_BATCH_ROLES and _is_labjack(recs[0]):
+        try:
+            states = _brief_labjack_batch(recs)
+        except Exception as e:
+            logger.debug("labjack batch probe failed: %s", e)
+            return [_unknown(rec) for rec in recs]
+        return [
+            {
+                "name": rec.get("name", ""),
+                "role": rec.get("role", ""),
+                "state": states.get(rec.get("name", "")),
+            }
+            for rec in recs
+        ]
+
+    # Path 2: per-role batch (e.g. USB)
     role = recs[0].get("role", "")
     batch = _BATCH_PROBES.get(role)
     if batch is None:
+        # Path 3: per-net fallback
         return [_probe_net_state(rec) for rec in recs]
 
     names = [rec.get("name", "") for rec in recs]

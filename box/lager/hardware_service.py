@@ -976,6 +976,148 @@ def cache_stats():
         ]
     })
 
+# ---------------------------------------------------------------------------
+# LabJack T7 batch register read — consumed by box_http_server /nets/state.
+# Lives here (not in box_http_server) because hardware_service is the single
+# process that owns the LabJack USB handle.
+# ---------------------------------------------------------------------------
+
+_DIO_OFFSETS = {"FIO": 0, "EIO": 8, "CIO": 16, "MIO": 20}
+
+
+def _dio_bit_position(pin_str):
+    """Map a LabJack T7 pin name to its DIO bit position (0-22), or None."""
+    import re
+    pin = str(pin_str).strip().upper()
+    for prefix, base in _DIO_OFFSETS.items():
+        m = re.match(rf'^{prefix}(\d+)$', pin)
+        if m:
+            return base + int(m.group(1))
+    try:
+        return int(pin)
+    except (ValueError, TypeError):
+        return None
+
+
+def _ensure_ain_configured(ljm_mod, handle, channel_name, configured):
+    """Write safe-default AIN config once per channel in this batch.
+
+    Sets single-ended +/-10V range with GND reference so we don't inherit
+    stale differential-mode config from a previous tool.
+    """
+    if channel_name in configured:
+        return
+    try:
+        ljm_mod.eWriteName(handle, f"{channel_name}_RANGE", 10.0)
+        ljm_mod.eWriteName(handle, f"{channel_name}_NEGATIVE_CH", 199)
+        ljm_mod.eWriteName(handle, f"{channel_name}_RESOLUTION_INDEX", 0)
+        ljm_mod.eWriteName(handle, f"{channel_name}_SETTLING_US", 0)
+        configured.add(channel_name)
+    except Exception as e:
+        logger.debug("AIN config for %s failed (continuing): %s", channel_name, e)
+
+
+@app.route('/labjack/batch_read', methods=['POST'])
+def labjack_batch_read():
+    """Read GPIO/ADC/DAC state for multiple nets on one LabJack in a single
+    handle session.
+
+    Uses the existing per-device lock so concurrent gpo/gpi/adc/dac commands
+    serialize correctly.  GPIO reads use DIO_DIRECTION + DIO_STATE registers
+    (no per-pin eReadName, so no direction mutation on EIO/CIO/MIO).
+
+    Payload::
+
+        {"nets": [
+            {"name": "EIO_RESET", "role": "gpio", "pin": "EIO3"},
+            {"name": "VBAT",      "role": "adc",  "pin": "0"},
+            {"name": "DAC_OUT",   "role": "dac",  "pin": "0"}
+        ]}
+
+    Response::
+
+        {"EIO_RESET": "HIGH (1)", "VBAT": "3.3012V", "DAC_OUT": "1.5000V"}
+
+    Nets that cannot be read come back as ``null``.
+    """
+    from lager.io.labjack_handle import get_labjack_handle, ljm as ljm_mod, _LJM_ERR
+
+    data = request.get_json(force=True, silent=True)
+    if not data or not isinstance(data.get("nets"), list):
+        return jsonify({"error": "payload must contain a 'nets' list"}), 400
+
+    nets = data["nets"]
+    results = {n.get("name", ""): None for n in nets}
+
+    if ljm_mod is None:
+        logger.debug("labjack/batch_read: LJM not available: %s", _LJM_ERR)
+        return jsonify(results)
+
+    device_lock = _get_address_lock("labjack:ANY")
+    try:
+        with device_lock:
+            handle = get_labjack_handle()
+
+            gpio_nets = [n for n in nets if n.get("role") == "gpio"]
+            adc_nets = [n for n in nets if n.get("role") == "adc"]
+            dac_nets = [n for n in nets if n.get("role") == "dac"]
+
+            if gpio_nets:
+                try:
+                    dir_bits = int(ljm_mod.eReadName(handle, "DIO_DIRECTION"))
+                    state_bits = int(ljm_mod.eReadName(handle, "DIO_STATE"))
+                    for n in gpio_nets:
+                        pin = n.get("pin") or ""
+                        bit = _dio_bit_position(pin)
+                        if bit is None:
+                            continue
+                        val = (state_bits >> bit) & 1
+                        results[n["name"]] = "HIGH (1)" if val else "LOW (0)"
+                except Exception as e:
+                    logger.debug("batch_read gpio: %s", e)
+
+            if adc_nets:
+                try:
+                    configured = set()
+                    ain_names, ain_ordered = [], []
+                    for n in adc_nets:
+                        pin = n.get("pin") or ""
+                        try:
+                            ch = f"AIN{int(pin)}"
+                        except (ValueError, TypeError):
+                            ch = str(pin)
+                        _ensure_ain_configured(ljm_mod, handle, ch, configured)
+                        ain_names.append(ch)
+                        ain_ordered.append(n)
+                    values = ljm_mod.eReadNames(handle, len(ain_names), ain_names)
+                    for n, v in zip(ain_ordered, values):
+                        results[n["name"]] = "%.4fV" % float(v)
+                except Exception as e:
+                    logger.debug("batch_read adc: %s", e)
+
+            if dac_nets:
+                try:
+                    dac_names, dac_ordered = [], []
+                    for n in dac_nets:
+                        pin = n.get("pin") or ""
+                        try:
+                            ch = f"DAC{int(pin)}"
+                        except (ValueError, TypeError):
+                            ch = str(pin)
+                        dac_names.append(ch)
+                        dac_ordered.append(n)
+                    values = ljm_mod.eReadNames(handle, len(dac_names), dac_names)
+                    for n, v in zip(dac_ordered, values):
+                        results[n["name"]] = "%.4fV" % float(v)
+                except Exception as e:
+                    logger.debug("batch_read dac: %s", e)
+
+    except Exception as e:
+        logger.warning("labjack/batch_read failed: %s", e)
+
+    return jsonify(results)
+
+
 @app.route('/web_oscilloscope.html', methods=['GET'])
 def serve_web_oscilloscope():
     """Serve the web oscilloscope HTML interface"""
@@ -1011,6 +1153,7 @@ def run_service():
     logger.info(f"  POST /cache/clear - Clear device cache (retains shared pyvisa sessions)")
     logger.info(f"  POST /cache/clear_all - Clear device cache AND force-close shared pyvisa sessions")
     logger.info(f"  GET  /cache/stats - Get cache statistics")
+    logger.info(f"  POST /labjack/batch_read - Batch register read for nets state")
     logger.info(f"  GET  /web_oscilloscope.html - Web oscilloscope interface")
 
     # Run Flask app with threading
