@@ -999,22 +999,20 @@ def _dio_bit_position(pin_str):
         return None
 
 
-def _ensure_ain_configured(ljm_mod, handle, channel_name, configured):
-    """Write safe-default AIN config once per channel in this batch.
-
-    Sets single-ended +/-10V range with GND reference so we don't inherit
-    stale differential-mode config from a previous tool.
-    """
-    if channel_name in configured:
-        return
-    try:
-        ljm_mod.eWriteName(handle, f"{channel_name}_RANGE", 10.0)
-        ljm_mod.eWriteName(handle, f"{channel_name}_NEGATIVE_CH", 199)
-        ljm_mod.eWriteName(handle, f"{channel_name}_RESOLUTION_INDEX", 0)
-        ljm_mod.eWriteName(handle, f"{channel_name}_SETTLING_US", 0)
-        configured.add(channel_name)
-    except Exception as e:
-        logger.debug("AIN config for %s failed (continuing): %s", channel_name, e)
+# NOTE: this batch read deliberately writes NOTHING.
+#
+# It used to write AIN config first -- _RANGE 10.0, _NEGATIVE_CH 199,
+# _RESOLUTION_INDEX 0, _SETTLING_US 0 -- to avoid "inheriting stale
+# differential-mode config from a previous tool". But that config is not stale;
+# it is the caller's. `lager nets state` is a read-only display, and forcing
+# every channel to single-ended +/-10V silently destroyed a deliberately
+# configured differential pair or a chosen resolution/settling, mid-measurement,
+# for anyone who happened to list state.
+#
+# This is the same defect class as the unconditional GPIO dev.input() that was
+# removed from this path earlier: the caller asked what the state WAS, not to
+# change it. AIN channels are now read as configured. If a channel cannot be
+# read as it stands, it reports unknown rather than being reconfigured.
 
 
 @app.route('/labjack/batch_read', methods=['POST'])
@@ -1022,9 +1020,11 @@ def labjack_batch_read():
     """Read GPIO/ADC/DAC state for multiple nets on one LabJack in a single
     handle session.
 
-    Uses the existing per-device lock so concurrent gpo/gpi/adc/dac commands
-    serialize correctly.  GPIO reads use DIO_DIRECTION + DIO_STATE registers
-    (no per-pin eReadName, so no direction mutation on EIO/CIO/MIO).
+    Serialises against concurrent gpo/gpi/adc/dac commands by taking the same
+    per-device lock ``/invoke`` takes -- the caller sends ``device_id`` so both
+    sides key on one identity. GPIO reads use DIO_DIRECTION + DIO_STATE
+    registers (no per-pin eReadName, so no direction mutation on EIO/CIO/MIO),
+    and nothing in this handler writes to the device.
 
     Payload::
 
@@ -1053,7 +1053,14 @@ def labjack_batch_read():
         logger.debug("labjack/batch_read: LJM not available: %s", _LJM_ERR)
         return jsonify(results)
 
-    device_lock = _get_address_lock("labjack:ANY")
+    # Lock on the identity the CALLER resolved. /invoke locks on `device_id`
+    # from _physical_device_id() -- "labjack:" + the net's address -- so a
+    # constant here would take a DIFFERENT lock object on any bench whose
+    # LabJack net carries an address, and the batch read would interleave with
+    # a concurrent gpo/gpi/adc on the same handle. That is the contention this
+    # endpoint exists to avoid. "labjack:ANY" remains the fallback only because
+    # it is what _physical_device_id itself yields for an address-less record.
+    device_lock = _get_address_lock(data.get("device_id") or "labjack:ANY")
     try:
         with device_lock:
             handle = get_labjack_handle()
@@ -1078,7 +1085,6 @@ def labjack_batch_read():
 
             if adc_nets:
                 try:
-                    configured = set()
                     ain_names, ain_ordered = [], []
                     for n in adc_nets:
                         pin = n.get("pin") or ""
@@ -1086,7 +1092,6 @@ def labjack_batch_read():
                             ch = f"AIN{int(pin)}"
                         except (ValueError, TypeError):
                             ch = str(pin)
-                        _ensure_ain_configured(ljm_mod, handle, ch, configured)
                         ain_names.append(ch)
                         ain_ordered.append(n)
                     values = ljm_mod.eReadNames(handle, len(ain_names), ain_names)

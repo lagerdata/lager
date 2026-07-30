@@ -2,6 +2,57 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Added
+
+- **`lager nets state` reports live hardware state for every saved net**, via a
+  new `GET /nets/state` box endpoint. Power supplies report channel/output/
+  voltage/current, USB ports report enabled or disabled, GPIO reports level,
+  ADC/DAC report volts, and so on; roles with no probe report nothing rather
+  than guessing. `--json` emits the same data unformatted.
+
+  It stays a separate subcommand rather than folding into `lager nets`, because
+  it touches hardware: plain `lager nets` is a single `saved_nets.json` read
+  (~0.31s measured, no instrument access), while this takes the same instrument
+  locks a running `lager python` test holds.
+
+  Boxes too old to have the endpoint report a clear upgrade hint instead of an
+  HTTP error.
+
+  Probing is per *instrument*, not per net. Every driver wraps each call in its
+  own open/operate/close cycle under that instrument's lock -- correct for
+  one-shot commands, but it means N nets on one device cost N full
+  enumerate/connect/disconnect cycles, serialised, however wide the pool is
+  (~2.4s for a single hub port read on real hardware, ~4.5s for a hub that is
+  not currently discoverable). Nets are grouped by physical instrument so that
+  cost is paid once per device, and the endpoint always answers within its
+  deadline: a wedged instrument yields nulls for its own nets instead of a 500
+  for the whole bench, and the request does not wait for it.
+
+### Fixed
+
+- **`lager nets state` no longer reconfigures the hardware it is reporting on.**
+  Two paths mutated the instrument while answering a read-only query. GPIO
+  state was read with an unconditional `input()`, which on a LabJack T7
+  reconfigures the pin as an input -- guarded for `FIO` pins only, so `EIO`,
+  `CIO` and `MIO` took the unguarded path and a pin holding a target's reset,
+  boot-mode or enable line was silently released just by listing state. And the
+  ADC path wrote `_RANGE`, `_NEGATIVE_CH`, `_RESOLUTION_INDEX` and
+  `_SETTLING_US` before each read, so a deliberately configured differential
+  pair or chosen resolution was reset to single-ended +/-10V mid-measurement.
+  GPIO now reads the `DIO_DIRECTION` + `DIO_STATE` registers, which reports
+  every pin in the DIO range without touching direction, and AIN channels are
+  read exactly as configured.
+
+- **The LabJack batch probe now serialises against concurrent `lager
+  gpo`/`gpi`/`adc`/`dac` commands.** It locked on a hardcoded `"labjack:ANY"`
+  while `/invoke` locks on the net's real device identity, so on any bench whose
+  LabJack net carries an address the two took different lock objects and could
+  interleave I/O on one shared LJM handle -- the exact contention the batch
+  endpoint was introduced to remove. Both sides now key on the identity the
+  caller resolves.
+
 ## [0.33.1] - 2026-07-29
 
 ### Fixed
