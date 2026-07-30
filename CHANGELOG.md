@@ -77,6 +77,25 @@ All notable changes to the Lager platform are documented here. For detailed rele
   warns and continues rather than aborting if that reconnect fails. A failed
   erase is still fatal.
 
+- **`lager debug <net> flash` no longer reports "Flashed!" when nothing was
+  programmed.** `/debug/flash` answers 200 whether or not the probe ever
+  attached -- the box's `flash_device` is a generator that yields the
+  programmer's output and carries no success channel -- and the CLI printed
+  that output and then reported success without inspecting it. Short of an HTTP
+  error the command could not fail, so a run whose log read
+  "ERROR: Could not connect to target" still finished with "Flashed!" and exit
+  0, leaving the caller believing a blank part had been programmed. Because
+  `flash` erases by default, that silence did not leave the previous image in
+  place; it left nothing.
+
+  The command now takes its verdict from the programmer's own output, and
+  reports which line it failed on plus the fact that the part is now erased.
+  Evidence of programming wins over a later connect error, since
+  `flash_device` re-establishes a gdbserver *after* programming and that
+  reconnect can fail on a part that was written correctly. Output that matches
+  neither keeps its existing meaning, so an older box or a backend we have not
+  characterised is never newly reported as failing.
+
 ## [0.33.1] - 2026-07-29
 
 ### Fixed

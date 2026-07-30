@@ -879,6 +879,64 @@ def disconnect(ctx, box, keep_server):
 
     client.close()
 
+
+# Probe-side failures that /debug/flash reports inside a 200 response.
+#
+# flash_device() (box/lager/debug/api.py) is a generator that only yields the
+# programmer's stdout -- it has no success channel, and the endpoint answers 200
+# whether or not anything was programmed. So the returned text is the only
+# evidence the CLI has, and without this check `lager debug flash` cannot fail
+# short of an HTTP error: it printed "Flashed!" over a log saying
+# "Could not connect to target", leaving the caller believing a blank part was
+# programmed.
+#
+# A connect failure alone does NOT mean the flash failed. flash_device()
+# re-establishes a gdbserver *after* programming, and that reconnect can fail on
+# a part that was just programmed correctly -- so evidence of programming wins
+# over any later connect noise. Only when there is no such evidence does a
+# connect failure decide the verdict; anything else keeps its existing meaning,
+# so an uncharacterised backend is never called bad.
+#
+# Match on whole stripped lines, never as a substring: J-Link's API trace prints
+# `- 10.056ms returns "O.K."` in the middle of a FAILED session, so substring
+# matching on success text reports success on exactly the run this exists to
+# catch. Lines can carry a log prefix, hence the endswith.
+_FLASH_PROGRAMMED_SIGNATURES = (
+    'J-Link: Flash download:',   # J-Link, one line per programmed range
+    'Downloading file',          # J-Link loadfile
+    'wrote ',                    # OpenOCD flash write_image
+)
+
+_FLASH_FAILURE_SIGNATURES = (
+    'ERROR: Could not connect to target.',
+    'Could not connect to target.',
+    'Could not connect to the target device.',
+    'Cannot connect to target.',
+)
+
+
+def _line_matches(line, signatures):
+    stripped = line.strip()
+    return any(stripped == sig or stripped.endswith(sig) or stripped.startswith(sig)
+               for sig in signatures)
+
+
+def _flash_failure_line(output):
+    """Return the programmer's failure line from flash output, else None.
+
+    `output` is the joined /debug/flash text. Returns None whenever the output
+    shows the device was actually programmed, even if a later line reports a
+    connect failure -- that is the post-flash gdbserver, not the flash.
+    """
+    lines = (output or '').splitlines()
+    if any(_line_matches(line, _FLASH_PROGRAMMED_SIGNATURES) for line in lines):
+        return None
+    for line in lines:
+        if _line_matches(line, _FLASH_FAILURE_SIGNATURES):
+            return line.strip()
+    return None
+
+
 @click.command(cls=NetSubCommand)
 @click.pass_context
 @click.option("--box", required=False, help="Lagerbox name or IP")
@@ -1017,6 +1075,19 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
             output = '\n'.join(output)
         if output:
             click.echo(output)
+
+        # /debug/flash answers 200 even when the probe never attached, so the
+        # returned text is the only evidence that anything was programmed.
+        failure = _flash_failure_line(output)
+        if failure:
+            click.secho(f"\nFlash failed: {failure}", fg='red', err=True)
+            click.secho(
+                "The target was NOT programmed. If this ran without --no-erase "
+                "it is now erased.",
+                fg='red', err=True,
+            )
+            client.close()
+            ctx.exit(1)
 
         click.secho("\nFlashed!", fg='green')
         if erase and 'DA1469' in device_type:
