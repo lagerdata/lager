@@ -104,3 +104,59 @@ def state(net_name: str) -> bool:
     label = "enabled" if enabled else "disabled"
     print(f"{GREEN}USB port '{net_name}' is {label}{RESET}")
     return enabled
+
+
+def states(net_names=None) -> Dict[str, bool | None]:
+    """Read several USB nets, grouping them by physical hub.
+
+    ``state()`` is one net per call and each call is a full hub
+    open -> read -> close under that hub's lock, so reading a whole bench with
+    it costs one enumerate/connect/disconnect cycle per *port*. Grouping by hub
+    turns that into one cycle per *hub*.
+
+    Hubs are grouped by ``_lock_key()`` -- the same key the drivers serialise
+    on -- so the grouping can never span two devices that would have contended
+    anyway.
+
+    Unlike ``state()`` this is quiet (no stdout) and total: a hub that cannot be
+    reached maps all of its nets to None instead of raising, so one absent hub
+    does not hide the ones that are present.
+
+    Args:
+        net_names: iterable of USB net names, or None for every saved USB net.
+
+    Returns:
+        dict[str, bool | None]: net name -> enabled, or None if unreadable.
+    """
+    nets = _load_net_definitions()
+    wanted = list(nets) if net_names is None else [n for n in net_names if n in nets]
+
+    # hub lock key -> (controller, {port: net_name})
+    by_hub: Dict[str, tuple] = {}
+    for name in wanted:
+        info = nets[name]
+        controller = _controller_for(info)
+        try:
+            key = controller._lock_key()
+        except Exception:
+            # A driver that has not implemented _lock_key still works: give it a
+            # key of its own so it degrades to one session per net rather than
+            # being grouped wrongly (or crashing the whole sweep).
+            key = f"unkeyed::{name}"
+        if key not in by_hub:
+            by_hub[key] = (controller, {})
+        by_hub[key][1][info["port"]] = name
+
+    out: Dict[str, bool | None] = {}
+    for controller, port_to_net in by_hub.values():
+        try:
+            port_states = controller.states(list(port_to_net))
+        except Exception:
+            # Hub absent, SDK missing, lock timeout: report this hub's nets as
+            # unknown and move on to the next hub.
+            port_states = {}
+        for port, name in port_to_net.items():
+            value = port_states.get(port)
+            out[name] = None if value is None else bool(value)
+
+    return out

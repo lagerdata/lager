@@ -71,6 +71,48 @@ class USBNet(ABC):
             it is currently disabled (powered off).
         """
         raise NotImplementedError()
+
+    def _lock_key(self) -> str:
+        """Key identifying the *physical* hub this controller talks to.
+
+        Already a de-facto interface member: each driver's session helper
+        serialises on it via ``hub_access``, so two controllers sharing a key
+        contend and two with different keys do not. Declared here so callers
+        that need to group nets by hub (see ``dispatcher.states``) can rely on
+        it rather than reaching into a driver private.
+        """
+        raise NotImplementedError()
+
+    def states(self, ports):
+        """Read several ports on THIS hub, ideally in one session.
+
+        Every driver wraps each public call in its own
+        open -> operate -> close cycle under ``hub_access``, because holding a
+        hub open would pin its exclusive USB claim away from other processes.
+        That is the right default for one-shot commands, but it makes reading N
+        ports cost N full enumerate/connect/disconnect cycles, serialised behind
+        this hub's lock -- which is what made a whole-bench state sweep take
+        seconds per hub rather than milliseconds.
+
+        Drivers should override this to run all the reads inside a single
+        session. This base implementation is a correct-but-slow fallback so a
+        driver that has not been taught the batch form still works.
+
+        Args:
+            ports: iterable of port numbers on this hub.
+
+        Returns:
+            dict[int, bool | None]: port -> enabled, or None for a port whose
+            individual read failed. Never raises for a single bad port; a
+            failure that takes out the whole hub still propagates.
+        """
+        out = {}
+        for port in ports:
+            try:
+                out[port] = bool(self.state(None, port))
+            except Exception:
+                out[port] = None
+        return out
     
     # ─────────────  Common backend exceptions  ─────────────
 

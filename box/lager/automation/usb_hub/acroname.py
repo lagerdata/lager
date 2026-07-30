@@ -253,6 +253,26 @@ class AcronameUSBNet(USBNet):
     def state(self, net_name: str, port: int) -> bool:  # type: ignore[override]
         return self._with_hub(lambda hub: self._read_enabled(hub, port))
 
+    def states(self, ports) -> dict:  # type: ignore[override]
+        """Read every requested port inside ONE hub session.
+
+        ``state()`` costs a full discoverAndConnect/read/disconnect cycle, all
+        of it under this hub's lock, so reading an 8-port hub one net at a time
+        pays that eight times over for eight register reads. Here the session is
+        opened once and each read is just ``getPortState``.
+        """
+        def _read_all(hub):
+            out = {}
+            for port in ports:
+                try:
+                    out[port] = self._read_enabled(hub, port)
+                except Exception:
+                    # One unreadable port must not lose the other seven.
+                    out[port] = None
+            return out
+
+        return self._with_hub(_read_all)
+
     def toggle(self, net_name: str, port: int) -> bool:  # type: ignore[override]
         def _do(hub):
             currently_on = self._read_enabled(hub, port)
