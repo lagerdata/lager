@@ -78,10 +78,11 @@ class FakeClient:
     change there surfaces here as a TypeError rather than a false pass.
     """
 
-    def __init__(self, connect_error=None, erase_error=None):
+    def __init__(self, connect_error=None, erase_error=None, flash_output=""):
         self.calls: list[str] = []
         self.connect_error = connect_error
         self.erase_error = erase_error
+        self.flash_output = flash_output
         self.closed = False
 
     def erase(self, net, speed='4000', transport='SWD'):
@@ -104,7 +105,7 @@ class FakeClient:
     def flash(self, firmware_file, file_type='hex', address=None, verbose=False,
               net=None, jlink_script=None, openocd_config=None):
         self.calls.append("flash")
-        return {"status": "flash_complete", "output": ""}
+        return {"status": "flash_complete", "output": self.flash_output}
 
     def reset(self, net, halt=False):
         self.calls.append("reset")
@@ -254,3 +255,131 @@ class TestForceReconnectStaysNonFatal:
         assert "Warning: Force reconnect failed" in result.output
         # The ONLY connect/disconnect pair left in the flash path.
         assert client.calls == ["erase", "disconnect", "connect", "flash"]
+
+
+# --------------------------------------------------------------------------- #
+# The flash must not claim success when nothing was programmed                #
+# --------------------------------------------------------------------------- #
+
+# Excerpts below are trimmed from real runs against nRF5340 benches, not
+# invented -- the exact byte patterns are what the verdict has to survive.
+
+# A run where the probe never attached. /debug/flash still answered 200: the
+# box's flash_device() is a generator that only yields the programmer's stdout
+# and has no success channel at all, so this text was the sole evidence.
+JLINK_CONNECT_FAILED = """\
+Flashing device nRF5340_xxAA_APP via JLinkExe...
+Connecting to J-Link...
+J-Link is connected.
+Target voltage: 1.81 V
+Connecting to target...
+AP[0]: Skipped. Could not read CPUID register
+Attach to CPU failed. Executing connect under reset.
+Failed to power up DAP
+ERROR: Could not connect to target.
+Error occurred: Could not connect to the target device.
+02-00000000-00-00000027-002F: T356A06C0 000:061.794 - 10.056ms returns "O.K."
+Please check power, connection and settings.
+"""
+
+# The same shape as above, programmed successfully.
+JLINK_PROGRAMMED = """\
+Flashing device nRF5340_xxAA_APP via JLinkExe...
+Cortex-M33 identified.
+'loadfile': Performing implicit reset & halt of MCU.
+Downloading file [/tmp/tmpbh7c0j19.hex]...
+J-Link: Flash download: Bank 2 @ 0x00000000: 1 range affected (4096 bytes)
+J-Link: Flash download: Program speed: 222 KB/s
+O.K.
+"""
+
+# Programmed, then the post-flash gdbserver failed to come back. flash_device()
+# re-establishes a gdbserver AFTER programming, so this connect error belongs to
+# the reconnect, not to the flash -- the part is programmed and the command must
+# say so.
+JLINK_PROGRAMMED_THEN_RECONNECT_FAILED = JLINK_PROGRAMMED + """\
+Reconnecting GDB server...
+Connecting to target...
+ERROR: Could not connect to target.
+Target connection failed. GDBServer will be closed...
+"""
+
+OPENOCD_PROGRAMMED = """\
+** Programming Started **
+wrote 32768 bytes from file /tmp/fw.hex in 1.203366s (26.593 KiB/s)
+** Programming Finished **
+"""
+
+
+class TestFlashVerdictFollowsTheProgrammer:
+    """`lager debug flash` used to print "Flashed!" unconditionally.
+
+    `flash()` did `result = client.flash(...)`, echoed `result['output']`, then
+    ran `click.secho("Flashed!")` without ever inspecting either. Because
+    /debug/flash answers 200 even when the probe never attached, the command
+    could not fail short of an HTTP error -- observed on a bench printing
+    "Flashed!" over a log reading "Could not connect to target", with the part
+    left blank by the erase that preceded it.
+
+    That matters most on THIS command: `flash` erases by default, so a silent
+    failure does not leave the old image in place, it leaves nothing.
+    """
+
+    def test_connect_failure_is_reported_and_exits_nonzero(self, hexfile):
+        client = FakeClient(flash_output=JLINK_CONNECT_FAILED)
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 1, result.output
+        assert "Flash failed" in result.output
+        assert "Flashed!" not in result.output
+
+    def test_failure_message_warns_the_part_is_now_erased(self, hexfile):
+        client = FakeClient(flash_output=JLINK_CONNECT_FAILED)
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert "NOT programmed" in result.output
+
+    def test_api_trace_ok_in_a_failed_session_is_not_success(self, hexfile):
+        """The failing log contains `returns "O.K."` -- J-Link's API trace, not
+        the loadfile verdict. A substring test for success text passes on
+        exactly the run this check exists to catch, so matching is per-line."""
+        assert '"O.K."' in JLINK_CONNECT_FAILED
+        client = FakeClient(flash_output=JLINK_CONNECT_FAILED)
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 1, result.output
+
+    def test_successful_jlink_flash_still_reports_flashed(self, hexfile):
+        client = FakeClient(flash_output=JLINK_PROGRAMMED)
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 0, result.output
+        assert "Flashed!" in result.output
+
+    def test_programmed_then_failed_gdbserver_reconnect_is_still_success(self, hexfile):
+        """The false positive a bare denylist would ship: a connect error that
+        arrives after programming is the reconnect, and calling that a failed
+        flash is worse than the bug being fixed."""
+        client = FakeClient(flash_output=JLINK_PROGRAMMED_THEN_RECONNECT_FAILED)
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 0, result.output
+        assert "Flashed!" in result.output
+
+    def test_openocd_programmed_output_is_success(self, hexfile):
+        client = FakeClient(flash_output=OPENOCD_PROGRAMMED)
+        result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+        assert result.exit_code == 0, result.output
+        assert "Flashed!" in result.output
+
+    def test_unrecognised_output_keeps_its_existing_meaning(self, hexfile):
+        """Older boxes return an empty body, and backends we have not
+        characterised print something else entirely. Neither may start failing
+        on an upgrade, so anything unmatched stays a success."""
+        for output in ("", "Flashing device DA14695 via JLinkExe...\n"):
+            client = FakeClient(flash_output=output)
+            result = run_flash(client, ["--hex", hexfile, "--box", "mybox"])
+            assert result.exit_code == 0, result.output
+            assert "Flashed!" in result.output
+
+    def test_verdict_applies_to_no_erase_runs_too(self, hexfile):
+        client = FakeClient(flash_output=JLINK_CONNECT_FAILED)
+        result = run_flash(
+            client, ["--hex", hexfile, "--box", "mybox", "--no-erase"])
+        assert result.exit_code == 1, result.output
+        assert "Flash failed" in result.output
