@@ -32,12 +32,12 @@ A job only *blocks* a merge once its status context is listed in branch ruleset 
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1055 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 1237 |
+| `unit (box)` | `test/unit/box/` | 1238 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 79 (+4 skipped) |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 91 (+1 skipped) |
-| | **Total gated** | **2733** |
+| | **Total gated** | **2734** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -476,7 +476,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_net_command_handler.py` | Generic POST /net/command Flask handler dispatch by role and error handling |
 | `test_net_save_uart_identity.py` | `usb_identity_for_net_record`: durable USB identity snapshot at UART net save time |
 | `test_nets_display.py` | `lager nets` table no-truncation for long UART pins and VISA addresses |
-| `test_nets_state_endpoint.py` | `GET /nets/state`: a wedged instrument yields nulls rather than a 500 or a blocked request, and nets are probed per instrument rather than per net |
+| `test_nets_state_endpoint.py` | `GET /nets/state`: wedged-instrument resilience, per-instrument probing, LabJack cross-role batch routing through hardware_service (no USB contention), and I2C bus scan |
 | `test_openocd_dispatch.py` | OpenOCD interface .cfg dispatch and user-cfg override behavior |
 | `test_probes_visa_parsing.py` | VISA address parsing for empty-serial FTDI probes |
 | `test_python_service_breakpoint.py` | Breakpoint endpoints on box python/service.py POST routes |
