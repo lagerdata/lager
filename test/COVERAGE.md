@@ -31,13 +31,13 @@ A job only *blocks* a merge once its status context is listed in branch ruleset 
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1082 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1114 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 1282 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 79 (+4 skipped) |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 91 (+1 skipped) |
-| | **Total gated** | **2805** |
+| | **Total gated** | **2837** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -535,6 +535,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_ssh.py` | SSH ensure_lager_box_keypair and key_auth_works helpers |
 | `test_supply_tui.py` | SupplyTUI render output, command parsing, worker threads, connection failure |
 | `test_uart_ws_status_events.py` | CLI handling of box-side `uart_status` events when a UART device re-enumerates |
+| `test_update_flatten.py` | `lager update` sparse-checkout flatten: deletions propagate, root entries preserved, and the docker-build hash covers the source tree |
 | `test_update_probe.py` | `lager box update` probe script modprobe/usbtmc detection and output parsing |
 | `test_version_skew.py` | Version skew warning when CLI minor > box minor with per-process caching |
 | `test_watt_subcommands.py` | `lager watt` NetGroup reading power/current/voltage/all over the box API |
