@@ -1,0 +1,68 @@
+---
+title: "Version 0.34.0"
+description: "July 30, 2026"
+---
+
+## <u>Features</u>
+
+- **`lager nets state`** reports live hardware state for every saved net in one
+  command. Power supplies show channel, output and measured voltage/current;
+  USB ports show enabled or disabled; GPIO shows level; ADC and DAC show volts;
+  an I2C bus shows the addresses that answered. Roles with no probe report
+  nothing rather than guessing. Add `--json` for the same data unformatted.
+
+  It is a separate subcommand rather than part of `lager nets` because it
+  touches hardware: plain `lager nets` reads saved configuration only, while
+  this takes the same instrument locks a running `lager python` test holds.
+
+  Nets are probed per instrument rather than per net, so a hub with eight ports
+  costs one connect cycle instead of eight, and the command always answers
+  within its deadline — an instrument that has stopped responding reports
+  nothing for its own nets instead of failing the whole bench.
+
+  A Lager Box too old to support this reports a clear upgrade hint.
+
+## <u>Bug Fixes</u>
+
+- **`lager debug <net> flash` no longer leaves the target blank when the
+  post-erase reconnect fails.** `flash` erases by default and used to reconnect
+  the debugger between the erase and the flash. That reconnect sat inside the
+  erase's own error handling, so when it failed the command reported
+  `Flash erase failed`, exited non-zero, and never programmed the part it had
+  just erased. The reconnect was not needed by either debug backend and has
+  been removed.
+
+- **`lager debug <net> flash` no longer reports success when nothing was
+  programmed.** The command printed `Flashed!` and exited zero regardless of
+  what the programmer actually did, so a run whose log read
+  `Could not connect to target` still looked like a success — with the part
+  left erased, because `flash` erases first. It now takes its result from the
+  programmer's own output and reports which step failed.
+
+- **`lager nets state` no longer reconfigures the hardware it reports on.**
+  Reading GPIO state could reset a pin's direction on a LabJack T7, releasing a
+  line held for a target's reset, boot-mode or enable signal; and reading an
+  analog input reset that channel's range and resolution, disturbing a
+  measurement in progress. Both now read without writing.
+
+- **The LabJack batch probe now serialises correctly against `lager gpo`,
+  `gpi`, `adc` and `dac`.** It took a different lock than those commands, so
+  reading state could overlap with a command already using the same device.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.34.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.34.0/)
