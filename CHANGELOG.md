@@ -100,6 +100,45 @@ All notable changes to the Lager platform are documented here. For detailed rele
   custom target init is a legitimate use -- but nothing else told you what you
   had taken over.
 
+- **`lager update` no longer leaves a file on the box after it is deleted
+  upstream.** The step that flattens the sparse-checkout layout (`box/` into
+  the repository root) copied with `cp -rf box/* .`, which is additive: it
+  overwrote changed files but never removed ones the new tree no longer
+  contained. The copy then deleted the tracked source, leaving the flattened
+  tree untracked — so neither `git checkout -f` nor `git reset --hard` had any
+  authority over it, and nothing else in the update path could clean it up.
+
+  A file deleted upstream therefore persisted on every box indefinitely and
+  was copied into the runtime image by the next docker build. Boxes were found
+  carrying a module deleted thirteen minor versions earlier, and the
+  execute-capable MCP tools removed as a deliberate security reduction were
+  still sitting in the image releases after the change that removed them.
+  Nothing imported them, so they were inert rather than reachable, but a
+  security-motivated deletion that still ships is not a deletion.
+
+  Each top-level entry is now removed and then moved into place, so a subtree
+  is rebuilt rather than merged into and deletions propagate on the first
+  update. Entries at the repository root that `box/` does not provide are
+  untouched, so `.git` and the sparse-checked-out `cli/` are never in range.
+  No manual cleanup is needed: the first update carrying this fix removes the
+  accumulated files and the image rebuilds without them.
+
+- **A source-only change now invalidates the cached Docker image.** The build
+  hash covered only `box.Dockerfile` and `requirements.txt`, so a pure-Python
+  change left `must_wipe_image` false and correctness rested entirely on
+  BuildKit's `COPY` cache. That held only incidentally — an early `COPY *.py`
+  layer tended to change too, invalidating the layers after it — and it is the
+  same class of silent staleness as the flatten bug above. Every file under
+  `~/box/lager` now feeds the hash. `__pycache__` directories and `.pyc` files
+  are excluded, since they are regenerated on the box and would otherwise
+  force a rebuild on every run.
+
+  Because the stored hash on an existing box was computed with the old
+  formula, it cannot match the new one: **the first `lager update` after this
+  release wipes the cached image and rebuilds it in full, once per box.** On
+  Pi-class hardware that is a slow update. Subsequent updates only rebuild
+  when something under `~/box/lager` actually changed.
+
 ## [0.34.0] - 2026-07-30
 
 ### Added

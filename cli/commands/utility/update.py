@@ -103,6 +103,65 @@ def wait_for_box_ready(box_ip, *, timeout_s=60, initial_delay_s=2):
     return False
 
 
+def _flatten_shell_cmd():
+    """Shell snippet that flattens the sparse-checkout layout (`box/` -> root).
+
+    Each top-level name that `box/` provides is *removed* from the root and
+    then moved into place, rather than copied over the top of whatever is
+    already there. The old `cp -rf box/* .` was additive: it overwrote changed
+    files but never removed ones the new tree no longer contained, so a file
+    deleted upstream persisted on every box indefinitely and was baked into
+    the runtime image by the next docker build. Boxes were found carrying
+    modules deleted thirteen minor versions earlier, including the
+    execute-capable MCP tools removed as a deliberate security reduction.
+    Because `rm -rf box` then deleted the tracked source, the flattened tree
+    was untracked and `git checkout -f` / `git reset --hard` had no authority
+    over it — nothing else in the update path could ever clean it up.
+
+    Invariants:
+
+    - **`nullglob` is load-bearing.** Without it an unmatched `box/*` stays
+      the literal string and `$name` becomes `*`. Every expansion here is
+      also quoted, so even then `rm` would target a file literally named
+      `*` rather than globbing, but the two guards together make an empty
+      `box/` a no-op instead of an error.
+    - **Removing before the move is what makes deletions propagate**, and it
+      also stops `mv` from nesting `box/lager` *inside* an existing `lager/`
+      (the classic `mv a b` behaviour when `b` is a directory).
+    - **Only the names `box/` provides are touched.** A blanket wipe of `~/box`
+      would take out `.git` and the root-level tracked files — root and `box/`
+      both carry a `README.md` (see `_pull_shell_script`). `box/` ships no
+      `cli` or `.git` entry, so the sparse-checked-out `~/box/cli` the host
+      CLI install needs is never in range.
+    - **`rmdir`, not `rm -rf`, retires the source directory.** It only
+      succeeds once every entry has moved, so a partial flatten leaves `box/`
+      intact and the next run recovers. `rm -rf box` here would destroy the
+      source that a retry depends on.
+
+    `mv` rather than `cp` because both sides are the same filesystem, making
+    each entry an atomic rename: no disk doubling, and no window where a
+    half-copied tree looks complete.
+
+    Deletion of a whole top-level name is still not propagated — if `box/foo`
+    disappeared upstream, `~/box/foo` would remain, since the loop only walks
+    what `box/` currently provides. Every file the runtime image is built from
+    lives under the single name `lager`, which is removed and recreated
+    wholesale, so this does not affect the build context.
+    """
+    return (
+        'cd ~/box && '
+        '{ if [ -d box ]; then '
+        'shopt -s dotglob nullglob; '
+        'for src in box/*; do '
+        'name=${src#box/}; '
+        'rm -rf "./$name"; '
+        'mv "$src" "./$name"; '
+        'done; '
+        'rmdir box 2>/dev/null; '
+        'fi; true; }'
+    )
+
+
 # Files whose contents legitimately invalidate the cached Docker image.
 # Dockerfile is the universal one; requirements.txt may not exist on every box
 # revision, so we sha256sum it only when present.
@@ -111,13 +170,26 @@ _BUILD_HASH_INPUTS = [
     '~/box/lager/requirements.txt',
 ]
 
+# Source trees whose contents also invalidate the cached image. The Dockerfile
+# `COPY`s these into the image, so a pure-Python change must wipe it: without
+# them in the hash, `must_wipe_image` stays false for every source-only change
+# and correctness rests entirely on BuildKit's COPY cache. That held only by
+# luck — an early `COPY *.py` layer tended to change too, invalidating the
+# later layers — and it is exactly the kind of silent staleness that let
+# deleted files survive in the runtime image.
+_BUILD_HASH_SOURCE_DIRS = [
+    '~/box/lager',
+]
+
 
 def _build_hash_shell_cmd():
     """Shell snippet that prints a hash of the docker-build inputs.
 
-    Missing files are silently skipped (so the hash still works on box
-    revisions without a requirements.txt). Prints an empty string if nothing
-    matched, which we treat as "skip auto-invalidation".
+    Covers both the individual files in `_BUILD_HASH_INPUTS` and every file
+    under `_BUILD_HASH_SOURCE_DIRS`. Missing files and directories are
+    silently skipped (so the hash still works on box revisions without a
+    requirements.txt). Prints an empty string if nothing matched, which we
+    treat as "skip auto-invalidation".
 
     `~/box/...` paths are tilde-expanded by the for-loop's word-expansion
     pass before iteration, so `$f` inside the body is already absolute —
@@ -125,12 +197,32 @@ def _build_hash_shell_cmd():
     string when nothing matched" promise true; without it, an empty pipe
     into sha256sum would hash the empty string (`e3b0c44...`) and mask the
     no-files case.
+
+    `sort -z` is required for determinism: `find` walks in filesystem order,
+    which is not stable across boxes or across a tree that has been rewritten
+    by the flatten. Sorting first means the same tree always produces the same
+    hash. Because `sha256sum` prints the path alongside the digest, a rename
+    or a deletion changes the hash too — which is the point, since an
+    additive-copy bug used to leave deleted files in the build context.
+
+    `__pycache__` and `.pyc` files are excluded. They are derived artifacts
+    regenerated on the box, so hashing them would make the value unstable and
+    wipe the image on every run; any real change to a `.py` is caught by the
+    `.py` itself.
     """
     paths = ' '.join(_BUILD_HASH_INPUTS)
+    dirs = ' '.join(_BUILD_HASH_SOURCE_DIRS)
     return (
-        'out=$(for f in ' + paths + '; do '
-        '  [ -f "$f" ] && sha256sum "$f"; '
-        'done); '
+        'out=$('
+        'for f in ' + paths + '; do '
+        '[ -f "$f" ] && sha256sum "$f"; '
+        'done; '
+        'for d in ' + dirs + '; do '
+        '[ -d "$d" ] && find "$d" -type f '
+        "-not -path '*/__pycache__/*' -not -name '*.pyc' -print0 "
+        '| sort -z | xargs -0 -r sha256sum; '
+        'done'
+        '); '
         '[ -n "$out" ] && echo "$out" | sha256sum | cut -d" " -f1'
     )
 
@@ -1265,7 +1357,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         if force:
             deps_status = 'forced clean rebuild (--force: image + cargo/npm volumes wiped)'
         elif deps_will_change:
-            deps_status = 'will trigger fresh build (Dockerfile or requirements changed)'
+            deps_status = 'will trigger fresh build (Dockerfile, requirements or box source changed)'
         elif is_rollback or commits_ahead > 0:
             # Probe measured the *current* (pre-pull) Dockerfile/requirements,
             # so a backward jump can still trigger a rebuild we can't predict
@@ -1368,20 +1460,19 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         if progress:
             progress.update("Already up to date")
 
-    # Flatten the sparse-checkout layout (box/ -> root) when needed. The cp is
-    # best-effort (the box may already be flat), but the post-flatten verify
+    # Flatten the sparse-checkout layout (box/ -> root) when needed. The move
+    # is best-effort (the box may already be flat), but the post-flatten verify
     # is fatal: a silently-failed flatten used to let the docker build proceed
     # against missing files — an image that passed `docker ps` but failed at
     # runtime, one of the documented "had to run update 3 times" modes. The
-    # `{ ...; true; }` keeps a cp failure non-fatal so the verify always runs
+    # `{ ...; true; }` keeps a failure non-fatal so the verify always runs
     # and is what actually decides. Flatten + verify share one SSH call.
     if needs_flatten:
         if progress:
             progress.update("Flattening structure...")
         log('Flattening layout...', nl=False)
         flatten_script = (
-            'cd ~/box && '
-            '{ if [ -d box ]; then shopt -s dotglob && cp -rf box/* . && rm -rf box; fi; true; } && '
+            _flatten_shell_cmd() + ' && '
             'test -f ~/box/lager/box_http_server.py && '
             'test -f ~/box/lager/docker/box.Dockerfile'
         )
