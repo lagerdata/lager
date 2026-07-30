@@ -24,20 +24,24 @@ TTL reap.
 
 ### Which commands auto-lock
 
-| Command                | Lock window                                                                | Why                                                                                              |
-|------------------------|----------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------|
-| `lager python`         | Full test run (acquire → heartbeat → release)                              | Canonical test runner.                                                                            |
-| `lager install`        | The `setup_and_deploy_box.sh` step (the part that restarts the container)  | Container restart mid-test would kill the test outright.                                          |
-| `lager uninstall`      | Container teardown, image wipe, `~/box` and `/etc/lager` removal           | Same — destructive on-box mutation.                                                              |
-| `lager update`         | Container stop → image rebuild → restart → health check                    | Container restart is the test-clobbering action. Read-only probe / fetch are deliberately outside the lock. |
-| `lager install-wheel`  | The `pip install` invocation inside the container                          | `pip install` mutates the container's Python environment; a concurrent test could race on imports. |
+| Category | Commands | Lock window | Why |
+|----------|----------|-------------|-----|
+| Test runner | `lager python` | Full test run (acquire → heartbeat → release) | Canonical test runner. |
+| Measurement | `gpi`, `gpo`, `adc`, `dac`, `thermocouple`, `watt`, `energy`, `scope`, `logic` | Single command invocation | Hardware I/O — interleaved access corrupts readings or pin state. |
+| Communication | `spi`, `i2c`, `uart`, `wifi`, `ble`, `blufi`, `usb`, `router` | Single command invocation | Bus/protocol transactions must not interleave across users. |
+| Power | `supply`, `battery`, `eload`, `solar` | Single command invocation (subcommands only, not listing) | Concurrent voltage/current changes are dangerous. |
+| Development | `debug` (flash/connect/erase/reset/etc.), `arm`, `webcam` | Single command invocation | Flashing or debug sessions must not collide. |
+| Admin | `install`, `uninstall`, `update`, `install-wheel` | Destructive section only | Container restart/mutation mid-test would kill the test. |
 
 Read-only commands (`lager hello`, `lager boxes list`, `lager boxes lock` /
-`unlock` itself, status / dry-run paths, etc.) do **not** acquire the
-auto-lock. Note: this is intentionally narrower than the v0.12–0.13.3
-behavior, which slapped a `--force-command`-overridable lock on every
-single CLI command. See *Backward compatibility* below for the
-v0.13.4 history.
+`unlock` itself, net-listing paths like `lager supply --box X` with no
+subcommand, status / dry-run paths, etc.) do **not** acquire the auto-lock.
+
+Unlike the v0.12–0.13.3 design (which used a shared decorator on every
+command and was reverted in v0.13.4), this implementation uses the same
+TTL + heartbeat + atexit infrastructure as `lager python`, avoiding the
+three corner cases that motivated the revert. See *Backward
+compatibility* below for the full history.
 
 The lock identity is **CI-aware** so concurrent test runs in CI mutually
 exclude correctly. Holder formats:
@@ -232,11 +236,11 @@ v0.13.0 added an ephemeral "command-in-progress" lock that fired on
 `--force-command` flag. v0.13.4 removed it because three corner cases
 were unfixable in that design:
 
-| v0.13.4 corner case                                          | How this PR avoids it                                                                                                                                                                                                              |
+| v0.13.4 corner case                                          | How the current design avoids it                                                                                                                                                                                                   |
 |--------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| *"Supply commands never released the lock"*                  | The auto-lock is only attached to **5 commands** (`python`, `install`, `uninstall`, `update`, `install-wheel`), not every CLI surface. Supply commands etc. don't touch the lock — no decorator-on-everything to leak from.        |
-| *"Long-running commands blocked all other commands on the same box"* | Only those 5 commands check the lock; status / list / read-only paths are unaffected. For genuine concurrent test runs, dev gets fail-fast in &lt;5s and CI gets a queue (default 60s, configurable). That's the *desired* policy. |
-| *"Detached processes left stale locks"*                      | `--detach` is **opt-in** for a long-lived hold (`ttl_seconds: null` is intentional). Non-detached runs have heartbeat + TTL reap, so an abnormal CLI exit self-recovers in ≤ TTL + grace.                                          |
+| *"Supply commands never released the lock"*                  | Every auto-lock uses `auto_lock_acquire_for_command` which registers an `atexit` handler + heartbeat thread. The lock is released on normal exit, exception, SIGINT, or (worst case) reaped by the server TTL after SIGKILL. The v0.13 bug was a decorator that swallowed exceptions before release ran — the atexit safety net makes that impossible. |
+| *"Long-running commands blocked all other commands on the same box"* | Read-only / listing paths (`lager supply --box X` with no subcommand, `lager gpi --box X` with no netname, `lager boxes`, `lager hello`) use plain `resolve_box()` which only checks the lock passively. Only hardware-*interacting* subcommands acquire. For concurrent hardware use, dev gets fail-fast in &lt;1s and CI gets a queue (default 30min, configurable via `LAGER_LOCK_WAIT`). |
+| *"Detached processes left stale locks"*                      | All ephemeral locks have `ttl_seconds=1800` + heartbeat every 60s. If the CLI dies, the box reaps the lock within one TTL. `--detach` (on `lager python` only) is an opt-in eternal hold (`ttl_seconds: null`) that must be released manually — this is intentional and documented. |
 
 `--force-command` is **gone**. Collision policy is structured (fail-fast
 in dev, queue in CI) and the existing `lager boxes lock --force` is the
