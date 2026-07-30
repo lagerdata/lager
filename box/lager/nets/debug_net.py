@@ -13,18 +13,30 @@ import contextlib
 from .constants import NetType
 
 
-# Shared temp paths the HTTP debug service writes user scripts to.
-# DebugNet writes the same files on the in-box Python API path so
-# downstream J-Link helpers (``api._get_script_file``) and OpenOCD
-# (``-f /tmp/lager_openocd_user.cfg``) pick them up without changes.
-# Keep in lockstep with the constants in ``box/lager/debug/service.py``.
-_JLINK_SCRIPT_TEMP_PATH = '/tmp/lager_jlink_script.JLinkScript'
+# Shared temp path the HTTP debug service writes OpenOCD configs to. DebugNet
+# writes the same file on the in-box Python API path so OpenOCD
+# (``-f /tmp/lager_openocd_user.cfg``) picks it up without changes. Keep in
+# lockstep with ``OPENOCD_CONFIG_TEMP_PATH`` in ``box/lager/debug/service.py``.
+#
+# J-Link scripts are deliberately absent here: they are per net, resolved
+# through ``api.script_path_for_net`` (issue #195).
 _OPENOCD_CONFIG_TEMP_PATH = '/tmp/lager_openocd_user.cfg'
 
 _SHARED_PATH_FOR_SUFFIX = {
-    '.JLinkScript': _JLINK_SCRIPT_TEMP_PATH,
-    '.cfg':         _OPENOCD_CONFIG_TEMP_PATH,
+    '.cfg': _OPENOCD_CONFIG_TEMP_PATH,
 }
+
+
+def _target_path_for(suffix, net_name):
+    """Where a materialised script/cfg for this net belongs, or None.
+
+    J-Link scripts are per net (issue #195). OpenOCD cfgs stay on the shared
+    path -- see materialise_user_script's docstring for why.
+    """
+    if suffix == '.JLinkScript':
+        from lager.debug.api import script_path_for_net
+        return script_path_for_net(net_name)
+    return _SHARED_PATH_FOR_SUFFIX.get(suffix)
 
 
 def materialise_user_script(net_info, *, explicit_key, b64_key, suffix):
@@ -38,19 +50,18 @@ def materialise_user_script(net_info, *, explicit_key, b64_key, suffix):
        path for *suffix*.
     3. None — no user override; the backend uses its built-in defaults.
 
-    We use the shared paths (not per-net) for two reasons:
+    J-Link scripts are written **per net**. They used to go to a single shared
+    path, justified by ``reset_device`` / ``read_memory`` internally calling
+    ``api._get_script_file()``, which only checked that shared path. Those now
+    take ``script_file=`` explicitly, so the constraint is gone -- and the
+    caveat it forced ("two debug nets connecting concurrently will clobber the
+    shared path") turned out to be the smaller half of the problem. The larger
+    half: a script written for one net was picked up by operations on *any*
+    net, and outlived the session that wrote it. See issue #195.
 
-    * J-Link's ``reset_device`` / ``read_memory`` internally call
-      ``api._get_script_file()`` which *only* checks the shared path; a
-      per-net path wouldn't be picked up.
-    * OpenOCD reads the cfg once at daemon startup, so subsequent writes
-      to the shared path don't affect an already-running daemon.
-
-    Caveat: two debug nets with different scripts that connect concurrently
-    will clobber the shared path. In practice the in-box Python API is used
-    sequentially against a single net per test, and the HTTP service path
-    has the same limitation (it handles concurrency at the request boundary
-    by rewriting the file on every endpoint).
+    OpenOCD cfgs stay on the shared path: the daemon reads its cfg once at
+    startup, so a per-net path would not change which cfg a running daemon is
+    using, and OpenOCD is one-daemon-per-probe rather than per-net.
     """
     import base64
     import os
@@ -65,38 +76,39 @@ def materialise_user_script(net_info, *, explicit_key, b64_key, suffix):
     if not isinstance(encoded, str) or not encoded.strip():
         return None
 
-    shared_path = _SHARED_PATH_FOR_SUFFIX[suffix]
+    target = _target_path_for(suffix, net.get('name'))
+    if not target:
+        return None
     try:
-        with open(shared_path, 'wb') as f:
+        with open(target, 'wb') as f:
             f.write(base64.b64decode(encoded))
-        return shared_path
+        return target
     except Exception:  # noqa: BLE001 — surface as "no user cfg"
         return None
 
 
-def _repoint_jlink_script(script):
+def _repoint_jlink_script(script, net_name=None):
     """Copy a per-connect J-Link script override to the shared temp path.
 
     Unlike :func:`materialise_user_script`, an existing path is *not* returned
-    as-is — its bytes are copied to the shared path, because J-Link's
-    ``reset_device`` / ``read_memory`` resolve scripts via
-    ``api._get_script_file()`` which only checks the shared path; a foreign
-    path would silently not be used by those ops.
+    as-is — its bytes are copied to **this net's** script path, so every later
+    operation on the net resolves the same file. It used to be copied to a path
+    shared by all nets, which is issue #195.
 
     Args:
         script: path to a ``.JLinkScript`` already on the box, OR a
             base64-encoded script blob, OR None/empty.
 
     Returns:
-        The shared temp path when the override was materialised, else None —
+        This net's script path when the override was materialised, else None —
         the caller leaves the previously materialised script in place.
 
     Never raises: empty, missing-path, or undecodable input is a no-op. The
     path-existence check runs first so a real path is never misread as
     base64; ``validate=True`` keeps a typo'd path (whose ``.`` is outside the
     base64 alphabet) from "decoding" into garbage and clobbering the shared
-    script. Inherits materialise_user_script's concurrency caveat: concurrent
-    connects with different scripts clobber each other.
+    script. Two nets no longer clobber each other; two concurrent connects on
+    the SAME net still do, which is inherent to one script per net.
     """
     import base64
     import os
@@ -111,10 +123,12 @@ def _repoint_jlink_script(script):
             data = base64.b64decode(script, validate=True)
         if not data:
             return None
-        shared_path = _SHARED_PATH_FOR_SUFFIX['.JLinkScript']
-        with open(shared_path, 'wb') as f:
+        target = _target_path_for('.JLinkScript', net_name)
+        if not target:
+            return None
+        with open(target, 'wb') as f:
             f.write(data)
-        return shared_path
+        return target
     except Exception:  # noqa: BLE001 — bad override leaves the current script in place
         return None
 
@@ -782,9 +796,9 @@ try:
 
             ``script`` (J-Link only; the OpenOCD backend ignores it) is a
             per-connect ``.JLinkScript`` override: a path on the box or a
-            base64 blob, copied to the shared script temp path so
+            base64 blob, copied to **this net's** script path so
             ``flash``/``reset``/``read_memory`` all pick it up immediately
-            (they resolve via the shared path). An already-running gdbserver
+            (they take it explicitly). An already-running gdbserver
             only adopts the new script on a relaunch — pass ``force=True``;
             ``ignore_if_connected=True`` returns early without relaunching,
             though the file is still repointed for subsequent Commander ops.
@@ -795,7 +809,7 @@ try:
             speed = speed or self.speed
             transport = transport or self.transport
 
-            new_script = _repoint_jlink_script(script)
+            new_script = _repoint_jlink_script(script, self.name)
             if new_script:
                 self._jlink_script_path = new_script
 
@@ -864,10 +878,24 @@ try:
             )
 
         def disconnect(self):
-            """Stop the gdbserver for this probe."""
+            """Stop the gdbserver for this probe, and drop this net's script.
+
+            The script belongs to the session, not to the box. Without the
+            clear it outlives the session that established it, so the next
+            operation on this net silently runs under it -- the same leak the
+            HTTP ``/debug/disconnect`` path fixes. OpenOCD cfgs stay on the
+            shared path and are not cleared here; see
+            :func:`materialise_user_script`.
+            """
             if self.backend == BACKEND_OPENOCD:
                 return stop_openocd(serial=self.serial, tcl_port=self.openocd_tcl_port)
-            return disconnect(serial=self.serial, gdb_port=self.gdb_port)
+            try:
+                result = disconnect(serial=self.serial, gdb_port=self.gdb_port)
+            finally:
+                from lager.debug.api import clear_script_file
+                clear_script_file(self.name)
+                self._jlink_script_path = None
+            return result
 
         def reset(self, halt=False):
             """Reset the device — same return shape (newline-joined output) for both backends.
@@ -883,7 +911,8 @@ try:
                     self._ensure_openocd_running()
                     return self._openocd_rpc().reset(halt=halt) or ''
                 return '\n'.join(
-                    reset_device(halt=halt, serial=self.serial, gdb_port=self.gdb_port)
+                    reset_device(halt=halt, serial=self.serial, gdb_port=self.gdb_port,
+                                  script_file=self._jlink_script_path)
                 )
             return self._self_heal(_reset)
 
@@ -954,6 +983,7 @@ try:
                 return debug_read_memory(
                     address, length, mcu=self.device,
                     serial=self.serial, gdb_port=self.gdb_port,
+                    script_file=self._jlink_script_path,
                 )
             return self._self_heal(_read)
 

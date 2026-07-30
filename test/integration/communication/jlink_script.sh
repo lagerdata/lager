@@ -147,14 +147,51 @@ show_failure() {
     echo "$1" | tail -3 | sed 's/^/      /'
 }
 
+# Where the box actually keeps this net's J-Link script.
+#
+# Scripts are per net (issue #195); the old shared
+# /tmp/lager_jlink_script.JLinkScript is no longer written by any current box.
+# Every check below reads through here, so a suite run against a current box
+# asserts on the file that is really in force rather than one that should never
+# exist -- which is what made the script-content checks in categories 3 and 5
+# vacuous.
+script_path_on_box() {
+    local net_slug
+    net_slug=$(printf '%s' "$NET" | sed 's/[^A-Za-z0-9._-]/_/g')
+    printf '/tmp/lager_jlink_script_%s.JLinkScript' "$net_slug"
+}
+
 cleanup_script_file() {
-    # Remove script file from box
-    ssh ${SSH_USER}@$BOX_IP "rm -f /tmp/lager_jlink_script.JLinkScript" 2>/dev/null || true
+    # Remove any script this suite left on the box, and SAY SO if the removal
+    # did not take.
+    #
+    # This used to be `rm -f ... 2>/dev/null || true` — which cannot fail, and
+    # therefore cannot tell you it did nothing. Benches were repeatedly found
+    # still carrying this suite's smoke-test script after a run, with a
+    # leftover script making an erased target unattachable (issue #195) and the
+    # error naming neither. A teardown that silently no-ops is worse than none:
+    # it creates the belief that the bench was left clean.
+    #
+    # Both paths are removed: the legacy shared file, and this net's per-net
+    # file. /tmp is shared between the host and the lager container, so a plain
+    # ssh rm reaches the file the box actually reads.
+    local paths="/tmp/lager_jlink_script.JLinkScript $(script_path_on_box)"
+
+    ssh ${SSH_USER}@$BOX_IP "rm -f $paths" 2>/dev/null || true
+
+    local still
+    still=$(ssh ${SSH_USER}@$BOX_IP "ls $paths 2>/dev/null" 2>/dev/null || true)
+    if [ -n "$still" ]; then
+        echo "  WARNING: could not clear J-Link script(s) from the box:"
+        echo "$still" | sed 's/^/    /'
+        echo "    The bench may be left in a state where debug attach fails."
+        echo "    Clear by hand:  ssh ${SSH_USER}@$BOX_IP 'rm -f $paths'"
+    fi
 }
 
 check_script_on_box() {
     local expected_content="$1"
-    local actual=$(ssh ${SSH_USER}@$BOX_IP "cat /tmp/lager_jlink_script.JLinkScript 2>/dev/null" || true)
+    local actual=$(ssh ${SSH_USER}@$BOX_IP "cat $(script_path_on_box) 2>/dev/null" || true)
     if [ -n "$expected_content" ]; then
         if echo "$actual" | grep -q "$expected_content"; then
             return 0
@@ -256,7 +293,7 @@ GDB_PID=$!
 sleep 5
 
 echo -n "  Checking no script on box... "
-SCRIPT_EXISTS=$(ssh ${SSH_USER}@$BOX_IP "test -f /tmp/lager_jlink_script.JLinkScript && echo 'yes' || echo 'no'" 2>/dev/null)
+SCRIPT_EXISTS=$(ssh ${SSH_USER}@$BOX_IP "test -f $(script_path_on_box) && echo 'yes' || echo 'no'" 2>/dev/null)
 # With no DEBUG section, there should be no NEW script written (old ones may persist)
 # The key is that connection succeeds
 if lager debug $NET status --box $BOX 2>&1 | grep -qi "Connected"; then
@@ -595,7 +632,7 @@ sleep 8
 
 echo -n "  Checking large script transfer... "
 if check_script_on_box "LARGE SCRIPT"; then
-    SCRIPT_SIZE=$(ssh ${SSH_USER}@$BOX_IP "wc -c < /tmp/lager_jlink_script.JLinkScript" 2>/dev/null || echo "0")
+    SCRIPT_SIZE=$(ssh ${SSH_USER}@$BOX_IP "wc -c < $(script_path_on_box)" 2>/dev/null || echo "0")
     if [ "$SCRIPT_SIZE" -gt 10000 ]; then
         track_test "pass"
         echo "  Script size: $SCRIPT_SIZE bytes"
@@ -1101,7 +1138,7 @@ GDB_PID=$!
 sleep 5
 
 echo -n "  Verifying script on box... "
-SCRIPT_CONTENT=$(ssh ${SSH_USER}@$BOX_IP "cat /tmp/lager_jlink_script.JLinkScript 2>/dev/null" || true)
+SCRIPT_CONTENT=$(ssh ${SSH_USER}@$BOX_IP "cat $(script_path_on_box) 2>/dev/null" || true)
 if echo "$SCRIPT_CONTENT" | grep -q "VERIFY TEST"; then
     track_test "pass"
     echo ""

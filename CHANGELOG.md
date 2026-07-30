@@ -2,6 +2,55 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Fixed
+
+- **A J-Link script no longer leaks onto debug operations that never asked for
+  one.** The box kept a single script at `/tmp/lager_jlink_script.JLinkScript`
+  and handed it to any operation that did not supply its own. Only `connect` and
+  `flash` send a script, so `reset`, `erase`, `memrd` and the gdbserver path
+  silently inherited whichever script was written last -- by a different net, by
+  an earlier session, or by a test suite that had since finished.
+
+  Scripts are now written per net (`/tmp/lager_jlink_script_<net>.JLinkScript`),
+  an operation with no net gets no script rather than an ambient one, and a
+  net's script is cleared when its debug session ends -- on the in-box Python
+  API path as well as over HTTP. `reset`, `erase` and `memrd` take the script
+  explicitly instead of resolving it from a shared location, so a net with a
+  genuinely required custom `InitTarget` still gets it on every operation. An
+  older box's shared file is removed when the debug service next starts.
+
+  OpenOCD configs still use a shared path: the daemon reads its config once at
+  startup, and it is one daemon per probe rather than per net.
+
+  Also fixed in the J-Link CLI test suite: its teardown reported success without
+  checking, so a suite that failed to clear its script left the bench poisoned
+  and said nothing. It now verifies the removal and prints the manual command if
+  it did not take. Its script-content checks read the per-net path too; they had
+  been asserting against the old shared file, which no current box writes.
+
+### Known issues
+
+- **A J-Link script that defines `InitTarget()` can make a just-erased target
+  unattachable.** This is not fixed here, and the scoping change above does not
+  address it: a script correctly configured for its own net does it too.
+
+  A user `.JLinkScript` replaces J-Link's built-in *per-device* `InitTarget()`,
+  and the replacement is per function -- a script defining no `InitTarget()`
+  leaves the built-in in place and is harmless. On an nRF5340 that built-in is
+  what brings the DAP up on a blank part: measured after a chip erase it takes
+  ~425 ms, against ~3 us for a user stub that just returns. With it displaced,
+  the attach that follows an erase fails with `Could not read CPUID register`
+  and `Failed to power up DAP`, and because `flash` erases by default one
+  scripted flash can leave the part blank and the net failing.
+
+  Until this is fixed: a script that does not define `InitTarget()` is safe. To
+  recover a net, clear its script with `lager debug <net> disconnect` and
+  re-flash with none configured. Note that removing the host-side `.lager` entry
+  is not enough on its own -- the box keeps the net's script file until the
+  session ends.
+
 ## [0.34.0] - 2026-07-30
 
 ### Added

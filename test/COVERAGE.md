@@ -32,12 +32,12 @@ A job only *blocks* a merge once its status context is listed in branch ruleset 
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1071 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 1247 |
+| `unit (box)` | `test/unit/box/` | 1264 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 79 (+4 skipped) |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 91 (+1 skipped) |
-| | **Total gated** | **2759** |
+| | **Total gated** | **2776** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -407,8 +407,8 @@ test/
 ├── mcp/                  # MCP server tests (pytest)
 │   ├── unit/             # 11 files: mocked, no hardware -- GATED
 │   └── integration/      #  1 file: live hardware required
-├── unit/                 # Local unit tests (115 files) -- ALL GATED
-│   ├── box/              # 61 files: box-side Python unit tests
+├── unit/                 # Local unit tests (116 files) -- ALL GATED
+│   ├── box/              # 62 files: box-side Python unit tests
 │   ├── cli/              # 43 files: CLI Python unit tests
 │   ├── measurement/      #  4 files: Joulescope / PPK2 / watt unit tests
 │   ├── blufi/            #  2 files: BluFi protocol unit tests
@@ -426,9 +426,9 @@ cli/tests/                #  5 files: 3 pytest suites + test_io_imports.py (GATE
                           #           `unit (cli)`), plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 115 files)
+### Local Unit Tests (`test/unit/` -- 116 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 61 files)
+#### Box Unit Tests (`test/unit/box/` -- 62 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported, and stubs the two third-party modules that are neither guarded nor installed
@@ -468,6 +468,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_jlink_memrd_reset_halt.py` | DA1469x reset+halt-before-read gating, regression guard, env-var opt-out |
 | `test_jlink_multi.py` | Multi-probe start_jlink_gdbserver with per-probe serial/port/RTT configuration |
 | `test_jlink_multi_gdbserver_select.py` | Multi-probe GDB slot dispatch |
+| `test_jlink_script_scoping.py` | J-Link scripts are per net: an operation with no net gets none, a net never inherits another's script, and a session's script is cleared when it ends |
 | `test_jlink_uncached_verify.py` | DA1469x opt-in uncached QSPI post-program verify to detect false XIP failures |
 | `test_lager_package_identity.py` | Guards this suite's conftest invariant: `lager` must be the real on-disk package with its `__init__` executed, not a placeholder |
 | `test_labjack_batch_read.py` | `POST /labjack/batch_read`: locks on the same device identity `/invoke` does, and writes nothing to the instrument |

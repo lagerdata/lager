@@ -33,7 +33,7 @@ from lager.debug import (
     get_jlink_status,
 )
 from lager.debug.gdb import get_controller, get_arch, reset as gdb_reset
-from lager.debug.api import JLinkNotRunning
+from lager.debug.api import JLinkNotRunning, clear_script_file, purge_legacy_script_file
 from lager.debug.jlink import JLink
 from lager.debug.gdbserver import (
     start_jlink_gdbserver,
@@ -66,8 +66,6 @@ from lager.debug.openocd import (
     OpenOcdRpcError,
 )
 
-# Temp path for J-Link script file (written during connect)
-JLINK_SCRIPT_TEMP_PATH = '/tmp/lager_jlink_script.JLinkScript'
 OPENOCD_CONFIG_TEMP_PATH = '/tmp/lager_openocd_user.cfg'
 
 
@@ -266,11 +264,22 @@ def _get_script_file(net=None):
     import base64
     from lager.cache import get_nets_cache
 
-    def _write_b64_script(b64: str, source: str) -> str:
-        with open(JLINK_SCRIPT_TEMP_PATH, 'wb') as f:
+    from lager.debug.api import script_path_for_net
+
+    net_name = net.get('name') if isinstance(net, dict) else (
+        net if isinstance(net, str) else None)
+    target_path = script_path_for_net(net_name)
+
+    def _write_b64_script(b64: str, source: str):
+        if not target_path:
+            # No net, no owner, nowhere safe to put it. Writing to a shared path
+            # is what let one net's script run under another's operations.
+            logger.warning('Refusing to write a J-Link script with no net (%s)', source)
+            return None
+        with open(target_path, 'wb') as f:
             f.write(base64.b64decode(b64))
-        logger.info(f'Wrote J-Link script to {JLINK_SCRIPT_TEMP_PATH} ({source})')
-        return JLINK_SCRIPT_TEMP_PATH
+        logger.info(f'Wrote J-Link script for net {net_name} to {target_path} ({source})')
+        return target_path
 
     if isinstance(net, dict):
         emb = net.get('jlink_script')
@@ -295,9 +304,13 @@ def _get_script_file(net=None):
         except Exception as e:
             logger.warning(f'Failed to reconstruct J-Link script from NetsCache: {e}')
 
-    if os.path.exists(JLINK_SCRIPT_TEMP_PATH):
-        logger.debug(f'Using existing J-Link script file {JLINK_SCRIPT_TEMP_PATH}')
-        return JLINK_SCRIPT_TEMP_PATH
+    # Fall back to THIS NET's own script only -- written by an earlier connect on
+    # the same net -- never to "whatever script is on disk". That fallback is the
+    # bug: `reset`/`erase`/`memrd`/`gdbserver` send no script, so they silently
+    # inherited whichever net or test suite wrote last. See issue #195.
+    if target_path and os.path.exists(target_path):
+        logger.debug(f'Using {net_name} script file {target_path}')
+        return target_path
     return None
 
 
@@ -524,11 +537,18 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 jlink_script = data.get('jlink_script') or self._get_jlink_script_from_net(net)
                 if jlink_script:
                     try:
+                        from lager.debug.api import script_path_for_net
                         script_content = base64.b64decode(jlink_script)
-                        script_file_path = JLINK_SCRIPT_TEMP_PATH
+                        # Per net -- a shared path meant this connect's script
+                        # was picked up by operations on every other net too,
+                        # and outlived this session (issue #195).
+                        script_file_path = script_path_for_net(net.get('name'))
+                        if not script_file_path:
+                            raise ValueError('connect has no net name to scope the script to')
                         with open(script_file_path, 'wb') as f:
                             f.write(script_content)
-                        logger.info(f'Wrote J-Link script to {script_file_path}')
+                        logger.info(f'Wrote J-Link script for net {net.get("name")} '
+                                    f'to {script_file_path}')
                     except Exception as e:
                         logger.warning(f'Failed to write J-Link script file: {e}')
                         script_file_path = None
@@ -775,6 +795,14 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             connection_id = f"{net.get('name', 'default')}:{device_type}"
             with connections_lock:
                 active_connections.pop(connection_id, None)
+
+            # The script belongs to the session, not to the box. Dropping it here
+            # is what stops it reaching operations that never asked for one -- a
+            # test suite that configures a script and exits used to leave the
+            # bench running under it indefinitely. Only when the session is
+            # actually ending: --keep-jlink-running means GDB is still attached.
+            if not keep_running:
+                clear_script_file(net.get('name'))
 
             message = f'{server_label} still running' if keep_running else f'{server_label} stopped'
             self.send_json_response(200, {
@@ -1657,6 +1685,12 @@ class DebugService:
 
         logger.info(f"Starting Lager Debug Service v{SERVICE_VERSION}")
         logger.info(f"Listening on {self.host}:{self.port} (accessible via port forwarding)")
+
+        # A box upgrading into per-net scripts can still be carrying the old
+        # shared file. Nothing reads it any more, so it would just sit there
+        # confusing whoever next goes looking. The service restarts on update,
+        # which makes this the upgrade hook.
+        purge_legacy_script_file()
 
         try:
             self.server = ThreadingHTTPServer((self.host, self.port), DebugServiceHandler)
