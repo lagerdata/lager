@@ -131,18 +131,30 @@ def _brief_labjack_batch(recs):
     the LabJack USB handle.  One HTTP call, register-level reads for GPIO
     (no direction mutation), batched eReadNames for AIN/DAC.
 
+    Sends ``device_id`` -- the SAME identity ``/invoke`` locks on, from
+    ``_physical_device_id`` -- so the batch read serialises against a
+    concurrent ``lager gpo``/``gpi``/``adc``/``dac`` on this T7. Deriving it
+    here rather than letting the endpoint guess is the point: every net in the
+    group already resolves to one physical device, and a key invented at the
+    other end is not guaranteed to be the same string.
+
     Returns dict[netname, brief_str | None].
     """
     import requests as _req
+
+    from .net_command import _physical_device_id
 
     payload = [
         {"name": r.get("name", ""), "role": r.get("role", ""),
          "pin": r.get("pin") or r.get("channel") or ""}
         for r in recs
     ]
+    device_id = _physical_device_id(
+        recs[0].get("role", ""), recs[0].get("instrument", "") or "", recs[0])
     try:
         resp = _req.post("http://localhost:8080/labjack/batch_read",
-                         json={"nets": payload}, timeout=5.0)
+                         json={"nets": payload, "device_id": device_id},
+                         timeout=5.0)
         if resp.ok:
             return resp.json()
     except Exception as e:

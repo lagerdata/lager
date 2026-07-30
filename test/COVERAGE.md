@@ -32,12 +32,12 @@ A job only *blocks* a merge once its status context is listed in branch ruleset 
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1055 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 1238 |
+| `unit (box)` | `test/unit/box/` | 1247 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 79 (+4 skipped) |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 91 (+1 skipped) |
-| | **Total gated** | **2734** |
+| | **Total gated** | **2743** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -470,6 +470,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_jlink_multi_gdbserver_select.py` | Multi-probe GDB slot dispatch |
 | `test_jlink_uncached_verify.py` | DA1469x opt-in uncached QSPI post-program verify to detect false XIP failures |
 | `test_lager_package_identity.py` | Guards this suite's conftest invariant: `lager` must be the real on-disk package with its `__init__` executed, not a placeholder |
+| `test_labjack_batch_read.py` | `POST /labjack/batch_read`: locks on the same device identity `/invoke` does, and writes nothing to the instrument |
 | `test_lock_state.py` | lock_state.py single source of truth for box-side lock behavior |
 | `test_monitor_state.py` | SupplyNet/KeithleyBattery single-call monitor-state helpers reducing lock contention |
 | `test_mount_prep.py` | Mount preparation SSH operations via mocked runner |

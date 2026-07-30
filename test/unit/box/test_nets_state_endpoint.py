@@ -360,6 +360,36 @@ class LabJackBatchProbeTests(unittest.TestCase):
         payload = mock.call_args[1]["json"]["nets"]
         self.assertEqual(len(payload), 4)
 
+    # A real bench T7 address -- the serial field is genuinely empty on this
+    # hardware. Every other case here uses address "ANY", which is precisely
+    # what hid the lock bug: with "ANY", _physical_device_id returns
+    # "labjack:ANY" and a hardcoded key at the other end matched by luck.
+    ADDRESSED_BENCH = [
+        {"name": "gpio5", "role": "gpio", "instrument": "LabJack_T7",
+         "address": "USB0::0x0CD5::0x0007::::INSTR", "pin": "EIO0"},
+        {"name": "adc1", "role": "adc", "instrument": "LabJack_T7",
+         "address": "USB0::0x0CD5::0x0007::::INSTR", "pin": "0"},
+    ]
+
+    def test_sends_the_device_id_invoke_locks_on(self):
+        """hardware_service must be told which lock to take, because /invoke
+        locks on _physical_device_id's output and the batch read has to
+        contend on the same object or it can interleave I/O on one handle."""
+        from lager.http_handlers.net_command import _physical_device_id
+
+        rec = self.ADDRESSED_BENCH[0]
+        expected = _physical_device_id(rec["role"], rec["instrument"], rec)
+
+        import requests as _req
+        with patch.object(_req, "post",
+                          return_value=self._mock_post({})) as mock:
+            nets_handler._brief_labjack_batch(self.ADDRESSED_BENCH)
+
+        sent = mock.call_args[1]["json"].get("device_id")
+        self.assertEqual(sent, expected)
+        self.assertNotEqual(sent, "labjack:ANY",
+                            "an addressed bench must not collapse to the ANY key")
+
     def test_http_failure_returns_all_none(self):
         import requests as _req
         with patch.object(_req, "post", side_effect=_req.ConnectionError("refused")):
