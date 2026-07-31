@@ -1964,6 +1964,43 @@ def _set_debug_script_impl(
         f"{resolved_box} ({reason}).",
         fg="green",
     )
+    _warn_if_script_defines_init_target(chosen, raw_bytes)
+
+
+# ``int InitTarget(void)``, ``InitTarget()``, with or without a return type and
+# across line breaks. Deliberately loose: a false positive costs one warning
+# line, a false negative costs a bench.
+_INIT_TARGET_RE = re.compile(rb"\bInitTarget\s*\(", re.IGNORECASE)
+
+
+def _warn_if_script_defines_init_target(backend: str, raw_bytes: bytes) -> None:
+    """Warn when a J-Link script defines ``InitTarget()``.
+
+    A user `.JLinkScript` REPLACES J-Link's built-in per-device
+    ``InitTarget()``, per function rather than per file. On an nRF5340 that
+    built-in is what brings the DAP up on a blank or protected part -- measured
+    at ~425 ms of real work after a chip erase, against ~3 us for a stub that
+    just returns. Displaced, the attach that follows an erase fails, and since
+    ``flash`` erases by default a single scripted flash can leave the part blank
+    and the net unusable.
+
+    Not an error: a script that genuinely needs custom target init is a real use
+    case. But whoever writes one has to do the bring-up themselves, and nothing
+    else in the tooling says so. Issue #195.
+    """
+    if backend != _BACKEND_JLINK or not _INIT_TARGET_RE.search(raw_bytes):
+        return
+    click.secho(
+        "Warning: this script defines InitTarget(), which REPLACES J-Link's "
+        "built-in target init for this device.\n"
+        "  On nRF-family parts that built-in is what brings up a blank or "
+        "protected target, so a flash\n"
+        "  (which erases first) may leave the part unattachable. Your "
+        "InitTarget() must do that bring-up\n"
+        "  itself. A script that does not define InitTarget() leaves the "
+        "built-in in place.",
+        fg="yellow", err=True,
+    )
 
 
 def _show_debug_script_impl(

@@ -497,6 +497,10 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
         The HTTP response shape is identical in both cases so the CLI doesn't
         care which backend is running.
         """
+        # Bound before the try so the error handler below can name the script
+        # even when the failure happens before resolution reaches it.
+        script_file_path = None
+
         try:
             import base64
 
@@ -757,6 +761,20 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                         f"gdbserver (PID {holder_pid}). Stop it first with "
                         f"`lager debug <net> disconnect`, or pass --force-reconnect "
                         f"to take the probe over.".replace('  ', ' ')
+                    )
+                elif script_file_path:
+                    # By this point the attach was retried WITHOUT the script and
+                    # still failed, so the script is not the whole story -- but it
+                    # is the single most likely thing to have made this target
+                    # unattachable, and naming it turns a suspected dead board
+                    # into a one-line diagnosis. Issue #195.
+                    error_msg += (
+                        f" A J-Link script is configured for this net "
+                        f"({script_file_path}); the attach was retried without it "
+                        f"and still failed. If the target is blank, note that a "
+                        f"script defining InitTarget() replaces the device "
+                        f"built-in that brings up a blank part. Remove it with "
+                        f"`lager nets remove-script <net> --box <BOX>`."
                     )
             elif "No J-Link device found" in error_msg or "JLinkGDBServerCLExe not found" in error_msg:
                 error_msg = "JLinkGDBServer not found. Check that J-Link is installed on box."

@@ -147,18 +147,28 @@ show_failure() {
     echo "$1" | tail -3 | sed 's/^/      /'
 }
 
-# Where the box actually keeps this net's J-Link script.
-#
-# Scripts are per net (issue #195); the old shared
-# /tmp/lager_jlink_script.JLinkScript is no longer written by any current box.
-# Every check below reads through here, so a suite run against a current box
-# asserts on the file that is really in force rather than one that should never
-# exist -- which is what made the script-content checks in categories 3 and 5
-# vacuous.
+# Where a CURRENT box keeps this net's J-Link script (issue #195). Used for
+# teardown, which should remove both layouts, and as the first path
+# read_script_on_box tries. Reads go through read_script_on_box, not here,
+# because the box may be older than this suite.
 script_path_on_box() {
     local net_slug
     net_slug=$(printf '%s' "$NET" | sed 's/[^A-Za-z0-9._-]/_/g')
     printf '/tmp/lager_jlink_script_%s.JLinkScript' "$net_slug"
+}
+
+# Read whichever script file THIS box actually writes.
+#
+# The suite and the box are versioned independently: CI runs the suite from the
+# commit under test but only probes the box with `lager update --check`, so a
+# box can legitimately be older than the suite driving it. Reading only the
+# per-net path made every script-content check fail against a box that still
+# writes the shared one -- a suite bug, not a box bug. Per-net first (what a
+# current box writes), then the legacy shared path.
+read_script_on_box() {
+    ssh ${SSH_USER}@$BOX_IP \
+        "cat $(script_path_on_box) 2>/dev/null || cat /tmp/lager_jlink_script.JLinkScript 2>/dev/null" \
+        2>/dev/null || true
 }
 
 cleanup_script_file() {
@@ -191,7 +201,7 @@ cleanup_script_file() {
 
 check_script_on_box() {
     local expected_content="$1"
-    local actual=$(ssh ${SSH_USER}@$BOX_IP "cat $(script_path_on_box) 2>/dev/null" || true)
+    local actual=$(read_script_on_box)
     if [ -n "$expected_content" ]; then
         if echo "$actual" | grep -q "$expected_content"; then
             return 0
@@ -293,7 +303,7 @@ GDB_PID=$!
 sleep 5
 
 echo -n "  Checking no script on box... "
-SCRIPT_EXISTS=$(ssh ${SSH_USER}@$BOX_IP "test -f $(script_path_on_box) && echo 'yes' || echo 'no'" 2>/dev/null)
+SCRIPT_EXISTS=$([ -n "$(read_script_on_box)" ] && echo 'yes' || echo 'no')
 # With no DEBUG section, there should be no NEW script written (old ones may persist)
 # The key is that connection succeeds
 if lager debug $NET status --box $BOX 2>&1 | grep -qi "Connected"; then
@@ -632,7 +642,7 @@ sleep 8
 
 echo -n "  Checking large script transfer... "
 if check_script_on_box "LARGE SCRIPT"; then
-    SCRIPT_SIZE=$(ssh ${SSH_USER}@$BOX_IP "wc -c < $(script_path_on_box)" 2>/dev/null || echo "0")
+    SCRIPT_SIZE=$(read_script_on_box | wc -c | tr -d ' ')
     if [ "$SCRIPT_SIZE" -gt 10000 ]; then
         track_test "pass"
         echo "  Script size: $SCRIPT_SIZE bytes"
@@ -1138,7 +1148,7 @@ GDB_PID=$!
 sleep 5
 
 echo -n "  Verifying script on box... "
-SCRIPT_CONTENT=$(ssh ${SSH_USER}@$BOX_IP "cat $(script_path_on_box) 2>/dev/null" || true)
+SCRIPT_CONTENT=$(read_script_on_box)
 if echo "$SCRIPT_CONTENT" | grep -q "VERIFY TEST"; then
     track_test "pass"
     echo ""
