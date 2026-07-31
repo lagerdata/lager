@@ -457,3 +457,63 @@ class TestExplicitBackendFlag:
         saved = fake_box['saves'][-1]
         assert 'openocd_config' not in saved
         assert 'jlink_script' in saved
+
+
+@pytest.fixture
+def jlink_init_target_file():
+    """A J-Link script that defines InitTarget() -- the harmful shape."""
+    f = tempfile.NamedTemporaryFile('w', suffix='.JLinkScript', delete=False)
+    f.write('int InitTarget(void) { Report("OPS"); return 0; }\n')
+    f.close()
+    yield f.name
+    os.unlink(f.name)
+
+
+class TestInitTargetWarning:
+    """A user script defining InitTarget() replaces J-Link's built-in one.
+
+    Per function, not per file: a script defining no InitTarget() leaves the
+    built-in in place. On nRF-family parts that built-in is what brings up a
+    blank target, so displacing it makes the attach after an erase fail --
+    measured at ~425 ms of real work versus ~3 us for a stub (issue #195).
+
+    Not an error: custom target init is a legitimate use. But nothing else in
+    the tooling tells you what you have taken over.
+    """
+
+    def test_warns_when_the_script_defines_init_target(
+            self, fake_box, jlink_init_target_file):
+        res = CliRunner().invoke(
+            nets_group,
+            ['set-script', 'JLINK1', jlink_init_target_file, '--box', 'test-box'],
+        )
+        assert res.exit_code == 0, res.output
+        assert 'InitTarget()' in res.output
+        assert 'REPLACES' in res.output
+
+    def test_no_warning_for_a_script_without_init_target(
+            self, fake_box, jlink_file):
+        """The fixture defines Reset(), not InitTarget(). Warning on every
+        script would make it noise and it would stop being read."""
+        res = CliRunner().invoke(
+            nets_group, ['set-script', 'JLINK1', jlink_file, '--box', 'test-box'],
+        )
+        assert res.exit_code == 0, res.output
+        assert 'InitTarget()' not in res.output
+
+    def test_no_warning_for_an_openocd_config(self, fake_box, cfg_file):
+        res = CliRunner().invoke(
+            nets_group, ['set-script', 'SWD', cfg_file, '--box', 'test-box'],
+        )
+        assert res.exit_code == 0, res.output
+        assert 'InitTarget()' not in res.output
+
+    def test_the_script_is_still_saved_despite_the_warning(
+            self, fake_box, jlink_init_target_file):
+        """A warning, not a refusal -- custom init is legitimate."""
+        res = CliRunner().invoke(
+            nets_group,
+            ['set-script', 'JLINK1', jlink_init_target_file, '--box', 'test-box'],
+        )
+        assert res.exit_code == 0, res.output
+        assert 'jlink_script' in fake_box['saves'][-1]

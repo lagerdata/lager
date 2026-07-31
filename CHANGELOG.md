@@ -73,26 +73,32 @@ All notable changes to the Lager platform are documented here. For detailed rele
   hub discovery path that loses the race are unchanged. `reason: "deadline"` is
   the evidence needed to size that work.
 
-### Known issues
-
-- **A J-Link script that defines `InitTarget()` can make a just-erased target
-  unattachable.** This is not fixed here, and the scoping change above does not
-  address it: a script correctly configured for its own net does it too.
-
+- **A J-Link script no longer leaves a just-erased target unattachable.**
   A user `.JLinkScript` replaces J-Link's built-in *per-device* `InitTarget()`,
   and the replacement is per function -- a script defining no `InitTarget()`
   leaves the built-in in place and is harmless. On an nRF5340 that built-in is
   what brings the DAP up on a blank part: measured after a chip erase it takes
-  ~425 ms, against ~3 us for a user stub that just returns. With it displaced,
-  the attach that follows an erase fails with `Could not read CPUID register`
-  and `Failed to power up DAP`, and because `flash` erases by default one
-  scripted flash can leave the part blank and the net failing.
+  ~425 ms, against ~3 us for a user stub that just returns. Displaced, the
+  attach that follows an erase failed with `Could not read CPUID register` and
+  `Failed to power up DAP` -- and because `flash` erases by default, one
+  scripted flash could leave the part blank and the net failing every later
+  attach.
 
-  Until this is fixed: a script that does not define `InitTarget()` is safe. To
-  recover a net, clear its script with `lager debug <net> disconnect` and
-  re-flash with none configured. Note that removing the host-side `.lager` entry
-  is not enough on its own -- the box keeps the net's script file until the
-  session ends.
+  `connect` now exhausts its speed ladder **with** the script and, only then,
+  retries once without it. Dropping the script is the more surprising change of
+  behaviour, so it happens last and is reported rather than silently succeeding:
+  the response carries `script_skipped` and the box logs that the target is not
+  running the configured init. A target that is unreachable either way still
+  fails, so the retry cannot turn a dead board into a pass.
+
+  When the scriptless retry also fails, the error now names the script and the
+  command to remove it. Previously it offered cabling advice and never mentioned
+  the script, so a poisoned net presented as dead hardware.
+
+  `lager nets set-script` warns when the script being attached defines
+  `InitTarget()`, naming what it displaces. It is a warning, not a refusal --
+  custom target init is a legitimate use -- but nothing else told you what you
+  had taken over.
 
 ## [0.34.0] - 2026-07-30
 

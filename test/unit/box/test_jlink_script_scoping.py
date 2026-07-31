@@ -16,16 +16,18 @@ just-erased target makes the debugger unable to attach, so one scripted flash
 left a bench failing every later attach until somebody deleted the file by hand.
 The error named neither the script nor the file.
 
-Measured on a bench, all four cells:
+The attach failure itself was later measured properly and is NOT what these
+tests cover -- see ``test_jlink_script_attach_retry.py``. In short: a script
+that defines ``InitTarget()`` replaces J-Link's built-in per-device
+``InitTarget()``, and on an nRF5340 that built-in is what brings up a blank
+part. The replacement is per function, so a script defining no ``InitTarget()``
+is harmless. An earlier version of this docstring claimed the opposite -- that
+an inert script was enough and therefore only persistence mattered -- on the
+strength of one CI observation. Three trials per cell on hardware say
+otherwise; contents are exactly what matters.
 
-    |                | programmed target | blank target |
-    | script present | attach OK         | attach FAILS |
-    | no script      | attach OK         | attach OK    |
-
-An inert script -- defining no InitTarget at all -- was enough: a CI run failed
-`debug.connect()` with it present and passed on the same commit with it removed.
-So the defect is the *persistence*, not any script's contents, and these tests
-pin the persistence rules rather than anything about script text.
+The persistence is still a real and separate defect, and it is what these tests
+pin: a script reaching operations that never asked for one.
 
 What is pinned here:
 

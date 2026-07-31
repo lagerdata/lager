@@ -118,6 +118,23 @@ def purge_legacy_script_file():
         return False
 
 
+# J-Link Commander does not raise when it cannot attach -- it prints and carries
+# on, so the only way to notice is to read its output. These are the lines it
+# produces for a target it could not reach.
+_CONNECT_FAILED_RE = re.compile(
+    r'could not connect to (?:the )?target'
+    r'|cannot connect to target'
+    r'|failed to power up dap'
+    r'|could not read cpuid',
+    re.IGNORECASE,
+)
+
+
+def _connect_failed(output_chunks):
+    """True if Commander output shows it never attached."""
+    return bool(_CONNECT_FAILED_RE.search('\n'.join(output_chunks)))
+
+
 class DebugError(Exception):
     """Base class for debug errors"""
     pass
@@ -437,86 +454,120 @@ def connect_jlink(speed, device, transport, force=False, ignore_if_connected=Fal
     else:
         halt_mode = '-nohalt'
 
-    for attempt_speed in speeds_to_try:
-        if len(speeds_to_try) > 1:
-            logger.debug(f'Attempting connection at {attempt_speed} kHz...')
+    def _try_speed_ladder(attempt_script):
+        """Walk the speed ladder with *attempt_script*; status dict, or None."""
+        nonlocal last_error
+        for attempt_speed in speeds_to_try:
+            if len(speeds_to_try) > 1:
+                logger.debug(f'Attempting connection at {attempt_speed} kHz...')
 
-        # Use the same start_jlink_gdbserver() function as the CLI
-        # This ensures consistent behavior between Python API and CLI
-        halt = (attach == 'reset-halt')
+            # Use the same start_jlink_gdbserver() function as the CLI
+            # This ensures consistent behavior between Python API and CLI
+            halt = (attach == 'reset-halt')
 
-        try:
-            result = start_jlink_gdbserver(
-                device=device,
-                speed=attempt_speed,
-                transport=transport,
-                halt=halt,
-                gdb_port=gdb_port,
-                rtt_telnet_port=rtt_telnet_port,
-                serial=serial,
-                script_file=script_file,
-            )
-        except Exception as exc:
-            last_error = JLinkStartError(b'', str(exc).encode(), str(exc))
-            continue
-
-        # Check if gdbserver started successfully
-        gdbserver_status = get_jlink_gdbserver_status(serial=serial)
-        if gdbserver_status['running']:
-            status = {
-                'running': True,
-                'start': 'ok',
-                'speed': attempt_speed,
-                'requested_speed': requested_speed,
-                'fallback_used': (attempt_speed != requested_speed),
-                'pid': result.get('pid'),
-                'gdb_port': result.get('gdb_port', gdb_port),
-                'rtt_telnet_port': result.get('rtt_telnet_port', rtt_telnet_port),
-                'serial': serial,
-            }
-
-            # Give J-Link GDB server additional time to start accepting connections
-            logger.debug('Waiting for J-Link GDB server to be ready for connections...')
-            time.sleep(1.0)
-
-            # Perform reset if requested (after server is confirmed ready)
-            if attach == 'reset-halt' or attach == 'reset':
-                try:
-                    gdb_reset(halt=halt, device=device, port=gdb_port)
-                except Exception as e:
-                    logger.warning(f'Reset after connect failed: {e}')
-
-            # EXPLICIT VERIFICATION: Test GDB connection to confirm target is responsive
             try:
-                from .gdb import get_controller
-                logger.debug('Verifying GDB connection to target...')
-                gdbmi = get_controller(device=device, port=gdb_port)
+                result = start_jlink_gdbserver(
+                    device=device,
+                    speed=attempt_speed,
+                    transport=transport,
+                    halt=halt,
+                    gdb_port=gdb_port,
+                    rtt_telnet_port=rtt_telnet_port,
+                    serial=serial,
+                    script_file=attempt_script,
+                )
+            except Exception as exc:
+                last_error = JLinkStartError(b'', str(exc).encode(), str(exc))
+                continue
 
-                # Try a simple monitor command to verify connection
-                verify_responses = gdbmi.write('monitor version', timeout_sec=3.0, raise_error_on_timeout=False)
-                connection_verified = False
-                for resp in verify_responses:
-                    if resp.get('type') == 'console':
-                        connection_verified = True
-                        break
+            # Check if gdbserver started successfully
+            gdbserver_status = get_jlink_gdbserver_status(serial=serial)
+            if gdbserver_status['running']:
+                status = {
+                    'running': True,
+                    'start': 'ok',
+                    'speed': attempt_speed,
+                    'requested_speed': requested_speed,
+                    'fallback_used': (attempt_speed != requested_speed),
+                    'pid': result.get('pid'),
+                    'gdb_port': result.get('gdb_port', gdb_port),
+                    'rtt_telnet_port': result.get('rtt_telnet_port', rtt_telnet_port),
+                    'serial': serial,
+                }
 
-                if connection_verified:
-                    status['target_verified'] = True
-                    logger.debug('Target connection verified successfully')
-                else:
-                    logger.warning('Target connection could not be verified (no response from monitor command)')
+                # Give J-Link GDB server additional time to start accepting connections
+                logger.debug('Waiting for J-Link GDB server to be ready for connections...')
+                time.sleep(1.0)
+
+                # Perform reset if requested (after server is confirmed ready)
+                if attach == 'reset-halt' or attach == 'reset':
+                    try:
+                        gdb_reset(halt=halt, device=device, port=gdb_port)
+                    except Exception as e:
+                        logger.warning(f'Reset after connect failed: {e}')
+
+                # EXPLICIT VERIFICATION: Test GDB connection to confirm target is responsive
+                try:
+                    from .gdb import get_controller
+                    logger.debug('Verifying GDB connection to target...')
+                    gdbmi = get_controller(device=device, port=gdb_port)
+
+                    # Try a simple monitor command to verify connection
+                    verify_responses = gdbmi.write('monitor version', timeout_sec=3.0, raise_error_on_timeout=False)
+                    connection_verified = False
+                    for resp in verify_responses:
+                        if resp.get('type') == 'console':
+                            connection_verified = True
+                            break
+
+                    if connection_verified:
+                        status['target_verified'] = True
+                        logger.debug('Target connection verified successfully')
+                    else:
+                        logger.warning('Target connection could not be verified (no response from monitor command)')
+                        status['target_verified'] = False
+
+                except Exception as e:
+                    logger.warning(f'Target verification failed: {e}')
                     status['target_verified'] = False
 
-            except Exception as e:
-                logger.warning(f'Target verification failed: {e}')
-                status['target_verified'] = False
+                return status
+            else:
+                # Connection failed at this speed, try next
+                stop_jlink_gdbserver(serial=serial)
+                time.sleep(0.5)
+                last_error = JLinkStartError(b'', b'Connection failed', 'GDB server failed to start')
+        return None
 
-            return status
-        else:
-            # Connection failed at this speed, try next
-            stop_jlink_gdbserver(serial=serial)
-            time.sleep(0.5)
-            last_error = JLinkStartError(b'', b'Connection failed', 'GDB server failed to start')
+    # A user .JLinkScript that defines InitTarget() REPLACES J-Link's built-in
+    # per-device InitTarget() -- the replacement is per function, so a script
+    # defining no InitTarget() is harmless. On an nRF5340 that built-in is what
+    # brings the DAP up on a blank part: measured at ~425ms of real work after a
+    # chip erase, against ~3us for a user stub that just returns. Displaced, the
+    # attach that follows an erase fails with "Could not read CPUID register"
+    # and "Failed to power up DAP" -- and because flash erases by default, one
+    # scripted flash could leave the part blank and the net unusable.
+    #
+    # So: exhaust the speed ladder WITH the script, and only then drop it and
+    # try once more. Ordering matters -- dropping the user's script is the more
+    # surprising change of behaviour, so it goes last, and it is reported
+    # loudly rather than silently succeeding. Issue #195.
+    script_attempts = [script_file, None] if script_file else [None]
+    for attempt_script in script_attempts:
+        status = _try_speed_ladder(attempt_script)
+        if status is None:
+            continue
+        if script_file and attempt_script is None:
+            status['script_skipped'] = script_file
+            logger.warning(
+                'Attached to %s WITHOUT its configured J-Link script (%s). A '
+                'user .JLinkScript that defines InitTarget() replaces the '
+                'device built-in that brings up a blank or protected part, so '
+                'the attach only succeeded once the script was dropped. The '
+                'target is NOT running your script init.',
+                device, script_file,
+            )
+        return status
 
     # All attempts failed
     stop_jlink_gdbserver(serial=serial)
@@ -869,10 +920,36 @@ def flash_device(files, preverify=False, verify=True, run_after=False, mcu=None,
             self.serial = serial
 
     resolved_script = script_file if (script_file and os.path.exists(script_file)) else None
-    jlink = TempJLink(jlink_args, script_file=resolved_script, serial=serial)
-    jlink.__class__ = JLink
 
-    yield from jlink.flash(files, preverify, verify)
+    def _run_flash(script):
+        jl = TempJLink(jlink_args, script_file=script, serial=serial)
+        jl.__class__ = JLink
+        return [str(chunk) for chunk in jl.flash(files, preverify, verify)]
+
+    # Same defect as the gdbserver attach, but this is J-Link Commander, which
+    # reports a failed connect as TEXT in its output rather than by raising --
+    # so it needs its own retry and its own detection. This is the path that
+    # actually fails after `flash` erases: the erase blanks the part, and the
+    # Commander connect that follows cannot attach with the device's
+    # InitTarget() displaced by the user's. Issue #195.
+    flash_output = _run_flash(resolved_script)
+    if resolved_script and _connect_failed(flash_output):
+        logger.warning(
+            'Flash could not attach with the J-Link script %s; retrying '
+            'without it.', resolved_script,
+        )
+        retry_output = _run_flash(None)
+        if not _connect_failed(retry_output):
+            yield (f'WARNING: could not attach with the configured J-Link script '
+                   f'({resolved_script}), so it was SKIPPED for this flash. A '
+                   f'script defining InitTarget() replaces the device built-in '
+                   f'that brings up a blank part, and flash erases first. The '
+                   f'target was programmed WITHOUT your script init. Remove it '
+                   f'with `lager nets remove-script <net> --box <BOX>`.')
+            flash_output = retry_output
+        # Retry failed too: keep the original output, which carries the real error.
+
+    yield from flash_output
 
     time.sleep(1.0)  # Give JLinkExe time to fully disconnect
 
