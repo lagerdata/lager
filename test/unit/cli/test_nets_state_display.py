@@ -8,7 +8,7 @@ and that the table still renders instrument groupings correctly.
 """
 import io
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 
 from cli.commands.box.nets import _display_table
 
@@ -69,6 +69,71 @@ class DisplayTableWithStateTest(unittest.TestCase):
             {"uart1": None},
         )
         self.assertIn("–", out)
+
+
+class NullReasonFootnoteTest(unittest.TestCase):
+    """A "–" used to mean three unrelated things (issue #196).
+
+    The reasons go in a footnote rather than the column: they are too long for
+    a cell. It goes to stderr so a redirected table stays parseable.
+    """
+
+    RECS = [
+        {"name": "usb1", "role": "usb", "pin": "0",
+         "instrument": "Acroname_4Port", "address": "NA"},
+        {"name": "usb2", "role": "usb", "pin": "1",
+         "instrument": "Acroname_4Port", "address": "NA"},
+        {"name": "uart1", "role": "uart", "pin": "/dev/ttyUSB0",
+         "instrument": "FTDI_FT232R", "address": "NA"},
+    ]
+
+    def _render(self, state_map, reason_map):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            _display_table(self.RECS, state_map=state_map, reason_map=reason_map)
+        return out.getvalue(), err.getvalue()
+
+    def test_reason_is_reported_for_a_null(self):
+        _, err = self._render({"usb1": None}, {"usb1": "deadline"})
+        self.assertIn("usb1", err)
+        self.assertIn("deadline", err)
+
+    def test_nets_sharing_a_reason_are_listed_together(self):
+        _, err = self._render(
+            {"usb1": None, "usb2": None},
+            {"usb1": "deadline", "usb2": "deadline"},
+        )
+        self.assertEqual(err.count("usb1, usb2: deadline"), 1,
+                         "one line per reason, not one per net")
+
+    def test_a_role_with_no_probe_is_not_reported_as_a_problem(self):
+        """uart/spi/i2c report no state by design. Listing those would put a
+        footnote on every bench and it would stop being read."""
+        _, err = self._render({"uart1": None}, {"uart1": "no probe for role"})
+        self.assertNotIn("uart1", err)
+
+    def test_deadline_says_the_budget_is_shared(self):
+        """Otherwise it reads as 'this instrument is slow', which is the wrong
+        thing to go and investigate."""
+        _, err = self._render({"usb1": None}, {"usb1": "deadline"})
+        self.assertIn("shared", err)
+
+    def test_an_older_box_sending_no_reasons_prints_no_footnote(self):
+        _, err = self._render({"usb1": None}, {})
+        self.assertEqual(err.strip(), "")
+
+    def test_unreadable_detail_survives_to_the_user(self):
+        _, err = self._render(
+            {"usb1": None},
+            {"usb1": "unreadable: PortStateError: Acroname error code 12"},
+        )
+        self.assertIn("Acroname error code 12", err)
+
+    def test_the_table_itself_is_unchanged_on_stdout(self):
+        out, _ = self._render({"usb1": None}, {"usb1": "deadline"})
+        self.assertIn("–", out)
+        self.assertNotIn("deadline", out,
+                         "reasons belong in the footnote, not the cell")
 
 
 if __name__ == "__main__":

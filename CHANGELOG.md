@@ -30,6 +30,49 @@ All notable changes to the Lager platform are documented here. For detailed rele
   it did not take. Its script-content checks read the per-net path too; they had
   been asserting against the old shared file, which no current box writes.
 
+- **`lager nets state` now says *why* a net has no state.** `state: null` meant
+  three unrelated things with no way to tell them apart from outside the box:
+  the instrument had not answered before the request deadline, its probe
+  failed, or the role has no probe at all. They need different remedies, and on
+  a multi-hub bench the first two are what made one hub look intermittently
+  broken.
+
+  Null entries now carry a `reason` -- `"deadline"`, `"no probe for role"`, or
+  `"unreadable: <detail>"`. Entries that have a state carry no `reason`, so its
+  presence means "this is a null, and here is why". `lager nets state` prints
+  the unexpected ones in a footnote after the table, grouped by reason, and
+  `--json` carries them as `live_state_reason`. Roles with no probe are not
+  listed: they are normal, and reporting them would put a footnote on every
+  bench.
+
+  The `deadline` note says explicitly that the budget is shared across every
+  instrument, because "this instrument is slow" is the wrong thing to go and
+  investigate.
+
+  Three supporting fixes.
+
+  **A USB hub that will not open now says so.** This is the path that turns a
+  whole hub null, and it discarded its exception silently -- so a hub that
+  could not be reached was indistinguishable from one that answered null, with
+  nothing anywhere naming which hub or why. It now logs the hub key, how many
+  nets it is failing, and the driver's own cause.
+
+  An Acroname *port* that will not read is still recorded as null so it does
+  not lose the other seven, but its error code is logged instead of discarded.
+  A partial result is the one shape a deadline miss cannot produce, so it is
+  what separates a per-port fault from a hub-wide one.
+
+  And the deadline log line said "N/M instrument groups answered" while
+  counting *nets* -- on a bench with many nets per instrument that reads as
+  though the grouping had collapsed, and it sent a real diagnosis down the
+  wrong path. It now counts nets and names which ones were dropped.
+
+  A CLI newer than its box simply sees no `reason` and renders as before.
+
+  This is diagnosis, not a behaviour change: the shared request budget and the
+  hub discovery path that loses the race are unchanged. `reason: "deadline"` is
+  the evidence needed to size that work.
+
 ### Known issues
 
 - **A J-Link script that defines `InitTarget()` can make a just-erased target

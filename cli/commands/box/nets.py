@@ -735,12 +735,21 @@ def _channel_display(rec):
     return pin
 
 
-def _display_table(records, state_map: dict[str, str | None] | None = None):
+def _display_table(
+    records,
+    state_map: dict[str, str | None] | None = None,
+    reason_map: dict[str, str] | None = None,
+):
     """Render the grouped net table.
 
     When *state_map* is provided an extra **State** column is inserted
     after Channel showing the brief live state for each net (or ``–``
     when unknown).
+
+    *reason_map* carries the box's explanation for each ``–``. Those go in a
+    footnote rather than the column: the strings are too long for a cell, and
+    a bare ``–`` used to mean three unrelated things with no way to tell which
+    (issue #196).
     """
 
     if not records:
@@ -840,6 +849,49 @@ def _display_table(records, state_map: dict[str, str | None] | None = None):
             click.echo(prefix, nl=False)
             click.secho(f"{row[0]:<{col_w[0]}}", bold=True, nl=False)
             click.echo("  " + "  ".join(f"{row[i]:<{col_w[i]}}" for i in range(1, len(col_w))))
+
+    _print_state_reasons(records, reason_map)
+
+
+# Roles with no live probe report no state by design (uart, spi, i2c, ...).
+# That is not a problem and must not be listed as one, or the footnote is noise
+# on every bench and stops being read.
+_EXPECTED_NO_STATE_REASON = "no probe for role"
+
+
+def _print_state_reasons(records, reason_map: dict[str, str] | None) -> None:
+    """Explain the ``–`` cells, grouped by reason.
+
+    Only unexpected ones: a role with no probe is normal. Silent when the box
+    sent no reasons at all, which is what an older box does.
+    """
+    if not reason_map:
+        return
+
+    by_reason: dict[str, list[str]] = {}
+    for rec in records:
+        name = rec.get("name", "")
+        reason = reason_map.get(name)
+        if not reason or reason == _EXPECTED_NO_STATE_REASON:
+            continue
+        by_reason.setdefault(reason, []).append(name)
+
+    if not by_reason:
+        return
+
+    click.echo()
+    click.secho("Nets reporting no state:", bold=True, err=True)
+    for reason in sorted(by_reason):
+        names = ", ".join(by_reason[reason])
+        click.echo(f"    {names}: {reason}", err=True)
+    if any(r == "deadline" for r in by_reason):
+        click.secho(
+            "    Note: 'deadline' is the box's budget for probing every\n"
+            "    instrument, shared across all of them. It expiring does not\n"
+            "    on its own mean this instrument is slow.",
+            fg="yellow", err=True,
+        )
+
 
 def _list_nets(ctx: click.Context, box: str) -> None:
     """
@@ -2159,6 +2211,9 @@ def state_cmd(ctx: click.Context, box: str | None, as_json: bool) -> None:
 
     # Fetch live state from /nets/state (box-side parallel probes).
     state_map: dict[str, str | None] = {}
+    # Why a net has no state. Absent on boxes older than this field; the
+    # display and the JSON both have to read as they did before in that case.
+    reason_map: dict[str, str] = {}
     state_list = _fetch_net_state(resolved_box)
     if state_list is None:
         click.secho(
@@ -2168,19 +2223,24 @@ def state_cmd(ctx: click.Context, box: str | None, as_json: bool) -> None:
         )
     elif isinstance(state_list, list):
         for entry in state_list:
-            state_map[entry.get("name", "")] = entry.get("state")
+            name = entry.get("name", "")
+            state_map[name] = entry.get("state")
+            reason = entry.get("reason")
+            if reason:
+                reason_map[name] = reason
 
     if as_json:
         merged = []
         for rec in records:
-            merged.append({
-                **rec,
-                "live_state": state_map.get(rec.get("name", "")),
-            })
+            name = rec.get("name", "")
+            item = {**rec, "live_state": state_map.get(name)}
+            if name in reason_map:
+                item["live_state_reason"] = reason_map[name]
+            merged.append(item)
         click.echo(json.dumps(merged, indent=2))
         return
 
-    _display_table(records, state_map=state_map)
+    _display_table(records, state_map=state_map, reason_map=reason_map)
 
 
 @nets.command("show", help="Show full details of a saved net, including metadata")

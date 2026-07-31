@@ -395,27 +395,50 @@ _BRIEF_PROBES = {
 }
 
 
+# Why a net's state came back null. `state: null` used to mean three unrelated
+# things -- the instrument was never reached before the request deadline, the
+# probe failed, or the role has no probe at all -- and the response said which
+# for none of them. They need different remedies, and telling them apart from
+# the outside was impossible. See issue #196.
+REASON_DEADLINE = "deadline"
+REASON_NO_PROBE = "no probe for role"
+
+
+def _unreadable(detail):
+    """Reason string for a probe that ran and did not produce an answer."""
+    detail = str(detail).strip()
+    return f"unreadable: {detail}" if detail else "unreadable"
+
+
+def _entry(name, role, state, reason=None):
+    """One net's answer.
+
+    ``reason`` is attached only when *state* is None, so its presence means
+    "this is a null, and here is why". A net with a state carries no reason.
+    """
+    out = {"name": name, "role": role, "state": state}
+    if state is None and reason:
+        out["reason"] = reason
+    return out
+
+
 def _probe_net_state(net_rec):
-    """Return {"name": ..., "role": ..., "state": <str|None>} for one net."""
+    """Return {"name": ..., "role": ..., "state": <str|None>[, "reason": ...]}."""
     name = net_rec.get("name", "")
     role = net_rec.get("role", "")
     probe = _BRIEF_PROBES.get(role)
     if probe is None:
-        return {"name": name, "role": role, "state": None}
+        return _entry(name, role, None, REASON_NO_PROBE)
     try:
-        return {"name": name, "role": role, "state": probe(name)}
+        return _entry(name, role, probe(name))
     except Exception as e:
         logger.debug("probe %s (%s) failed: %s", name, role, e)
-        return {"name": name, "role": role, "state": None}
+        return _entry(name, role, None, _unreadable(f"{type(e).__name__}: {e}"))
 
 
-def _unknown(net_rec):
-    """The "we could not find out" answer for one net."""
-    return {
-        "name": net_rec.get("name", ""),
-        "role": net_rec.get("role", ""),
-        "state": None,
-    }
+def _unknown(net_rec, reason):
+    """The "we could not find out" answer for one net, and why."""
+    return _entry(net_rec.get("name", ""), net_rec.get("role", ""), None, reason)
 
 
 def _group_key(net_rec):
@@ -461,13 +484,15 @@ def _probe_group(recs):
             states = _brief_labjack_batch(recs)
         except Exception as e:
             logger.debug("labjack batch probe failed: %s", e)
-            return [_unknown(rec) for rec in recs]
+            reason = _unreadable(f"{type(e).__name__}: {e}")
+            return [_unknown(rec, reason) for rec in recs]
         return [
-            {
-                "name": rec.get("name", ""),
-                "role": rec.get("role", ""),
-                "state": states.get(rec.get("name", "")),
-            }
+            _entry(
+                rec.get("name", ""),
+                rec.get("role", ""),
+                states.get(rec.get("name", "")),
+                _unreadable("no value from instrument"),
+            )
             for rec in recs
         ]
 
@@ -483,14 +508,16 @@ def _probe_group(recs):
         states = batch(names)
     except Exception as e:
         logger.debug("batch probe for role %s failed: %s", role, e)
-        return [_unknown(rec) for rec in recs]
+        reason = _unreadable(f"{type(e).__name__}: {e}")
+        return [_unknown(rec, reason) for rec in recs]
 
     return [
-        {
-            "name": rec.get("name", ""),
-            "role": role,
-            "state": states.get(rec.get("name", "")),
-        }
+        _entry(
+            rec.get("name", ""),
+            role,
+            states.get(rec.get("name", "")),
+            _unreadable("no value from instrument"),
+        )
         for rec in recs
     ]
 
@@ -536,6 +563,17 @@ def register_nets_routes(app: Flask) -> None:
         request and never blocks another instrument's answer. Roles without a
         probe (uart, spi, i2c, ...) are also ``state: null``.
 
+        A null entry carries a ``reason`` saying which of those it is --
+        ``"deadline"``, ``"no probe for role"``, or ``"unreadable: <detail>"``.
+        Entries with a state carry no ``reason``. The three used to be
+        indistinguishable from outside the box, and they need different
+        remedies (issue #196).
+
+        Note the deadline is shared by the whole request, not per instrument, so
+        ``reason: "deadline"`` means this net's instrument had not answered when
+        the budget for *all* of them ran out -- not necessarily that this
+        instrument is slow.
+
         Always answers 200 with one entry per saved net, in the saved order.
         """
         try:
@@ -573,10 +611,19 @@ def register_nets_routes(app: Flask) -> None:
                 # this must be caught HERE -- an except inside the loop body
                 # never sees it, and letting it escape turned one wedged
                 # instrument into a 500 for the whole bench.
+                #
+                # Counts NETS, not groups -- len(by_name) is nets answered and
+                # len(nets) is nets asked for. Naming these "instrument groups"
+                # read as "the grouping collapsed to one group per net", which
+                # sent a real diagnosis down the wrong path; the slow instrument
+                # it was actually reporting went unnoticed.
+                unanswered = sorted(rec.get("name", "") for rec in nets
+                                    if rec.get("name", "") not in by_name)
                 logger.warning(
-                    "nets_state: %ss deadline reached; %d/%d instrument groups "
-                    "answered, the rest report null",
+                    "nets_state: %ss deadline reached; %d/%d nets answered, "
+                    "the rest report null: %s",
                     _STATE_TIMEOUT, len(by_name), len(nets),
+                    ", ".join(unanswered) or "(none)",
                 )
         finally:
             # Do NOT wait. A `with` block (or a plain shutdown()) joins every
@@ -587,8 +634,11 @@ def register_nets_routes(app: Flask) -> None:
             # already running is left to finish and be discarded.
             pool.shutdown(wait=False, cancel_futures=True)
 
-        # One entry per saved net, saved order, whatever happened above.
-        return jsonify([by_name.get(rec.get("name", "")) or _unknown(rec)
+        # One entry per saved net, saved order, whatever happened above. A net
+        # with no entry never had one produced: its group is still running (or
+        # was cancelled) when the shared deadline expired.
+        return jsonify([by_name.get(rec.get("name", ""))
+                        or _unknown(rec, REASON_DEADLINE)
                         for rec in nets])
 
     @app.route('/nets/<name>', methods=['PUT'])

@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Dict
 
 from .usb_net import USBNet
 from .acroname import AcronameUSBNet
 from .ykush import YKUSHUSBNet
+
+logger = logging.getLogger(__name__)
 
 # ANSI color codes
 GREEN = '\033[92m'
@@ -148,12 +151,22 @@ def states(net_names=None) -> Dict[str, bool | None]:
         by_hub[key][1][info["port"]] = name
 
     out: Dict[str, bool | None] = {}
-    for controller, port_to_net in by_hub.values():
+    for key, (controller, port_to_net) in by_hub.items():
         try:
             port_states = controller.states(list(port_to_net))
-        except Exception:
+        except Exception as e:
             # Hub absent, SDK missing, lock timeout: report this hub's nets as
             # unknown and move on to the next hub.
+            #
+            # This is the path that turns a whole hub null, and it used to
+            # discard the exception silently -- so a hub that would not open
+            # was indistinguishable from one that answered null, with nothing
+            # anywhere naming which hub or why. On a multi-hub bench that is
+            # what made one hub look intermittently broken (issue #196).
+            logger.warning(
+                "USB hub %s unreadable, reporting %d net(s) as unknown: %s: %s",
+                key, len(port_to_net), type(e).__name__, e,
+            )
             port_states = {}
         for port, name in port_to_net.items():
             value = port_states.get(port)
