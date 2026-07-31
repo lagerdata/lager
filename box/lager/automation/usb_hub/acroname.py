@@ -10,6 +10,8 @@ Lazy-imports BrainStem to minimise start-up cost.
 
 from __future__ import annotations
 
+import logging
+
 from .usb_net import (
     USBNet,
     LibraryMissingError,
@@ -25,6 +27,8 @@ from .usb_net import (
 # hub connected between operations, so no process pins it open and blocks the
 # others. Mirrors the YKUSH driver; see ykush.py.
 _LOCK_TIMEOUT_S = 10.0
+
+logger = logging.getLogger(__name__)
 
 
 class AcronameUSBNet(USBNet):
@@ -260,14 +264,25 @@ class AcronameUSBNet(USBNet):
         of it under this hub's lock, so reading an 8-port hub one net at a time
         pays that eight times over for eight register reads. Here the session is
         opened once and each read is just ``getPortState``.
+
+        A port that will not read is recorded as None so it does not lose the
+        other seven, but the failure is logged with the hub's own error code.
+        It used to be swallowed entirely, which left a partial result with
+        nothing anywhere saying which ports failed or why -- and a partial
+        result is the one shape a request-deadline miss cannot produce, so it
+        is the evidence that separates the two causes (issue #196).
         """
         def _read_all(hub):
             out = {}
             for port in ports:
                 try:
                     out[port] = self._read_enabled(hub, port)
-                except Exception:
+                except Exception as e:
                     # One unreadable port must not lose the other seven.
+                    logger.warning(
+                        "Acroname %s: port %s unreadable: %s: %s",
+                        self._lock_key(), port, type(e).__name__, e,
+                    )
                     out[port] = None
             return out
 
