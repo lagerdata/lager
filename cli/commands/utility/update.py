@@ -201,9 +201,22 @@ def _flatten_shell_cmd():
 # Files whose contents legitimately invalidate the cached Docker image.
 # Dockerfile is the universal one; requirements.txt may not exist on every box
 # revision, so we sha256sum it only when present.
+#
+# Working-tree paths (post-flatten layout on the box) vs git blob paths (repo
+# keeps the `box/` prefix). Target-ref hashing uses the git paths so --check
+# can compare the upcoming pull's build inputs to /etc/lager/build-hash without
+# checking it out. Individual blobs are listed separately from the source tree
+# because `_build_hash_shell_cmd` hashes `_BUILD_HASH_INPUTS` first and then
+# walks `_BUILD_HASH_SOURCE_DIRS` — Dockerfile/requirements therefore appear
+# twice in the aggregate, and the at-ref hasher must match that composition.
 _BUILD_HASH_INPUTS = [
     '~/box/lager/docker/box.Dockerfile',
     '~/box/lager/requirements.txt',
+]
+_BUILD_HASH_GIT_BLOBS = [
+    # (git path under ~/box, absolute working-tree path after flatten)
+    ('box/lager/docker/box.Dockerfile', '~/box/lager/docker/box.Dockerfile'),
+    ('box/lager/requirements.txt', '~/box/lager/requirements.txt'),
 ]
 
 # Source trees whose contents also invalidate the cached image. The Dockerfile
@@ -216,6 +229,9 @@ _BUILD_HASH_INPUTS = [
 _BUILD_HASH_SOURCE_DIRS = [
     '~/box/lager',
 ]
+# Git-tree prefix corresponding to `_BUILD_HASH_SOURCE_DIRS` after flatten
+# (`box/lager/...` blob → `$HOME/box/lager/...` working-tree path).
+_BUILD_HASH_GIT_SOURCE_PREFIX = 'box/lager'
 
 
 def _build_hash_shell_cmd():
@@ -263,6 +279,59 @@ def _build_hash_shell_cmd():
     )
 
 
+def _build_hash_at_ref_shell_cmd(git_ref):
+    """Shell snippet: hash build inputs at ``git_ref`` without checking out.
+
+    Emits the same aggregate sha256 as `_build_hash_shell_cmd` when the
+    working tree matches ``git_ref`` for those files — ``sha256sum`` lines use
+    the post-flatten absolute paths so they compose identically (including the
+    deliberate double-count of Dockerfile/requirements: once via the individual
+    inputs list, once via the source-tree walk). Missing blobs at the ref are
+    skipped (same as a missing working-tree file). Empty output means nothing
+    was measurable.
+    """
+    # Sanitize: only allow refs that git will accept as a single argument
+    # (branch, tag, SHA, origin/main). Reject shell metacharacters.
+    if not git_ref or any(c in git_ref for c in ' \t\n\r;|&$`\\"\'<>(){}[]'):
+        return 'echo ""'
+    # POSIX only — the remote login shell may be dash, and the repo's probe
+    # tests execute these snippets under `sh`. No bash pattern substitution
+    # and no `printf -v`.
+    #
+    # `git show | sha256sum` prints "<hash>  -"; the sed rewrites the "-" to
+    # the absolute working-tree path so each line is byte-identical to what
+    # `sha256sum <file>` produces in `_build_hash_shell_cmd`. The aggregate
+    # then uses the same `out=$(...)` + `echo "$out" | sha256sum` composition,
+    # so a ref whose blobs match the working tree yields the same digest.
+    clauses = []
+    for git_path, abs_tilde in _BUILD_HASH_GIT_BLOBS:
+        abs_shell = abs_tilde.replace('~', '$HOME', 1)
+        # `&&` inside a clause (skip missing blobs), `;` between clauses so a
+        # missing requirements.txt does not suppress the Dockerfile line.
+        clauses.append(
+            f'git cat-file -e {git_ref}:{git_path} 2>/dev/null && '
+            f'git show {git_ref}:{git_path} | sha256sum | '
+            f'sed "s|  -$|  {abs_shell}|"'
+        )
+    # Source-tree walk: same files as `find ~/box/lager ... | sort -z`, but
+    # read from the git object database. Paths are mapped from the pre-flatten
+    # git prefix (`box/lager/...`) to the post-flatten absolute path.
+    src_prefix = _BUILD_HASH_GIT_SOURCE_PREFIX
+    clauses.append(
+        f'git ls-tree -r --name-only {git_ref} {src_prefix} 2>/dev/null | '
+        f'grep -v "/__pycache__/" | grep -v "\\.pyc$" | sort | '
+        f'while IFS= read -r path; do '
+        f'abs="$HOME/box/${{path#box/}}"; '
+        f'git show {git_ref}:"$path" | sha256sum | sed "s|  -$|  $abs|"; '
+        f'done'
+    )
+    return (
+        'out=$(cd "$HOME/box" 2>/dev/null && { '
+        + '; '.join(clauses)
+        + '; }); [ -n "$out" ] && echo "$out" | sha256sum | cut -d" " -f1'
+    )
+
+
 def _read_build_hash(ssh_runner):
     """Return the sha256 of the box's *current* docker-build inputs.
 
@@ -273,6 +342,38 @@ def _read_build_hash(ssh_runner):
     """
     r = ssh_runner(_build_hash_shell_cmd())
     return r.stdout.strip() if r.returncode == 0 else ''
+
+
+def _read_build_hash_at_ref(ssh_runner, git_ref):
+    """Return the sha256 of docker-build inputs at ``git_ref`` (no checkout)."""
+    r = ssh_runner(_build_hash_at_ref_shell_cmd(git_ref))
+    return r.stdout.strip() if r.returncode == 0 else ''
+
+
+def _preview_deps_status(*, force, stored_hash, working_hash, target_hash, needs_pull):
+    """Classify Dockerfile/requirements/source drift for ``--check`` preview.
+
+    Returns ``(deps_will_change, deps_status)``. When ``needs_pull``, prefer
+    ``target_hash`` (blob hash at the ref about to be checked out) over the
+    working-tree hash — otherwise a forward jump whose *current* tree still
+    matches the stored hash falsely reports "~90s (cached build)".
+    """
+    if force:
+        return True, 'forced clean rebuild (--force: image + cargo/npm volumes wiped)'
+    if needs_pull:
+        if target_hash:
+            if _build_hash_mismatch(target_hash, stored_hash):
+                return True, (
+                    'will trigger fresh build '
+                    '(target Dockerfile, requirements or box source differ)'
+                )
+            return False, 'cache valid (target matches last build)'
+        # Could not measure the target (sparse checkout, odd ref, …). Be
+        # honest rather than claiming cache-valid from the pre-pull tree.
+        return True, 'unknown until pull (could not hash target build inputs)'
+    if _build_hash_mismatch(working_hash, stored_hash):
+        return True, 'will trigger fresh build (Dockerfile, requirements or box source changed)'
+    return False, 'cache valid (no rebuild)'
 
 
 def _read_box_source_version(ssh_runner):
@@ -442,6 +543,49 @@ def _pull_shell_script(target_version, git_ref):
     )
 
 
+def _docker_build_line_summary(line):
+    """Extract a short human label from a BuildKit / docker build log line.
+
+    Returns None for noise (blank, pure progress hashes, cache hits with no
+    payload). Used to feed ``ProgressBar.set_detail`` during the container
+    build so the bar shows *what* is slow.
+    """
+    s = (line or '').strip()
+    if not s:
+        return None
+    # BuildKit: "#15 3.2 Setting up nodejs (20.x)" or "#12 [5/20] RUN pip ..."
+    if s.startswith('#'):
+        # Drop the leading "#N" / "#N M.M" prefix.
+        rest = s.lstrip('#').split(None, 1)
+        if len(rest) < 2:
+            return None
+        payload = rest[1]
+        # "#12 0.5 " timed lines — strip leading seconds if present.
+        parts = payload.split(None, 1)
+        if parts and parts[0].replace('.', '', 1).isdigit() and len(parts) > 1:
+            payload = parts[1]
+        payload = payload.strip()
+        if not payload or payload.startswith('DONE ') or payload == 'CACHED':
+            return None
+        return payload[:60]
+    # Classic builder / pip noise that still indicates progress.
+    for prefix in (
+        'Step ',
+        'Collecting ',
+        'Downloading ',
+        'Building wheel ',
+        'Installing collected',
+        'Setting up ',
+        'Unpacking ',
+        'Compiling ',
+        'Downloading crates',
+        'Installing ',
+    ):
+        if s.startswith(prefix):
+            return s[:60]
+    return None
+
+
 def _build_hash_mismatch(new_hash, stored_hash):
     """True when the docker-build inputs changed relative to the last
     successful build.
@@ -536,6 +680,7 @@ class ProgressBar:
         self.total_steps = total_steps
         self.current_step = 0
         self.current_task = ""
+        self._base_task = ""
         self.start_time = time.time()
         self._stop_event = threading.Event()
         self._render_thread = None
@@ -571,12 +716,30 @@ class ProgressBar:
     def update(self, task_name):
         """Advance to the next step and render."""
         self.current_step += 1
+        self._base_task = task_name
         self.current_task = task_name
         self._render()
         # Lazy-start the periodic thread on first step so we don't tick a
         # 0/N bar when nobody has called update() yet.
         if self._tty:
             self._start_periodic_thread()
+
+    def set_detail(self, detail):
+        """Refresh the in-flight label with a live detail suffix.
+
+        Used during long steps (Docker build) so the bar shows what is
+        actually running, e.g. ``Building container... [pip install ...]``.
+        Does not advance the step counter. No-op when ``detail`` is empty.
+        """
+        detail = (detail or '').strip()
+        if not detail:
+            return
+        # Keep the suffix short so _layout can still fit the base label.
+        if len(detail) > 50:
+            detail = detail[:47] + '...'
+        with self._lock:
+            self.current_task = f'{self._base_task} [{detail}]'
+        self._render()
 
     def _format_elapsed_time(self):
         """Format elapsed time as human-readable string."""
@@ -1351,11 +1514,24 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         current_version_raw = facts.get('ETC_VERSION', '').strip()
         current_box_version = current_version_raw.split('|', 1)[0] if current_version_raw else '(unknown)'
 
-        # --check does no git pull, so the probe's build-hash inputs still
-        # reflect the tree that would be built — no extra round-trip needed.
-        _check_new_hash = facts.get('BUILD_HASH_NEW', '')
+        # --check does no git pull. Hash the *target* ref's Dockerfile when a
+        # pull is pending so a forward jump (e.g. 0.31 → main) that changes
+        # the image recipe is not misreported as "~90s (cached)" from the
+        # pre-pull working tree matching /etc/lager/build-hash.
+        _check_working_hash = facts.get('BUILD_HASH_NEW', '')
         _check_stored_hash = facts.get('BUILD_HASH_STORED', '')
-        deps_will_change = _build_hash_mismatch(_check_new_hash, _check_stored_hash)
+        _check_target_hash = ''
+        if needs_pull and git_sync_confirmed:
+            _check_target_hash = _read_build_hash_at_ref(
+                run_ssh_command_with_output, git_ref,
+            )
+        deps_will_change, deps_status = _preview_deps_status(
+            force=force,
+            stored_hash=_check_stored_hash,
+            working_hash=_check_working_hash,
+            target_hash=_check_target_hash,
+            needs_pull=needs_pull,
+        )
         container_down = facts.get('LAGER_RUNNING', '') == '0'
 
         if not git_sync_confirmed:
@@ -1391,18 +1567,6 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             )
 
         if force:
-            deps_status = 'forced clean rebuild (--force: image + cargo/npm volumes wiped)'
-        elif deps_will_change:
-            deps_status = 'will trigger fresh build (Dockerfile, requirements or box source changed)'
-        elif is_rollback or commits_ahead > 0:
-            # Probe measured the *current* (pre-pull) Dockerfile/requirements,
-            # so a backward jump can still trigger a rebuild we can't predict
-            # without actually pulling. Be honest about the unknown.
-            deps_status = 'unknown until pull (older ref may differ)'
-        else:
-            deps_status = 'cache valid (no rebuild)'
-
-        if force:
             container_status = 'will restart (forced clean rebuild)'
             est = '~6 min (fresh build)'
         elif container_down:
@@ -1419,9 +1583,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         elif commits_behind == 0 and commits_ahead == 0 and not deps_will_change:
             container_status = 'no restart needed'
             est = '~5s'
-        elif deps_will_change or is_rollback or commits_ahead > 0:
-            # Rollback / branch-switch likely flips at least some COPY layers
-            # in the Dockerfile cache; assume a real build.
+        elif deps_will_change:
             container_status = 'will restart'
             est = '~6 min (fresh build possible)'
         else:
@@ -2179,37 +2341,28 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
          'DOCKER_BUILDKIT=1 docker build -f docker/box.Dockerfile -t lager .'])
 
     build_output_lines = []
-    if verbose:
-        # Stream output in verbose mode
-        process = subprocess.Popen(
-            ssh_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding='utf-8',
-            errors='replace',
-            bufsize=1
-        )
-        if process.stdout:
-            for line in process.stdout:
+    # Always read the build stream so non-verbose mode can still surface a
+    # live detail on the progress bar (and so failures still get the last
+    # 20 lines). Verbose additionally echoes each line to the terminal.
+    process = subprocess.Popen(
+        ssh_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding='utf-8',
+        errors='replace',
+        bufsize=1,
+    )
+    if process.stdout:
+        for line in process.stdout:
+            build_output_lines.append(line.rstrip())
+            if verbose:
                 click.echo(f'    {line}', nl=False)
-                build_output_lines.append(line.rstrip())
-        return_code = process.wait(timeout=600)
-    else:
-        # Silent mode - capture output for error reporting
-        process = subprocess.Popen(
-            ssh_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding='utf-8',
-            errors='replace',
-        )
-        # Read and store output for potential error reporting
-        if process.stdout:
-            for line in process.stdout:
-                build_output_lines.append(line.rstrip())
-        return_code = process.wait(timeout=600)
+            elif progress:
+                summary = _docker_build_line_summary(line)
+                if summary:
+                    progress.set_detail(summary)
+    return_code = process.wait(timeout=600)
 
     if return_code != 0:
         if progress:

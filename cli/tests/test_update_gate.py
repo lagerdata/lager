@@ -12,9 +12,12 @@ import subprocess
 import pytest
 
 from cli.commands.utility.update import (
+    _build_hash_at_ref_shell_cmd,
     _build_hash_mismatch,
     _deployed_version_stale,
+    _docker_build_line_summary,
     _parse_probe_output,
+    _preview_deps_status,
     _probe_shell_script,
     _pull_shell_script,
     _rebuild_gate_verdict,
@@ -189,6 +192,87 @@ class TestProbeHostCliFacts:
         # Callers must tolerate probe output that predates the host-CLI facts.
         facts = _parse_probe_output('LAGER_PROBE_ETC_VERSION=1.2.3\n')
         assert 'HOST_CLI_VERSION' not in facts
+
+
+class TestPreviewDepsStatus:
+    """`--check` must hash the *target* ref when a pull is pending.
+
+    Repro (JUL-4): 121 commits behind, pre-pull Dockerfile still matched the
+    stored hash → old code said "cache valid / ~90s", then the pull changed
+    the Dockerfile and the real update took ~6 min.
+    """
+
+    def test_forward_jump_target_mismatch_reports_fresh_build(self):
+        change, status = _preview_deps_status(
+            force=False,
+            stored_hash=SHA_A,
+            working_hash=SHA_A,  # pre-pull tree still matches
+            target_hash=SHA_B,   # origin/main Dockerfile differs
+            needs_pull=True,
+        )
+        assert change is True
+        assert 'target Dockerfile' in status
+
+    def test_forward_jump_target_match_reports_cache_valid(self):
+        change, status = _preview_deps_status(
+            force=False,
+            stored_hash=SHA_A,
+            working_hash=SHA_A,
+            target_hash=SHA_A,
+            needs_pull=True,
+        )
+        assert change is False
+        assert 'target matches' in status
+
+    def test_unmeasurable_target_is_unknown_not_cache_valid(self):
+        change, status = _preview_deps_status(
+            force=False,
+            stored_hash=SHA_A,
+            working_hash=SHA_A,
+            target_hash='',
+            needs_pull=True,
+        )
+        assert change is True
+        assert 'unknown until pull' in status
+
+    def test_in_sync_uses_working_tree_hash(self):
+        change, status = _preview_deps_status(
+            force=False,
+            stored_hash=SHA_A,
+            working_hash=SHA_B,
+            target_hash='',
+            needs_pull=False,
+        )
+        assert change is True
+        assert 'Dockerfile or requirements changed' in status
+
+
+class TestBuildHashAtRefShellCmd:
+    def test_emits_git_show_for_dockerfile_blob(self):
+        script = _build_hash_at_ref_shell_cmd('origin/main')
+        assert 'git show origin/main:box/lager/docker/box.Dockerfile' in script
+        assert 'git cat-file -e origin/main:box/lager/docker/box.Dockerfile' in script
+
+    def test_rejects_metacharacters(self):
+        assert _build_hash_at_ref_shell_cmd('main; rm -rf /') == 'echo ""'
+        assert _build_hash_at_ref_shell_cmd('') == 'echo ""'
+
+
+class TestDockerBuildLineSummary:
+    def test_buildkit_run_line(self):
+        assert 'pip3 install' in (
+            _docker_build_line_summary('#12 [8/20] RUN pip3 install cryptography') or ''
+        )
+
+    def test_buildkit_timed_setting_up(self):
+        assert 'Setting up' in (
+            _docker_build_line_summary('#15 3.2 Setting up nodejs (20.x)') or ''
+        )
+
+    def test_ignores_cached_and_blank(self):
+        assert _docker_build_line_summary('#5 CACHED') is None
+        assert _docker_build_line_summary('') is None
+        assert _docker_build_line_summary('   ') is None
 
 
 class TestGateIgnoresHostCliFacts:
