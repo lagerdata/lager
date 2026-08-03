@@ -33,12 +33,15 @@ from flask import Flask, jsonify, request
 
 from lager import (
     DeviceNotFoundError,
+    HubOperationTimeout,
     LibraryMissingError,
     PortStateError,
     USBBackendError,
 )
 from lager.automation import usb_hub
+from lager.automation.usb_hub import usb_net
 from lager.util import self_restart as _self_restart
+from lager.util.device_lock import DeviceLockError
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +73,46 @@ def _self_restart_if_wedged(netname, action, exc):
             address, f"usb {action} {netname}", service="box_http_server",
             stamp_path=_BHS_SELF_RESTART_STAMP)
 
+
+def _self_restart_on_hung_hub(lock_key):
+    """Same wedge, other shape: the driver call never returned.
+
+    Wired into the driver layer (``usb_net.set_hang_hook``) rather than called
+    from this handler, because the request that notices a hang is usually not
+    this one — the 1 Hz ``/nets/state`` sweep gets there first, and it
+    deliberately swallows a single hub's failure so one bad hub cannot hide the
+    rest. Detecting and responding in the same place covers every caller.
+
+    A hub's lock key IS its VISA address whenever the net has one, which is
+    what the sysfs gate needs; a driver falling back to a synthetic key just
+    fails that gate and no restart happens. Scheduled rather than run inline so
+    the in-flight request can still answer 504 — see
+    ``self_restart.schedule_self_restart_for_hang``. Same sysfs gate and
+    cooldown stamp as the unreachable path, so a hub that is genuinely
+    unplugged still does not send the service into a restart loop."""
+    _self_restart.schedule_self_restart_for_hang(
+        lock_key, f"usb hub operation on {lock_key}",
+        service="box_http_server", stamp_path=_BHS_SELF_RESTART_STAMP)
+
+
 # Serialize hub calls within this process. The Acroname/YKUSH drivers also
-# hold a cross-process flock per physical hub (see automation/usb_hub), but
-# failing fast here keeps concurrent HTTP requests from queueing on it.
+# hold a cross-process flock per physical hub (see automation/usb_hub), and
+# bounding the wait here keeps concurrent HTTP requests from queueing on it.
+#
+# The bound is the point. This lock used to be taken with a plain `with`, so a
+# single hub call stuck in native code held it forever and every later request
+# — including the 1 Hz state polls — blocked behind it with no timeout, which
+# is how one wedged hub took the whole USB endpoint down. The wait has to
+# resolve well inside the callers' own HTTP timeouts, or they report a
+# transport timeout instead of the real error.
+#
+# Matched to the drivers' hub lock (usb_net._LOCK_TIMEOUT_S), which this one
+# sits in front of. A request that waits here and then waits again inside the
+# driver can spend up to the sum before answering; that needs both a wedged
+# hub AND a second caller already queued, and both waits end in the same 503,
+# so the loser of that race loses only the message, never correctness.
+_USB_LOCK_TIMEOUT_S = 10.0
+
 _usb_lock = threading.Lock()
 
 # Serialize dfu-util runs separately from hub-port ops: a DFU download can
@@ -277,6 +317,12 @@ def _run_dfu_util(args, timeout):
 def register_usb_routes(app: Flask) -> None:
     """Register USB HTTP routes with the Flask app."""
 
+    # This process runs under start-services.sh's supervisor, so it is one of
+    # the few that may answer a hung hub by exiting. Claiming that here, next
+    # to the cooldown stamp it uses, keeps the whole self-restart policy for
+    # box_http_server in one file.
+    usb_net.set_hang_hook(_self_restart_on_hung_hub)
+
     @app.route('/usb/command', methods=['POST'])
     def usb_command_http():
         """
@@ -307,9 +353,36 @@ def register_usb_routes(app: Flask) -> None:
                     'error': 'netname and action (enable|disable|toggle|state) are required',
                 }), 400
 
+            # Bounded acquire, not `with`: a hub call wedged in native code
+            # holds this lock for the life of the process, and queueing behind
+            # it forever is the failure this endpoint is being protected from.
+            if not _usb_lock.acquire(timeout=_USB_LOCK_TIMEOUT_S):
+                logger.warning(
+                    "[HTTP] /usb/command %s %s: hub lock still held after %.0fs",
+                    action, netname, _USB_LOCK_TIMEOUT_S)
+                return jsonify({
+                    'success': False,
+                    'error': 'hub-busy: another USB hub operation is still running',
+                }), 503
+
             try:
-                with _usb_lock:
-                    result = getattr(usb_hub, action)(netname)
+                result = getattr(usb_hub, action)(netname)
+            # HubOperationTimeout is a USBBackendError; it must be matched
+            # first or a hang reports as an ordinary backend error (502).
+            except HubOperationTimeout as e:
+                # The self-restart was already scheduled by the driver layer's
+                # hang hook (see _self_restart_on_hung_hub); this request's job
+                # is just to say what happened before the respawn lands.
+                logger.error("[HTTP] /usb/command %s %s hung: %s",
+                             action, netname, e)
+                return jsonify({
+                    'success': False, 'error': f'hub-op-timeout: {e}',
+                }), 504
+            except DeviceLockError as e:
+                # Neither lock layer could claim the hub in time — another
+                # thread or another box process still has it.
+                logger.warning("[HTTP] /usb/command hub unavailable: %s", e)
+                return jsonify({'success': False, 'error': f'hub-busy: {e}'}), 503
             except LibraryMissingError as e:
                 logger.warning("[HTTP] /usb/command library missing: %s", e)
                 return jsonify({'success': False, 'error': f'library-missing: {e}'}), 500
@@ -331,6 +404,8 @@ def register_usb_routes(app: Flask) -> None:
             except (RuntimeError, FileNotFoundError) as e:
                 logger.exception("[HTTP] /usb/command dispatcher error")
                 return jsonify({'success': False, 'error': str(e)}), 502
+            finally:
+                _usb_lock.release()
 
             # toggle and state both return the live port state from the
             # dispatcher; enable/disable are unambiguous from the action itself.

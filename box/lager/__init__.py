@@ -74,6 +74,7 @@ from .automation.usb_hub import (
     LibraryMissingError,
     DeviceNotFoundError,
     PortStateError,
+    HubOperationTimeout,
 )
 
 # =============================================================================
@@ -108,4 +109,5 @@ __all__ = [
     "LibraryMissingError",
     "DeviceNotFoundError",
     "PortStateError",
+    "HubOperationTimeout",
 ]

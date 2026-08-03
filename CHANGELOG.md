@@ -2,6 +2,49 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Fixed
+
+- **A wedged USB hub no longer takes every later USB command down with it.** A
+  hub operation that hung — native BrainStem or pykush code blocking forever
+  against a hub whose USB link is wedged, typically after a re-enumeration —
+  held the box's USB lock for the life of the process. Every subsequent
+  `lager usb` command and every 1 Hz state poll queued behind it with no
+  timeout of its own, and the box's self-restart recovery could not help
+  because it only fired when an operation *raised*. A call that never returns
+  raises nothing.
+
+  Three bounds close that. `POST /usb/command` now waits at most 10s for the
+  in-process hub lock and answers `503 hub-busy` rather than queueing; the
+  per-hub lock inside the drivers honours the same timeout the cross-process
+  lock already did, and reports a hub it cannot claim as unavailable instead
+  of waiting forever; and each hub operation — the whole open → operate →
+  close cycle, since the open is what hangs — runs under a 30s deadline. On
+  expiry the caller gets `504 hub-op-timeout` and the service schedules the
+  same supervised self-restart it already used for unreachable devices, which
+  is the only thing that clears an orphaned USB context. The hung thread
+  cannot be killed from Python; the supervisor respawn is the recovery.
+
+- **The same treatment for `hardware_service`'s `/invoke`.** Per-device and
+  per-VISA-address locks are acquired with a 10s timeout and answer
+  `503 device-busy` instead of queueing forever behind a wedged
+  `open_resource` (which blocks inside libusb before the 5s VISA I/O timeout
+  is even applied) or a hung native driver call. The driver call itself runs
+  under a 30s deadline; expiry answers `504 invoke-timeout` and schedules the
+  self-restart. `POST /labjack/batch_read`, which takes the same lock, is
+  bounded too — a busy LabJack reports its nets as unreadable rather than
+  hanging a `/nets/state` sweep. A device whose operation hung deliberately
+  keeps its lock: the abandoned thread still owns the session and the USB
+  claim, so later requests get a fast "busy" until the service is respawned.
+  Success responses and the existing stale-VISA-session retry are unchanged.
+
+  One behaviour change to be aware of: a request that arrives while the same
+  physical device is more than 10s into another operation now reports
+  `device-busy` instead of queueing. Callers already gave up at their own HTTP
+  timeout in that situation (`Device.DEFAULT_TIMEOUT` is 10s); what changes is
+  that they get a real error rather than a transport timeout.
+
 ## [0.34.2] - 2026-08-02
 
 ### Removed

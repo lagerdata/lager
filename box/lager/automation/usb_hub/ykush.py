@@ -8,7 +8,13 @@ import re
 import subprocess
 from typing import Any, Callable, Sequence
 
-from .usb_net import LibraryMissingError, USBNet, hub_access
+from .usb_net import (
+    HUB_OP_TIMEOUT_S,
+    LibraryMissingError,
+    USBNet,
+    hub_access,
+    run_hub_op,
+)
 
 # ────────────────────────────────────────────────────────────────────
 #  helpers – regex, constants
@@ -183,9 +189,15 @@ class YKUSHUSBNet(USBNet):
         the hub is never pinned open. The whole open→operate→close cycle (and
         the retry) runs under the shared cross-process device lock so concurrent
         callers — e.g. box_http_server and a ``lager python`` test — don't
-        collide on the hub's exclusive libusb claim."""
+        collide on the hub's exclusive libusb claim.
+
+        Both attempts share ONE deadline: a hub whose HID link is wedged blocks
+        pykush's open indefinitely rather than failing, so bounding each attempt
+        separately would still let the pair run forever, and the retry only ever
+        existed for errors that surface fast."""
         _ensure_library()
-        with hub_access(self._lock_key(), timeout=_LOCK_TIMEOUT_S):
+
+        def _attempt_with_retry():
             try:
                 return self._run_once(fn)
             except LibraryMissingError:
@@ -195,6 +207,10 @@ class YKUSHUSBNet(USBNet):
                 # handle was already released; try once more, still holding the
                 # lock so no other process slips in between attempts.
                 return self._run_once(fn)
+
+        key = self._lock_key()
+        with hub_access(key, timeout=_LOCK_TIMEOUT_S):
+            return run_hub_op(key, _attempt_with_retry, timeout=HUB_OP_TIMEOUT_S)
 
     # ----------------------------------------------------------------
     def __init__(self, net_info: dict | None = None) -> None:

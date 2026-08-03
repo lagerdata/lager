@@ -13,6 +13,7 @@ from .usb_net import (
     LibraryMissingError,
     DeviceNotFoundError,
     PortStateError,
+    HubOperationTimeout,
 )
 
 # Import driver classes for export
@@ -33,6 +34,7 @@ __all__ = [
     "LibraryMissingError",
     "DeviceNotFoundError",
     "PortStateError",
+    "HubOperationTimeout",
     # Driver classes
     "AcronameUSBNet",
     "AcronameUSB",  # Alias for backward compatibility
