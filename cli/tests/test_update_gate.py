@@ -6,6 +6,7 @@ Tests for the update flow's rebuild gate: probe parsing, the build-hash
 mismatch predicate, and the early-exit verdict (including container liveness).
 """
 import os
+import shutil
 import stat
 import subprocess
 
@@ -14,6 +15,7 @@ import pytest
 from cli.commands.utility.update import (
     _build_hash_at_ref_shell_cmd,
     _build_hash_mismatch,
+    _build_hash_shell_cmd,
     _deployed_version_stale,
     _docker_build_line_summary,
     _parse_probe_output,
@@ -256,6 +258,85 @@ class TestBuildHashAtRefShellCmd:
     def test_rejects_metacharacters(self):
         assert _build_hash_at_ref_shell_cmd('main; rm -rf /') == 'echo ""'
         assert _build_hash_at_ref_shell_cmd('') == 'echo ""'
+
+    def test_uses_only_posix_shell_constructs(self):
+        # The remote login shell may be dash. Bash pattern substitution and
+        # `printf -v` both silently changed the digest under /bin/sh.
+        script = _build_hash_at_ref_shell_cmd('origin/main')
+        assert 'printf -v' not in script
+        assert '/#' not in script
+
+
+@pytest.mark.skipif(
+    shutil.which('sha256sum') is None,
+    reason='needs GNU sha256sum (present on boxes and CI; macOS ships shasum)',
+)
+class TestBuildHashAtRefMatchesWorkingTree:
+    """Execute both hashers under ``sh`` against a fake box layout.
+
+    This is the invariant #12 depends on: the target-ref digest must equal the
+    working-tree digest that `/etc/lager/build-hash` stores, or every --check
+    would report a spurious rebuild. Verified end-to-end (real git, real
+    sha256sum, dash-compatible) rather than by asserting on substrings.
+    """
+
+    DOCKERFILE_GIT_PATH = 'box/lager/docker/box.Dockerfile'
+    DOCKERFILE_TREE_PATH = 'lager/docker/box.Dockerfile'
+
+    def _fake_box(self, tmp_path, dockerfile_body):
+        """Build $HOME/box as the boxes have it: git tracks the `box/` prefix,
+        the working tree is the flattened layout."""
+        home = tmp_path / 'home'
+        box = home / 'box'
+        for rel in (self.DOCKERFILE_GIT_PATH, self.DOCKERFILE_TREE_PATH):
+            path = box / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(dockerfile_body)
+        env = dict(os.environ, HOME=str(home))
+        run = lambda *args: subprocess.run(
+            args, cwd=box, env=env, capture_output=True, text=True, timeout=30,
+        )
+        run('git', 'init', '-q', '-b', 'main')
+        run('git', 'config', 'user.email', 'test@example.com')
+        run('git', 'config', 'user.name', 'test')
+        run('git', 'add', self.DOCKERFILE_GIT_PATH)
+        commit = run('git', 'commit', '-q', '-m', 'dockerfile')
+        assert commit.returncode == 0, commit.stderr
+        return home, env
+
+    def _sh(self, snippet, env, cwd):
+        result = subprocess.run(
+            ['sh'], input=snippet, text=True, capture_output=True,
+            env=env, cwd=cwd, timeout=30,
+        )
+        return result.stdout.strip()
+
+    def test_ref_digest_equals_working_tree_digest(self, tmp_path):
+        home, env = self._fake_box(tmp_path, 'FROM python:3.12-slim\n')
+        working = self._sh(_build_hash_shell_cmd(), env, home / 'box')
+        at_ref = self._sh(_build_hash_at_ref_shell_cmd('HEAD'), env, home)
+        assert working, 'working-tree hasher produced nothing'
+        assert at_ref == working
+
+    def test_ref_digest_differs_when_target_dockerfile_changes(self, tmp_path):
+        home, env = self._fake_box(tmp_path, 'FROM python:3.12-slim\n')
+        before = self._sh(_build_hash_at_ref_shell_cmd('HEAD'), env, home)
+        box = home / 'box'
+        (box / self.DOCKERFILE_GIT_PATH).write_text('FROM python:3.13-slim\n')
+        subprocess.run(
+            ['git', 'commit', '-qam', 'bump base'], cwd=box, env=env,
+            capture_output=True, text=True, timeout=30,
+        )
+        after = self._sh(_build_hash_at_ref_shell_cmd('HEAD'), env, home)
+        # The JUL-4 case: working tree still matches the stored hash while the
+        # ref about to be checked out does not.
+        working = self._sh(_build_hash_shell_cmd(), env, box)
+        assert after != before
+        assert after != working
+
+    def test_missing_ref_yields_empty_not_a_bogus_digest(self, tmp_path):
+        home, env = self._fake_box(tmp_path, 'FROM python:3.12-slim\n')
+        assert self._sh(_build_hash_at_ref_shell_cmd('no-such-ref'), env, home) == ''
 
 
 class TestDockerBuildLineSummary:
