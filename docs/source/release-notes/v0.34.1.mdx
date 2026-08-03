@@ -1,0 +1,74 @@
+---
+title: "Version 0.34.1"
+description: "August 2, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **`lager update` no longer leaves a file on the box after it is deleted
+  upstream.** The step that flattens the repository layout on the box copied
+  additively: it overwrote changed files but never removed ones the new tree no
+  longer contained, and it then deleted the tracked source, so the result was
+  beyond the reach of `git checkout -f` or `git reset --hard`. A file removed
+  upstream therefore stayed on every box indefinitely and was copied into the
+  runtime image by the next build — boxes were found carrying a module deleted
+  thirteen minor versions earlier. Each top-level entry is now removed and then
+  moved into place, so a subtree is rebuilt rather than merged into and
+  deletions take effect on the first update. Files installed at the repository
+  root by any other route are untouched. No manual cleanup is needed.
+
+- **A source-only change now invalidates the cached Docker image.** The build
+  hash covered only the Dockerfile and `requirements.txt`, so a pure-Python
+  change relied entirely on the layer cache invalidating correctly. Every file
+  under the box's source tree now feeds the hash; `__pycache__` and `.pyc` are
+  excluded so regenerated artifacts do not force needless rebuilds. Because the
+  stored hash on an existing box was computed with the old formula, the first
+  update after this release rebuilds the image in full, once per box.
+
+- **A J-Link script no longer leaks onto debug operations that never asked for
+  one.** The box kept a single script file and handed it to any operation that
+  did not supply its own, so `reset`, `erase`, `memrd` and the gdbserver path
+  silently inherited whichever script was written last — by a different net, by
+  an earlier session, or by a test suite that had since finished. Scripts are
+  now written per net, an operation with no net gets no script rather than an
+  ambient one, and a net's script is cleared when its debug session ends. A net
+  with a genuinely required custom `InitTarget` still gets it on every
+  operation, and an older box's shared file is removed when the debug service
+  next starts.
+
+- **A J-Link script no longer leaves a just-erased target unattachable.** A
+  user `.JLinkScript` replaces J-Link's built-in per-device `InitTarget()`, and
+  on an nRF5340 that built-in is what brings the DAP up on a blank part. When it
+  was displaced, the attach following an erase failed with
+  `Could not read CPUID register` — and because `flash` erases by default, one
+  scripted flash could leave the part blank and the net failing every later
+  attach. The attach path now retries without the script rather than wedging
+  the net.
+
+- **`lager nets state` now says *why* a net has no state.** `state: null` meant
+  three unrelated things with no way to tell them apart: the instrument had not
+  answered before the request deadline, its probe failed, or the role has no
+  probe at all. Null entries now carry a `reason` — `"deadline"`,
+  `"no probe for role"`, or `"unreadable: <detail>"`. The command prints the
+  unexpected ones in a footnote after the table, grouped by reason, and
+  `--json` carries them as `live_state_reason`. A USB hub that cannot be opened
+  now names itself and its cause instead of failing silently. A CLI newer than
+  its box simply sees no `reason` and renders as before.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.34.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.34.1/)
