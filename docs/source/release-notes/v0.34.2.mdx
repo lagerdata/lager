@@ -1,0 +1,74 @@
+---
+title: "Version 0.34.2"
+description: "August 2, 2026"
+---
+
+## <u>Removed</u>
+
+- **The HTTP SSH key-authorization endpoint (`POST /authorize-key` on port
+  9000) is gone**, along with its handler, its rate limiter, and the
+  `/tmp/lager-authorized-keys.d` staging directory it wrote to. The endpoint
+  let any caller holding the bearer token create an arbitrarily-labelled `.pub`
+  file, and the keys it created could never be removed, because the old sync
+  only appended. It was also the first link in a privilege-escalation chain: a
+  container-side file write became host SSH access, and from there host root
+  via the privileged runtime container.
+
+  **If you provision boxes through this endpoint, switch to writing
+  `<name>.pub` into `/etc/lager/authorized_keys.d/` directly.** That directory
+  is bind-mounted into the runtime container, so a control plane can still
+  write it from inside the container before it has SSH access — the bootstrap
+  path is unchanged, and keys still appear in `~/.ssh/authorized_keys` within
+  about five seconds. No CLI command called this endpoint, so command-line
+  workflows are unaffected.
+
+## <u>Changed</u>
+
+- **`~/.ssh/authorized_keys` is now rebuilt from the key directory rather than
+  appended to.** The box owns only the region between its
+  `# BEGIN LAGER MANAGED KEYS` and `# END LAGER MANAGED KEYS` markers, and
+  regenerates that region on every pass, writing a temp file and renaming so
+  `sshd` never sees a partial file.
+
+  **Deleting a `.pub` now revokes the key**, which was previously impossible,
+  and the old check-then-append race can no longer duplicate lines — boxes have
+  been found with five entries built from three key files.
+
+  Keys installed by any other route — `lager ssh-setup`, `ssh-copy-id`,
+  cloud-init — live outside the marked region and are preserved byte-for-byte.
+  A key that is *also* published through the key directory becomes managed,
+  though, so deleting its `.pub` later removes it outright, including the copy
+  the other route installed. Use a distinct key per access path when the two
+  must be revoked independently.
+
+  Another system that manages this file must claim its own distinct marker
+  pair; two managers sharing one pair would each rebuild the other's region on
+  every pass.
+
+## <u>Bug Fixes</u>
+
+- **`start_box.sh` is now single-instance.** Concurrent copies raced each other
+  and accumulated across restarts — boxes have been found running ten or more
+  at once, some months old, each having burned hours of CPU, with their
+  key-sync loops appending over one another. The script now takes a
+  non-blocking lock for its lifetime and exits with a clear message if another
+  copy holds it. The background key-sync poller closes the inherited lock
+  descriptor, so a long-lived poller cannot pin the lock against later runs.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.34.2
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.34.2/)
