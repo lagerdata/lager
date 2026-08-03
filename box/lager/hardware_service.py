@@ -28,6 +28,7 @@ import atexit
 from flask import Flask, request, jsonify, send_from_directory
 
 from lager.util import self_restart as _self_restart
+from lager.util.watchdog import run_with_deadline
 
 # Configure logging
 logging.basicConfig(
@@ -82,6 +83,64 @@ def _get_address_lock(address):
     battery). Stored in `device_locks` under a sentinel key to avoid
     colliding with cache_key entries."""
     return _get_device_lock(('__address__', address))
+
+
+# How long to wait for a device's lock before answering "busy". Callers bound
+# their own /invoke POST (nets/device.py Device.DEFAULT_TIMEOUT = 10s), so this
+# is not what protects them from a slow instrument — what it protects them from
+# is a lock whose holder is never coming back, which used to leave every later
+# request for that device queued forever with no error and no recovery.
+_LOCK_TIMEOUT_S = 10.0
+
+# How long the driver call itself may run before this service stops waiting on
+# it and treats the device as wedged. Deliberately well above the callers' own
+# timeouts: a caller giving up is normal (long integration windows, a slow
+# thermocouple), a driver call that never returns at all is not, and only the
+# second one warrants a restart. Expiry means the operation is stuck in native
+# code that cannot be interrupted — see util/watchdog.py.
+_INVOKE_DEADLINE_S = 30.0
+
+
+class DeviceBusy(Exception):
+    """A device's lock could not be acquired inside ``_LOCK_TIMEOUT_S``."""
+
+
+class DeviceOperationTimeout(Exception):
+    """A driver call blocked past ``_INVOKE_DEADLINE_S`` and was abandoned."""
+
+
+def _locked_call(lock, fn, *, what, lock_timeout=None, op_timeout=None):
+    """Serialize ``fn`` on ``lock``, bounding BOTH the wait and the work.
+
+    Raises ``DeviceBusy`` if the lock is still held after ``lock_timeout``, and
+    ``DeviceOperationTimeout`` if ``fn`` has not returned after ``op_timeout``.
+    Both default to the module constants, read at call time so a test (or a
+    future per-device override) can change them without re-importing.
+
+    On a hang the lock is deliberately NOT released. The abandoned thread is
+    still inside the driver — it holds the pyvisa session, the libusb claim, the
+    LJM handle — so releasing would hand the next request a device that is
+    already in use by an operation nobody can cancel, and it would wedge too.
+    Holding it means later requests get a fast, honest "busy" until the
+    supervisor respawns this service, which is the actual recovery.
+    """
+    lock_timeout = _LOCK_TIMEOUT_S if lock_timeout is None else lock_timeout
+    op_timeout = _INVOKE_DEADLINE_S if op_timeout is None else op_timeout
+    if not lock.acquire(timeout=lock_timeout):
+        raise DeviceBusy(
+            f"{what}: device still busy after {lock_timeout:.0f}s waiting for "
+            f"a previous operation to finish"
+        )
+    wedged = False
+    try:
+        return run_with_deadline(fn, op_timeout, what=what,
+                                 timeout_error=DeviceOperationTimeout)
+    except DeviceOperationTimeout:
+        wedged = True
+        raise
+    finally:
+        if not wedged:
+            lock.release()
 
 
 # Shared pyvisa Resource cache keyed by VISA address. Lets multiple driver
@@ -209,6 +268,22 @@ def _looks_like_open_failure(exc):
 
 def _maybe_self_restart_for_wedged_session(address, context):
     _self_restart.maybe_self_restart(
+        address, context, service="hardware_service",
+        stamp_path=_HW_SELF_RESTART_STAMP)
+
+
+def _schedule_self_restart_for_hang(address, context):
+    """Hang counterpart to ``_maybe_self_restart_for_wedged_session``.
+
+    This service already self-restarts when a device is enumerated but
+    unreachable. A driver call that HANGS is the same orphaned-context wedge
+    with nothing to catch, and it is the worse of the two: the wedged thread
+    cannot be killed from Python, so the device stays locked out until the
+    process is replaced. Scheduled rather than run inline so the request can
+    answer 504 first (see ``self_restart.schedule_self_restart_for_hang``)."""
+    if not address:
+        return
+    _self_restart.schedule_self_restart_for_hang(
         address, context, service="hardware_service",
         stamp_path=_HW_SELF_RESTART_STAMP)
 
@@ -530,14 +605,33 @@ def invoke():
             device_lock = _get_address_lock(address)
         else:
             device_lock = _get_device_lock(cache_key)
+
+        what = f"{device_name}.{function_name}"
+
+        def _call_device():
+            _sync_device_channel(device, net_info)
+            return func(*args, **kwargs)
+
         try:
-            with device_lock:
-                _sync_device_channel(device, net_info)
-                result = func(*args, **kwargs)
+            # Bounded on both sides — see _locked_call. A wedged open_resource
+            # (which blocks in libusb before the 5s VISA I/O timeout is even
+            # set) or a hung native driver call used to leave every later
+            # /invoke thread for this device queued forever.
+            result = _locked_call(device_lock, _call_device, what=what)
 
             # Return the result
             # Note: EnumEncoder is handled by device.py when it decodes the response
             return jsonify(result)
+
+        except DeviceBusy as e:
+            logger.warning(f"Device busy for {what}: {e}")
+            return jsonify({'error': f'device-busy: {e}'}), 503
+
+        except DeviceOperationTimeout as e:
+            logger.error(f"Device operation hung for {what}: {e}")
+            _schedule_self_restart_for_hang(
+                address or device_id, f"{what} (hung)")
+            return jsonify({'error': f'invoke-timeout: {e}'}), 504
 
         except Exception as e:
             # Check if this is a stale VISA session error on a cached device
@@ -613,10 +707,24 @@ def invoke():
                         device = device.device
                     device_cache[cache_key] = device
                     func = getattr(device, function_name)
-                    with device_lock:
+
+                    def _call_fresh_device():
                         _sync_device_channel(device, net_info)
-                        result = func(*args, **kwargs)
+                        return func(*args, **kwargs)
+
+                    result = _locked_call(device_lock, _call_fresh_device,
+                                          what=f"{what} (retry)")
                     return jsonify(result)
+                except DeviceBusy as busy_e:
+                    logger.warning(f"Device busy retrying {what}: {busy_e}")
+                    return jsonify({'error': f'device-busy: {busy_e}'}), 503
+                except DeviceOperationTimeout as hang_e:
+                    # The freshly recreated session hung too — the device is
+                    # not merely stale, this process cannot talk to it at all.
+                    logger.error(f"Device operation hung retrying {what}: {hang_e}")
+                    _schedule_self_restart_for_hang(
+                        address or device_id, f"{what} (hung on recovery retry)")
+                    return jsonify({'error': f'invoke-timeout: {hang_e}'}), 504
                 except Exception as retry_e:
                     logger.error(f"Retry also failed for {device_name}.{function_name}: {retry_e}")
                     logger.error(traceback.format_exc())
@@ -1061,8 +1169,18 @@ def labjack_batch_read():
     # endpoint exists to avoid. "labjack:ANY" remains the fallback only because
     # it is what _physical_device_id itself yields for an address-less record.
     device_lock = _get_address_lock(data.get("device_id") or "labjack:ANY")
+    # Bounded like /invoke's: this endpoint takes the SAME lock, so a wedged
+    # /invoke that never released it would otherwise hang every /nets/state
+    # sweep of this LabJack -- the exact pile-up the bound exists to stop.
+    # Nets that cannot be read report null, which is this endpoint's contract
+    # for an unreadable device, so a busy lock needs no separate status.
+    if not device_lock.acquire(timeout=_LOCK_TIMEOUT_S):
+        logger.warning("labjack/batch_read: device busy after %.0fs; "
+                       "reporting %d net(s) as unknown",
+                       _LOCK_TIMEOUT_S, len(nets))
+        return jsonify(results)
     try:
-        with device_lock:
+        try:
             handle = get_labjack_handle()
 
             gpio_nets = [n for n in nets if n.get("role") == "gpio"]
@@ -1117,8 +1235,10 @@ def labjack_batch_read():
                 except Exception as e:
                     logger.debug("batch_read dac: %s", e)
 
-    except Exception as e:
-        logger.warning("labjack/batch_read failed: %s", e)
+        except Exception as e:
+            logger.warning("labjack/batch_read failed: %s", e)
+    finally:
+        device_lock.release()
 
     return jsonify(results)
 

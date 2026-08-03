@@ -13,11 +13,13 @@ from __future__ import annotations
 import logging
 
 from .usb_net import (
+    HUB_OP_TIMEOUT_S,
     USBNet,
     LibraryMissingError,
     DeviceNotFoundError,
     PortStateError,
     hub_access,
+    run_hub_op,
 )
 
 # BrainStem/USB access to a hub is EXCLUSIVE, and the hub is driven from several
@@ -222,14 +224,24 @@ class AcronameUSBNet(USBNet):
 
     def _with_hub(self, fn):
         """Serialise across threads and processes, open a fresh hub connection,
-        run ``fn(hub)``, and always disconnect so the hub is never left claimed."""
-        with hub_access(self._lock_key(), timeout=_LOCK_TIMEOUT_S):
+        run ``fn(hub)``, and always disconnect so the hub is never left claimed.
+
+        The whole cycle runs under a deadline, not just ``fn``: the open is the
+        part most likely to hang. ``discoverAndConnect``/``connectFromSpec``
+        are native BrainStem calls that block indefinitely against a hub whose
+        USB link is wedged, and one of those used to take out every later USB
+        command in the process."""
+        def _session():
             hub = None
             try:
                 hub = self._open_hub()
                 return fn(hub)
             finally:
                 self._close_hub(hub)
+
+        key = self._lock_key()
+        with hub_access(key, timeout=_LOCK_TIMEOUT_S):
+            return run_hub_op(key, _session, timeout=HUB_OP_TIMEOUT_S)
 
     # ------------------------------------------------------------------ #
     # internal – decode enable+power bits

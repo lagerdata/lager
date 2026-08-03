@@ -1,11 +1,15 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import threading
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 
-from lager.util.device_lock import device_lock
+from lager.util.device_lock import DeviceLockError, device_lock
+from lager.util.watchdog import run_with_deadline
+
+logger = logging.getLogger(__name__)
 
 # ─────────────  Exclusive access to a physical USB hub  ─────────────
 #
@@ -18,8 +22,20 @@ from lager.util.device_lock import device_lock
 #   * in-process — a per-hub `threading.Lock`.
 # `hub_access` combines both (the same belt-and-suspenders as hardware_service),
 # keyed on the physical hub so different hubs never block each other.
+#
+# BOTH layers are bounded. The flock always was; the in-process lock was taken
+# with a plain `with`, so a thread stuck in a wedged driver call held it forever
+# and every later caller — including the 1 Hz state polls — queued behind it
+# with no timeout of their own. The two now share one timeout, and a caller that
+# cannot get in is told so instead of waiting.
 _local_hub_locks: dict = {}
 _local_hub_locks_guard = threading.Lock()
+
+# How long a hub operation (the whole open → operate → close cycle, including a
+# driver's internal retry) may take before the caller stops waiting on it. Well
+# above any healthy operation — a cold BrainStem discovery scan can take
+# several seconds — so expiry means "wedged", not "slow".
+HUB_OP_TIMEOUT_S = 30.0
 
 
 def _local_hub_lock(key: str) -> threading.Lock:
@@ -34,10 +50,83 @@ def _local_hub_lock(key: str) -> threading.Lock:
 @contextmanager
 def hub_access(key: str, timeout: float):
     """Exclusive access to one physical USB hub, within AND across processes.
-    Wrap a driver's whole open→operate→release cycle in this."""
-    with _local_hub_lock(key):
+    Wrap a driver's whole open→operate→release cycle in this.
+
+    Raises ``DeviceLockError`` if the hub cannot be claimed within ``timeout``
+    — the same type the cross-process ``device_lock`` raises, so callers need
+    one handler for "hub unavailable" whichever layer refused.
+
+    If the body raises ``HubOperationTimeout`` the in-process lock is
+    deliberately NOT released: a thread is still inside the hub's driver, and
+    handing the hub to the next thread would only wedge that one too. The
+    cross-process flock IS released, because the wedge is per-process — a
+    different process (a ``lager python`` script, or this service after the
+    supervisor respawns it) can still open the hub.
+    """
+    lock = _local_hub_lock(key)
+    if not lock.acquire(timeout=timeout):
+        raise DeviceLockError(
+            f"USB hub {key} is busy: another operation in this process has "
+            f"held it for more than {timeout:.0f}s"
+        )
+    wedged = False
+    try:
         with device_lock(key, timeout=timeout):
-            yield
+            try:
+                yield
+            except HubOperationTimeout:
+                wedged = True
+                raise
+    finally:
+        if not wedged:
+            lock.release()
+
+
+# Called with the hub's lock key when an operation blows its deadline. Left
+# unset here on purpose: recovery from a hang means replacing the process, and
+# only a long-lived service running under the supervisor may decide that. A
+# `lager python` script imports these same drivers and must never exit itself.
+# box_http_server installs its hook when it registers the USB routes.
+_hang_hook = None
+
+
+def set_hang_hook(hook):
+    """Register the process's response to a hung hub operation (or None).
+
+    Registered here rather than at each call site because a hang is a property
+    of the PROCESS, not of the request that happened to notice it: the 1 Hz
+    ``/nets/state`` poll is the likeliest first witness, and ``dispatcher.states``
+    deliberately swallows one hub's failure so it cannot lose the others. With
+    the response wired to the detector instead, every path — ``/usb/command``,
+    a state sweep, an MCP tool — triggers recovery from the same place.
+    """
+    global _hang_hook  # pylint: disable=global-statement
+    _hang_hook = hook
+
+
+def run_hub_op(key: str, fn, timeout: float = HUB_OP_TIMEOUT_S):
+    """Run one hub operation under a deadline, inside ``hub_access``.
+
+    BrainStem's ``discoverAndConnect``/``connectFromSpec`` and pykush's HID
+    calls are native code that can block indefinitely when a hub's USB link is
+    wedged after a re-enumeration. Nothing below Python can interrupt them, so
+    the deadline abandons the worker rather than cancelling it — what it buys
+    is a caller that answers instead of joining the pile-up, and a signal the
+    service can act on (the supervisor respawn).
+    """
+    try:
+        return run_with_deadline(
+            fn, timeout, what=f"USB hub operation on {key}",
+            timeout_error=HubOperationTimeout,
+        )
+    except HubOperationTimeout:
+        hook = _hang_hook
+        if hook is not None:
+            try:
+                hook(key)
+            except Exception:  # noqa: BLE001 — recovery must not mask the hang
+                logger.exception("hub hang hook failed for %s", key)
+        raise
 
 
 class USBNet(ABC):
@@ -130,3 +219,14 @@ class DeviceNotFoundError(USBBackendError):
 
 class PortStateError(USBBackendError):
     """Hub reported an error while reading or changing port state."""
+
+
+class HubOperationTimeout(USBBackendError):
+    """A hub operation blocked past its deadline and was abandoned.
+
+    Distinct from ``DeviceLockError``, which means another caller holds the hub
+    and this one may retry. This means a thread is stuck *inside* the hub's
+    driver, in native code Python cannot interrupt, and only a fresh process
+    clears it. Handlers must match it BEFORE the generic ``USBBackendError``
+    case, or a hang reports as an ordinary backend error.
+    """

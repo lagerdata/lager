@@ -13,6 +13,12 @@ exit and let the supervisor respawn the service with a clean USB context — the
 next request/poll then works and the TUI self-heals (~2s blip, no container or
 box restart).
 
+The same orphaned context has a second, worse shape: the driver call does not
+fail, it never returns (see ``util/watchdog.py``). That is the case
+``schedule_self_restart_for_hang`` covers — a restart is even more clearly the
+only recovery there, because the wedged native thread cannot be killed from
+Python.
+
 Heavily gated so it only fires for the real wedge: the device must be
 enumerated in sysfs (a restart can help; an unplugged device can't, so we don't
 loop) and we must not be inside a per-service cooldown.
@@ -23,12 +29,22 @@ import glob
 import logging
 import os
 import re
+import threading
 import time
 import traceback
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_COOLDOWN_S = 60.0
+
+# How long to wait before the hang path runs its gate check. A hang has to do
+# two things — tell the caller AND trigger the respawn — and doing the second
+# inline costs the first: ``os._exit`` fires before the framework writes the
+# response, so the client sees a dropped connection instead of the structured
+# timeout error it needs to report. Deferring by a beat lets the response flush
+# first. Not tunable per call site: every caller wants the same "after the
+# response, before anyone retries" moment.
+_HANG_RESTART_DELAY_S = 1.0
 
 # Substrings that mark an exception/traceback as a failure to OPEN a session
 # (vs. a normal command error on an already-open device). The joulescope
@@ -118,14 +134,16 @@ def looks_like_device_unreachable(exc):
 
 
 def maybe_self_restart(address, context, *, service, stamp_path,
-                       cooldown_s=DEFAULT_COOLDOWN_S):
+                       cooldown_s=DEFAULT_COOLDOWN_S, wedge="unreachable"):
     """Exit (so the supervisor respawns this service) when ``address``'s device
     is wedged in-process: enumerated in sysfs but unreachable. No-op when the
     device isn't on the bus (a restart can't help) or we self-restarted within
     the cooldown (anti-loop).
 
     ``service`` is a human label for logs; ``stamp_path`` is a per-service
-    cooldown file so each service's cooldown is independent.
+    cooldown file so each service's cooldown is independent. ``wedge`` names
+    the shape of the wedge for the logs — "unreachable" (the call failed) or
+    "hung" (the call never returned); the gating is identical either way.
     """
     # Retry the sysfs check (~4s): the wedge is detected at the tail of a
     # re-enumeration, so the device may not be back in sysfs for a beat. A false
@@ -162,9 +180,37 @@ def maybe_self_restart(address, context, *, service, stamp_path,
             fh.write(str(now))
     except OSError:
         pass
-    logger.critical("[self-restart] %s: %s is enumerated but unreachable "
-                    "in-process (orphaned USB claim). Exiting so the supervisor "
-                    "respawns %s with a clean USB context.",
-                    context, address, service)
+    logger.critical("[self-restart] %s: %s is enumerated but %s in-process "
+                    "(orphaned USB claim). Exiting so the supervisor respawns "
+                    "%s with a clean USB context.",
+                    context, address, wedge, service)
     logging.shutdown()  # flush handlers before the hard exit
     os._exit(70)  # EX_SOFTWARE; start-services.sh's `while true` respawns us
+
+
+def schedule_self_restart_for_hang(address, context, *, service, stamp_path,
+                                   cooldown_s=DEFAULT_COOLDOWN_S,
+                                   delay_s=_HANG_RESTART_DELAY_S):
+    """Self-restart path for an operation that HUNG rather than raised.
+
+    ``maybe_self_restart`` needs no exception — only an address and a reason —
+    but every caller reached it from an ``except`` block, so the failure mode
+    that most needs a restart never triggered one: a native driver call that
+    never returns produces nothing to catch. This is that entry point.
+
+    Runs on a short timer for two reasons: the caller can return its structured
+    timeout response before ``os._exit`` lands (see ``_HANG_RESTART_DELAY_S``),
+    and the sysfs gate inside ``maybe_self_restart`` sleeps up to ~4s, which no
+    request thread should pay for.
+
+    Returns the timer so tests can join it; callers ignore it.
+    """
+    timer = threading.Timer(
+        delay_s, maybe_self_restart, args=(address, context),
+        kwargs={'service': service, 'stamp_path': stamp_path,
+                'cooldown_s': cooldown_s, 'wedge': 'hung'},
+    )
+    timer.daemon = True
+    timer.name = f"self-restart-hang:{service}"
+    timer.start()
+    return timer
