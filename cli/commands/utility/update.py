@@ -1882,6 +1882,27 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     # to be running: 'container-down' falls through to the rebuild path below
     # and brings the box back up. `--force` still skips the early-exit
     # unconditionally.
+    # Secret files must be owned by uid 33 (the container user), not merely
+    # mode 0600. 0600 grants the owner alone, so a secrets file left under a
+    # different owner — e.g. copied onto the box by hand — locks the runtime
+    # out of it the moment anything tightens the mode. The symptom is silent:
+    # secret injection returns empty and scripts fail nowhere near the cause.
+    #
+    # BEFORE the rebuild gate on purpose, like the host-CLI reconcile below.
+    # This is a heal, not part of building an image, and the box that most
+    # needs it is the one already running current code: an operator whose
+    # secrets stopped working reaches for `lager update`, and if the repair
+    # sat after the gate that update would early-exit "already up to date"
+    # and fix nothing. Running it here costs one short SSH round-trip on the
+    # fast path and makes the remedy work whenever it is reached for.
+    #
+    # `lager update` is the only path that runs with real privilege, so it is
+    # where the repair belongs; the box's boot script can only warn when it
+    # lacks the grant. Best-effort throughout — an unreadable secrets file must
+    # never be the reason an update fails — so boxes that miss the repair still
+    # get the boot warning telling them what to run.
+    run_ssh_command_with_output(_secret_ownership_shell_cmd(), timeout_secs=30)
+
     _gate = _rebuild_gate_verdict(
         facts,
         git_sync_confirmed=git_sync_confirmed,
@@ -2359,23 +2380,6 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         ctx.exit(1)
     log_status('OK', 'green')
 
-    # Secret files must be owned by uid 33 (the container user), not merely
-    # mode 0600. 0600 grants the owner alone, so a secrets file left under a
-    # different owner — e.g. copied onto the box by hand — locks the runtime
-    # out of it the moment anything tightens the mode. The symptom is silent:
-    # secret injection returns empty and scripts fail nowhere near the cause.
-    #
-    # This is the one path that runs with real privilege, so it is where the
-    # repair belongs; the box's boot script can only warn when it lacks the
-    # grant. Best-effort throughout: `sudo -n` so a box without the chown
-    # grant fails instantly rather than waiting on a password, and the whole
-    # thing is `|| true` because an unreadable secrets file must never be the
-    # reason an update fails. Boxes that miss the repair still get the boot
-    # warning telling them what to run.
-    #
-    # chmod is deliberately not attempted: after the chown this user no longer
-    # owns the file, and the container fixes the mode itself on next load.
-    run_ssh_command_with_output(_secret_ownership_shell_cmd(), timeout_secs=30)
 
     # Persist the build-inputs hash now that /etc/lager is group-writable by this
     # user (Step 10). This is what lets the next run's cache-validity check short-circuit to
