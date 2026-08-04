@@ -203,17 +203,82 @@ if [ ! -f /etc/lager/saved_nets.json ]; then
     chmod 666 /etc/lager/saved_nets.json
 fi
 
-# Secrets must not be group/world-readable. The executor also enforces this on
-# load (box/lager/python/executor.py); doing it at boot covers files dropped
-# while the container was down. Best-effort: these files may be owned by the
-# container user (www-data), which this script's user cannot chmod — that must
-# never block container startup.
-for secret_file in /etc/lager/org_secrets.json /etc/lager/secret_key; do
-    if [ -f "$secret_file" ] && ! chmod 600 "$secret_file" 2>/dev/null; then
-        echo "[WARNING] Could not chmod 600 $secret_file (not owner)."
-        echo "          The container enforces this on load; or run: sudo chmod 600 $secret_file"
-    fi
-done
+# --- BEGIN secret-file ownership (extracted verbatim by test/unit/box/test_secret_file_ownership.py) ---
+# Secrets must not be group/world-readable, and the runtime must still be able
+# to read them. Both halves matter, and enforcing only the first is what broke
+# a box in the field.
+#
+# Mode 0600 grants the OWNER alone. Everything that reads these files runs as
+# uid 33 inside the container, so 0600 is only safe once uid 33 owns the file.
+# On a box where the file had been copied in by hand it was owned by the host
+# login user instead — this script runs as that user, so its chmod SUCCEEDED
+# and instantly locked the runtime out of its own secrets. The executor caught
+# the PermissionError and injected an empty secret set, so the failure was
+# silent; the box just stopped having secrets.
+#
+# The old loop had the diagnostics exactly backwards: it warned when chmod
+# failed (the HEALTHY case — the file already belongs to uid 33 and only the
+# container can chmod it) and said nothing when chmod succeeded (the case that
+# creates the lockout).
+#
+# Order is chmod-then-chown on purpose. Once the file belongs to uid 33 this
+# user can no longer chmod it, so setting the mode while we are still the owner
+# reaches the target state in one pass; doing it the other way round leaves the
+# mode for the container to fix on its next load.
+LAGER_SECRET_FILES="${LAGER_SECRET_FILES:-/etc/lager/org_secrets.json /etc/lager/secret_key}"
+# uid 33 is www-data, the user the container runs as. Hardcoded because it is
+# baked into the container image, not discovered at runtime.
+LAGER_CONTAINER_UID="${LAGER_CONTAINER_UID:-33}"
+
+# `find -uid` / `-perm` rather than `stat`, whose flags differ between GNU and
+# BSD; this keeps the block runnable off-box by its unit test.
+_owned_by_container_uid() {
+    [ -n "$(find "$1" -maxdepth 0 -uid "$LAGER_CONTAINER_UID" 2>/dev/null)" ]
+}
+
+_normalize_secret_files() {
+    for secret_file in $LAGER_SECRET_FILES; do
+        [ -f "$secret_file" ] || continue
+
+        # Succeeds only while this user still owns the file; a no-op once it
+        # belongs to uid 33, which is the state we are trying to reach.
+        chmod 600 "$secret_file" 2>/dev/null || true
+
+        if ! _owned_by_container_uid "$secret_file"; then
+            # sudo first: the box's NOPASSWD grant covers chown, and this is
+            # the path that repairs a hand-copied file automatically. `-n` so a
+            # box without the grant fails immediately instead of waiting for a
+            # password nobody is there to type. Plain chown covers the case
+            # where this script is already running as root.
+            sudo -n chown "$LAGER_CONTAINER_UID:$LAGER_CONTAINER_UID" "$secret_file" 2>/dev/null \
+                || chown "$LAGER_CONTAINER_UID:$LAGER_CONTAINER_UID" "$secret_file" 2>/dev/null \
+                || true
+        fi
+
+        # Still not ours, and now unreadable by anyone but its owner: the
+        # runtime cannot read its own secrets. Loud, because the symptom
+        # otherwise is silently-absent secrets rather than an error.
+        if ! _owned_by_container_uid "$secret_file" \
+            && [ -n "$(find "$secret_file" -maxdepth 0 -perm 600 2>/dev/null)" ]; then
+            echo ""
+            echo "  ============================================================"
+            echo "  WARNING: the container cannot read $secret_file"
+            echo "  ============================================================"
+            echo "  It is mode 0600 but not owned by uid $LAGER_CONTAINER_UID, which is the user"
+            echo "  the container runs as. Secret injection will be EMPTY and any"
+            echo "  in-container reader will fail with 'Permission denied'."
+            echo ""
+            echo "  Fix it with:"
+            echo "    sudo chown $LAGER_CONTAINER_UID:$LAGER_CONTAINER_UID $secret_file && sudo chmod 600 $secret_file"
+            echo ""
+            echo "  \`lager update\` also repairs this automatically."
+            echo "  ============================================================"
+            echo ""
+        fi
+    done
+}
+_normalize_secret_files
+# --- END secret-file ownership ---
 
 # --- BEGIN authorized-keys sync (extracted verbatim by test/unit/box/test_authorized_keys_sync.py) ---
 # Publish SSH keys from the key directory into ~/.ssh/authorized_keys.
