@@ -50,6 +50,18 @@ def _display_usb_nets(ctx: click.Context, box: str) -> None:
     display_nets_table(nets, empty_message="No USB nets found on this box.")
 
 
+# Must exceed the box's own worst case for /usb/command, or the box's
+# structured errors are undeliverable by construction: the client gives up
+# before the answer it is waiting for exists. The handler's bounds are
+# additive — up to `_USB_LOCK_TIMEOUT_S` (10s) queueing on the process-wide
+# hub lock, then up to `HUB_OP_TIMEOUT_S` (30s) in the driver deadline — so a
+# wedged hub answers 504 at ~40s. A 30s client timeout turned that into a
+# transport error, which reads as "the box is unreachable" and hides both the
+# real diagnosis and the fact that the box already scheduled its own recovery.
+# Raise this if either box-side bound grows.
+_USB_COMMAND_TIMEOUT_S = 45
+
+
 def _invoke_remote(
     ctx: click.Context,
     net_name: str,
@@ -69,18 +81,16 @@ def _invoke_remote(
     from ...box_storage import _check_gateway
 
     url = f"http://{target_box}:{NET_HTTP_PORT}/usb/command"
-    # First contact with an Acroname hub runs BrainStem USB discovery on the
-    # box, which can take well over 10s cold; budget for it.
     try:
         resp = requests.post(
             url,
             json={"netname": net_name, "action": command},
-            timeout=30,
+            timeout=_USB_COMMAND_TIMEOUT_S,
             headers=auth_headers_for_box(target_box),
         )
         resp = _check_gateway(resp, target_box)
     except (requests.ConnectionError, requests.Timeout) as e:
-        echo_box_request_failure(target_box, e, timeout=30)
+        echo_box_request_failure(target_box, e, timeout=_USB_COMMAND_TIMEOUT_S)
         ctx.exit(1)
     except requests.RequestException as e:
         click.secho(f"Error: USB request to box failed: {e}", fg='red', err=True)
