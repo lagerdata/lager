@@ -131,6 +131,19 @@ def run_hub_op(key: str, fn, timeout: float = HUB_OP_TIMEOUT_S):
 
 class USBNet(ABC):
     """Abstract base class for USB network controllers."""
+
+    # Does this driver keep a USB handle alive between public calls?
+    #
+    # Only a driver that does can have its handle orphaned by a re-enumeration,
+    # which is the sole failure mode the box's self-restart recovery repairs
+    # (see util/self_restart.py). A driver that opens and closes inside every
+    # call has nothing to orphan, so restarting the service on its behalf drops
+    # every other in-flight box operation to fix nothing.
+    #
+    # Defaults True so an unmodified driver keeps today's behaviour; a driver
+    # opts out only by demonstrating the open/close-per-call invariant.
+    holds_usb_context_between_ops = True
+
     @abstractmethod
     def enable(self, net_name, port):
         """Enable (power on) the specified port on the given USB net."""
@@ -213,8 +226,53 @@ class LibraryMissingError(USBBackendError):
     """Required vendor SDK (BrainStem, pykush, …) is not present."""
 
 
+# ─────────────  Why a hub would not open  ─────────────
+#
+# "The hub did not open" has several causes with DIFFERENT remedies, and
+# collapsing them is what makes a bench look intermittently broken: a hub that
+# is unplugged and a hub that is cabled but not answering produce the same
+# `state: null`, and only one of them is worth walking over to the bench for.
+#
+# Plain strings, not an enum: these cross an HTTP boundary into JSON and land in
+# a CLI that may be a different version, where an unknown string is still
+# printable. An enum would need `.value` at every boundary and buy nothing.
+HUB_ABSENT = "hub-absent"                    # nothing from this vendor on the bus
+HUB_UNREACHABLE = "hub-unreachable"          # our serial IS on the bus, will not answer
+HUB_SERIAL_MISMATCH = "hub-serial-mismatch"  # vendor devices present, none ours
+HUB_OPEN_FAILED = "hub-open-failed"          # sysfs unknown / other refusal
+
+
 class DeviceNotFoundError(USBBackendError):
-    """Requested hub (by serial) could not be opened."""
+    """Requested hub (by serial) could not be opened.
+
+    Carries structured fields alongside the message so callers can act on the
+    cause without parsing prose:
+
+    ``classification``
+        One of the ``HUB_*`` constants above, or None from a driver that does
+        not classify.
+    ``usb_context_healthy``
+        True when this process demonstrably talked to the USB bus while failing
+        to find THIS hub — i.e. a discovery scan completed and returned at least
+        one device. That is positive evidence the process's USB context is fine
+        and the hub is the problem, which is the one thing that distinguishes
+        "restarting this service would help" from "restarting it is pointless".
+        None when unknown; never guess.
+    ``detail``
+        The full open-attempt breakdown, for ``--json`` and diagnostics. Kept
+        off the message so a remedy sentence is not buried in return codes.
+
+    All three default to None, so ``DeviceNotFoundError(msg)`` still works.
+    ``super().__init__(message)`` keeps ``.args`` single-element, so pickling
+    and copying across the pyvisa/joulescope paths are unaffected.
+    """
+
+    def __init__(self, message, *, classification=None,
+                 usb_context_healthy=None, detail=None):
+        super().__init__(message)
+        self.classification = classification
+        self.usb_context_healthy = usb_context_healthy
+        self.detail = detail
 
 
 class PortStateError(USBBackendError):
