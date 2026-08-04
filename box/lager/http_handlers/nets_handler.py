@@ -91,7 +91,7 @@ def _brief_usb(netname):
         return None
 
 
-def _brief_usb_batch(netnames, causes=None):
+def _brief_usb_batch(netnames, causes=None, codes=None):
     """USB hub ports for several nets, grouped by physical hub.
 
     The per-net probe costs a full hub open/read/close under that hub's lock, so
@@ -104,13 +104,17 @@ def _brief_usb_batch(netnames, causes=None):
         causes: optional dict, filled in place with ``net name -> "Type: msg"``
             for nets that came back None with a known cause. Passed through to
             ``usb_hub.states``; also filled here when the whole call fails.
+        codes: optional dict, filled in place with ``net name -> classification``
+            for the same nets. Left empty when the whole call fails: a failure
+            to load net definitions says nothing about the state of the bus,
+            and a code that names the wrong fault is worse than none.
 
     Returns:
         dict[str, str | None]: net name -> "enabled"/"disabled", or None.
     """
     from ..automation import usb_hub
     try:
-        raw = usb_hub.states(netnames, causes=causes)
+        raw = usb_hub.states(netnames, causes=causes, codes=codes)
     except Exception as e:
         logger.debug("brief_usb_batch %s: %s", netnames, e)
         # Everything below the dispatcher's own per-hub guard lands here --
@@ -178,6 +182,10 @@ def _brief_labjack_batch(recs):
 
 # Roles that can answer for several nets in one instrument session. Anything
 # absent here falls back to the per-net probe in _BRIEF_PROBES.
+# Role -> batch probe. A probe here MUST accept
+# ``(netnames, *, causes=None, codes=None)``: `_probe_group` passes both
+# unconditionally, so a probe that omits either raises TypeError at the call
+# site rather than silently losing the diagnostics.
 _BATCH_PROBES = {
     "usb": _brief_usb_batch,
 }
@@ -417,21 +425,39 @@ REASON_DEADLINE = "deadline"
 REASON_NO_PROBE = "no probe for role"
 
 
+# A null entry may also carry ``reason_code``: a stable token naming the fault
+# class, where the driver produced one.
+#
+# THE COMPATIBILITY RULE, because a future edit will otherwise break it without
+# noticing: the box always sends a complete, self-sufficient human ``reason``.
+# ``reason_code`` only ever UPGRADES presentation -- a colour, a remedy line,
+# grouping -- and is never the sole carrier of meaning.
+#
+# That is what makes both directions of version skew safe with no negotiation.
+# An older CLI reads only ``reason`` and never looks at the extra key. A newer
+# CLI against an older box sees no code and falls back to printing ``reason``,
+# which is exactly today's behaviour. Move the meaning into the code and every
+# older CLI silently starts printing less than it used to.
 def _unreadable(detail):
     """Reason string for a probe that ran and did not produce an answer."""
     detail = str(detail).strip()
     return f"unreadable: {detail}" if detail else "unreadable"
 
 
-def _entry(name, role, state, reason=None):
+def _entry(name, role, state, reason=None, code=None):
     """One net's answer.
 
     ``reason`` is attached only when *state* is None, so its presence means
     "this is a null, and here is why". A net with a state carries no reason.
+    ``reason_code`` rides alongside it, and only alongside it -- the key is
+    absent, not null, when there is no classification, so an older CLI's
+    ``.get("reason_code")`` sees nothing rather than something falsy.
     """
     out = {"name": name, "role": role, "state": state}
     if state is None and reason:
         out["reason"] = reason
+        if code:
+            out["reason_code"] = code
     return out
 
 
@@ -522,8 +548,11 @@ def _probe_group(recs):
     # keeps the generic wording, so "we know why" stays distinguishable from
     # "no value came back".
     causes: dict = {}
+    # Machine-readable counterpart to `causes`, filled only where the driver
+    # classified the fault. Batch probes that do not take it are unaffected.
+    codes: dict = {}
     try:
-        states = batch(names, causes=causes)
+        states = batch(names, causes=causes, codes=codes)
     except Exception as e:
         logger.debug("batch probe for role %s failed: %s", role, e)
         reason = _unreadable(f"{type(e).__name__}: {e}")
@@ -537,6 +566,7 @@ def _probe_group(recs):
             _unreadable(
                 causes.get(rec.get("name", "")) or "no value from instrument"
             ),
+            codes.get(rec.get("name", "")),
         )
         for rec in recs
     ]

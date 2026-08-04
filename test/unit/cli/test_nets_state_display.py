@@ -136,5 +136,91 @@ class NullReasonFootnoteTest(unittest.TestCase):
                          "reasons belong in the footnote, not the cell")
 
 
+class ReasonCodeRemedyTests(unittest.TestCase):
+    """A code only ever ADDS a remedy line. The box's reason is always printed
+    and always self-sufficient, so both directions of version skew are safe."""
+
+    RECS = [
+        {"name": "usb1", "role": "usb", "channel": "0",
+         "instrument": "Acroname_4Port", "address": "NA"},
+        {"name": "usb2", "role": "usb", "channel": "1",
+         "instrument": "Acroname_4Port", "address": "NA"},
+    ]
+
+    def _render(self, state_map, reason_map, code_map=None):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            _display_table(self.RECS, state_map=state_map,
+                           reason_map=reason_map, code_map=code_map)
+        return out.getvalue(), err.getvalue()
+
+    def test_a_known_code_adds_a_remedy_line(self):
+        _, err = self._render(
+            {"usb1": None}, {"usb1": "unreadable: hub will not answer"},
+            {"usb1": "hub-unreachable"},
+        )
+        self.assertIn("check its power and upstream cable", err)
+        self.assertIn("Restarting box services", err)
+
+    def test_an_unknown_code_falls_back_to_the_box_reason(self):
+        """A NEWER box can send a code this CLI has never heard of. It must
+        print the reason and not raise -- this is the command someone runs
+        when something is already broken."""
+        _, err = self._render(
+            {"usb1": None}, {"usb1": "unreadable: hub imploded"},
+            {"usb1": "hub-imploded"},
+        )
+        self.assertIn("hub imploded", err)
+        self.assertNotIn("->", err)
+
+    def test_a_code_is_purely_additive(self):
+        """The compatibility claim, as an assertion: adding a code changes
+        nothing that was already printed. Everything an older box produces is
+        still there, byte for byte, with the remedy appended -- so a CLI that
+        ignores codes loses no information."""
+        reason = {"usb1": "unreadable: hub will not answer"}
+        out_without, err_without = self._render({"usb1": None}, reason)
+        out_with, err_with = self._render({"usb1": None}, reason,
+                                          {"usb1": "hub-unreachable"})
+        self.assertEqual(out_without, out_with, "the table must not change")
+        self.assertTrue(
+            err_with.startswith(err_without.rstrip("\n")),
+            f"footnote was rewritten, not appended to:\n{err_without!r}\n"
+            f"{err_with!r}",
+        )
+        self.assertNotIn("->", err_without)
+        self.assertIn("->", err_with)
+
+    def test_nets_sharing_a_code_get_one_remedy_line(self):
+        """Four dead nets on one hub are one fault. Repeating the remedy per
+        net buries it."""
+        _, err = self._render(
+            {"usb1": None, "usb2": None},
+            {"usb1": "unreadable: hub will not answer",
+             "usb2": "unreadable: hub will not answer"},
+            {"usb1": "hub-unreachable", "usb2": "hub-unreachable"},
+        )
+        self.assertEqual(err.count("check its power and upstream cable"), 1)
+
+    def test_nets_disagreeing_on_a_code_get_no_remedy(self):
+        """Grouped by reason, so a group with two classifications cannot be
+        given one remedy without guessing which."""
+        _, err = self._render(
+            {"usb1": None, "usb2": None},
+            {"usb1": "unreadable: x", "usb2": "unreadable: x"},
+            {"usb1": "hub-unreachable", "usb2": "hub-absent"},
+        )
+        self.assertNotIn("->", err)
+
+    def test_the_remedy_goes_to_stderr_with_the_rest_of_the_footnote(self):
+        """A redirected table has to stay parseable."""
+        out, err = self._render(
+            {"usb1": None}, {"usb1": "unreadable: hub will not answer"},
+            {"usb1": "hub-unreachable"},
+        )
+        self.assertIn("check its power", err)
+        self.assertNotIn("check its power", out)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -739,6 +739,7 @@ def _display_table(
     records,
     state_map: dict[str, str | None] | None = None,
     reason_map: dict[str, str] | None = None,
+    code_map: dict[str, str] | None = None,
 ):
     """Render the grouped net table.
 
@@ -850,7 +851,7 @@ def _display_table(
             click.secho(f"{row[0]:<{col_w[0]}}", bold=True, nl=False)
             click.echo("  " + "  ".join(f"{row[i]:<{col_w[i]}}" for i in range(1, len(col_w))))
 
-    _print_state_reasons(records, reason_map)
+    _print_state_reasons(records, reason_map, code_map)
 
 
 # Roles with no live probe report no state by design (uart, spi, i2c, ...).
@@ -858,12 +859,48 @@ def _display_table(
 # on every bench and stops being read.
 _EXPECTED_NO_STATE_REASON = "no probe for role"
 
+# What a classification means for the person reading the footnote, and how
+# loudly to say it. Only "go and look at the hardware" is red; the others are
+# usually a bench in a normal state or a net pointing at the wrong device.
+#
+# Looked up with .get() and ALWAYS optional -- a newer box can send a code this
+# CLI has never heard of, and the box's own `reason` already says everything
+# needed. A KeyError here would crash the exact command someone runs when
+# something is already broken.
+_REASON_CODE_NOTES = {
+    "hub-unreachable": (
+        "the hub is on the USB bus but will not answer. That is hardware:\n"
+        "    check its power and upstream cable. Restarting box services\n"
+        "    will not help.",
+        "red",
+    ),
+    "hub-absent": (
+        "the hub is not on the USB bus at all -- unplugged, or its\n"
+        "    upstream port is off.",
+        "yellow",
+    ),
+    "hub-serial-mismatch": (
+        "hubs are on the bus but none has the serial this net names.\n"
+        "    Check the net's address.",
+        "yellow",
+    ),
+}
 
-def _print_state_reasons(records, reason_map: dict[str, str] | None) -> None:
+
+def _print_state_reasons(
+    records,
+    reason_map: dict[str, str] | None,
+    code_map: dict[str, str] | None = None,
+) -> None:
     """Explain the ``–`` cells, grouped by reason.
 
     Only unexpected ones: a role with no probe is normal. Silent when the box
     sent no reasons at all, which is what an older box does.
+
+    ``code_map`` only ever adds a remedy line under a group. The box's
+    ``reason`` is always printed and always self-sufficient, so an older box
+    that sends no codes, or a newer one sending a code this CLI does not know,
+    both render exactly as they did before.
     """
     if not reason_map:
         return
@@ -879,11 +916,19 @@ def _print_state_reasons(records, reason_map: dict[str, str] | None) -> None:
     if not by_reason:
         return
 
+    code_map = code_map or {}
     click.echo()
     click.secho("Nets reporting no state:", bold=True, err=True)
     for reason in sorted(by_reason):
-        names = ", ".join(by_reason[reason])
-        click.echo(f"    {names}: {reason}", err=True)
+        names = by_reason[reason]
+        click.echo(f"    {', '.join(names)}: {reason}", err=True)
+        # One remedy per group, not per net: four dead nets on one hub are one
+        # fault, and printing the same sentence four times buries it.
+        codes = {code_map.get(n) for n in names}
+        note = _REASON_CODE_NOTES.get(codes.pop()) if len(codes) == 1 else None
+        if note:
+            text, colour = note
+            click.secho(f"    -> {text}", fg=colour, err=True)
     if any(r == "deadline" for r in by_reason):
         click.secho(
             "    Note: 'deadline' is the box's budget for probing every\n"
@@ -2251,6 +2296,10 @@ def state_cmd(ctx: click.Context, box: str | None, as_json: bool) -> None:
     # Why a net has no state. Absent on boxes older than this field; the
     # display and the JSON both have to read as they did before in that case.
     reason_map: dict[str, str] = {}
+    # The machine-readable half of the same answer, where the box sent one.
+    # Never required: an older box sends no codes and everything below falls
+    # back to printing `reason`, which is what it did before this existed.
+    code_map: dict[str, str] = {}
     state_list = _fetch_net_state(resolved_box)
     if state_list is None:
         click.secho(
@@ -2265,6 +2314,9 @@ def state_cmd(ctx: click.Context, box: str | None, as_json: bool) -> None:
             reason = entry.get("reason")
             if reason:
                 reason_map[name] = reason
+                code = entry.get("reason_code")
+                if code:
+                    code_map[name] = code
 
     if as_json:
         merged = []
@@ -2273,11 +2325,14 @@ def state_cmd(ctx: click.Context, box: str | None, as_json: bool) -> None:
             item = {**rec, "live_state": state_map.get(name)}
             if name in reason_map:
                 item["live_state_reason"] = reason_map[name]
+            if name in code_map:
+                item["live_state_reason_code"] = code_map[name]
             merged.append(item)
         click.echo(json.dumps(merged, indent=2))
         return
 
-    _display_table(records, state_map=state_map, reason_map=reason_map)
+    _display_table(records, state_map=state_map, reason_map=reason_map,
+                   code_map=code_map)
 
 
 @nets.command("show", help="Show full details of a saved net, including metadata")

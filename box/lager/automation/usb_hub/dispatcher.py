@@ -109,7 +109,7 @@ def state(net_name: str) -> bool:
     return enabled
 
 
-def states(net_names=None, *, causes=None) -> Dict[str, bool | None]:
+def states(net_names=None, *, causes=None, codes=None) -> Dict[str, bool | None]:
     """Read several USB nets, grouping them by physical hub.
 
     ``state()`` is one net per call and each call is a full hub
@@ -132,6 +132,13 @@ def states(net_names=None, *, causes=None) -> Dict[str, bool | None]:
             return value cannot carry this (it is ``bool | None`` and a third
             inhabitant is exactly the ambiguity issue #196 is about), and a
             caller that does not pass it is unaffected.
+        codes: optional dict, filled in place with ``net name -> classification``
+            (a ``HUB_*`` constant) for the same nets. Separate from ``causes``
+            rather than making its values a pair: ``causes`` is prose for a
+            human and this is a token for a machine, they have different
+            lifetimes across versions, and widening the existing value type
+            would break every caller for no gain. Both are optional and both
+            are no-ops when not passed.
 
     Returns:
         dict[str, bool | None]: net name -> enabled, or None if unreadable.
@@ -181,6 +188,14 @@ def states(net_names=None, *, causes=None) -> Dict[str, bool | None]:
                 cause = f"{type(e).__name__}: {e}"
                 for name in port_to_net.values():
                     causes[name] = cause
+            # The classification, where the driver produced one. Not every
+            # failure has one -- a missing SDK or a lock timeout is not a
+            # statement about the bus -- so this stays absent rather than
+            # guessing, and the prose cause above still says what happened.
+            code = getattr(e, "classification", None)
+            if codes is not None and code:
+                for name in port_to_net.values():
+                    codes[name] = code
             port_states = {}
         for port, name in port_to_net.items():
             value = port_states.get(port)
