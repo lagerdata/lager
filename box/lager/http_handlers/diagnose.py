@@ -53,9 +53,18 @@ def _parse_visa_address(addr: str):
     return m.group(1).lower(), m.group(2).lower(), m.group(3)
 
 
-def _find_usb_sysfs(vid_hex, pid_hex):
+def _find_usb_sysfs(vid_hex, pid_hex, serial=None):
     """Walk /sys/bus/usb/devices/ for a device matching (vid, pid). Returns
-    sysfs path like '/sys/bus/usb/devices/1-4' or None."""
+    sysfs path like '/sys/bus/usb/devices/1-4' or None.
+
+    When *serial* is given, an exact serial match wins. Matching on vid/pid
+    alone and taking the first hit silently reports the WRONG instrument on a
+    bench with two of the same model -- which is the bench most likely to be
+    running a diagnostic in the first place. The vid/pid hit is still returned
+    as a fallback so a device with an unreadable iSerial is not lost; callers
+    that care can compare the serial themselves.
+    """
+    fallback = None
     for dev in glob.glob('/sys/bus/usb/devices/*/'):
         try:
             with open(os.path.join(dev, 'idVendor')) as f:
@@ -64,10 +73,21 @@ def _find_usb_sysfs(vid_hex, pid_hex):
             with open(os.path.join(dev, 'idProduct')) as f:
                 if f.read().strip().lower() != pid_hex:
                     continue
+            if serial:
+                try:
+                    with open(os.path.join(dev, 'serial')) as f:
+                        found = f.read().strip()
+                except (FileNotFoundError, OSError):
+                    found = ''
+                if found.lower() == str(serial).strip().lower():
+                    return dev.rstrip('/')
+                if fallback is None:
+                    fallback = dev.rstrip('/')
+                continue
             return dev.rstrip('/')
         except (FileNotFoundError, OSError):
             continue
-    return None
+    return fallback
 
 
 def _usbfs_path_for_sysfs(sysfs):
@@ -94,8 +114,123 @@ def _run(cmd, timeout=5):
         return -1, '', str(e)
 
 
+def _all_usb_devnums():
+    """Every USB device's devnum on this box, as a sorted list.
+
+    Context for one device's own devnum. The kernel hands these out
+    monotonically per bus as devices enumerate, so a device sitting far above
+    its neighbours has re-enumerated many times since they did -- and on a
+    bench that is otherwise stable, that gap IS the diagnosis. Measured on a
+    two-hub bench: the failing hub sat at 93 while every other instrument was
+    in the 60s, which was the single most useful number in the investigation
+    and nothing in lager surfaced it.
+    """
+    out = []
+    for dev in glob.glob('/sys/bus/usb/devices/*/'):
+        try:
+            with open(os.path.join(dev, 'devnum')) as f:
+                out.append(int(f.read().strip()))
+        except (FileNotFoundError, ValueError, OSError):
+            continue
+    return sorted(out)
+
+
+def _acroname_bus_report(vid_hex):
+    """Every device from one vendor on the bus, with the fields that matter.
+
+    Vendor-wide, not vid+pid: one physical Acroname hub enumerates as several
+    USB devices under different product ids, and the hub component's iSerial
+    can be empty while the control endpoint's carries a serial. Filtering by
+    the net's pid would hide the half that proves the hub is physically there.
+    """
+    devices = []
+    for dev in sorted(glob.glob('/sys/bus/usb/devices/*/')):
+        def _read(name):
+            try:
+                with open(os.path.join(dev, name)) as f:
+                    return f.read().strip()
+            except (FileNotFoundError, OSError):
+                return None
+        if (_read('idVendor') or '').lower() != vid_hex:
+            continue
+        devices.append({
+            'sysfs_name': os.path.basename(dev.rstrip('/')),
+            'vid': _read('idVendor'),
+            'pid': _read('idProduct'),
+            'serial': _read('serial'),
+            'product': _read('product'),
+            'busnum': _read('busnum'),
+            'devnum': _read('devnum'),
+            'speed': _read('speed'),
+        })
+    return devices
+
+
+def _brainstem_scan():
+    """What the vendor SDK can see right now: (serials, error).
+
+    A scan, not a claim -- it never opens a hub, so it is safe to run while
+    something else is driving one. This is the single signal that separates
+    "the kernel has it enumerated" from "it answers", which is the distinction
+    sysfs alone cannot make and the one this whole endpoint exists for.
+    """
+    try:
+        import brainstem
+    except Exception as e:
+        return None, f'{type(e).__name__}: {e}'
+    try:
+        specs = brainstem.discover.findAllModules(brainstem.link.Spec.USB) or []
+    except Exception as e:
+        return None, f'findAllModules raised {type(e).__name__}: {e}'
+    out = []
+    for spec in specs:
+        serial = getattr(spec, 'serial_number', None)
+        out.append(f'0x{serial:08X}' if isinstance(serial, int) else str(serial))
+    return out, None
+
+
+def _try_hub_open(address):
+    """Open and immediately close the hub, without touching any port.
+
+    Contends for the hub like any other caller and waits the driver's normal
+    lock timeout. If something else is driving the hub -- a running test
+    toggling ports -- that wait expires and the probe reports itself skipped
+    with the reason, rather than reporting a failure that is really just
+    someone else's turn. Same shape as /diagnose/jlink's connect_skipped.
+
+    Returns the fields describing what happened. Never raises: this is the last
+    section of a diagnostic and must not be able to take out the rest of it.
+    """
+    try:
+        from lager.automation.usb_hub.acroname import AcronameUSBNet
+        from lager.util.device_lock import DeviceLockError
+    except Exception as e:
+        return {'hub_opens': None,
+                'probe_skip_reason': f'driver unavailable: {type(e).__name__}: {e}'}
+
+    net = AcronameUSBNet({'address': address})
+    try:
+        # No retry: a diagnostic reports what it found, it does not paper over
+        # it. The retry belongs on the paths a person is waiting on.
+        net._with_hub(lambda hub: None, retry=False)
+        return {'hub_opens': True, 'hub_open_error': None}
+    except DeviceLockError as e:
+        return {'hub_opens': None, 'probe_skipped': True,
+                'probe_skip_reason': f'hub is busy: {e}'}
+    except Exception as e:
+        out = {'hub_opens': False,
+               'hub_open_error': f'{type(e).__name__}: {e}'}
+        code = getattr(e, 'classification', None)
+        if code:
+            out['hub_open_classification'] = code
+        detail = getattr(e, 'detail', None)
+        if detail:
+            out['hub_open_detail'] = detail
+        return out
+
+
 def register_diagnose_routes(app: Flask) -> None:
-    """Register `/diagnose/usb` and `/diagnose/visa` on the Flask app."""
+    """Register `/diagnose/usb`, `/diagnose/usbhub` and `/diagnose/visa`."""
 
     @app.route('/diagnose/usb', methods=['GET'])
     def diagnose_usb():
@@ -108,7 +243,7 @@ def register_diagnose_routes(app: Flask) -> None:
             }), 400
 
         vid, pid, serial = parts
-        sysfs = _find_usb_sysfs(vid, pid)
+        sysfs = _find_usb_sysfs(vid, pid, serial)
         if not sysfs:
             return jsonify({
                 'address': addr,
@@ -138,6 +273,80 @@ def register_diagnose_routes(app: Flask) -> None:
             'usbtmc_loaded': _usbtmc_loaded(),
             'dmesg_tail': _dmesg_usb_tail(),
         })
+
+    @app.route('/diagnose/usbhub', methods=['GET'])
+    def diagnose_usbhub():
+        """Why a programmable USB hub is or is not answering.
+
+        Separate from /diagnose/usb because the question is different. That one
+        asks whether a USB-TMC instrument is enumerated and who holds it. A hub
+        can be enumerated, unheld, and still not answer its vendor SDK -- which
+        is precisely the state that made a bench look intermittently broken
+        (issue #196), and the state neither sysfs nor lsof can see.
+        """
+        addr = (request.args.get('address') or '').strip()
+        parts = _parse_visa_address(addr)
+        if not parts:
+            return jsonify({
+                'address': addr,
+                'error': ('not a USB VISA address '
+                          '(expected USB0::0xVID::0xPID::SERIAL::INSTR)'),
+            }), 400
+
+        vid, pid, serial = parts
+        sysfs = _find_usb_sysfs(vid, pid, serial)
+        devnums = _all_usb_devnums()
+        bus = _acroname_bus_report(vid)
+        scan_serials, scan_error = _brainstem_scan()
+
+        # Does the SDK see OUR hub, as opposed to any hub? Compared loosely:
+        # the address parses to hex, the SDK reports an int, sysfs a string.
+        def _norm(v):
+            if v is None:
+                return None
+            s = str(v).strip().lower().removeprefix('0x').lstrip('0')
+            return s or '0'
+
+        want = _norm(serial)
+        visible = (None if scan_serials is None
+                   else any(_norm(s) == want for s in scan_serials))
+
+        this_devnum = None
+        if sysfs:
+            try:
+                with open(os.path.join(sysfs, 'devnum')) as f:
+                    this_devnum = int(f.read().strip())
+            except (FileNotFoundError, ValueError, OSError):
+                pass
+
+        device_path = _usbfs_path_for_sysfs(sysfs) if sysfs else None
+        body = {
+            'address': addr,
+            'vid': vid,
+            'pid': pid,
+            'serial': serial,
+            'enumerated': bool(sysfs),
+            'sysfs_path': sysfs,
+            'device_path': device_path,
+            'vendor_devices': bus,
+            'devnum': this_devnum,
+            # Context for devnum. A device far above its peers has
+            # re-enumerated many times since they did.
+            'devnum_min': devnums[0] if devnums else None,
+            'devnum_max': devnums[-1] if devnums else None,
+            'devnum_median': (devnums[len(devnums) // 2] if devnums else None),
+            'sdk_scan_serials': scan_serials,
+            'sdk_scan_error': scan_error,
+            'serial_visible_to_sdk': visible,
+            'holders': _holders_via_proc(device_path) if device_path else [],
+        }
+
+        # The intrusive part: can it actually be opened? Skipped rather than
+        # queued when something else holds the hub -- taking the lock for
+        # several seconds could land in the middle of a running test toggling
+        # ports. Same shape as /diagnose/jlink's connect_skipped.
+        body.update(_try_hub_open(addr))
+        return jsonify(body)
 
     @app.route('/diagnose/visa', methods=['GET'])
     def diagnose_visa():
@@ -453,21 +662,41 @@ def _usbtmc_loaded() -> bool:
     return False
 
 
+# Why this returns nothing on a normal box, and why that is not worth "fixing"
+# in here:
+#
+# The box services run as www-data inside the container. `--privileged` puts
+# CAP_SYSLOG in the bounding set but NOT in a non-root process's effective set,
+# and `dmesg_restrict=1` gates on exactly that -- so both `dmesg` and reading
+# /dev/kmsg return EPERM. `sudo` is not in the box image at all, so the
+# `sudo -n dmesg` this used to run has never produced output on any box.
+#
+# Granting the capability would not help much either. The ring buffer is the
+# CURRENT BOOT only and is shared with everything else the kernel logs: measured
+# on a bench box, it held ~45 hours, 89% of it firewall drops, and ZERO usb
+# lines -- the USB events from the incident being investigated had long since
+# been evicted. The history that actually answers "how often has this device
+# re-enumerated" is in the host's persistent journal, which the container does
+# not mount, and the CLI reads that over SSH instead.
 def _dmesg_usb_tail() -> str:
-    """Last few lines of dmesg matching USB / usbtmc. Best-effort — needs
-    CAP_SYSLOG; if not available, returns an explanatory string instead of
-    blowing up. Uses `sudo -n` so a missing passwordless-sudo grant fails
-    fast instead of blocking on a password prompt, and filters in Python
-    rather than via a shell pipeline so the dmesg rc isn't masked by a
-    downstream `tail` succeeding and so stderr text isn't filtered away by
-    `grep`."""
-    rc, out, err = _run('sudo -n dmesg', timeout=3)
+    """Kernel USB lines, when the container can read them at all.
+
+    Usually it cannot; see the note above. Returns an explanatory string rather
+    than an empty one, because a blank field reads as "nothing happened" when
+    the truth is "nothing was visible from here".
+    """
+    rc, out, err = _run('dmesg', timeout=3)
     if rc != 0:
-        return f'(dmesg unavailable: {err.strip() or "permission denied"})'
+        return ('(kernel log not readable from the box container: the services '
+                'run unprivileged and dmesg_restrict is set. Per-device '
+                'enumeration history comes from the host journal instead -- '
+                'see `lager diagnose`.)')
     matches = [
         line for line in out.splitlines()[-200:]
         if 'usb' in line.lower() or 'usbtmc' in line.lower()
     ]
+    if not matches:
+        return '(no USB lines in the kernel ring buffer for this boot)'
     return '\n'.join(matches[-20:])
 
 
