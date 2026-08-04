@@ -1,0 +1,75 @@
+---
+title: "Version 0.34.3"
+description: "August 4, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **A wedged USB hub no longer takes every later USB command down with it.** A
+  hub operation that hung — native hub-driver code blocking forever against a
+  hub whose USB link is wedged, typically after a re-enumeration — held the
+  box's USB lock for the life of the process. Every subsequent `lager usb`
+  command and every state poll queued behind it with no timeout of its own, and
+  the box's self-restart recovery could not help, because it only ran when an
+  operation *raised*. A call that never returns raises nothing.
+
+  Three bounds close that. A hub command that cannot get the lock within 10
+  seconds now answers `hub-busy` instead of queueing; a hub that cannot be
+  claimed reports as unavailable rather than waiting forever; and each hub
+  operation runs under a 30-second deadline. On expiry the caller gets
+  `hub-op-timeout` and the box schedules the same supervised restart it already
+  used for unreachable devices, which is the only thing that clears an orphaned
+  USB context. Hubs are bounded independently, so a wedged hub no longer
+  affects the others on the bench.
+
+- **The same treatment for hardware-service device calls.** Per-device locks are
+  acquired with an 8-second timeout and answer `device-busy` instead of queueing
+  forever behind a wedged instrument open or a hung driver call. The driver call
+  itself runs under a 30-second deadline; expiry answers `invoke-timeout` and
+  schedules the restart. A device whose operation hung keeps its lock on
+  purpose — the stuck operation still owns the instrument, so later requests get
+  a fast, honest "busy" rather than wedging in turn.
+
+- **`lager usb` now waits long enough to hear the box's answer.** Its timeout
+  was 30 seconds, but the box's own limits are additive, so a wedged hub
+  answered at around 40 seconds and the command had already given up. That
+  surfaced as "cannot reach box", which reads as a network fault and hides both
+  the real diagnosis and the fact that the box had already started recovering.
+
+- **Errors no longer tell you to update the box when a device is unplugged.**
+  `lager usb`, `lager supply` and `lager battery` appended "This box image does
+  not expose `<endpoint>`; update the box." to every not-found response —
+  including the ones meaning "this net or its instrument was not found". An
+  unplugged USB hub reported both at once, sending the diagnosis somewhere the
+  fault never was.
+
+- **Secret files are now owned by the container user, not just locked down.**
+  `/etc/lager/org_secrets.json` and `/etc/lager/secret_key` were tightened to
+  mode 0600, but 0600 grants the *owner* alone — and everything that reads these
+  files runs as the container user. A secrets file copied onto a box by hand
+  belonged to the host login user, so tightening it locked the runtime out of
+  its own secrets. Nothing failed loudly: secret injection simply returned
+  empty, and scripts broke far from the cause.
+
+  `lager update` now repairs ownership of both files automatically, including on
+  boxes that are already up to date. The box also repairs what it can at boot
+  and prints an unmissable warning, with the exact commands to run, when it
+  finds a secrets file the runtime cannot read.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.34.3
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.34.3/)
