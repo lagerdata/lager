@@ -62,11 +62,43 @@ def _usb_net_address(netname):
         return None
 
 
+def _driver_holds_usb_context(netname):
+    """Can this net's driver even HAVE an orphaned USB context?
+
+    Best-effort and fails safe: anything unresolvable answers True, which is
+    today's behaviour. Only a driver that positively declares otherwise is
+    exempted.
+    """
+    try:
+        from lager.automation.usb_hub.dispatcher import (
+            _controller_for, _load_net_definitions,
+        )
+        info = (_load_net_definitions().get(netname) or {})
+        controller = _controller_for(info)
+        return bool(getattr(controller, "holds_usb_context_between_ops", True))
+    except Exception:
+        return True
+
+
 def _self_restart_if_wedged(netname, action, exc):
     """If a USB op failed because the device is unreachable but the device is
     still on the bus (sysfs), this process's USB/HID context is wedged after a
     re-enumeration — exit so the supervisor respawns box_http_server with a
-    clean context. No-op when the device is genuinely absent or in cooldown."""
+    clean context. No-op when the device is genuinely absent or in cooldown.
+
+    Skipped entirely for a driver that opens and closes inside every call.
+    Restarting repairs exactly one thing: a USB handle this process orphaned
+    across a re-enumeration. A driver that keeps no handle has none to orphan,
+    so the restart cannot help — it only drops every other in-flight operation
+    the service is holding, including UART sessions and running scripts.
+    """
+    if not _driver_holds_usb_context(netname):
+        logger.warning(
+            "[HTTP] usb %s %s: not self-restarting — this driver holds no USB "
+            "context between operations, so a respawn cannot reach it. Cause: %s",
+            action, netname, exc,
+        )
+        return
     address = _usb_net_address(netname)
     if address:
         _self_restart.maybe_self_restart(

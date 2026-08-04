@@ -342,5 +342,72 @@ class DfuRouteTests(unittest.TestCase):
         self.assertEqual(body['value']['exit_code'], 74)
 
 
+class SelfRestartGateTests(unittest.TestCase):
+    """A service restart repairs exactly one thing: a USB handle THIS process
+    orphaned across a re-enumeration. A driver that opens and closes inside
+    every call has none, so restarting on its behalf cannot help — it only
+    drops every other in-flight operation the service is holding.
+
+    Measured on a two-hub bench: a hub that would not open triggered a restart,
+    and the respawned process, with a brand-new libusb context, failed
+    identically 37s later.
+    """
+
+    def _run(self, controller, netname='usb1'):
+        """Call the gate with a fake controller; returns whether it restarted."""
+        info = {netname: {'address': 'USB0::0x24FF::0x0011::E6BACCD5::INSTR'}}
+        with patch.dict(sys.modules), \
+                patch.object(usb_handler._self_restart, 'maybe_self_restart') as m:
+            disp = types.ModuleType('lager.automation.usb_hub.dispatcher')
+            disp._load_net_definitions = lambda: info
+            disp._controller_for = lambda _info: controller
+            sys.modules['lager.automation.usb_hub.dispatcher'] = disp
+            usb_handler._self_restart_if_wedged(
+                netname, 'state', RuntimeError('hub would not open'))
+            return m.called
+
+    def test_a_stateless_driver_does_not_trigger_a_restart(self):
+        class _Stateless:
+            holds_usb_context_between_ops = False
+
+        self.assertFalse(self._run(_Stateless()))
+
+    def test_a_stateful_driver_still_triggers_the_restart(self):
+        class _Stateful:
+            holds_usb_context_between_ops = True
+
+        self.assertTrue(self._run(_Stateful()))
+
+    def test_a_driver_that_declares_nothing_is_treated_as_stateful(self):
+        """Fails safe: only a positive declaration exempts a driver, so an
+        unmodified third-party driver keeps today's behaviour."""
+        class _Silent:
+            pass
+
+        self.assertTrue(self._run(_Silent()))
+
+    def test_an_unresolvable_controller_is_treated_as_stateful(self):
+        """The gate runs on an error path and must never make it worse."""
+        def _boom(_info):
+            raise RuntimeError('no such driver')
+
+        info = {'usb1': {'address': 'USB0::0x24FF::0x0011::E6BACCD5::INSTR'}}
+        with patch.dict(sys.modules), \
+                patch.object(usb_handler._self_restart,
+                             'maybe_self_restart') as m:
+            disp = types.ModuleType('lager.automation.usb_hub.dispatcher')
+            disp._load_net_definitions = lambda: info
+            disp._controller_for = _boom
+            sys.modules['lager.automation.usb_hub.dispatcher'] = disp
+            usb_handler._self_restart_if_wedged('usb1', 'state', RuntimeError('x'))
+        self.assertTrue(m.called)
+
+    def test_the_acroname_driver_declares_itself_stateless(self):
+        """Ties the gate to the real driver, so moving the flag breaks a test
+        rather than silently restoring the pointless restarts."""
+        from lager.automation.usb_hub.acroname import AcronameUSBNet
+        self.assertFalse(AcronameUSBNet.holds_usb_context_between_ops)
+
+
 if __name__ == '__main__':
     unittest.main()
