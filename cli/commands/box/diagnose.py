@@ -398,6 +398,128 @@ def _classify_jlink(usb_info: dict, jlink_info: dict) -> tuple[str, str]:
     return ('yellow', 'UNCLEAR — review the J-Link section above and rerun if needed.')
 
 
+def _fmt_usbhub_lines(d: dict):
+    """Render the USB-hub section."""
+    devnum = d.get('devnum')
+    lo, hi = d.get('devnum_min'), d.get('devnum_max')
+    med = d.get('devnum_median')
+    churn = f'{devnum}' if devnum is not None else '—'
+    if (devnum is not None and lo is not None and hi is not None
+            and med is not None):
+        # The interpretation, inline, because the raw number means nothing to
+        # someone who does not already know how devnums are assigned.
+        churn += f'   (bench: {lo}–{hi}, median {med})'
+        if devnum > med * 1.3 and devnum >= hi:
+            churn += '  <- far above its peers: this device has re-enumerated'
+
+    visible = d.get('serial_visible_to_sdk')
+    visible_s = {True: 'yes', False: 'NO', None: 'unknown'}.get(visible, 'unknown')
+
+    lines = [
+        f'enumerated:   {d.get("enumerated")}',
+        f'sysfs:        {d.get("sysfs_path") or "—"}',
+        f'devnum:       {churn}',
+        f'seen by SDK:  {visible_s}',
+    ]
+    serials = d.get('sdk_scan_serials')
+    if serials is not None:
+        lines.append(f'  SDK scan:   {", ".join(serials) if serials else "(nothing)"}')
+    if d.get('sdk_scan_error'):
+        lines.append(f'  scan error: {d["sdk_scan_error"]}')
+
+    for dev in (d.get('vendor_devices') or []):
+        lines.append(
+            f'  bus:        {dev.get("sysfs_name")}  {dev.get("vid")}:{dev.get("pid")}'
+            f'  serial={dev.get("serial") or "(none)"}'
+            f'  devnum={dev.get("devnum")}  {dev.get("product") or ""}'.rstrip()
+        )
+
+    if d.get('probe_skipped'):
+        lines.append(f'hub open:     skipped — {d.get("probe_skip_reason")}')
+    elif d.get('hub_opens') is True:
+        lines.append('hub open:     OK')
+    elif d.get('hub_opens') is False:
+        lines.append(f'hub open:     FAILED — {d.get("hub_open_error")}')
+        if d.get('hub_open_detail'):
+            lines.append(f'  detail:     {d["hub_open_detail"]}')
+    for h in (d.get('holders') or []):
+        lines.append(f'  held by:    pid {h.get("pid")} {h.get("command") or ""}'.rstrip())
+    return lines
+
+
+def _classify_usb_hub(d: dict):
+    """(colour, headline) for a USB hub net. Most specific first."""
+    if d.get('unavailable') or d.get('transport_error'):
+        return ('yellow',
+                'UNCLEAR — this box does not serve /diagnose/usbhub. '
+                'Update the box to diagnose hub nets.')
+
+    if d.get('enumerated') is False:
+        return ('red',
+                'NOT ENUMERATED — the kernel does not see this hub at all. '
+                'Check its upstream cable and whether its port has power.')
+
+    if d.get('probe_skipped'):
+        return ('yellow',
+                f'BUSY — {d.get("probe_skip_reason")}. Something else is '
+                f'driving this hub; rerun when it is idle.')
+
+    # The distinction this endpoint exists for: enumerated, and the vendor SDK
+    # still cannot see it. sysfs and lsof both report a healthy device here.
+    if d.get('serial_visible_to_sdk') is False:
+        extra = ''
+        devnum, med = d.get('devnum'), d.get('devnum_median')
+        if devnum is not None and med is not None and devnum > med * 1.3:
+            extra = (f' Its devnum ({devnum}) is well above the rest of the '
+                     f'bench (median {med}), so it has been re-enumerating.')
+        return ('red',
+                'HUB WEDGED (electrical) — the kernel has it enumerated but it '
+                'does not answer its vendor SDK. That is the hub or its cabling, '
+                'not the box software: restarting box services will not help.'
+                + extra)
+
+    if d.get('hub_opens') is False:
+        holders = d.get('holders') or []
+        if holders:
+            who = ', '.join(f'pid {h.get("pid")}' for h in holders)
+            return ('yellow',
+                    f'HUB CLAIMED — the SDK can see it but the open failed and '
+                    f'it is held by {who}.')
+        return ('red', f'HUB WILL NOT OPEN — {d.get("hub_open_error")}')
+
+    if d.get('hub_opens') is True:
+        return ('green',
+                'REACHABLE — the hub enumerated, the SDK sees it, and it opened '
+                'and closed cleanly. This tests the path to the hub, not the '
+                'DUT behind any given port.')
+
+    return ('yellow', 'UNCLEAR — review the section above and rerun if needed.')
+
+
+def _diagnose_usb_hub(box_ip: str, address: str) -> None:
+    """USB-hub branch of `lager diagnose`.
+
+    Fetches the instrument-agnostic host-side USB section plus
+    `/diagnose/usbhub` in parallel, renders them, and classifies.
+    """
+    urls = {
+        'usb': f'http://{box_ip}:9000/diagnose/usb?address={address}',
+        'hub': f'http://{box_ip}:9000/diagnose/usbhub?address={address}',
+    }
+    results: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = {pool.submit(_call, url): name for name, url in urls.items()}
+        for fut in as_completed(futures):
+            results[futures[fut]] = fut.result()
+
+    _print_section('USB (host-side)', results['usb'], _fmt_usb_lines)
+    _print_section('USB hub', results['hub'], _fmt_usbhub_lines)
+
+    color, headline = _classify_usb_hub(results['hub'])
+    click.echo()
+    click.echo(click.style(f'Classification: {headline}', fg=color, bold=True))
+
+
 def _diagnose_debug(box_ip: str, net: str, address: str) -> None:
     """Debug-net (J-Link) branch of `lager diagnose`.
 
@@ -469,6 +591,14 @@ def diagnose(ctx, net, box, net_type):
     # below can't reach them. Route them to the J-Link-aware path instead.
     if role == 'debug':
         _diagnose_debug(resolved_box, net, address)
+        return
+
+    # USB hub nets are not USB-TMC either, and the pyvisa probe below has
+    # nothing to say about them. They used to fall through to the generic
+    # "NOT USB-TMC, check the role command yourself" bucket, which is exactly
+    # no help when the question is why a hub will not answer.
+    if role == 'usb':
+        _diagnose_usb_hub(resolved_box, address)
         return
 
     # Fire the three endpoints in parallel.
