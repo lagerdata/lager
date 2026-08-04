@@ -25,6 +25,7 @@ from ...core.net_helpers import (
     list_nets_by_role,
     display_nets_table,
     validate_net_exists,
+    box_command_error,
     echo_box_request_failure,
     NET_HTTP_PORT,
 )
@@ -99,10 +100,9 @@ def _invoke_remote(
         click.echo(f"[OK] {message}")
         return
 
-    error = result.get('error') or f'USB command failed (HTTP {resp.status_code})'
-    if resp.status_code == 404:
-        error = (f"{error}. This box image does not expose /usb/command; "
-                 f"update the box.")
+    error = box_command_error(
+        result, resp.status_code, '/usb/command',
+        f'USB command failed (HTTP {resp.status_code})')
     click.secho(f"Error: {error}", fg='red', err=True)
     ctx.exit(1)
 

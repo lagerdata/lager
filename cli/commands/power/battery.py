@@ -21,6 +21,7 @@ import click
 from ...core.net_group import NetGroup
 # Import consolidated helpers from cli.core.net_helpers
 from ...core.net_helpers import (
+    box_command_error,
     require_netname,
     resolve_box,
     validate_net,
@@ -81,10 +82,9 @@ def _run_backend(ctx, box, action: str, **params):
         click.echo(f"\033[92m{result.get('message', 'Command executed')}\033[0m")
         return
 
-    error = result.get('error') or f"battery command failed (HTTP {response.status_code})"
-    if response.status_code == 404:
-        error = (f"{error}. This box image does not expose /battery/command; "
-                 f"update the box.")
+    error = box_command_error(
+        result, response.status_code, '/battery/command',
+        f"battery command failed (HTTP {response.status_code})")
     click.secho(f"Error: {error}", fg='red', err=True)
     raise SystemExit(1)
 

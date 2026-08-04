@@ -166,6 +166,28 @@ NET_HTTP_PORT = 9000
 _NET_HTTP_TIMEOUT = 10
 
 
+def box_command_error(result, status_code, endpoint, fallback) -> str:
+    """Build the user-facing error for a failed :9000 command response.
+
+    The "update the box" hint is gated on the SHAPE of the body, not on the
+    status code. Every :9000 command handler sets ``success`` in its own JSON,
+    including its 404s — and a handler's 404 means the net or its instrument
+    was not found, which an update cannot fix. Only Flask's built-in 404, which
+    carries no ``success`` key, means this box image predates the endpoint.
+
+    Keying the hint on the code alone told people to update the box whenever an
+    instrument was unplugged: an absent USB hub reported "device-not-found: No
+    Acroname hub detected on USB with serial 0x… . This box image does not
+    expose /usb/command; update the box." Both halves cannot be true, and the
+    second one sends the diagnosis somewhere the fault never was.
+    """
+    body = result if isinstance(result, dict) else {}
+    error = body.get('error') or fallback
+    if status_code == 404 and 'success' not in body:
+        error = f"{error}. This box image does not expose {endpoint}; update the box."
+    return error
+
+
 def echo_box_request_failure(box_ip: str, exc, timeout=None) -> None:
     """Print the right diagnosis for a failed box HTTP call.
 
