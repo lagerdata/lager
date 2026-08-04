@@ -114,6 +114,10 @@ def _invoke_remote(
         result, resp.status_code, '/usb/command',
         f'USB command failed (HTTP {resp.status_code})')
     click.secho(f"Error: {error}", fg='red', err=True)
+
+    detail = result.get('reason_detail')
+    if detail:
+        click.secho(f"       {detail}", fg='yellow', err=True)
     ctx.exit(1)
 
 
