@@ -120,7 +120,12 @@ def _call(url: str, timeout: float = 8.0) -> dict:
         r = requests.get(url, timeout=timeout, headers=auth_headers_for_box(box_host))
         r = _check_gateway(r, box_host)
         if r.status_code == 404:
-            return {'unavailable': 'endpoint not on this box (pre-0.20 image)'}
+            # Deliberately does not name a version: this is shared by every
+            # diagnose endpoint, and they were not all added in the same
+            # release. Naming 0.20 sent a reader looking for the wrong thing
+            # when a newer endpoint was the one missing.
+            return {'unavailable': 'endpoint not served by this box; '
+                                   'update the box to use this section'}
         if r.status_code >= 400:
             return {'transport_error': f'HTTP {r.status_code}: {r.text[:200]}'}
         return r.json()

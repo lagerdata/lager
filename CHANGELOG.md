@@ -2,6 +2,85 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Fixed
+
+- **The box no longer restarts its HTTP server for a USB hub it cannot
+  reach.** A self-restart repairs exactly one thing: a USB handle the process
+  orphaned across a re-enumeration, which only a fresh process can reopen. The
+  Acroname driver keeps no such handle — it opens, operates and disconnects on
+  every call — so there was never anything on that path for a restart to
+  repair. It fired anyway, because the gate asks only whether the device is
+  still in sysfs, and the kernel keeps a sysfs node for a device that is
+  enumerated but not answering on the wire.
+
+  Observed on a two-hub bench: a hub that would not open triggered the restart
+  twice, and each respawned process failed identically 37s and 43s later.
+  Nothing was fixed, and every other in-flight operation the service was
+  holding — UART sessions, running scripts, hardware calls — was dropped to do
+  it. Only the 60s cooldown kept it from repeating for as long as the hub
+  stayed down. Drivers now declare whether they hold a USB context between
+  operations; those that do not are skipped. The pyvisa and HID paths, where a
+  session really does persist, are unchanged.
+
+- **`lager diagnose` reported the wrong instrument on a bench with two of the
+  same model.** The sysfs lookup matched on vendor and product id and returned
+  the first hit. It now prefers an exact serial match, falling back to
+  vid/pid so a device with an unreadable iSerial is not lost.
+
+- **`lager diagnose`'s dmesg section has never worked.** It shelled out to
+  `sudo -n dmesg` and the box image ships no `sudo`, so the field has read
+  `(dmesg unavailable: ...)` on every box since it shipped. It now reads dmesg
+  directly and, when the container cannot (the services run unprivileged and
+  `dmesg_restrict` is set), says so and points at where the history actually
+  lives.
+
+### Changed
+
+- **A USB hub that will not open now says what to do about it.** The bus
+  cross-check already worked out which of three faults it was looking at —
+  nothing from this vendor on the bus, our serial present but not answering,
+  or other devices present and none of them ours — then flattened all three
+  into one string with a breakdown of vendor return codes appended. The
+  terminal showed a wall of `USBHub2x4/spec rc=7 (x3)` and no sentence saying
+  whether to check a cable, a power switch, or the net's address.
+
+  Null entries in `lager nets state` now carry a `reason_code` alongside
+  `reason`, and the footnote adds one remedy line per affected group — red
+  when the fault is hardware, yellow when the bench is more likely in a normal
+  state. `--json` carries `live_state_reason_code`. The box always sends a
+  complete, self-sufficient human `reason`, so an older CLI, or a newer one
+  seeing a code it does not recognise, renders exactly as before.
+
+  A hub the kernel has enumerated but that will not answer now logs at ERROR
+  rather than WARNING. That case is always hardware and always worth acting
+  on; a hub that is simply absent is a normal bench state.
+
+- **An Acroname hub open is retried once when the bus says the hub is there.**
+  A hub caught mid-re-enumeration is on the bus a beat before discovery will
+  return it, so an operation landing in that window failed outright. The YKUSH
+  driver has always retried once for this reason; this one did not. Gated on
+  the bus cross-check, so a hub that is genuinely absent still costs exactly
+  one attempt, and suppressed on the polling path so the whole-bench state
+  sweep's timing is unchanged.
+
+### Added
+
+- **`lager diagnose` now covers USB hub nets.** They used to fall through to
+  "NOT USB-TMC: check the role command yourself", which is no help when the
+  question is why the hub will not answer. A new `/diagnose/usbhub` endpoint
+  reports what sysfs and lsof structurally cannot: the vendor SDK's own view.
+  A hub can be enumerated, held by nobody, and still invisible to BrainStem
+  discovery — and in that state every host-side signal looks healthy.
+
+  It also reports the device's `devnum` against the rest of the bench. The
+  kernel assigns those monotonically per bus, so a device far above its
+  neighbours has re-enumerated many times since they did. On the bench that
+  prompted this, the failing hub sat at 93 while every other instrument was in
+  the 60s; that one number was the most useful fact in the investigation and
+  nothing surfaced it.
+
 ## [0.34.3] - 2026-08-04
 
 ### Fixed
