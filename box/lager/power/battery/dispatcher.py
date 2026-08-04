@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Type
 
+from lager import safety
 from lager.dispatchers.base import BaseDispatcher
 from lager.exceptions import BatteryBackendError, LibraryMissingError, DeviceNotFoundError
 
@@ -149,6 +150,7 @@ def set_voc(netname: str, value: float | None = None, **_):
     """Set or read battery open circuit voltage."""
     if value is not None and value < 0:
         raise BatteryBackendError("Voltage cannot be negative")
+    safety.check(netname, 'voc', [], {'value': value}, role=BatteryDispatcher.ROLE)
     drv, _ = _dispatcher._resolve_net_and_driver(netname)
     drv.voc(value=value)
 
@@ -157,6 +159,7 @@ def set_volt_full(netname: str, value: float | None = None, **_):
     """Set or read fully charged battery voltage."""
     if value is not None and value < 0:
         raise BatteryBackendError("Voltage cannot be negative")
+    safety.check(netname, 'voltage_full', [], {'value': value}, role=BatteryDispatcher.ROLE)
     drv, _ = _dispatcher._resolve_net_and_driver(netname)
     drv.voltage_full(value=value)
 
@@ -165,6 +168,7 @@ def set_volt_empty(netname: str, value: float | None = None, **_):
     """Set or read fully discharged battery voltage."""
     if value is not None and value < 0:
         raise BatteryBackendError("Voltage cannot be negative")
+    safety.check(netname, 'voltage_empty', [], {'value': value}, role=BatteryDispatcher.ROLE)
     drv, _ = _dispatcher._resolve_net_and_driver(netname)
     drv.voltage_empty(value=value)
 
@@ -181,6 +185,7 @@ def set_current_limit(netname: str, value: float | None = None, **_):
     """Set or read maximum charge/discharge current."""
     if value is not None and value < 0.001:
         raise BatteryBackendError("Current limit must be at least 1mA (0.001A)")
+    safety.check(netname, 'current_limit', [], {'value': value}, role=BatteryDispatcher.ROLE)
     drv, _ = _dispatcher._resolve_net_and_driver(netname)
     drv.current_limit(value=value)
 
@@ -189,6 +194,7 @@ def set_ovp(netname: str, value: float | None = None, **_):
     """Set or read over-voltage protection threshold."""
     if value is not None and value < 0:
         raise BatteryBackendError("Voltage cannot be negative")
+    safety.check(netname, 'ovp', [], {'value': value}, role=BatteryDispatcher.ROLE)
     drv, _ = _dispatcher._resolve_net_and_driver(netname)
     drv.ovp(value=value)
 
@@ -197,6 +203,7 @@ def set_ocp(netname: str, value: float | None = None, **_):
     """Set or read over-current protection threshold."""
     if value is not None and value < 0.001:
         raise BatteryBackendError("OCP limit must be at least 1mA (0.001A)")
+    safety.check(netname, 'ocp', [], {'value': value}, role=BatteryDispatcher.ROLE)
     drv, _ = _dispatcher._resolve_net_and_driver(netname)
     drv.ocp(value=value)
 

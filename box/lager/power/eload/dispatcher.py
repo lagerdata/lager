@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Type
 
+from lager import safety
 from lager.dispatchers.base import BaseDispatcher
 from lager.exceptions import ELoadBackendError, DeviceNotFoundError
 from .eload_net import ELoadNet
@@ -90,6 +91,7 @@ _dispatcher = ELoadDispatcher()
 
 def set_constant_current(net_name: str, current: float) -> dict:
     """Set constant current mode and current level."""
+    safety.check(net_name, 'set_current', [current], {}, role=ELoadDispatcher.ROLE)
     device = _dispatcher.resolve_driver(net_name)
     device.set_mode("CC")
     device.set_current(current)
@@ -105,6 +107,7 @@ def get_constant_current(net_name: str) -> dict:
 
 def set_constant_voltage(net_name: str, voltage: float) -> dict:
     """Set constant voltage mode and voltage level."""
+    safety.check(net_name, 'set_voltage', [voltage], {}, role=ELoadDispatcher.ROLE)
     device = _dispatcher.resolve_driver(net_name)
     device.set_mode("CV")
     device.set_voltage(voltage)

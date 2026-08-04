@@ -25,6 +25,7 @@ from typing import Dict, Any
 import traceback
 
 # Import all debug functions at startup (once!)
+from lager import safety
 from lager.debug import (
     connect_jlink,
     disconnect,
@@ -924,6 +925,12 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             import os
 
             net = data.get('net', {})
+            try:
+                safety.check_destructive(net, 'flash')
+            except safety.DestructiveOperationRefused as refused:
+                logger.warning(str(refused))
+                self.send_error_response(403, str(refused))
+                return
             device_type = _resolve_device_type(net)
             backend = resolve_backend(net)
             serial, slot, gdb_port, swo_port, telnet_port, rtt_telnet_port = _resolve_probe(net)
@@ -1183,6 +1190,12 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
         """
         try:
             net = data.get('net', {})
+            try:
+                safety.check_destructive(net, 'erase')
+            except safety.DestructiveOperationRefused as refused:
+                logger.warning(str(refused))
+                self.send_error_response(403, str(refused))
+                return
             device_type = _resolve_device_type(net)
             speed = data.get('speed', '4000')
             transport = data.get('transport', 'SWD')
