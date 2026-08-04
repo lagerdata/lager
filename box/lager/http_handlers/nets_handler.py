@@ -91,7 +91,7 @@ def _brief_usb(netname):
         return None
 
 
-def _brief_usb_batch(netnames):
+def _brief_usb_batch(netnames, causes=None):
     """USB hub ports for several nets, grouped by physical hub.
 
     The per-net probe costs a full hub open/read/close under that hub's lock, so
@@ -99,14 +99,27 @@ def _brief_usb_batch(netnames):
     disconnect cycles in three serialised lanes -- seconds, not milliseconds.
     ``usb_hub.states`` groups by hub and pays one cycle per hub.
 
+    Args:
+        netnames: USB net names to read.
+        causes: optional dict, filled in place with ``net name -> "Type: msg"``
+            for nets that came back None with a known cause. Passed through to
+            ``usb_hub.states``; also filled here when the whole call fails.
+
     Returns:
         dict[str, str | None]: net name -> "enabled"/"disabled", or None.
     """
     from ..automation import usb_hub
     try:
-        raw = usb_hub.states(netnames)
+        raw = usb_hub.states(netnames, causes=causes)
     except Exception as e:
         logger.debug("brief_usb_batch %s: %s", netnames, e)
+        # Everything below the dispatcher's own per-hub guard lands here --
+        # loading the net definitions, building a controller for an unsupported
+        # instrument. One cause for every net, since none of them was reached.
+        if causes is not None:
+            cause = f"{type(e).__name__}: {e}"
+            for n in netnames:
+                causes[n] = cause
         return {n: None for n in netnames}
 
     out = {}
@@ -504,8 +517,13 @@ def _probe_group(recs):
         return [_probe_net_state(rec) for rec in recs]
 
     names = [rec.get("name", "") for rec in recs]
+    # Filled by the probe for nets whose instrument named a reason (e.g. a hub
+    # that would not open). A net the batch merely omitted has no entry and
+    # keeps the generic wording, so "we know why" stays distinguishable from
+    # "no value came back".
+    causes: dict = {}
     try:
-        states = batch(names)
+        states = batch(names, causes=causes)
     except Exception as e:
         logger.debug("batch probe for role %s failed: %s", role, e)
         reason = _unreadable(f"{type(e).__name__}: {e}")
@@ -516,7 +534,9 @@ def _probe_group(recs):
             rec.get("name", ""),
             role,
             states.get(rec.get("name", "")),
-            _unreadable("no value from instrument"),
+            _unreadable(
+                causes.get(rec.get("name", "")) or "no value from instrument"
+            ),
         )
         for rec in recs
     ]

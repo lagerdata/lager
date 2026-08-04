@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import logging
 
+from lager.util.usb_sysfs import enumerate_usb_devices
+
 from .usb_net import (
     HUB_OP_TIMEOUT_S,
     USBNet,
@@ -30,7 +32,80 @@ from .usb_net import (
 # others. Mirrors the YKUSH driver; see ykush.py.
 _LOCK_TIMEOUT_S = 10.0
 
+# Acroname Inc. One physical hub enumerates under MORE THAN ONE product id (the
+# control endpoint and the hub silicon are separate USB devices), and the hub
+# component's iSerial descriptor may be empty even when the control endpoint's
+# carries a serial. So the sysfs cross-check below filters on VENDOR only: a pid
+# filter taken from the net's address would hide half of what is on the bus,
+# which is the half that tells you the hub is physically there.
+_ACRONAME_VID = "24ff"
+
+# The open-failure summary is appended to a DeviceNotFoundError message, which
+# reaches a user as a `lager nets state` footnote. Bounded so a bench with many
+# hubs cannot turn one line into a screenful; the box log gets it uncapped.
+_OPEN_FAILURE_DETAIL_MAX = 240
+_OPEN_FAILURE_MAX_SERIALS = 6
+
 logger = logging.getLogger(__name__)
+
+
+def _open_failure_detail(diag, sysfs):
+    """One-line summary of why a hub would not open, for the exception message.
+
+    Pure and deterministic: same diag in, same string out, no clock and no
+    dict-iteration order. That matters because every net on a failed hub gets
+    this same string as its reason, and the CLI groups identical reasons into a
+    single footnote line rather than repeating one per net.
+    """
+    head = []
+
+    cache = diag.get("cache")
+    if cache and cache != "miss":
+        head.append(f"cached spec: {cache}")
+
+    discovery = diag.get("discovery") or "not attempted"
+    serials = list(diag.get("spec_serials") or [])
+    if serials:
+        shown = serials[:_OPEN_FAILURE_MAX_SERIALS]
+        extra = len(serials) - len(shown)
+        listed = ", ".join(shown) + (f", +{extra} more" if extra else "")
+        discovery = f"{discovery} [{listed}]"
+    match = diag.get("spec_match")
+    if match is False:
+        discovery += ", no serial match"
+    elif isinstance(match, str):
+        discovery += f", {match}"
+    head.append(f"discovery: {discovery}")
+
+    # Every hub class is tried in turn and they usually fail identically, so
+    # collapse runs of the same result rather than spending the budget saying
+    # rc=7 three times.
+    attempts = []
+    for item in (diag.get("attempts") or []):
+        if attempts and attempts[-1][0] == item:
+            attempts[-1][1] += 1
+        else:
+            attempts.append([item, 1])
+    attempts_s = "; ".join(
+        f"{text} (x{n})" if n > 1 else text for text, n in attempts
+    )
+
+    # The bus verdict is the most valuable line here -- it is what separates a
+    # vendor-library fault from an unplugged cable -- so it is reserved before
+    # the attempt list gets any budget, and the attempt list is what gets cut.
+    # Nothing is lost: the log line above carries all of it uncapped.
+    tail = f"sysfs: {sysfs or 'unavailable'}"
+    head_s = "; ".join(head)
+    if not attempts_s:
+        return f"{head_s}; {tail}"
+
+    room = _OPEN_FAILURE_DETAIL_MAX - len(head_s) - len(tail) - len("; attempts: ; ")
+    if room < 12:
+        # No room to say anything useful about the attempts; drop them whole.
+        return f"{head_s}; {tail}"
+    if len(attempts_s) > room:
+        attempts_s = attempts_s[:room - 3].rstrip() + "..."
+    return f"{head_s}; attempts: {attempts_s}; {tail}"
 
 
 class AcronameUSBNet(USBNet):
@@ -130,46 +205,82 @@ class AcronameUSBNet(USBNet):
         hub2 = (stem.USBHub2x4,)                # 4-port family
         return (hub2 + hub3) if self._pid == 0x0011 else (hub3 + hub2)
 
-    def _discover_spec(self):
+    @staticmethod
+    def _fmt_serial(value):
+        """Render a BrainStem serial the way an address writes it."""
+        if value is None:
+            return "(none)"
+        if isinstance(value, int):
+            return f"0x{value:08X}"
+        return repr(value)
+
+    def _discover_spec(self, diag):
         """One USB discovery scan → THIS hub's link Spec (or None).
 
         Best-effort: older BrainStem SDKs without ``discover.findAllModules``
         just return None and the driver falls back to per-class
         ``discoverAndConnect`` exactly as before.
+
+        Records what the scan did into ``diag`` for the open-failure message.
+        A bare ``None`` return cannot distinguish "the scan threw", "the scan
+        found nothing" and "the scan found hubs but not this serial" — and on a
+        multi-hub bench that difference is the whole diagnosis, because the
+        serials the scan DID return say whether discovery is skipping one hub
+        while finding its neighbour.
         """
         discover = getattr(self._brainstem, "discover", None)
         find_all = getattr(discover, "findAllModules", None) if discover else None
         if find_all is None:
+            diag["discovery"] = "findAllModules unavailable (old SDK)"
             return None
         try:
             specs = find_all(self._transport()) or []
-        except Exception:
+        except Exception as e:
+            diag["discovery"] = f"findAllModules raised {type(e).__name__}: {e}"
+            logger.debug("Acroname %s: findAllModules raised",
+                         self._lock_key(), exc_info=True)
             return None
+        diag["discovery"] = f"findAllModules ok, {len(specs)} spec(s)"
+        diag["spec_serials"] = [
+            self._fmt_serial(getattr(s, "serial_number", None)) for s in specs
+        ]
         if self._serial is None:
             # No address to match against: only safe when exactly one hub.
+            diag["spec_match"] = "no address serial to match"
             return specs[0] if len(specs) == 1 else None
         for spec in specs:
             if getattr(spec, "serial_number", None) == self._serial:
+                diag["spec_match"] = True
                 return spec
+        diag["spec_match"] = False
         return None
 
     def _try_connect(self, candidate, spec_obj):
         """Connect one candidate hub object, preferring the scan-free
-        ``connectFromSpec`` path; returns True on success."""
+        ``connectFromSpec`` path.
+
+        Returns ``(ok, detail)``. The detail carries the vendor return code or
+        the exception text so a failed open can say WHICH step refused and with
+        what code; previously both were discarded and every failure mode
+        collapsed into the same bare "no hub detected".
+        """
         if spec_obj is not None and hasattr(candidate, "connectFromSpec"):
             try:
-                if candidate.connectFromSpec(spec_obj) == self._Result.NO_ERROR:
-                    return True
-            except Exception:
-                pass
-            # A spec that no longer connects is stale (re-enumeration);
-            # let the caller fall back to full discovery.
-            return False
+                rc = candidate.connectFromSpec(spec_obj)
+            except Exception as e:
+                # A spec that no longer connects is stale (re-enumeration);
+                # let the caller fall back to full discovery.
+                return False, f"connectFromSpec {type(e).__name__}: {e}"
+            return rc == self._Result.NO_ERROR, f"connectFromSpec rc={rc}"
+        # Deliberately NOT wrapped: a raising discoverAndConnect already
+        # propagates with its own type and message, which the dispatcher logs.
+        # Catching it here would convert it into a DeviceNotFoundError and
+        # change the exception type (and HTTP status) callers see.
         if self._serial is not None:
             rc = candidate.discoverAndConnect(self._transport(), self._serial)
         else:
             rc = candidate.discoverAndConnect(self._transport())
-        return rc == self._Result.NO_ERROR
+        return rc == self._Result.NO_ERROR, f"discoverAndConnect rc={rc}"
 
     def _open_hub(self):
         """Connect THIS net's hub. Never caches the connection — the caller
@@ -182,35 +293,118 @@ class AcronameUSBNet(USBNet):
         """
         self._require_library()
         key = self._lock_key()
+        diag = {
+            "cache": "miss",
+            "discovery": "not attempted",
+            "spec_serials": [],
+            "spec_match": False,
+            "attempts": [],
+        }
 
         cached = AcronameUSBNet._conn_cache.get(key)
         if cached is not None:
             candidate = cached["cls"]()
-            if self._try_connect(candidate, cached["spec"]):
+            ok, detail = self._try_connect(candidate, cached["spec"])
+            if ok:
                 return candidate
+            diag["cache"] = f"hit ({cached['cls'].__name__}), {detail}"
             # Failed connectFromSpec can still leave a partial USB claim on
             # some BrainStem builds — always release before rediscovering.
             self._close_hub(candidate)
             AcronameUSBNet._conn_cache.pop(key, None)
 
-        spec_obj = self._discover_spec()
+        spec_obj = self._discover_spec(diag)
         # Try with the spec first (scan-free connects); if that yields
         # nothing (e.g. an SDK whose connectFromSpec misbehaves), fall back
         # to the original per-class discoverAndConnect loop.
         attempts = [spec_obj, None] if spec_obj is not None else [None]
         for attempt_spec in attempts:
+            how = "spec" if attempt_spec is not None else "discover"
             for cls in self._ordered_classes():
                 candidate = cls()
-                if self._try_connect(candidate, attempt_spec):
+                ok, detail = self._try_connect(candidate, attempt_spec)
+                if ok:
                     AcronameUSBNet._conn_cache[key] = {
                         "cls": cls, "spec": attempt_spec,
                     }
                     return candidate
+                diag["attempts"].append(f"{cls.__name__}/{how} {detail}")
                 self._close_hub(candidate)
+
+        # Everything refused. Say what was tried, and cross-check the bus: the
+        # vendor library reporting "no hub" while the kernel plainly has one
+        # enumerated is a different fault from an unplugged cable, and needs a
+        # different remedy. Full detail to the log (uncapped), a bounded
+        # summary onto the exception so it reaches the user's terminal.
+        sysfs = self._sysfs_acroname_report()
+        logger.warning(
+            "Acroname %s: hub would not open. cache: %s; discovery: %s; "
+            "scan serials: %s; serial match: %s; attempts: %s; sysfs: %s",
+            key, diag["cache"], diag["discovery"],
+            ", ".join(diag["spec_serials"]) or "(none)", diag["spec_match"],
+            "; ".join(diag["attempts"]) or "(none)", sysfs or "unavailable",
+        )
 
         serial = self._serial
         where = f" with serial 0x{serial:08X}" if serial is not None else ""
-        raise DeviceNotFoundError(f"No Acroname hub detected on USB{where}")
+        raise DeviceNotFoundError(
+            f"No Acroname hub detected on USB{where} "
+            f"[{_open_failure_detail(diag, sysfs)}]"
+        )
+
+    def _sysfs_acroname_report(self):
+        """What the kernel sees on the bus, as a short phrase (or None).
+
+        Independent of BrainStem: sysfs stays truthful even when the vendor
+        SDK's discovery does not return a device, which is exactly the case
+        this is here to name (issue #196).
+
+        Best-effort by construction — the whole body is guarded, because this
+        runs on the way to raising DeviceNotFoundError and must never be able
+        to replace that with an error from the diagnostic itself.
+        """
+        try:
+            devices = enumerate_usb_devices(vid=_ACRONAME_VID)
+            if not devices:
+                return f"no Acroname ({_ACRONAME_VID}) device on the bus"
+
+            def _ids(dev):
+                return f"{dev.get('vid') or '????'}:{dev.get('pid') or '????'}"
+
+            listed = ", ".join(_ids(d) for d in devices)
+            # A device with no iSerial descriptor can never match, so count it
+            # separately rather than let it read as "the hub is not there".
+            no_serial = sum(1 for d in devices if not (d.get("serial") or "").strip())
+            unnamed = f", {no_serial} with no serial descriptor" if no_serial else ""
+
+            if self._serial is None:
+                return (f"{len(devices)} Acroname ({_ACRONAME_VID}) device(s) on the "
+                        f"bus ({listed}){unnamed}; net address names no serial")
+
+            want = self._norm_serial(self._serial)
+            for dev in devices:
+                if self._norm_serial(dev.get("serial")) == want:
+                    return (f"serial present on the bus ({listed}) -- discovery "
+                            f"did not return an enumerated hub")
+            return (f"{len(devices)} Acroname ({_ACRONAME_VID}) device(s) on the bus "
+                    f"({listed}), none with serial 0x{self._serial:08X}{unnamed}")
+        except Exception:
+            return None
+
+    @staticmethod
+    def _norm_serial(value):
+        """Comparable form of a serial from either side of the fence.
+
+        The net address parses to an int; sysfs hands back a hex string. Strip
+        case, any 0x, and leading zeros so 0xBFABDDC4, "BFABDDC4" and
+        "0bfabddc4" all compare equal.
+        """
+        if value is None:
+            return None
+        if isinstance(value, int):
+            value = f"{value:x}"
+        raw = str(value).strip().lower().removeprefix("0x").lstrip("0")
+        return (raw or "0") if str(value).strip() else None
 
     @staticmethod
     def _close_hub(hub) -> None:

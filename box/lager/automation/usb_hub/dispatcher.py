@@ -109,7 +109,7 @@ def state(net_name: str) -> bool:
     return enabled
 
 
-def states(net_names=None) -> Dict[str, bool | None]:
+def states(net_names=None, *, causes=None) -> Dict[str, bool | None]:
     """Read several USB nets, grouping them by physical hub.
 
     ``state()`` is one net per call and each call is a full hub
@@ -127,6 +127,11 @@ def states(net_names=None) -> Dict[str, bool | None]:
 
     Args:
         net_names: iterable of USB net names, or None for every saved USB net.
+        causes: optional dict, filled in place with ``net name -> "Type: msg"``
+            for every net reported None because its hub would not open. The
+            return value cannot carry this (it is ``bool | None`` and a third
+            inhabitant is exactly the ambiguity issue #196 is about), and a
+            caller that does not pass it is unaffected.
 
     Returns:
         dict[str, bool | None]: net name -> enabled, or None if unreadable.
@@ -167,6 +172,15 @@ def states(net_names=None) -> Dict[str, bool | None]:
                 "USB hub %s unreadable, reporting %d net(s) as unknown: %s: %s",
                 key, len(port_to_net), type(e).__name__, e,
             )
+            # The log names the cause for someone on the box. Hand it to the
+            # caller too, so it can reach the user's terminal -- otherwise a
+            # hub that would not open and a hub that answered null per port are
+            # still indistinguishable over HTTP, which is what made this look
+            # like flaky hardware.
+            if causes is not None:
+                cause = f"{type(e).__name__}: {e}"
+                for name in port_to_net.values():
+                    causes[name] = cause
             port_states = {}
         for port, name in port_to_net.items():
             value = port_states.get(port)
