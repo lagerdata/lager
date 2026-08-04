@@ -11,11 +11,16 @@ Lazy-imports BrainStem to minimise start-up cost.
 from __future__ import annotations
 
 import logging
+import time
 
 from lager.util.usb_sysfs import enumerate_usb_devices
 
 from .usb_net import (
+    HUB_ABSENT,
+    HUB_OPEN_FAILED,
     HUB_OP_TIMEOUT_S,
+    HUB_SERIAL_MISMATCH,
+    HUB_UNREACHABLE,
     USBNet,
     LibraryMissingError,
     DeviceNotFoundError,
@@ -46,7 +51,31 @@ _ACRONAME_VID = "24ff"
 _OPEN_FAILURE_DETAIL_MAX = 240
 _OPEN_FAILURE_MAX_SERIALS = 6
 
+# How long to let the bus settle before the one retry in ``_with_hub``. Sized
+# for a re-enumeration, which the kernel completes in well under half a second
+# (the control endpoint reappears ~0.4s after its hub component); long enough to
+# clear that race, short enough that a user-typed command does not feel hung.
+_OPEN_RETRY_SETTLE_S = 0.5
+
+# What to DO about each classification. The remedies are deliberately different
+# from each other -- that difference is the entire point of classifying, and a
+# reason that does not change what the reader does next is not worth printing.
+_REMEDIES = {
+    HUB_UNREACHABLE: ("the hub is on the USB bus but is not answering "
+                      "BrainStem; check hub power and the upstream cable"),
+    HUB_ABSENT: ("no Acroname device is on the USB bus; the hub is unplugged "
+                 "or its upstream port is off"),
+    HUB_SERIAL_MISMATCH: ("Acroname devices are on the bus but none has this "
+                          "serial; check the net's address"),
+    HUB_OPEN_FAILED: "the hub would not open; see `lager diagnose <net>`",
+}
+
 logger = logging.getLogger(__name__)
+
+
+def _remedy_for(code):
+    """The one-sentence "what to do next" for a classification."""
+    return _REMEDIES.get(code) or _REMEDIES[HUB_OPEN_FAILED]
 
 
 def _open_failure_detail(diag, sysfs):
@@ -123,6 +152,16 @@ class AcronameUSBNet(USBNet):
     discovery scan; a stale cache entry (hub re-enumerated, unplugged) fails
     the connect, is invalidated, and the full discovery path runs again.
     """
+
+    # This driver holds no USB handle between calls: `_with_hub` opens,
+    # operates and disconnects every time, and `_conn_cache` stores discovery
+    # metadata rather than a connection. So a re-enumeration has nothing here to
+    # orphan, and the service self-restart that repairs an orphaned context
+    # cannot repair anything on this path — it would only drop every other
+    # in-flight box operation. Measured on a two-hub bench: a hub that would not
+    # open triggered a restart, and the respawned process, with a brand-new
+    # libusb context, failed identically 37s later.
+    holds_usb_context_between_ops = False
 
     _brainstem = None         # cached vendor MODULE (an import, not a handle)
     _Result = None            # brainstem.result.Result alias
@@ -227,19 +266,36 @@ class AcronameUSBNet(USBNet):
         multi-hub bench that difference is the whole diagnosis, because the
         serials the scan DID return say whether discovery is skipping one hub
         while finding its neighbour.
+
+        Also sets ``diag["context_healthy"]``: whether this PROCESS could reach
+        the USB bus at all, as distinct from whether it found our hub. Only a
+        scan that came back with at least one device proves it — see the
+        ``specs`` case below for why "the scan completed" is not enough.
         """
         discover = getattr(self._brainstem, "discover", None)
         find_all = getattr(discover, "findAllModules", None) if discover else None
         if find_all is None:
+            # Never ran, so nothing was observed either way. Leave unknown.
             diag["discovery"] = "findAllModules unavailable (old SDK)"
             return None
         try:
             specs = find_all(self._transport()) or []
         except Exception as e:
             diag["discovery"] = f"findAllModules raised {type(e).__name__}: {e}"
+            diag["context_healthy"] = False
             logger.debug("Acroname %s: findAllModules raised",
                          self._lock_key(), exc_info=True)
             return None
+        # A scan returning at least one device is positive evidence that this
+        # process walked the bus and got answers, so a hub it did not return is
+        # the hub's problem and not this process's USB context.
+        #
+        # An EMPTY scan is deliberately NOT that evidence, and must stay
+        # unknown: on a bench whose only hub is wedged, "my USB stack is fine
+        # and the hub is silent" and "my USB stack is broken" both return zero
+        # specs. Calling that healthy would suppress the one recovery that does
+        # work in the second case.
+        diag["context_healthy"] = True if specs else None
         diag["discovery"] = f"findAllModules ok, {len(specs)} spec(s)"
         diag["spec_serials"] = [
             self._fmt_serial(getattr(s, "serial_number", None)) for s in specs
@@ -299,6 +355,8 @@ class AcronameUSBNet(USBNet):
             "spec_serials": [],
             "spec_match": False,
             "attempts": [],
+            # None until a scan observes something either way; see _discover_spec.
+            "context_healthy": None,
         }
 
         cached = AcronameUSBNet._conn_cache.get(key)
@@ -334,39 +392,65 @@ class AcronameUSBNet(USBNet):
         # Everything refused. Say what was tried, and cross-check the bus: the
         # vendor library reporting "no hub" while the kernel plainly has one
         # enumerated is a different fault from an unplugged cable, and needs a
-        # different remedy. Full detail to the log (uncapped), a bounded
-        # summary onto the exception so it reaches the user's terminal.
-        sysfs = self._sysfs_acroname_report()
-        logger.warning(
-            "Acroname %s: hub would not open. cache: %s; discovery: %s; "
+        # different remedy. Full detail to the log (uncapped); the remedy onto
+        # the message, where a user will actually read it.
+        code, sysfs = self._sysfs_classify()
+        code = code or HUB_OPEN_FAILED
+
+        # A hub the kernel has enumerated but that will not answer is ALWAYS
+        # hardware and always worth acting on. A hub that is simply not on the
+        # bus is a normal bench state — someone unplugged it — and logging both
+        # at the same level is how a real fault sits unnoticed among routine
+        # ones. Level is the only thing that differs; the text is identical.
+        log = logger.error if code == HUB_UNREACHABLE else logger.warning
+        log(
+            "Acroname %s: hub would not open (%s). cache: %s; discovery: %s; "
             "scan serials: %s; serial match: %s; attempts: %s; sysfs: %s",
-            key, diag["cache"], diag["discovery"],
+            key, code, diag["cache"], diag["discovery"],
             ", ".join(diag["spec_serials"]) or "(none)", diag["spec_match"],
             "; ".join(diag["attempts"]) or "(none)", sysfs or "unavailable",
         )
 
         serial = self._serial
         where = f" with serial 0x{serial:08X}" if serial is not None else ""
+        # The message carries the REMEDY, not the return codes. Both used to
+        # share it, and the remedy is what the reader needs: a wall of
+        # `USBHub2x4/spec rc=7` buries the one sentence that says what to do.
+        # The breakdown moves to `.detail`, which --json and diagnostics render.
         raise DeviceNotFoundError(
-            f"No Acroname hub detected on USB{where} "
-            f"[{_open_failure_detail(diag, sysfs)}]"
+            f"No Acroname hub detected on USB{where}: {_remedy_for(code)}",
+            classification=code,
+            usb_context_healthy=diag.get("context_healthy"),
+            detail=_open_failure_detail(diag, sysfs),
         )
 
     def _sysfs_acroname_report(self):
-        """What the kernel sees on the bus, as a short phrase (or None).
+        """What the kernel sees on the bus, as a short phrase (or None)."""
+        return self._sysfs_classify()[1]
+
+    def _sysfs_classify(self):
+        """Cross-check the bus: ``(classification, phrase)``.
 
         Independent of BrainStem: sysfs stays truthful even when the vendor
         SDK's discovery does not return a device, which is exactly the case
         this is here to name (issue #196).
 
-        Best-effort by construction — the whole body is guarded, because this
-        runs on the way to raising DeviceNotFoundError and must never be able
-        to replace that with an error from the diagnostic itself.
+        The classification is what a caller acts on; the phrase is what a human
+        reads. They are produced together because they answer the same question
+        and must never disagree — a phrase saying the serial is on the bus while
+        the code says the hub is absent would be worse than either alone.
+
+        Returns ``(None, None)`` when sysfs itself could not be read, which is
+        "we could not tell", not "nothing is there". Best-effort by
+        construction — the whole body is guarded, because this runs on the way
+        to raising DeviceNotFoundError and must never be able to replace that
+        with an error from the diagnostic itself.
         """
         try:
             devices = enumerate_usb_devices(vid=_ACRONAME_VID)
             if not devices:
-                return f"no Acroname ({_ACRONAME_VID}) device on the bus"
+                return (HUB_ABSENT,
+                        f"no Acroname ({_ACRONAME_VID}) device on the bus")
 
             def _ids(dev):
                 return f"{dev.get('vid') or '????'}:{dev.get('pid') or '????'}"
@@ -378,18 +462,24 @@ class AcronameUSBNet(USBNet):
             unnamed = f", {no_serial} with no serial descriptor" if no_serial else ""
 
             if self._serial is None:
-                return (f"{len(devices)} Acroname ({_ACRONAME_VID}) device(s) on the "
+                # Hubs are present but the net names no serial to pick among
+                # them. Classified with the mismatch case because the remedy is
+                # the same one: the net's address is what needs fixing.
+                return (HUB_SERIAL_MISMATCH,
+                        f"{len(devices)} Acroname ({_ACRONAME_VID}) device(s) on the "
                         f"bus ({listed}){unnamed}; net address names no serial")
 
             want = self._norm_serial(self._serial)
             for dev in devices:
                 if self._norm_serial(dev.get("serial")) == want:
-                    return (f"serial present on the bus ({listed}) -- discovery "
+                    return (HUB_UNREACHABLE,
+                            f"serial present on the bus ({listed}) -- discovery "
                             f"did not return an enumerated hub")
-            return (f"{len(devices)} Acroname ({_ACRONAME_VID}) device(s) on the bus "
+            return (HUB_SERIAL_MISMATCH,
+                    f"{len(devices)} Acroname ({_ACRONAME_VID}) device(s) on the bus "
                     f"({listed}), none with serial 0x{self._serial:08X}{unnamed}")
         except Exception:
-            return None
+            return (None, None)
 
     @staticmethod
     def _norm_serial(value):
@@ -416,7 +506,7 @@ class AcronameUSBNet(USBNet):
         except Exception:
             pass
 
-    def _with_hub(self, fn):
+    def _with_hub(self, fn, *, retry=True):
         """Serialise across threads and processes, open a fresh hub connection,
         run ``fn(hub)``, and always disconnect so the hub is never left claimed.
 
@@ -424,11 +514,56 @@ class AcronameUSBNet(USBNet):
         part most likely to hang. ``discoverAndConnect``/``connectFromSpec``
         are native BrainStem calls that block indefinitely against a hub whose
         USB link is wedged, and one of those used to take out every later USB
-        command in the process."""
+        command in the process.
+
+        Retries the OPEN once when — and only when — the bus says our serial is
+        there but discovery did not return it. That is the shape of a hub caught
+        mid-re-enumeration, and the YKUSH driver has always self-healed it
+        (``ykush.py`` ``_with_device``); this driver never did.
+
+        Three things keep the retry from becoming a cost:
+
+        * It is gated on evidence, not on hope. If the serial is NOT on the bus,
+          a second attempt provably cannot connect either, so ``hub-absent`` and
+          ``hub-serial-mismatch`` still cost exactly one attempt.
+        * It is bounded: one retry and one short settle, never a loop.
+        * ``states()`` passes ``retry=False``. That is the polling path — the
+          state sweep and the TUI call it every few seconds against a budget
+          shared with every other instrument on the bench, so a transient race
+          is gone by the next poll anyway and a retry would only spend a budget
+          that is not this hub's to spend. The one-shot user paths have their
+          own timeout and are where a lost race actually costs a person a
+          re-typed command.
+
+        BOTH attempts run inside the ONE ``run_hub_op`` deadline, not around it.
+        Retrying outside would hand each attempt its own ``HUB_OP_TIMEOUT_S``,
+        so a hub that hangs on open could hold a caller for twice the bound the
+        CLI is waiting on — turning the box's structured 504 into a transport
+        timeout, which is the failure this deadline exists to prevent.
+
+        The retry also stays inside ``hub_access``: dropping the lock between
+        attempts would let another process open the hub in the gap, and the
+        second attempt would then fail for a different reason than the first.
+        """
         def _session():
             hub = None
             try:
-                hub = self._open_hub()
+                try:
+                    hub = self._open_hub()
+                except DeviceNotFoundError as first:
+                    if not (retry and first.classification == HUB_UNREACHABLE):
+                        raise
+                    # The cached spec names an enumeration that is gone; drop it
+                    # so the retry pays for a full rediscovery rather than
+                    # repeating the same stale connect.
+                    AcronameUSBNet._conn_cache.pop(self._lock_key(), None)
+                    logger.info(
+                        "Acroname %s: serial is on the bus but discovery missed "
+                        "it; retrying the open once after %.1fs",
+                        self._lock_key(), _OPEN_RETRY_SETTLE_S,
+                    )
+                    time.sleep(_OPEN_RETRY_SETTLE_S)
+                    hub = self._open_hub()  # a second failure propagates
                 return fn(hub)
             finally:
                 self._close_hub(hub)
@@ -492,7 +627,11 @@ class AcronameUSBNet(USBNet):
                     out[port] = None
             return out
 
-        return self._with_hub(_read_all)
+        # No open-retry here. This is the polling path: the whole-bench state
+        # sweep budgets one deadline across EVERY instrument on the box, so a
+        # retry would spend other instruments' time to win a race the next poll
+        # wins for free. The one-shot paths retry; see _with_hub.
+        return self._with_hub(_read_all, retry=False)
 
     def toggle(self, net_name: str, port: int) -> bool:  # type: ignore[override]
         def _do(hub):
