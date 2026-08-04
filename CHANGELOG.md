@@ -27,7 +27,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
   cannot be killed from Python; the supervisor respawn is the recovery.
 
 - **The same treatment for `hardware_service`'s `/invoke`.** Per-device and
-  per-VISA-address locks are acquired with a 10s timeout and answer
+  per-VISA-address locks are acquired with an 8s timeout and answer
   `503 device-busy` instead of queueing forever behind a wedged
   `open_resource` (which blocks inside libusb before the 5s VISA I/O timeout
   is even applied) or a hung native driver call. The driver call itself runs
@@ -40,10 +40,18 @@ All notable changes to the Lager platform are documented here. For detailed rele
   Success responses and the existing stale-VISA-session retry are unchanged.
 
   One behaviour change to be aware of: a request that arrives while the same
-  physical device is more than 10s into another operation now reports
+  physical device is more than 8s into another operation now reports
   `device-busy` instead of queueing. Callers already gave up at their own HTTP
   timeout in that situation (`Device.DEFAULT_TIMEOUT` is 10s); what changes is
   that they get a real error rather than a transport timeout.
+
+- **`lager usb` waits long enough to hear the box's answer.** Its HTTP timeout
+  was 30s, but the box's own bounds for `/usb/command` are additive — up to 10s
+  queueing on the hub lock, then up to 30s in the operation deadline — so a
+  wedged hub answered at ~40s and the CLI had already given up. That surfaced
+  as "cannot reach box", which reads as a network fault and hides both the real
+  diagnosis and the fact that the box had already scheduled its own recovery.
+  Now 45s, above the box's worst case.
 
 ## [0.34.2] - 2026-08-02
 

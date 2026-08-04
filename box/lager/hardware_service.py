@@ -85,12 +85,17 @@ def _get_address_lock(address):
     return _get_device_lock(('__address__', address))
 
 
-# How long to wait for a device's lock before answering "busy". Callers bound
-# their own /invoke POST (nets/device.py Device.DEFAULT_TIMEOUT = 10s), so this
-# is not what protects them from a slow instrument — what it protects them from
-# is a lock whose holder is never coming back, which used to leave every later
-# request for that device queued forever with no error and no recovery.
-_LOCK_TIMEOUT_S = 10.0
+# How long to wait for a device's lock before answering "busy". What this
+# protects callers from is not a slow instrument — it is a lock whose holder is
+# never coming back, which used to leave every later request for that device
+# queued forever with no error and no recovery.
+#
+# Deliberately UNDER nets/device.py's Device.DEFAULT_TIMEOUT (10s), not equal
+# to it. At 10s the busy answer and the caller's own timeout expire together,
+# so the caller reports a transport failure and the structured error it was
+# waiting for never arrives. A bound only helps if whoever is waiting on it is
+# still listening when it fires.
+_LOCK_TIMEOUT_S = 8.0
 
 # How long the driver call itself may run before this service stops waiting on
 # it and treats the device as wedged. Deliberately well above the callers' own
