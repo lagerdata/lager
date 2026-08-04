@@ -147,6 +147,26 @@ def load_box_secrets():
         try:
             with open(secrets_file, 'r') as f:
                 return json.load(f)
+        except PermissionError as e:
+            # Distinct from a malformed or missing file: the secrets are THERE
+            # and we are not allowed to read them. That happens when the file
+            # is mode 0600 under an owner other than this process's uid —
+            # typically a file copied in by hand and then tightened by a boot
+            # script running as the host user.
+            #
+            # Logged at error, and separately from the generic path, because
+            # the consequence is invisible downstream: we return {} either way,
+            # so every LAGER_SECRET_* variable simply vanishes and scripts fail
+            # far from the cause. This message is the only place the real
+            # reason appears.
+            logger.error(
+                "Cannot read %s: %s. This process runs as uid %d, and the file "
+                "is readable only by its owner. Secret injection will be EMPTY. "
+                "Fix it on the box with: sudo chown %d:%d %s && sudo chmod 600 %s "
+                "(or run `lager update`, which repairs this).",
+                secrets_file, e, os.getuid(),
+                os.getuid(), os.getuid(), secrets_file, secrets_file,
+            )
         except Exception as e:
             logger.warning(f"Could not load secrets from {secrets_file}: {e}")
 

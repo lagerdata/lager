@@ -53,6 +53,33 @@ All notable changes to the Lager platform are documented here. For detailed rele
   diagnosis and the fact that the box had already scheduled its own recovery.
   Now 45s, above the box's worst case.
 
+- **Secret files are now owned by the container user, not just locked down.**
+  `/etc/lager/org_secrets.json` and `/etc/lager/secret_key` were tightened to
+  mode 0600 at boot and on load. But 0600 grants the *owner* alone, and
+  everything that reads these files runs as the container user — so a secrets
+  file that had been copied onto a box by hand, and therefore belonged to the
+  host login user, was locked away from the runtime by the very step meant to
+  protect it. The box's boot script runs as that same user, so its `chmod`
+  succeeded and the lockout was instant.
+
+  Nothing failed loudly: the loader caught the permission error and returned an
+  empty secret set, so every `LAGER_SECRET_*` variable simply vanished and
+  scripts failed far from the cause.
+
+  `lager update` now repairs ownership of both files automatically — it is the
+  path that runs with real privilege, so ordinary users are fixed on their next
+  update with nothing to run by hand. The box also repairs what it can at boot
+  and prints an unmissable warning, with the exact `chown`/`chmod` to run, when
+  it finds a secrets file the runtime cannot read. The loader reports a
+  permission failure at error level with the same remediation instead of a
+  low-visibility warning.
+
+  The boot-time diagnostics used to be inverted: the old script warned when its
+  `chmod` *failed*, which is the healthy case (the file already belongs to the
+  container user, which is precisely why the host user cannot change it), and
+  said nothing at all when the `chmod` succeeded — the case that creates the
+  lockout.
+
 ## [0.34.2] - 2026-08-02
 
 ### Removed

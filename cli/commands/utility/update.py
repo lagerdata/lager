@@ -103,6 +103,42 @@ def wait_for_box_ready(box_ip, *, timeout_s=60, initial_delay_s=2):
     return False
 
 
+# Files whose contents are secret and whose owner therefore matters as much as
+# their mode. Mode 0600 grants the OWNER alone, so tightening one of these under
+# the wrong owner locks the runtime out of it entirely.
+_SECRET_FILES = ('/etc/lager/org_secrets.json', '/etc/lager/secret_key')
+
+# uid 33 is www-data, the user the container runs as. Hardcoded because it is
+# baked into the container image, not discovered at runtime.
+_CONTAINER_UID = 33
+
+
+def _secret_ownership_shell_cmd(files=_SECRET_FILES, uid=_CONTAINER_UID):
+    """Shell snippet that gives the secret files back to the container user.
+
+    A secrets file copied onto a box by hand belongs to whoever copied it. The
+    boot script then tightens it to 0600 — successfully, because that same user
+    owns it — and uid 33 can no longer read its own secrets. Nothing fails
+    loudly: secret injection just returns empty and scripts break far from the
+    cause.
+
+    Best-effort by construction. `sudo -n` so a box whose sudoers predates the
+    chown grant fails instantly instead of blocking on a password prompt no one
+    is there to answer, and every branch swallows its failure — an unreadable
+    secrets file must never be the reason an update fails. Boxes that miss the
+    repair still get the boot-time warning telling them what to run by hand.
+
+    No chmod: after the chown this user no longer owns the file, and the
+    container tightens the mode itself on the next load.
+    """
+    quoted = ' '.join(shlex.quote(f) for f in files)
+    return (
+        f'for f in {quoted}; do '
+        f'if [ -f "$f" ]; then sudo -n /bin/chown {uid}:{uid} "$f" 2>/dev/null || true; fi; '
+        'done; true'
+    )
+
+
 def _flatten_shell_cmd():
     """Shell snippet that flattens the sparse-checkout layout (`box/` -> root).
 
@@ -2322,6 +2358,24 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         click.echo('Then run `lager box update` again.', err=True)
         ctx.exit(1)
     log_status('OK', 'green')
+
+    # Secret files must be owned by uid 33 (the container user), not merely
+    # mode 0600. 0600 grants the owner alone, so a secrets file left under a
+    # different owner — e.g. copied onto the box by hand — locks the runtime
+    # out of it the moment anything tightens the mode. The symptom is silent:
+    # secret injection returns empty and scripts fail nowhere near the cause.
+    #
+    # This is the one path that runs with real privilege, so it is where the
+    # repair belongs; the box's boot script can only warn when it lacks the
+    # grant. Best-effort throughout: `sudo -n` so a box without the chown
+    # grant fails instantly rather than waiting on a password, and the whole
+    # thing is `|| true` because an unreadable secrets file must never be the
+    # reason an update fails. Boxes that miss the repair still get the boot
+    # warning telling them what to run.
+    #
+    # chmod is deliberately not attempted: after the chown this user no longer
+    # owns the file, and the container fixes the mode itself on next load.
+    run_ssh_command_with_output(_secret_ownership_shell_cmd(), timeout_secs=30)
 
     # Persist the build-inputs hash now that /etc/lager is group-writable by this
     # user (Step 10). This is what lets the next run's cache-validity check short-circuit to
