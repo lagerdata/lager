@@ -144,7 +144,7 @@ class ProbeGroupTests(unittest.TestCase):
     def test_batch_probe_is_called_once_for_the_whole_group(self):
         calls = []
 
-        def fake_batch(names):
+        def fake_batch(names, causes=None):
             calls.append(list(names))
             return {n: "enabled" for n in names}
 
@@ -175,7 +175,7 @@ class ProbeGroupTests(unittest.TestCase):
         self.assertEqual(out[0]["state"], "HIGH (1)")
 
     def test_raising_batch_probe_yields_nulls_not_an_exception(self):
-        def boom(names):
+        def boom(names, causes=None):
             raise RuntimeError("hub fell off the bus")
 
         recs = [r for r in SAVED_NETS if r["instrument"] == "Acroname_8Port"]
@@ -227,7 +227,8 @@ class EndpointTests(unittest.TestCase):
     def test_one_entry_per_saved_net_in_saved_order(self):
         with patch.object(nets_handler.Net, "list_saved", return_value=SAVED_NETS), \
              patch.dict(nets_handler._BATCH_PROBES,
-                        {"usb": lambda names: {n: "enabled" for n in names}}), \
+                        {"usb": lambda names, causes=None:
+                         {n: "enabled" for n in names}}), \
              patch.object(nets_handler, "_brief_labjack_batch",
                           return_value={"gpi1": "LOW (0)"}):
             resp = self.client.get('/nets/state')
@@ -247,7 +248,7 @@ class EndpointTests(unittest.TestCase):
         the request must not wait for it."""
         release = threading.Event()
 
-        def wedged(names):
+        def wedged(names, causes=None):
             # Blocks the way a driver blocked on a hub lock does. Released in
             # the finally below so the suite stays fast.
             release.wait(timeout=30)
@@ -282,7 +283,7 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(by_name["gpi1"], "LOW (0)")
 
     def test_one_bad_instrument_does_not_hide_the_healthy_ones(self):
-        def boom(names):
+        def boom(names, causes=None):
             raise RuntimeError("no hub")
 
         with patch.object(nets_handler.Net, "list_saved", return_value=SAVED_NETS), \
@@ -303,7 +304,7 @@ class EndpointTests(unittest.TestCase):
         lock = threading.Lock()
         active = {"n": 0}
 
-        def slow_batch(names):
+        def slow_batch(names, causes=None):
             with lock:
                 active["n"] += 1
                 concurrent.append(active["n"])
@@ -459,6 +460,33 @@ class UsbBatchProbeTests(unittest.TestCase):
             out = nets_handler._brief_usb_batch(["a", "b"])
         self.assertEqual(out, {"a": None, "b": None})
 
+    def test_causes_are_forwarded_from_the_dispatcher(self):
+        def fake_states(names, causes=None):
+            if causes is not None:
+                causes["b"] = "DeviceNotFoundError: No Acroname hub detected"
+            return {"a": True, "b": None}
+
+        import lager.automation.usb_hub as hub_mod
+        causes: dict = {}
+        with patch.object(hub_mod, "states", fake_states):
+            out = nets_handler._brief_usb_batch(["a", "b"], causes=causes)
+        self.assertEqual(out, {"a": "enabled", "b": None})
+        self.assertEqual(causes,
+                         {"b": "DeviceNotFoundError: No Acroname hub detected"})
+
+    def test_a_dispatcher_that_raises_fills_every_cause(self):
+        """Nothing was reached, so every net gets the same reason -- this is
+        the path where loading the net definitions or building a controller
+        fails, below the dispatcher's own per-hub guard."""
+        import lager.automation.usb_hub as hub_mod
+        causes: dict = {}
+        with patch.object(hub_mod, "states",
+                          side_effect=RuntimeError("SDK missing")):
+            out = nets_handler._brief_usb_batch(["a", "b"], causes=causes)
+        self.assertEqual(out, {"a": None, "b": None})
+        self.assertEqual(causes, {"a": "RuntimeError: SDK missing",
+                                  "b": "RuntimeError: SDK missing"})
+
 
 class HubUnreadableIsLoggedTests(unittest.TestCase):
     """A hub that will not open turns ALL of its nets null.
@@ -494,6 +522,62 @@ class HubUnreadableIsLoggedTests(unittest.TestCase):
         self.assertIn("acroname::4port", logged, "the log must name which hub")
         self.assertIn("No Acroname hub detected on USB", logged,
                       "the log must carry the driver's own cause")
+
+    def test_the_hub_open_cause_is_handed_to_the_caller(self):
+        """The log only helps someone already on the box. The cause has to
+        reach the caller too, or the CLI still cannot tell a hub that would not
+        open from one that answered null."""
+        dispatcher = self._dispatcher()
+        nets = {
+            "usb1": {"port": 0, "instrument": "Acroname_4Port", "address": "A"},
+            "usb2": {"port": 1, "instrument": "Acroname_4Port", "address": "A"},
+        }
+        controller = MagicMock()
+        controller._lock_key.return_value = "acroname::4port"
+        controller.states.side_effect = RuntimeError(
+            "No Acroname hub detected on USB with serial 0xBFABDDC4")
+
+        causes: dict = {}
+        with patch.object(dispatcher, "_load_net_definitions", return_value=nets), \
+             patch.object(dispatcher, "_controller_for", return_value=controller), \
+             self.assertLogs(dispatcher.logger, level="WARNING"):
+            out = dispatcher.states(["usb1", "usb2"], causes=causes)
+
+        self.assertEqual(out, {"usb1": None, "usb2": None})
+        expected = ("RuntimeError: No Acroname hub detected on USB "
+                    "with serial 0xBFABDDC4")
+        self.assertEqual(causes, {"usb1": expected, "usb2": expected})
+
+    def test_a_caller_that_does_not_ask_for_causes_is_unaffected(self):
+        """Backward-compat pin: causes is additive and opt-in."""
+        dispatcher = self._dispatcher()
+        nets = {"usb1": {"port": 0, "instrument": "Acroname_4Port",
+                         "address": "A"}}
+        controller = MagicMock()
+        controller._lock_key.return_value = "acroname::4port"
+        controller.states.side_effect = RuntimeError("nope")
+
+        with patch.object(dispatcher, "_load_net_definitions", return_value=nets), \
+             patch.object(dispatcher, "_controller_for", return_value=controller), \
+             self.assertLogs(dispatcher.logger, level="WARNING"):
+            self.assertEqual(dispatcher.states(["usb1"]), {"usb1": None})
+
+    def test_a_readable_hub_records_no_cause(self):
+        """A cause means 'we know why this is null'. A hub that answered must
+        not leave one behind."""
+        dispatcher = self._dispatcher()
+        nets = {"usb1": {"port": 0, "instrument": "Acroname_4Port",
+                         "address": "A"}}
+        controller = MagicMock()
+        controller._lock_key.return_value = "acroname::4port"
+        controller.states.return_value = {0: True}
+
+        causes: dict = {}
+        with patch.object(dispatcher, "_load_net_definitions", return_value=nets), \
+             patch.object(dispatcher, "_controller_for", return_value=controller):
+            out = dispatcher.states(["usb1"], causes=causes)
+        self.assertEqual(out, {"usb1": True})
+        self.assertEqual(causes, {})
 
     def test_one_dead_hub_does_not_stop_the_others_being_read(self):
         dispatcher = self._dispatcher()
@@ -565,7 +649,7 @@ class NullReasonTests(unittest.TestCase):
     def test_a_raising_batch_is_unreadable_not_deadline(self):
         """The distinction that matters: this instrument was reached and
         failed. Calling it 'deadline' would send someone after the timeout."""
-        def boom(names):
+        def boom(names, causes=None):
             raise RuntimeError("no hub")
 
         recs = [r for r in SAVED_NETS if r["instrument"] == "Acroname_8Port"]
@@ -577,13 +661,76 @@ class NullReasonTests(unittest.TestCase):
                             entry["reason"])
             self.assertNotEqual(entry["reason"], nets_handler.REASON_DEADLINE)
 
+    def test_a_hub_that_would_not_open_says_why_not_no_value(self):
+        """The gap this closes: the dispatcher knew the cause and logged it,
+        but over HTTP a hub that would not open was labelled identically to a
+        port that simply did not read. One CLI run should now name it."""
+        cause = ("DeviceNotFoundError: No Acroname hub detected on USB with "
+                 "serial 0xBFABDDC4 [discovery: findAllModules ok, 1 spec(s) "
+                 "[0xAAAA0001], no serial match; sysfs: serial present on the "
+                 "bus (24ff:0011) -- discovery did not return an enumerated hub]")
+
+        def hub_will_not_open(names, causes=None):
+            if causes is not None:
+                for n in names:
+                    causes[n] = cause
+            return {}
+
+        recs = [r for r in SAVED_NETS if r["instrument"] == "Acroname_8Port"]
+        with patch.dict(nets_handler._BATCH_PROBES, {"usb": hub_will_not_open}):
+            out = nets_handler._probe_group(recs)
+
+        for entry in out:
+            self.assertIsNone(entry["state"])
+            self.assertEqual(entry["reason"], f"unreadable: {cause}")
+            self.assertNotEqual(entry["reason"],
+                                "unreadable: no value from instrument")
+
+    def test_a_port_that_did_not_read_still_says_no_value(self):
+        """The generic wording stays for the case it actually describes: the
+        hub answered, this port did not."""
+        recs = [r for r in SAVED_NETS if r["instrument"] == "Acroname_8Port"]
+        names = [r["name"] for r in recs]
+
+        def partial_read(n, causes=None):
+            return {names[0]: "enabled", names[2]: "disabled"}
+
+        with patch.dict(nets_handler._BATCH_PROBES, {"usb": partial_read}):
+            out = nets_handler._probe_group(recs)
+
+        by_name = {e["name"]: e for e in out}
+        self.assertEqual(by_name[names[1]]["reason"],
+                         "unreadable: no value from instrument")
+        # A net that read carries no reason key at all.
+        self.assertNotIn("reason", by_name[names[0]])
+
+    def test_a_cause_is_attached_only_to_the_net_it_names(self):
+        """One unreadable hub on a bench must not relabel the nets that read."""
+        recs = [r for r in SAVED_NETS if r["instrument"] == "Acroname_8Port"]
+        names = [r["name"] for r in recs]
+
+        def mixed(n, causes=None):
+            if causes is not None:
+                causes[names[1]] = "DeviceNotFoundError: nope"
+            return {names[0]: "enabled", names[2]: "disabled"}
+
+        with patch.dict(nets_handler._BATCH_PROBES, {"usb": mixed}):
+            out = nets_handler._probe_group(recs)
+
+        by_name = {e["name"]: e for e in out}
+        self.assertEqual(by_name[names[1]]["reason"],
+                         "unreadable: DeviceNotFoundError: nope")
+        self.assertEqual(by_name[names[0]]["state"], "enabled")
+        self.assertNotIn("reason", by_name[names[0]])
+
     def test_a_batch_that_omits_one_net_marks_only_that_net(self):
         """The Acroname per-port case: the session completed, one port did
         not read. A partial result is the shape a deadline miss cannot make."""
         recs = [r for r in SAVED_NETS if r["instrument"] == "Acroname_8Port"]
         names = [r["name"] for r in recs]
         partial = {names[0]: "enabled", names[1]: None, names[2]: "disabled"}
-        with patch.dict(nets_handler._BATCH_PROBES, {"usb": lambda n: partial}):
+        with patch.dict(nets_handler._BATCH_PROBES,
+                        {"usb": lambda n, causes=None: partial}):
             out = nets_handler._probe_group(recs)
 
         by_name = {e["name"]: e for e in out}
@@ -597,7 +744,7 @@ class NullReasonTests(unittest.TestCase):
     def test_a_net_the_deadline_cut_off_says_deadline(self):
         release = threading.Event()
 
-        def wedged(names):
+        def wedged(names, causes=None):
             release.wait(timeout=30)
             return {n: "enabled" for n in names}
 
