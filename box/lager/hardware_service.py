@@ -27,6 +27,7 @@ import traceback
 import atexit
 from flask import Flask, request, jsonify, send_from_directory
 
+from lager import safety
 from lager.util import self_restart as _self_restart
 from lager.util.watchdog import run_with_deadline
 
@@ -459,6 +460,21 @@ def invoke():
             return jsonify({'error': 'Missing "device" field'}), 400
         if not function_name:
             return jsonify({'error': 'Missing "function" field'}), 400
+
+        # Safety interlock. Deliberately here, before the device is built and
+        # before the try/except that wraps the call: the stale-VISA-session
+        # recovery path below re-invokes `func` a second time, and a check
+        # placed next to either call site would leave the other unguarded.
+        # Checking once, up front, covers both -- the arguments do not change
+        # between the first attempt and the retry.
+        #
+        # This process is separate from the one running the test script, which
+        # is what makes the interlock enforceable rather than advisory.
+        try:
+            safety.check_invocation(net_info, function_name, args, kwargs)
+        except (safety.SafetyViolation, safety.RateLimitExceeded, safety.UnidentifiedNet) as violation:
+            logger.warning(f"Safety interlock refused {device_name}.{function_name}: {violation}")
+            return jsonify(violation.as_dict()), 403
 
         logger.info(f"Invoking {device_name}.{function_name}({args}, {kwargs}) with net_info={net_info}")
 

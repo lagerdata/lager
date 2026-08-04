@@ -243,6 +243,7 @@ def resolve_net_proxy(
         )
 
     net_info: Dict[str, Any] = {
+        "name": netname,
         "address": address,
         "channel": channel,
         "instrument": instrument,

@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Tuple, Type
 
+from lager import safety
 from lager.dispatchers.base import BaseDispatcher
 from lager.dispatchers import helpers
 from lager.exceptions import SupplyBackendError, LibraryMissingError, DeviceNotFoundError
@@ -150,11 +151,13 @@ def _resolve_net_and_driver(netname: str):
 # --------- actions (called from supply.py) ---------
 
 def voltage(netname: str, value: float | None = None, ocp: float | None = None, ovp: float | None = None, **_):
+    safety.check(netname, 'voltage', [], {'value': value, 'ocp': ocp, 'ovp': ovp}, role=SupplyDispatcher.ROLE)
     drv, _ = _dispatcher._resolve_net_and_driver(netname)
     drv.voltage(value=value, ocp=ocp, ovp=ovp)
 
 
 def current(netname: str, value: float | None = None, ocp: float | None = None, ovp: float | None = None, **_):
+    safety.check(netname, 'current', [], {'value': value, 'ocp': ocp, 'ovp': ovp}, role=SupplyDispatcher.ROLE)
     drv, _ = _dispatcher._resolve_net_and_driver(netname)
     drv.current(value=value, ocp=ocp, ovp=ovp)
 
@@ -190,11 +193,13 @@ def clear_ovp(netname: str, **_):
 
 
 def ocp(netname: str, value: float | None = None, **_):
+    safety.check(netname, 'ocp', [], {'value': value}, role=SupplyDispatcher.ROLE)
     drv, _ = _dispatcher._resolve_net_and_driver(netname)
     drv.ocp(value=value)
 
 
 def ovp(netname: str, value: float | None = None, **_):
+    safety.check(netname, 'ovp', [], {'value': value}, role=SupplyDispatcher.ROLE)
     drv, _ = _dispatcher._resolve_net_and_driver(netname)
     drv.ovp(value=value)
 
