@@ -572,6 +572,56 @@ def _probe_group(recs):
     ]
 
 
+# Keys accepted in a net's ``safety_limits`` record, mirroring what
+# ``lager.safety`` actually enforces. The set is closed on purpose: a stored key
+# nothing reads is indistinguishable, from the outside, from an enforced one.
+_SAFETY_CEILING_KEYS = ('max_voltage', 'max_current')
+_SAFETY_LIMIT_KEYS = _SAFETY_CEILING_KEYS + ('allow_destructive',)
+
+
+def _validate_safety_limits(payload):
+    """Validate a safety-limits body.
+
+    Returns ``(limits, error)``. An empty ``limits`` dict means "clear", which
+    is a legitimate request -- a net with no ``safety_limits`` key is
+    unrestricted, and that is how a net goes back to being unrestricted.
+    """
+    if payload is None:
+        return {}, None
+    if not isinstance(payload, dict):
+        return None, 'body must be a JSON object'
+
+    limits = {}
+    for key, value in payload.items():
+        if key == 'max_power':
+            return None, (
+                'max_power is not supported: one setter call establishes either '
+                'voltage or current, never both, so a power ceiling could not be '
+                'evaluated honestly. Use max_voltage and max_current.'
+            )
+        if key not in _SAFETY_LIMIT_KEYS:
+            return None, "unknown key '%s'; accepted: %s" % (
+                key, ', '.join(_SAFETY_LIMIT_KEYS))
+        if value is None:
+            # Explicit null clears that one key while leaving the others.
+            continue
+        if key == 'allow_destructive':
+            if not isinstance(value, bool):
+                return None, 'allow_destructive must be a boolean'
+            limits[key] = value
+            continue
+        # A ceiling that is not a positive number cannot be compared against a
+        # setpoint. bool is a subclass of int, hence the explicit exclusion:
+        # True would otherwise sail through as 1.0 V.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None, '%s must be a number' % key
+        if value <= 0:
+            return None, '%s must be greater than zero' % key
+        limits[key] = float(value)
+
+    return limits, None
+
+
 def register_nets_routes(app: Flask) -> None:
     """Register nets REST routes with the Flask app."""
 
@@ -706,6 +756,54 @@ def register_nets_routes(app: Flask) -> None:
 
         Net.save_local_net(data)
         return jsonify({'ok': True})
+
+    @app.route('/nets/<name>/safety-limits', methods=['PUT'])
+    def nets_set_safety_limits(name):
+        """Set or clear the safety limits on a saved net.
+
+        Merges rather than replaces, so no other field on the net is disturbed.
+        ``PUT /nets/<name>`` cannot serve this purpose: it takes a whole net
+        definition, rederives ``mappings`` and ``scope_points`` from it, and
+        would require the caller to round-trip every field it does not model.
+
+        Every record sharing this name is updated, not just the first one found.
+        ``lager.safety`` reads limits through ``NetsCache.find_by_name``, which
+        indexes one record per name, so leaving a same-named sibling untouched
+        would make enforcement depend on which record the index happened to
+        keep -- a limit that applies or not depending on file order is worse
+        than none.
+
+        This route confers no authority that this port did not already grant:
+        ``PUT /nets/<name>`` replaces a net wholesale, limits included, and
+        ``DELETE /nets/<name>`` removes it. The interlock's guarantee is that a
+        *test script* cannot raise its own ceiling through the hardware service,
+        not that the saved-net file is unwritable.
+        """
+        payload = request.get_json(force=True, silent=True)
+        limits, error = _validate_safety_limits(payload)
+        if error:
+            return jsonify({'error': error}), 400
+
+        # Copy before mutating: get_local_nets hands back the cache's own dicts,
+        # and a failed write would otherwise leave raised limits live in memory
+        # until something invalidated the cache.
+        nets = [dict(n) for n in Net.get_local_nets()]
+        matched = [n for n in nets if n.get('name') == name]
+        if not matched:
+            return jsonify({'error': "no saved net named '%s'" % name}), 404
+
+        for record in matched:
+            if limits:
+                record['safety_limits'] = dict(limits)
+            else:
+                record.pop('safety_limits', None)
+
+        Net.save_local_nets(nets)
+        logger.info(
+            "safety limits for net '%s' set to %s across %d record(s)",
+            name, limits or None, len(matched),
+        )
+        return jsonify({'ok': True, 'name': name, 'safety_limits': limits or None})
 
     @app.route('/nets', methods=['DELETE'])
     def nets_delete_all():
