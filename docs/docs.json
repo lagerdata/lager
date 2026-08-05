@@ -234,6 +234,7 @@
           {
             "group": "Version History",
             "pages": [
+              "source/release-notes/v0.34.4",
               "source/release-notes/v0.34.3",
               "source/release-notes/v0.34.2",
               "source/release-notes/v0.34.1",
