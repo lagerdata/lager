@@ -31,7 +31,17 @@ Each suite runs in its own pytest process because test/unit/box/ and
 test/unit/measurement/ want incompatible sys.modules states for the name
 `lager` -- the same reason unit-tests.yml uses one job per suite.
 
-Usage:  python tools/check_coverage_counts.py [--fix]
+Section headers carry file counts too, and those were unchecked until 2026-08-05
+-- by which point the CLI header claimed 43 files against 48 on disk and nine
+test files from three merged PRs had no row in any table. Those counts are now
+checked the same way, by globbing the path the header itself names. That half is
+pure filesystem work, so `--files-only` verifies it without running any suite.
+
+What is still NOT enforced: that a new file has a *row* in its section's table.
+A count can be corrected without describing what was added, and no reasonable
+check can tell a real description from a placeholder.
+
+Usage:  python tools/check_coverage_counts.py [--fix] [--files-only]
 """
 
 from __future__ import annotations
@@ -58,6 +68,55 @@ SUITES = {
 
 ROW = re.compile(r'^\|\s*`?(unit \([a-z]+\))`?\s*\|(.*?)\|\s*([^|]+?)\s*\|\s*$')
 TOTAL_ROW = re.compile(r'^\|\s*\|\s*\*\*Total gated\*\*\s*\|\s*\*\*(\d+)\*\*\s*\|\s*$')
+
+# Section headers carry their own file counts, e.g.
+#
+#     #### Box Unit Tests (`test/unit/box/` -- 67 files)
+#                          ^^^^^^^^^^^^^^^    ^^
+#                          path               claimed count
+#
+# Those drifted for months while the run-counts above were gated: on 2026-08-05
+# the CLI header said 43 against 48 on disk, and 9 test files from three merged
+# PRs had no row at all. The path is in the header, so this needs no table --
+# a directory is counted recursively, and a header whose "path" is already a
+# glob is matched as written.
+HEADER = re.compile(r'^(#+ .*\(`)([^`]+)(`\s+--\s+)(\d+)( files?\))\s*$')
+
+# Suites that are not Python `test_*.py` files.
+GLOB_OVERRIDES = {'test/integration/': '**/*.sh'}
+
+
+def count_files(path: str) -> int:
+    """Files backing one section header, counted the way the header means it."""
+    if path.endswith('/'):
+        return len(list((REPO_ROOT / path).glob(GLOB_OVERRIDES.get(path, '**/test_*.py'))))
+    return len(list(REPO_ROOT.glob(path)))
+
+
+def check_file_counts(text: str, fix: bool) -> tuple[list[str], str]:
+    """Compare every section header's file count with disk.
+
+    Cheap on purpose -- globbing only, no pytest -- so a docs-only change can
+    verify itself without a test environment.
+    """
+    bad, out = [], []
+    for line in text.splitlines(keepends=True):
+        m = HEADER.match(line.rstrip('\n'))
+        if not m:
+            out.append(line)
+            continue
+        head, path, mid, claimed, tail = m.groups()
+        actual = count_files(path)
+        same = int(claimed) == actual
+        print(f'  {"OK " if same else "BAD"} {path:28s} '
+              f'header {claimed:<6} actual {actual}')
+        if not same:
+            bad.append(path)
+            if fix:
+                tail = ' file)' if actual == 1 else ' files)'
+                line = f'{head}{path}{mid}{actual}{tail}\n'
+        out.append(line)
+    return bad, ''.join(out)
 
 
 def run_suite(paths: list[str]) -> dict[str, int]:
@@ -118,10 +177,33 @@ def render_cell(counts: dict[str, int]) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--fix', action='store_true',
-                    help='rewrite the table instead of failing')
+                    help='rewrite the counts instead of failing')
+    ap.add_argument('--files-only', action='store_true',
+                    help='check only the per-section file counts; no pytest run, '
+                         'so a docs-only change can verify itself without a test env')
     args = ap.parse_args()
 
     text = COVERAGE_MD.read_text()
+
+    print('Counting the files behind each section header...')
+    bad_files, text = check_file_counts(text, args.fix)
+
+    if args.files_only:
+        if args.fix:
+            COVERAGE_MD.write_text(text)
+            if bad_files:
+                print('\nRewrote the section headers. Review the diff before committing.')
+                return 0
+        if bad_files:
+            print('\nFAIL: section headers in test/COVERAGE.md disagree with disk.\n'
+                  '      Fix:  python tools/check_coverage_counts.py --files-only --fix\n'
+                  '      A header count is not enough on its own -- if a file is new,\n'
+                  '      give it a row in that section\'s table too.',
+                  file=sys.stderr)
+            return 1
+        print('\nCOVERAGE.md file counts match.')
+        return 0
+
     claimed, cells, claimed_total = {}, {}, None
     for line in text.splitlines():
         m = ROW.match(line)
@@ -155,7 +237,7 @@ def main() -> int:
     print(f'  {"OK " if total_ok else "BAD"} {"Total gated":20s} '
           f'table {claimed_total:<22} actual {actual_total}')
 
-    if not bad and total_ok:
+    if not bad and total_ok and not bad_files:
         print('\nCOVERAGE.md counts match.')
         return 0
 
@@ -168,14 +250,15 @@ def main() -> int:
             new = re.sub(r'\*\*Total gated\*\* \| \*\*\d+\*\*',
                          f'**Total gated** | **{actual_total}**', new)
         COVERAGE_MD.write_text(new)
-        print('\nRewrote the table. Review the diff before committing.')
+        print('\nRewrote the counts. Review the diff before committing.')
         return 0
 
-    print('\nFAIL: test/COVERAGE.md disagrees with what pytest reports.\n'
+    print('\nFAIL: test/COVERAGE.md disagrees with what is on disk.\n'
           '      That file states its counts are checked against disk, so a\n'
           '      stale number there is a defect, not a formatting nit.\n\n'
           '      Fix:  python tools/check_coverage_counts.py --fix\n'
-          '      then review the diff and commit it with your test change.',
+          '      then review the diff and commit it with your test change.\n'
+          '      A new file needs a row in its section table as well as a count.',
           file=sys.stderr)
     return 1
 
