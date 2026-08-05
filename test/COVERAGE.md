@@ -31,13 +31,13 @@ A job only *blocks* a merge once its status context is listed in branch ruleset 
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1132 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 1340 |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1160 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 1397 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 79 (+4 skipped) |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 91 (+1 skipped) |
-| | **Total gated** | **2913** |
+| | **Total gated** | **2998** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -516,6 +516,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_devenv_terminal_docker_args.py` | `docker run` args for `devenv terminal` and `exec`; regression for the `--group` bare-flag bug |
 | `test_diagnose_classify.py` | `lager diagnose` classification decision tree for one-line user diagnosis |
 | `test_diagnose_classify_jlink.py` | `lager diagnose` J-Link classification from `/diagnose/usb` + `/diagnose/jlink` payloads |
+| `test_diagnose_classify_usbhub.py` | `lager diagnose` USB hub classification from `/diagnose/usbhub`, including the wedged hub that sysfs and lsof both call healthy |
 | `test_error_mapping.py` | map_system_error errno mapping [16/19/110] to actionable headlines and actions |
 | `test_gateway_auth_refresh.py` | Gateway-auth refresh margin scaling with token lifetime -- pins the refresh-storm fix |
 | `test_net_9000_migration.py` | Tier-1 net CLI commands (adc, dac, gpi, gpo, spi, i2c, watt, energy, ...) driving the box `:9000` API |
@@ -537,6 +538,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_uart_ws_status_events.py` | CLI handling of box-side `uart_status` events when a UART device re-enumerates |
 | `test_update_flatten.py` | `lager update` sparse-checkout flatten: deletions propagate, root entries preserved, and the docker-build hash covers the source tree |
 | `test_update_probe.py` | `lager box update` probe script modprobe/usbtmc detection and output parsing |
+| `test_usb_command_errors.py` | `lager usb <net> <command>` error wiring: a 404 for a missing device must not be reported as an out-of-date box image |
 | `test_version_skew.py` | Version skew warning when CLI minor > box minor with per-process caching |
 | `test_watt_subcommands.py` | `lager watt` NetGroup reading power/current/voltage/all over the box API |
 | `test_ws_diagnose.py` | WebSocket failure message generation pointing to instrument vs. box based on health |
