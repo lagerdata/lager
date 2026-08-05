@@ -108,6 +108,20 @@ class StatusCapabilitiesTest(unittest.TestCase):
             (box_http_server._has_ble, box_http_server._has_wifi,
              box_http_server._has_blufi) = orig
 
+    def test_safety_limits_capability_reflects_nets_registration(self):
+        # The control plane decides whether to report a configured ceiling as
+        # enforced from this flag. Reporting it enforced on a box that cannot
+        # store one is the failure the flag exists to prevent, so it must track
+        # registration rather than the presence of the module on disk.
+        orig = box_http_server._has_nets
+        try:
+            box_http_server._has_nets = True
+            self.assertIs(self._capabilities()['safetyLimits'], True)
+            box_http_server._has_nets = False
+            self.assertIs(self._capabilities()['safetyLimits'], False)
+        finally:
+            box_http_server._has_nets = orig
+
 
 if __name__ == '__main__':
     unittest.main()

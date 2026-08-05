@@ -318,6 +318,13 @@ def status():
             # contracts as the :5000 python-exec service); lets the CLI
             # detect boxes that predate them.
             'binaries': _has_binaries,
+            # PUT /nets/<name>/safety-limits is served on :9000. The control
+            # plane must not report a ceiling as enforced on a box that cannot
+            # store one, and a version number cannot answer that: an import
+            # failure here leaves the route unregistered on a box whose version
+            # says it should be there. A box predating the route omits the key
+            # entirely, which reads as false.
+            'safetyLimits': _has_nets,
         },
     })
 
