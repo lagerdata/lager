@@ -1,0 +1,98 @@
+---
+title: "Version 0.34.4"
+description: "August 5, 2026"
+---
+
+## <u>Features</u>
+
+- **`lager diagnose` now covers USB hub nets.** They used to fall through to a
+  generic "check the role command yourself", which is no help when the question
+  is why the hub will not answer. The new section reports what host-side tools
+  structurally cannot: the vendor SDK's own view of the hub. A hub can be
+  enumerated by the kernel, held by no other process, and still invisible to
+  hub discovery — and in that state every other signal looks healthy.
+
+  It also reports the device's USB device number against the rest of the bench.
+  The kernel assigns those in order, so a device far above its neighbours has
+  re-enumerated many times since they did. On the bench that prompted this
+  work, the failing hub sat at 93 while every other instrument was in the 60s;
+  that one number was the most useful fact in the investigation and nothing
+  surfaced it.
+
+## <u>Bug Fixes</u>
+
+- **The box no longer restarts its HTTP service for a USB hub it cannot reach.**
+  A self-restart repairs exactly one thing: a USB handle the process orphaned
+  across a re-enumeration, which only a fresh process can reopen. The Acroname
+  driver keeps no such handle — it opens, operates and disconnects on every
+  call — so there was never anything on that path for a restart to repair. It
+  fired anyway, because the check asked only whether the device was still
+  enumerated, and the kernel keeps a device node for hardware that has stopped
+  answering on the wire.
+
+  Observed on a two-hub bench: a hub that would not open triggered the restart
+  twice, and each respawned process failed identically seconds later. Nothing
+  was fixed, and every other in-flight operation — UART sessions, running
+  scripts, hardware calls — was dropped to do it. Drivers now declare whether
+  they hold a USB context between operations, and those that do not are
+  skipped. The pyvisa and HID paths, where a session really does persist, are
+  unchanged.
+
+- **`lager diagnose` reported the wrong instrument on a bench with two of the
+  same model.** The device lookup matched on vendor and product id and returned
+  the first hit. It now prefers an exact serial match, falling back to
+  vendor/product so a device with an unreadable serial is not lost.
+
+- **`lager diagnose`'s kernel-log section has never worked.** It shelled out to
+  a command the box image does not ship, so the field has read
+  "unavailable" on every box since it shipped. It now reads the kernel log
+  directly and, where the container is not permitted to, says so and points at
+  where the history actually lives.
+
+## <u>Improvements</u>
+
+- **A USB hub that will not open now tells you what to do about it.** The box
+  already worked out which of three faults it was looking at — nothing from
+  this vendor on the bus, the hub's serial present but not answering, or other
+  devices present and none of them the one addressed — then flattened all three
+  into a single line with vendor return codes appended. The terminal showed a
+  wall of codes and no sentence saying whether to check a cable, a power
+  switch, or the net's address.
+
+  Unknown entries in `lager nets state` now carry a machine-readable
+  `reason_code` alongside the human reason, and the footnote adds one remedy
+  per affected group — red when the fault is hardware, yellow when the bench is
+  more likely in a normal state. `--json` output carries
+  `live_state_reason_code`. The box always sends a complete, self-sufficient
+  human reason, so an older CLI, or a newer one seeing a code it does not
+  recognise, renders exactly as before.
+
+  A hub the kernel has enumerated but that will not answer is now logged as an
+  error rather than a warning. That case is always hardware and always worth
+  acting on; a hub that is simply absent is a normal bench state.
+
+- **An Acroname hub open is retried once when the bus says the hub is there.** A
+  hub caught mid-re-enumeration is on the bus a beat before discovery will
+  return it, so an operation landing in that window failed outright. The YKUSH
+  driver has always retried once for this reason; this one did not. The retry is
+  gated on the bus check, so a hub that is genuinely absent still costs exactly
+  one attempt, and it is suppressed on the polling path so the whole-bench state
+  sweep's timing is unchanged.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.34.4
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.34.4/)
