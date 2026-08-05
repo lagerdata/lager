@@ -3,8 +3,11 @@
 This document tracks what test coverage exists across all Lager features and the four test
 suites: local unit tests, Python API tests, bash integration tests, and MCP tests.
 
-**Counts here are checked against disk.** If you add or remove a test file, update the numbers in
-this document in the same change.
+**Counts here are checked against disk**, by `tools/check_coverage_counts.py` in the required
+`static-checks` job — both the gated run-counts below and the per-section file counts in every
+`(-- N files)` header. If you add or remove a test file, update the numbers in this document in
+the same change, and give a new file a row in its section's table: the count is gated, the row is
+not, and a file with neither is invisible to everyone reading this.
 
 ## What runs in CI
 
@@ -24,8 +27,9 @@ schedule-, or dispatch-triggered and need the bench.
 workflows through `workflow_call`, which is why neither of those carries a `schedule` trigger of
 its own.
 
-A job only *blocks* a merge once its status context is listed in branch ruleset 14535039. The six
-`unit (...)` contexts are; the `compat`, `static-checks` and `coverage` contexts are not yet.
+A job only *blocks* a merge once its status context is listed in branch ruleset 14535039. Seven
+contexts are: the six `unit (...)` jobs and `static-checks`. The `compat` and `coverage` contexts
+are not.
 
 `unit-tests.yml` runs six matrix jobs, each in its own pytest process, on Python 3.11:
 
@@ -426,9 +430,9 @@ cli/tests/                #  5 files: 3 pytest suites + test_io_imports.py (GATE
                           #           `unit (cli)`), plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 116 files)
+### Local Unit Tests (`test/unit/` -- 126 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 62 files)
+#### Box Unit Tests (`test/unit/box/` -- 67 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported, and stubs the two third-party modules that are neither guarded nor installed
@@ -461,17 +465,21 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_dispatcher_channel_resolution.py` | `resolve_channel`: v0.32.0 regression where int()-only parsing broke named adc/dac channels |
 | `test_gdb_controller_leak.py` | GdbController close on failed attempts to prevent fd leak |
 | `test_gdbserver_zombie_status.py` | Defunct/zombie gdbserver detection that a bare `os.kill(pid, 0)` check passes |
+| `test_hardware_service_fail_fast.py` | `/invoke` fail-fast locking and hang recovery: per-device and per-address locks answer `device-busy` rather than queueing behind a wedged `open_resource`, and a hung driver call expires into `invoke-timeout` plus a supervised restart |
 | `test_hardware_service_retry.py` | Close-then-recreate retry path for concurrent Keithley resource collisions |
 | `test_host_ops.py` | apt_install and sysctl_apply SSH execution branches |
+| `test_hub_lock_fail_fast.py` | The same treatment on the USB hub path: bounded waits on the module-level and per-hub locks (`hub-busy`), a per-operation deadline (`hub-op-timeout`), and the restart that follows |
 | `test_jlink_commander_use_poll.py` | JLinkExe spawned with use_poll=True to avoid fd >= 1024 select() failure |
 | `test_jlink_error_masking.py` | Three debug-path defects that masked on-bench J-Link failures |
 | `test_jlink_memrd_reset_halt.py` | DA1469x reset+halt-before-read gating, regression guard, env-var opt-out |
 | `test_jlink_multi.py` | Multi-probe start_jlink_gdbserver with per-probe serial/port/RTT configuration |
 | `test_jlink_multi_gdbserver_select.py` | Multi-probe GDB slot dispatch |
+| `test_jlink_script_attach_retry.py` | A user `.JLinkScript` defining `InitTarget()` replaces J-Link's built-in, which is what brings the DAP up on a blank or protected part; the attach retries once without the script rather than wedging the net |
 | `test_jlink_script_scoping.py` | J-Link scripts are per net: an operation with no net gets none, a net never inherits another's script, and a session's script is cleared when it ends |
 | `test_jlink_uncached_verify.py` | DA1469x opt-in uncached QSPI post-program verify to detect false XIP failures |
 | `test_lager_package_identity.py` | Guards this suite's conftest invariant: `lager` must be the real on-disk package with its `__init__` executed, not a placeholder |
 | `test_labjack_batch_read.py` | `POST /labjack/batch_read`: locks on the same device identity `/invoke` does, and writes nothing to the instrument |
+| `test_load_box_secrets.py` | `load_box_secrets()` returns `{}` on every failure, which makes an unreadable secrets file indistinguishable from a box with none configured -- pins that distinction |
 | `test_lock_state.py` | lock_state.py single source of truth for box-side lock behavior |
 | `test_monitor_state.py` | SupplyNet/KeithleyBattery single-call monitor-state helpers reducing lock contention |
 | `test_mount_prep.py` | Mount preparation SSH operations via mocked runner |
@@ -486,6 +494,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_python_service_nets_list.py` | GET /nets/list handler returning saved net array or empty on missing/invalid JSON |
 | `test_render_docker_args.py` | Sourceable bash output preserves docker-run args through array expansion |
 | `test_render_packages.py` | pip/cargo/npm renderers preserve only their own config fields and soft-fail gracefully |
+| `test_secret_file_ownership.py` | The ownership block extracted verbatim from `box/start_box.sh`: mode 0600 grants the OWNER alone, so a secrets file owned by the host login user locks the container runtime out of its own secrets |
 | `test_serial_id_cables.py` | tty enumeration and resolution via fake /sys tree lookup |
 | `test_ssh_runner.py` | SSH key selection and auth fallback logic |
 | `test_ssh_setup.py` | `lager ssh-setup` command and SSH key provisioning with TTY passthrough |
@@ -499,13 +508,14 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_webcam_detection.py` | sysfs-based webcam detection (`_by_camera`) against a fake sysfs tree |
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 43 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 48 files)
 
 | File | What it tests |
 |------|---------------|
 | `test_address_utils.py` | IPv4/IPv6/Tailscale/hostname validation rejecting schemes, ports, and paths |
 | `test_battery_tui.py` | BatteryTUI render output, command parsing, and worker thread offloading |
 | `test_binaries_9000.py` | `lager binaries add/list/remove` and `download_file` migrated to the box HTTP server on `:9000` |
+| `test_box_command_error.py` | `box_command_error`: a 404 that means "net or instrument not found" must not also tell the user their box image is out of date |
 | `test_box_lock_helpers.py` | Lock holder resolution, acquire/release/heartbeat, and format_lock_user CI support |
 | `test_box_request_failure_messages.py` | `echo_box_request_failure`: distinguishing a slow box-side op from a dead box |
 | `test_configure_docker_dns.py` | `configure_docker_dns`: daemon.json `dns` entries must be bare IPs or Docker refuses to start |
@@ -538,6 +548,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_uart_ws_status_events.py` | CLI handling of box-side `uart_status` events when a UART device re-enumerates |
 | `test_update_flatten.py` | `lager update` sparse-checkout flatten: deletions propagate, root entries preserved, and the docker-build hash covers the source tree |
 | `test_update_probe.py` | `lager box update` probe script modprobe/usbtmc detection and output parsing |
+| `test_update_secret_ownership.py` | `lager update`'s secret-file ownership repair, run as real shell against a throwaway directory with a recording `sudo` stub |
 | `test_usb_command_errors.py` | `lager usb <net> <command>` error wiring: a 404 for a missing device must not be reported as an out-of-date box image |
 | `test_version_skew.py` | Version skew warning when CLI minor > box minor with per-process caching |
 | `test_watt_subcommands.py` | `lager watt` NetGroup reading power/current/voltage/all over the box API |
@@ -583,7 +594,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_errors.py` | `cli/errors.py` taxonomy, plus main/box_storage/config error paths |
 | `test_format_lock_user.py` | `box_storage.format_lock_user` rendering of lock holder identities |
 
-#### In-Package CLI Tests (`cli/tests/` -- 5 files)
+#### In-Package CLI Tests (`cli/tests/` -- 7 files)
 
 Gated as part of the `unit (cli)` job.
 
@@ -592,6 +603,8 @@ Gated as part of the `unit (cli)` job.
 | `test_box_storage.py` | `box_storage.py` project-level `.lager` merging behavior | Yes |
 | `test_gateway_auth.py` | `gateway_auth.py` bearer-token auth for boxes behind an authenticating gateway | Yes |
 | `test_update_gate.py` | Update rebuild gate: probe parsing, build-hash mismatch, early-exit verdict | Yes |
+| `test_gateway_callsites.py` | Gateway-auth discovery across every box-talking call site: record the mapping on a discovery 401, retry once with a held token, surface genuine denials, and keep rendering the other boxes' rows | Yes |
+| `test_host_cli.py` | Host-OS CLI install helpers shared by `lager install` and `lager update`: the reconcile decision table, `--check` labels, exit codes, the probe snippet under a real shell, and the drift guard pinning the deploy scripts' mirror | Yes |
 | `test_io_imports.py` | The `lager.io.*` import surface and re-export identity; asserts the removed root-level aliases stay removed | Yes |
 | `test_box_lager_imports.py` | Import-verification report across the box package. **No assert statements** -- excluded by `cli/tests/conftest.py`; run it directly | No |
 
