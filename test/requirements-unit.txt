@@ -35,7 +35,7 @@ pyvisa-py>=0.7,<1
 flask>=3,<4
 pyserial>=3.5,<4
 pyusb>=1.2,<2
-cryptography>=42,<50
+cryptography>=42,<51
 fastmcp>=3,<4
 pexpect>=4.8,<5
 # NB: pymupdf (PyMuPDF) is intentionally NOT listed — it is AGPL-3.0, which
