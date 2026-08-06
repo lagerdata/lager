@@ -36,12 +36,12 @@ are not.
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1160 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 1462 |
+| `unit (box)` | `test/unit/box/` | 1517 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 79 (+4 skipped) |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 91 (+1 skipped) |
-| | **Total gated** | **3063** |
+| | **Total gated** | **3118** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -430,9 +430,9 @@ cli/tests/                #  5 files: 3 pytest suites + test_io_imports.py (GATE
                           #           `unit (cli)`), plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 126 files)
+### Local Unit Tests (`test/unit/` -- 132 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 67 files)
+#### Box Unit Tests (`test/unit/box/` -- 73 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported, and stubs the two third-party modules that are neither guarded nor installed
@@ -443,6 +443,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_acroname_driver.py` | Acroname USB hub driver: device-contention regression from indefinitely cached hub handles |
 | `test_authorized_keys_sync.py` | `start_box.sh` authorized_keys marker-block rebuild (revocation, no duplicates, foreign keys preserved) and its single-instance lock |
 | `test_battery_model_authoring.py` | Battery model authoring (create/export of 2281S memory slots), against hardware-verified ground truth |
+| `test_bench_quiesce.py` | The quiesce registry that makes a starting job wait for the previous one's teardown, and the arithmetic tying its bounds to the reap they must cover |
 | `test_battery_model_catalog.py` | Read-only battery model catalog; the 2281S has no `:BATT:MODel:CATalog?` query |
 | `test_binaries_store.py` | `lager.binaries.store` plus the `:9000` `/binaries/*` and `/download-file` handlers |
 | `test_box_config.py` | box_config v1 schema validation rules and idempotency hash |
@@ -452,6 +453,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_box_http_server_capabilities.py` | /status capabilities block advertises netCommand based on route registration |
 | `test_box_level_command_handlers.py` | Box-level `POST /ble\|wifi\|blufi/command` handlers driving the box's own radios |
 | `test_breakpoint_pause.py` | `lager.pause()` interactive breakpoint: timeout handling and resume signaling |
+| `test_cleanup_watchdog.py` | Cleanup grace as an *idle* budget: a teardown making progress keeps its deadline pushed out, a wedged one is still cut off, and blocking on an instrument counts as progress |
 | `test_custom_devices_assign.py` | `lager.devices.assign` and the `/custom-devices/*` handlers behind `lager nets assign` |
 | `test_custom_store.py` | Custom-device JSON persistence: USB cable to catalog instrument mapping |
 | `test_da1469x_loader.py` | DA1469x ELF symbol reading, loader path resolution, flash/erase/timeout paths |
@@ -486,18 +488,22 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_net_command_handler.py` | Generic POST /net/command Flask handler dispatch by role and error handling |
 | `test_net_save_uart_identity.py` | `usb_identity_for_net_record`: durable USB identity snapshot at UART net save time |
 | `test_nets_display.py` | `lager nets` table no-truncation for long UART pins and VISA addresses |
+| `test_nets_safety_limits_endpoint.py` | `PUT /nets/<name>/safety-limits`: that what the route writes is what the interlock reads, that every record sharing a name is updated, and that a refused body changes nothing |
 | `test_nets_state_endpoint.py` | `GET /nets/state`: wedged-instrument resilience, per-instrument probing, LabJack cross-role batch routing through hardware_service (no USB contention), and I2C bus scan |
 | `test_openocd_dispatch.py` | OpenOCD interface .cfg dispatch and user-cfg override behavior |
 | `test_probes_visa_parsing.py` | VISA address parsing for empty-serial FTDI probes |
+| `test_python_kill.py` | `/python/kill` signals every PID in a job, once per process group, and shares one grace window across the whole set; real forked children, not mocks |
 | `test_python_service_breakpoint.py` | Breakpoint endpoints on box python/service.py POST routes |
 | `test_python_service_multipart.py` | `parse_multipart` after the move off `cgi.FieldStorage`: byte-exact binary fields, repeated names, and the `.py`/`.zip` to BytesIO rule |
 | `test_python_service_nets_list.py` | GET /nets/list handler returning saved net array or empty on missing/invalid JSON |
 | `test_render_docker_args.py` | Sourceable bash output preserves docker-run args through array expansion |
 | `test_render_packages.py` | pip/cargo/npm renderers preserve only their own config fields and soft-fail gracefully |
+| `test_safety_interlock.py` | Per-net safety interlock (`box/lager/safety.py`): limits read from NetsCache rather than the request, so a caller cannot widen its own ceiling, and the check placed before the device is built so the stale-VISA retry path cannot bypass it |
 | `test_secret_file_ownership.py` | The ownership block extracted verbatim from `box/start_box.sh`: mode 0600 grants the OWNER alone, so a secrets file owned by the host login user locks the container runtime out of its own secrets |
 | `test_serial_id_cables.py` | tty enumeration and resolution via fake /sys tree lookup |
 | `test_ssh_runner.py` | SSH key selection and auth fallback logic |
 | `test_ssh_setup.py` | `lager ssh-setup` command and SSH key provisioning with TTY passthrough |
+| `test_stream_disconnect.py` | `peer_is_connected` and the idle tick that let the box notice a vanished client in under a second instead of waiting for the script's next write |
 | `test_stream_teardown.py` | `lager python` child reaped when the client disconnects mid-run, instead of orphaning at 100% CPU holding a device flock |
 | `test_supply_command_handler.py` | `POST /supply/command` handler, covering v0.32.0 hardware-found regressions |
 | `test_uart_bridge_reconnect.py` | UARTBridge re-enumeration healing after an adapter changes its /dev/tty node |

@@ -19,10 +19,13 @@ later run on that instrument until someone killed it by hand.
 """
 
 import os
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
+from unittest import mock
 
 _BOX_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(__file__), '..', '..', '..', 'box')
@@ -30,6 +33,7 @@ _BOX_ROOT = os.path.abspath(
 if _BOX_ROOT not in sys.path:
     sys.path.insert(0, _BOX_ROOT)
 
+from lager.exec import process as process_mod  # noqa: E402
 from lager.exec.process import stream_process_output, terminate_process  # noqa: E402
 
 
@@ -39,12 +43,16 @@ def _spin_forever():
     The spin is the shape from the field report: the orphan sat at 100% CPU
     doing no I/O, so nothing could reap it via a closed pipe or SIGPIPE.
 
-    The output before the spin is purely so the generator has something to
+    The output before the spin is purely so the generator has something real to
     yield, and it is a full 1024 bytes on purpose: the drain thread calls
     `readable.read(1024)` on a BufferedReader, which blocks until it has that
-    many bytes or hits EOF. A short write would sit in the buffer and the
-    first `next()` would block for KEEPALIVE_TIME (20 s) waiting to emit an
-    empty keepalive instead -- a minute of test runtime for no added coverage.
+    many bytes or hits EOF, so a short write would just sit in the buffer.
+
+    That used to also be what kept these tests fast -- without it the first
+    `next()` blocked for KEEPALIVE_TIME (20 s). It no longer is: the generator
+    now yields a zero-length IDLE_TICK on every idle poll, so `next()` returns
+    promptly either way. Kept because the tests still want the child to have
+    actually run and produced output before the teardown under test.
     """
     return subprocess.Popen(
         [sys.executable, '-c',
@@ -154,29 +162,114 @@ class StreamTeardownTests(unittest.TestCase):
 
 
 class TerminateProcessTests(unittest.TestCase):
-    """terminate_process is the existing SIGTERM -> wait -> SIGKILL helper the
-    teardown reuses. It is load-bearing now, so pin its escalation."""
+    """terminate_process is the reaper behind the teardown above.
 
-    def test_sigkills_a_child_that_ignores_sigterm(self):
-        proc = subprocess.Popen(
-            [sys.executable, '-c',
-             'import signal,time\n'
-             'signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
-             'print("ready", flush=True)\n'
-             'time.sleep(120)\n'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        try:
-            assert proc.stdout is not None
-            proc.stdout.readline()  # wait until SIGTERM is actually ignored
-            terminate_process(proc)
-            self.assertIsNotNone(proc.poll(),
-                                 "a SIGTERM-ignoring child must still be killed")
-        finally:
+    It used to lead with SIGTERM, whose default Python disposition kills the
+    interpreter outright: `finally` blocks, context-manager `__exit__`s and
+    `atexit` hooks were all skipped. So a client that went away left the box
+    free of orphans but left the BENCH as the test had it -- outputs still
+    driven, rails still energised, peripherals still running.
+
+    That matters more than the other stop paths because this one needs nothing
+    from the client. It is the only cleanup that still happens when the
+    supervisor is hard-killed rather than signalled, which is exactly what
+    GitHub Actions does 10s into a cancellation.
+    """
+
+    def setUp(self):
+        self.procs = []
+        # Keep the escalation rungs short; the real values are sized for a HIL
+        # script's cleanup, not for a test suite.
+        for name, value in (('CLEANUP_GRACE_S', 0.5), ('TERMINATE_GRACE_S', 0.5)):
+            patcher = mock.patch.object(process_mod, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.addCleanup(self._reap_all)
+
+    def _reap_all(self):
+        for proc in self.procs:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=5)
+
+    def _spawn(self, source, *args):
+        proc = subprocess.Popen(
+            [sys.executable, '-c', source, *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        self.procs.append(proc)
+        assert proc.stdout is not None
+        proc.stdout.readline()  # handlers are installed once "ready" is out
+        return proc
+
+    def test_the_child_gets_to_run_its_cleanup(self):
+        """REGRESSION: this is the bench left live.
+
+        The marker file stands in for a script's real teardown -- de-energising
+        rails, parking outputs, releasing the DUT -- work that only happens if
+        the child is unwound rather than killed outright.
+        """
+        marker = os.path.join(tempfile.mkdtemp(), 'cleaned')
+        proc = self._spawn(
+            'import sys, time\n'
+            'try:\n'
+            '    print("ready", flush=True)\n'
+            '    while True: time.sleep(0.05)\n'
+            'except KeyboardInterrupt:\n'
+            '    open(sys.argv[1], "w").write("cleaned")\n',
+            marker,
+        )
+
+        returncode = terminate_process(proc)
+
+        self.assertTrue(
+            os.path.exists(marker),
+            'child was killed before its cleanup could run',
+        )
+        self.assertEqual(returncode, 0, 'child should have exited on its own')
+
+    def test_escalates_to_sigterm_when_the_interrupt_is_ignored(self):
+        proc = self._spawn(
+            'import signal, time\n'
+            'signal.signal(signal.SIGINT, signal.SIG_IGN)\n'
+            'print("ready", flush=True)\n'
+            'time.sleep(120)\n'
+        )
+
+        terminate_process(proc)
+
+        self.assertEqual(proc.poll(), -signal.SIGTERM)
+
+    def test_escalates_to_sigkill_when_both_are_ignored(self):
+        proc = self._spawn(
+            'import signal, time\n'
+            'signal.signal(signal.SIGINT, signal.SIG_IGN)\n'
+            'signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+            'print("ready", flush=True)\n'
+            'time.sleep(120)\n'
+        )
+
+        terminate_process(proc)
+
+        self.assertEqual(proc.poll(), -signal.SIGKILL)
+
+    def test_an_already_exited_child_costs_nothing(self):
+        """The normal path calls this too, on a child that has already gone.
+
+        Every rung must be a no-op there, or each completed run would pay the
+        cleanup grace before its exit code reached the client.
+        """
+        proc = subprocess.Popen([sys.executable, '-c', 'raise SystemExit(7)'])
+        self.procs.append(proc)
+        proc.wait(timeout=5)
+
+        start = time.monotonic()
+        returncode = terminate_process(proc)
+        elapsed = time.monotonic() - start
+
+        self.assertEqual(returncode, 7)
+        self.assertLess(elapsed, 0.5)
 
 
 if __name__ == '__main__':
