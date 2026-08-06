@@ -2,6 +2,38 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Added
+
+- **RTT is now bi-directional, so firmware that reads commands over RTT can be
+  driven from the CLI.** The probe's RTT connection was always full duplex, and
+  the box's own Python API has exposed `write()` on it for as long as
+  `dbg.rtt()` has existed — but the only remote transport was a one-way HTTP
+  stream, so a remote caller could read the target's log output and had no way
+  to answer it. Interactive firmware consoles were therefore reachable from a
+  script running on the box and from nowhere else.
+
+  `lager debug <net> gdbserver --rtt --interactive` now forwards stdin to the
+  target's RTT down-channel while the up-channel streams as before. The
+  up-channel stays raw bytes on stdout, so the established defmt pipeline is
+  unchanged and composes with the new flag:
+
+      lager debug <NET> gdbserver --rtt --interactive 2>/dev/null \
+        | defmt-print -e app.elf
+
+  What you type is echoed by your terminal rather than injected into stdout,
+  so the byte stream reaching `defmt-print` is exactly what it was before.
+  `--rtt-channel` selects a channel other than 0 for both directions.
+
+  This requires the firmware to declare an RTT **down** buffer on that channel.
+  `defmt-rtt` alone only sets up the up buffer; with no down buffer the target
+  silently discards what it is sent, which looks like a host-side failure and
+  is not one.
+
+  Plain `--rtt` is untouched and still uses the HTTP stream, so nothing that
+  reads RTT today changes behaviour.
+
 ## [0.34.4] - 2026-08-05
 
 ### Fixed
