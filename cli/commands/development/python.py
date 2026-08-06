@@ -63,6 +63,23 @@ def _default_sigpipe():
 
 _ORIGINAL_SIGINT_HANDLER = signal.getsignal(signal.SIGINT)
 
+# Signals that mean "stop this job". Only SIGINT used to be handled, so
+# `kill -TERM` -- and the second rung of a GitHub Actions cancellation, and a
+# dropped SSH session -- killed the client at its default disposition. That
+# skipped both auto-lock release paths (the `finally` in `python` and the
+# atexit above) AND never sent the kill RPC, so the box lock leaked and the
+# box-side script was left for the disconnect reaper to notice.
+_STOP_SIGNALS = tuple(
+    getattr(signal, name)
+    for name in ('SIGINT', 'SIGTERM', 'SIGHUP')
+    if hasattr(signal, name)
+)
+
+# Captured the first time we install a handler, so that restoring works even
+# when a previous run left ours in place. SIGINT is seeded from import time to
+# preserve the disposition the SIGINT-only version restored.
+_ORIGINAL_STOP_HANDLERS = {signal.SIGINT: _ORIGINAL_SIGINT_HANDLER}
+
 
 # ---------------------------------------------------------------------------
 # Auto-lock plumbing for `lager python`
@@ -121,9 +138,14 @@ from ...box_storage import HeartbeatThread as _HeartbeatThread  # noqa: E402
 
 def sigint_handler(kill_python, box_ip, _sig, _frame):
     """
-    Handle Ctrl+C by restoring the old signal handler (so that subsequent
-    Ctrl+C will actually stop python) and sending SIGTERM to the running
-    docker container.
+    Handle a stop signal by restoring the old handlers (so that a subsequent
+    Ctrl+C, or SIGTERM from a supervisor, will actually stop python) and
+    sending SIGTERM to the running docker container.
+
+    Reached from SIGINT, SIGTERM, and SIGHUP -- see ``_STOP_SIGNALS``. All
+    three are restored, not just the one that fired: an impatient operator
+    should be able to break out of a hung kill RPC with whichever signal is
+    to hand, which is the same escape hatch the SIGINT-only version offered.
 
     The auto-lock is NOT released from this handler; instead the lock is
     released by:
@@ -148,8 +170,44 @@ def sigint_handler(kill_python, box_ip, _sig, _frame):
     [Errno 16] Resource busy on the next open. Removed.
     """
     click.echo(' Attempting to stop Lager Python job')
-    signal.signal(signal.SIGINT, _ORIGINAL_SIGINT_HANDLER)
-    kill_python(signal.SIGTERM)
+    _restore_stop_handlers()
+    try:
+        kill_python(signal.SIGTERM)
+    except requests.exceptions.RequestException as exc:
+        # The RPC is bounded, so an unreachable or wedged box surfaces here
+        # rather than hanging. Raising out of a signal handler would unwind
+        # the streaming loop from whatever line it happened to interrupt, so
+        # report and let the stream end on its own instead. The script may
+        # still be running on the box.
+        click.secho(f'Failed to stop job on {box_ip}: {exc}', fg='red', err=True)
+
+
+def _install_stop_handlers(kill_python, box_ip):
+    """Route every signal in ``_STOP_SIGNALS`` through ``sigint_handler``.
+
+    No-op off the main thread: signal.signal() raises ValueError there, and
+    the Net TUI runs box calls on worker threads (run_box_job). SIGINT is
+    delivered to the main thread regardless, so a worker-thread run has
+    nothing to install.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return
+    handler = functools.partial(sigint_handler, kill_python, box_ip)
+    for sig in _STOP_SIGNALS:
+        _ORIGINAL_STOP_HANDLERS.setdefault(sig, signal.getsignal(sig))
+        signal.signal(sig, handler)
+
+
+def _restore_stop_handlers():
+    """Put every stop signal back to the disposition it had before we ran."""
+    if threading.current_thread() is not threading.main_thread():
+        return
+    for sig in _STOP_SIGNALS:
+        original = _ORIGINAL_STOP_HANDLERS.get(sig)
+        # getsignal returns None for a handler installed from C, which
+        # signal.signal() will not accept back.
+        if original is not None:
+            signal.signal(sig, original)
 
 
 def _do_exit(exit_code, box, session, downloads):
@@ -493,14 +551,7 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
         return
 
     kill_python = functools.partial(session.kill_python, box_ip, lager_process_id)
-    if threading.current_thread() is threading.main_thread():
-        # signal.signal() raises ValueError off the main thread, and the
-        # Net TUI now runs box calls on worker threads (run_box_job). The
-        # handler only exists to turn Ctrl+C into a remote kill for
-        # interactive foreground runs; SIGINT is delivered to the main
-        # thread regardless, so a worker-thread run has nothing to install.
-        handler = functools.partial(sigint_handler, kill_python, box_ip)
-        signal.signal(signal.SIGINT, handler)
+    _install_stop_handlers(kill_python, box_ip)
 
     # Let the user resume a lager.pause() breakpoint by pressing Enter. The box
     # prints the breakpoint banner to the streamed stderr; this just turns a
@@ -689,10 +740,9 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
         click.secho(f'Error: Box returned HTTP {resp.status_code}', fg='red', err=True)
         ctx.exit(1)
 
-    # Ctrl+C = kill the process (same as normal lager python)
+    # Ctrl+C (or SIGTERM/SIGHUP) = kill the process, same as normal lager python
     kill_python = functools.partial(session.kill_python, box_ip, process_id)
-    handler = functools.partial(sigint_handler, kill_python, box_ip)
-    signal.signal(signal.SIGINT, handler)
+    _install_stop_handlers(kill_python, box_ip)
 
     # Ctrl+D = detach (stdin EOF watcher thread)
     detached_by_user = False
@@ -722,7 +772,7 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
     try:
         for (datatype, content) in stream_python_output(resp):
             if datatype == StreamDatatypes.EXIT:
-                signal.signal(signal.SIGINT, _ORIGINAL_SIGINT_HANDLER)
+                _restore_stop_handlers()
                 click.echo(f'Process exited with code {content}')
                 sys.exit(content)
             elif datatype == StreamDatatypes.STDOUT:
@@ -737,7 +787,7 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
         click.secho('Response format not supported. Please upgrade lager-cli', fg='red', err=True)
         sys.exit(1)
     finally:
-        signal.signal(signal.SIGINT, _ORIGINAL_SIGINT_HANDLER)
+        _restore_stop_handlers()
 
     if detached_by_user:
         box_label = dut_name or box_ip
