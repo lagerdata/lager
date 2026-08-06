@@ -20,7 +20,9 @@ Now runs in: box/python container (port 5000)
 
 import json
 import logging
+import select
 import signal
+import socket
 import threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs
@@ -93,6 +95,60 @@ def is_truthy_string(s):
     return s.lower() in ('true', '1', 'yes', 'on')
 
 
+def peer_is_connected(sock):
+    """
+    Whether the client is still on the other end of ``sock``.
+
+    Waiting for a write to fail is not good enough for us. Nothing gets
+    written while a script is quiet -- our longer HIL tests are quiet for
+    minutes at a time -- and even once something is written, TCP hides the
+    first failure: the bytes land in the send buffer, the peer answers RST,
+    and only the NEXT write raises. A disconnect could therefore go unnoticed
+    for two keepalive intervals, and for all of that time the box-side script
+    keeps driving the bench with nobody watching.
+
+    So the connection is checked directly, on every idle tick of the streaming
+    loop. POLLHUP/POLLERR mean it is gone outright. Readable-with-nothing-to-
+    read means the peer sent FIN, which is what a killed CLI looks like: the
+    client only ever writes its request body and then reads, and never
+    half-closes, so an EOF here is unambiguous.
+
+    Errs towards "still connected" on anything ambiguous. A false positive
+    would abort a healthy run and force-kill the script mid-test, which is far
+    worse than taking a little longer to notice a real disconnect.
+
+    Args:
+        sock: the connected socket
+
+    Returns:
+        bool: False only when the peer is definitely gone
+    """
+    try:
+        poller = select.poll()
+        poller.register(sock, select.POLLIN | select.POLLHUP | select.POLLERR)
+        events = poller.poll(0)
+    except (OSError, ValueError):
+        # Socket already closed or otherwise unusable.
+        return False
+
+    if not events:
+        return True
+
+    _, revents = events[0]
+    if revents & (select.POLLHUP | select.POLLERR):
+        return False
+    if revents & select.POLLIN:
+        try:
+            return bool(sock.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT))
+        except (BlockingIOError, InterruptedError):
+            # Readable but nothing to peek at yet; not evidence of a close.
+            return True
+        except OSError:
+            # ECONNRESET and friends: the peer is gone.
+            return False
+    return True
+
+
 class PythonServiceHandler(BaseHTTPRequestHandler):
     """HTTP request handler for Python execution service"""
 
@@ -131,6 +187,14 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
 
         try:
             for chunk in generator:
+                if not chunk:
+                    # IDLE_TICK: the script has gone quiet and the generator
+                    # handed control back so we can look at the client. There
+                    # is nothing to write -- checking is the entire point.
+                    if not peer_is_connected(self.connection):
+                        logger.info("Client disconnected during streaming (peer closed)")
+                        break
+                    continue
                 try:
                     self.wfile.write(chunk)
                     self.wfile.flush()

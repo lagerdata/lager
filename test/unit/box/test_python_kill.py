@@ -102,7 +102,7 @@ class KillTestCase(unittest.TestCase):
     def setUp(self):
         self.procs = []
         self.stray_pids = []
-        patcher = mock.patch.object(executor, 'KILL_GRACE_S', TEST_GRACE_S)
+        patcher = mock.patch.object(executor, 'CLEANUP_GRACE_S', TEST_GRACE_S)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.addCleanup(self._reap_all)

@@ -100,6 +100,9 @@ cleanup_fns = set()
 output_channel = make_output_channel(cleanup_fns)
 
 for chunk in stream_process_output(proc, output_channel, cleanup_fns):
+    if not chunk:
+        # IDLE_TICK — carries no data. Check on the client here; write nothing.
+        continue
     # chunk format: b'<fileno> <length> <data>'
     yield chunk
 ```
@@ -112,6 +115,14 @@ Each chunk is prefixed with: `<fileno> <length> <data>`
 - fileno 3: output_channel
 - Final line: `- <len> <returncode>`
 
+**Idle ticks**: while the script is quiet the generator also yields `IDLE_TICK`
+(zero bytes, ~10x/second). It is not part of the wire format and **must be
+skipped, not written**. It exists so the consumer regains control often enough
+to notice a client that has gone away — otherwise a disconnect during a silent
+stretch goes unseen until the script prints again, and the script keeps driving
+the bench in the meantime. `send_streaming_response` uses it to run
+`peer_is_connected()`.
+
 **`make_output_channel(cleanup_fns)`**
 Create a temporary file for the output channel.
 
@@ -121,7 +132,10 @@ output_channel = make_output_channel(cleanup_fns)
 ```
 
 **`terminate_process(proc)`**
-Gracefully terminate a process (SIGTERM, then SIGKILL if needed).
+Terminate a process, escalating only as far as needed: SIGINT, then SIGTERM,
+then SIGKILL. SIGINT comes first so the script's `except KeyboardInterrupt` /
+`finally` / `atexit` teardown actually runs — this is the path that releases
+bench hardware when a client disconnects.
 
 ```python
 returncode = terminate_process(proc)
@@ -144,6 +158,14 @@ do_cleanup(cleanup_fns)
 #### Constants
 
 - `KEEPALIVE_TIME = 20`: Seconds between keepalive messages
+- `IDLE_TICK = b''`: Zero-length sentinel yielded while the script is quiet
+- `CLEANUP_GRACE_S = 5.0`: Seconds a script may go **without making progress**
+  after SIGINT before escalating. An idle budget, not a total: a teardown that
+  keeps working keeps its deadline pushed out. Progress is CPU time and context
+  switches across the script's process tree, so cleanup blocked on an instrument
+  counts as working.
+- `CLEANUP_MAX_S = 60.0`: Absolute ceiling on cleanup, however busy it looks
+- `TERMINATE_GRACE_S = 2.0`: Seconds after SIGTERM before SIGKILL
 
 ## Usage Examples
 
