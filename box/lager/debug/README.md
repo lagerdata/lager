@@ -32,6 +32,20 @@ A single Lager Box can run up to four J-Link probes concurrently — each `lager
 - **Port range published by Docker.** `box/start_box.sh` publishes `2331-2342:2331-2342` (4 slots × 3 GDB-side ports) and `9090-9097:9090-9097` (4 slots × 2 RTT channels). Boxes hardened with `box/lager/scripts/secure_box_firewall.sh` must re-run that script after upgrade so UFW admits the new ranges.
 - **`--gdb-port` is opt-in only.** The CLI's `lager debug <net> gdbserver --gdb-port <N>` flag overrides the slot allocator. With it omitted (the default), the box picks the right port for the probe automatically — that's the only safe option on multi-probe boxes.
 
+## RTT transports
+
+RTT reaches remote clients through two paths, both bridging the probe's local RTT telnet port (`9090 + 2*slot + channel`):
+
+- **HTTP chunked stream (read-only).** `POST /debug/rtt` on the debug service (:8765) streams up-channel bytes until the client disconnects. Used by plain `lager debug <net> gdbserver --rtt`.
+- **Socket.IO `/rtt` namespace (bi-directional).** Served by the box HTTP+WebSocket server (:9000, `box/lager/http_handlers/rtt.py`), wrapping `DebugNet.rtt()` so remote clients get the same `read_some()`/`write()` surface as on-box scripts. Used by `lager debug <net> gdbserver --rtt --interactive`. Events:
+  - `start_rtt {netname, channel?, search_addr?, search_size?, chunk_size?}` — attach to the net's RTT port. The gdbserver must already be running (the CLI starts it via `/debug/connect` first); the handler never starts one.
+  - `rtt_connected {netname, channel, backend}` — attach succeeded; up-channel data follows.
+  - `rtt_data {data: <hex>}` — server → client, raw up-channel bytes (J-Link telnet banner stripped).
+  - `rtt_write {data: <hex>}` — client → server, raw bytes for the target's RTT **down-channel**. The firmware must configure a down buffer on that channel (`defmt-rtt` alone only provides the up buffer).
+  - `stop_rtt` / disconnect — tear down the session and release the telnet port.
+
+  The RTT telnet port accepts a single client, so one session per probe+channel: a colliding `start_rtt` is rejected unless the existing session has no live reader behind it (then it is reclaimed, mirroring the UART session guard).
+
 ## Usage
 
 ### Python API

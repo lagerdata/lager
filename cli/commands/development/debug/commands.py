@@ -467,6 +467,7 @@ class NetDebugGroup(NetGroupHelpMixin, click.MultiCommand):
         "lager debug SWD flash --elf firmware.elf --box <BOX>",
         "lager debug SWD memrd 0x20000000 256 --box <BOX>",
         "lager debug status --box <BOX>        (uses default debug net)",
+        "lager debug SWD gdbserver --rtt --interactive --box <BOX> 2>/dev/null | defmt-print -e app.elf",
     ]
 
     def list_commands(self, ctx):
@@ -566,6 +567,12 @@ def _debug(ctx, box):
               help='Automatically stream RTT logs after starting GDB server')
 @click.option('--rtt-reset', is_flag=True, default=False,
               help='Start GDB server, reset device, then stream RTT logs (captures boot sequence)')
+@click.option('-i', '--interactive', is_flag=True, default=False,
+              help='Bi-directional RTT: forward stdin to the target\'s RTT down-channel '
+                   'while streaming the up-channel to stdout (requires --rtt or --rtt-reset). '
+                   'Pipeable: lager debug NET gdbserver --rtt --interactive 2>/dev/null | defmt-print -e app.elf')
+@click.option('--rtt-channel', type=int, default=0, show_default=True,
+              help='RTT channel to stream (up and down)')
 @click.option('--reset', is_flag=True, default=False,
               help='Reset the device after starting GDB server')
 @click.option('--gdb-port', type=int, default=None,
@@ -579,9 +586,14 @@ def _debug(ctx, box):
               help='Size of RAM region to search for RTT control block (hex, e.g., 0x4000)')
 @click.option('--rtt-chunk-size', type=str, default=None,
               help='Read chunk size for RTT search (hex, e.g., 0x1000)')
-def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, reset, gdb_port,
-              rtt_search_addr, rtt_search_size, rtt_chunk_size):
+def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, interactive,
+              rtt_channel, reset, gdb_port, rtt_search_addr, rtt_search_size, rtt_chunk_size):
     """Start JLinkGDBServer for debugging"""
+    # --interactive only makes sense with an RTT stream to attach to.
+    if interactive and not (rtt or rtt_reset):
+        click.secho("Error: --interactive requires --rtt or --rtt-reset", fg='red', err=True)
+        ctx.exit(1)
+
     # Validate GDB port range only when the user explicitly passed --gdb-port.
     if gdb_port is not None:
         if gdb_port < 1 or gdb_port > 65535:
@@ -808,13 +820,30 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
                 click.echo("Waiting for RTT initialization...", err=True)
             time.sleep(3.5)  # Increased from 2.0s to 3.5s for better reliability
 
+        if interactive:
+            # Bi-directional session over the box's /rtt WebSocket namespace
+            # (:9000): the up-channel streams raw to stdout (defmt-pipeable)
+            # while stdin is forwarded to the target's RTT down-channel. The
+            # gdbserver was already started above via /debug/connect on :8765.
+            if not quiet:
+                click.echo("Starting interactive RTT session...", err=True)
+            client.close()
+            from .rtt_websocket_client import connect_rtt_interactive
+            exit_code = connect_rtt_interactive(
+                f'http://{target_box}:9000',
+                debug_net.get('name'),
+                channel=rtt_channel,
+                search_params=rtt_search_params,
+            )
+            ctx.exit(exit_code)
+
         # Stream RTT logs using the service endpoint (fast!)
         if not quiet:
             click.echo("Starting RTT stream...", err=True)
 
         try:
             # Stream RTT data to stdout
-            for chunk in client.rtt(net=debug_net, channel=0, timeout=None, **rtt_search_params):
+            for chunk in client.rtt(net=debug_net, channel=rtt_channel, timeout=None, **rtt_search_params):
                 # Write directly to stdout in binary mode for maximum performance
                 import sys
                 try:
