@@ -36,12 +36,12 @@ are not.
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1160 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 1462 |
+| `unit (box)` | `test/unit/box/` | 1480 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 79 (+4 skipped) |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 91 (+1 skipped) |
-| | **Total gated** | **3063** |
+| | **Total gated** | **3081** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -432,7 +432,7 @@ cli/tests/                #  5 files: 3 pytest suites + test_io_imports.py (GATE
 
 ### Local Unit Tests (`test/unit/` -- 126 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 67 files)
+#### Box Unit Tests (`test/unit/box/` -- 68 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported, and stubs the two third-party modules that are neither guarded nor installed
@@ -489,6 +489,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_nets_state_endpoint.py` | `GET /nets/state`: wedged-instrument resilience, per-instrument probing, LabJack cross-role batch routing through hardware_service (no USB contention), and I2C bus scan |
 | `test_openocd_dispatch.py` | OpenOCD interface .cfg dispatch and user-cfg override behavior |
 | `test_probes_visa_parsing.py` | VISA address parsing for empty-serial FTDI probes |
+| `test_python_kill.py` | `/python/kill` signals every PID in a job, once per process group, and shares one grace window across the whole set; real forked children, not mocks |
 | `test_python_service_breakpoint.py` | Breakpoint endpoints on box python/service.py POST routes |
 | `test_python_service_multipart.py` | `parse_multipart` after the move off `cgi.FieldStorage`: byte-exact binary fields, repeated names, and the `.py`/`.zip` to BytesIO rule |
 | `test_python_service_nets_list.py` | GET /nets/list handler returning saved net array or empty on missing/invalid JSON |

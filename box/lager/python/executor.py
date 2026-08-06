@@ -13,9 +13,11 @@ Now performs direct execution to eliminate the controller container dependency.
 """
 
 import os
+import glob
 import json
 import tempfile
 import shutil
+import time
 import zipfile
 import subprocess
 import logging
@@ -42,6 +44,13 @@ logger = logging.getLogger(__name__)
 
 MAX_TIMEOUT = 300
 LAGER_PYTHON_IP_ADDR = '172.18.0.10'  # Docker-internal network default; overridden by LOCAL_ADDRESS env var
+
+# How long a signalled job gets to exit before it is SIGKILLed.
+#
+# Shared by every PID in the job rather than spent per PID, so the worst case is
+# one window regardless of how many processes the job has. Still a hardcoded
+# guess about somebody else's teardown, which is the next thing to fix.
+KILL_GRACE_S = 3.0
 
 
 def _release_hardware_service_direct_usb_claims():
@@ -559,130 +568,238 @@ class PythonExecutor:
                     logger.warning(f"Failed to clean up {process_base}: {exc}")
 
 
-def _kill_by_proc_id(sig, proc_id):
-    """
-    Kill a process by its lager process ID.
+KILL_POLL_INTERVAL_S = 0.1
 
-    Since LAGER_PROCESS_ID is an environment variable (not visible in ps output),
-    we need to search /proc/*/environ files to find the matching process.
+
+def _pid_is_alive(pid):
+    """
+    Whether ``pid`` exists and has not already exited.
+
+    Reads /proc rather than using ``os.kill(pid, 0)`` so that a zombie counts
+    as dead. The script is a child of the service process and the streaming
+    generator reaps it on its own schedule, so a signal probe would answer
+    "alive" for a process that had already run its entire exit path -- and the
+    escalation below would then spend its whole grace window waiting for it.
+
+    Falls back to the signal probe where /proc is absent (macOS, for the unit
+    tests). The box is Linux, so it takes the zombie-aware path in production.
+    """
+    try:
+        with open(f'/proc/{pid}/stat', 'rb') as f:
+            stat = f.read()
+    except (ProcessLookupError, PermissionError):
+        return False
+    except FileNotFoundError:
+        if os.path.isdir('/proc'):
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+    # State is the field after comm, which is parenthesised and may itself
+    # contain spaces, so split from the last ')' rather than the first space.
+    _, _, rest = stat.rpartition(b')')
+    fields = rest.split()
+    return bool(fields) and fields[0] != b'Z'
+
+
+def _scan_lager_pids(search_str):
+    """
+    PIDs whose environment block contains ``search_str``.
+
+    LAGER_PROCESS_ID is an environment variable rather than something visible
+    in ps output, so identifying a job means reading /proc/*/environ.
 
     Args:
-        sig: Signal number to send
-        proc_id: Lager process ID (UUID) to search for (bytes)
+        search_str: bytes to look for in each process's environment
+
+    Returns:
+        list[int]: matching PIDs, in no particular order
     """
-    import glob
-
-    proc_id_str = proc_id.decode() if isinstance(proc_id, bytes) else proc_id
-    search_str = f'LAGER_PROCESS_ID={proc_id_str}'.encode()
-
-    # Search through /proc/*/environ to find processes with matching LAGER_PROCESS_ID
+    pids = []
     for environ_path in glob.glob('/proc/*/environ'):
         try:
             pid = int(environ_path.split('/')[2])
-
-            # Read the environment variables for this process
             with open(environ_path, 'rb') as f:
                 environ_data = f.read()
-
-            # Check if this process has the matching LAGER_PROCESS_ID
-            if search_str in environ_data:
-                # Read cmdline to determine if it's timeout or python
-                cmdline_path = f'/proc/{pid}/cmdline'
-                try:
-                    with open(cmdline_path, 'rb') as f:
-                        cmdline = f.read().replace(b'\x00', b' ')
-                except FileNotFoundError:
-                    continue
-
-                # Log what we're killing
-                if b'/usr/bin/timeout' in cmdline:
-                    logger.info(f"Killing timeout process {pid} with signal {sig} (cmdline: {cmdline[:100]})")
-                elif b'/usr/local/bin/python3' in cmdline:
-                    logger.info(f"Killing Python process {pid} with signal {sig} (cmdline: {cmdline[:100]})")
-                else:
-                    logger.info(f"Killing process {pid} with signal {sig}")
-
-                # Kill the process
-                try:
-                    os.kill(pid, sig)
-                    logger.info(f"Successfully sent signal {sig} to PID {pid}")
-                except (ProcessLookupError, PermissionError) as e:
-                    logger.warning(f"Failed to kill PID {pid}: {e}")
-                    continue
-
-                # If not SIGKILL, wait up to 3s then escalate
-                if sig != signal_module.SIGKILL:
-                    import time
-                    for _ in range(30):
-                        try:
-                            os.kill(pid, 0)  # check if alive
-                        except ProcessLookupError:
-                            return  # process exited
-                        time.sleep(0.1)
-                    # Still alive — escalate to SIGKILL
-                    try:
-                        logger.warning(f"Process {pid} did not exit after 3s, sending SIGKILL")
-                        os.kill(pid, signal_module.SIGKILL)
-                    except (ProcessLookupError, PermissionError):
-                        pass
-                return
-
-        except (FileNotFoundError, ValueError, PermissionError):
-            # Process exited or we can't read it
+        except (FileNotFoundError, ProcessLookupError, ValueError, PermissionError):
+            # Process exited between the glob and the read, or belongs to
+            # another user.
             continue
+        if search_str in environ_data:
+            pids.append(pid)
+    return pids
 
-    logger.warning(f"Could not find process with LAGER_PROCESS_ID={proc_id_str}")
+
+def _describe_pid(pid):
+    """Truncated cmdline for log messages, or '<gone>' if the process exited."""
+    try:
+        with open(f'/proc/{pid}/cmdline', 'rb') as f:
+            cmdline = f.read().replace(b'\x00', b' ').strip()
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        return '<gone>'
+    return cmdline[:100].decode('utf-8', errors='replace')
+
+
+def _signal_targets(pids, sig):
+    """
+    Reduce a job's PIDs to the ones that must be signalled directly.
+
+    A non-detached job runs under /usr/bin/timeout, which puts itself and the
+    script in a fresh process group and forwards SIGINT/SIGTERM/SIGHUP to it.
+    Signalling the group leader therefore already reaches every member.
+
+    Signalling the members as well does not merely duplicate harmlessly.
+    Measured against GNU coreutils 9.7: signalling wrapper and script together
+    delivers SIGINT to the script twice, and the second one lands inside the
+    `finally` that is unwinding from the first, raises out of it, and
+    truncates the cleanup after roughly one step. Signalling either alone
+    delivers exactly once and the cleanup completes. One signal per process
+    group is the whole point of this function.
+
+    Two things are deliberately still signalled directly:
+
+    * Everything, when ``sig`` is SIGKILL. It cannot be caught, so nothing
+      forwards it and every PID has to be named. There is no cleanup to
+      truncate in that case either.
+    * Any member whose group leader is not part of this job, or is no longer
+      alive to do the forwarding — a grandchild that called setsid(), or a
+      wrapper that has already exited.
+
+    Args:
+        pids: the job's PIDs
+        sig: signal number about to be sent
+
+    Returns:
+        list[int]: the subset to signal
+    """
+    if sig == signal_module.SIGKILL:
+        return list(pids)
+
+    matched = set(pids)
+    targets = []
+    for pid in pids:
+        try:
+            leader = os.getpgid(pid)
+        except (ProcessLookupError, PermissionError):
+            continue
+        covered = leader != pid and leader in matched and _pid_is_alive(leader)
+        if covered:
+            logger.info(f"PID {pid} will be signalled by its group leader {leader}")
+            continue
+        targets.append(pid)
+    return targets
+
+
+def _signal_and_reap(pids, sig, grace_s=None):
+    """
+    Signal a job, then wait for all of it to exit.
+
+    Two properties matter here, and the old implementation had neither.
+
+    Signalling is reduced to one process per group (see ``_signal_targets``)
+    so an interrupt is delivered exactly once and the script's cleanup is not
+    cut short by its own duplicate.
+
+    Whatever is signalled, the wait covers every PID in the job and runs once
+    for the whole set. The previous shape resolved each PID fully — signal,
+    poll for 3s, escalate — before touching the next, so a job with a wrapper,
+    a script and a grandchild could hold the request open for 9s while the
+    client's POST timed out underneath it.
+
+    Args:
+        pids: the job's PIDs
+        sig: signal number to send
+        grace_s: how long to wait for exit before escalating to SIGKILL.
+            Defaults to KILL_GRACE_S, read at call time so the caller can
+            size the window to the workload.
+
+    Returns:
+        int: number of processes successfully signalled
+    """
+    if grace_s is None:
+        grace_s = KILL_GRACE_S
+
+    signalled = []
+    for pid in _signal_targets(pids, sig):
+        try:
+            os.kill(pid, sig)
+        except (ProcessLookupError, PermissionError) as exc:
+            logger.warning(f"Failed to signal PID {pid}: {exc}")
+            continue
+        signalled.append(pid)
+        logger.info(f"Sent signal {sig} to PID {pid}")
+
+    # Nothing to escalate to, so there is nothing to wait for.
+    if not signalled or sig == signal_module.SIGKILL:
+        return len(signalled)
+
+    # Waits on the whole job, not just what was signalled: a member covered
+    # by its group leader's forwarding still has to be seen to exit.
+    deadline = time.monotonic() + grace_s
+    remaining = [pid for pid in pids if _pid_is_alive(pid)]
+    while remaining and time.monotonic() < deadline:
+        time.sleep(KILL_POLL_INTERVAL_S)
+        remaining = [pid for pid in remaining if _pid_is_alive(pid)]
+
+    for pid in remaining:
+        logger.warning(f"Process {pid} did not exit after {grace_s}s, sending SIGKILL")
+        try:
+            os.kill(pid, signal_module.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    return len(signalled)
+
+
+def _kill_by_proc_id(sig, proc_id):
+    """
+    Kill every process belonging to one lager process ID.
+
+    All of a job's processes carry LAGER_PROCESS_ID — the /usr/bin/timeout
+    wrapper, the python3 script it wraps, and anything the script spawned — so
+    all of them have to be collected before any of them is signalled. This
+    used to signal whichever match glob() returned first and then return, and
+    glob() yields readdir order: a job whose script had spawned a child could
+    have that child killed and reported as a successful kill while the script
+    itself ran on untouched.
+
+    Args:
+        sig: Signal number to send
+        proc_id: Lager process ID (UUID) to search for (bytes or str)
+    """
+    proc_id_str = proc_id.decode() if isinstance(proc_id, bytes) else proc_id
+    pids = _scan_lager_pids(f'LAGER_PROCESS_ID={proc_id_str}'.encode())
+
+    if not pids:
+        logger.warning(f"Could not find process with LAGER_PROCESS_ID={proc_id_str}")
+        return
+
+    for pid in pids:
+        logger.info(f"Killing PID {pid} with signal {sig} (cmdline: {_describe_pid(pid)})")
+    _signal_and_reap(pids, sig)
 
 
 def _kill_all_lager_processes(sig):
     """
     Kill all processes that have a LAGER_PROCESS_ID environment variable.
 
-    Used when --kill is invoked without a specific process ID.
+    Used when --kill is invoked without a specific process ID. Note that this
+    sweeps every lager python job on the box, not just the caller's.
 
     Args:
         sig: Signal number to send
     """
-    import glob
+    pids = _scan_lager_pids(b'LAGER_PROCESS_ID=')
 
-    search_str = b'LAGER_PROCESS_ID='
-    killed = 0
-
-    for environ_path in glob.glob('/proc/*/environ'):
-        try:
-            pid = int(environ_path.split('/')[2])
-
-            with open(environ_path, 'rb') as f:
-                environ_data = f.read()
-
-            if search_str in environ_data:
-                logger.info(f"Killing lager process PID {pid} with signal {sig}")
-                try:
-                    os.kill(pid, sig)
-                    killed += 1
-                except (ProcessLookupError, PermissionError) as e:
-                    logger.warning(f"Failed to kill PID {pid}: {e}")
-                    continue
-
-                if sig != signal_module.SIGKILL:
-                    import time
-                    for _ in range(30):
-                        try:
-                            os.kill(pid, 0)
-                        except ProcessLookupError:
-                            break
-                        time.sleep(0.1)
-                    else:
-                        try:
-                            logger.warning(f"Process {pid} did not exit after 3s, sending SIGKILL")
-                            os.kill(pid, signal_module.SIGKILL)
-                        except (ProcessLookupError, PermissionError):
-                            pass
-
-        except (FileNotFoundError, ValueError, PermissionError):
-            continue
-
-    if killed:
-        logger.info(f"Killed {killed} lager process(es)")
-    else:
+    if not pids:
         logger.warning("No running lager processes found")
+        return
+
+    for pid in pids:
+        logger.info(f"Killing lager process PID {pid} with signal {sig} (cmdline: {_describe_pid(pid)})")
+    killed = _signal_and_reap(pids, sig)
+    logger.info(f"Killed {killed} lager process(es)")
