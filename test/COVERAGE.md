@@ -35,13 +35,13 @@ are not.
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1160 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1169 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 1462 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 79 (+4 skipped) |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 91 (+1 skipped) |
-| | **Total gated** | **3063** |
+| | **Total gated** | **3072** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -430,9 +430,9 @@ cli/tests/                #  5 files: 3 pytest suites + test_io_imports.py (GATE
                           #           `unit (cli)`), plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 126 files)
+### Local Unit Tests (`test/unit/` -- 129 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 67 files)
+#### Box Unit Tests (`test/unit/box/` -- 69 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported, and stubs the two third-party modules that are neither guarded nor installed
@@ -486,6 +486,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_net_command_handler.py` | Generic POST /net/command Flask handler dispatch by role and error handling |
 | `test_net_save_uart_identity.py` | `usb_identity_for_net_record`: durable USB identity snapshot at UART net save time |
 | `test_nets_display.py` | `lager nets` table no-truncation for long UART pins and VISA addresses |
+| `test_nets_safety_limits_endpoint.py` | `PUT /nets/<name>/safety-limits`: that what the route writes is what the interlock reads, that every record sharing a name is updated, and that a refused body changes nothing |
 | `test_nets_state_endpoint.py` | `GET /nets/state`: wedged-instrument resilience, per-instrument probing, LabJack cross-role batch routing through hardware_service (no USB contention), and I2C bus scan |
 | `test_openocd_dispatch.py` | OpenOCD interface .cfg dispatch and user-cfg override behavior |
 | `test_probes_visa_parsing.py` | VISA address parsing for empty-serial FTDI probes |
@@ -494,6 +495,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_python_service_nets_list.py` | GET /nets/list handler returning saved net array or empty on missing/invalid JSON |
 | `test_render_docker_args.py` | Sourceable bash output preserves docker-run args through array expansion |
 | `test_render_packages.py` | pip/cargo/npm renderers preserve only their own config fields and soft-fail gracefully |
+| `test_safety_interlock.py` | Per-net safety interlock (`box/lager/safety.py`): limits read from NetsCache rather than the request, so a caller cannot widen its own ceiling, and the check placed before the device is built so the stale-VISA retry path cannot bypass it |
 | `test_secret_file_ownership.py` | The ownership block extracted verbatim from `box/start_box.sh`: mode 0600 grants the OWNER alone, so a secrets file owned by the host login user locks the container runtime out of its own secrets |
 | `test_serial_id_cables.py` | tty enumeration and resolution via fake /sys tree lookup |
 | `test_ssh_runner.py` | SSH key selection and auth fallback logic |
@@ -508,7 +510,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_webcam_detection.py` | sysfs-based webcam detection (`_by_camera`) against a fake sysfs tree |
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 48 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 49 files)
 
 | File | What it tests |
 |------|---------------|
@@ -543,6 +545,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_performance_improvements.py` | Config caching, connection pooling |
 | `test_python_auto_lock.py` | `lager python` auto-lock wrapper idempotency, atexit, and heartbeat thread |
 | `test_python_breakpoint_session.py` | Breakpoint client request shapes for continue_python/breakpoint_status endpoints |
+| `test_python_stop_signals.py` | `lager python` stop handlers cover SIGINT, SIGTERM and SIGHUP on both registration paths, and restore every one; asserts real signal dispositions rather than recorded calls |
 | `test_ssh.py` | SSH ensure_lager_box_keypair and key_auth_works helpers |
 | `test_supply_tui.py` | SupplyTUI render output, command parsing, worker threads, connection failure |
 | `test_uart_ws_status_events.py` | CLI handling of box-side `uart_status` events when a UART device re-enumerates |
