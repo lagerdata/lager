@@ -391,6 +391,27 @@ class _DefmtRtt:
             return None
         return item
 
+    def write(self, data):
+        """Send *data* to the target's RTT down-channel. Returns bytes written.
+
+        Decoding is one-way — ``defmt-print`` sits on the up-channel only — so
+        this goes straight to the underlying session, bypassing it. Safe to call
+        while lines are being decoded: both directions share one TCP socket, the
+        pump thread only ever reads from it, and a send in the opposite
+        direction does not disturb an in-flight recv.
+
+        Accepts bytes or str. Requires the firmware to declare an RTT *down*
+        buffer on this channel; ``defmt-rtt`` alone only sets up the up buffer,
+        and a target without a down buffer silently discards what it is sent.
+        """
+        session = self._session
+        if session is None:
+            raise RuntimeError(
+                "RTT session is not open: call write() inside the "
+                "`with dbg.rtt_defmt(...) as logs:` block."
+            )
+        return session.write(data)
+
     def __iter__(self):
         """Yield decoded lines until the defmt-print stream ends."""
         while True:
@@ -427,6 +448,11 @@ class _DefmtRtt:
             return self._rtt.__exit__(exc_type, exc_val, exc_tb)
         finally:
             self._proc = None
+            # Drop the session so a stray write() after teardown raises instead
+            # of silently reopening the telnet port: both backends' write()
+            # reconnects when the socket is gone, which would reclaim the port
+            # we just released and leave it held with nothing reading it.
+            self._session = None
 
 
 # -------- _NullDebug fallback (always defined for imports) --------

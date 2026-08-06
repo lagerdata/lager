@@ -34,6 +34,21 @@ All notable changes to the Lager platform are documented here. For detailed rele
   Plain `--rtt` is untouched and still uses the HTTP stream, so nothing that
   reads RTT today changes behaviour.
 
+- **`rtt_defmt()` can now write, so a `lager python` script can drive
+  interactive firmware and assert on its decoded reply.** Raw `dbg.rtt()` has
+  always been bi-directional, but the decoding wrapper only exposed
+  `read_line()` — and reaching for a second raw session alongside it does not
+  work, because the RTT telnet port accepts a single client. Decoding a
+  target's logs therefore meant giving up the ability to talk to it.
+
+      with dbg.rtt_defmt(elf='build/app.elf') as logs:
+          logs.write(b'self_test\n')
+          line = logs.read_line(timeout=5.0)
+
+  Decoding is one-way — `defmt-print` only ever sees the up-channel — so a
+  write bypasses it and goes straight to the target's down-channel. As with the
+  CLI flag above, the firmware must declare an RTT down buffer on that channel.
+
 ## [0.34.4] - 2026-08-05
 
 ### Fixed

@@ -433,8 +433,29 @@ with dbg.rtt_defmt(elf='build/app.elf', channel=0) as logs:
 |--------|-------------|
 | `read_line(timeout=None)` | Next decoded log line as `str`, or `None` on timeout / stream end |
 | iteration (`for line in logs:`) | Yield decoded lines until the stream ends |
+| `write(data)` | Send bytes or `str` to the target's RTT down-channel |
 
 Like the CLI pipe, the RTT stream never ends on its own — bound your read loop with a time budget or line count, then exit the `with` block.
+
+#### Driving the firmware while decoding its logs
+
+`write()` makes a decoding session bi-directional, so a script can send a command and assert on the decoded response. Decoding is one-way — `defmt-print` only sees the up-channel — so writes bypass it and go straight to the target. This is the only way to do both at once: the RTT telnet port accepts a single client, so you cannot open a raw `rtt()` alongside a `rtt_defmt()`.
+
+```python
+with dbg.rtt_defmt(elf='build/app.elf') as logs:
+    logs.write(b'self_test\n')            # command the firmware
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        line = logs.read_line(timeout=1.0)
+        if line and 'self_test: pass' in line:
+            break
+    else:
+        raise AssertionError('firmware never reported a passing self-test')
+```
+
+<Warning>
+This requires the firmware to declare an RTT **down** buffer on the channel you opened. `defmt-rtt` alone only sets up the up buffer — with no down buffer the target silently discards whatever you write, which looks like a host-side failure and is not one.
+</Warning>
 
 **Parameters:**
 
