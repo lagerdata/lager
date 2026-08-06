@@ -36,12 +36,12 @@ are not.
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1175 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 1517 |
+| `unit (box)` | `test/unit/box/` | 1554 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 79 (+4 skipped) |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 91 (+1 skipped) |
-| | **Total gated** | **3133** |
+| | **Total gated** | **3170** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -430,9 +430,9 @@ cli/tests/                #  5 files: 3 pytest suites + test_io_imports.py (GATE
                           #           `unit (cli)`), plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 132 files)
+### Local Unit Tests (`test/unit/` -- 135 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 71 files)
+#### Box Unit Tests (`test/unit/box/` -- 74 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported, and stubs the two third-party modules that are neither guarded nor installed
@@ -443,6 +443,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_acroname_driver.py` | Acroname USB hub driver: device-contention regression from indefinitely cached hub handles |
 | `test_authorized_keys_sync.py` | `start_box.sh` authorized_keys marker-block rebuild (revocation, no duplicates, foreign keys preserved) and its single-instance lock |
 | `test_battery_model_authoring.py` | Battery model authoring (create/export of 2281S memory slots), against hardware-verified ground truth |
+| `test_bench_quiesce.py` | The quiesce registry that makes a starting job wait for the previous one's teardown, and the arithmetic tying its bounds to the reap they must cover |
 | `test_battery_model_catalog.py` | Read-only battery model catalog; the 2281S has no `:BATT:MODel:CATalog?` query |
 | `test_binaries_store.py` | `lager.binaries.store` plus the `:9000` `/binaries/*` and `/download-file` handlers |
 | `test_box_config.py` | box_config v1 schema validation rules and idempotency hash |
@@ -452,6 +453,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_box_http_server_capabilities.py` | /status capabilities block advertises netCommand based on route registration |
 | `test_box_level_command_handlers.py` | Box-level `POST /ble\|wifi\|blufi/command` handlers driving the box's own radios |
 | `test_breakpoint_pause.py` | `lager.pause()` interactive breakpoint: timeout handling and resume signaling |
+| `test_cleanup_watchdog.py` | Cleanup grace as an *idle* budget: a teardown making progress keeps its deadline pushed out, a wedged one is still cut off, and blocking on an instrument counts as progress |
 | `test_custom_devices_assign.py` | `lager.devices.assign` and the `/custom-devices/*` handlers behind `lager nets assign` |
 | `test_custom_store.py` | Custom-device JSON persistence: USB cable to catalog instrument mapping |
 | `test_da1469x_loader.py` | DA1469x ELF symbol reading, loader path resolution, flash/erase/timeout paths |
@@ -502,6 +504,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_serial_id_cables.py` | tty enumeration and resolution via fake /sys tree lookup |
 | `test_ssh_runner.py` | SSH key selection and auth fallback logic |
 | `test_ssh_setup.py` | `lager ssh-setup` command and SSH key provisioning with TTY passthrough |
+| `test_stream_disconnect.py` | `peer_is_connected` and the idle tick that let the box notice a vanished client in under a second instead of waiting for the script's next write |
 | `test_stream_teardown.py` | `lager python` child reaped when the client disconnects mid-run, instead of orphaning at 100% CPU holding a device flock |
 | `test_supply_command_handler.py` | `POST /supply/command` handler, covering v0.32.0 hardware-found regressions |
 | `test_uart_bridge_reconnect.py` | UARTBridge re-enumeration healing after an adapter changes its /dev/tty node |
