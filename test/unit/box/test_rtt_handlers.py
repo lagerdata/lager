@@ -337,6 +337,213 @@ class StaleSessionReclaimTests(unittest.TestCase):
             alive.join(1.0)
 
 
+class FakeManager:
+    """Stand-in for python-socketio's connection manager."""
+
+    def __init__(self, connected):
+        self.connected = set(connected)
+        self.queried = []
+
+    def is_connected(self, sid, namespace):
+        self.queried.append((sid, namespace))
+        return sid in self.connected
+
+
+class ManagedSocketIO(FakeSocketIO):
+    """FakeSocketIO that also exposes a `.server.manager`, as the real one does."""
+
+    def __init__(self, connected):
+        super().__init__()
+        self.manager = FakeManager(connected)
+        self.server = types.SimpleNamespace(manager=self.manager)
+
+
+class DepartedClientTests(unittest.TestCase):
+    """A client can vanish without Socket.IO noticing.
+
+    `disconnect` only fires once the transport is known to be gone. If the
+    client's host suspends or its network drops, that takes until the engine.io
+    ping timeout (the box configures 25s interval + 60s timeout). The read
+    loop's own heartbeat cannot stand in for this: the loop stays healthy and
+    keeps refreshing it, so `_session_is_stale` is False the whole time and the
+    session holds its RTT port against every new start.
+    """
+
+    SID = 'sid-departed'
+
+    def setUp(self):
+        rtt_handlers.active_rtt_sessions.clear()
+
+    def tearDown(self):
+        rtt_handlers.active_rtt_sessions.clear()
+
+    def test_client_gone_reports_disconnected_sid(self):
+        sio = ManagedSocketIO(connected=['someone-else'])
+        self.assertTrue(rtt_handlers._client_gone(sio, self.SID))
+
+    def test_client_gone_reports_connected_sid(self):
+        sio = ManagedSocketIO(connected=[self.SID])
+        self.assertFalse(rtt_handlers._client_gone(sio, self.SID))
+        self.assertEqual(sio.manager.queried, [(self.SID, '/rtt')])
+
+    def test_unintrospectable_socketio_never_reports_gone(self):
+        # No `.server`: a fake in tests, or an async_mode without a manager.
+        # An unknown answer must never tear down a live session.
+        self.assertFalse(rtt_handlers._client_gone(FakeSocketIO(), self.SID))
+
+    def test_manager_error_never_reports_gone(self):
+        class Exploding:
+            def is_connected(self, sid, namespace):
+                raise RuntimeError('manager blew up')
+
+        sio = FakeSocketIO()
+        sio.server = types.SimpleNamespace(manager=Exploding())
+        self.assertFalse(rtt_handlers._client_gone(sio, self.SID))
+
+    def test_read_loop_exits_and_frees_port_when_client_departs(self):
+        """The regression: an endlessly-readable session whose client is gone.
+
+        Before the liveness check this loop ran forever, kept its heartbeat
+        fresh, and blocked every `start_rtt` on port 9090 until the ping
+        timeout expired.
+        """
+        stop = threading.Event()
+
+        class EndlessSession(FakeRttSession):
+            def read_some(self, timeout=1.0):
+                time.sleep(0.01)
+                return None          # idle: normal, never ends the loop
+
+        session = EndlessSession([], stop)
+        rtt_handlers.active_rtt_sessions[self.SID] = {
+            'session': session, 'stop_event': stop, 'netname': 'dbg',
+            'serial': 'JLINK123', 'channel': 0, 'rtt_port': 9090,
+            'last_activity': time.monotonic(),
+        }
+        sio = ManagedSocketIO(connected=[])   # client already gone
+
+        t = threading.Thread(
+            target=rtt_handlers._rtt_read_loop,
+            args=(sio, self.SID, 'dbg', session, stop, False),
+            daemon=True)
+        t.start()
+        t.join(5.0)
+
+        self.assertFalse(t.is_alive(), "loop did not exit for a departed client")
+        self.assertNotIn(self.SID, rtt_handlers.active_rtt_sessions,
+                         "departed client's session was not evicted")
+        self.assertGreaterEqual(session.exit_calls, 1,
+                                "RTT telnet port was not released")
+        self.assertIsNone(rtt_handlers._find_port_conflict(9090),
+                          "port 9090 still blocks a new session")
+
+    def test_read_loop_keeps_running_while_client_connected(self):
+        stop = threading.Event()
+        reads = threading.Event()
+
+        class EndlessSession(FakeRttSession):
+            def read_some(self, timeout=1.0):
+                reads.set()
+                time.sleep(0.01)
+                return None
+
+        session = EndlessSession([], stop)
+        rtt_handlers.active_rtt_sessions[self.SID] = {
+            'session': session, 'stop_event': stop, 'netname': 'dbg',
+            'rtt_port': 9090, 'last_activity': time.monotonic(),
+        }
+        sio = ManagedSocketIO(connected=[self.SID])
+
+        t = threading.Thread(
+            target=rtt_handlers._rtt_read_loop,
+            args=(sio, self.SID, 'dbg', session, stop, False),
+            daemon=True)
+        t.start()
+        try:
+            self.assertTrue(reads.wait(2.0), "loop never read")
+            time.sleep(0.1)
+            self.assertTrue(t.is_alive(),
+                            "loop exited even though the client is connected")
+            self.assertIn(self.SID, rtt_handlers.active_rtt_sessions)
+        finally:
+            stop.set()
+            t.join(2.0)
+
+
+class PortConflictTests(unittest.TestCase):
+    """The guard is keyed on the RTT telnet port, the single-client resource.
+
+    Both backends listen at ``rtt_telnet_port + channel``, and the base comes
+    from the probe's slot (``9090 + 2 * slot``), so the port — not the net name
+    — is what two sessions can genuinely fight over.
+    """
+
+    def setUp(self):
+        rtt_handlers.active_rtt_sessions.clear()
+
+    def tearDown(self):
+        rtt_handlers.active_rtt_sessions.clear()
+
+    def _live(self, sid, netname, rtt_port):
+        gate = threading.Event()
+        alive = threading.Thread(target=gate.wait)
+        alive.start()
+        self.addCleanup(lambda: (gate.set(), alive.join(1.0)))
+        rtt_handlers.active_rtt_sessions[sid] = {
+            'session': FakeRttSession([], threading.Event()),
+            'stop_event': threading.Event(), 'netname': netname,
+            'rtt_port': rtt_port, 'thread': alive,
+            'last_activity': time.monotonic(),
+        }
+
+    def test_port_for_channel_offsets_the_slot_base(self):
+        dbg = types.SimpleNamespace(rtt_telnet_port=9092)   # slot 1
+        self.assertEqual(rtt_handlers._rtt_port_for(dbg, 0), 9092)
+        self.assertEqual(rtt_handlers._rtt_port_for(dbg, 1), 9093)
+
+    def test_port_unknown_when_attribute_absent(self):
+        self.assertIsNone(
+            rtt_handlers._rtt_port_for(types.SimpleNamespace(), 0))
+
+    def test_same_port_conflicts(self):
+        self._live('sid-a', 'netA', 9090)
+        self.assertEqual(rtt_handlers._find_port_conflict(9090), 'sid-a')
+
+    def test_other_channel_on_same_net_is_a_different_port(self):
+        # What --rtt-channel is for: channel 0 and channel 1 of one net are
+        # separate ports and must both be able to run.
+        self._live('sid-a', 'netA', 9090)
+        self.assertIsNone(rtt_handlers._find_port_conflict(9091))
+
+    def test_other_probe_is_a_different_port(self):
+        self._live('sid-a', 'netA', 9090)          # slot 0
+        self.assertIsNone(rtt_handlers._find_port_conflict(9092))  # slot 1
+
+    def test_serial_less_nets_share_slot_zero_and_conflict(self):
+        # allocate_probe_slot() returns 0 for any falsy serial, so two
+        # serial-less nets really do land on the same port. Blocking is right.
+        self._live('sid-a', 'netA', 9090)
+        self.assertEqual(rtt_handlers._find_port_conflict(9090), 'sid-a')
+
+    def test_unknown_ports_conflict_with_each_other(self):
+        self._live('sid-a', 'netA', None)
+        self.assertEqual(rtt_handlers._find_port_conflict(None), 'sid-a')
+
+    def test_stale_holder_is_reclaimed_instead_of_blocking(self):
+        stop = threading.Event()
+        rtt_session = FakeRttSession([], stop)
+        rtt_handlers.active_rtt_sessions['sid-stale'] = {
+            'session': rtt_session, 'stop_event': stop, 'netname': 'netA',
+            'rtt_port': 9090,
+            'last_activity': (time.monotonic()
+                              - rtt_handlers.STALE_SESSION_TIMEOUT - 5),
+        }
+        self.assertIsNone(rtt_handlers._find_port_conflict(9090))
+        self.assertNotIn('sid-stale', rtt_handlers.active_rtt_sessions)
+        self.assertTrue(stop.is_set())
+        self.assertGreaterEqual(rtt_session.exit_calls, 1)
+
+
 class CleanupTests(unittest.TestCase):
     def setUp(self):
         rtt_handlers.active_rtt_sessions.clear()
