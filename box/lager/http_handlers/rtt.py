@@ -34,20 +34,72 @@ logger = logging.getLogger(__name__)
 # Global dictionary to track active RTT sessions
 # Format: {session_id: {'session': rtt_session, 'thread': thread_obj,
 #                       'stop_event': event_obj, 'netname': str,
-#                       'serial': str, 'channel': int, 'last_activity': float}}
+#                       'serial': str, 'channel': int, 'rtt_port': int|None,
+#                       'last_activity': float}}
 active_rtt_sessions = {}
 active_rtt_sessions_lock = threading.Lock()
 
 # A live read loop refreshes its session's 'last_activity' every iteration
 # (~0.1s). If a session's heartbeat ages past this, the loop is no longer
 # making progress and the session is a phantom: still registered, still
-# holding its per-net/per-probe guard, with no live reader behind it.
-# Reclaiming it lets a fresh `start_rtt` for the same net succeed instead of
-# hitting a permanent "already in use". Must stay comfortably above the
-# loop's iteration period. (Same rationale as uart.py's STALE_SESSION_TIMEOUT;
-# RTT's read_some can block up to ~0.25s while a gdbserver bounce heals, so
-# the same 30s bound is safely conservative.)
+# holding its port guard, with no live reader behind it. Reclaiming it lets a
+# fresh `start_rtt` on that port succeed instead of hitting a permanent
+# "already in use". Must stay comfortably above the loop's iteration period.
+# (Same rationale as uart.py's STALE_SESSION_TIMEOUT; RTT's read_some can
+# block up to ~0.25s while a gdbserver bounce heals, so the same 30s bound is
+# safely conservative.)
+#
+# This covers a *wedged reader* only. It cannot detect a departed client: the
+# heartbeat is written by the read loop itself, so a client that dies leaves a
+# perfectly healthy loop refreshing it forever. That case is handled by
+# _client_gone() below, not here.
 STALE_SESSION_TIMEOUT = 30.0
+
+
+def _client_gone(socketio, session_id) -> bool:
+    """True when *session_id* is no longer connected to the /rtt namespace.
+
+    The read loop's heartbeat proves the loop is iterating, not that anyone is
+    still listening, so the stale-session reclaim is blind to a client that
+    went away: the loop stays healthy, 'last_activity' stays fresh, and the
+    session keeps its port guard. When the client's socket closes (Ctrl+C,
+    kill, terminal closed) Socket.IO fires `disconnect` and the guard is
+    released promptly. When it does *not* close — host suspended, Wi-Fi or VPN
+    dropped, box unreachable — nothing releases it until the engine.io ping
+    timeout expires, which this box configures as ping_interval 25s +
+    ping_timeout 60s. Asking the connection manager directly collapses that
+    85s window to one loop iteration.
+
+    Returns False when the manager cannot be introspected (a fake socketio in
+    tests, or an async_mode that exposes no manager), so an unknown answer can
+    never tear down a live session.
+    """
+    try:
+        manager = socketio.server.manager
+    except AttributeError:
+        return False
+    try:
+        return not manager.is_connected(session_id, '/rtt')
+    except Exception:  # noqa: BLE001 — liveness is advisory, never fatal
+        return False
+
+
+def _rtt_port_for(dbg, channel):
+    """The RTT telnet port a session on *dbg* / *channel* will occupy.
+
+    Both backends listen at ``rtt_telnet_port + channel`` (``RTT._port`` in
+    ``debug/api.py``, ``_OpenOcdRtt._port`` in ``nets/debug_net.py``), and the
+    base comes from the probe's slot (``9090 + 2 * slot``). This is the one
+    genuinely exclusive resource in play: the port accepts a single client.
+
+    Returns None when the debug object predates the attribute, which reads as
+    "unknown port" and collides with any other unknown — the conservative
+    answer, since guessing they differ would let two readers fight over a port.
+    """
+    base = getattr(dbg, 'rtt_telnet_port', None)
+    if base is None:
+        return None
+    return base + channel
 
 
 def _strip_jlink_banner(data_chunk):
@@ -84,6 +136,10 @@ def _rtt_read_loop(socketio, session_id, netname, rtt_session, stop_event,
     - ``read_some`` returning ``None`` is normal (idle interval, or the
       reader is transparently re-attaching across a flash/reset gdbserver
       bounce) and never terminates the loop.
+    - A client that has gone away ends the loop on the next iteration. Nothing
+      else notices: `disconnect` only fires once Socket.IO knows the transport
+      is gone, and the heartbeat this loop writes cannot distinguish "still
+      streaming to someone" from "streaming into the void".
     """
     read_buffer = bytearray()
     last_emit_time = time.time()
@@ -116,6 +172,17 @@ def _rtt_read_loop(socketio, session_id, netname, rtt_session, stop_event,
     try:
         while not stop_event.is_set():
             touch()
+            # Before reading more: is anyone still there? Emitting into an
+            # empty room is a silent no-op, so without this the loop would
+            # stream happily to a dead client and hold the RTT port against
+            # the next session until the ping timeout expired.
+            if _client_gone(socketio, session_id):
+                logger.info(
+                    "RTT client %s is gone; releasing port %s (netname=%s)",
+                    session_id,
+                    (active_rtt_sessions.get(session_id) or {}).get('rtt_port'),
+                    netname)
+                break
             try:
                 data = rtt_session.read_some(timeout=0.1)
             except Exception as e:
@@ -207,6 +274,29 @@ def _reclaim_if_stale(session_id, session) -> bool:
     return True
 
 
+def _find_port_conflict(rtt_port):
+    """Return the sid of a live session already holding *rtt_port*, else None.
+
+    Call while holding active_rtt_sessions_lock. Sessions with no live reader
+    behind them are reclaimed as they are scanned, so a phantom never blocks a
+    start.
+
+    Keyed on the port rather than the net name because the port is what is
+    actually exclusive: two channels of one net are different ports and may run
+    at once (that is what --rtt-channel is for), while two nets that resolve to
+    the same port must not — including two serial-less nets, which both fall
+    back to slot 0.
+    """
+    # list(): _reclaim_if_stale pops entries as we scan.
+    for sid, sess in list(active_rtt_sessions.items()):
+        if sess.get('rtt_port') != rtt_port:
+            continue
+        if _reclaim_if_stale(sid, sess):
+            continue
+        return sid
+    return None
+
+
 def _find_debug_net(netname):
     """Return the saved-net record for *netname* (role 'debug'), or None."""
     from lager.core import get_saved_nets
@@ -288,25 +378,24 @@ def register_rtt_socketio(socketio: SocketIO) -> None:
                 emit('error', {'message': f"Invalid debug net '{netname}': {e}"})
                 return
 
-            # Per-connection + per-probe guard. The RTT telnet port accepts a
-            # single client, so a second session on the same probe+channel
-            # would either be refused or silently steal the stream. Sessions
-            # with no live read loop behind them are reclaimed rather than
-            # blocking forever (same healing as UART).
+            # Per-connection + per-port guard. The RTT telnet port accepts a
+            # single client, so two sessions on one port would either be
+            # refused or silently steal each other's stream. Sessions with no
+            # live read loop behind them are reclaimed rather than blocking
+            # forever (same healing as UART).
+            rtt_port = _rtt_port_for(dbg, channel)
             with active_rtt_sessions_lock:
                 existing = active_rtt_sessions.get(request.sid)
                 if existing is not None and not _reclaim_if_stale(request.sid, existing):
                     emit('error', {'message': 'RTT session already active'})
                     return
-                # list(): _reclaim_if_stale may pop entries as we scan.
-                for sid, sess in list(active_rtt_sessions.items()):
-                    same_net = sess.get('netname') == netname
-                    same_probe = (sess.get('serial') == dbg.serial
-                                  and sess.get('channel') == channel)
-                    if (same_net or same_probe) and not _reclaim_if_stale(sid, sess):
-                        emit('error', {'message': (
-                            f"RTT for net '{netname}' is already in use by another session")})
-                        return
+                conflict = _find_port_conflict(rtt_port)
+                if conflict is not None:
+                    other = active_rtt_sessions[conflict].get('netname')
+                    emit('error', {'message': (
+                        f"RTT port {rtt_port} is already in use by another "
+                        f"session (net '{other}')")})
+                    return
 
             # The gdbserver must already be up (the CLI starts it through the
             # debug service's /debug/connect before connecting here). Check
@@ -346,6 +435,7 @@ def register_rtt_socketio(socketio: SocketIO) -> None:
                     'netname': netname,
                     'serial': dbg.serial,
                     'channel': channel,
+                    'rtt_port': rtt_port,
                     'last_activity': time.monotonic(),
                 }
 

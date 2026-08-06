@@ -44,7 +44,12 @@ RTT reaches remote clients through two paths, both bridging the probe's local RT
   - `rtt_write {data: <hex>}` — client → server, raw bytes for the target's RTT **down-channel**. The firmware must configure a down buffer on that channel (`defmt-rtt` alone only provides the up buffer).
   - `stop_rtt` / disconnect — tear down the session and release the telnet port.
 
-  The RTT telnet port accepts a single client, so one session per probe+channel: a colliding `start_rtt` is rejected unless the existing session has no live reader behind it (then it is reclaimed, mirroring the UART session guard).
+  The RTT telnet port accepts a single client, so sessions are guarded per **port** — `9090 + 2*slot + channel`, the resource that is actually exclusive. Two channels of one net are different ports and may run at once; two nets that resolve to the same port (including two serial-less nets, which both fall back to slot 0) cannot.
+
+  Three things can free a held port, because no one of them covers every case:
+  - `stop_rtt`, or the `disconnect` that follows a closed socket (Ctrl+C, kill, terminal closed) — the normal path.
+  - The read loop noticing its client is no longer connected to `/rtt`. `disconnect` only fires once the transport is known to be gone, so a client whose host suspends or whose network drops would otherwise hold the port until the engine.io ping timeout (25s interval + 60s timeout as this box configures it). The loop's own heartbeat cannot substitute: the loop stays healthy and keeps refreshing it, so the stale check below never trips for a departed client.
+  - The stale-session reclaim on the next `start_rtt`, for the opposite failure — a reader wedged with a heartbeat older than 30s. This is lazy by design: it runs only when a new session asks for the port.
 
 ## Usage
 

@@ -36,12 +36,12 @@ are not.
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1166 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 1481 |
+| `unit (box)` | `test/unit/box/` | 1495 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 79 (+4 skipped) |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 91 (+1 skipped) |
-| | **Total gated** | **3088** |
+| | **Total gated** | **3102** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -495,7 +495,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_python_service_nets_list.py` | GET /nets/list handler returning saved net array or empty on missing/invalid JSON |
 | `test_render_docker_args.py` | Sourceable bash output preserves docker-run args through array expansion |
 | `test_render_packages.py` | pip/cargo/npm renderers preserve only their own config fields and soft-fail gracefully |
-| `test_rtt_handlers.py` | Bi-directional RTT over the `/rtt` WebSocket namespace: read loop, J-Link banner stripping, single-client session guard and stale-session reclaim, shutdown cleanup |
+| `test_rtt_handlers.py` | Bi-directional RTT over the `/rtt` WebSocket namespace: read loop, J-Link banner stripping, shutdown cleanup, and the three ways a held RTT port is freed — a departed client (which the loop's own heartbeat cannot detect), a wedged reader, and the port-keyed guard that keeps two channels of one net independent |
 | `test_safety_interlock.py` | Per-net voltage and current ceilings enforced on instrument commands |
 | `test_secret_file_ownership.py` | The ownership block extracted verbatim from `box/start_box.sh`: mode 0600 grants the OWNER alone, so a secrets file owned by the host login user locks the container runtime out of its own secrets |
 | `test_serial_id_cables.py` | tty enumeration and resolution via fake /sys tree lookup |
