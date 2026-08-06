@@ -76,6 +76,7 @@ class FakeRttSession:
         self._lock = threading.Lock()
         self.entered = False
         self.exited = False
+        self.writes = []
 
     def __enter__(self):
         self.entered = True
@@ -90,6 +91,11 @@ class FakeRttSession:
             if self._chunks:
                 return self._chunks.popleft()
         return None
+
+    def write(self, data):
+        with self._lock:
+            self.writes.append(data)
+        return len(data)
 
 
 def _write_stub_defmt_print(tmpdir):
@@ -190,6 +196,74 @@ class TestDefmtRttDecoding(unittest.TestCase):
             collected,
             ["decoded:line one", "decoded:line two", "decoded:line three"],
         )
+
+
+class TestDefmtRttWrite(unittest.TestCase):
+    """The down-channel passthrough that makes `rtt_defmt()` bi-directional.
+
+    Decoding is one-way: `defmt-print` sits on the up-channel, so a write has
+    nothing to do with it and goes straight to the underlying session. Without
+    this passthrough, firmware that takes commands over RTT was unreachable
+    from a decoding session — and opening a second raw `rtt()` alongside it is
+    not an option, since the RTT telnet port accepts a single client.
+    """
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmpdir = self._tmp.name
+        self.elf = os.path.join(self.tmpdir, "app.elf")
+        with open(self.elf, "wb") as f:
+            f.write(b"\x7fELF fake")
+        self.stub = _write_stub_defmt_print(self.tmpdir)
+
+    def test_write_reaches_the_target_while_lines_decode(self):
+        session = FakeRttSession([b"boot ok\n"])
+        wrapper = _DefmtRtt(
+            session, self.elf, defmt_print_bin=self.stub, read_timeout=0.02,
+        )
+        with wrapper as logs:
+            self.assertEqual(logs.read_line(timeout=3.0), "decoded:boot ok")
+            # Mid-stream, with the pump thread still reading the same socket.
+            self.assertEqual(logs.write(b"status\n"), len(b"status\n"))
+        self.assertEqual(session.writes, [b"status\n"])
+
+    def test_write_passes_str_through_untouched(self):
+        # Encoding is the backend's job (both do `if isinstance(data, str)`),
+        # so the wrapper must not second-guess it.
+        session = FakeRttSession([])
+        wrapper = _DefmtRtt(
+            session, self.elf, defmt_print_bin=self.stub, read_timeout=0.02,
+        )
+        with wrapper as logs:
+            logs.write("reboot\n")
+        self.assertEqual(session.writes, ["reboot\n"])
+
+    def test_write_before_entering_raises(self):
+        session = FakeRttSession([])
+        wrapper = _DefmtRtt(session, self.elf, defmt_print_bin=self.stub)
+        with self.assertRaises(RuntimeError):
+            wrapper.write(b"too early\n")
+        self.assertEqual(session.writes, [])
+
+    def test_write_after_teardown_does_not_reopen_the_port(self):
+        """A late write must fail loudly rather than resurrect the session.
+
+        Both backends' `write()` reconnects when the socket is gone. Letting one
+        through after teardown would reclaim the RTT telnet port we just
+        released and hold it with nothing reading behind it.
+        """
+        session = FakeRttSession([])
+        wrapper = _DefmtRtt(
+            session, self.elf, defmt_print_bin=self.stub, read_timeout=0.02,
+        )
+        with wrapper as logs:
+            pass
+        self.assertTrue(session.exited)
+        with self.assertRaises(RuntimeError):
+            logs.write(b"too late\n")
+        self.assertEqual(session.writes, [])
 
 
 if __name__ == "__main__":
