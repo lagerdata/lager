@@ -2,9 +2,41 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
-## [Unreleased]
+## [0.35.0] - 2026-08-06
 
 ### Added
+
+- **A net can now carry voltage and current ceilings that the box enforces, so
+  a script bug cannot drive an instrument past what the hardware on the bench
+  can survive.** A setpoint above a net's ceiling is refused before it reaches
+  the instrument. Limits live on the saved-net record, so they follow the net
+  rather than whichever instrument happens to be driving it. This is opt-in: a
+  net with no limits configured is unrestricted, so existing benches behave
+  exactly as they did.
+
+  Enforcement is deliberately two-tier, and the difference matters when you
+  decide what to rely on. The hard tier runs inside the box's hardware service —
+  a separate process, and the only route to the instrument for the nets it
+  covers — so a test script cannot talk around it. A second, advisory tier in
+  the power dispatchers catches honest mistakes earlier but is defeatable by a
+  script that imports a driver directly; it is a convenience, not a guarantee.
+
+  Ceilings are always re-read from the box's saved nets by name and never taken
+  from the request, so a caller on a shared box cannot raise its own limit. The
+  inline `ovp=` and `ocp=` trip settings are checked too, since those would
+  otherwise lift the instrument's own guard above the net ceiling. A net can
+  refuse erase and flash outright with `allow_destructive: false`, and the box
+  caps the call rate per net and method so a runaway loop stays bounded.
+
+  Set them with `PUT /nets/<name>/safety-limits` on the box, which merges
+  `max_voltage`, `max_current` and `allow_destructive` into the saved net and
+  leaves every other field untouched. `max_power` is refused rather than stored:
+  a single setter call establishes either voltage or current and never both, so
+  a power ceiling could not be evaluated honestly, and a stored limit that
+  nothing enforces is indistinguishable from an enforced one from the outside.
+  Boxes carrying the route advertise it in the capabilities on `/status`, so a
+  control plane can tell where a configured ceiling is genuinely enforced
+  instead of inferring it from a version number.
 
 - **RTT is now bi-directional, so firmware that reads commands over RTT can be
   driven from the CLI.** The probe's RTT connection was always full duplex, and
