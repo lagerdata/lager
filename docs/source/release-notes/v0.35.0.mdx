@@ -1,0 +1,92 @@
+---
+title: "Version 0.35.0"
+description: "August 6, 2026"
+---
+
+## <u>Features</u>
+
+- **Nets can now carry voltage and current ceilings that the Lager Box
+  enforces.** A setpoint above a net's ceiling is refused before it ever reaches
+  the instrument, so a mistake in a test script cannot drive hardware past what
+  the bench can survive. Ceilings are stored on the net, not the instrument, so
+  they follow the net when you swap the supply behind it.
+
+  Enforcement is two-tier, and the difference is worth knowing when you decide
+  what to rely on. The hard tier runs inside the Lager Box's hardware service —
+  a separate process, and the only route to the instrument for the nets it
+  covers — so a test script cannot talk around it. A second, advisory tier
+  catches honest mistakes earlier but can be bypassed by a script that reaches
+  for a driver directly; treat it as a convenience rather than a guarantee.
+
+  Ceilings are always re-read from the Lager Box's own saved nets, never taken
+  from the incoming request, so a script on a shared bench cannot raise its own
+  limit. Inline overvoltage and overcurrent trip settings are checked too, since
+  those would otherwise lift the instrument's built-in guard above the net's
+  ceiling. A net can also refuse erase and flash outright, and the call rate per
+  net is capped so a runaway loop stays bounded.
+
+  This is opt-in. A net with no limits configured is unrestricted, so existing
+  benches behave exactly as they did before upgrading.
+
+- **RTT is now bi-directional, so firmware with an interactive console can be
+  driven from the command line.** The debug probe's RTT connection was always
+  full duplex, but the only remote transport was one-way: you could read a
+  target's log output and had no way to answer it. Firmware that takes commands
+  over RTT was reachable from a script running on the Lager Box and from nowhere
+  else.
+
+  `lager debug <net> gdbserver --rtt --interactive` now sends what you type to
+  the target while its output streams back as before. The output side is still
+  raw bytes, so an existing defmt pipeline keeps working and composes with the
+  new flag:
+
+  ```bash
+  lager debug <NET> gdbserver --rtt --interactive 2>/dev/null | defmt-print -e app.elf
+  ```
+
+  What you type is echoed by your terminal rather than mixed into that stream,
+  so what reaches `defmt-print` is exactly what it was before. `--rtt-channel`
+  selects a channel other than 0 in both directions, and plain `--rtt` is
+  untouched.
+
+  This needs firmware that declares an RTT **down** buffer on the channel in
+  use. `defmt-rtt` on its own sets up only the outgoing buffer; without an
+  incoming one the target quietly discards whatever you send, which looks like a
+  problem on the host side and is not one.
+
+- **A `lager python` script can now command interactive firmware and read its
+  decoded logs in the same session.** `rtt_defmt()` decodes a target's defmt
+  logs into readable lines, but it could only listen — and opening a second, raw
+  RTT session alongside it is not a way around that, because a target's RTT
+  connection accepts one reader at a time. Decoding a target's logs therefore
+  meant giving up the ability to talk to it.
+
+  It now accepts writes, so a test can send a command and assert on the reply it
+  decodes:
+
+  ```python
+  with dbg.rtt_defmt(elf='build/app.elf') as logs:
+      logs.write(b'self_test\n')
+      line = logs.read_line(timeout=5.0)
+  ```
+
+  As with the CLI flag above, this needs firmware that declares an RTT down
+  buffer on the channel in use.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.35.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.35.0/)
