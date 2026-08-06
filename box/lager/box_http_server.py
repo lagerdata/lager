@@ -126,6 +126,14 @@ from lager.http_handlers.uart import (
     cleanup_uart_sessions,
 )
 
+# Import RTT handlers from modular http package (bi-directional RTT over
+# the /rtt WebSocket namespace, used by `lager debug <net> gdbserver --rtt
+# --interactive`)
+from lager.http_handlers.rtt import (
+    register_rtt_socketio,
+    cleanup_rtt_sessions,
+)
+
 # Import supply handlers from modular http package
 from lager.http_handlers.supply import (
     register_supply_routes,
@@ -334,6 +342,10 @@ def status():
 # and the /uart WebSocket namespace used by interactive/read-only sessions.
 register_uart_routes(app)
 register_uart_socketio(socketio)
+
+# Register RTT WebSocket handlers (/rtt namespace, bi-directional RTT for
+# interactive defmt-rtt sessions)
+register_rtt_socketio(socketio)
 
 # Register supply HTTP and WebSocket handlers from modular http package
 register_supply_routes(app)
@@ -605,6 +617,8 @@ def signal_handler(signum, frame):
     logger.info(f"Received signal {sig_name}, shutting down gracefully...")
     # Cleanup any active UART sessions (using modular cleanup function)
     cleanup_uart_sessions()
+    # Cleanup any active RTT sessions (releases RTT telnet connections)
+    cleanup_rtt_sessions()
     # Cleanup any active supply sessions (using modular cleanup function)
     cleanup_supply_sessions()
     cleanup_battery_sessions()
