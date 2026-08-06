@@ -26,6 +26,9 @@ import threading
 import signal as signal_module
 
 from lager.exec.process import (
+    CLEANUP_GRACE_S,
+    CLEANUP_MAX_S,
+    TERMINATE_GRACE_S,
     make_output_channel,
     add_cleanup_fn,
     do_cleanup,
@@ -33,6 +36,8 @@ from lager.exec.process import (
     stream_process_output_to_file,
     set_pipe_size,
 )
+from lager.exec import quiesce
+from lager.exec.quiesce import pid_is_alive as _pid_is_alive
 from .exceptions import (
     PipInstallError,
     MissingModuleFolderError,
@@ -45,12 +50,24 @@ logger = logging.getLogger(__name__)
 MAX_TIMEOUT = 300
 LAGER_PYTHON_IP_ADDR = '172.18.0.10'  # Docker-internal network default; overridden by LOCAL_ADDRESS env var
 
-# How long a signalled job gets to exit before it is SIGKILLed.
+# How long a starting job waits for the previous one to finish shutting down.
 #
-# Shared by every PID in the job rather than spent per PID, so the worst case is
-# one window regardless of how many processes the job has. Still a hardcoded
-# guess about somebody else's teardown, which is the next thing to fix.
-KILL_GRACE_S = 3.0
+# Derived, not chosen. It has to cover the longest reap the box can legitimately
+# perform, or the wait ends while the previous job is still being killed and the
+# next one starts driving a bench that is still mid-teardown -- exactly the
+# overlap the gate exists to prevent. That bound is the full escalation:
+# cleanup up to CLEANUP_MAX_S, then TERMINATE_GRACE_S for SIGTERM and again for
+# SIGKILL.
+#
+# It was a flat 15.0 when the escalation was bounded by a fixed 3s cleanup grace
+# (7s worst case, comfortably covered). The progress watchdog took the worst case
+# to 64s and left this behind, which silently reopened the overlap for any
+# cleanup running longer than 15s. Deriving it means that cannot happen again.
+#
+# Reaching this ceiling still means a job is wedged rather than cleaning up, and
+# we proceed with a warning: an indefinite block would turn one stuck script into
+# a permanently unusable box.
+QUIESCE_WAIT_S = CLEANUP_MAX_S + 2 * TERMINATE_GRACE_S + 5.0
 
 
 def _release_hardware_service_direct_usb_claims():
@@ -343,6 +360,20 @@ class PythonExecutor:
             stdout = subprocess.PIPE
             stderr = subprocess.STDOUT if stdout_is_stderr else subprocess.PIPE
 
+            # Do not start driving the bench while the previous job is still
+            # doing so. Its cleanup runs after its client has gone, so the box
+            # lock — which the client releases, and which lapses on its own
+            # when the client is killed — says nothing about whether the
+            # hardware is actually free yet.
+            quiesced, still_reaping = quiesce.wait_until_clear(QUIESCE_WAIT_S)
+            if not quiesced:
+                logger.warning(
+                    'starting a new job with pid(s) %s still shutting down '
+                    'after %.0fs; their cleanup may not have finished and the '
+                    'bench may be in an unexpected state',
+                    ', '.join(str(p) for p in still_reaping), QUIESCE_WAIT_S,
+                )
+
             # Yield any direct-USB claims hardware_service holds from prior
             # :9000 CLI net commands (gpo/adc/spi/watt/... on LabJack, FT232H,
             # Aardvark, USB-202, Joulescope, PPK2) so this script can open them.
@@ -571,41 +602,6 @@ class PythonExecutor:
 KILL_POLL_INTERVAL_S = 0.1
 
 
-def _pid_is_alive(pid):
-    """
-    Whether ``pid`` exists and has not already exited.
-
-    Reads /proc rather than using ``os.kill(pid, 0)`` so that a zombie counts
-    as dead. The script is a child of the service process and the streaming
-    generator reaps it on its own schedule, so a signal probe would answer
-    "alive" for a process that had already run its entire exit path -- and the
-    escalation below would then spend its whole grace window waiting for it.
-
-    Falls back to the signal probe where /proc is absent (macOS, for the unit
-    tests). The box is Linux, so it takes the zombie-aware path in production.
-    """
-    try:
-        with open(f'/proc/{pid}/stat', 'rb') as f:
-            stat = f.read()
-    except (ProcessLookupError, PermissionError):
-        return False
-    except FileNotFoundError:
-        if os.path.isdir('/proc'):
-            return False
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        return True
-    # State is the field after comm, which is parenthesised and may itself
-    # contain spaces, so split from the last ')' rather than the first space.
-    _, _, rest = stat.rpartition(b')')
-    fields = rest.split()
-    return bool(fields) and fields[0] != b'Z'
-
-
 def _scan_lager_pids(search_str):
     """
     PIDs whose environment block contains ``search_str``.
@@ -714,45 +710,48 @@ def _signal_and_reap(pids, sig, grace_s=None):
         pids: the job's PIDs
         sig: signal number to send
         grace_s: how long to wait for exit before escalating to SIGKILL.
-            Defaults to KILL_GRACE_S, read at call time so the caller can
+            Defaults to CLEANUP_GRACE_S, read at call time so the caller can
             size the window to the workload.
 
     Returns:
         int: number of processes successfully signalled
     """
     if grace_s is None:
-        grace_s = KILL_GRACE_S
+        grace_s = CLEANUP_GRACE_S
 
-    signalled = []
-    for pid in _signal_targets(pids, sig):
-        try:
-            os.kill(pid, sig)
-        except (ProcessLookupError, PermissionError) as exc:
-            logger.warning(f"Failed to signal PID {pid}: {exc}")
-            continue
-        signalled.append(pid)
-        logger.info(f"Sent signal {sig} to PID {pid}")
+    # Registered before the first signal so there is no gap in which the job
+    # is unwinding its cleanup but the box believes the bench is free.
+    with quiesce.reaping_job(pids):
+        signalled = []
+        for pid in _signal_targets(pids, sig):
+            try:
+                os.kill(pid, sig)
+            except (ProcessLookupError, PermissionError) as exc:
+                logger.warning(f"Failed to signal PID {pid}: {exc}")
+                continue
+            signalled.append(pid)
+            logger.info(f"Sent signal {sig} to PID {pid}")
 
-    # Nothing to escalate to, so there is nothing to wait for.
-    if not signalled or sig == signal_module.SIGKILL:
+        # Nothing to escalate to, so there is nothing to wait for.
+        if not signalled or sig == signal_module.SIGKILL:
+            return len(signalled)
+
+        # Waits on the whole job, not just what was signalled: a member covered
+        # by its group leader's forwarding still has to be seen to exit.
+        deadline = time.monotonic() + grace_s
+        remaining = [pid for pid in pids if _pid_is_alive(pid)]
+        while remaining and time.monotonic() < deadline:
+            time.sleep(KILL_POLL_INTERVAL_S)
+            remaining = [pid for pid in remaining if _pid_is_alive(pid)]
+
+        for pid in remaining:
+            logger.warning(f"Process {pid} did not exit after {grace_s}s, sending SIGKILL")
+            try:
+                os.kill(pid, signal_module.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+
         return len(signalled)
-
-    # Waits on the whole job, not just what was signalled: a member covered
-    # by its group leader's forwarding still has to be seen to exit.
-    deadline = time.monotonic() + grace_s
-    remaining = [pid for pid in pids if _pid_is_alive(pid)]
-    while remaining and time.monotonic() < deadline:
-        time.sleep(KILL_POLL_INTERVAL_S)
-        remaining = [pid for pid in remaining if _pid_is_alive(pid)]
-
-    for pid in remaining:
-        logger.warning(f"Process {pid} did not exit after {grace_s}s, sending SIGKILL")
-        try:
-            os.kill(pid, signal_module.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-
-    return len(signalled)
 
 
 def _kill_by_proc_id(sig, proc_id):

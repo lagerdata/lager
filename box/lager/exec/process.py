@@ -10,6 +10,7 @@ Migrated from gateway/controller/controller/application/views/run.py (legacy, re
 """
 
 import tempfile
+import signal
 import subprocess
 import select
 import time
@@ -20,9 +21,62 @@ import functools
 import threading
 import queue as _queue
 
+from lager.exec import quiesce
+
 logger = logging.getLogger(__name__)
 
 KEEPALIVE_TIME = 20  # seconds
+
+# Yielded on every idle poll of the drain queue, roughly ten times a second
+# while the script is silent. It carries ZERO bytes and is never written to the
+# wire: its only job is to hand control back to the HTTP layer often enough
+# that it can check whether the client is still there.
+#
+# Without it the streaming loop only regains control when the script produces
+# output or the 20s keepalive fires, so a disconnect during a quiet stretch --
+# and our longer tests are quiet for minutes -- went unnoticed for that whole
+# time while the script kept driving the bench.
+IDLE_TICK = b''
+
+# How long a script gets to run its cleanup after being interrupted, before we
+# escalate. This is the budget for anything in a `finally`: de-energising rails,
+# parking outputs, releasing the DUT. Both stop paths share it -- the
+# /python/kill RPC and the client-disconnect reaper below -- so that the window
+# a test is written against cannot depend on which one happened to fire.
+#
+# It is an *idle* budget, not a total one (see wait_for_cleanup). A fixed total
+# cannot be set correctly from here: it is a guess about how long somebody
+# else's teardown takes, and every value is wrong for someone. Our own is ~2.4s
+# against benches with a handful of instruments; a user with six LabJacks and
+# three hubs could reasonably need ten times that, and picking a number large
+# enough for them would mean a wedged script holds a shared box for that long.
+#
+# So this only has to exceed the longest *pause within* a teardown, which is a
+# far more stable quantity than its duration. Measured on hardware across six
+# runs of back-to-back USB hub operations, the longest stretch in which the
+# script registered no progress at all was 1.12s, so this is roughly 4x the
+# observed worst case. It was 3.0s until that measurement, which sat below the
+# same figure read off the old CPU-only progress signal (4.17s); an end-to-end
+# A/B put that combination's failure rate at 3 of 11 interrupted teardowns.
+#
+# The cost of a larger budget is bounded and no longer a race: a script that is
+# genuinely wedged burns this long before escalating, but the quiesce gate (A8)
+# means the next job waits rather than grabbing a mid-teardown bench, and
+# CLEANUP_MAX_S still caps the total.
+CLEANUP_GRACE_S = 5.0
+
+# Absolute ceiling on cleanup, however busy the script looks. The idle budget
+# above cannot distinguish a teardown that is genuinely working from a script
+# that ignored the interrupt and simply carried on with its test, because from
+# outside they both just burn CPU. This bounds that case. It is deliberately
+# far above any plausible teardown, so a script that hits it is misbehaving
+# rather than slow.
+CLEANUP_MAX_S = 60.0
+
+# How long to wait after SIGTERM before SIGKILL. Short on purpose: a script
+# that ignored the interrupt is not going to clean up, so this rung only
+# exists to let the interpreter finish dying.
+TERMINATE_GRACE_S = 2.0
 MAX_LOG_SIZE = 10 * 1024 * 1024  # 10MB cap for detached process output logs
 
 # Target pipe buffer size (1 MiB). Linux default is 64 KiB which can stall
@@ -122,24 +176,151 @@ def do_cleanup(cleanup_fns):
     cleanup_fns.clear()
 
 
-def terminate_process(proc):
+def wait_for_cleanup(proc, idle_s=None, max_s=None, poll_s=0.1):
     """
-    Terminate a process gracefully, or kill it if necessary.
+    Wait for an interrupted process to finish cleaning up.
 
-    Attempts SIGTERM first, waits up to 2 seconds, then sends SIGKILL if needed.
+    ``idle_s`` is how long the process may go without visibly doing anything
+    before we give up on it -- not how long cleanup may take in total. A
+    teardown that keeps working keeps its deadline pushed out, so it can run
+    for as long as it needs; one that is wedged on an instrument that stopped
+    answering is still cut off after ``idle_s``, because it has stopped
+    executing code and no amount of waiting will change that.
+
+    That distinction is the point. A total budget has to be guessed on behalf
+    of every user's teardown, and any guess is wrong for someone. An idle
+    budget only has to be longer than the longest pause *within* a teardown,
+    which is a far more stable quantity: the settles we and everyone else write
+    are sub-second.
+
+    ``max_s`` bounds the case this cannot see. A script that ignored the
+    interrupt and carried on running its test looks exactly like a busy
+    teardown from out here, so without a ceiling it would hold the bench until
+    it finished.
+
+    Where progress cannot be measured (no /proc), degrades to a plain
+    ``idle_s`` wait, which is what this did before the watchdog existed.
+
+    Args:
+        proc: subprocess.Popen object, already signalled.
+        idle_s: seconds of no observable progress before giving up.
+            Defaults to CLEANUP_GRACE_S, read at call time.
+        max_s: absolute ceiling regardless of progress. Defaults to
+            CLEANUP_MAX_S, read at call time.
+        poll_s: interval between progress samples.
+
+    Returns:
+        int: the return code, if the process exited.
+        None: if it was still running when we stopped waiting.
+    """
+    if idle_s is None:
+        idle_s = CLEANUP_GRACE_S
+    if max_s is None:
+        max_s = CLEANUP_MAX_S
+
+    started = time.monotonic()
+    hard_deadline = started + max_s
+    idle_deadline = started + idle_s
+    last = quiesce.progress_snapshot(proc.pid)
+    extended = False
+
+    while True:
+        try:
+            return proc.wait(poll_s)
+        except subprocess.TimeoutExpired:
+            pass
+
+        now = time.monotonic()
+        current = quiesce.progress_snapshot(proc.pid)
+        if current is not None and current != last:
+            last = current
+            if now + idle_s > idle_deadline:
+                idle_deadline = now + idle_s
+                if not extended and now - started > idle_s / 2:
+                    extended = True
+                    logger.info(
+                        'pid %s is still working %.1fs after the interrupt; '
+                        'extending its cleanup window while it makes progress',
+                        proc.pid, now - started,
+                    )
+
+        if now >= hard_deadline:
+            logger.warning(
+                'pid %s has been in cleanup for %.0fs (the ceiling) and is '
+                'still going; it is not shutting down, so escalating',
+                proc.pid, max_s,
+            )
+            return None
+        if now >= idle_deadline:
+            logger.info(
+                'pid %s stopped making progress %.1fs after the interrupt '
+                '(total %.1fs); escalating to SIGTERM',
+                proc.pid, idle_s, now - started,
+            )
+            return None
+
+
+def terminate_process(proc, cleanup_grace_s=None):
+    """
+    Stop a process, giving it a chance to clean up first.
+
+    Escalates SIGINT -> SIGTERM -> SIGKILL. Leading with SIGINT is the whole
+    point: Python turns it into a KeyboardInterrupt that unwinds the stack, so
+    `finally` blocks, context-manager `__exit__`s and `atexit` hooks all run,
+    whereas its default SIGTERM disposition kills the interpreter outright and
+    skips every one of them. For a HIL script that is the difference between
+    the bench being left idle and left live -- de-energising rails, parking
+    outputs and releasing the DUT live in exactly those `finally` blocks.
+
+    This matters most on the path that reaches here without anyone asking for
+    a kill: the client went away (cancelled CI job, killed CLI, dropped
+    network) and the generator's teardown is reaping the child. It is the only
+    cleanup mechanism that survives the supervisor being hard-killed, because
+    it runs on the box and needs nothing from the client -- so it is the
+    backstop for every executor, `lager python` and `d4 test run` alike.
+
+    The child is normally the /usr/bin/timeout wrapper, which forwards the
+    signal to the process group it shares with the script. Signalling only the
+    wrapper is deliberate: signalling the script as well delivers the
+    interrupt twice, and the second one lands inside the `finally` unwinding
+    from the first and truncates the cleanup.
+
+    The cleanup window is an idle budget, not a total one: a teardown that
+    keeps doing work keeps getting more time (see wait_for_cleanup). Cleanup
+    that legitimately takes 20s completes; cleanup wedged on a dead instrument
+    is still cut off promptly.
 
     Args:
         proc: subprocess.Popen object
+        cleanup_grace_s: how long the script may go without making progress
+            after the interrupt before we escalate. Defaults to
+            CLEANUP_GRACE_S, read at call time.
 
     Returns:
-        int: Process return code, or -1 if killed
+        int: Process return code, or -1 if it had to be killed
     """
-    proc.terminate()
-    try:
-        return proc.wait(2)
-    except subprocess.TimeoutExpired:
+    if cleanup_grace_s is None:
+        cleanup_grace_s = CLEANUP_GRACE_S
+
+    # Everything below is the window in which the script is still driving the
+    # bench despite the client already being gone. Publish it so the next job
+    # waits instead of powering rails out from under this one's teardown.
+    with quiesce.reaping_job([proc.pid]):
+        # No-ops if the child has already exited, which is the common case on
+        # the normal path where the drains hit EOF before we get here.
+        proc.send_signal(signal.SIGINT)
+        returncode = wait_for_cleanup(proc, idle_s=cleanup_grace_s)
+        if returncode is not None:
+            return returncode
+
+        proc.terminate()
+        try:
+            return proc.wait(TERMINATE_GRACE_S)
+        except subprocess.TimeoutExpired:
+            logger.warning('pid %s ignored SIGTERM; sending SIGKILL', proc.pid)
+
         proc.kill()
-        proc.wait(2)
+        proc.wait(TERMINATE_GRACE_S)
         return -1
 
 
@@ -263,6 +444,10 @@ def stream_process_output(proc, output_channel, cleanup_fns):
         - fileno 2: stderr
         - fileno 3: output_channel
         - Final line: "- <len> <returncode>"
+
+    Also yields a zero-length ``IDLE_TICK`` whenever the script is quiet. It is
+    not part of the wire format -- consumers must skip it rather than write it
+    -- and exists so the HTTP layer can check on the client between chunks.
     """
     q = _queue.Queue(maxsize=_DRAIN_QUEUE_MAX)
     stop_event = threading.Event()
@@ -311,6 +496,7 @@ def stream_process_output(proc, output_channel, cleanup_fns):
                 if now - last_keepalive > KEEPALIVE_TIME:
                     last_keepalive = now
                     yield from emit(0, b'')
+                yield IDLE_TICK
                 continue
 
             if chunk is None:
