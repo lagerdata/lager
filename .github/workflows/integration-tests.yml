@@ -24,13 +24,18 @@
 # be able to execute code on the bench.
 #
 # No cron of its own. Nightly, nightly-bench.yml invokes this workflow behind
-# the Box Lifecycle run, so the instruments are exercised against a box that
-# was just updated and reinstalled rather than against whatever it happened to
-# be running. It also still runs on every push to `main` — a per-merge sweep
-# that keeps instrument coverage on nights the lifecycle goes red — and on
-# manual dispatch.
+# the "Bench: Box Lifecycle" run, so the instruments are exercised against a
+# box that was just updated and reinstalled rather than against whatever it
+# happened to be running. It also still runs on every push to `main` — a
+# per-merge sweep that keeps instrument coverage on nights the lifecycle goes
+# red — and on manual dispatch.
+#
+# Instrument power: the Rigol and Keithley sit on AC relays driven by the
+# bench LabJack (see .github/workflows/README.md). This job powers them on
+# before the first suite and back off at the end, so the bench is dark
+# between runs.
 
-name: Integration Tests
+name: "Bench: Integration Tests"
 
 on:
   push:
@@ -57,7 +62,9 @@ jobs:
   hardware-tests:
     name: Run hardware tests on the bench
     runs-on: [self-hosted, lager-bench]
-    timeout-minutes: 40
+    # 40 covered the suites alone (green runs span 13-27 min); +5 keeps the
+    # relay power-on settle (up to ~3 min) out of the margin.
+    timeout-minutes: 45
 
     env:
       LAGER_BOX: ${{ inputs.box_name || vars.LAGER_BOX || 'MASTER' }}
@@ -141,6 +148,39 @@ jobs:
           [ "$rc" -le 1 ] || exit "$rc"
         shell: bash
 
+      - name: Power on bench instruments (AC relays)
+        # The Rigol DP821 and Keithley 2281S sit on AC power relays driven by
+        # the bench LabJack (control high = outlet on); the bench is dark
+        # between runs. Power both up and wait until both enumerate on the
+        # box's USB scan before any suite talks to them. The driven level
+        # latches in LabJack hardware, so nothing needs to stay alive to hold
+        # it. `lager instruments` reads the box's USB scan only (no VISA
+        # session, no box lock) and exits non-zero on transient connectivity
+        # errors — hence `|| true` per attempt. Fast no-op when the
+        # instruments are already up (e.g. right behind the lifecycle run in
+        # the nightly chain). No continue-on-error and no `id:` — if the
+        # instruments cannot be powered, failing here beats seven suites
+        # failing one by one.
+        env:
+          RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
+          KEITHLEY_POWER_NET: ${{ vars.KEITHLEY_POWER_NET || 'KEITHLEY_POWER' }}
+        run: |
+          lager gpo "$RIGOL_POWER_NET" high --box "$LAGER_BOX"
+          lager gpo "$KEITHLEY_POWER_NET" high --box "$LAGER_BOX"
+          # The Keithley is the slow booter — measured ~90s to enumerate.
+          for _ in $(seq 1 36); do
+            out=$(lager instruments --box "$LAGER_BOX" 2>/dev/null || true)
+            if printf '%s' "$out" | grep -q 'Rigol_DP821' \
+              && printf '%s' "$out" | grep -q 'Keithley_2281S'; then
+              echo "Both instruments enumerated."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Instruments did not enumerate within 180s of relay power-on"
+          exit 1
+        shell: bash
+
       - name: Stage debug firmware
         # The debug suites SELF-SKIP when no firmware is present and record
         # those skips as PASS, so a firmware that never arrives would leave the
@@ -197,7 +237,10 @@ jobs:
         env:
           ADC_NET: ${{ vars.ADC_NET || 'adc1' }}
           DAC_NET: ${{ vars.DAC_NET || 'dac1' }}
-          GPIO_NET: ${{ vars.GPIO_NET || 'gpio16' }}
+          # NOT gpio16/gpio17 (FIO0/FIO1): those pins drive the bench's AC
+          # power relays — the test toggles the pin and leaves it LOW, which
+          # would cut an instrument's power mid-run. gpio18 = FIO2.
+          GPIO_NET: ${{ vars.GPIO_NET || 'gpio18' }}
           ADC_NETS: ${{ vars.ADC_NETS || 'adc1,adc2,adc3' }}
           LOOPBACK_ADC_NET: ${{ vars.LOOPBACK_ADC_NET || 'adc1' }}
         run: lager python test/api/io/test_LabJack_T7.py --box "$LAGER_BOX"
@@ -305,17 +348,20 @@ jobs:
         #            while printing failures. Tightening them converts four
         #            false passes into two visible failures (the other two now
         #            pass legitimately).
+        #    6 -> 0  the flash/post-erase connect defect below stopped
+        #            reproducing on the bench; consecutive nightly runs report
+        #            0 failures, so the ratchet locks the clean state in.
         #
         # Measured on a real bench from a known-good target -- the precondition
         # matters, because a failed flash leaves the chip erased and every
         # later connect on that net then fails for the same reason, which
         # inflates the count on any rerun that starts dirty.
         #
-        # The remaining 6 are one defect and its blast radius: `flash` erases,
-        # then its post-erase `/debug/connect` answers 500 ("Failed to power up
-        # DAP"), so section 4 loses all five checks and smoke loses its flash.
-        # Tracked separately -- that is a different bug from the net-blind
-        # status check fixed here, and halting the reconnect does not fix it.
+        # The 6 tracked before the drop to 0 were one defect and its blast
+        # radius: `flash` erases, then its post-erase `/debug/connect` answers
+        # 500 ("Failed to power up DAP"), so section 4 lost all five checks
+        # and smoke lost its flash. Tracked separately -- that was a different
+        # bug from the net-blind status check fixed here.
         #
         # This value must move in the SAME commit as the assertion repairs;
         # lowering it separately would trip the `-gt` arm.
@@ -326,7 +372,7 @@ jobs:
           # The suite defaults to ssh user `lager`; this bench logs in as
           # `lagerdata`.
           SSH_USER: lagerdata
-          JLINK_CLI_BASELINE: "6"
+          JLINK_CLI_BASELINE: "0"
         # Pass the box NAME, not the IP: given an IP the suite registers a
         # `temp_box_<ip>` entry, polluting the box list the lifecycle workflow
         # also manages.
@@ -422,4 +468,19 @@ jobs:
         # another holder's live lock.
         if: always()
         run: lager boxes unlock --box "$LAGER_BOX" 2>/dev/null || true
+        shell: bash
+
+      - name: Power off bench instruments (AC relays)
+        # Dark-bench policy: leave the Rigol and Keithley unpowered between
+        # runs. Best-effort — a power-off hiccup must not turn a green run
+        # red, and the next run's power-on step re-asserts the state anyway.
+        # No `id:`, so the fail gate above never sees this step.
+        if: always()
+        continue-on-error: true
+        env:
+          RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
+          KEITHLEY_POWER_NET: ${{ vars.KEITHLEY_POWER_NET || 'KEITHLEY_POWER' }}
+        run: |
+          lager gpo "$RIGOL_POWER_NET" low --box "$LAGER_BOX" || true
+          lager gpo "$KEITHLEY_POWER_NET" low --box "$LAGER_BOX" || true
         shell: bash

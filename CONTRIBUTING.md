@@ -28,9 +28,9 @@ pushing to avoid a round trip.
 
 | Workflow | What it does |
 |----------|--------------|
-| **Unit Tests** | The unit suites below, across the Python versions in `cli/setup.py` |
-| **Static Checks** | Lint over the untested tree, including ShellCheck on `*.sh` |
-| **Rust Checks** | `cargo fmt`, `clippy`, and a build of `box/oscilloscope-daemon` |
+| **PR Gate: Unit Tests** | The unit suites below, across the Python versions in `cli/setup.py` |
+| **PR Gate: Static Checks** | Lint over the untested tree, including ShellCheck on `*.sh` |
+| **PR Gate: Rust Checks** | `cargo fmt`, `clippy`, and a build of `box/oscilloscope-daemon` |
 
 Integration, hardware, and nightly bench workflows run against real hardware and
 are not triggered by ordinary pull requests.

@@ -20,7 +20,7 @@ schedule-, or dispatch-triggered and need the bench.
 | `static-checks.yml` | `pull_request`, push to `main`, dispatch | GitHub-hosted `ubuntu-latest` | Reports (see below) |
 | `rust-checks.yml` | `pull_request`, push to `main`, dispatch -- **path-filtered** to `box/oscilloscope-daemon/**` | GitHub-hosted `ubuntu-latest` | Reports (see below) |
 | `integration-tests.yml` | push to `main`, `workflow_call`, dispatch | self-hosted `lager-bench` | No |
-| `update-regression.yml` (Box Lifecycle) | `workflow_call`, dispatch | self-hosted `lager-bench` | No |
+| `update-regression.yml` (Bench: Box Lifecycle) | `workflow_call`, dispatch | self-hosted `lager-bench` | No |
 | `nightly-bench.yml` | nightly schedule, dispatch | orchestrator | No |
 
 `nightly-bench.yml` is the only workflow with a schedule; it reaches the other two bench

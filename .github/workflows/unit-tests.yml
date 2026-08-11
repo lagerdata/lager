@@ -19,7 +19,9 @@
 # ancestor directory — so if a repo-root conftest.py is ever added, every job
 # here will load it and it must not touch sys.modules['lager'].
 
-name: Unit Tests
+# Display name only — the JOB names below ("unit (...)", "compat (...)") are
+# pinned as required contexts in the main branch ruleset; never rename those.
+name: "PR Gate: Unit Tests"
 
 on:
   push:

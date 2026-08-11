@@ -20,7 +20,10 @@ Bench wiring (STG-1):
 Prerequisites:
     - ADC net configured on the box (default 'adc1', wired to dac1 on STG-1)
     - DAC net configured on the box (default 'dac1', wired to adc1 on STG-1)
-    - GPIO net configured on the box, output-capable (default 'gpio16')
+    - GPIO net configured on the box, output-capable (default 'gpio16').
+      CAUTION: on benches whose LabJack drives AC power relays (FIO0/FIO1 on
+      the CI bench), pass a non-relay pin's net (CI uses GPIO_NET=gpio18) —
+      this test toggles the pin and leaves it LOW.
     - Loopback (Group 10) runs by default when LOOPBACK_ADC_NET is set; set it to ""
       to skip on benches where dac1 and adc1 are not physically connected
 """

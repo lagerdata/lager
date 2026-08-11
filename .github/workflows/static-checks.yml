@@ -21,7 +21,9 @@
 # run means the change under review broke something -- not that the baseline
 # was already dirty.
 
-name: Static Checks
+# Display name only — the `static-checks` JOB name below is pinned as a
+# required context in the main branch ruleset; never rename it.
+name: "PR Gate: Static Checks"
 
 on:
   push:

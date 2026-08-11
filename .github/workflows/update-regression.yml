@@ -26,8 +26,13 @@
 # instrument sweep on it succeeding, so this run decides whether the night's
 # hardware suites happen at all. Still directly dispatchable on its own. No
 # pull_request trigger — public repo + self-hosted runner driving real hardware.
+#
+# Instrument power: the Rigol and Keithley sit on AC relays driven by the
+# bench LabJack (see .github/workflows/README.md). This job powers them on
+# up front (its per-phase smokes need the Rigol) and back off at the end,
+# so the bench is dark between runs.
 
-name: Box Lifecycle
+name: "Bench: Box Lifecycle"
 
 on:
   workflow_call:
@@ -115,6 +120,35 @@ jobs:
             sleep 10
           done
           echo "Box did not become reachable within 120s"
+          exit 1
+        shell: bash
+
+      - name: Power on bench instruments (AC relays)
+        # The Rigol DP821 and Keithley 2281S sit on AC power relays driven by
+        # the bench LabJack (control high = outlet on); the bench is dark
+        # between runs. Power both up front so they stay on for the whole
+        # lifecycle. The driven level latches in LabJack hardware and the
+        # LabJack keeps USB power through the uninstall/reinstall window, so
+        # the drive survives the whole job. Only the Rigol gates this step —
+        # it is what the per-phase smokes use; the Keithley is powered as a
+        # warm-up for the chained integration run, which verifies it itself.
+        # `lager instruments` exits non-zero on transient connectivity
+        # errors, hence `|| true` per attempt.
+        env:
+          RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
+          KEITHLEY_POWER_NET: ${{ vars.KEITHLEY_POWER_NET || 'KEITHLEY_POWER' }}
+        run: |
+          lager gpo "$RIGOL_POWER_NET" high --box "$LAGER_BOX"
+          lager gpo "$KEITHLEY_POWER_NET" high --box "$LAGER_BOX"
+          for _ in $(seq 1 36); do
+            out=$(lager instruments --box "$LAGER_BOX" 2>/dev/null || true)
+            if printf '%s' "$out" | grep -q 'Rigol_DP821'; then
+              echo "Rigol enumerated."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Rigol did not enumerate within 180s of relay power-on"
           exit 1
         shell: bash
 
@@ -242,6 +276,22 @@ jobs:
         run: lager python test/api/power/test_supply_Rigol_DP821.py --box "$LAGER_BOX"
         shell: bash
 
+      - name: Power off bench instruments (AC relays, pre-recovery)
+        # Dark-bench policy: leave the Rigol and Keithley unpowered between
+        # runs. Best-effort: `lager gpo` is an HTTP call to the box software,
+        # which does not exist if the run died inside the uninstall->install
+        # window — the post-recovery step below gets a second chance once
+        # recovery has reinstalled it.
+        if: always()
+        continue-on-error: true
+        env:
+          RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
+          KEITHLEY_POWER_NET: ${{ vars.KEITHLEY_POWER_NET || 'KEITHLEY_POWER' }}
+        run: |
+          lager gpo "$RIGOL_POWER_NET" low --box "$LAGER_BOX" || true
+          lager gpo "$KEITHLEY_POWER_NET" low --box "$LAGER_BOX" || true
+        shell: bash
+
       - name: Recovery — leave the bench usable on failure
         # The uninstall->install window is the one place a failure leaves the
         # box with nothing. One best-effort reinstall converts "transient
@@ -279,4 +329,21 @@ jobs:
         # there is no other holder to stomp.
         if: always()
         run: lager boxes unlock --box "$LAGER_BOX" --force 2>/dev/null || true
+        shell: bash
+
+      - name: Power off bench instruments (AC relays, post-recovery)
+        # Second chance for the dark-bench policy: recovery has reinstalled
+        # the box software and re-registered the box, so a power-off that
+        # failed mid-lifecycle can succeed now. On a clean run this is a
+        # harmless re-drive of an already-low pin. If even this fails,
+        # recovery itself failed — the relays stay latched on and the
+        # instruments idle at AC (harmless); the bench needs a hand anyway.
+        if: always()
+        continue-on-error: true
+        env:
+          RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
+          KEITHLEY_POWER_NET: ${{ vars.KEITHLEY_POWER_NET || 'KEITHLEY_POWER' }}
+        run: |
+          lager gpo "$RIGOL_POWER_NET" low --box "$LAGER_BOX" || true
+          lager gpo "$KEITHLEY_POWER_NET" low --box "$LAGER_BOX" || true
         shell: bash
