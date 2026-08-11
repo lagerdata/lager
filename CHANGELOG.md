@@ -2,6 +2,20 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Fixed
+
+- **Killing a `lager python` job now stops every process the job started, not
+  whichever one a scan happened to find first.** All of a job's processes are
+  collected before any is signalled, delivery is reduced to one signal per
+  process group (so a graceful interrupt is not cut short by its own
+  duplicate), and one grace window is shared by the whole job before anything
+  is force-killed — a multi-process job no longer holds the kill request open
+  while each process is resolved in turn. The kill request sent when the CLI
+  is interrupted is also bounded by a network timeout, so an unreachable box
+  surfaces as an error instead of a hang inside a signal handler.
+
 ## [0.35.0] - 2026-08-06
 
 ### Added
