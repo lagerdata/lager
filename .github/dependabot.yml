@@ -11,10 +11,11 @@
 # split into their own group so a real advisory is never buried in a routine
 # version-bump PR.
 #
-# Note what this does NOT solve for cargo: no workflow builds
-# box/oscilloscope-daemon, and box.Dockerfile does not copy the binary -- it is
-# built by hand (./build_daemon.sh) and mounted from the host at runtime. So a
-# merged lockfile bump is a source fix only; boxes stay on the old binary until
+# Cargo bumps are compile-checked by rust-checks.yml (cargo check / clippy /
+# audit on PRs touching box/oscilloscope-daemon), but deployment is still
+# manual: box.Dockerfile does not copy the binary -- it is built by hand
+# (./build_daemon.sh) and mounted from the host at runtime. So a merged
+# lockfile bump is a source fix only; boxes stay on the old binary until
 # someone rebuilds and redistributes it.
 version: 2
 
@@ -52,12 +53,22 @@ updates:
   # reasoning applies here -- cli/setup.py declares python_requires=">=3.10",
   # so a raised floor can make the package uninstallable on a version it
   # claims to support.
+  #
+  # mcp majors are ignored deliberately (see PR #209): the MCP server code
+  # targets the 1.x FastMCP API, upstream's 2.0 release notes advise keeping a
+  # <2 bound until migrated, and no CI job installs the [mcp] extra -- so a
+  # widened cap merges green while `pip install lager-cli[mcp]` breaks at
+  # runtime. Lift this ignore when the 2.x port lands, and add a CI job that
+  # actually installs the extra so the cap is tested.
   - package-ecosystem: pip
     directory: /cli
     versioning-strategy: increase-if-necessary
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: mcp
+        update-types: ['version-update:semver-major']
     groups:
       pip-security:
         applies-to: security-updates
