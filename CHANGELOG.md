@@ -2,6 +2,39 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Fixed
+
+- **`lager install` could take Docker down on a fresh box and then blame the
+  config.** `docker.service` ships `StartLimitBurst=3` / `StartLimitInterval=60s`,
+  and the installer started it four times in eleven seconds: the package
+  postinst's own start, a `docker.socket` restart (which bounces the service
+  too, since `docker.service` declares `Requires=docker.socket`), the service
+  restart immediately after it, and finally the restart that applies
+  `daemon.json`. systemd refused the fourth and latched the unit into
+  `failed (start-limit-hit)`, where every further restart — including the
+  installer's own retry — fails instantly without attempting a start. Docker
+  itself was healthy throughout; every start systemd allowed to run reached
+  full initialization.
+
+  The installer now performs one service start per step: the `docker.socket`
+  restart is kept only as a fallback for the stale-socket failure it was
+  actually added for, so it costs a start only when the plain restart has
+  already failed. Every restart is preceded by
+  `systemctl reset-failed docker.service docker.socket`, which clears the
+  counter — so a box that is already latched now recovers instead of staying
+  wedged, including on the DNS rollback path, where a refused restart used to
+  leave the old `daemon.json` restored and the daemon still dead.
+
+- **A wedged Docker daemon was reported as a malformed `/etc/docker/daemon.json`.**
+  That hint fired because writing `daemon.json` is the step before the restart
+  that fails, not because the two are related — and it was wrong in the case
+  actually observed, sending debugging down the wrong path. The installer now
+  reads `systemctl show docker -p Result` first and, on `start-limit-hit`,
+  names that cause and gives the remedy that works (`reset-failed`, then
+  `start`). The `daemon.json` hint remains for every other failure.
+
 ## [0.36.1] - 2026-08-12
 
 ### Fixed

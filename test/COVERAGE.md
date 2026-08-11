@@ -35,13 +35,13 @@ are not.
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1179 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1187 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 1563 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 79 (+4 skipped) |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 91 (+1 skipped) |
-| | **Total gated** | **3183** |
+| | **Total gated** | **3191** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -430,7 +430,7 @@ cli/tests/                #  5 files: 3 pytest suites + test_io_imports.py (GATE
                           #           `unit (cli)`), plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 135 files)
+### Local Unit Tests (`test/unit/` -- 136 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 74 files)
 
@@ -531,6 +531,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_debug_service_client_auth.py` | Gateway auth on the debug service client |
 | `test_devenv_config_commands.py` | `lager devenv mount` / `env`: editing project-local `.lager` volumes and environment keys |
 | `test_devenv_terminal_docker_args.py` | `docker run` args for `devenv terminal` and `exec`; regression for the `--group` bare-flag bug |
+| `test_docker_start_limit.py` | The installer must not trip docker.service's `StartLimitBurst=3`: one service start per step, `reset-failed` before every restart, and `start-limit-hit` diagnosed as itself rather than a bad daemon.json |
 | `test_diagnose_classify.py` | `lager diagnose` classification decision tree for one-line user diagnosis |
 | `test_diagnose_classify_jlink.py` | `lager diagnose` J-Link classification from `/diagnose/usb` + `/diagnose/jlink` payloads |
 | `test_diagnose_classify_usbhub.py` | `lager diagnose` USB hub classification from `/diagnose/usbhub`, including the wedged hub that sysfs and lsof both call healthy |
