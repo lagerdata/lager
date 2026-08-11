@@ -392,7 +392,13 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
 
     # Helper function to run SSH commands
     def run_ssh(cmd, description, allow_fail=False):
-        """Run an SSH command and handle errors."""
+        """Run an SSH command and handle errors.
+
+        Returns True only when the remote command actually succeeded.
+        ``allow_fail`` softens how the failure is REPORTED (yellow
+        "skipped" instead of red "failed"), not what is returned — the
+        lock-dissolve decision below needs the honest answer.
+        """
         click.echo(f"  {description}...", nl=False)
         try:
             ssh_cmd = ["ssh"]
@@ -419,7 +425,7 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
                 return True
             elif allow_fail:
                 click.secho(" skipped", fg='yellow')
-                return True
+                return False
             else:
                 click.secho(" failed", fg='red')
                 if not use_interactive_ssh and hasattr(result, 'stderr') and result.stderr:
@@ -695,14 +701,25 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
     # ~/box, /etc/lager, etc. all clobber a running `lager python` test.
     # A concurrent test fail-fasts (dev) or queues (CI) on the box lock
     # rather than getting killed mid-run.
-    with auto_lock_around_command(ip, box or ip, 'uninstall'):
+    with auto_lock_around_command(ip, box or ip, 'uninstall') as lock_session:
         click.secho("[Step 1/5] Stopping Docker containers...", fg='cyan')
         run_ssh(
             "cd ~/box && docker compose down 2>/dev/null",
             "Running docker compose down",
             allow_fail=True
         )
-        run_ssh("docker stop lager 2>/dev/null; docker rm -f lager 2>/dev/null", "Removing lager container", allow_fail=True)
+        lager_container_removed = run_ssh("docker stop lager 2>/dev/null; docker rm -f lager 2>/dev/null", "Removing lager container", allow_fail=True)
+        if lager_container_removed:
+            # That container served the :9000 lock API our own lock lives
+            # in, so the lock is gone with it. Dissolve the session rather
+            # than heartbeat and release against a server this command just
+            # deleted — those POSTs cannot succeed, and the heartbeat's
+            # "relying on server TTL" warning fired on every single
+            # successful uninstall because of it.
+            #
+            # Only on a CONFIRMED removal: if the step failed, the container
+            # may still be up, and a heartbeat failure is real signal again.
+            lock_session.dissolve()
         run_ssh("docker stop pigpio 2>/dev/null; docker rm -f pigpio 2>/dev/null", "Removing pigpio container", allow_fail=True)
         run_ssh("docker network rm lagernet 2>/dev/null", "Removing lagernet network", allow_fail=True)
         click.echo()

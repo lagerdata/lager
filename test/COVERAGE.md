@@ -35,13 +35,13 @@ are not.
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1187 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1193 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 1563 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 79 (+4 skipped) |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
-| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 91 (+1 skipped) |
-| | **Total gated** | **3191** |
+| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 94 (+1 skipped) |
+| | **Total gated** | **3200** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -351,7 +351,7 @@ Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `H
 | `cli/gateway_auth.py` | 376 | 27 tests | Refresh path plus the `cli/tests/` suite. `handle_gateway_denial`, `gateway_response_hook`, `auth_headers_for_box` remain thin. |
 | `cli/config.py` | 435 | 63 tests | Cache, the configparser round-trip and legacy-key migration, `read_lager_json`/`write_lager_json`, `expand_devenv_path` and `get_debug_script_for_net` are covered. `get_includes_from_config` and `_find_config_files` are not. |
 | `cli/commands/utility/install.py` | 575 | indirect | Only `install_wheel` is exercised. |
-| `cli/commands/utility/uninstall.py` | 820 | 10 tests | Spec parsing only; teardown and rollback untested. |
+| `cli/commands/utility/uninstall.py` | 837 | 13 tests | Spec parsing plus the teardown's lock lifecycle. The privileged sudo session, the `--all` extras and `--dry-run` inspection are untested. |
 | `cli/commands/communication/*.py` | — | 1 each | Smoke-only: asserts each posts to `:9000`. `spi.py` (700) and `i2c.py` (551) have no protocol or argument-parsing coverage. |
 | `cli/commands/measurement/*.py` | — | 1 each | Same `:9000` smoke pattern. |
 
@@ -523,7 +523,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_battery_tui.py` | BatteryTUI render output, command parsing, and worker thread offloading |
 | `test_binaries_9000.py` | `lager binaries add/list/remove` and `download_file` migrated to the box HTTP server on `:9000` |
 | `test_box_command_error.py` | `box_command_error`: a 404 that means "net or instrument not found" must not also tell the user their box image is out of date |
-| `test_box_lock_helpers.py` | Lock holder resolution, acquire/release/heartbeat, and format_lock_user CI support |
+| `test_box_lock_helpers.py` | Lock holder resolution, acquire/release/heartbeat, `LockSession.dissolve`, and format_lock_user CI support |
 | `test_box_request_failure_messages.py` | `echo_box_request_failure`: distinguishing a slow box-side op from a dead box |
 | `test_configure_docker_dns.py` | `configure_docker_dns`: daemon.json `dns` entries must be bare IPs or Docker refuses to start |
 | `test_configure_docker_dns_rollback.py` | Rollback behaviour of `configure_docker_dns.sh` when the DNS optimization fails |
@@ -594,7 +594,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_group_usage.py` | Usage-line formatting for CLI command groups (CommandFirstUsageMixin / LagerGroup) |
 | `test_install_wheel.py` | install-wheel command: wheel filename to package name parsing |
 | `test_pdf_pages.py` | `tools/pdf_pages.py`: PNG and text extraction (skips without pymupdf, which is AGPL) |
-| `test_uninstall_spec.py` | Pins `lager uninstall`'s removal spec to what `install` / `box-config apply` actually create |
+| `test_uninstall_spec.py` | Pins `lager uninstall`'s removal spec to what `install` / `box-config apply` actually create; lock dissolves when the teardown removes the lock server |
 | `test_update_version_ref.py` | Version reference resolution for git checkouts (semver tags vs. named branches) |
 
 #### Repo-Root Unit Tests (`test/test_*.py` -- 2 files)
