@@ -1004,6 +1004,43 @@ def default_auto_holder_type():
         return 'ephemeral'
 
 
+class LockSession:
+    """Handle yielded by :func:`auto_lock_around_command`.
+
+    Unpacks as ``(holder, state)`` so the historical
+    ``with auto_lock_around_command(...) as (holder, state):`` form keeps
+    working, and adds :meth:`dissolve` for the one kind of command that
+    destroys the lock server it is holding a lock on.
+    """
+
+    __slots__ = ('holder', 'state', '_dissolve_fn')
+
+    def __init__(self, holder, state, dissolve_fn):
+        self.holder = holder
+        self.state = state
+        self._dissolve_fn = dissolve_fn
+
+    def __iter__(self):
+        return iter((self.holder, self.state))
+
+    def dissolve(self):
+        """Declare the lock gone because this command removed its server.
+
+        `lager uninstall` deletes the lager container partway through its
+        own run — and that container is the process serving the ``:9000``
+        lock API this session's lock lives in. From that moment there is
+        nothing left to keep alive and nobody left to release to: the lock
+        state died with the container.
+
+        Calling this stops the heartbeat thread and makes both the context
+        manager's ``finally`` and the ``atexit`` fallback skip the release
+        POST. It is neither a release (there is no server to tell) nor a
+        leak (no state persists to block the next command). Idempotent, and
+        a no-op when no lock was ever acquired.
+        """
+        self._dissolve_fn()
+
+
 def auto_lock_around_command(
     ip,
     box_label,
@@ -1043,10 +1080,13 @@ def auto_lock_around_command(
     ``SystemExit(1)`` with a "locked by ..." message after the wait
     deadline.
 
-    Yields the ``(holder, state)`` tuple, where ``state`` is one of
-    ``"acquired"``, ``"already_ours"``, ``"unreachable"``, or
-    ``"disabled"``. Callers can use ``state`` to short-circuit downstream
-    work but the lock lifecycle is fully handled by the context manager.
+    Yields a :class:`LockSession`, which unpacks as ``(holder, state)``
+    — ``state`` being one of ``"acquired"``, ``"already_ours"``,
+    ``"unreachable"``, or ``"disabled"``. Callers can use ``state`` to
+    short-circuit downstream work; the lock lifecycle is otherwise fully
+    handled by the context manager, the sole exception being commands that
+    remove the lock server themselves, which call
+    :meth:`LockSession.dissolve` (see `lager uninstall`).
     """
     import contextlib
 
@@ -1056,7 +1096,12 @@ def auto_lock_around_command(
         import os as _os
 
         if _os.getenv('LAGER_AUTO_LOCK_DISABLE'):
-            yield (holder or get_lock_holder(), 'disabled')
+            # No lock was taken, so there is nothing to dissolve — but the
+            # handle must still offer the method, or a caller that dissolves
+            # would crash under the escape hatch.
+            yield LockSession(
+                holder or get_lock_holder(), 'disabled', lambda: None,
+            )
             return
 
         resolved_holder = holder or get_lock_holder()
@@ -1122,8 +1167,27 @@ def auto_lock_around_command(
             )
             heartbeat.start()
 
+        dissolved = {'done': False}
+
+        def _dissolve():
+            # Back end for LockSession.dissolve(); see that docstring for
+            # why a removed lock server means neither release nor leak.
+            if dissolved['done']:
+                return
+            dissolved['done'] = True
+            if heartbeat is not None:
+                heartbeat.stop()
+            # Marking the release done skips it in BOTH the finally below
+            # and the atexit fallback: a POST to the deleted server can
+            # only burn its 5s timeout on the way to failing.
+            released['done'] = True
+            try:
+                _atexit.unregister(_safe_release)
+            except Exception:  # pylint: disable=broad-except
+                pass
+
         try:
-            yield (resolved_holder, state)
+            yield LockSession(resolved_holder, state, _dissolve)
         finally:
             if heartbeat is not None:
                 heartbeat.stop()

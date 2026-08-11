@@ -12,6 +12,8 @@ Covers:
 - heartbeat_box_lock(): 200 -> True, 404 -> False, transport error -> False.
 - format_lock_user(): new ci:* formatting paths.
 - default_lock_wait_seconds() CI vs dev defaults + env override.
+- LockSession.dissolve(): the affordance `lager uninstall` uses once it has
+  deleted the container serving the lock API.
 """
 
 from __future__ import annotations
@@ -659,6 +661,136 @@ class TestAutoLockAroundCommand:
             pass
 
         assert captured['holder_type'] == 'ci'
+
+
+class TestLockSessionDissolve:
+    """`lager uninstall` removes the lager container — the process serving
+    the :9000 lock API its own lock lives in — partway through its run.
+    dissolve() is how it says so: stop heartbeating, skip the release.
+
+    Every OTHER caller (install, install-wheel, lager python) must be
+    unaffected, which the untouched tests above assert by never calling it.
+    """
+
+    @staticmethod
+    def _patch_lock(monkeypatch, heartbeat, released, state='acquired', lock_data=None):
+        monkeypatch.setattr(
+            box_storage, 'acquire_box_lock',
+            lambda *a, **k: (state, lock_data if lock_data is not None else {}),
+        )
+        monkeypatch.setattr(
+            box_storage, 'release_box_lock',
+            lambda *a, **k: released.append(a) or True,
+        )
+        monkeypatch.setattr(
+            box_storage, 'get_lock_holder', lambda: 'test-holder',
+        )
+        monkeypatch.setattr(box_storage, 'HeartbeatThread', lambda *a, **k: heartbeat)
+
+    def test_dissolve_stops_heartbeat_and_skips_release(self, monkeypatch):
+        released = []
+        hb = mock.Mock(start=mock.Mock(), stop=mock.Mock())
+        self._patch_lock(monkeypatch, hb, released)
+
+        with box_storage.auto_lock_around_command(
+            '10.0.0.1', 'lab-box', 'uninstall',
+        ) as session:
+            hb.start.assert_called_once()
+            session.dissolve()
+            # Stopped INSIDE the block: the point is that no heartbeat is
+            # attempted over the rest of the command, not merely that the
+            # thread is tidied up at exit (the finally already did that).
+            assert hb.stop.called, 'dissolve must stop the heartbeat immediately'
+
+        assert released == [], 'must not POST a release to a deleted server'
+
+    def test_dissolve_is_idempotent(self, monkeypatch):
+        released = []
+        hb = mock.Mock(start=mock.Mock(), stop=mock.Mock())
+        self._patch_lock(monkeypatch, hb, released)
+
+        with box_storage.auto_lock_around_command(
+            '10.0.0.1', 'lab-box', 'uninstall',
+        ) as session:
+            session.dissolve()
+            session.dissolve()
+            session.dissolve()
+
+        assert released == []
+
+    def test_dissolve_unregisters_the_atexit_fallback(self, monkeypatch):
+        # The atexit handler is the release path for signals and os._exit.
+        # Left registered, it would fire the doomed POST at interpreter
+        # shutdown — exactly what dissolve exists to avoid.
+        import atexit as real_atexit
+        unregistered = []
+        released = []
+        hb = mock.Mock(start=mock.Mock(), stop=mock.Mock())
+        self._patch_lock(monkeypatch, hb, released)
+        monkeypatch.setattr(
+            real_atexit, 'unregister', lambda fn: unregistered.append(fn),
+        )
+
+        with box_storage.auto_lock_around_command(
+            '10.0.0.1', 'lab-box', 'uninstall',
+        ) as session:
+            session.dissolve()
+            assert len(unregistered) == 1
+
+        # The finally's _safe_release is a no-op now, so it must not
+        # unregister a second time.
+        assert len(unregistered) == 1
+
+    def test_dissolve_stops_heartbeat_of_a_resumed_lock(self, monkeypatch):
+        # Resumed ephemeral lock (state 'already_ours' with a TTL) gets a
+        # heartbeat but is never released. Uninstall can still be the
+        # command that deletes the server, so dissolve must silence it.
+        released = []
+        hb = mock.Mock(start=mock.Mock(), stop=mock.Mock())
+        self._patch_lock(
+            monkeypatch, hb, released,
+            state='already_ours', lock_data={'ttl_seconds': 1800},
+        )
+
+        with box_storage.auto_lock_around_command(
+            '10.0.0.1', 'lab-box', 'uninstall',
+        ) as session:
+            session.dissolve()
+            assert hb.stop.called
+
+        assert released == []
+
+    def test_dissolve_is_a_noop_under_the_disable_escape_hatch(self, monkeypatch):
+        # LAGER_AUTO_LOCK_DISABLE skips the acquire entirely; the yielded
+        # handle must still answer dissolve() rather than AttributeError.
+        monkeypatch.setenv('LAGER_AUTO_LOCK_DISABLE', '1')
+
+        def boom(*a, **k):
+            raise AssertionError('no lock is held when disabled')
+
+        monkeypatch.setattr(box_storage, 'acquire_box_lock', boom)
+        monkeypatch.setattr(box_storage, 'release_box_lock', boom)
+        monkeypatch.setattr(box_storage, 'get_lock_holder', lambda: 'test-holder')
+
+        with box_storage.auto_lock_around_command(
+            '10.0.0.1', 'lab-box', 'uninstall',
+        ) as session:
+            assert session.state == 'disabled'
+            session.dissolve()
+
+    def test_session_still_unpacks_as_holder_state(self, monkeypatch):
+        # Guards the callers (and tests) written against the old tuple
+        # yield: the handle grew a method, it did not change shape.
+        released = []
+        hb = mock.Mock(start=mock.Mock(), stop=mock.Mock())
+        self._patch_lock(monkeypatch, hb, released)
+
+        with box_storage.auto_lock_around_command(
+            '10.0.0.1', 'lab-box', 'install',
+        ) as (holder, state):
+            assert (holder, state) == ('test-holder', 'acquired')
+
+        assert len(released) == 1, 'a session nobody dissolved still releases'
 
 
 class TestAutoLockAcquireForCommand:

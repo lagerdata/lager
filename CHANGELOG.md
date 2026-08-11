@@ -35,6 +35,23 @@ All notable changes to the Lager platform are documented here. For detailed rele
   names that cause and gives the remedy that works (`reset-failed`, then
   `start`). The `daemon.json` hint remains for every other failure.
 
+- **`lager uninstall` warned about a lock heartbeat failure on every
+  successful run.** The command holds the box auto-lock across all five of its
+  steps so a concurrent `lager python` cannot be torn down mid-test — but Step
+  1 removes the lager container, which is the process serving the `:9000` lock
+  API the heartbeat renews against. Every heartbeat and the final release after
+  that point were POSTs to a server the command itself had just deleted, so
+  `Warning: uninstall lock heartbeat failed; relying on server TTL.` was
+  guaranteed, and it read as a fault when it was a consequence of the uninstall
+  working.
+
+  The lock session now *dissolves* once the container is confirmed gone: the
+  heartbeat stops and the release is skipped, because the lock state died with
+  the container — there is nobody left to tell and nothing left to persist. If
+  the container removal fails, nothing is dissolved: the server may still be
+  up, and a heartbeat failure is real signal again. No other command's lock
+  behavior changes.
+
 ## [0.36.1] - 2026-08-12
 
 ### Fixed
