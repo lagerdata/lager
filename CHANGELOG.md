@@ -6,6 +6,14 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- **`lager python` now survives more than Ctrl+C: SIGTERM and SIGHUP stop the
+  job too.** A killed terminal or a supervisor's TERM (including a cancelled CI
+  job) previously ended the client at its default disposition — the box-side
+  script kept running and the box lock stayed held until someone noticed. All
+  three stop signals now trigger the same remote stop and lock release, the
+  handlers are restored afterwards so a second signal can always break out, and
+  the reattach path installs them safely from worker threads as well.
+
 - **Killing a `lager python` job now stops every process the job started, not
   whichever one a scan happened to find first.** All of a job's processes are
   collected before any is signalled, delivery is reduced to one signal per
