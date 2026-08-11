@@ -1,6 +1,6 @@
 # Lager
 
-[![Unit Tests](https://github.com/lagerdata/lager/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/lagerdata/lager/actions/workflows/unit-tests.yml)
+[![PR Gate: Unit Tests](https://github.com/lagerdata/lager/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/lagerdata/lager/actions/workflows/unit-tests.yml)
 [![PyPI](https://img.shields.io/pypi/v/lager-cli)](https://pypi.org/project/lager-cli/)
 [![Python](https://img.shields.io/pypi/pyversions/lager-cli)](https://pypi.org/project/lager-cli/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)

@@ -5,7 +5,8 @@
 # main, that the box can be updated and reinstalled and that its instruments
 # still work afterwards:
 #
-#   Box Lifecycle (update paths -> uninstall -> install) -> Integration Tests
+#   Bench: Box Lifecycle (update paths -> uninstall -> install)
+#     -> Bench: Integration Tests
 #
 # `needs:` is the whole ordering: integration runs only if lifecycle succeeded.
 # On a red lifecycle the night reads as one red run with integration skipped —
@@ -21,8 +22,13 @@
 # the shared hardware-ci group; a caller sharing that group would hold the slot
 # while waiting on a child that wants the same slot — a deadlock. The bench is
 # still serialized, by that group on the children and by the box's own lock.
+#
+# Instrument AC power (relays) lives inside each called workflow: each powers
+# the Rigol/Keithley on at its start and off at its end. Deliberately NOT
+# coordinated across the chain — a chain cancelled between jobs can therefore
+# never strand the bench powered; the cost is one extra relay cycle per night.
 
-name: Nightly Bench
+name: "Bench: Nightly"
 
 on:
   schedule:
