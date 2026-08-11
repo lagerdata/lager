@@ -504,6 +504,16 @@ ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/install -m 0644 /tmp/lager_daemon.json 
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/install -m 0644 /tmp/lager_daemon.json /etc/docker/daemon.json
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/systemctl restart docker
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart docker
+# `reset-failed` before each restart. docker.service ships StartLimitBurst=3 /
+# StartLimitInterval=60s, and one install legitimately starts it several times
+# inside that window (package postinst, the pre-flight restart, the daemon.json
+# restart). The fourth is refused and systemd latches the unit into
+# "failed (start-limit-hit)", after which every further restart -- including
+# this script's own retry -- fails instantly without attempting a start.
+# reset-failed clears that counter, which is what makes the restarts below
+# self-healing instead of permanently wedged.
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/systemctl reset-failed docker.service docker.socket
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl reset-failed docker.service docker.socket
 # Firewall: install the shipped script to a ROOT-owned path (the login user
 # can't modify it there), then run it. NOPASSWD on a /tmp path would be unsafe
 # (world-writable); a fixed root-owned path is safe.
@@ -571,12 +581,22 @@ else
 
         # Install Docker on the box.
         #
-        # `systemctl daemon-reload` + restarting docker.socket before the
-        # daemon matters on boxes where docker was ever removed: the old
+        # ONE service start here, not two. This used to restart docker.socket
+        # and then docker, but docker.service declares `Requires=docker.socket`
+        # so the socket restart bounces the service too -- two starts where one
+        # was needed. Against docker.service's StartLimitBurst=3 in a 60s
+        # window, that plus the package postinst's own start and the later
+        # daemon.json restart made four starts in eleven seconds: the fourth
+        # was refused and the unit latched into "failed (start-limit-hit)",
+        # which the installer then reported as a bad daemon.json.
+        #
+        # The socket restart survives as a FALLBACK because it fixes a real,
+        # different failure: on boxes where docker was ever removed, the old
         # socket unit lingers loaded in systemd and the reinstalled service
         # fails to start with "Unit docker.socket failed to load properly ...
-        # Device or resource busy". `restart` (not `start`) also recovers a
-        # half-started daemon left behind by the package postinst.
+        # Device or resource busy". That path costs its extra start only when
+        # the plain restart has already failed. `restart` (not `start`) also
+        # recovers a half-started daemon left by the package postinst.
         #
         # `if ssh_t ...` (not `ssh_t; if [ $? ... ]`): under `set -e` a bare
         # failing ssh_t aborts the whole script with an unexplained
@@ -587,8 +607,12 @@ else
             { sudo apt-get install -y docker-buildx || sudo apt-get install -y docker-buildx-plugin || true; } && \
             sudo systemctl daemon-reload && \
             sudo systemctl enable docker && \
-            { sudo systemctl restart docker.socket 2>/dev/null || true; } && \
-            sudo systemctl restart docker && \
+            { sudo systemctl reset-failed docker.service docker.socket 2>/dev/null || true; } && \
+            { sudo systemctl restart docker || {
+                sudo systemctl reset-failed docker.service docker.socket 2>/dev/null || true
+                sudo systemctl restart docker.socket 2>/dev/null || true
+                sudo systemctl restart docker
+            }; } && \
             sudo usermod -aG docker ${BOX_USER}
         "; then
             print_success "Docker installed successfully"
@@ -626,10 +650,17 @@ else
     # the service can't start until a daemon-reload.
     if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "systemctl is-active --quiet docker"; then
         print_info "Docker daemon is not running - starting it..."
+        # Same shape as the install step above: reset-failed clears any
+        # start-limit latch (a unit in that state refuses every restart
+        # instantly), one restart, and the socket dance only as a fallback.
         ssh_t "${BOX_USER}@${BOX_IP}" "
             sudo systemctl daemon-reload && \
-            { sudo systemctl restart docker.socket 2>/dev/null || true; } && \
-            sudo systemctl restart docker
+            { sudo systemctl reset-failed docker.service docker.socket 2>/dev/null || true; } && \
+            { sudo systemctl restart docker || {
+                sudo systemctl reset-failed docker.service docker.socket 2>/dev/null || true
+                sudo systemctl restart docker.socket 2>/dev/null || true
+                sudo systemctl restart docker
+            }; }
         " || true
     fi
     # (2) A fresh `usermod -aG docker` only shows up in NEW SSH logins, and
@@ -1461,11 +1492,30 @@ print_info "Verifying the Docker daemon is running..."
 if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "docker info >/dev/null 2>&1"; then
     print_error "The Docker daemon is not running on the box"
     echo ""
-    echo "  Nothing can be deployed until it starts. On the box:"
-    echo "    sudo systemctl status docker"
-    echo "    sudo journalctl -u docker -n 50 --no-pager"
-    echo ""
-    echo "  A daemon that refuses to start usually has a bad /etc/docker/daemon.json."
+    # Ask the unit WHY before guessing. "start-limit-hit" and a bad daemon.json
+    # are different failures with different fixes, and the daemon.json guess was
+    # wrong in the one case we have actually seen: writing daemon.json is simply
+    # the step before the restart that fails, so the hint fired on a healthy
+    # config and sent debugging down the wrong path entirely.
+    DOCKER_RESULT=$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "systemctl show docker -p Result --value 2>/dev/null" 2>/dev/null || true)
+    if [ "$DOCKER_RESULT" = "start-limit-hit" ]; then
+        echo "  systemd refused to start it: too many starts in too short a window."
+        echo "  docker.service ships StartLimitBurst=3 / StartLimitInterval=60s, and"
+        echo "  the unit is now latched -- every further restart fails instantly"
+        echo "  without attempting a start. The daemon itself is likely fine."
+        echo ""
+        echo "  On the box:"
+        echo "    sudo systemctl reset-failed docker.service docker.socket"
+        echo "    sudo systemctl start docker"
+        echo ""
+        echo "  Then re-run this script."
+    else
+        echo "  Nothing can be deployed until it starts. On the box:"
+        echo "    sudo systemctl status docker"
+        echo "    sudo journalctl -u docker -n 50 --no-pager"
+        echo ""
+        echo "  A daemon that refuses to start usually has a bad /etc/docker/daemon.json."
+    fi
     echo ""
     exit 1
 fi

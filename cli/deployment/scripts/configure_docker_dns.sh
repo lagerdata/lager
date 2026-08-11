@@ -17,7 +17,10 @@
 #
 # Every privileged action here is one the box's sudoers file already grants
 # NOPASSWD (see setup_and_deploy_box.sh): `install` from the fixed path
-# /tmp/lager_daemon.json, and `systemctl restart docker`. Staging anywhere else --
+# /tmp/lager_daemon.json, `systemctl restart docker`, and
+# `systemctl reset-failed docker.service docker.socket` -- the last of which is
+# best-effort, so a box whose sudoers predates that grant just skips it.
+# Staging anywhere else --
 # a mktemp path, say -- silently falls outside the grant and makes every run prompt
 # for a password. Snapshot and restore therefore route through that same path, and
 # the backup lives in /tmp, where no privileges are needed to write it.
@@ -43,6 +46,19 @@ if [ -f "$DAEMON_JSON" ]; then
 else
     HAD_CONFIG=0
 fi
+
+restart_docker() {
+    # `reset-failed` first, every time. docker.service ships StartLimitBurst=3 /
+    # StartLimitInterval=60s, and a fresh install legitimately starts it several
+    # times inside that window -- the package postinst, the installer's
+    # pre-flight restart, then this one. Trip the limit and systemd latches the
+    # unit into "failed (start-limit-hit)", where every further restart fails
+    # instantly WITHOUT attempting a start. That takes down the rollback below
+    # too: the restore would put the old daemon.json back and still leave the
+    # daemon dead. Clearing the counter first is what makes both paths work.
+    sudo systemctl reset-failed docker.service docker.socket 2>/dev/null || true
+    sudo systemctl restart docker
+}
 
 daemon_is_up() {
     # `systemctl is-active` reads the unit's own state: unlike `docker info` it
@@ -70,12 +86,12 @@ restore_previous() {
     fi
     sudo install -m 0644 "$STAGED" "$DAEMON_JSON" \
         || echo "WARNING: could not restore ${DAEMON_JSON}" >&2
-    sudo systemctl restart docker || true
+    restart_docker || true
 }
 
 sudo install -m 0644 "$STAGED" "$DAEMON_JSON"
 
-if ! sudo systemctl restart docker || ! daemon_is_up; then
+if ! restart_docker || ! daemon_is_up; then
     restore_previous
     echo "ERROR: Docker would not start with the new DNS configuration." >&2
     echo "       Restored the previous ${DAEMON_JSON} and restarted Docker." >&2
