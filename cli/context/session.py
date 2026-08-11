@@ -639,7 +639,7 @@ class DirectHTTPSession:
         # Bounded because this is called from a signal handler: an unbounded
         # POST there means Ctrl+C wedges the client instead of stopping the
         # job. The read budget outlasts the box's own escalation window (it
-        # signals the job, waits KILL_GRACE_S for exit, then SIGKILLs) so a
+        # signals the job, waits CLEANUP_GRACE_S for exit, then SIGKILLs) so a
         # slow-but-working kill is not mistaken for a hung one.
         response = self.session.post(url, json={
             'lager_process_id': lager_process_id,

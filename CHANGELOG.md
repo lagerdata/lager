@@ -6,6 +6,17 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- **A `lager python` script whose client vanishes now gets to finish its
+  teardown.** When the CLI is hard-killed, the network drops, or a CI job is
+  cancelled, the box previously SIGTERMed the script outright — no `finally`,
+  no context managers, no `atexit` — and only noticed the dead client the next
+  time the script wrote output, which for a quiet script could take many
+  seconds. Disconnects are now detected sub-second even for silent scripts, the
+  script is interrupted with SIGINT first, and a progress-aware watchdog gives
+  cleanup work a grace window (extended while it is demonstrably making
+  progress, hard-capped at one minute) before escalating to SIGTERM and
+  SIGKILL. New jobs wait for a previous job's teardown to clear before starting.
+
 - **`lager python` now survives more than Ctrl+C: SIGTERM and SIGHUP stop the
   job too.** A killed terminal or a supervisor's TERM (including a cancelled CI
   job) previously ended the client at its default disposition — the box-side
