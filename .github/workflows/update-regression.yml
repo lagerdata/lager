@@ -123,6 +123,70 @@ jobs:
           exit 1
         shell: bash
 
+      - name: Ensure relay nets exist (self-heal)
+        # People testing on the bench sometimes rebuild the box's nets with
+        # `lager nets delete-all` + `add-all`. That wipes the named relay
+        # nets (add-all re-fills FIO0/FIO1 as numbered gpio nets) and
+        # recreates the default LabJack SPI net on FIO0-FIO3, whose CS/SCK
+        # lines ARE the relay controls. Heal here instead of failing the
+        # night: rename the squatter net back (preserves its record),
+        # create the net fresh when the pin is empty, and delete any SPI
+        # net overlapping the relay pins. Hard gate — if this cannot be
+        # healed, the power-on step below could not work either. Kept in
+        # both bench workflows: either can be the first to run after a
+        # wipe (push-to-main runs integration alone).
+        env:
+          RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
+          KEITHLEY_POWER_NET: ${{ vars.KEITHLEY_POWER_NET || 'KEITHLEY_POWER' }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess, sys
+
+          box = os.environ["LAGER_BOX"]
+
+          def lager(*args, parse=False):
+              res = subprocess.run(["lager", *args, "--box", box],
+                                   capture_output=True, text=True)
+              if res.returncode != 0:
+                  print(res.stdout + res.stderr)
+                  sys.exit(f"lager {' '.join(args)} failed (rc {res.returncode})")
+              return json.loads(res.stdout) if parse else res.stdout
+
+          nets = lager("nets", "state", "--json", parse=True)
+          names = {n.get("name") for n in nets}
+
+          def labjack_address():
+              for n in nets:
+                  if "0x0CD5" in str(n.get("address", "")):
+                      return n["address"]
+              out = lager("instruments")
+              m = re.search(r"USB0::0x0CD5::0x0007::[^:\s]*::INSTR", out)
+              if not m:
+                  sys.exit("cannot determine the LabJack VISA address")
+              return m.group(0)
+
+          for want, pin in ((os.environ["RIGOL_POWER_NET"], "FIO0"),
+                            (os.environ["KEITHLEY_POWER_NET"], "FIO1")):
+              if want in names:
+                  print(f"{want} present")
+                  continue
+              squatter = next((n["name"] for n in nets
+                               if n.get("role") == "gpio"
+                               and n.get("pin") == pin), None)
+              if squatter:
+                  lager("nets", "rename", squatter, want)
+                  print(f"renamed {squatter} -> {want} ({pin})")
+              else:
+                  lager("nets", "add", want, "gpio", pin, labjack_address())
+                  print(f"created {want} on {pin}")
+
+          for n in nets:
+              if n.get("role") == "spi" and re.search(r"\bFIO[01]\b", json.dumps(n)):
+                  lager("nets", "delete", n["name"], "spi", "--yes")
+                  print(f"deleted SPI net {n['name']} - overlaps the relay pins")
+          PY
+        shell: bash
+
       - name: Power on bench instruments (AC relays)
         # The Rigol DP821 and Keithley 2281S sit on AC power relays driven by
         # the bench LabJack (control high = outlet on); the bench is dark
@@ -137,18 +201,36 @@ jobs:
         env:
           RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
           KEITHLEY_POWER_NET: ${{ vars.KEITHLEY_POWER_NET || 'KEITHLEY_POWER' }}
+          PROBE_SUPPLY_NET: ${{ vars.RIGOL_CH1_NET || 'supply2' }}
         run: |
           lager gpo "$RIGOL_POWER_NET" high --box "$LAGER_BOX"
           lager gpo "$KEITHLEY_POWER_NET" high --box "$LAGER_BOX"
+          enumerated=""
           for _ in $(seq 1 36); do
             out=$(lager instruments --box "$LAGER_BOX" 2>/dev/null || true)
             if printf '%s' "$out" | grep -q 'Rigol_DP821'; then
-              echo "Rigol enumerated."
+              enumerated=1
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "$enumerated" ]; then
+            echo "Rigol did not enumerate within 180s of relay power-on"
+            exit 1
+          fi
+          echo "Rigol enumerated."
+          # Enumeration is not readiness: the USB hotplug from the relay
+          # power-on restarts the box's hardware service and supply
+          # connections are refused for a few seconds afterwards. Poll an
+          # actual supply read before the first smoke runs.
+          for _ in $(seq 1 24); do
+            if lager supply "$PROBE_SUPPLY_NET" state --box "$LAGER_BOX" >/dev/null 2>&1; then
+              echo "Hardware service is answering supply reads."
               exit 0
             fi
             sleep 5
           done
-          echo "Rigol did not enumerate within 180s of relay power-on"
+          echo "Hardware service did not answer supply reads within 120s of power-on"
           exit 1
         shell: bash
 
@@ -217,7 +299,12 @@ jobs:
           SUPPLY_NET: ${{ vars.RIGOL_CH1_NET || 'supply2' }}
           CHANNEL_MAX_VOLTAGE: ${{ vars.RIGOL_CH1_MAX_VOLTAGE || '60.0' }}
           CHANNEL_MAX_CURRENT: ${{ vars.RIGOL_CH1_MAX_CURRENT || '1.0' }}
-        run: lager python test/api/power/test_supply_Rigol_DP821.py --box "$LAGER_BOX"
+        # --passenv is required: `lager python` runs the script on the box
+        # and forwards env only through --env/--passenv (see the note in
+        # integration-tests.yml).
+        run: |
+          lager python test/api/power/test_supply_Rigol_DP821.py --box "$LAGER_BOX" \
+            --passenv SUPPLY_NET --passenv CHANNEL_MAX_VOLTAGE --passenv CHANNEL_MAX_CURRENT
         shell: bash
 
       - name: Uninstall box software (scoped — see header)
@@ -273,7 +360,12 @@ jobs:
           SUPPLY_NET: ${{ vars.RIGOL_CH1_NET || 'supply2' }}
           CHANNEL_MAX_VOLTAGE: ${{ vars.RIGOL_CH1_MAX_VOLTAGE || '60.0' }}
           CHANNEL_MAX_CURRENT: ${{ vars.RIGOL_CH1_MAX_CURRENT || '1.0' }}
-        run: lager python test/api/power/test_supply_Rigol_DP821.py --box "$LAGER_BOX"
+        # --passenv is required: `lager python` runs the script on the box
+        # and forwards env only through --env/--passenv (see the note in
+        # integration-tests.yml).
+        run: |
+          lager python test/api/power/test_supply_Rigol_DP821.py --box "$LAGER_BOX" \
+            --passenv SUPPLY_NET --passenv CHANNEL_MAX_VOLTAGE --passenv CHANNEL_MAX_CURRENT
         shell: bash
 
       - name: Power off bench instruments (AC relays, pre-recovery)

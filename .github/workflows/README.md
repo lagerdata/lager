@@ -54,13 +54,27 @@ lager gpi RIGOL_POWER --box <box>
 
 Notes and footguns:
 
+- **`env:` blocks do not reach box-side scripts.** `lager python` runs the
+  script on the box and forwards environment only through explicit
+  `--env`/`--passenv` flags. Every `lager python` step must `--passenv` each
+  variable it sets; a step that omits this silently runs the script on its
+  built-in defaults (invisible whenever the workflow fallback happens to
+  match the script default — which is exactly how it went unnoticed).
+- **Enumeration is not readiness.** The USB hotplug from relay power-on
+  restarts the box's hardware service; supply connections are refused for a
+  few seconds after the instruments appear on the USB scan. The power-on
+  step polls a real supply read (`lager supply <net> state`) before any
+  suite runs.
 - A box reboot or LabJack power-cycle resets the pins to floating inputs,
   which opens the relays: the instruments go dark until the next run (or a
   manual `gpo ... high`) powers them back on.
 - The relay nets are persistent box state under `/etc/lager`. The lifecycle's
   uninstall preserves them — `--keep-config` is load-bearing. A
-  `lager nets delete-all` does NOT preserve them; after any wipe, re-create
-  them (the address is the LabJack's VISA address from
+  `lager nets delete-all` does NOT preserve them; `add-all` then re-fills
+  FIO0/FIO1 as numbered gpio nets. Both bench workflows self-heal this at
+  the start of each run ("Ensure relay nets exist"): they rename the
+  squatter net back, or re-create the net when the pin is empty. Manual
+  recovery, if ever needed (the address is the LabJack's VISA address from
   `lager instruments --box <box>`):
 
   ```bash
@@ -70,8 +84,10 @@ Notes and footguns:
 
 - Never create a LabJack SPI net on its default FIO0-FIO3 pins: CS=FIO0 and
   SCK=FIO1 would clock both relays. `lager nets add-all` WILL create exactly
-  that net when none exists — delete it (or re-pin it with explicit
-  `--cs/--sck/--mosi/--miso` on free pins) afterwards.
+  that net when none exists. The self-heal step deletes any SPI net
+  overlapping the relay pins on the next CI run, but between runs it is
+  live — delete it (or re-pin it with explicit `--cs/--sck/--mosi/--miso`
+  on free pins) right after any `add-all`.
 - The CI GPIO test pin is `gpio18` (FIO2), set in `integration-tests.yml`.
   Never point `GPIO_NET` — or any test that toggles a GPIO — at the relay
   nets, nor at `gpio16`/`gpio17` (the auto-generated names for FIO0/FIO1).
