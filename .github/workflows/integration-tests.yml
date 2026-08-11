@@ -148,6 +148,68 @@ jobs:
           [ "$rc" -le 1 ] || exit "$rc"
         shell: bash
 
+      - name: Ensure relay nets exist (self-heal)
+        # People testing on the bench sometimes rebuild the box's nets with
+        # `lager nets delete-all` + `add-all`. That wipes the named relay
+        # nets (add-all re-fills FIO0/FIO1 as numbered gpio nets) and
+        # recreates the default LabJack SPI net on FIO0-FIO3, whose CS/SCK
+        # lines ARE the relay controls. Heal here instead of failing the
+        # night: rename the squatter net back (preserves its record),
+        # create the net fresh when the pin is empty, and delete any SPI
+        # net overlapping the relay pins. Hard gate — if this cannot be
+        # healed, the power-on step below could not work either.
+        env:
+          RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
+          KEITHLEY_POWER_NET: ${{ vars.KEITHLEY_POWER_NET || 'KEITHLEY_POWER' }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess, sys
+
+          box = os.environ["LAGER_BOX"]
+
+          def lager(*args, parse=False):
+              res = subprocess.run(["lager", *args, "--box", box],
+                                   capture_output=True, text=True)
+              if res.returncode != 0:
+                  print(res.stdout + res.stderr)
+                  sys.exit(f"lager {' '.join(args)} failed (rc {res.returncode})")
+              return json.loads(res.stdout) if parse else res.stdout
+
+          nets = lager("nets", "state", "--json", parse=True)
+          names = {n.get("name") for n in nets}
+
+          def labjack_address():
+              for n in nets:
+                  if "0x0CD5" in str(n.get("address", "")):
+                      return n["address"]
+              out = lager("instruments")
+              m = re.search(r"USB0::0x0CD5::0x0007::[^:\s]*::INSTR", out)
+              if not m:
+                  sys.exit("cannot determine the LabJack VISA address")
+              return m.group(0)
+
+          for want, pin in ((os.environ["RIGOL_POWER_NET"], "FIO0"),
+                            (os.environ["KEITHLEY_POWER_NET"], "FIO1")):
+              if want in names:
+                  print(f"{want} present")
+                  continue
+              squatter = next((n["name"] for n in nets
+                               if n.get("role") == "gpio"
+                               and n.get("pin") == pin), None)
+              if squatter:
+                  lager("nets", "rename", squatter, want)
+                  print(f"renamed {squatter} -> {want} ({pin})")
+              else:
+                  lager("nets", "add", want, "gpio", pin, labjack_address())
+                  print(f"created {want} on {pin}")
+
+          for n in nets:
+              if n.get("role") == "spi" and re.search(r"\bFIO[01]\b", json.dumps(n)):
+                  lager("nets", "delete", n["name"], "spi", "--yes")
+                  print(f"deleted SPI net {n['name']} - overlaps the relay pins")
+          PY
+        shell: bash
+
       - name: Power on bench instruments (AC relays)
         # The Rigol DP821 and Keithley 2281S sit on AC power relays driven by
         # the bench LabJack (control high = outlet on); the bench is dark
@@ -164,20 +226,40 @@ jobs:
         env:
           RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
           KEITHLEY_POWER_NET: ${{ vars.KEITHLEY_POWER_NET || 'KEITHLEY_POWER' }}
+          PROBE_SUPPLY_NET: ${{ vars.RIGOL_CH1_NET || 'supply2' }}
         run: |
           lager gpo "$RIGOL_POWER_NET" high --box "$LAGER_BOX"
           lager gpo "$KEITHLEY_POWER_NET" high --box "$LAGER_BOX"
           # The Keithley is the slow booter — measured ~90s to enumerate.
+          enumerated=""
           for _ in $(seq 1 36); do
             out=$(lager instruments --box "$LAGER_BOX" 2>/dev/null || true)
             if printf '%s' "$out" | grep -q 'Rigol_DP821' \
               && printf '%s' "$out" | grep -q 'Keithley_2281S'; then
-              echo "Both instruments enumerated."
+              enumerated=1
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "$enumerated" ]; then
+            echo "Instruments did not enumerate within 180s of relay power-on"
+            exit 1
+          fi
+          echo "Both instruments enumerated."
+          # Enumeration is not readiness: the USB hotplug from the relay
+          # power-on restarts the box's hardware service, and supply
+          # connections are refused for a few seconds after the instruments
+          # appear (observed live: two Rigol suites failed inside that window
+          # while everything after passed). Poll an actual supply read until
+          # the service answers before letting any suite run.
+          for _ in $(seq 1 24); do
+            if lager supply "$PROBE_SUPPLY_NET" state --box "$LAGER_BOX" >/dev/null 2>&1; then
+              echo "Hardware service is answering supply reads."
               exit 0
             fi
             sleep 5
           done
-          echo "Instruments did not enumerate within 180s of relay power-on"
+          echo "Hardware service did not answer supply reads within 120s of power-on"
           exit 1
         shell: bash
 
@@ -208,6 +290,13 @@ jobs:
           echo "staged $(wc -c < firmware.hex) bytes of Intel HEX"
         shell: bash
 
+      # `lager python` runs the script ON THE BOX and forwards environment
+      # only through explicit --env/--passenv — a step-level `env:` block
+      # alone never reaches the box-side script, which then silently runs on
+      # its built-in defaults. That stayed invisible for as long as every
+      # fallback here textually matched every script default; the GPIO_NET
+      # repoint was the first divergence and failed on exactly this. Every
+      # `lager python` step therefore --passenv's the vars it sets.
       - name: Test Rigol DP821 CH1 (60V / 1A)
         id: rigol-ch1-test
         continue-on-error: true
@@ -216,7 +305,9 @@ jobs:
           SUPPLY_NET: ${{ vars.RIGOL_CH1_NET || 'supply2' }}
           CHANNEL_MAX_VOLTAGE: ${{ vars.RIGOL_CH1_MAX_VOLTAGE || '60.0' }}
           CHANNEL_MAX_CURRENT: ${{ vars.RIGOL_CH1_MAX_CURRENT || '1.0' }}
-        run: lager python test/api/power/test_supply_Rigol_DP821.py --box "$LAGER_BOX"
+        run: |
+          lager python test/api/power/test_supply_Rigol_DP821.py --box "$LAGER_BOX" \
+            --passenv SUPPLY_NET --passenv CHANNEL_MAX_VOLTAGE --passenv CHANNEL_MAX_CURRENT
         shell: bash
 
       - name: Test Rigol DP821 CH2 (8V / 10A)
@@ -227,7 +318,9 @@ jobs:
           SUPPLY_NET: ${{ vars.RIGOL_CH2_NET || 'supply3' }}
           CHANNEL_MAX_VOLTAGE: ${{ vars.RIGOL_CH2_MAX_VOLTAGE || '8.0' }}
           CHANNEL_MAX_CURRENT: ${{ vars.RIGOL_CH2_MAX_CURRENT || '10.0' }}
-        run: lager python test/api/power/test_supply_Rigol_DP821.py --box "$LAGER_BOX"
+        run: |
+          lager python test/api/power/test_supply_Rigol_DP821.py --box "$LAGER_BOX" \
+            --passenv SUPPLY_NET --passenv CHANNEL_MAX_VOLTAGE --passenv CHANNEL_MAX_CURRENT
         shell: bash
 
       - name: Test LabJack T7 (ADC / DAC / GPIO)
@@ -243,7 +336,10 @@ jobs:
           GPIO_NET: ${{ vars.GPIO_NET || 'gpio18' }}
           ADC_NETS: ${{ vars.ADC_NETS || 'adc1,adc2,adc3' }}
           LOOPBACK_ADC_NET: ${{ vars.LOOPBACK_ADC_NET || 'adc1' }}
-        run: lager python test/api/io/test_LabJack_T7.py --box "$LAGER_BOX"
+        run: |
+          lager python test/api/io/test_LabJack_T7.py --box "$LAGER_BOX" \
+            --passenv ADC_NET --passenv DAC_NET --passenv GPIO_NET \
+            --passenv ADC_NETS --passenv LOOPBACK_ADC_NET
         shell: bash
 
       - name: Test Acroname USB Hub
@@ -253,7 +349,9 @@ jobs:
         env:
           USB_NET: ${{ vars.USB_NET || 'usb1' }}
           USB_NETS: ${{ vars.USB_NETS || 'usb1' }}
-        run: lager python test/api/usb/test_Acroname.py --box "$LAGER_BOX"
+        run: |
+          lager python test/api/usb/test_Acroname.py --box "$LAGER_BOX" \
+            --passenv USB_NET --passenv USB_NETS
         shell: bash
 
       - name: Test Keithley 2281S power supply
@@ -264,7 +362,10 @@ jobs:
           KEITHLEY_SUPPLY_NET: ${{ vars.KEITHLEY_SUPPLY_NET || 'supply1' }}
           KEITHLEY_MAX_VOLTAGE: ${{ vars.KEITHLEY_MAX_VOLTAGE || '20.0' }}
           KEITHLEY_MAX_CURRENT: ${{ vars.KEITHLEY_MAX_CURRENT || '6.0' }}
-        run: lager python test/api/power/test_supply_Keithley_2281S.py --box "$LAGER_BOX"
+        run: |
+          lager python test/api/power/test_supply_Keithley_2281S.py --box "$LAGER_BOX" \
+            --passenv KEITHLEY_SUPPLY_NET --passenv KEITHLEY_MAX_VOLTAGE \
+            --passenv KEITHLEY_MAX_CURRENT
         shell: bash
 
       - name: Test Keithley 2281S battery simulator
@@ -273,7 +374,9 @@ jobs:
         timeout-minutes: 8
         env:
           KEITHLEY_BATTERY_NET: ${{ vars.KEITHLEY_BATTERY_NET || 'battery1' }}
-        run: lager python test/api/power/test_battery_Keithley_2281S.py --box "$LAGER_BOX"
+        run: |
+          lager python test/api/power/test_battery_Keithley_2281S.py --box "$LAGER_BOX" \
+            --passenv KEITHLEY_BATTERY_NET
         shell: bash
 
       - name: Test MCC USB-202 (ADC / DAC / GPIO)
@@ -290,7 +393,11 @@ jobs:
           LABJACK_ADC_NET: ${{ vars.USB202_LABJACK_ADC_NET || '' }}
           GPIO_LOOPBACK_OUT: ${{ vars.USB202_GPIO_LOOPBACK_OUT || '' }}
           GPIO_LOOPBACK_IN: ${{ vars.USB202_GPIO_LOOPBACK_IN || '' }}
-        run: lager python test/api/io/test_usb202.py --box "$LAGER_BOX"
+        run: |
+          lager python test/api/io/test_usb202.py --box "$LAGER_BOX" \
+            --passenv ADC_NETS --passenv DAC_NETS --passenv GPIO_NETS \
+            --passenv SUPPLY_NET --passenv SUPPLY_VOLTAGE --passenv SUPPLY_ADC_NET \
+            --passenv LABJACK_ADC_NET --passenv GPIO_LOOPBACK_OUT --passenv GPIO_LOOPBACK_IN
         shell: bash
 
       # J-Link goes last: it spawns JLinkGDBServer and holds the probe's USB
@@ -309,7 +416,8 @@ jobs:
           ALLOW_ERASE: "0"  # never chip-erase the bench target
         run: |
           lager python test/api/communication/test_debug_comprehensive.py \
-            --box "$LAGER_BOX" --add-file "$RUNNER_TEMP/firmware.hex"
+            --box "$LAGER_BOX" --add-file "$RUNNER_TEMP/firmware.hex" \
+            --passenv DEBUG_NET --passenv FIRMWARE_PATH --passenv ALLOW_ERASE
         shell: bash
 
       - name: Test J-Link flash to RTT round trip (Python API)
@@ -321,7 +429,8 @@ jobs:
           FIRMWARE_PATH: firmware.hex
         run: |
           lager python test/api/communication/test_debug_rtt_blink.py \
-            --box "$LAGER_BOX" --add-file "$RUNNER_TEMP/firmware.hex"
+            --box "$LAGER_BOX" --add-file "$RUNNER_TEMP/firmware.hex" \
+            --passenv DEBUG_NET --passenv FIRMWARE_PATH
         shell: bash
 
       - name: Test J-Link script file (CLI)

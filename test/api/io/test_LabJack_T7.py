@@ -9,9 +9,11 @@ Complements the existing focused tests — run this for a full-device integratio
 Run with:
     lager python test/api/io/test_LabJack_T7.py --box <YOUR-BOX>
 
-Override defaults:
-    ADC_NET=adc2 DAC_NET=dac2 GPIO_NET=gpio4 lager python ...
-    LOOPBACK_ADC_NET="" lager python ...   # disable loopback group
+Override defaults — the env var must ALSO be forwarded to the box with
+--passenv (or --env); `lager python` runs this script box-side and does not
+inherit the calling shell's environment:
+    ADC_NET=adc2 GPIO_NET=gpio4 lager python ... --passenv ADC_NET --passenv GPIO_NET
+    LOOPBACK_ADC_NET="" lager python ... --passenv LOOPBACK_ADC_NET  # disable loopback group
 
 Bench wiring (STG-1):
     dac1 output    → adc1 input   (loopback wire; enables Group 10 by default)
