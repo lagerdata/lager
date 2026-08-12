@@ -506,7 +506,7 @@ class AcronameUSBNet(USBNet):
         except Exception:
             pass
 
-    def _with_hub(self, fn, *, retry=True):
+    def _with_hub(self, fn, *, retry=True, timeout=None):
         """Serialise across threads and processes, open a fresh hub connection,
         run ``fn(hub)``, and always disconnect so the hub is never left claimed.
 
@@ -569,8 +569,17 @@ class AcronameUSBNet(USBNet):
                 self._close_hub(hub)
 
         key = self._lock_key()
-        with hub_access(key, timeout=_LOCK_TIMEOUT_S):
-            return run_hub_op(key, _session, timeout=HUB_OP_TIMEOUT_S)
+        if timeout is None:
+            with hub_access(key, timeout=_LOCK_TIMEOUT_S):
+                return run_hub_op(key, _session, timeout=HUB_OP_TIMEOUT_S)
+        # A caller-supplied budget bounds the WHOLE cycle: the lock wait and
+        # the native open/read/close both count against it, so a contended
+        # lock cannot silently double the caller's bound (issue #205).
+        budget = min(timeout, HUB_OP_TIMEOUT_S)
+        start = time.monotonic()
+        with hub_access(key, timeout=min(_LOCK_TIMEOUT_S, budget)):
+            remaining = max(0.5, budget - (time.monotonic() - start))
+            return run_hub_op(key, _session, timeout=remaining)
 
     # ------------------------------------------------------------------ #
     # internal – decode enable+power bits
@@ -598,7 +607,7 @@ class AcronameUSBNet(USBNet):
     def state(self, net_name: str, port: int) -> bool:  # type: ignore[override]
         return self._with_hub(lambda hub: self._read_enabled(hub, port))
 
-    def states(self, ports) -> dict:  # type: ignore[override]
+    def states(self, ports, *, timeout=None) -> dict:  # type: ignore[override]
         """Read every requested port inside ONE hub session.
 
         ``state()`` costs a full discoverAndConnect/read/disconnect cycle, all
@@ -631,7 +640,7 @@ class AcronameUSBNet(USBNet):
         # sweep budgets one deadline across EVERY instrument on the box, so a
         # retry would spend other instruments' time to win a race the next poll
         # wins for free. The one-shot paths retry; see _with_hub.
-        return self._with_hub(_read_all, retry=False)
+        return self._with_hub(_read_all, retry=False, timeout=timeout)
 
     def toggle(self, net_name: str, port: int) -> bool:  # type: ignore[override]
         def _do(hub):

@@ -185,7 +185,7 @@ class USBNet(ABC):
         """
         raise NotImplementedError()
 
-    def states(self, ports):
+    def states(self, ports, *, timeout=None):
         """Read several ports on THIS hub, ideally in one session.
 
         Every driver wraps each public call in its own
@@ -202,6 +202,13 @@ class USBNet(ABC):
 
         Args:
             ports: iterable of port numbers on this hub.
+            timeout: optional bound, in seconds, on the WHOLE read -- lock
+                wait plus session -- so a shared caller budget (the state
+                sweep's, issue #205) survives one slow hub. None keeps each
+                driver's own ``HUB_OP_TIMEOUT_S``. This fallback ignores it:
+                per-port ``state()`` calls already carry the driver deadline,
+                and a fallback that partially honours a budget would read as
+                the driver honouring it.
 
         Returns:
             dict[int, bool | None]: port -> enabled, or None for a port whose
@@ -240,6 +247,7 @@ HUB_ABSENT = "hub-absent"                    # nothing from this vendor on the b
 HUB_UNREACHABLE = "hub-unreachable"          # our serial IS on the bus, will not answer
 HUB_SERIAL_MISMATCH = "hub-serial-mismatch"  # vendor devices present, none ours
 HUB_OPEN_FAILED = "hub-open-failed"          # sysfs unknown / other refusal
+HUB_SKIPPED = "hub-skipped"                  # not probed: slower instruments consumed the state budget
 
 
 class DeviceNotFoundError(USBBackendError):

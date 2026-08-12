@@ -884,6 +884,12 @@ _REASON_CODE_NOTES = {
         "    Check the net's address.",
         "yellow",
     ),
+    "hub-skipped": (
+        "this hub was not probed: slower instruments consumed the box's\n"
+        "    state budget first. The hub itself may be fine -- reading it on\n"
+        "    its own will answer.",
+        "yellow",
+    ),
 }
 
 

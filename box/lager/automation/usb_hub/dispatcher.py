@@ -6,9 +6,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from typing import Dict
 
-from .usb_net import USBNet
+from .usb_net import HUB_SKIPPED, USBNet
 from .acroname import AcronameUSBNet
 from .ykush import YKUSHUSBNet
 
@@ -109,7 +110,15 @@ def state(net_name: str) -> bool:
     return enabled
 
 
-def states(net_names=None, *, causes=None, codes=None) -> Dict[str, bool | None]:
+# Below this much remaining budget a hub is skipped rather than probed: even a
+# healthy cached open-read-close cycle takes a large fraction of a second, so a
+# probe launched with less than this is spending the time without a realistic
+# chance of an answer.
+_MIN_HUB_SLICE_S = 1.0
+
+
+def states(net_names=None, *, causes=None, codes=None,
+           deadline=None) -> Dict[str, bool | None]:
     """Read several USB nets, grouping them by physical hub.
 
     ``state()`` is one net per call and each call is a full hub
@@ -139,6 +148,15 @@ def states(net_names=None, *, causes=None, codes=None) -> Dict[str, bool | None]
             lifetimes across versions, and widening the existing value type
             would break every caller for no gain. Both are optional and both
             are no-ops when not passed.
+        deadline: optional ``time.monotonic()`` timestamp bounding the WHOLE
+            sweep. Hubs run serialised in this loop, so without it one hub
+            that burns its full driver timeout consumes the caller's entire
+            budget and every later hub reads as the caller's deadline
+            expiring -- a false whole-bench diagnosis (issue #205). With it,
+            each hub's probe is clamped to the time actually remaining, and a
+            hub the budget cannot cover is skipped outright: its nets map to
+            None with ``HUB_SKIPPED`` and a cause naming the skip, which is a
+            statement about the budget, never about the hub.
 
     Returns:
         dict[str, bool | None]: net name -> enabled, or None if unreadable.
@@ -164,8 +182,31 @@ def states(net_names=None, *, causes=None, codes=None) -> Dict[str, bool | None]
 
     out: Dict[str, bool | None] = {}
     for key, (controller, port_to_net) in by_hub.items():
+        op_timeout = None
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining < _MIN_HUB_SLICE_S:
+                # Earlier hubs consumed the budget. Say so per net, so these
+                # do not fall through to the caller's own deadline wording --
+                # "the budget ran out before this hub's turn" and "this hub is
+                # slow" need different remedies (issue #205).
+                logger.warning(
+                    "USB hub %s skipped, %d net(s) not probed: %.1fs of the "
+                    "state budget remains",
+                    key, len(port_to_net), max(remaining, 0.0),
+                )
+                for name in port_to_net.values():
+                    if causes is not None:
+                        causes[name] = ("not probed: slower instruments "
+                                        "consumed the state budget")
+                    if codes is not None:
+                        codes[name] = HUB_SKIPPED
+                    out[name] = None
+                continue
+            op_timeout = remaining
         try:
-            port_states = controller.states(list(port_to_net))
+            port_states = controller.states(list(port_to_net),
+                                            timeout=op_timeout)
         except Exception as e:
             # Hub absent, SDK missing, lock timeout: report this hub's nets as
             # unknown and move on to the next hub.
