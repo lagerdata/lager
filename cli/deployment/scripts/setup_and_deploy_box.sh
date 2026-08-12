@@ -202,7 +202,7 @@ echo -e "${BLUE}Time:${NC}    $(date '+%Y-%m-%d %H:%M:%S')"
 echo ""
 
 # Step counter
-TOTAL_STEPS=9
+TOTAL_STEPS=8
 CURRENT_STEP=0
 
 print_step() {
@@ -606,9 +606,9 @@ else
         # failing ssh_t aborts the whole script with an unexplained
         # "Deployment failed!" before the manual-fix message below can print.
         if ssh_t "${BOX_USER}@${BOX_IP}" "
-            sudo apt-get update && \
-            sudo apt-get install -y docker.io docker-compose-v2 && \
-            { sudo apt-get install -y docker-buildx || sudo apt-get install -y docker-buildx-plugin || true; } && \
+            sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update && \
+            sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker.io docker-compose-v2 && \
+            { sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx || sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx-plugin || true; } && \
             sudo systemctl daemon-reload && \
             sudo systemctl enable docker && \
             { sudo systemctl reset-failed docker.service docker.socket 2>/dev/null || true; } && \
@@ -706,8 +706,8 @@ else
     # Try distro packages first (docker-buildx on Ubuntu universe, then the
     # docker-buildx-plugin from Docker's own apt repo if that's configured).
     ssh_t "${BOX_USER}@${BOX_IP}" "
-        sudo apt-get update && \
-        { sudo apt-get install -y docker-buildx || sudo apt-get install -y docker-buildx-plugin || true; }
+        sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update && \
+        { sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx || sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx-plugin || true; }
     "
     # The apt packages can be absent or install a plugin the docker CLI doesn't
     # pick up (seen in the field). If buildx still doesn't actually run, drop the
@@ -1315,53 +1315,17 @@ else
                     print_success "J-Link installed successfully on box"
                 else
                     print_warning "J-Link installation verification failed"
-                    print_info "Continuing with pyOCD (already installed)"
+                    print_info "Debug will fall back to OpenOCD, which runs in the container"
                 fi
             else
                 print_warning "J-Link download failed"
                 echo ""
-                print_info "This is OK - debug commands will use pyOCD instead"
-                print_info "pyOCD is open-source and works with J-Link hardware"
+                print_info "J-Link probes will not work until this is installed."
+                print_info "OpenOCD ships in the container and drives ST-Link,"
+                print_info "CMSIS-DAP and FTDI probes; those are unaffected."
                 echo ""
             fi
         fi
-    fi
-fi
-
-# =============================================================================
-# STEP 4.5: Install pyOCD (Open Source Debug Tool)
-# =============================================================================
-print_step "Installing pyOCD (Open Source)"
-
-# pyOCD is an open-source alternative to J-Link that supports CMSIS-DAP, ST-Link, and other debug probes
-# It's installed automatically via pip
-
-print_info "Checking if pyOCD is already installed..."
-if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "python3 -c 'import pyocd' 2>/dev/null" ; then
-    PYOCD_VERSION=$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "python3 -c 'import pyocd; print(pyocd.__version__)' 2>/dev/null" || echo "unknown")
-    print_success "pyOCD already installed (version: ${PYOCD_VERSION})"
-else
-    print_info "Installing pyOCD and yoctopuce via pip..."
-    echo ""
-
-    # Install pyOCD and yoctopuce using pip3
-    ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "pip3 install --user yoctopuce" 2>&1 | grep -v "Defaulting to user installation" || true
-    if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "pip3 install --user 'pyocd>=0.36.0'" 2>&1 | grep -q "Successfully installed\|Requirement already satisfied" ; then
-        echo ""
-        PYOCD_VERSION=$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "python3 -c 'import pyocd; print(pyocd.__version__)' 2>/dev/null" || echo "installed")
-        print_success "pyOCD installed successfully (version: ${PYOCD_VERSION})"
-        echo ""
-        print_info "pyOCD provides debug support for:"
-        echo "  - CMSIS-DAP debug probes"
-        echo "  - ST-Link debuggers"
-        echo "  - J-Link (if hardware is present)"
-        echo "  - 70+ ARM Cortex-M microcontrollers"
-    else
-        print_warning "pyOCD installation encountered issues"
-        echo ""
-        echo "  You can manually install it later:"
-        echo "    ssh ${BOX_USER}@${BOX_IP} 'pip3 install --user pyocd'"
-        echo ""
     fi
 fi
 
@@ -1394,13 +1358,15 @@ else
     # decides, and reports honestly if this didn't take.
     if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "python3 -Im ensurepip --version >/dev/null 2>&1"; then
         print_info "Installing python3-venv (needed to create the CLI venv)..."
-        ssh_t "${BOX_USER}@${BOX_IP}" "sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3-venv" || true
+        ssh_t "${BOX_USER}@${BOX_IP}" "sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y --no-install-recommends python3-venv" || true
     fi
 
     print_info "Installing lager CLI into ~/.lager/venv on the box host..."
-    # Exit-code based on purpose: pip's stdout is not parsed (the older pyOCD
-    # step above greps pip output through a pipe and loses the exit code).
-    # The distinct codes match HOST_CLI_EXIT_MESSAGES in _host_cli.py.
+    # Exit-code based on purpose: pip's stdout is not parsed. Grepping pip
+    # output through a pipe loses the real exit code, which is how the removed
+    # pyOCD step managed to report "encountered issues" for a pip3 that was
+    # never installed. The distinct codes match HOST_CLI_EXIT_MESSAGES in
+    # _host_cli.py.
     set +e
     HOST_CLI_OUTPUT=$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" '
         test -d "$HOME/box/cli" || git -C "$HOME/box" sparse-checkout add cli 2>/dev/null || exit 41
@@ -1588,11 +1554,24 @@ if [ "$SKIP_VERIFY" = false ]; then
         echo ""
         print_info "Testing Lager CLI connectivity..."
 
-        # Try to connect using lager hello
-        if timeout 10 lager hello --box "${BOX_IP}" &>/dev/null; then
+        # Retry, don't single-shot: this runs seconds after start_box.sh
+        # returns, and the container is still bringing up five services
+        # (python exec, hardware, debug, HTTP, MCP). A single attempt raced
+        # that startup and warned on every successful install, which trained
+        # everyone to ignore the one line that would report a real failure.
+        LAGER_HELLO_OK=false
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if timeout 10 lager hello --box "${BOX_IP}" &>/dev/null; then
+                LAGER_HELLO_OK=true
+                break
+            fi
+            sleep 3
+        done
+        if [ "$LAGER_HELLO_OK" = true ]; then
             print_success "Lager CLI can communicate with box"
         else
-            print_warning "Lager CLI connection test failed (you may need to add box to .lager config)"
+            print_warning "Lager CLI could not reach the box after 30s of retries"
+            print_info "Check the container: ssh ${BOX_USER}@${BOX_IP} 'docker logs --tail 50 lager'"
         fi
     fi
 fi
@@ -1629,7 +1608,7 @@ echo "3. List available instruments (if connected):"
 echo -e "   ${BLUE}lager instruments --box ${BOX_IP}${NC}"
 echo ""
 echo "4. Create nets for your hardware:"
-echo -e "   ${BLUE}lager nets create <net-name> <net-type> <channel> <address> --box ${BOX_IP}${NC}"
+echo -e "   ${BLUE}lager nets add <net-name> <role> <channel> <address> --box ${BOX_IP}${NC}"
 echo ""
 
 echo "5. Update box code in the future:"

@@ -78,8 +78,8 @@ echo ""
 # Install UFW if not present
 if ! command -v ufw &> /dev/null; then
     echo -e "${YELLOW}Installing UFW...${NC}"
-    apt-get update -qq
-    apt-get install -y ufw
+    DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y ufw
     echo -e "${GREEN}[OK] UFW installed${NC}"
 fi
 

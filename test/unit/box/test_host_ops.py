@@ -41,6 +41,12 @@ class AptInstall(unittest.TestCase):
         self.assertIn("tcpdump", cmd)
         self.assertIn("iptables-persistent", cmd)
         self.assertIn("DEBIAN_FRONTEND=noninteractive", cmd)
+        # needrestart is an apt post-invoke hook: unsuppressed it can raise a
+        # full-screen "Pending kernel upgrade" dialog that blocks the install
+        # waiting on a keypress, and in mode=a it restarts services on its own
+        # -- including docker, which would spend a start against
+        # docker.service's StartLimitBurst.
+        self.assertIn("NEEDRESTART_SUSPEND=1", cmd)
         self.assertIn("--no-install-recommends", cmd)
 
     def test_sudo_failure_surfaces_bootstrap_message(self):

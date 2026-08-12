@@ -185,7 +185,7 @@ def apt_install(
     quoted_pkgs = " ".join(shlex.quote(p) for p in packages)
     cmd = (
         "sudo -n apt-get update -qq && "
-        f"sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends {quoted_pkgs}"
+        f"sudo -n DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y --no-install-recommends {quoted_pkgs}"
     )
     rc, _stdout, stderr = runner(box_ip, cmd)
     if rc != 0:
