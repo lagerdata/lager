@@ -37,6 +37,19 @@ test files from three merged PRs had no row in any table. Those counts are now
 checked the same way, by globbing the path the header itself names. That half is
 pure filesystem work, so `--files-only` verifies it without running any suite.
 
+The counts record what CI sees, and CI is Linux. Some tests are gated on the
+platform -- `test/unit/box/` skips six on `/proc` and one on `flock(1)` -- so
+the same suite legitimately reports 1547 passed / 7 skipped on macOS and 1554
+passed / 0 skipped on a runner. Off Linux this tool therefore treats a row
+whose SKIP count moved as unverifiable rather than wrong: it reports it, keeps
+the table's number when totalling, and `--fix` will not touch it. Without that
+rule `--fix` rewrote the box row to the local number and handed back a table
+that fails the CI gate it feeds -- which happened, twice, on the branch that
+added this paragraph.
+
+A row whose skip count is unchanged is still checked off Linux, because nothing
+platform-gated can be hiding in it. On Linux every row is checked, as before.
+
 What is still NOT enforced: that a new file has a *row* in its section's table.
 A count can be corrected without describing what was added, and no reasonable
 check can tell a real description from a placeholder.
@@ -55,6 +68,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 COVERAGE_MD = REPO_ROOT / 'test' / 'COVERAGE.md'
+
+#: The table records CI's numbers, and CI runs Linux. Elsewhere, platform-gated
+#: tests skip instead of passing, so a moved skip count is a property of the
+#: machine rather than of the tree. See the module docstring.
+ON_LINUX = sys.platform.startswith('linux')
 
 # Must stay in step with the matrix in .github/workflows/unit-tests.yml.
 SUITES = {
@@ -131,8 +149,12 @@ def run_suite(paths: list[str]) -> dict[str, int]:
 
     env = dict(os.environ)
     env['PYTHONPATH'] = f"{REPO_ROOT}:{REPO_ROOT / 'box'}"
+    # --color=no: the summary is parsed with an anchored `^\d+ passed`, and
+    # pytest colourises whenever FORCE_COLOR is set in the environment even
+    # though this pipe is not a terminal. Some agent and CI shells export it,
+    # and the escape prefix made every run die on "could not parse summary".
     proc = subprocess.run(
-        [sys.executable, '-m', 'pytest', *expanded, '-q',
+        [sys.executable, '-m', 'pytest', *expanded, '-q', '--color=no',
          '--import-mode=importlib', '-c', '/dev/null', '--timeout=60'],
         capture_output=True, text=True, cwd=REPO_ROOT, env=env,
     )
@@ -164,6 +186,36 @@ def parse_cell(cell: str) -> dict[str, int]:
         if m:
             out[key] = int(m.group(1))
     return out
+
+
+def classify(claimed: dict[str, int], actual: dict[str, int],
+             on_linux: bool = ON_LINUX) -> str:
+    """One row's verdict: 'ok', 'drift', or 'platform'.
+
+    'platform' means the run skipped a different number of tests than the table
+    records, on a machine that is not the one the table describes. The passed
+    count from such a run says nothing about the tree -- the missing tests went
+    to skips, not to failures -- so it is neither a pass nor a failure here.
+    On Linux that leniency would hide real drift, so it is not applied.
+    """
+    if all(claimed[k] == actual[k] for k in ('passed', 'skipped', 'xfailed')):
+        return 'ok'
+    if not on_linux and claimed['skipped'] != actual['skipped']:
+        return 'platform'
+    return 'drift'
+
+
+def gated_total(claimed: dict[str, dict[str, int]],
+                actual: dict[str, dict[str, int]],
+                verdicts: dict[str, str]) -> int:
+    """Sum the passed counts, trusting the table where this machine cannot look.
+
+    A platform-gated row contributes the number the table claims. That keeps the
+    total a real check of every other row instead of an assertion that fails for
+    a reason the developer cannot act on.
+    """
+    return sum((claimed if verdicts[name] == 'platform' else actual)[name]['passed']
+               for name in claimed)
 
 
 def render_cell(counts: dict[str, int]) -> str:
@@ -222,20 +274,26 @@ def main() -> int:
     print('Running each suite in its own process, as CI does...')
     actual = {name: run_suite(paths) for name, paths in SUITES.items()}
 
-    bad = []
+    verdicts = {name: classify(claimed[name], actual[name]) for name in SUITES}
+    bad = [name for name, verdict in verdicts.items() if verdict == 'drift']
+    label = {'ok': 'OK ', 'drift': 'BAD', 'platform': 'n/a'}
     for name in SUITES:
-        same = all(claimed[name][k] == actual[name][k]
-                   for k in ('passed', 'skipped', 'xfailed'))
-        if not same:
-            bad.append(name)
-        print(f'  {"OK " if same else "BAD"} {name:20s} '
+        print(f'  {label[verdicts[name]]} {name:20s} '
               f'table {render_cell(claimed[name]):22s} '
-              f'actual {render_cell(actual[name])}')
+              f'actual {render_cell(actual[name])}'
+              f'{"   (platform-gated here; table kept)" if verdicts[name] == "platform" else ""}')
 
-    actual_total = sum(a['passed'] for a in actual.values())
+    actual_total = gated_total(claimed, actual, verdicts)
     total_ok = claimed_total == actual_total
     print(f'  {"OK " if total_ok else "BAD"} {"Total gated":20s} '
           f'table {claimed_total:<22} actual {actual_total}')
+
+    gated = [name for name, verdict in verdicts.items() if verdict == 'platform']
+    if gated:
+        print(f'\nNot checked on {sys.platform}: {", ".join(gated)}.\n'
+              '      Those suites skipped tests this table counts as passing, so\n'
+              '      the numbers here describe the machine, not the tree. CI (Linux)\n'
+              '      checks them; --fix leaves them alone.')
 
     if not bad and total_ok and not bad_files:
         print('\nCOVERAGE.md counts match.')
