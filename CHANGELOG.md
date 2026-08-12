@@ -44,6 +44,18 @@ All notable changes to the Lager platform are documented here. For detailed rele
   and "this hub is slow" stop being the same message. The whole-request
   deadline and every one-shot USB command path are unchanged. (#205)
 
+### Changed
+
+- **The BluFi AES import follows CFB into cryptography's decrepit home.**
+  cryptography 50.0 deprecates importing CFB from
+  `hazmat.primitives.ciphers.modes`: upstream moved it to
+  `hazmat.decrepit.ciphers.modes` and calls the old path's removal imminent.
+  The import now prefers the new location and falls back to the old one on
+  installs that predate it (the box runtime pins cryptography 38.0.4). Same
+  mode class either way, so ciphertext is byte-for-byte unchanged. The BluFi
+  key exchange's FFDH deprecation -- the other half of #219 -- remains open
+  and tracked there.
+
 ## [0.36.0] - 2026-08-12
 
 ### Fixed
