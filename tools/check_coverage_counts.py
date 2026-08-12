@@ -50,9 +50,18 @@ added this paragraph.
 A row whose skip count is unchanged is still checked off Linux, because nothing
 platform-gated can be hiding in it. On Linux every row is checked, as before.
 
-What is still NOT enforced: that a new file has a *row* in its section's table.
-A count can be corrected without describing what was added, and no reasonable
-check can tell a real description from a placeholder.
+Per-file table rows are enforced too: every test file on disk must have a row
+in its section's inventory table, and every row must name a file that exists.
+Before this, a count could be corrected without describing what was added --
+the header said 74 and the table listed 74, but nothing tied either to WHICH
+files. `--fix` removes rows for deleted files; it never invents a row, because
+a row's description has to come from the author and no reasonable check can
+tell a real description from a placeholder. Like the header counts, this is
+pure filesystem work and runs under `--files-only`, and it is platform-blind:
+files on disk do not depend on where the tool runs.
+
+What is still NOT enforced: that a row's description matches what its file
+actually tests.
 
 Usage:  python tools/check_coverage_counts.py [--fix] [--files-only]
 """
@@ -103,6 +112,31 @@ HEADER = re.compile(r'^(#+ .*\(`)([^`]+)(`\s+--\s+)(\d+)( files?\))\s*$')
 # Suites that are not Python `test_*.py` files.
 GLOB_OVERRIDES = {'test/integration/': '**/*.sh'}
 
+# Sections whose tables carry ONE ROW PER TEST FILE. Keys are the header paths
+# exactly as they appear in COVERAGE.md's `(-- N files)` headers. Every path
+# here must parse to a non-empty table -- an empty parse means the table was
+# removed or its format changed, and that must fail loudly rather than pass as
+# "nothing to compare".
+INVENTORY_TABLES = (
+    'test/unit/box/',
+    'test/unit/cli/',
+    'test/unit/measurement/',
+    'test/unit/blufi/',
+    'test/unit/test_*.py',
+    'test/test_*.py',
+    'cli/tests/',
+    'test/mcp/unit/',
+    'test/mcp/integration/',
+)
+
+# A table row whose first cell is a backticked bare filename, e.g.
+#     | `test_acroname_driver.py` | Acroname USB hub driver: ... |
+# The character class excludes '/' on purpose: rows elsewhere in the document
+# (the coverage-gap tables, the undertested list) put full *module* paths like
+# `cli/core/param_types.py` in their first cell, and those are claims about
+# source files, not test inventory.
+ROW_FILE = re.compile(r'^\|\s*`([^`/]+\.py)`')
+
 
 def count_files(path: str) -> int:
     """Files backing one section header, counted the way the header means it."""
@@ -135,6 +169,83 @@ def check_file_counts(text: str, fix: bool) -> tuple[list[str], str]:
                 line = f'{head}{path}{mid}{actual}{tail}\n'
         out.append(line)
     return bad, ''.join(out)
+
+
+def files_on_disk(path: str) -> set[str]:
+    """Basenames of the test files behind one section header."""
+    if path.endswith('/'):
+        return {p.name for p in
+                (REPO_ROOT / path).glob(GLOB_OVERRIDES.get(path, '**/test_*.py'))}
+    return {p.name for p in REPO_ROOT.glob(path)}
+
+
+def check_table_inventory(text: str, fix: bool) -> tuple[list[str], int, str]:
+    """Compare every inventory table's rows with the files on disk.
+
+    Rows are associated with the nearest preceding `(-- N files)` header, and
+    the association resets on EVERY heading line -- a row can never bleed into
+    the wrong section when a prose subsection sits between two tables. Fenced
+    code is skipped: the tree diagram contains both '#' and '|' lines.
+
+    Returns (bad section paths, count of files missing a row, updated text).
+    With fix=True the updated text has rows for deleted files removed; rows
+    for NEW files are never generated -- the author writes those.
+    """
+    rows: dict[str, list[str]] = {p: [] for p in INVENTORY_TABLES}
+    out, current, in_fence = [], None, False
+    stale_all: set[tuple[str, str]] = set()
+
+    for line in text.splitlines(keepends=True):
+        stripped = line.rstrip('\n')
+        if stripped.startswith('```'):
+            in_fence = not in_fence
+        elif not in_fence and stripped.startswith('#'):
+            m = HEADER.match(stripped)
+            current = m.group(2) if m and m.group(2) in rows else None
+        elif not in_fence and current:
+            m = ROW_FILE.match(stripped)
+            if m:
+                rows[current].append((m.group(1)))
+        out.append(line)
+
+    bad, missing_total = [], 0
+    for path in INVENTORY_TABLES:
+        disk = files_on_disk(path)
+        table = set(rows[path])
+        missing = sorted(disk - table)
+        stale = sorted(table - disk)
+        ok = bool(rows[path]) and not missing and not stale
+        print(f'  {"OK " if ok else "BAD"} {path:28s} '
+              f'disk {len(disk):<4} rows {len(rows[path])}')
+        if not rows[path]:
+            print('        no rows parsed -- table removed, or its format changed')
+        for f in missing:
+            print(f'        on disk but no table row: {f}')
+        for f in stale:
+            print(f'        table row but not on disk: {f}')
+        if not ok:
+            bad.append(path)
+        missing_total += len(missing)
+        stale_all.update((path, f) for f in stale)
+
+    if fix and stale_all:
+        stale_names = {f for _, f in stale_all}
+        kept, current, in_fence = [], None, False
+        for line in out:
+            stripped = line.rstrip('\n')
+            if stripped.startswith('```'):
+                in_fence = not in_fence
+            elif not in_fence and stripped.startswith('#'):
+                m = HEADER.match(stripped)
+                current = m.group(2) if m and m.group(2) in rows else None
+            elif not in_fence and current:
+                m = ROW_FILE.match(stripped)
+                if m and m.group(1) in stale_names:
+                    continue
+            kept.append(line)
+        out = kept
+
+    return bad, missing_total, ''.join(out)
 
 
 def run_suite(paths: list[str]) -> dict[str, int]:
@@ -240,20 +351,29 @@ def main() -> int:
     print('Counting the files behind each section header...')
     bad_files, text = check_file_counts(text, args.fix)
 
+    print('Checking each inventory table lists exactly the files on disk...')
+    bad_rows, missing_rows, text = check_table_inventory(text, args.fix)
+
     if args.files_only:
         if args.fix:
             COVERAGE_MD.write_text(text)
-            if bad_files:
-                print('\nRewrote the section headers. Review the diff before committing.')
+            if bad_files or bad_rows:
+                print('\nRewrote what can be rewritten. Review the diff before committing.')
+            if missing_rows:
+                print(f'\n{missing_rows} file(s) still have no table row. --fix never\n'
+                      'writes one: add the row yourself, with a description of what\n'
+                      'the file actually tests.', file=sys.stderr)
+                return 1
+            if bad_files or bad_rows:
                 return 0
-        if bad_files:
-            print('\nFAIL: section headers in test/COVERAGE.md disagree with disk.\n'
+        if bad_files or bad_rows:
+            print('\nFAIL: test/COVERAGE.md disagrees with disk (see BAD lines above).\n'
                   '      Fix:  python tools/check_coverage_counts.py --files-only --fix\n'
-                  '      A header count is not enough on its own -- if a file is new,\n'
-                  '      give it a row in that section\'s table too.',
+                  '      rewrites header counts and drops rows for deleted files.\n'
+                  '      A NEW file needs a hand-written row in its section\'s table.',
                   file=sys.stderr)
             return 1
-        print('\nCOVERAGE.md file counts match.')
+        print('\nCOVERAGE.md file counts and inventory tables match.')
         return 0
 
     claimed, cells, claimed_total = {}, {}, None
@@ -295,7 +415,7 @@ def main() -> int:
               '      the numbers here describe the machine, not the tree. CI (Linux)\n'
               '      checks them; --fix leaves them alone.')
 
-    if not bad and total_ok and not bad_files:
+    if not bad and total_ok and not bad_files and not bad_rows:
         print('\nCOVERAGE.md counts match.')
         return 0
 
@@ -309,6 +429,11 @@ def main() -> int:
                          f'**Total gated** | **{actual_total}**', new)
         COVERAGE_MD.write_text(new)
         print('\nRewrote the counts. Review the diff before committing.')
+        if missing_rows:
+            print(f'\n{missing_rows} file(s) still have no table row. --fix never\n'
+                  'writes one: add the row yourself, with a description of what\n'
+                  'the file actually tests.', file=sys.stderr)
+            return 1
         return 0
 
     print('\nFAIL: test/COVERAGE.md disagrees with what is on disk.\n'

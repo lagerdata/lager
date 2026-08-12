@@ -4,10 +4,11 @@ This document tracks what test coverage exists across all Lager features and the
 suites: local unit tests, Python API tests, bash integration tests, and MCP tests.
 
 **Counts here are checked against disk**, by `tools/check_coverage_counts.py` in the required
-`static-checks` job — both the gated run-counts below and the per-section file counts in every
-`(-- N files)` header. If you add or remove a test file, update the numbers in this document in
-the same change, and give a new file a row in its section's table: the count is gated, the row is
-not, and a file with neither is invisible to everyone reading this.
+`static-checks` job — the gated run-counts below, the per-section file counts in every
+`(-- N files)` header, and the per-file inventory tables themselves: every test file must have a
+row in its section's table, and a row naming a deleted file fails the check. If you add or remove
+a test file, update the counts and the table in the same change. `--fix` rewrites counts and
+drops rows for deleted files; a new file's row you write yourself, with a real description.
 
 ## What runs in CI
 
@@ -374,7 +375,7 @@ Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `H
 
 ## Coverage Strengths
 
-- **Box-side logic**: 56 files / 1142 tests covering the box HTTP handlers, debug and J-Link
+- **Box-side logic**: 74 files / 1554 tests covering the box HTTP handlers, debug and J-Link
   paths, locking, net persistence, and device drivers -- all hardware-free and gated on every PR.
 - **Communication protocols**: I2C and SPI have 18+ Python API files across three hardware
   backends (Aardvark, LabJack, FT232H) with full 3-suite coverage.
@@ -415,9 +416,9 @@ test/
 ├── mcp/                  # MCP server tests (pytest)
 │   ├── unit/             # 11 files: mocked, no hardware -- GATED
 │   └── integration/      #  1 file: live hardware required
-├── unit/                 # Local unit tests (116 files) -- ALL GATED
-│   ├── box/              # 62 files: box-side Python unit tests
-│   ├── cli/              # 43 files: CLI Python unit tests
+├── unit/                 # Local unit tests (135 files) -- ALL GATED
+│   ├── box/              # 74 files: box-side Python unit tests
+│   ├── cli/              # 50 files: CLI Python unit tests
 │   ├── measurement/      #  4 files: Joulescope / PPK2 / watt unit tests
 │   ├── blufi/            #  2 files: BluFi protocol unit tests
 │   └── test_*.py         #  5 files: root-level unit tests
@@ -430,8 +431,8 @@ test/
     └── test_utils.py     # Python test helpers
 
 test/test_*.py            #  2 files: run by the `unit (root)` job
-cli/tests/                #  5 files: 3 pytest suites + test_io_imports.py (GATED via
-                          #           `unit (cli)`), plus 1 standalone report script
+cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
+                          #           plus 1 standalone report script
 ```
 
 ### Local Unit Tests (`test/unit/` -- 137 files)
