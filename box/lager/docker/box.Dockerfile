@@ -194,8 +194,16 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 # Acroname BrainStem SDK (USB hub control). No source dependency, so it lives
 # above the source COPY block — a code change must not re-run this pip install.
 # See: https://pypi.org/project/brainstem/
+#
+# Pinned, not floated (issue #206): this layer is BuildKit-cached, so an
+# unpinned install resolves whatever version is current on the day the cache
+# happens to be invalidated -- two boxes built weeks apart can run different
+# SDKs and behave differently (older SDKs lack discover.findAllModules, and
+# the hub driver degrades around that). The pin is what makes boxes
+# comparable; bump it deliberately, in its own change, against a real hub.
+# /diagnose/usbhub reports the installed version as sdk_version.
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    pip3 install brainstem --upgrade
+    pip3 install 'brainstem==2.12.5'
 
 # Copy Python lager package modules (grouped structure)
 # All root-level .py modules (box_http_server, hardware_service, *_hs

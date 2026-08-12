@@ -189,6 +189,19 @@ def _brainstem_scan():
     return out, None
 
 
+def _brainstem_version():
+    """Installed SDK version, for cross-box comparison (issue #206).
+
+    The package was historically installed unpinned in a build-cached layer,
+    so two boxes could run different SDKs and behave differently. This field
+    is what says so without shelling into the container."""
+    try:
+        from importlib.metadata import version
+        return version('brainstem')
+    except Exception:
+        return None
+
+
 def _try_hub_open(address):
     """Open and immediately close the hub, without touching any port.
 
@@ -335,6 +348,7 @@ def register_diagnose_routes(app: Flask) -> None:
             'devnum_min': devnums[0] if devnums else None,
             'devnum_max': devnums[-1] if devnums else None,
             'devnum_median': (devnums[len(devnums) // 2] if devnums else None),
+            'sdk_version': _brainstem_version(),
             'sdk_scan_serials': scan_serials,
             'sdk_scan_error': scan_error,
             'serial_visible_to_sdk': visible,
