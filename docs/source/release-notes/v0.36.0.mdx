@@ -1,0 +1,30 @@
+---
+title: "Version 0.36.0"
+description: "August 12, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- A `lager python` script whose client vanishes now gets to finish its teardown. When the CLI is hard-killed, the network drops, or a CI job is cancelled, the Lager Box previously terminated the script outright — no `finally` blocks, no context managers, no `atexit` — and only noticed the dead client the next time the script wrote output. Disconnects are now detected sub-second even for silent scripts, the script is interrupted with SIGINT first, and a progress-aware watchdog gives cleanup work a grace window before escalating. New jobs wait for a previous job's teardown to clear before starting.
+
+- `lager python` now survives more than Ctrl+C: SIGTERM and SIGHUP stop the job too. A killed terminal or a supervisor's TERM (including a cancelled CI job) previously ended the client silently — the script on the Lager Box kept running and the box lock stayed held. All three stop signals now trigger the same remote stop and lock release, and the handlers are restored afterwards so a second signal can always break out.
+
+- Killing a `lager python` job now stops every process the job started, not whichever one a scan happened to find first. All of a job's processes are collected before any is signalled, delivery is reduced to one signal per process group so a graceful interrupt is not cut short by its own duplicate, and one grace window is shared by the whole job — a multi-process job no longer holds the kill request open while each process is resolved in turn.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.36.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.36.0/)
