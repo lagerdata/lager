@@ -2,6 +2,31 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Fixed
+
+- **Two identical USB-UART adapters no longer collapse onto one tty.** The
+  box's USB scanner handed every device of the same model a reference to one
+  shared channel table, then wrote each device's tty list into it in place --
+  so with two same-model adapters plugged in, both scan entries advertised
+  whichever device happened to be enumerated last. Adding a net for the
+  second adapter therefore recorded the first adapter's tty and USB identity
+  under the second adapter's address, and the two nets silently drove the
+  same physical port. The clobbered lists lived in the scanner's module
+  state, so the corruption outlived the request and poisoned every later
+  scan in the same server process.
+
+  Scan entries now carry their own per-role channel lists, and the merge
+  helper re-owns a record's lists before appending, so the catalog can never
+  be edited through a scan result. The CLI's net-add flows (the TUI and
+  `nets add` / `nets add-all`) additionally prefer the scanner's per-device
+  `tty_paths` field -- which was always computed from the device's own
+  serial -- over the shared channel map, so an updated CLI offers the right
+  tty even against a box that predates this fix. A net saved with a
+  cross-wired identity does not self-correct: re-add it after updating.
+  (#213)
+
 ## [0.36.0] - 2026-08-12
 
 ### Fixed

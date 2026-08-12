@@ -53,18 +53,21 @@ class _FakeSysfs:
     """
 
     def __init__(self, root: str, *, vid: str, pid: str, serial: str | None,
-                 num_interfaces: int = 4):
+                 num_interfaces: int = 4, bus_name: str = '3-1',
+                 tty_start: int = 0):
         self.root = root
         self.sys_bus = os.path.join(root, 'sys', 'bus', 'usb', 'devices')
         self.sys_class_tty = os.path.join(root, 'sys', 'class', 'tty')
         self.sys_devices = os.path.join(root, 'sys', 'devices')
-        os.makedirs(self.sys_bus)
-        os.makedirs(self.sys_class_tty)
-        os.makedirs(self.sys_devices)
+        # exist_ok: several devices can share one fake tree (multi-adapter
+        # tests build two of these against the same root).
+        os.makedirs(self.sys_bus, exist_ok=True)
+        os.makedirs(self.sys_class_tty, exist_ok=True)
+        os.makedirs(self.sys_devices, exist_ok=True)
 
         # The "real" USB device directory lives under /sys/devices and
         # is symlinked from /sys/bus/usb/devices/<name>.
-        self.bus_name = '3-1'
+        self.bus_name = bus_name
         self.device_dir = os.path.join(self.sys_devices, self.bus_name)
         os.makedirs(self.device_dir)
         with open(os.path.join(self.device_dir, 'idVendor'), 'w') as f:
@@ -79,11 +82,13 @@ class _FakeSysfs:
         os.symlink(self.device_dir, os.path.join(self.sys_bus, self.bus_name))
 
         # Four interface child dirs + tty nodes that link back into them.
+        # tty numbering starts at *tty_start* so two devices in one tree
+        # get distinct /dev names, the way the kernel would assign them.
         self.tty_paths = []
         for iface in range(num_interfaces):
             iface_dir = os.path.join(self.device_dir, f'{self.bus_name}:1.{iface}')
             os.makedirs(iface_dir)
-            tty_name = f'ttyUSB{iface}'
+            tty_name = f'ttyUSB{tty_start + iface}'
             tty_holder = os.path.join(iface_dir, tty_name)
             os.makedirs(tty_holder)
             tty_class_link = os.path.join(self.sys_class_tty, tty_name)
@@ -196,6 +201,96 @@ class TestChannelMapDefaults(unittest.TestCase):
         # Pre-existing behaviour; pin it so a future refactor doesn't
         # silently regress the policy.
         self.assertEqual(self.scanner.CHANNEL_MAPS['FTDI_FT232H']['uart'], [])
+
+
+class TestScanUsbTwoIdenticalAdapters(unittest.TestCase):
+    """Two same-model adapters must each advertise their own tty.
+
+    Regression coverage for the shared-channel-table bug (#213):
+    ``scan_usb`` aliased ``CHANNEL_MAPS[name]`` into every entry and then
+    wrote the per-device tty list into it, so every same-model entry
+    reported whichever device was scanned last -- and the catalog itself
+    kept the clobbered list for the life of the process, poisoning later
+    scans too.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.scanner = _load_scanner()
+
+    def setUp(self):
+        tmpdir = tempfile.mkdtemp()
+        self.addCleanup(lambda: _rmtree(tmpdir))
+        # Two CP210x (same VID:PID), distinct serials, distinct ttys.
+        self.fake_a = _FakeSysfs(tmpdir, vid='10c4', pid='ea60',
+                                 serial='SERIALAAAA', num_interfaces=1,
+                                 bus_name='3-1.2.1', tty_start=1)
+        self.fake_b = _FakeSysfs(tmpdir, vid='10c4', pid='ea60',
+                                 serial='SERIALBBBB', num_interfaces=1,
+                                 bus_name='3-1.2.2', tty_start=2)
+
+        import pathlib
+        real_path = pathlib.Path
+        sys_bus = self.fake_a.sys_bus
+        sys_class_tty = self.fake_a.sys_class_tty
+
+        def _path_shim(*args, **kw):
+            if args and args[0] == '/sys/bus/usb/devices':
+                return real_path(sys_bus)
+            if args and args[0] == '/sys/class/tty':
+                return real_path(sys_class_tty)
+            return real_path(*args, **kw)
+
+        original_Path = self.scanner.Path
+        self.scanner.Path = _path_shim  # type: ignore[attr-defined]
+        self.addCleanup(lambda: setattr(self.scanner, 'Path', original_Path))
+
+    def test_each_adapter_reports_its_own_tty(self):
+        entries = {e['serial']: e for e in self.scanner.scan_usb()
+                   if e['name'] == 'SiLabs_CP210x'}
+        self.assertEqual(sorted(entries), ['SERIALAAAA', 'SERIALBBBB'])
+        self.assertEqual(entries['SERIALAAAA']['channels']['uart'],
+                         ['/dev/ttyUSB1'])
+        self.assertEqual(entries['SERIALBBBB']['channels']['uart'],
+                         ['/dev/ttyUSB2'])
+        # tty_path/tty_paths were per-device even before the fix; pin them
+        # so the channels/tty_paths agreement is a tested invariant.
+        self.assertEqual(entries['SERIALAAAA']['tty_path'], '/dev/ttyUSB1')
+        self.assertEqual(entries['SERIALBBBB']['tty_path'], '/dev/ttyUSB2')
+        self.assertEqual(entries['SERIALAAAA']['tty_paths'], ['/dev/ttyUSB1'])
+        self.assertEqual(entries['SERIALBBBB']['tty_paths'], ['/dev/ttyUSB2'])
+
+    def test_scan_does_not_mutate_the_catalog(self):
+        self.scanner.scan_usb()
+        self.assertEqual(self.scanner.CHANNEL_MAPS['SiLabs_CP210x'],
+                         {'uart': ['0']})
+
+
+class TestMergeOrAppendCatalogSafety(unittest.TestCase):
+    """``merge_or_append`` must never extend a list the catalog owns.
+
+    A record whose ``channels`` still aliases ``CHANNEL_MAPS`` (built by an
+    older caller or a test double) used to have new channels appended into
+    the catalog itself; the merge now re-owns the lists first (#213).
+    """
+
+    def test_merge_does_not_extend_catalog_lists(self):
+        scanner = _load_scanner()
+        existing = {
+            'vid': '10c4', 'pid': 'ea60', 'serial': 'SERIALAAAA',
+            'channels': scanner.CHANNEL_MAPS['SiLabs_CP210x'],  # the hazard
+            'net_type': ['uart'],
+        }
+        instruments = [existing]
+        entry = {
+            'vid': '10c4', 'pid': 'ea60', 'serial': 'SERIALAAAA',
+            'channels': {'uart': ['/dev/ttyUSB5']},
+            'net_type': ['uart'],
+        }
+        scanner.merge_or_append(entry, instruments)
+        self.assertEqual(scanner.CHANNEL_MAPS['SiLabs_CP210x'],
+                         {'uart': ['0']})
+        self.assertIn('/dev/ttyUSB5', existing['channels']['uart'])
 
 
 def _rmtree(path):

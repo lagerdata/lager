@@ -58,6 +58,42 @@ class TestAssignPayload:
 
 
 # --------------------------------------------------------------------------- #
+# uart_channel_paths                                                          #
+# --------------------------------------------------------------------------- #
+
+class TestUartChannelPaths:
+    """The add flows must offer each adapter its own tty.
+
+    ``channels["uart"]`` from an unpatched box can be one shared list for
+    every same-model adapter (issue #213), while ``tty_paths`` was always
+    computed per device -- so it wins whenever the box sent it.
+    """
+
+    def test_tty_paths_win_over_channels(self):
+        dev = {"tty_paths": ["/dev/ttyUSB2"],
+               "channels": {"uart": ["/dev/ttyUSB1"]}}
+        assert tui.uart_channel_paths(dev, dev["channels"]["uart"]) == \
+            ["/dev/ttyUSB2"]
+
+    def test_falls_back_to_channels_for_an_older_box(self):
+        channels = ["/dev/ttyUSB1"]
+        dev = {"channels": {"uart": channels}}
+        assert tui.uart_channel_paths(dev, channels) is channels
+
+    def test_preserves_none_when_device_has_neither(self):
+        # ``nets add`` passes the raw channel-map lookup, which can be
+        # None; without tty_paths it must come back untouched so the
+        # caller's "no channels to validate" semantics hold.
+        assert tui.uart_channel_paths({}, None) is None
+
+    def test_returned_list_is_a_copy(self):
+        dev = {"tty_paths": ["/dev/ttyUSB2"]}
+        result = tui.uart_channel_paths(dev, [])
+        result.append("/dev/ttyUSB9")
+        assert dev["tty_paths"] == ["/dev/ttyUSB2"]
+
+
+# --------------------------------------------------------------------------- #
 # _cable_ident                                                                #
 # --------------------------------------------------------------------------- #
 
