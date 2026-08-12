@@ -52,6 +52,104 @@ All notable changes to the Lager platform are documented here. For detailed rele
   up, and a heartbeat failure is real signal again. No other command's lock
   behavior changes.
 
+- **`lager install` warned that it could not reach the box on installs that had
+  just succeeded.** The connectivity check fired a single `lager hello` seconds
+  after the container was started, racing the five services still coming up
+  inside it. It failed on healthy boxes often enough that the warning was
+  routinely ignored — which is the state in which it stops being able to report
+  a real failure. It now retries for 30s, and when it does give up it says so
+  in those terms and prints the `docker logs` command to run next.
+
+- **The install summary told users to run `lager nets create`, which is not a
+  command.** The nets commands are `add` / `add-all` / `add-batch`; the printed
+  example also named the second argument `<net-type>` when what `add` takes is
+  a role. Now `lager nets add <net-name> <role> <channel> <address>`.
+
+- **Provisioning could stop and wait for a keypress nobody was there to
+  press.** Every `apt-get` the installer runs on the box now sets
+  `NEEDRESTART_SUSPEND=1` beside `DEBIAN_FRONTEND=noninteractive`. needrestart
+  is an apt post-invoke hook that `DEBIAN_FRONTEND` does not reach, so on a box
+  with a pending kernel upgrade it raised a full-screen dialog mid-install. The
+  suspend is deliberate rather than `NEEDRESTART_MODE=a`: auto mode answers the
+  prompt by restarting services itself, including docker, which would spend a
+  start against the `StartLimitBurst` budget the fix above exists to protect.
+
+- **The lock heartbeat warned on the first missed renewal, which made it
+  meaningless.** Renewals are attempted every 60s against a 1800s TTL, so one
+  failure has spent a thirtieth of the budget — but it printed
+  `Warning: … heartbeat failed; relying on server TTL.` immediately. `lager
+  install` replaces the container serving the `:9000` lock API, so *minutes*
+  of failed renewals are expected mid-install and the lock outlives them
+  comfortably; the line fired on installs that were fine. The warning now
+  waits until the unrenewed window reaches half the TTL and reports how long
+  it has actually been (`has not renewed for 15m of its 30m TTL`), which is
+  the number that tells you whether to act. A successful renewal resets the
+  window, so a box that keeps dropping out is reported each time it gets
+  close rather than once per process. Eternal locks (`--detach`) have no
+  deadline to measure against and fall back to a consecutive-failure count.
+
+- **`lager uninstall --keep-config` left a lock nothing could ever clear.**
+  Dissolving the session is right — the lock server is being deleted, so
+  there is nobody to release to — but it leaves `/etc/lager/lock.json` saying
+  `locked: true`, and `--keep-config` is the one path where that file
+  survives the uninstall. A lock whose `ttl_seconds` is null is never reaped
+  (the box's expiry check returns false outright on a null TTL), so
+  reinstalling the box brought it up held by a holder that no longer existed,
+  permanently. The lock state and its flock sidecar are now cleared as part
+  of the privileged step; saved nets, which are the point of the flag, are
+  untouched.
+
+- **`lager uninstall --dry-run` could report a box as empty because it never
+  managed to ask.** The query helper captured both streams with a 30s timeout
+  and no allowance for a password prompt, so on a box without key auth every
+  query stalled, hit the timeout, landed in a blanket `except Exception` and
+  returned `None` — which the inventory renders identically to "the box does
+  not have this". Queries on the password path now allow 120s, permit a
+  single prompt, and leave stderr on the terminal; a query that does time out
+  says so instead of being counted as an absence.
+
+- **`lager uninstall` reported removing a box from `.lager` that was still
+  there.** Writes deliberately touch only the global `~/.lager` — project
+  boxes must not leak into global storage — but every read merges that file
+  with each project `.lager` found walking up from the cwd. A box defined in
+  both was deleted and still resolved, under a green "Removed" line, which
+  sent debugging toward the box rather than the config. The command now says
+  which file it wrote and names any project file that still defines the name.
+  Relatedly, a box defined *only* in a project file no longer reports as "not
+  found in .lager config", which was the wrong sentence for "found, but not
+  somewhere this command may write".
+
+### Changed
+
+- **The installer no longer installs pyOCD, and no longer offers it as a
+  fallback it cannot deliver.** The step pip-installed pyOCD onto the box
+  *host*, outside the container where debugging actually runs, and nothing in
+  the box code imports or invokes it — the debug subsystem drives J-Link and
+  OpenOCD, and OpenOCD is already in the image. So when a J-Link install
+  failed, every message that said "debug commands will use pyOCD (already
+  installed)" — in the installer, in `lager update`, in `start_box.sh` and in
+  the deployment docs — was describing a fallback that did not exist. They now
+  name OpenOCD and say plainly what is lost: SEGGER probes, not debugging. Removing the step also drops a step from the install (9 → 8) and
+  one that reported failure by grepping pip's stdout, which is how it managed
+  to print "encountered issues" for installs that never ran.
+
+- **The box image now pins the third-party MCC uldaq library it builds from
+  source.** It was cloned unpinned from the default branch, so two boxes built
+  a week apart could get different driver code with no change in this repo. It
+  is pinned to `v1.2.1` — upstream's latest release, and what the unpinned
+  clone was already producing — so this fixes current behavior in place rather
+  than moving it.
+
+  That build also emits about thirty copies of one `-Wstringop-overflow`
+  warning, from a loop in upstream's `Usb9837x.cpp` that writes 16-byte
+  registers past the end of a 64-byte stack struct. It is a real overrun, and
+  it is **left unsuppressed on purpose**: lager's own drivers cannot reach it
+  (only the USB-202 is driven), but the `uldaq` Python package is present on
+  every box, so a user script with a DT9837 attached could. Silencing the
+  warning would hide a memory-safety defect rather than close it. The
+  reasoning is recorded in the Dockerfile so the noise is not mistaken for
+  something nobody looked at.
+
 ## [0.36.1] - 2026-08-12
 
 ### Fixed

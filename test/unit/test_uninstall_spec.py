@@ -126,6 +126,12 @@ class LockDissolveOnContainerRemoval(unittest.TestCase):
                 return mock.Mock(
                     returncode=1, stdout="", stderr="Error: No such container: lager",
                 )
+            if remote.startswith("cat ") and u._PRIV_RESULTS_PATH in remote:
+                # The privileged session writes name=OK per step and the
+                # command reads it back over this channel.
+                return mock.Mock(
+                    returncode=0, stdout="lock_state=OK\n", stderr="",
+                )
             return mock.Mock(returncode=0, stdout="ok", stderr="")
 
         # Force the un-multiplexed path: a real pool would open an SSH
@@ -143,8 +149,8 @@ class LockDissolveOnContainerRemoval(unittest.TestCase):
                     side_effect=lambda *a, **k: released.append(a) or True), \
                 mock.patch.object(bs, "get_lock_holder", return_value="test-holder"), \
                 mock.patch.object(bs, "HeartbeatThread", return_value=heartbeat):
-            # --keep-config keeps the privileged sudo session out of this
-            # test; the container teardown under test runs either way.
+            # --keep-config narrows the privileged session to the lock-state
+            # step; the container teardown under test runs either way.
             result = CliRunner().invoke(
                 u.uninstall, ["--ip", "10.0.0.1", "--yes", "--keep-config"],
             )
@@ -195,6 +201,194 @@ class LockDissolveOnContainerRemoval(unittest.TestCase):
         self.assertNotIn("lock heartbeat", result.output)
         self.assertNotIn("relying on server TTL", result.output)
 
+    def test_keep_config_clears_the_lock_state_it_dissolved(self):
+        """The other half of dissolving: nobody released the lock, so the
+        file still says locked:true. --keep-config is the one path where
+        that file survives the uninstall.
+        """
+        _result, events, _released, _heartbeat = self._drive_uninstall()
+        remote = " ".join(payload for kind, payload in events if kind == "ssh")
+        self.assertIn("/etc/lager/lock.json", remote)
+        self.assertIn("/etc/lager/lock.json.flock", remote)
+        # Only the lock state -- the saved nets are the whole point of the flag.
+        self.assertNotIn("rm -rf /etc/lager", remote)
+
+
+class KeepConfigLockState(unittest.TestCase):
+    """A lock whose ttl_seconds is null is never reaped -- the box's
+    _is_expired() returns False outright on a null TTL -- so a locked:true
+    left in a preserved /etc/lager is permanent: reinstall, and the box comes
+    up held by a holder that no longer exists.
+    """
+
+    def test_step_targets_only_the_lock_files(self):
+        _name, _desc, cmd = u.LOCK_STATE_PRIV_STEP
+        self.assertIn("/etc/lager/lock.json", cmd)
+        self.assertIn("/etc/lager/lock.json.flock", cmd)
+        for keeper in ("saved_nets.json", "/etc/lager ", "-rf"):
+            self.assertNotIn(keeper, cmd, keeper)
+
+    def test_step_tolerates_absent_files(self):
+        # /etc/lager may not exist at all (already uninstalled, or a box that
+        # never had one). `rm -f` is what makes that a success rather than a
+        # FAILED line in the summary.
+        _name, _desc, cmd = u.LOCK_STATE_PRIV_STEP
+        self.assertIn("rm -f", cmd)
+
+    def test_step_does_not_mask_failure(self):
+        # Same rule the other privileged steps follow: `|| true` would defeat
+        # the per-step OK/FAIL reporting.
+        self.assertNotIn("|| true", u.LOCK_STATE_PRIV_STEP[2])
+
+    def test_it_is_the_keep_config_counterpart_of_etc_lager(self):
+        # The two are mutually exclusive by construction: one removes the
+        # directory, the other the lock state inside a directory being kept.
+        self.assertNotEqual(u.LOCK_STATE_PRIV_STEP[0], u.ETC_LAGER_PRIV_STEP[0])
+        names = [n for n, _d, _c in u.UNINSTALL_ALL_PRIV_STEPS]
+        self.assertNotIn("lock_state", names, "governed by --keep-config, not --all")
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DryRunQueries(unittest.TestCase):
+    """`--dry-run` inventories the box over SSH. Its query helper used to
+    capture both streams with a 30s timeout and no allowance for a password
+    prompt, so on a box without key auth every query stalled until the
+    timeout, landed in a blanket `except Exception`, and returned None --
+    which the inventory renders exactly like "the box does not have this".
+    A confident, clean, entirely wrong report.
+    """
+
+    CONNECTIVITY_PROBE = "echo ok"
+
+    def _dry_run(self, *, keys_work=True, query_times_out=False):
+        """Returns (result, calls) where calls is [(argv, kwargs), ...]."""
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((list(cmd), kwargs))
+            remote = cmd[-1] if isinstance(cmd, (list, tuple)) else cmd
+            if remote == self.CONNECTIVITY_PROBE:
+                if keys_work or "NumberOfPasswordPrompts=1" in cmd:
+                    return mock.Mock(returncode=0, stdout="ok", stderr="")
+                return mock.Mock(
+                    returncode=255, stdout="", stderr="Permission denied (publickey).",
+                )
+            if query_times_out:
+                raise u.subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 30))
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        pool = mock.Mock()
+        pool.ensure_connection.return_value = False
+
+        with mock.patch.object(u.subprocess, "run", fake_run), \
+                mock.patch.object(u, "get_ssh_connection_pool", return_value=pool):
+            result = CliRunner().invoke(
+                u.uninstall, ["--ip", "10.0.0.1", "--yes", "--dry-run"],
+            )
+        return result, calls
+
+    def _queries(self, calls):
+        """The inventory queries, i.e. everything past the connectivity probe."""
+        return [
+            (argv, kwargs) for argv, kwargs in calls
+            if argv[-1] != self.CONNECTIVITY_PROBE
+        ]
+
+    def test_key_auth_path_is_batch_mode_and_short(self):
+        result, calls = self._dry_run(keys_work=True)
+        self.assertEqual(result.exit_code, 0, result.output)
+        queries = self._queries(calls)
+        self.assertTrue(queries, "sanity: the dry run issued queries")
+        for argv, kwargs in queries:
+            self.assertIn("BatchMode=yes", argv)
+            self.assertEqual(kwargs.get("timeout"), 30)
+
+    def test_password_path_allows_time_for_a_human(self):
+        result, calls = self._dry_run(keys_work=False)
+        self.assertEqual(result.exit_code, 0, result.output)
+        queries = self._queries(calls)
+        self.assertTrue(queries, "sanity: the dry run issued queries")
+        for argv, kwargs in queries:
+            # BatchMode would refuse to prompt at all and report the whole
+            # box as empty; 30s is shorter than finding and typing a password.
+            self.assertNotIn("BatchMode=yes", argv)
+            self.assertIn("NumberOfPasswordPrompts=1", argv)
+            self.assertEqual(kwargs.get("timeout"), 120)
+
+    def test_password_path_leaves_stderr_on_the_terminal(self):
+        # ssh's prompt goes to /dev/tty but its diagnostics go to stderr;
+        # capturing those while a human is being asked to type is how
+        # "nothing happened for two minutes" gets produced.
+        _result, calls = self._dry_run(keys_work=False)
+        for _argv, kwargs in self._queries(calls):
+            self.assertIsNone(kwargs.get("stderr"))
+            self.assertIsNotNone(kwargs.get("stdout"), "stdout is still needed")
+
+    def test_a_timed_out_query_is_not_reported_as_absence(self):
+        result, _calls = self._dry_run(keys_work=True, query_times_out=True)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("timed out", result.output)
+        self.assertIn("not necessarily absent", result.output)
+
+
+class LocalConfigCleanupReport(unittest.TestCase):
+    """delete_box() writes the global ~/.lager only; every read merges it with
+    the project .lager files found walking up from the cwd. A box defined in
+    both is deleted AND still resolves, and the command said "Removed" — which
+    sent people hunting for a bug in the box rather than in their config.
+    """
+
+    def _drive(self, *, deleted, survivors):
+        def fake_run(cmd, **_kwargs):
+            remote = cmd[-1] if isinstance(cmd, (list, tuple)) else cmd
+            if remote.startswith("cat ") and u._PRIV_RESULTS_PATH in remote:
+                return mock.Mock(returncode=0, stdout="lock_state=OK\n", stderr="")
+            return mock.Mock(returncode=0, stdout="ok", stderr="")
+
+        pool = mock.Mock()
+        pool.ensure_connection.return_value = False
+
+        with mock.patch.object(u.subprocess, "run", fake_run), \
+                mock.patch.object(u, "get_ssh_connection_pool", return_value=pool), \
+                mock.patch.object(u, "get_box_name_by_ip", return_value="STG-2"), \
+                mock.patch.object(u, "delete_box", return_value=deleted), \
+                mock.patch.object(
+                    u, "project_files_defining_box", return_value=survivors), \
+                mock.patch.object(
+                    bs, "acquire_box_lock", return_value=("acquired", {})), \
+                mock.patch.object(bs, "release_box_lock", return_value=True), \
+                mock.patch.object(bs, "get_lock_holder", return_value="test-holder"), \
+                mock.patch.object(bs, "HeartbeatThread", return_value=mock.Mock()):
+            return CliRunner().invoke(
+                u.uninstall, ["--ip", "10.0.0.1", "--yes", "--keep-config"],
+            )
+
+    def test_names_the_project_file_that_still_defines_the_box(self):
+        result = self._drive(deleted=True, survivors=["/work/proj/.lager"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("global ~/.lager", result.output)
+        self.assertIn("still defined in", result.output)
+        self.assertIn("/work/proj/.lager", result.output)
+
+    def test_a_clean_delete_says_nothing_extra(self):
+        result = self._drive(deleted=True, survivors=[])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Removed 'STG-2'", result.output)
+        self.assertNotIn("still defined in", result.output)
+
+    def test_a_project_only_box_is_not_reported_as_missing(self):
+        # delete_box returns False because the global file never had it, but
+        # the box is very much configured — "was not found" is the wrong
+        # sentence for "found, but not somewhere this command may write".
+        result = self._drive(deleted=False, survivors=["/work/proj/.lager"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertNotIn("was not found", result.output)
+        self.assertIn("still defined in", result.output)
+
+    def test_genuinely_absent_still_says_so(self):
+        result = self._drive(deleted=False, survivors=[])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("was not found", result.output)

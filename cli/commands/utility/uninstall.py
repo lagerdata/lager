@@ -16,6 +16,7 @@ from ...box_storage import (
     get_box_ip,
     get_box_name_by_ip,
     get_box_user,
+    project_files_defining_box,
 )
 from ...core.ssh_utils import host_in_known_hosts, get_ssh_connection_pool
 
@@ -37,7 +38,8 @@ from ...core.ssh_utils import host_in_known_hosts, get_ssh_connection_pool
 # Deliberately NOT removed (the box keeps working infrastructure): docker apt
 # packages, the buildx plugin (including the /usr/local/lib/docker/cli-plugins
 # fallback binary), the `dns` key lager merged into /etc/docker/daemon.json,
-# pip packages (pyOCD etc.), and apt packages from `lager box-config apply`.
+# host pip packages (including pyOCD, which older provisions installed), and
+# apt packages from `lager box-config apply`.
 UNINSTALL_ALL_PRIV_STEPS = [
     (
         "udev_rules",
@@ -91,6 +93,24 @@ ETC_LAGER_PRIV_STEP = (
     "etc_lager",
     "Removing /etc/lager directory",
     "sudo rm -rf /etc/lager",
+)
+
+# The --keep-config counterpart. Lock state is not config: /etc/lager/lock.json
+# records a live claim on a box whose lock server this command is deleting.
+# The dissolve in Step 1 deliberately skips the release (there is nobody left
+# to tell), so the file is left saying locked:true — and a lock written with
+# ttl_seconds null is never reaped, because the box's _is_expired() returns
+# False outright on a null TTL. The result is a tombstone: reinstall the box
+# and it comes up holding a lock for a holder that no longer exists, which
+# nothing on the box will ever clear.
+#
+# Without --keep-config the whole directory goes and the question never
+# arises; this keeps the two paths consistent rather than making
+# "keep my saved nets" quietly also mean "keep a dead lock".
+LOCK_STATE_PRIV_STEP = (
+    "lock_state",
+    "Clearing box lock state",
+    "sudo rm -f /etc/lager/lock.json /etc/lager/lock.json.flock",
 )
 
 # Home-dir, not /tmp: a fixed name in the world-writable /tmp would let
@@ -448,25 +468,56 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
             click.secho(f" error: {e}", fg='red')
             return False
 
-    # Helper to run SSH query commands (for --dry-run)
+    # Helper to run SSH query commands (for --dry-run and reading the
+    # privileged session's results file)
     def query_ssh(cmd):
-        """Run an SSH command and return stdout, or None on failure."""
+        """Run an SSH command and return stdout, or None on failure.
+
+        Two things differ on the password path (``use_interactive_ssh``),
+        both because a human is in the loop:
+
+        * stderr is left attached to the terminal instead of captured.
+          ssh writes its password prompt to /dev/tty, but its diagnostics go
+          to stderr, and swallowing those while the user is being asked to
+          type something is how "nothing happened for thirty seconds" gets
+          produced.
+        * the timeout matches ``run_ssh``'s interactive branch (120s, not
+          30s). 30s is shorter than a person finding and typing a password,
+          so the call was reliably killed mid-prompt.
+
+        A timeout is reported rather than swallowed. It used to land in the
+        blanket ``except Exception`` and return None, which ``--dry-run``
+        renders identically to "the box does not have this" -- so a stalled
+        prompt printed a clean, confident, entirely wrong inventory.
+        """
         try:
             ssh_cmd = ["ssh"]
             if ssh_pool:
                 ssh_cmd.extend(ssh_pool.get_ssh_options(ip))
-            if not use_interactive_ssh:
+            if use_interactive_ssh:
+                # One prompt, like the connectivity check: ssh's default of
+                # three turns a wrong password into three stalled minutes.
+                ssh_cmd.extend(["-o", "NumberOfPasswordPrompts=1"])
+            else:
                 ssh_cmd.extend(["-o", "BatchMode=yes"])
             ssh_cmd.extend([ssh_host, cmd])
 
             result = subprocess.run(
                 ssh_cmd,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=None if use_interactive_ssh else subprocess.PIPE,
                 text=True,
-                timeout=30,
+                timeout=120 if use_interactive_ssh else 30,
             )
             if result.returncode == 0:
                 return result.stdout.strip()
+            return None
+        except subprocess.TimeoutExpired:
+            click.secho(
+                f"  (query timed out after {120 if use_interactive_ssh else 30}s; "
+                "result unknown, not necessarily absent)",
+                fg='yellow', err=True,
+            )
             return None
         except Exception:
             return None
@@ -613,6 +664,8 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
     click.echo("  - ~/box directory")
     if not keep_config:
         click.echo("  - /etc/lager directory (saved nets)")
+    else:
+        click.echo("  - /etc/lager/lock.json (stale lock state; saved nets are kept)")
 
     if remove_all:
         click.echo("  - Instrument udev rules (99-instrument.rules, 99-lager-user.rules, lager-*.rules)")
@@ -626,10 +679,11 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
         click.echo("  - Legacy box-side SSH keys and SSH config entries")
 
     click.echo()
-    if not keep_config or remove_all:
-        click.echo("Privileged removals run in one session; you may be prompted for the")
-        click.echo("box's sudo password once if the login user has no passwordless grant.")
-        click.echo()
+    # Always at least one privileged step now: /etc/lager, or the lock state
+    # inside it under --keep-config.
+    click.echo("Privileged removals run in one session; you may be prompted for the")
+    click.echo("box's sudo password once if the login user has no passwordless grant.")
+    click.echo()
 
     if not yes:
         click.secho("WARNING: This action cannot be undone!", fg='red', bold=True)
@@ -646,7 +700,9 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
     # --all.
     priv_results = {}
     priv_steps = []
-    if not keep_config:
+    if keep_config:
+        priv_steps.append(LOCK_STATE_PRIV_STEP)
+    else:
         priv_steps.append(ETC_LAGER_PRIV_STEP)
     if remove_all:
         priv_steps.extend(UNINSTALL_ALL_PRIV_STEPS)
@@ -746,10 +802,9 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
         # Privileged removals — /etc/lager plus (with --all) the system
         # artifacts install creates — in one interactive session.
         click.secho("[Step 4/5] Removing system configuration...", fg='cyan')
-        if priv_steps:
-            priv_results = run_priv_session(priv_steps)
-        else:
-            click.echo("  Skipping /etc/lager removal (--keep-config)")
+        if keep_config:
+            click.echo("  Keeping /etc/lager (--keep-config)")
+        priv_results = run_priv_session(priv_steps)
         click.echo()
 
         # Unprivileged --all extras. The authorized_keys strip goes LAST of
@@ -803,6 +858,7 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
     if keep_config:
         click.echo()
         click.secho("Note: /etc/lager directory was preserved (contains saved nets).", fg='yellow')
+        click.secho("Its lock.json was cleared — the lock server it described is gone.", fg='yellow')
 
     if not remove_all:
         click.echo()
@@ -829,9 +885,29 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
     if box_name:
         click.echo()
         if yes or click.confirm(f"Remove '{box_name}' from local .lager configuration?", default=True):
-            if delete_box(box_name):
-                click.secho(f"Removed '{box_name}' from .lager config.", fg='green')
-            else:
+            deleted = delete_box(box_name)
+            # delete_box writes the global ~/.lager only, but every read
+            # merges the global file with each project .lager found walking up
+            # from the cwd. A name defined in both is deleted AND still
+            # resolves — so report on what survived, not on what we wrote.
+            # Saying "Removed" about a box that still answers to its name sent
+            # people looking for a bug in the box rather than in their config.
+            survivors = project_files_defining_box(box_name)
+            if deleted:
+                click.secho(f"Removed '{box_name}' from the global ~/.lager config.", fg='green')
+            elif not survivors:
                 click.secho(f"'{box_name}' was not found in .lager config.", fg='yellow')
+            if survivors:
+                click.echo()
+                click.secho(
+                    f"Note: '{box_name}' is still defined in "
+                    + ", ".join(str(p) for p in survivors),
+                    fg='yellow',
+                )
+                click.secho(
+                    "Those are project-level config files and were left alone; "
+                    "edit them to retire the name entirely.",
+                    fg='yellow',
+                )
         else:
             click.echo(f"Kept '{box_name}' in .lager config.")
