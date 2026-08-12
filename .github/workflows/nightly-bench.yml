@@ -27,6 +27,16 @@
 # the Rigol/Keithley on at its start and off at its end. Deliberately NOT
 # coordinated across the chain — a chain cancelled between jobs can therefore
 # never strand the bench powered; the cost is one extra relay cycle per night.
+#
+# Notification: a red night files (or comments on) the single `bench-alert`
+# issue, and a fully green night closes it — see the notify jobs at the bottom.
+# Before them, a failing nightly notified NO ONE, and one 2026-08 outage ran
+# eight consecutive red nights before a human noticed. The notify jobs run on
+# HOSTED runners on purpose: the bench being down is exactly the condition
+# under which they must still be able to run. Direct dispatches of the child
+# workflows bypass notification — a dispatch has a human watching by
+# definition. bench-watchdog.yml covers the remaining blind spot, the night
+# that never starts (runner offline, cron dead).
 
 name: "Bench: Nightly"
 
@@ -48,3 +58,72 @@ jobs:
     needs: lifecycle
     uses: ./.github/workflows/integration-tests.yml
     secrets: inherit
+
+  notify-failure:
+    # `!= 'success'` rather than `failure()`: when lifecycle fails,
+    # integration is SKIPPED, not failed, and a skipped instrument sweep is
+    # exactly the half-covered night that must page someone. `!cancelled()`
+    # keeps a manually cancelled run from alerting — cancellation has a human
+    # attached. Permissions are per-job so the called bench workflows keep
+    # their default token.
+    name: notify (failure)
+    needs: [lifecycle, integration]
+    if: ${{ !cancelled() && (needs.lifecycle.result != 'success' || needs.integration.result != 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: File or update the bench-alert issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          LIFECYCLE: ${{ needs.lifecycle.result }}
+          INTEGRATION: ${{ needs.integration.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          cat > "$RUNNER_TEMP/alert-body.md" <<EOF
+          Nightly bench run failed: ${RUN_URL}
+
+          | Job | Result |
+          |---|---|
+          | Box Lifecycle | ${LIFECYCLE} |
+          | Integration Tests | ${INTEGRATION} |
+
+          Triage order (see .github/workflows/README.md): instrument power
+          relays and USB enumeration first, then whether the box's auth
+          service is reachable, then the change under test. This issue is
+          closed automatically by the next fully green nightly run.
+          EOF
+          bash tools/bench_alert.sh alert "Nightly bench is failing" "$RUNNER_TEMP/alert-body.md"
+        shell: bash
+
+  notify-recovery:
+    # Bare `needs:` fires this only when BOTH children succeeded. Closing on
+    # green is what keeps the alert issue meaningful — an issue that stays
+    # open after the bench recovers trains people to ignore it, which is the
+    # same failure mode as a permanently-red check.
+    name: notify (recovery)
+    needs: [lifecycle, integration]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Close the bench-alert issue if one is open
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          printf 'Recovered: fully green nightly run %s\n' "$RUN_URL" > "$RUNNER_TEMP/recover-body.md"
+          bash tools/bench_alert.sh recover "$RUNNER_TEMP/recover-body.md"
+        shell: bash

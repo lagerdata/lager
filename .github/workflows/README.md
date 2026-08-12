@@ -17,7 +17,8 @@ deleted.)
 |---|---|---|---|---|
 | `integration-tests.yml` | Bench: Integration Tests | push to `main`, `workflow_call`, dispatch | self-hosted `lager-bench` | Drives every bench instrument through `lager python`, plus the J-Link CLI suite |
 | `update-regression.yml` | Bench: Box Lifecycle | `workflow_call`, dispatch | self-hosted `lager-bench` | Downgrade -> update -> no-op -> forced rebuild -> uninstall -> install, with a hardware smoke per phase |
-| `nightly-bench.yml` | Bench: Nightly | cron 10:17 UTC, dispatch | (calls the two above) | Nightly ordering wrapper: lifecycle first, instruments only if it succeeded |
+| `nightly-bench.yml` | Bench: Nightly | cron 10:17 UTC, dispatch | (calls the two above) | Nightly ordering wrapper: lifecycle first, instruments only if it succeeded; files/closes the `bench-alert` issue |
+| `bench-watchdog.yml` | Bench: Watchdog | cron every 6h at :41, dispatch | `ubuntu-latest` | Alerts when nightly runs stop FLOWING (queued too long, stuck, cron dead) — the failure the notify jobs cannot see |
 | `unit-tests.yml` | PR Gate: Unit Tests | `pull_request`, push to `main`, dispatch | `ubuntu-latest` | Unit suites (one pytest process per suite) + Python-version compat matrix |
 | `static-checks.yml` | PR Gate: Static Checks | `pull_request`, push to `main`, dispatch | `ubuntu-latest` | Syntax/lint floors over the tree the unit gate cannot reach, plus a coverage report |
 | `rust-checks.yml` | PR Gate: Rust Checks | `pull_request` + push (path-filtered), dispatch | `ubuntu-latest` | cargo check/clippy/audit for `box/oscilloscope-daemon` |
@@ -32,6 +33,27 @@ The bench workflows have no `pull_request` trigger on purpose: this repo is
 public and the runner drives real hardware, so a fork PR must never execute
 code on the bench. To bench-test a branch, push it to this repo and
 `workflow_dispatch` on that ref.
+
+## Bench alerting (the `bench-alert` issue)
+
+A red or half-run night files (or comments on) ONE open issue labeled
+`bench-alert`, via `tools/bench_alert.sh`; the next fully green nightly closes
+it. Two writers, one reader path:
+
+- `nightly-bench.yml`'s `notify (failure)` job fires when either child is not
+  `success` — including integration SKIPPED behind a failed lifecycle — and
+  its `notify (recovery)` job closes the issue on a fully green night.
+- `bench-watchdog.yml` covers the night that never runs: a run queued > 3h
+  (runner offline), running > 5h (stuck), or no scheduled run created in 26h
+  (cron dead). It only ever adds to the issue; recovery is the nightly's call.
+
+Both notify paths run on HOSTED runners — the bench being down is exactly the
+condition they must survive. Manual `workflow_dispatch` of the child bench
+workflows does not notify; a dispatch has a human watching by definition.
+
+The `bench-alert` label must exist in the repo. If alerting itself breaks
+(missing label, token without `issues: write`), the notify job goes red inside
+the run — loud, not silent.
 
 ## Bench instrument power (AC relays)
 

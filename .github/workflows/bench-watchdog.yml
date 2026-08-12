@@ -1,0 +1,130 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# Detects the bench failure the notify jobs in nightly-bench.yml structurally
+# cannot: the night that never runs. A workflow that never starts has no
+# failing job to notify from, so a dead self-hosted runner leaves runs QUEUED
+# forever, silently. That is the observed failure mode this watches for --
+# checking the runner's own online status via the API would need
+# administration:read, which GITHUB_TOKEN cannot hold, so this reads run
+# history instead and needs no standing credential.
+#
+# Three checks against nightly-bench.yml's recent runs:
+#   queued  > 3h   runner offline (the nightly chain's own budget is well
+#                  under that, and nothing else shares the bench queue slot
+#                  for hours)
+#   running > 5h   stuck run (lifecycle 90m + integration 45m timeouts mean
+#                  a healthy night can never take 5h)
+#   no scheduled run CREATED in 26h   the cron itself is dead
+#
+# Alerts land on the same single `bench-alert` issue the nightly notify jobs
+# use (tools/bench_alert.sh), so one bench incident reads as one issue no
+# matter which watcher saw it first. The watchdog never closes the issue --
+# only a fully green nightly does, because "runs are flowing again" is not
+# the same claim as "the bench is healthy".
+#
+# Honest residual: this is itself a scheduled workflow. GitHub disables crons
+# in repos with no activity for 60 days, which would kill the watchdog and the
+# nightly together. Accepted -- this repo has steady activity, and a watchdog
+# for the watchdog has no end.
+
+name: "Bench: Watchdog"
+
+on:
+  schedule:
+    # Off the hour for the same scheduled-queue reason as nightly-bench.yml.
+    # Every 6h bounds detection latency to ~6h (the 2026-08 outage ran 8 days
+    # unnoticed); more often adds noise risk during GitHub-side incidents,
+    # not signal.
+    - cron: "41 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  watchdog:
+    name: bench watchdog
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Check that nightly bench runs are flowing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          QUEUED_ALERT_HOURS: "3"
+          RUNNING_ALERT_HOURS: "5"
+          SCHEDULE_GAP_ALERT_HOURS: "26"
+        run: |
+          set -o pipefail
+          gh run list --repo "$GH_REPO" --workflow nightly-bench.yml \
+            --limit 20 --json databaseId,status,createdAt,event > runs.json
+
+          python3 - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+
+          runs = json.load(open('runs.json'))
+          now = datetime.now(timezone.utc)
+
+          def age_hours(run):
+              created = datetime.fromisoformat(run['createdAt'].replace('Z', '+00:00'))
+              return (now - created).total_seconds() / 3600
+
+          queued_h = float(os.environ['QUEUED_ALERT_HOURS'])
+          running_h = float(os.environ['RUNNING_ALERT_HOURS'])
+          gap_h = float(os.environ['SCHEDULE_GAP_ALERT_HOURS'])
+
+          problems = []
+          for r in runs:
+              if r['status'] == 'queued' and age_hours(r) > queued_h:
+                  problems.append(
+                      f"run {r['databaseId']} has been QUEUED for "
+                      f"{age_hours(r):.1f}h - is the bench runner offline?")
+              if r['status'] == 'in_progress' and age_hours(r) > running_h:
+                  problems.append(
+                      f"run {r['databaseId']} has been RUNNING for "
+                      f"{age_hours(r):.1f}h - stuck past every job timeout")
+
+          scheduled = [r for r in runs if r['event'] == 'schedule']
+          if not scheduled:
+              problems.append(
+                  f"no scheduled nightly run in the last {len(runs)} runs")
+          elif min(age_hours(r) for r in scheduled) > gap_h:
+              problems.append(
+                  f"newest scheduled nightly is {min(age_hours(r) for r in scheduled):.1f}h old "
+                  f"(cron is 10:17 UTC daily) - is the schedule disabled?")
+
+          if problems:
+              with open('problems.txt', 'w') as f:
+                  f.write('\n'.join(f"- {p}" for p in problems))
+              print('PROBLEMS:')
+              print(open('problems.txt').read())
+          else:
+              print('Nightly bench runs are flowing normally.')
+          PY
+
+          if [ -f problems.txt ]; then
+            {
+              echo "Bench watchdog found nightly runs not flowing:"
+              echo
+              cat problems.txt
+              echo
+              echo "Detected by: ${RUN_URL}"
+              echo "First checks: is the self-hosted runner service alive on the"
+              echo "bench box, and does the Actions tab show nightly-bench.yml"
+              echo "still scheduled? This issue closes automatically on the next"
+              echo "fully green nightly."
+            } > "$RUNNER_TEMP/alert-body.md"
+            bash tools/bench_alert.sh alert "Nightly bench is failing" "$RUNNER_TEMP/alert-body.md"
+            exit 1
+          fi
+        shell: bash
