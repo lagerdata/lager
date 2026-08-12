@@ -941,7 +941,9 @@ def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_ove
                     fg='yellow', err=True,
                 )
             elif ttl is not None:
-                heartbeat = _HeartbeatThread(box_ip, holder, default_heartbeat_interval())
+                heartbeat = _HeartbeatThread(
+                    box_ip, holder, default_heartbeat_interval(), ttl_seconds=ttl,
+                )
                 heartbeat.start()
         elif state == 'already_ours':
             # Pre-existing lock with our holder string. Do NOT release on
@@ -950,8 +952,12 @@ def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_ove
             # the original holder's call. If the resumed lock carries a TTL
             # (leftover ephemeral, not a user reservation), heartbeat it so
             # it can't expire mid-run.
-            if not detach and (lock_data or {}).get('ttl_seconds') is not None:
-                heartbeat = _HeartbeatThread(box_ip, holder, default_heartbeat_interval())
+            resumed_ttl = (lock_data or {}).get('ttl_seconds')
+            if not detach and resumed_ttl is not None:
+                heartbeat = _HeartbeatThread(
+                    box_ip, holder, default_heartbeat_interval(),
+                    ttl_seconds=resumed_ttl,
+                )
                 heartbeat.start()
         # state == 'unreachable' -> no lock taken; the real command will
         # surface the connection failure when it tries to POST the script.

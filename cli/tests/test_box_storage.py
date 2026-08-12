@@ -21,6 +21,7 @@ from cli.box_storage import (
     delete_all_boxes,
     update_box_version,
     save_boxes,
+    project_files_defining_box,
 )
 
 
@@ -201,3 +202,56 @@ class TestWriteOperationsUseGlobal:
 
         global_data = json.loads(global_lager.read_text())
         assert global_data["BOXES"]["mybox"]["version"] == "staging"
+
+
+# ---------- project_files_defining_box ----------
+
+class TestProjectFilesDefiningBox:
+    """Reads merge global + project; writes touch global only. That gap is
+    deliberate, but it means "deleted" and "gone" are different things --
+    and `lager uninstall` reported the first while meaning the second.
+    """
+
+    def test_reports_the_project_file_that_survives_a_delete(self, global_lager, project_dir):
+        _write_lager(global_lager, {"STG-2": "10.0.0.1"})
+        proj_lager = project_dir / ".lager"
+        _write_lager(proj_lager, {"STG-2": "10.0.0.1"})
+
+        with mock.patch("cli.config._find_config_files", return_value=[str(proj_lager)]):
+            assert delete_box("STG-2") is True
+            survivors = project_files_defining_box("STG-2")
+
+        assert survivors == [Path(proj_lager)]
+        # The point: it is deleted and still resolves.
+        with mock.patch("cli.config._find_config_files", return_value=[str(proj_lager)]):
+            assert "STG-2" in load_boxes()
+
+    def test_empty_when_only_the_global_file_defined_it(self, global_lager, project_dir):
+        _write_lager(global_lager, {"STG-2": "10.0.0.1"})
+        proj_lager = project_dir / ".lager"
+        _write_lager(proj_lager, {"other": "192.168.1.1"})
+
+        with mock.patch("cli.config._find_config_files", return_value=[str(proj_lager)]):
+            assert delete_box("STG-2") is True
+            assert project_files_defining_box("STG-2") == []
+
+    def test_lists_every_file_up_the_tree(self, global_lager, tmp_path):
+        outer = tmp_path / "outer"
+        inner = outer / "inner"
+        inner.mkdir(parents=True)
+        _write_lager(outer / ".lager", {"STG-2": "10.0.0.1"})
+        _write_lager(inner / ".lager", {"STG-2": "10.0.0.9"})
+
+        with mock.patch(
+            "cli.config._find_config_files",
+            return_value=[str(inner / ".lager"), str(outer / ".lager")],
+        ):
+            survivors = project_files_defining_box("STG-2")
+
+        assert survivors == [Path(inner / ".lager"), Path(outer / ".lager")]
+
+    def test_deleted_cwd_does_not_raise(self, global_lager):
+        # Same hazard load_boxes() guards: os.getcwd() throws after an
+        # `rm -rf` of the directory the shell is still sitting in.
+        with mock.patch("cli.config._find_config_files", side_effect=FileNotFoundError):
+            assert project_files_defining_box("STG-2") == []

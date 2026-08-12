@@ -912,3 +912,126 @@ class TestAutoLockAcquireForCommand:
             '10.0.0.1', 'lab-box', 'update',
         )
         release()  # stops nothing, releases nothing; must not raise
+
+
+# ---------------------------------------------------------------------------
+# HeartbeatThread warning threshold
+# ---------------------------------------------------------------------------
+
+
+def _drive(thread, attempts):
+    """Run ``thread``'s loop for exactly ``attempts`` renewal attempts.
+
+    Patches the stop event's wait so no wall-clock time passes: it returns
+    False (keep going) until the budget is spent, then True (stop).
+    """
+    seen = {'n': 0}
+
+    def fast_wait(_seconds):
+        seen['n'] += 1
+        return seen['n'] > attempts
+
+    with mock.patch.object(thread._stop_event, 'wait', side_effect=fast_wait):
+        thread.start()
+        thread.join(timeout=5.0)
+    assert not thread.is_alive()
+
+
+class TestHeartbeatWarningThreshold:
+    """The warning has to mean something.
+
+    Interval is 60s against a 1800s TTL, so one failed renewal has spent
+    1/30th of the budget. Warning on it made `lager install` — which replaces
+    the container serving the lock API, guaranteeing minutes of failures —
+    print a scary line on every successful run.
+    """
+
+    def test_a_short_outage_says_nothing(self, monkeypatch, capsys):
+        # 5 minutes of failures against a 30 minute TTL: 25 minutes of margin
+        # left. This is the `lager install` container-rebuild window.
+        monkeypatch.setattr(box_storage, 'heartbeat_box_lock', lambda *a, **k: False)
+        t = box_storage.HeartbeatThread(
+            '10.0.0.1', 'alice', 60, warn_label='install lock heartbeat',
+            ttl_seconds=1800,
+        )
+        _drive(t, attempts=5)
+        assert capsys.readouterr().err == ''
+
+    def test_it_warns_once_the_lock_is_actually_at_risk(self, monkeypatch, capsys):
+        monkeypatch.setattr(box_storage, 'heartbeat_box_lock', lambda *a, **k: False)
+        t = box_storage.HeartbeatThread(
+            '10.0.0.1', 'alice', 60, warn_label='install lock heartbeat',
+            ttl_seconds=1800,
+        )
+        _drive(t, attempts=15)  # 15 * 60s == 900s == half of 1800
+        err = capsys.readouterr().err
+        assert 'install lock heartbeat' in err
+        # The elapsed time is the number that tells you whether to worry, so
+        # it has to be in the message rather than "relying on server TTL".
+        assert '15m' in err and '30m' in err
+
+    def test_it_warns_only_once_per_outage(self, monkeypatch, capsys):
+        monkeypatch.setattr(box_storage, 'heartbeat_box_lock', lambda *a, **k: False)
+        t = box_storage.HeartbeatThread(
+            '10.0.0.1', 'alice', 60, ttl_seconds=1800,
+        )
+        _drive(t, attempts=40)
+        assert capsys.readouterr().err.count('Warning:') == 1
+
+    def test_a_successful_renewal_rearms_the_warning(self, monkeypatch, capsys):
+        # Fail long enough to warn, recover, then fail that long again. A box
+        # that keeps dropping out should be reported each time it gets close,
+        # not silenced for the rest of the process.
+        results = [False] * 15 + [True] + [False] * 15
+        it = iter(results)
+        monkeypatch.setattr(
+            box_storage, 'heartbeat_box_lock', lambda *a, **k: next(it, False),
+        )
+        t = box_storage.HeartbeatThread(
+            '10.0.0.1', 'alice', 60, ttl_seconds=1800,
+        )
+        _drive(t, attempts=len(results))
+        assert capsys.readouterr().err.count('Warning:') == 2
+
+    def test_an_eternal_lock_falls_back_to_a_failure_count(self, monkeypatch, capsys):
+        # ttl_seconds=None (a --detach run) cannot expire, so there is no
+        # deadline to measure against — but a box that has been unreachable
+        # for five straight attempts is still worth saying out loud.
+        monkeypatch.setattr(box_storage, 'heartbeat_box_lock', lambda *a, **k: False)
+
+        quiet = box_storage.HeartbeatThread('10.0.0.1', 'alice', 60, ttl_seconds=None)
+        _drive(quiet, attempts=4)
+        assert capsys.readouterr().err == ''
+
+        loud = box_storage.HeartbeatThread('10.0.0.1', 'alice', 60, ttl_seconds=None)
+        _drive(loud, attempts=5)
+        err = capsys.readouterr().err
+        assert 'may be unreachable' in err
+        assert 'will expire' not in err  # it cannot; don't claim otherwise
+
+    def test_failures_never_stop_the_thread(self, monkeypatch):
+        calls = []
+
+        def flaky(*_a, **_k):
+            calls.append(1)
+            raise RuntimeError('network down')
+
+        monkeypatch.setattr(box_storage, 'heartbeat_box_lock', flaky)
+        t = box_storage.HeartbeatThread('10.0.0.1', 'alice', 60, ttl_seconds=1800)
+        _drive(t, attempts=20)
+        assert len(calls) == 20
+
+
+class TestFormatDuration:
+    @pytest.mark.parametrize('seconds,expected', [
+        (0, '0s'),
+        (45, '45s'),
+        (60, '1m'),
+        (90, '1m30s'),
+        (900, '15m'),
+        (1800, '30m'),
+        (3600, '1h'),
+        (5400, '1h30m'),
+    ])
+    def test_shortest_honest_unit(self, seconds, expected):
+        assert box_storage._format_duration(seconds) == expected

@@ -7,7 +7,7 @@
 import json
 import os
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from .sort_utils import natural_sort_key
 
@@ -246,13 +246,42 @@ def get_box_name_by_ip(ip: str) -> Optional[str]:
 
 
 def delete_box(name: str) -> bool:
-    """Delete a box from the global storage. Returns True if deleted, False if not found."""
+    """Delete a box from the global storage. Returns True if deleted, False if not found.
+
+    Global only, deliberately — see :func:`_load_global_boxes`. A name that
+    is ALSO defined in a project ``.lager`` still resolves after this returns
+    True, so callers that report the deletion to a user should ask
+    :func:`project_files_defining_box` what survived.
+    """
     boxes = _load_global_boxes()
     if name in boxes:
         del boxes[name]
         save_boxes(boxes)
         return True
     return False
+
+
+def project_files_defining_box(name: str) -> List[Path]:
+    """Project-level ``.lager`` files (not the global one) that define ``name``.
+
+    Reads are merged across the global file and every ``.lager`` found walking
+    up from the cwd, but writes only ever touch the global one. That asymmetry
+    is intentional — a project's boxes must not leak into global storage — but
+    it means "deleted" and "gone" are different things, and saying the first
+    while meaning the second is how `lager uninstall` came to report
+    ``Removed 'STG-2' from .lager config`` about a box that was still there.
+    """
+    from .config import _find_config_files
+
+    try:
+        candidates = _find_config_files()
+    except (FileNotFoundError, OSError):
+        # cwd may have been deleted out from under us (rm -rf while cd'd in).
+        return []
+    return [
+        Path(path) for path in candidates
+        if name in _load_boxes_from_file(path)
+    ]
 
 
 def list_boxes() -> Dict[str, str]:
@@ -944,27 +973,78 @@ class HeartbeatThread(_threading_for_heartbeat.Thread):
     ``threading.Thread`` (used by unit tests and admin commands that want
     to wait for the heartbeat to finish before continuing).
 
-    Heartbeat failures are logged once (lowercase warning) and then retried
-    silently. We do NOT abort the command on heartbeat failure — the
-    server-side TTL is the authoritative reaper, and treating a flaky network
-    as a fatal error would generate more flake than it prevents.
+    Heartbeat failures never abort the command — the server-side TTL is the
+    authoritative reaper, and treating a flaky network as a fatal error would
+    generate more flake than it prevents.
+
+    They also don't warn immediately. A renewal is attempted every
+    ``interval`` seconds (60 by default) against a TTL that is 1800, so a
+    single failure has consumed 1/30th of the budget and means nothing.
+    Warning on the first one made the warning fire on runs that were fine:
+    `lager install` replaces the container serving the ``:9000`` lock API, so
+    several minutes of failed renewals are *expected* mid-install and the lock
+    outlives them comfortably. A line that cries wolf on every successful run
+    is worse than no line, because it trains everyone to skip the one that
+    matters.
+
+    So the warning waits until the unrenewed window is a real threat to the
+    lock — half the TTL — and then says how long it has actually been, which
+    is the number that tells you whether to worry. A renewal that succeeds
+    resets the window and re-arms the warning, so a box that keeps dropping
+    out is reported each time it gets close, not once per process.
     """
 
-    def __init__(self, ip, holder, interval, *, warn_label='lock heartbeat'):
+    #: Fraction of the TTL that may pass unrenewed before we say anything.
+    WARN_AT_TTL_FRACTION = 0.5
+
+    #: Consecutive failures tolerated when the lock has no TTL to measure
+    #: against (``ttl_seconds=None`` — an eternal lock, e.g. ``--detach``).
+    #: Such a lock cannot expire, so this is purely "the box has been
+    #: unreachable for a while and you probably want to know".
+    WARN_AFTER_FAILURES_NO_TTL = 5
+
+    def __init__(self, ip, holder, interval, *, warn_label='lock heartbeat',
+                 ttl_seconds=None):
         super().__init__(daemon=True, name='lager-lock-heartbeat')
         self._ip = ip
         self._holder = holder
         self._interval = max(1, int(interval))
         self._warn_label = warn_label
+        self._ttl_seconds = ttl_seconds
         # NOTE: must NOT be named ``_stop`` — ``threading.Thread`` itself
         # uses ``self._stop`` as a method during teardown, and assigning an
         # Event there raises ``TypeError: 'Event' object is not callable``
         # when the thread finishes normally.
         self._stop_event = _threading_for_heartbeat.Event()
         self._warned = False
+        self._consecutive_failures = 0
 
     def stop(self):
         self._stop_event.set()
+
+    def _should_warn(self):
+        """True when the unrenewed window has grown worth reporting."""
+        if self._warned:
+            return False
+        if self._ttl_seconds is None:
+            return self._consecutive_failures >= self.WARN_AFTER_FAILURES_NO_TTL
+        unrenewed = self._consecutive_failures * self._interval
+        return unrenewed >= self._ttl_seconds * self.WARN_AT_TTL_FRACTION
+
+    def _warning_text(self):
+        unrenewed = self._consecutive_failures * self._interval
+        if self._ttl_seconds is None:
+            return (
+                f'Warning: {self._warn_label} has failed '
+                f'{self._consecutive_failures} times in a row '
+                f'({_format_duration(unrenewed)}); the box may be unreachable.'
+            )
+        return (
+            f'Warning: {self._warn_label} has not renewed for '
+            f'{_format_duration(unrenewed)} of its '
+            f'{_format_duration(self._ttl_seconds)} TTL; '
+            f'the lock will expire if this continues.'
+        )
 
     def run(self):
         import click
@@ -974,15 +1054,33 @@ class HeartbeatThread(_threading_for_heartbeat.Thread):
                 ok = heartbeat_box_lock(self._ip, self._holder)
             except Exception:  # pylint: disable=broad-except
                 ok = False
-            if not ok and not self._warned:
+            if ok:
+                # Renewed: the clock restarts, and a later outage is allowed
+                # to speak up on its own merits.
+                self._consecutive_failures = 0
+                self._warned = False
+                continue
+            self._consecutive_failures += 1
+            if self._should_warn():
                 self._warned = True
                 try:
-                    click.secho(
-                        f'Warning: {self._warn_label} failed; relying on server TTL.',
-                        fg='yellow', err=True,
-                    )
+                    click.secho(self._warning_text(), fg='yellow', err=True)
                 except Exception:  # pylint: disable=broad-except
                     pass
+
+
+def _format_duration(seconds):
+    """Render a whole number of seconds as the shortest honest unit."""
+    seconds = int(seconds)
+    if seconds < 60:
+        return f'{seconds}s'
+    minutes, rem = divmod(seconds, 60)
+    if minutes < 60 and rem == 0:
+        return f'{minutes}m'
+    if minutes < 60:
+        return f'{minutes}m{rem}s'
+    hours, rem_min = divmod(minutes, 60)
+    return f'{hours}h' if rem_min == 0 else f'{hours}h{rem_min}m'
 
 
 def default_auto_holder_type():
@@ -1164,6 +1262,10 @@ def auto_lock_around_command(
                 resolved_holder,
                 heartbeat_interval or default_heartbeat_interval(),
                 warn_label=f'{command_name} lock heartbeat',
+                # The TTL the warning is measured against is whichever one
+                # this lock is actually living under: ours if we took it,
+                # the existing lock's if we resumed one.
+                ttl_seconds=resolved_ttl if should_release else resumed_ttl,
             )
             heartbeat.start()
 
