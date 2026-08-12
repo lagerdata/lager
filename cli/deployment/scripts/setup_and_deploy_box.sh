@@ -504,7 +504,11 @@ ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/install -m 0644 /tmp/lager_daemon.json 
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/install -m 0644 /tmp/lager_daemon.json /etc/docker/daemon.json
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/systemctl restart docker
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart docker
-# `reset-failed` before each restart. docker.service ships StartLimitBurst=3 /
+# NOTE: no backticks anywhere in this heredoc -- its delimiter is unquoted
+# (so \${BOX_USER} expands client-side), which means backticks would be run as
+# command substitutions rather than written to the file.
+#
+# reset-failed before each restart. docker.service ships StartLimitBurst=3 /
 # StartLimitInterval=60s, and one install legitimately starts it several times
 # inside that window (package postinst, the pre-flight restart, the daemon.json
 # restart). The fourth is refused and systemd latches the unit into

@@ -159,6 +159,31 @@ class TestDeployScriptRestartSequence:
             f"{code.count(RESET_FAILED)}"
         )
 
+    def test_the_sudoers_heredoc_contains_no_backticks(self):
+        """The sudoers heredoc's delimiter is UNQUOTED (`<< SCRIPT_EOF`), on
+        purpose, so ${BOX_USER} expands client-side. That also means any
+        backtick in it is executed as a command substitution rather than
+        written to the file. A prose comment mentioning `reset-failed` in
+        backticks produced `line 446: reset-failed: command not found` on a
+        real box and silently emptied that text out of the generated sudoers.
+        """
+        lines = DEPLOY_SCRIPT.read_text().splitlines()
+        start = next(
+            i for i, l in enumerate(lines)
+            if l.strip() == 'cat > "$TEMP_SCRIPT" << SCRIPT_EOF'
+        )
+        end = next(
+            i for i, l in enumerate(lines[start + 1:], start + 1)
+            if l.strip() == "SCRIPT_EOF"
+        )
+        offenders = [
+            (start + 1 + n, l) for n, l in enumerate(lines[start + 1:end]) if "`" in l
+        ]
+        assert offenders == [], (
+            "backticks inside the unquoted heredoc are executed, not written: "
+            f"{offenders}"
+        )
+
     def test_reset_failed_is_granted_in_sudoers(self):
         # Without the grant, a non-tty run prompts for a password and the
         # best-effort reset silently does nothing.
