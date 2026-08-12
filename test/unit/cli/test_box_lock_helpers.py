@@ -1035,3 +1035,138 @@ class TestFormatDuration:
     ])
     def test_shortest_honest_unit(self, seconds, expected):
         assert box_storage._format_duration(seconds) == expected
+
+
+class TestHeartbeatPause:
+    """`lager install` takes the lock server down on purpose and brings it
+    back. Renewals across that window cannot succeed, so counting them is
+    how a healthy install came to warn that its lock was about to expire.
+    """
+
+    def test_paused_renewals_are_not_attempted(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            box_storage, 'heartbeat_box_lock',
+            lambda *a, **k: calls.append(1) or True,
+        )
+        t = box_storage.HeartbeatThread('10.0.0.1', 'alice', 60, ttl_seconds=1800)
+        t.pause()
+        _drive(t, attempts=10)
+        assert calls == [], 'a paused heartbeat must not POST at all'
+
+    def test_a_paused_outage_never_warns_however_long(self, monkeypatch, capsys):
+        # 200 * 60s == 200 minutes against a 30 minute TTL. Unpaused this
+        # would warn many times over; the whole point is that it doesn't.
+        monkeypatch.setattr(box_storage, 'heartbeat_box_lock', lambda *a, **k: False)
+        t = box_storage.HeartbeatThread('10.0.0.1', 'alice', 60, ttl_seconds=1800)
+        t.pause()
+        _drive(t, attempts=200)
+        assert capsys.readouterr().err == ''
+
+    def test_unpause_resets_the_failure_window(self, monkeypatch, capsys):
+        # Failures accrued before the pause must not be added to failures
+        # after it: the pause is a declared outage, not a continuation.
+        monkeypatch.setattr(box_storage, 'heartbeat_box_lock', lambda *a, **k: False)
+        t = box_storage.HeartbeatThread('10.0.0.1', 'alice', 60, ttl_seconds=1800)
+        _drive(t, attempts=14)          # one short of the 15-failure threshold
+        assert capsys.readouterr().err == ''
+        t.pause()
+        t.unpause()
+
+        after = box_storage.HeartbeatThread('10.0.0.1', 'alice', 60, ttl_seconds=1800)
+        after._consecutive_failures = t._consecutive_failures
+        _drive(after, attempts=14)      # 14 more; 28 total, but the count reset
+        assert capsys.readouterr().err == ''
+
+    def test_renewals_resume_after_unpause(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            box_storage, 'heartbeat_box_lock',
+            lambda *a, **k: calls.append(1) or True,
+        )
+        t = box_storage.HeartbeatThread('10.0.0.1', 'alice', 60, ttl_seconds=1800)
+        t.pause()
+        t.unpause()
+        _drive(t, attempts=3)
+        assert len(calls) == 3
+
+
+class TestLockSessionSuspended:
+    def _session(self, heartbeat, *, acquired=True, monkeypatch=None):
+        monkeypatch.setattr(
+            box_storage, 'acquire_box_lock',
+            lambda *a, **k: (('acquired', {}) if acquired else ('unreachable', None)),
+        )
+        monkeypatch.setattr(box_storage, 'release_box_lock', lambda *a, **k: True)
+        monkeypatch.setattr(box_storage, 'get_lock_holder', lambda: 'test-holder')
+        monkeypatch.setattr(
+            box_storage, 'HeartbeatThread', lambda *a, **k: heartbeat)
+        return box_storage.auto_lock_around_command('10.0.0.1', 'lab-box', 'install')
+
+    def test_suspended_pauses_and_resumes(self, monkeypatch):
+        hb = mock.Mock()
+        with self._session(hb, monkeypatch=monkeypatch) as session:
+            assert hb.pause.call_count == 0
+            with session.suspended():
+                assert hb.pause.call_count == 1
+                assert hb.unpause.call_count == 0
+            assert hb.unpause.call_count == 1
+
+    def test_it_resumes_even_when_the_body_raises(self, monkeypatch):
+        hb = mock.Mock()
+        with self._session(hb, monkeypatch=monkeypatch) as session:
+            with pytest.raises(RuntimeError):
+                with session.suspended():
+                    raise RuntimeError('deploy blew up')
+            assert hb.unpause.call_count == 1
+
+    def test_a_dissolved_session_is_not_resumed(self, monkeypatch):
+        # If the server went away for good mid-window there is nothing to
+        # resume against; un-pausing would just restart the failure count.
+        hb = mock.Mock()
+        with self._session(hb, monkeypatch=monkeypatch) as session:
+            with session.suspended():
+                session.dissolve()
+        assert hb.unpause.call_count == 0
+
+    def test_suspend_is_a_no_op_without_a_lock(self, monkeypatch):
+        # 'unreachable' takes no lock and starts no heartbeat; a caller that
+        # suspends must not crash under it.
+        def no_heartbeat(*a, **k):
+            raise AssertionError('no heartbeat should exist')
+
+        monkeypatch.setattr(box_storage, 'HeartbeatThread', no_heartbeat)
+        monkeypatch.setattr(
+            box_storage, 'acquire_box_lock', lambda *a, **k: ('unreachable', None))
+        monkeypatch.setattr(box_storage, 'get_lock_holder', lambda: 'test-holder')
+        with box_storage.auto_lock_around_command(
+                '10.0.0.1', 'lab-box', 'install') as session:
+            with session.suspended():
+                pass
+
+    def test_disabled_escape_hatch_supports_suspend(self, monkeypatch):
+        monkeypatch.setenv('LAGER_AUTO_LOCK_DISABLE', '1')
+        monkeypatch.setattr(box_storage, 'get_lock_holder', lambda: 'test-holder')
+        with box_storage.auto_lock_around_command(
+                '10.0.0.1', 'lab-box', 'install') as session:
+            assert session.state == 'disabled'
+            with session.suspended():
+                pass
+
+
+class TestInstallLockTtl:
+    def test_it_outlasts_the_deploy_script_timeout(self):
+        # The script's own subprocess timeout is 1800s, and install spends
+        # most of that window unable to renew. A TTL at or under it would
+        # let the lock expire during a normal install.
+        assert box_storage.INSTALL_LOCK_TTL_SECONDS > 1800
+
+    def test_install_takes_that_ttl_and_suspends_the_deploy(self):
+        # `from cli.commands.utility import install` resolves to the click
+        # Command, not the module, so go through importlib for the source.
+        import importlib
+        import inspect
+        module = importlib.import_module('cli.commands.utility.install')
+        src = inspect.getsource(module)
+        assert 'ttl_seconds=INSTALL_LOCK_TTL_SECONDS' in src
+        assert 'lock_session.suspended()' in src

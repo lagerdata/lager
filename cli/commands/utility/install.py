@@ -18,6 +18,7 @@ from ...box_storage import (
     auto_lock_around_command,
     get_box_ip,
     get_box_user,
+    INSTALL_LOCK_TTL_SECONDS,
 )
 from ...core.ssh_utils import host_in_known_hosts
 from ...errors import ssh_error, LagerError
@@ -372,14 +373,28 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     if corporate_vpn:
         deploy_args.extend(["--corporate-vpn", corporate_vpn])
 
-    with auto_lock_around_command(ip, box or ip, 'install'):
+    # ttl_seconds: the deploy script below tears down the container serving
+    # the :9000 lock API and spends most of its run rebuilding it, so this
+    # lock survives on its TTL rather than on renewals — it must outlast the
+    # script's own 1800s timeout. See INSTALL_LOCK_TTL_SECONDS.
+    with auto_lock_around_command(
+        ip, box or ip, 'install', ttl_seconds=INSTALL_LOCK_TTL_SECONDS,
+    ) as lock_session:
         try:
-            # Run the deploy script, streaming output to the terminal
-            result = subprocess.run(
-                deploy_args,
-                check=False,
-                timeout=1800,  # 30 minute timeout
-            )
+            # Run the deploy script, streaming output to the terminal.
+            #
+            # Suspended: step 8 of that script removes the lager container
+            # and rebuilds the image, which on a cold cache is fifteen-plus
+            # minutes with nothing listening on :9000. Renewals across that
+            # window cannot succeed, and counting them as failures is how a
+            # perfectly healthy install came to print a warning that its
+            # lock was about to expire.
+            with lock_session.suspended():
+                result = subprocess.run(
+                    deploy_args,
+                    check=False,
+                    timeout=1800,  # 30 minute timeout
+                )
 
             if result.returncode != 0:
                 click.echo()

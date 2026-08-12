@@ -88,6 +88,25 @@ All notable changes to the Lager platform are documented here. For detailed rele
   close rather than once per process. Eternal locks (`--detach`) have no
   deadline to measure against and fall back to a consecutive-failure count.
 
+- **`lager install` warned that its lock was about to expire, every time.**
+  Raising the warning threshold (above) was not enough on its own: install
+  removes the lager container — the process serving the `:9000` lock API —
+  and then rebuilds the image, which on a cold cache runs past fifteen
+  minutes. No renewal can succeed for that entire window, so on a 1800s TTL
+  the warning was still correct to fire near the end of a completely healthy
+  install, and would fire earlier on any slower box.
+
+  The threshold was the wrong instrument for an outage the installer causes
+  and knows about, so install now declares it. The lock session grows a
+  `suspended()` block, which stops attempting renewals and resets the failure
+  window on the way out; install wraps the deploy script in it. Covering the
+  window is handled where it belongs — install takes its lock with a TTL
+  (1 hour) longer than the deploy script's own 30-minute timeout, so the
+  lock survives on time rather than on renewals it cannot make. The cost is
+  that an install killed outright — SIGKILL, power loss, anything that beats
+  both the `finally` and the `atexit` release — leaves the box locked for up
+  to an hour instead of half of one; `lager boxes unlock` clears it.
+
 - **`lager uninstall --keep-config` left a lock nothing could ever clear.**
   Dissolving the session is right — the lock server is being deleted, so
   there is nobody to release to — but it leaves `/etc/lager/lock.json` saying
