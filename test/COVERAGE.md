@@ -40,8 +40,8 @@ are not.
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 79 (+4 skipped) |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
-| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 107 (+1 skipped) |
-| | **Total gated** | **3244** |
+| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 121 (+1 skipped) |
+| | **Total gated** | **3258** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -430,7 +430,7 @@ cli/tests/                #  5 files: 3 pytest suites + test_io_imports.py (GATE
                           #           `unit (cli)`), plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 136 files)
+### Local Unit Tests (`test/unit/` -- 137 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 74 files)
 
@@ -587,10 +587,11 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_blufi_unit.py` | BluFi protocol parsing (696-line pytest suite) |
 | `test_blufi_scan.py` | `BlufiClient.scan()` BLE advertisement presence checks |
 
-#### Root Unit Tests (`test/unit/test_*.py` -- 5 files)
+#### Root Unit Tests (`test/unit/test_*.py` -- 6 files)
 
 | File | What it tests |
 |------|---------------|
+| `test_coverage_checker.py` | `tools/check_coverage_counts.py`: platform-gated rows are not drift (and `--fix` must not rewrite them), plus the anchored summary parse `FORCE_COLOR` defeated |
 | `test_group_usage.py` | Usage-line formatting for CLI command groups (CommandFirstUsageMixin / LagerGroup) |
 | `test_install_wheel.py` | install-wheel command: wheel filename to package name parsing |
 | `test_pdf_pages.py` | `tools/pdf_pages.py`: PNG and text extraction (skips without pymupdf, which is AGPL) |
