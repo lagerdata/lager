@@ -37,8 +37,27 @@ RUN apt-get update && apt-get install -y ca-certificates libusb-1.0-0-dev libude
 
 # MCC uldaq C library -- required by uldaq Python bindings for USB-202 DAQ devices
 # See: https://github.com/mccdaq/uldaq
+#
+# Pinned to a release tag, not the default branch: an unpinned --depth 1 clone
+# means two boxes built a week apart can get different library code with no
+# change in this repo. v1.2.1 is upstream's latest release (Mar 2022) and is
+# what the unpinned clone was already producing (libuldaq.so.1.2.1).
+#
+# KNOWN UPSTREAM DEFECT, deliberately NOT suppressed: this build emits ~30
+# copies of one -Wstringop-overflow warning from usb/Usb9837x.cpp, where
+# Cmd_ReadDevMultipleRegs writes 16-byte registers at offsets 53..469 of a
+# 64-byte stack struct -- the first write already runs past the end and every
+# later one is entirely outside it. GCC unrolls the loop, hence the repetition.
+#
+# It is a real stack overrun, not a false positive. lager's own drivers cannot
+# reach it (we drive only the USB-202: io/{adc,dac,gpio}/usb202.py), but the
+# uldaq Python package is installed on every box and a user script with a
+# DT9837 attached could call into it. A -Wno-stringop-overflow here would hide
+# a memory-safety bug rather than close it, so the warnings stay: noisy once
+# per image build, and honest. Fixing it means patching upstream source at
+# build time or dropping the library -- upstream has not released since 2022.
 RUN apt-get update && apt-get install -y autoconf automake libtool libusb-1.0-0-dev && rm -rf /var/lib/apt/lists/* \
-	&& git clone --depth 1 https://github.com/mccdaq/uldaq.git /tmp/uldaq \
+	&& git clone --depth 1 --branch v1.2.1 https://github.com/mccdaq/uldaq.git /tmp/uldaq \
 	&& cd /tmp/uldaq \
 	&& autoreconf -i \
 	&& ./configure \
