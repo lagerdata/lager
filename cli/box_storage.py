@@ -962,6 +962,7 @@ def heartbeat_box_lock(ip, holder, *, quiet=True):
 # server-side TTL from reaping a still-running command.
 
 
+import contextlib as _contextlib_for_lock
 import threading as _threading_for_heartbeat
 
 
@@ -1016,11 +1017,36 @@ class HeartbeatThread(_threading_for_heartbeat.Thread):
         # Event there raises ``TypeError: 'Event' object is not callable``
         # when the thread finishes normally.
         self._stop_event = _threading_for_heartbeat.Event()
+        self._paused = _threading_for_heartbeat.Event()
         self._warned = False
         self._consecutive_failures = 0
 
     def stop(self):
         self._stop_event.set()
+
+    def pause(self):
+        """Stop attempting renewals until :meth:`unpause`.
+
+        For a caller that is about to take the lock server down on purpose —
+        ``lager install`` replaces the very container serving ``:9000``. A
+        renewal during that window cannot succeed, so attempting one only
+        burns its timeout and manufactures a "failure" that means nothing.
+        Paused attempts are not counted, so the window can be any length
+        without pushing the warning toward firing.
+        """
+        self._paused.set()
+
+    def unpause(self):
+        """Resume renewals, with the failure window reset.
+
+        The reset matters: whatever happened while paused was expected, so it
+        must not be added to whatever happens next. The lock's survival across
+        the pause is the caller's problem, not the heartbeat's — see the TTL
+        note on `lager install`.
+        """
+        self._consecutive_failures = 0
+        self._warned = False
+        self._paused.clear()
 
     def _should_warn(self):
         """True when the unrenewed window has grown worth reporting."""
@@ -1050,6 +1076,8 @@ class HeartbeatThread(_threading_for_heartbeat.Thread):
         import click
 
         while not self._stop_event.wait(self._interval):
+            if self._paused.is_set():
+                continue
             try:
                 ok = heartbeat_box_lock(self._ip, self._holder)
             except Exception:  # pylint: disable=broad-except
@@ -1107,16 +1135,22 @@ class LockSession:
 
     Unpacks as ``(holder, state)`` so the historical
     ``with auto_lock_around_command(...) as (holder, state):`` form keeps
-    working, and adds :meth:`dissolve` for the one kind of command that
-    destroys the lock server it is holding a lock on.
+    working, and adds two affordances for commands that take down the lock
+    server they are holding a lock on:
+
+    * :meth:`dissolve` — it is gone for good (`lager uninstall`).
+    * :meth:`suspended` — it is going away and coming back (`lager install`).
     """
 
-    __slots__ = ('holder', 'state', '_dissolve_fn')
+    __slots__ = ('holder', 'state', '_dissolve_fn', '_suspend_fn', '_resume_fn')
 
-    def __init__(self, holder, state, dissolve_fn):
+    def __init__(self, holder, state, dissolve_fn,
+                 suspend_fn=None, resume_fn=None):
         self.holder = holder
         self.state = state
         self._dissolve_fn = dissolve_fn
+        self._suspend_fn = suspend_fn or (lambda: None)
+        self._resume_fn = resume_fn or (lambda: None)
 
     def __iter__(self):
         return iter((self.holder, self.state))
@@ -1137,6 +1171,44 @@ class LockSession:
         a no-op when no lock was ever acquired.
         """
         self._dissolve_fn()
+
+    @_contextlib_for_lock.contextmanager
+    def suspended(self):
+        """Declare a window in which the lock server is expected to be down.
+
+        `lager install` replaces the lager container — the process serving
+        the ``:9000`` lock API — and that rebuild runs upwards of fifteen
+        minutes. Renewals cannot succeed across it, so left alone the
+        heartbeat accumulates "failures" that are not failures and,
+        eventually, warns that a lock is at risk when nothing is wrong.
+        Under this block the renewals simply do not happen, and the failure
+        window resets on the way out, so anything reported once the server
+        is back is about the box's actual state.
+
+        This does NOT keep the lock alive — nothing can, while the process
+        owning the lock file is gone. Covering the window is the caller's
+        job, by taking a TTL longer than the outage (see
+        ``INSTALL_LOCK_TTL_SECONDS``). The heartbeat's job here is only to
+        stop misreporting it.
+
+        Resumes on the way out even if the body raises.
+        """
+        self._suspend_fn()
+        try:
+            yield
+        finally:
+            self._resume_fn()
+
+
+#: TTL for `lager install`'s auto-lock. Deliberately longer than every other
+#: admin command's: install spends most of its run with the lock server torn
+#: down (it is rebuilding the container that serves it), so the lock has to
+#: survive on TTL alone rather than on renewals. Sized against the deploy
+#: script's own 1800s timeout plus the pre/post steps around it. The cost of
+#: the larger number is that a hard-killed install (SIGKILL, power loss —
+#: anything that beats both the `finally` and the atexit release) leaves the
+#: box locked for up to an hour; `lager boxes unlock` is the way out.
+INSTALL_LOCK_TTL_SECONDS = 3600
 
 
 def auto_lock_around_command(
@@ -1288,8 +1360,20 @@ def auto_lock_around_command(
             except Exception:  # pylint: disable=broad-except
                 pass
 
+        def _suspend():
+            if heartbeat is not None:
+                heartbeat.pause()
+
+        def _resume():
+            # Never un-pause a dissolved session: the server is not coming
+            # back, and resuming would restart the failure count against it.
+            if heartbeat is not None and not dissolved['done']:
+                heartbeat.unpause()
+
         try:
-            yield LockSession(resolved_holder, state, _dissolve)
+            yield LockSession(
+                resolved_holder, state, _dissolve, _suspend, _resume,
+            )
         finally:
             if heartbeat is not None:
                 heartbeat.stop()
