@@ -44,6 +44,18 @@ All notable changes to the Lager platform are documented here. For detailed rele
   and "this hub is slow" stop being the same message. The whole-request
   deadline and every one-shot USB command path are unchanged. (#205)
 
+- **Every box now installs the same Acroname BrainStem SDK.** The box image
+  installed `brainstem` unpinned in a build-cached layer, so which SDK a box
+  ran depended on when that layer was last invalidated -- two boxes built
+  weeks apart could differ, which made cross-box comparison unreliable when
+  diagnosing hub behaviour (the hub driver already degrades differently for
+  SDKs without `discover.findAllModules`). The SDK is now pinned to 2.12.5,
+  the version validated against real hubs, with the bump-deliberately
+  rationale recorded next to the pin. `/diagnose/usbhub` additionally
+  reports the installed version as `sdk_version`, so version skew between
+  boxes is visible from the CLI rather than by shelling into containers.
+  (#206)
+
 ### Changed
 
 - **The BluFi AES import follows CFB into cryptography's decrepit home.**
