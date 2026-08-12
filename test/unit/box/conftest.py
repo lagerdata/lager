@@ -109,9 +109,8 @@ assert _lager_file is not None, (
     f"{list(getattr(lager, '__path__', []))!r} instead of the real package "
     f"under {BOX_DIR}.\n"
     "Either something named `lager` shadows box/lager on sys.path, or another "
-    "suite's conftest registered a stub `lager` first -- test/unit/box/ cannot "
-    "share a pytest process with test/unit/measurement/ (see this file's "
-    "docstring). Run it as its own pytest invocation."
+    "suite's conftest registered a stub `lager` first -- one suite per pytest "
+    "process (see this file's docstring). Run it as its own pytest invocation."
 )
 assert os.path.realpath(_lager_file).startswith(os.path.realpath(BOX_DIR)), (
     f"`lager` resolved to {_lager_file}, which is not the in-repo box "
