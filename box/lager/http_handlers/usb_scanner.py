@@ -501,7 +501,14 @@ def scan_usb() -> List[dict]:
         }
 
         if meta_name in CHANNEL_MAPS:
-            entry["channels"] = CHANNEL_MAPS[meta_name]
+            # Copy per-role lists so callers can't mutate the catalog (same
+            # guard as custom_instruments below). Handing out the dict itself
+            # gave every same-model device ONE shared channel table, so the
+            # per-device uart overwrite below made all of them report
+            # whichever device iterdir() visited last -- and the clobbered
+            # lists lived in module state, outliving the request (#213).
+            entry["channels"] = {role: list(chs)
+                                 for role, chs in CHANNEL_MAPS[meta_name].items()}
 
         if "uart" in meta.get("net_type", []):
             # Resolve actual /dev/tty* paths so consumers (TUI, dispatcher)
@@ -690,7 +697,12 @@ def merge_or_append(entry: dict, instruments: List[dict]) -> None:
                 existing.get("pid") == entry.get("pid") and
                 existing.get("serial") == entry.get("serial")):
             if "channels" in entry:
-                existing.setdefault("channels", {})
+                # Re-own the lists before appending: a record built without
+                # the scan-time copy above (an older caller, a test double)
+                # may still alias catalog lists, and appending into those
+                # would edit CHANNEL_MAPS itself (#213).
+                existing["channels"] = {net: list(ch) for net, ch
+                                        in (existing.get("channels") or {}).items()}
                 for net, ch in entry["channels"].items():
                     existing["channels"].setdefault(net, [])
                     for c in ch:

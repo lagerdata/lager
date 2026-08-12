@@ -23,7 +23,7 @@ from ...core.net_group import NetGroupHelpMixin
 from ...core.net_helpers import NET_HTTP_PORT, echo_box_request_failure
 from ...errors import LagerError
 from ...sort_utils import natural_sort_key as _natural_sort_key
-from .net_tui import launch_tui
+from .net_tui import launch_tui, uart_channel_paths
 
 
 # --------------------------------------------------------------------------- #
@@ -1191,6 +1191,11 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
 
         chan_map = dev_match.get("channels") or {}
         role_chans = chan_map.get(role)
+        if role == "uart" and dev_match.get("tty_paths"):
+            # Validate against the per-device tty list, not the shared
+            # channel map an older box may have cross-wired between
+            # identical adapters (issue #213).
+            role_chans = uart_channel_paths(dev_match, role_chans)
     else:
         chan_map = {}
         role_chans = None
@@ -1595,6 +1600,8 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
         channel_map = dev.get("channels", {})
 
         for role, channels in (channel_map or {}).items():
+            if role == "uart":
+                channels = uart_channel_paths(dev, channels)
             for ch in channels:
                 # Special handling for UART devices:
                 # For UART, the 'channels' list contains USB serial numbers
@@ -1802,7 +1809,8 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
             # Find the device path from inst_list
             device_path = None
             for dev in inst_list:
-                uart_channels = dev.get("channels", {}).get("uart", [])
+                uart_channels = uart_channel_paths(
+                    dev, dev.get("channels", {}).get("uart", []))
                 if net.get('pin') in uart_channels:
                     device_path = dev.get("tty_path")
                     break

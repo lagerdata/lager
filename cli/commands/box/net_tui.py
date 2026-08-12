@@ -60,6 +60,21 @@ class UARTNetSaveValidationError(ValueError):
     """
 
 
+def uart_channel_paths(dev: dict, channels):
+    """Per-device uart channel list for one scanned instrument record.
+
+    ``channels["uart"]`` comes from the box scanner, which on older boxes
+    handed every same-model adapter one shared list -- two identical
+    adapters could both offer the tty of whichever was scanned last
+    (issue #213; fixed box-side in the same change). ``tty_paths`` has
+    always been computed per device from its own serial, so prefer it
+    whenever the box sent it. Falls back to *channels* unchanged when it
+    didn't (older box, non-tty instrument).
+    """
+    tty_paths = dev.get("tty_paths")
+    return list(tty_paths) if tty_paths else channels
+
+
 def _uid(instr: str, chan: str, role: str, name: str) -> str:
     """Return a row-key that is unique for (instrument, USB0::0x05E6::0x2281::4519728::INSTR channel, type, name)."""
     base = f"{instr}_{chan}_{role}_{name}".replace(" ", "_")
@@ -3092,6 +3107,8 @@ class NetApp(App):
             addr = dev.get("address", "NA")
             channel_map = dev.get("channels", {})
             for role, channels in (channel_map or {}).items():
+                if role == "uart":
+                    channels = uart_channel_paths(dev, channels)
                 # Sort channels to ensure consistent ordering
                 sorted_channels = sorted(channels, key=lambda ch: str(ch))
                 for ch in sorted_channels:
@@ -3292,6 +3309,8 @@ def launch_tui(ctx: click.Context, dut: str) -> None:
         addr = dev.get("address", "NA")
         channel_map = dev.get("channels", {})
         for role, channels in (channel_map or {}).items():
+            if role == "uart":
+                channels = uart_channel_paths(dev, channels)
             # Sort channels to ensure consistent ordering (e.g., /dev/ttyUSB0 before /dev/ttyUSB1)
             sorted_channels = sorted(channels, key=lambda ch: str(ch))
             for ch in sorted_channels:

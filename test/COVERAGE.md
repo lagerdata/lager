@@ -35,13 +35,13 @@ are not.
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1175 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 1554 |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1179 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 1557 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 79 (+4 skipped) |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 91 (+1 skipped) |
-| | **Total gated** | **3170** |
+| | **Total gated** | **3177** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -511,7 +511,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_uart_session_cleanup.py` | Websocket UART read loop heals in place instead of stopping on a failed read |
 | `test_usb_devices_dfu.py` | `GET /usb/devices` sysfs enumeration and `POST /usb/dfu` list/download/detach argument building |
 | `test_usb_scanner_custom.py` | Custom-device surfacing in box HTTP scanner GET /instruments/list |
-| `test_usb_scanner_uart_fallback.py` | UART enumeration without USB serial by matching sysfs path |
+| `test_usb_scanner_uart_fallback.py` | UART enumeration without USB serial by matching sysfs path; two identical adapters keep distinct ttys and the channel catalog stays unmutated |
 | `test_webcam_detection.py` | sysfs-based webcam detection (`_by_camera`) against a fake sysfs tree |
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 
@@ -538,7 +538,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_gateway_auth_refresh.py` | Gateway-auth refresh margin scaling with token lifetime -- pins the refresh-storm fix |
 | `test_gdbserver_interactive_rtt.py` | `gdbserver --rtt --interactive`: the flag is rejected without `--rtt`, the streaming leg moves to the `/rtt` WebSocket, and plain `--rtt` still uses the HTTP stream |
 | `test_net_9000_migration.py` | Tier-1 net CLI commands (adc, dac, gpi, gpo, spi, i2c, watt, energy, ...) driving the box `:9000` API |
-| `test_net_tui_assign.py` | Custom-device assignment TUI helpers |
+| `test_net_tui_assign.py` | Custom-device assignment TUI helpers; per-device uart tty preference over the shared channel map |
 | `test_net_tui_labjack_pins.py` | TUI LabJack pin dialog preserving legacy channels or persisting custom params |
 | `test_net_tui_uart_guard.py` | UART net save validation rejecting bare interface indices and empty pins |
 | `test_nets_add_labjack_pins.py` | LabJack I2C/SPI arbitrary pin selection via --sda/--scl/--cs/--sck/--mosi/--miso |
