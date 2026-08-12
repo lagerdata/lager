@@ -7,29 +7,12 @@ Unit tests for BlufiClient.scan() -- BLE advertisement presence checks.
 Run with:
     python -m pytest test/unit/blufi/ -v
 """
-import os
-import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Ensure box/lager is importable, and mock bleak if not installed
-# ---------------------------------------------------------------------------
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-BOX_DIR = os.path.join(REPO_ROOT, "box")
-if BOX_DIR not in sys.path:
-    sys.path.insert(0, BOX_DIR)
-
-# bleak is a BLE library only available on boxes. Mock it so we can import
-# the BluFi package locally for unit-testing pure-logic code.
-if "bleak" not in sys.modules:
-    _mock_bleak = MagicMock()
-    sys.modules["bleak"] = _mock_bleak
-    sys.modules["bleak.backends"] = _mock_bleak.backends
-    sys.modules["bleak.backends.characteristic"] = _mock_bleak.backends.characteristic
-
+# box/ on sys.path and the bleak mock live in this directory's conftest.py.
 from lager.blufi import client as client_mod
 
 

@@ -1,17 +1,33 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
+"""Bootstrap for the measurement unit suite: the REAL ``lager`` package.
 
+Same recipe as test/unit/box/conftest.py: box/ goes to the FRONT of
+sys.path, the two genuinely-absent third-party modules are stubbed, the
+real ``lager`` is imported exactly once, and we assert it is the on-disk
+package. Every hardware SDK reachable from lager.measurement (joulescope,
+ppk2_api, yoctopuce, Phidget22) sits behind a guarded try/except in the
+module that uses it, so the real import needs nothing else -- the tests
+patch the resulting module attributes directly (e.g. ppk2_watt.PPK2_API,
+which is None without the lib), which is the standard mock idiom and
+needs no help from this file.
+
+History: this file used to register a placeholder ``lager`` whose
+``__init__`` never executed and hand-load ten modules by path, re-binding
+each onto its parent so ``mock.patch`` dotted lookups could resolve. That
+machinery faked what the import system does for free, and produced a
+py3.10-only failure class (mock's dotted lookup falls back to a real
+import on 3.11+, which masked missing parent bindings). It predates the
+box suite proving that the real package imports cleanly on a hosted
+runner with two targeted stubs.
+
+Process contract, unchanged: this suite wants the real ``lager``; a suite
+that stubs the name cannot share a pytest process with it. One suite per
+pytest invocation -- never bare ``pytest test/unit/``.
 """
-conftest.py — bootstrap the lager package for unit tests without
-installing the full dependency tree (simplejson, pyvisa, etc.).
 
-We import lager.exceptions and the dispatcher/measurement subpackages
-*without* triggering lager/__init__.py (which pulls in nets → requests →
-simplejson and many other heavy deps).
-"""
+from __future__ import annotations
 
-import importlib
-import importlib.util
 import os
 import sys
 import types
@@ -20,149 +36,59 @@ from unittest.mock import MagicMock
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 BOX_DIR = os.path.join(REPO_ROOT, "box")
 
-if BOX_DIR not in sys.path:
-    sys.path.insert(0, BOX_DIR)
+# FRONT of sys.path, remove-then-insert -- see test/unit/box/conftest.py for
+# why a later entry losing to a stray `lager` directory matters.
+if BOX_DIR in sys.path:
+    sys.path.remove(BOX_DIR)
+sys.path.insert(0, BOX_DIR)
 
 
-def _bind_to_parent(dotted: str, mod: types.ModuleType) -> None:
-    """Set `mod` as an attribute of its parent package.
-
-    The real import system does this; registering in sys.modules alone does
-    not. `unittest.mock.patch` resolves a dotted target by walking attributes
-    from the root module, so without this a patch of
-    "lager.measurement.watt.ppk2_watt.X" fails with
-
-        AttributeError: module 'lager' has no attribute 'measurement'
-
-    even though sys.modules holds every level. Python 3.11 changed mock's
-    lookup to fall back to an import, which masked the omission there -- so
-    this only ever surfaced on 3.10, a version the package supports but CI
-    did not exercise until the compat job was added.
-    """
-    parent, _, child = dotted.rpartition(".")
-    if parent and parent in sys.modules:
-        setattr(sys.modules[parent], child, mod)
-
-
-def _ensure_package(dotted: str) -> types.ModuleType:
-    """Register a bare package (directory with __init__) in sys.modules."""
-    if dotted in sys.modules:
-        return sys.modules[dotted]
-    mod = types.ModuleType(dotted)
+def _stub_module(dotted: str) -> types.ModuleType:
+    """Register a MagicMock-backed placeholder module, and its parents."""
     parts = dotted.split(".")
-    mod.__path__ = [os.path.join(BOX_DIR, *parts)]
-    mod.__package__ = dotted
-    sys.modules[dotted] = mod
-    _bind_to_parent(dotted, mod)
-    return mod
+    for i in range(1, len(parts) + 1):
+        key = ".".join(parts[:i])
+        if key not in sys.modules:
+            mod = types.ModuleType(key)
+            mod.__path__ = []  # importable as a package
+            mod.__getattr__ = lambda attr: MagicMock()  # type: ignore[method-assign]
+            sys.modules[key] = mod
+    return sys.modules[dotted]
 
 
-def _load_module(dotted: str, filepath: str) -> types.ModuleType:
-    """Load a single .py file and register it in sys.modules."""
-    if dotted in sys.modules:
-        return sys.modules[dotted]
-    spec = importlib.util.spec_from_file_location(dotted, filepath)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[dotted] = mod
-    spec.loader.exec_module(mod)
-    _bind_to_parent(dotted, mod)
-    return mod
+class GdbTimeoutError(Exception):
+    """Stand-in for ``pygdbmi.constants.GdbTimeoutError``.
+
+    Must be a real exception class, not a MagicMock attribute -- see the
+    matching definition in test/unit/box/conftest.py.
+    """
 
 
-# 1. Stub the top-level lager package so its __init__.py is NOT executed.
-_ensure_package("lager")
+# The same two stubs the box suite uses: the only third-party imports
+# reachable from box/lager that are neither guarded by try/except nor
+# provided by test/requirements-unit.txt. Nothing in this suite touches
+# them today; they are here so box/ and measurement/ share ONE bootstrap
+# recipe and a future import chain cannot silently diverge the two.
+_stub_module("flask_socketio")
+_stub_module("pygdbmi")
+_gdbcontroller = _stub_module("pygdbmi.gdbcontroller")
+_gdbcontroller.GdbController = object  # type: ignore[attr-defined]
+_constants = _stub_module("pygdbmi.constants")
+_constants.GdbTimeoutError = GdbTimeoutError  # type: ignore[attr-defined]
 
-# 2. Load lager.exceptions (standalone, no transitive deps).
-_load_module(
-    "lager.exceptions",
-    os.path.join(BOX_DIR, "lager", "exceptions.py"),
+import lager  # noqa: E402
+
+# A namespace package has __file__ is None. Fail loudly, once, here.
+_lager_file = getattr(lager, "__file__", None)
+assert _lager_file is not None, (
+    "`lager` resolved to a placeholder or namespace package with __path__="
+    f"{list(getattr(lager, '__path__', []))!r} instead of the real package "
+    f"under {BOX_DIR}.\n"
+    "Either something named `lager` shadows box/lager on sys.path, or another "
+    "suite's conftest registered a stub `lager` first -- run this suite in "
+    "its own pytest invocation."
 )
-
-# 3. Register subpackages as bare namespaces.
-for pkg in [
-    "lager.dispatchers",
-    "lager.measurement",
-    "lager.measurement.watt",
-    "lager.measurement.energy_analyzer",
-    "lager.measurement.thermocouple",
-]:
-    _ensure_package(pkg)
-
-# 4. Load dispatcher helpers and base (needed by watt/energy dispatchers).
-_load_module(
-    "lager.dispatchers.helpers",
-    os.path.join(BOX_DIR, "lager", "dispatchers", "helpers.py"),
-)
-_load_module(
-    "lager.dispatchers.base",
-    os.path.join(BOX_DIR, "lager", "dispatchers", "base.py"),
-)
-# Re-export BaseDispatcher from the dispatchers package so
-# `from lager.dispatchers import BaseDispatcher` works.
-sys.modules["lager.dispatchers"].BaseDispatcher = sys.modules[
-    "lager.dispatchers.base"
-].BaseDispatcher
-
-# 5. Load the watt meter base and the yocto stub (imported by dispatcher).
-_load_module(
-    "lager.measurement.watt.watt_net",
-    os.path.join(BOX_DIR, "lager", "measurement", "watt", "watt_net.py"),
-)
-
-# YoctoWatt is imported by the watt dispatcher. Mock it so we don't need the
-# yoctopuce lib; give it a proper class for identity checks.
-class _YoctoWatt:
-    pass
-
-if "lager.measurement.watt.yocto_watt" not in sys.modules:
-    _mock_yocto = MagicMock()
-    _mock_yocto.YoctoWatt = _YoctoWatt
-    sys.modules["lager.measurement.watt.yocto_watt"] = _mock_yocto
-
-# Load the real JoulescopeJS220 driver: it imports the joulescope lib behind
-# a guarded try/except (joulescope stays None without it), so tests can
-# exercise the per-serial instance cache by patching the module's
-# `joulescope` attribute.
-_load_module(
-    "lager.measurement.watt.joulescope_js220",
-    os.path.join(BOX_DIR, "lager", "measurement", "watt", "joulescope_js220.py"),
-)
-
-# 6. Mock ppk2_api (hardware library).
-sys.modules.setdefault("ppk2_api", MagicMock())
-sys.modules.setdefault("ppk2_api.ppk2_api", MagicMock())
-
-# 7. Load PPK2 watt driver.
-_load_module(
-    "lager.measurement.watt.ppk2_watt",
-    os.path.join(BOX_DIR, "lager", "measurement", "watt", "ppk2_watt.py"),
-)
-
-# 8. Load energy analyzer base.
-_load_module(
-    "lager.measurement.energy_analyzer.energy_analyzer_net",
-    os.path.join(BOX_DIR, "lager", "measurement", "energy_analyzer", "energy_analyzer_net.py"),
-)
-
-# Load the real Joulescope energy analyzer (imported by energy dispatcher);
-# it only touches the joulescope_js220 driver, which is loaded above.
-_load_module(
-    "lager.measurement.energy_analyzer.joulescope_energy",
-    os.path.join(BOX_DIR, "lager", "measurement", "energy_analyzer", "joulescope_energy.py"),
-)
-
-# 9. Load PPK2 energy analyzer.
-_load_module(
-    "lager.measurement.energy_analyzer.ppk2_energy",
-    os.path.join(BOX_DIR, "lager", "measurement", "energy_analyzer", "ppk2_energy.py"),
-)
-
-# 10. Load dispatchers (watt, energy).
-_load_module(
-    "lager.measurement.watt.dispatcher",
-    os.path.join(BOX_DIR, "lager", "measurement", "watt", "dispatcher.py"),
-)
-_load_module(
-    "lager.measurement.energy_analyzer.dispatcher",
-    os.path.join(BOX_DIR, "lager", "measurement", "energy_analyzer", "dispatcher.py"),
+assert os.path.realpath(_lager_file).startswith(os.path.realpath(BOX_DIR)), (
+    f"`lager` resolved to {_lager_file}, which is not the in-repo box "
+    f"package under {BOX_DIR}."
 )

@@ -4,13 +4,13 @@
 # Non-hardware unit tests. They need no bench and no self-hosted runner, so
 # they run on GitHub-hosted ubuntu-latest and gate pull requests.
 #
-# Each suite runs as its OWN matrix job because they want incompatible
-# `sys.modules` states for the name `lager`. test/unit/measurement/conftest.py
-# registers a placeholder `lager` whose __init__ never executes (to skip the
-# heavy box deps); test/unit/box/conftest.py imports the real package. Both
-# load at preparse, so a shared process is correct only if box happens to win
-# — and depending on argument order for correctness is precisely the fragility
-# test/unit/box/conftest.py exists to remove. One suite, one process.
+# Each suite runs as its OWN matrix job. The box/measurement/blufi conftests
+# now share one bootstrap recipe — the real `lager` package plus targeted
+# stubs for absent box-only libs (flask_socketio, pygdbmi, bleak) — but
+# one-suite-one-process stays the contract: the stubs are process-wide
+# `sys.modules` surgery and differ per suite, individual box test modules
+# still do their own import surgery at module level, and separate jobs keep
+# failure attribution per suite. Never run bare `pytest test/unit/`.
 #
 # `--import-mode=importlib` avoids clashes between same-named test modules
 # across suites. `-c /dev/null` is a house invariant (test/CONVENTIONS.md):
