@@ -2546,7 +2546,8 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         click.echo()
 
     # Step 13: Install J-Link when the verify call above didn't find it.
-    # Failure here is non-fatal — the box falls back to pyOCD.
+    # Failure here is non-fatal — only SEGGER probes are lost; OpenOCD ships
+    # in the container and drives ST-Link, CMSIS-DAP and FTDI.
     if jlink_path:
         log('Checking J-Link...', nl=False)
         log_status('OK (already installed)', 'green')
@@ -2662,7 +2663,7 @@ fi
                 for line in install_result.stdout.strip().split('\n'):
                     click.echo(f'    {line}')
         else:
-            log_status('FAILED (will use pyOCD)', 'yellow')
+            log_status('FAILED (J-Link probes unavailable)', 'yellow')
             if verbose:
                 if install_result.stderr:
                     click.echo(f'    Error: {install_result.stderr.strip()}', err=True)
@@ -2670,7 +2671,8 @@ fi
                 click.echo('    J-Link download failed. You can either:')
                 click.echo(f'      1. Copy from another box: deployment/copy_jlink_from_box.sh [SOURCE_BOX] {box_name}')
                 click.echo('      2. Manually download from https://www.segger.com/downloads/jlink/')
-                click.echo('      3. Use pyOCD (already installed, works with most debug probes)')
+                click.echo('      3. Use a non-SEGGER probe: OpenOCD ships in the container and')
+                click.echo('         drives ST-Link, CMSIS-DAP and FTDI adapters')
                 click.echo()
 
     # Step 14: Host-OS CLI (~/.lager/venv; see _host_cli). Deployed code

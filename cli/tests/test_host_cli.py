@@ -236,5 +236,13 @@ class TestDeployScriptDrift:
         assert 'python3-venv' in deploy_script
         assert 'python3-venv' in HOST_VENV_APT_CMD
 
+    def test_venv_apt_cannot_block_on_needrestart(self):
+        # needrestart is an apt post-invoke hook and DEBIAN_FRONTEND does not
+        # reach it: unsuppressed it can open a full-screen "Pending kernel
+        # upgrade" dialog that waits on a keypress over a non-tty ssh channel,
+        # and in mode=a it restarts docker on its own -- spending a start
+        # against docker.service's StartLimitBurst.
+        assert HOST_VENV_APT_CMD.count('NEEDRESTART_SUSPEND=1') == 2
+
     def test_convert_script_includes_cli(self, convert_script):
         assert 'git sparse-checkout set box cli' in convert_script

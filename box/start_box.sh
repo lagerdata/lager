@@ -127,10 +127,11 @@ if [ -d "$THIRD_PARTY_DIR" ]; then
 fi
 
 if [ "$JLINK_FOUND" = false ]; then
-    echo "[WARNING] J-Link not found (optional - pyOCD is used by default)"
+    echo "[WARNING] J-Link not found (optional - OpenOCD is used otherwise)"
     echo ""
     echo "  J-Link was already installed by the deployment script if available."
-    echo "  Debug commands will use pyOCD (open source, already installed)."
+    echo "  Without it, SEGGER J-Link probes will not work; OpenOCD ships in"
+    echo "  the container and drives ST-Link, CMSIS-DAP and FTDI probes."
     echo ""
     echo "  To verify J-Link installation manually:"
     echo "    ls -la $THIRD_PARTY_DIR/JLink*"

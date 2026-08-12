@@ -55,14 +55,20 @@ if [ -d "$HOME/box/cli" ]; then echo "LAGER_PROBE_HOST_BOX_CLI_DIR=1"; else echo
 # apt command for the venv prerequisite. The SETENV DEBIAN_FRONTEND form
 # matches the box-config sudoers grant (`_host_ops.boxcfg_sudoers_rules`), so
 # provisioned boxes run it promptless.
+# NEEDRESTART_SUSPEND=1 alongside DEBIAN_FRONTEND: needrestart is an apt
+# post-invoke hook, and DEBIAN_FRONTEND does not reach it. Left on, it can open
+# a full-screen "Pending kernel upgrade" dialog that blocks on a keypress over
+# a non-tty ssh channel, and in mode=a it restarts services on its own --
+# including docker, which spends a start against docker.service's
+# StartLimitBurst.
 HOST_VENV_APT_CMD = (
-    'sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && '
-    'sudo DEBIAN_FRONTEND=noninteractive apt-get install -y '
+    'sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update -qq && '
+    'sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y '
     '--no-install-recommends python3-venv'
 )
 
 # Distinct exit codes so callers can report what actually failed instead of
-# grepping pip's stdout (the failure mode of the older pyOCD install step,
+# grepping pip's stdout (the failure mode of the removed pyOCD install step,
 # which lost the exit code in a `grep -q "Successfully installed"` pipeline).
 HOST_CLI_EXIT_MESSAGES = {
     41: 'could not materialize ~/box/cli (git sparse-checkout add failed — git too old, or fetch blocked?)',

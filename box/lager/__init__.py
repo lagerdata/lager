@@ -14,7 +14,7 @@ Module Groups:
     lager.measurement - Measurement instruments (scope, thermocouple, watt)
     lager.protocols - Communication protocols (uart, ble, wifi)
     lager.automation - Automation hardware (arm, usb_hub, webcam)
-    lager.debug     - Embedded debugging (J-Link, pyOCD, GDB)
+    lager.debug     - Embedded debugging (J-Link, OpenOCD, GDB)
 
 Core Classes:
     Net, NetType    - PCB net abstraction for test points

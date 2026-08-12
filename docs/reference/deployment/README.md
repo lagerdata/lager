@@ -54,7 +54,7 @@ This script handles everything:
 - Sudo configuration
 - Code deployment via git sparse-checkout (HTTPS, no authentication needed)
 - Firewall configuration
-- pyOCD and J-Link installation
+- J-Link installation (OpenOCD ships in the container)
 - Docker container startup
 
 You'll be prompted for the box password once during initial setup.
@@ -121,8 +121,8 @@ lager update --box <BOX_IP> --version staging --yes
 3. Configures UFW firewall (restricts Lager ports to VPN/localhost)
 4. Clones box code via git sparse-checkout (HTTPS)
 5. Deploys udev rules for USB instruments
-6. Installs pyOCD (open source debug tool)
-7. Installs J-Link (if available)
+6. Installs J-Link (if available; OpenOCD ships in the container)
+7. Installs the lager CLI on the box host (`~/.lager/venv`)
 8. Builds and starts Docker containers
 
 ---
