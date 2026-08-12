@@ -9,6 +9,7 @@ Provides endpoints to list, update, delete, and query live state of saved nets.
 import json
 import logging
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 
@@ -91,7 +92,7 @@ def _brief_usb(netname):
         return None
 
 
-def _brief_usb_batch(netnames, causes=None, codes=None):
+def _brief_usb_batch(netnames, causes=None, codes=None, deadline=None):
     """USB hub ports for several nets, grouped by physical hub.
 
     The per-net probe costs a full hub open/read/close under that hub's lock, so
@@ -108,13 +109,17 @@ def _brief_usb_batch(netnames, causes=None, codes=None):
             for the same nets. Left empty when the whole call fails: a failure
             to load net definitions says nothing about the state of the bus,
             and a code that names the wrong fault is worse than none.
+        deadline: optional absolute ``time.monotonic()`` budget, forwarded to
+            the dispatcher so the serialised per-hub loop can sub-budget it
+            (issue #205).
 
     Returns:
         dict[str, str | None]: net name -> "enabled"/"disabled", or None.
     """
     from ..automation import usb_hub
     try:
-        raw = usb_hub.states(netnames, causes=causes, codes=codes)
+        raw = usb_hub.states(netnames, causes=causes, codes=codes,
+                             deadline=deadline)
     except Exception as e:
         logger.debug("brief_usb_batch %s: %s", netnames, e)
         # Everything below the dispatcher's own per-hub guard lands here --
@@ -183,9 +188,9 @@ def _brief_labjack_batch(recs):
 # Roles that can answer for several nets in one instrument session. Anything
 # absent here falls back to the per-net probe in _BRIEF_PROBES.
 # Role -> batch probe. A probe here MUST accept
-# ``(netnames, *, causes=None, codes=None)``: `_probe_group` passes both
-# unconditionally, so a probe that omits either raises TypeError at the call
-# site rather than silently losing the diagnostics.
+# ``(netnames, *, causes=None, codes=None, deadline=None)``: `_probe_group`
+# passes all three unconditionally, so a probe that omits any raises TypeError
+# at the call site rather than silently losing the diagnostics (or the budget).
 _BATCH_PROBES = {
     "usb": _brief_usb_batch,
 }
@@ -501,8 +506,14 @@ def _group_key(net_rec):
     return (role, instrument, address)
 
 
-def _probe_group(recs):
+def _probe_group(recs, deadline=None):
     """Probe every net in one instrument group. Returns a list of results.
+
+    ``deadline`` is the request's absolute ``time.monotonic()`` budget,
+    forwarded to batch probes that serialise several physical devices behind
+    one group (path 2) so they can sub-budget it -- see issue #205. The
+    per-net paths ignore it: their group IS one device, so the caller's
+    ``as_completed`` bound already says everything there is to say.
 
     Three dispatch paths, checked in order:
 
@@ -552,7 +563,7 @@ def _probe_group(recs):
     # classified the fault. Batch probes that do not take it are unaffected.
     codes: dict = {}
     try:
-        states = batch(names, causes=causes, codes=codes)
+        states = batch(names, causes=causes, codes=codes, deadline=deadline)
     except Exception as e:
         logger.debug("batch probe for role %s failed: %s", role, e)
         reason = _unreadable(f"{type(e).__name__}: {e}")
@@ -672,7 +683,11 @@ def register_nets_routes(app: Flask) -> None:
         Note the deadline is shared by the whole request, not per instrument, so
         ``reason: "deadline"`` means this net's instrument had not answered when
         the budget for *all* of them ran out -- not necessarily that this
-        instrument is slow.
+        instrument is slow. The USB batch probe additionally receives the
+        request deadline and sub-budgets it per hub (issue #205): a hub the
+        remaining budget cannot cover is skipped with its own reason and a
+        ``hub-skipped`` code instead of surfacing as ``"deadline"``, so one
+        slow hub no longer reads as a whole-bench fault.
 
         Always answers 200 with one entry per saved net, in the saved order.
         """
@@ -694,9 +709,12 @@ def register_nets_routes(app: Flask) -> None:
             groups.setdefault(_group_key(rec), []).append(rec)
 
         by_name = {}
+        # Absolute form of the same budget as_completed enforces below, for
+        # probes that sub-budget their own serialised work (the USB batch).
+        deadline = time.monotonic() + _STATE_TIMEOUT
         pool = ThreadPoolExecutor(max_workers=min(len(groups), 8))
         try:
-            futures = {pool.submit(_probe_group, recs): recs
+            futures = {pool.submit(_probe_group, recs, deadline): recs
                        for recs in groups.values()}
             try:
                 for fut in as_completed(futures, timeout=_STATE_TIMEOUT):

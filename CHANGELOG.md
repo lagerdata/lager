@@ -27,6 +27,23 @@ All notable changes to the Lager platform are documented here. For detailed rele
   cross-wired identity does not self-correct: re-add it after updating.
   (#213)
 
+- **One slow USB hub no longer reports the rest of the bench as timed out.**
+  `/nets/state` gives the whole request one budget, but every USB hub on the
+  box was probed serially inside a single work unit -- so a hub that burned
+  its driver timeout consumed the entire budget, and every hub after it came
+  back `reason: "deadline"` while being perfectly healthy: a false diagnosis
+  manufactured by the budget rather than observed.
+
+  The request deadline is now handed to the USB batch probe, which
+  sub-budgets it per hub: each hub's whole probe cycle -- the lock wait
+  included -- is clamped to the time actually remaining, and a hub the
+  budget cannot cover is skipped outright rather than probed into the
+  deadline. Skipped nets say so, with their own reason ("not probed: slower
+  instruments consumed the state budget") and a `hub-skipped` code the CLI
+  footnotes with a remedy, so "the budget ran out before this hub's turn"
+  and "this hub is slow" stop being the same message. The whole-request
+  deadline and every one-shot USB command path are unchanged. (#205)
+
 ## [0.36.0] - 2026-08-12
 
 ### Fixed

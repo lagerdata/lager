@@ -35,6 +35,7 @@ from flask import Flask
 
 from lager.automation.usb_hub import usb_net
 from lager.automation.usb_hub import acroname as acroname_mod
+from lager.automation.usb_hub import dispatcher as dispatcher_mod
 from lager.automation.usb_hub import ykush as ykush_mod
 from lager.automation.usb_hub.usb_net import HubOperationTimeout
 from lager.http_handlers import usb as usb_handler
@@ -193,6 +194,76 @@ class DriverDeadlineTests(_HangHookIsolated):
             with self.assertRaises(HubOperationTimeout):
                 net.enable("CLI_USB", 2)
             self.assertLess(time.monotonic() - start, 5.0)
+
+
+class _FakeController:
+    """Stand-in driver for dispatcher-level budget tests: records the
+    ``timeout`` each ``states`` call received and optionally burns wall
+    clock the way a slow hub does."""
+
+    def __init__(self, key, delay=0.0):
+        self.key = key
+        self.delay = delay
+        self.timeouts = []
+
+    def _lock_key(self):
+        return self.key
+
+    def states(self, ports, *, timeout=None):
+        self.timeouts.append(timeout)
+        if self.delay:
+            time.sleep(self.delay)
+        return {p: True for p in ports}
+
+
+class StateSweepBudgetTests(unittest.TestCase):
+    """``dispatcher.states`` sub-budgets a caller deadline across its
+    serialised per-hub loop (issue #205): each hub is clamped to the time
+    actually remaining, and a hub the budget cannot cover is skipped with
+    its own attribution instead of surfacing as the caller's deadline."""
+
+    def _run(self, hub_a, hub_b, deadline, causes=None, codes=None):
+        nets = {
+            "usb1": {"port": 1, "hub": hub_a},
+            "usb2": {"port": 2, "hub": hub_b},
+        }
+        with patch.object(dispatcher_mod, "_load_net_definitions",
+                          return_value=nets), \
+             patch.object(dispatcher_mod, "_controller_for",
+                          side_effect=lambda info: info["hub"]):
+            return dispatcher_mod.states(["usb1", "usb2"], causes=causes,
+                                         codes=codes, deadline=deadline)
+
+    def test_no_deadline_means_no_clamp_and_no_skip(self):
+        a, b = _FakeController("A"), _FakeController("B")
+        out = self._run(a, b, None)
+        self.assertEqual(out, {"usb1": True, "usb2": True})
+        self.assertEqual(a.timeouts, [None])
+        self.assertEqual(b.timeouts, [None])
+
+    def test_each_hub_is_clamped_to_the_time_remaining(self):
+        a = _FakeController("A", delay=0.3)
+        b = _FakeController("B")
+        self._run(a, b, time.monotonic() + 5.0)
+        self.assertLessEqual(a.timeouts[0], 5.0)
+        # Hub B is offered only what hub A left behind.
+        self.assertLess(b.timeouts[0], a.timeouts[0] - 0.2)
+
+    def test_a_hub_the_budget_cannot_cover_is_skipped_with_attribution(self):
+        a = _FakeController("A", delay=1.5)
+        b = _FakeController("B")
+        causes, codes = {}, {}
+        # Covers hub A comfortably; leaves hub B under the skip floor.
+        out = self._run(a, b, time.monotonic() + 2.2,
+                        causes=causes, codes=codes)
+        self.assertEqual(out["usb1"], True)
+        self.assertIsNone(out["usb2"])
+        self.assertEqual(b.timeouts, [], "a skipped hub must not be probed")
+        self.assertEqual(codes.get("usb2"), usb_net.HUB_SKIPPED)
+        self.assertIn("not probed", causes.get("usb2", ""))
+        # The skip is a statement about the budget, not about hub A.
+        self.assertNotIn("usb1", causes)
+        self.assertNotIn("usb1", codes)
 
 
 class _FakeHubModule:

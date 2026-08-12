@@ -776,6 +776,29 @@ class AcronameOpenRetryTests(unittest.TestCase):
         self.assertEqual(1, len(_discover_calls), _discover_calls)
         self.sleep.assert_not_called()
 
+    def test_a_caller_budget_clamps_the_operation_deadline(self):
+        """``states(timeout=)`` bounds the whole cycle (issue #205): the
+        ``run_hub_op`` deadline is at most the caller's budget, never the
+        full ``HUB_OP_TIMEOUT_S`` -- that is what lets the state sweep's
+        dispatcher hand each hub only the time actually remaining."""
+        calls = []
+        real = acroname.run_hub_op
+
+        def spy(key, fn, timeout=None):
+            calls.append(timeout)
+            return real(key, fn, timeout=timeout)
+
+        with patch.object(acroname, "enumerate_usb_devices",
+                          return_value=self.ON_BUS), \
+             patch.object(acroname, "run_hub_op", spy):
+            with self.assertRaises(acroname.DeviceNotFoundError):
+                self.net.states([0, 1], timeout=3.0)
+        self.assertEqual(1, len(calls))
+        self.assertLessEqual(calls[0], 3.0)
+        # The lock was uncontended, so nearly the whole budget survives to
+        # the operation deadline.
+        self.assertGreater(calls[0], 2.0)
+
     def test_the_stale_cache_is_dropped_before_the_retry(self):
         acroname.AcronameUSBNet._conn_cache[self.ADDRESS] = {
             "cls": _RefusingHub, "spec": None,

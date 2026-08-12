@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib
 import re
 import subprocess
+import time
 from typing import Any, Callable, Sequence
 
 from .usb_net import (
@@ -182,7 +183,7 @@ class YKUSHUSBNet(USBNet):
         VISA address is unique per hub; fall back to the serial."""
         return self.address or f"ykush::{self.serial or 'default'}"
 
-    def _with_device(self, fn):
+    def _with_device(self, fn, *, timeout=None):
         """Run ``fn(dev)`` against a freshly-opened hub, retrying once if the
         first attempt fails. A fresh handle per call self-heals a power-cycled
         hub or a transient USB/HID error, and releasing it after each call means
@@ -209,8 +210,17 @@ class YKUSHUSBNet(USBNet):
                 return self._run_once(fn)
 
         key = self._lock_key()
-        with hub_access(key, timeout=_LOCK_TIMEOUT_S):
-            return run_hub_op(key, _attempt_with_retry, timeout=HUB_OP_TIMEOUT_S)
+        if timeout is None:
+            with hub_access(key, timeout=_LOCK_TIMEOUT_S):
+                return run_hub_op(key, _attempt_with_retry, timeout=HUB_OP_TIMEOUT_S)
+        # A caller-supplied budget bounds the WHOLE cycle: the lock wait and
+        # both open attempts count against it, so a contended lock cannot
+        # silently double the caller's bound (issue #205).
+        budget = min(timeout, HUB_OP_TIMEOUT_S)
+        start = time.monotonic()
+        with hub_access(key, timeout=min(_LOCK_TIMEOUT_S, budget)):
+            remaining = max(0.5, budget - (time.monotonic() - start))
+            return run_hub_op(key, _attempt_with_retry, timeout=remaining)
 
     # ----------------------------------------------------------------
     def __init__(self, net_info: dict | None = None) -> None:
@@ -280,7 +290,7 @@ class YKUSHUSBNet(USBNet):
         self._validate_port(port)
         return self._with_device(lambda dev: self._read_enabled(dev, port))
 
-    def states(self, ports) -> dict:                           # type: ignore[override]
+    def states(self, ports, *, timeout=None) -> dict:          # type: ignore[override]
         """Read every requested port inside ONE device session.
 
         ``_with_device`` opens a fresh handle, operates, and closes, all under
@@ -300,7 +310,7 @@ class YKUSHUSBNet(USBNet):
                     out[port] = None
             return out
 
-        return self._with_device(_read_all)
+        return self._with_device(_read_all, timeout=timeout)
 
     def toggle(self, net_name: str, port: int) -> bool:        # type: ignore[override]
         self._validate_port(port)
