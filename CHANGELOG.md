@@ -25,6 +25,27 @@ All notable changes to the Lager platform are documented here. For detailed rele
   program support, so restoring the missing subpackage would have revived a
   path that modern toolchains break anyway. Should ELF or DWARF parsing be
   needed again, depend on `pyelftools` from PyPI. Closes #240.
+
+- **The `lager-mcp` console script, which exited immediately on every pip
+  install.** It targeted `lager.mcp.server` -- box-side code under `box/`
+  that the `lager-cli` wheel has never shipped -- so running it produced
+  `ModuleNotFoundError: No module named 'lager'`. Installing the `mcp` extra
+  did not help: that extra supplies the PyPI `mcp` SDK, not the `lager`
+  package.
+
+  This is a removal rather than a repair because the console script was never
+  how the MCP server runs. The box starts it in-container as
+  `python3 -m lager.mcp` and serves it on port 8100, which is what the MCP
+  documentation describes and what clients connect to.
+
+  `lager install` / `lager update` previously symlinked the script into
+  `~/.local/bin`, so boxes deployed from an older ref carry a link to a script
+  that cannot work. The install command now removes that link instead of
+  creating it, so those boxes self-heal on the next deploy. The `mcp` extra is
+  unchanged. The packaging gate now asserts the script is absent from the
+  built wheel, so a console script that cannot resolve fails CI rather than
+  reaching users. Closes #242.
+
 ### Fixed
 
 - **Two `cli/impl` modules could not be imported from a pip-installed CLI.**
@@ -49,25 +70,45 @@ All notable changes to the Lager platform are documented here. For detailed rele
   baseline is two-sided, the gate now fails if either module regresses *or* if
   the entries were left behind. Closes #241.
 
-- **The `lager-mcp` console script, which exited immediately on every pip
-  install.** It targeted `lager.mcp.server` -- box-side code under `box/`
-  that the `lager-cli` wheel has never shipped -- so running it produced
-  `ModuleNotFoundError: No module named 'lager'`. Installing the `mcp` extra
-  did not help: that extra supplies the PyPI `mcp` SDK, not the `lager`
-  package.
 
-  This is a removal rather than a repair because the console script was never
-  how the MCP server runs. The box starts it in-container as
-  `python3 -m lager.mcp` and serves it on port 8100, which is what the MCP
-  documentation describes and what clients connect to.
+- **The BluFi key exchange no longer depends on a key-agreement primitive that
+  newer `cryptography` releases reject outright.** cryptography 50.0 deprecates
+  finite-field Diffie-Hellman wholesale, and the BluFi handshake was built on
+  `hazmat.primitives.asymmetric.dh` end to end. This was worse than a
+  deprecation clock: on 50.0 the group BluFi uses is refused at parameter
+  construction with `ValueError: Invalid DH parameters`, so key generation
+  fails and provisioning cannot complete at all. The failure was invisible
+  because the four unit tests covering the exchange caught that same
+  `ValueError` and skipped — the suite reported green on exactly the
+  configuration where the feature was broken.
 
-  `lager install` / `lager update` previously symlinked the script into
-  `~/.local/bin`, so boxes deployed from an older ref carry a link to a script
-  that cannot work. The install command now removes that link instead of
-  creating it, so those boxes self-heal on the next deploy. The `mcp` extra is
-  unchanged. The packaging gate now asserts the script is absent from the
-  built wheel, so a console script that cannot resolve fails CI rather than
-  reaching users. Closes #242.
+  The box is the initiator and sends P, G and its own public key to the
+  device, so it owns the group outright and the only compatibility constraint
+  is byte-level. The exchange is now direct modular exponentiation over the
+  same hardcoded parameters, which removes the dependency in both directions:
+  it works on the runtime's pinned cryptography 38.0.4 and on 50.0 alike.
+
+  Two byte-level invariants that the library used to supply implicitly are now
+  explicit and pinned by known-answer tests captured from the previous
+  implementation: the public key still goes out padded to 256 bytes, and the
+  shared secret is still zero-padded to 128 bytes before it is hashed. The
+  latter matters — about one exchange in 256 produces a secret with a leading
+  zero byte, and hashing the unpadded form yields a different AES key from the
+  device's, which would present as an occasional unreproducible provisioning
+  failure rather than a clean break.
+
+  The four skipped tests now run everywhere, and peer public keys are
+  validated (0, 1 and p-1 are rejected) where the library used to do it. Note
+  that CPython's `pow()` is not constant-time where the library's `exchange()`
+  was; the parameters are Espressif's published BluFi constants and not a safe
+  prime, so the handshake does not withstand an active attacker either way,
+  but the timing characteristic is a real change. Completes #219.
+
+- **A second BluFi security negotiation on one client no longer derives a key
+  from two concatenated peer public keys.** The receive buffer for the peer's
+  key was only ever appended to, and was not cleared with the rest of the
+  security state. Not reachable today, since each request builds a fresh
+  client, but it failed silently rather than loudly.
 
 ## [0.36.2] - 2026-08-12
 

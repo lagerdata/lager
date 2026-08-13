@@ -72,7 +72,6 @@ class BlufiClient:
         self.ssidList = []
         self.mAck = queue.Queue()
         self.rxBuf = bytearray()
-        self.rxPubKeyBuf = bytearray()
 
         # Clean up connections, etc. when exiting (even by KeyboardInterrupt)
         atexit.register(self._cleanup)
@@ -86,6 +85,12 @@ class BlufiClient:
         self.mChecksum = False
         self.crypto = None
         self.mAESKey = None
+        # Reset with the rest of the security state: parsePublicKey() only ever
+        # extends this buffer, so a second negotiation on one client would
+        # otherwise concatenate the old peer key with the new one and derive a
+        # key from the pair. Not reachable today (every HTTP request builds a
+        # fresh client), but it fails silently if it ever is.
+        self.rxPubKeyBuf = bytearray()
         self.version = None
         self.wifiState = {
             "opMode": -1,
