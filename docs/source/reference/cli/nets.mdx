@@ -361,7 +361,7 @@ lager nets assign --list --box my-lager-box
 lager nets assign Rigol_DP711 --serial 00000006 --as-net main_supply --box my-lager-box
 
 # 3. Drive it like any other supply net:
-lager supply main_supply --voltage 3.3 --box my-lager-box
+lager supply main_supply voltage 3.3 --box my-lager-box
 ```
 
 Without `--as-net`, the command prints the exact `lager nets add` invocation

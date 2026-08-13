@@ -167,8 +167,12 @@ lager devenv delete build      # remove one
 ```
 
 Command names may contain only letters, numbers, dashes, and underscores. If
-you omit the command string, `add` prompts for it. By default `add` warns when
-overwriting an existing command; pass `--no-warn` to suppress that.
+you omit the command string, `add` prompts for it.
+
+| Subcommand | Option | Description |
+| --- | --- | --- |
+| `add` | `--warn` / `--no-warn` | Warn when overwriting an existing command (default: `--warn`) |
+| `delete` | `--devenv NAME` | Delete the command from a named devenv rather than the current one |
 
 ---
 

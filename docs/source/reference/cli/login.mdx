@@ -26,6 +26,30 @@ your account uses one). Your session is stored in `~/.lager_gateway_auth`
 than once. From then on, `lager hello`, `lager python`, net commands, and
 everything else just work against that box.
 
+### Non-interactive sign-in
+
+Both credentials can be supplied as options instead of being prompted for,
+which is what you want in a CI job:
+
+| Option | Description |
+| --- | --- |
+| `--email TEXT` | Account email |
+| `--password TEXT` | Account password |
+
+```bash
+lager login https://your-control-plane.example.com --email "$LAGER_EMAIL" --password "$LAGER_PASSWORD"
+```
+
+<Warning>
+A password passed on the command line is visible to other users via the process
+list and is written to your shell history. Read it from a secret store or an
+environment variable, as above, rather than typing the literal value.
+</Warning>
+
+If the account has MFA enabled, these two options are not enough on their own —
+you are still prompted for the MFA code, so the sign-in is not fully
+unattended. Use an account without MFA for automation.
+
 ```bash
 lager logout                 # forget every stored session
 lager logout <auth-url>      # forget one server's session

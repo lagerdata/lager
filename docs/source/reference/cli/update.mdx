@@ -16,17 +16,15 @@ lager update [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--box BOX` | Lagerbox name or IP address |
-| `--all` | Update all saved boxes that need updating |
 | `--version VERSION` | Release tag, semver pin, branch, or full 40-character commit SHA to update to (default: main). See [Version pinning](#version-pinning). |
 | `--yes` | Skip confirmation prompt |
 | `--check` | Dry run: report what would change without modifying the box |
-| `--skip-restart` | Skip container restart after update |
-| `--check-jlink` | Check for J-Link and offer to install if missing |
-| `--force` | Force fresh Docker build by removing cached image |
+| `--force` | Update even if the box reports it is already up to date, and force a clean rebuild (wipes the cached image and the cargo/npm volumes) |
 | `--verbose` / `-v` | Show detailed output (default shows progress bar) |
 
 <Note>
-Either `--box` or `--all` is required. They cannot be used together.
+`lager update` targets one box per invocation. To update several, loop over them
+in your shell — the `--all` flag and its multi-box loop were removed in v0.18.2.
 </Note>
 
 ## Version pinning
@@ -84,68 +82,29 @@ lager update --box my-lager-box --yes --verbose
 lager update --box my-lager-box --force --yes
 ```
 
-### Update All Boxes
+### Updating Several Boxes
 
-The `--all` flag queries every saved box's version and updates only those that are behind the current CLI version.
-
-```bash
-# Update all boxes that need updating
-lager update --all --yes
-
-# Preview which boxes need updating (without --yes, shows confirmation)
-lager update --all
-```
-
-**How `--all` works:**
-
-1. Queries each saved box's `/cli-version` endpoint
-2. Compares box version against the current CLI version
-3. Builds a list of boxes that need updating (version older than CLI or unknown)
-4. Skips boxes that are already current, newer, or unreachable
-5. Updates each box sequentially
-6. Displays a summary of successes and failures
-
-**Example output:**
-
-```
-CLI version: 0.3.22
-
-Checking box versions...
-
-  my-lager-box  0.3.20  will update
-  staging-box   0.3.22  current
-  pi-box        0.3.19  will update
-  offline-box   ---     unreachable (skipped)
-
-2 box(es) need updating. Proceed? [Y/n]: y
-
-Updating my-lager-box...
-  [OK] Updated to 0.3.22
-
-Updating pi-box...
-  [OK] Updated to 0.3.22
-
-Update complete (45.2s total)
-  Successful: 2
-  Failed:     0
-```
-
-### Skip Container Restart
+There is no built-in multi-box update. Loop in your shell, and use `--check`
+first if you want to see which boxes are actually behind:
 
 ```bash
-# Update code but don't restart containers
-lager update --box my-lager-box --skip-restart --yes
+# Report what would change on each box, without modifying anything
+for box in my-lager-box staging-box pi-box; do
+  echo "== $box"
+  lager update --box "$box" --check
+done
 
-# Manually restart later
-ssh lagerdata@my-lager-box 'cd ~/box && ./start_box.sh'
+# Then update them
+for box in my-lager-box staging-box pi-box; do
+  lager update --box "$box" --yes
+done
 ```
 
-### J-Link Installation Check
-
-```bash
-# Check if J-Link is installed, offer to install if missing
-lager update --box my-lager-box --check-jlink --yes
-```
+<Note>
+A `--all` flag existed before v0.18.2 and was removed along with the multi-box
+loop it drove. A plain shell loop continues to the next box when one fails, so an
+unreachable box does not stop the run.
+</Note>
 
 ---
 
@@ -216,11 +175,11 @@ cli/deployment/security/secure_box_firewall.sh <box-ip>
 # Standard update workflow
 lager update --box my-lager-box --version main --yes
 
-# Update all boxes at once
-lager update --all --yes
+# Update several boxes
+for box in my-lager-box staging-box; do lager update --box "$box" --yes; done
 
-# Update all boxes to staging branch
-lager update --all --version staging --yes
+# Update several boxes to the staging branch
+for box in my-lager-box staging-box; do lager update --box "$box" --version staging --yes; done
 
 # Force fresh build on a specific box
 lager update --box my-lager-box --force --yes
@@ -270,6 +229,7 @@ cli/deployment/security/secure_box_firewall.sh <box-ip>
 - Container builds use `--no-cache` to ensure fresh builds
 - Version defaults to `main` if not specified
 - Update automatically verifies container health after restart
-- `--all` checks versions automatically and only updates outdated boxes
-- `--force` removes cached Docker images before building (useful after major code changes)
-- `--box` and `--all` are mutually exclusive
+- `--check` reports what would change without modifying the box, so it is the safe
+  way to find out whether a box is behind
+- `--force` updates even when the box reports it is already current, wiping the
+  cached image and the cargo/npm volumes (useful after major code changes)
