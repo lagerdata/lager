@@ -138,7 +138,7 @@ SUPPORTED_USB: Dict[str, Dict] = {
     "Rigol_DL3021":      {"vid": "1ab1", "pid": "0e11", "net_type": ["eload"]},
     # camera — detection is catalog-driven: any entry with a ``webcam``
     # net_type is picked up by ``_by_camera`` below, so adding a camera
-    # is a one-line addition here (mirror it in cli/impl/query_instruments.py).
+    # is a one-line addition here.
     "Logitech_BRIO_HD":  {"vid": "046d", "pid": "085e", "net_type": ["webcam"]},
     "Logitech_BRIO":     {"vid": "046d", "pid": "0856", "net_type": ["webcam"]},
     "Logitech_BRIO_4K_Stream": {"vid": "046d", "pid": "086b", "net_type": ["webcam"]},
@@ -728,8 +728,8 @@ def merge_or_append(entry: dict, instruments: List[dict]) -> None:
 # /etc/lager/custom_devices.json; each one whose cable is currently plugged in
 # is surfaced here as a synthetic instrument record so the normal ``nets add``
 # / TUI flows light up without special-casing.
-# Keep in sync with ``cli/impl/query_instruments.py`` (same duplication
-# tech-debt as SUPPORTED_USB / CHANNEL_MAPS).
+# The CLI-side half of this duplication (``cli/impl/query_instruments.py``)
+# was deleted in the :9000 migration, so this is now the only copy.
 
 def custom_instruments() -> List[dict]:
     """Synthetic instrument records for live custom-device assignments."""

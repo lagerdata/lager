@@ -17,7 +17,7 @@
 # structural (excluding one module from a package needs a layout change) and
 # harmless to users.
 
-# These import from the box/ tree (`lager.*`), which the wheel does not
-# ship; they work only where box/ is on the path. Issue #241.
-cli.impl.box_config
-cli.impl.power.enable_disable
+# No functional entries remain: #240 removed the vendored elftools tree and
+# #241 deferred the box-tree imports in cli/impl. Every module in the wheel
+# now imports from a clean install. An entry added here must name the issue
+# that owns it, and must be deleted in the change that fixes it.
