@@ -47,17 +47,23 @@ on:
       - 'box/oscilloscope-daemon/**'
       - '.github/workflows/rust-checks.yml'
   pull_request:
-    paths:
-      - 'box/oscilloscope-daemon/**'
-      - '.github/workflows/rust-checks.yml'
   workflow_dispatch:
 
-# Path-filtered on purpose: most PRs here touch no Rust, and a toolchain
-# install plus a cold workspace check is minutes, not seconds. NOTE for whoever
-# makes this a required context later -- a path-filtered workflow does not
-# report at all when the paths do not match, so a required check would leave
-# every Python-only PR waiting forever. Make it required only alongside a
-# always-runs stub job, or drop the filter first.
+# The pull_request trigger is deliberately NOT path-filtered, and there is
+# deliberately NO companion "stub" workflow. A path-filtered workflow does
+# not report at all when paths do not match, so it can never be a required
+# context; and the tempting fix -- a second always-green workflow exposing a
+# job with the same name -- is unsafe, because two check runs sharing a
+# context name race, and the ruleset can be satisfied by the stub while the
+# real job fails. Instead this SINGLE job detects rust changes itself: the
+# heavy steps run only when box/oscilloscope-daemon/ (or this file) changed,
+# and otherwise the job succeeds via skip -- one check run, whose green is
+# correct by construction either way. Python-only PRs pay ~20 seconds for
+# checkout + detect, not the toolchain install.
+#
+# `push` keeps its path filter: push-to-main is not a required context, so
+# there is nothing to report on non-rust pushes and no reason to spend the
+# runner minutes.
 
 permissions:
   contents: read
@@ -74,6 +80,34 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          # Full history: the detect step below needs the merge base with the
+          # target branch to compute what this PR actually changes.
+          fetch-depth: 0
+
+      - name: Detect rust changes
+        id: detect
+        # On pull_request, diff the merge base against HEAD (the PR merge
+        # commit) for the rust tree and this workflow file. On push and
+        # dispatch, always run everything: push is already path-filtered,
+        # and a manual dispatch means a human wants the full result.
+        working-directory: ${{ github.workspace }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            base=$(git merge-base HEAD "origin/${GITHUB_BASE_REF}")
+            if git diff --name-only "$base" HEAD -- \
+                box/oscilloscope-daemon/ .github/workflows/rust-checks.yml \
+                | grep -q .; then
+              changed=true
+            else
+              changed=false
+            fi
+          else
+            changed=true
+          fi
+          echo "rust_changed=$changed" >> "$GITHUB_OUTPUT"
+          echo "rust_changed=$changed (event: $GITHUB_EVENT_NAME)"
+        shell: bash
 
       # daemon/build.rs generates FFI bindings from the PicoScope headers with
       # bindgen, unconditionally. Without libps2000 the build script panics and
@@ -91,6 +125,7 @@ jobs:
       # (cli, protocol, wtransport_test) still gate while the daemon check
       # degrades to advisory.
       - name: Install PicoScope SDK and build deps
+        if: steps.detect.outputs.rust_changed == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libclang-dev
@@ -111,6 +146,7 @@ jobs:
       # change in the repo. The workspace declares edition 2024, which needs
       # 1.85+; this is well past that.
       - name: Install Rust toolchain
+        if: steps.detect.outputs.rust_changed == 'true'
         run: |
           rustup toolchain install 1.95.0 --profile minimal --component clippy
           rustup default 1.95.0
@@ -120,6 +156,7 @@ jobs:
         shell: bash
 
       - name: Cache cargo registry and target
+        if: steps.detect.outputs.rust_changed == 'true'
         uses: actions/cache@v6
         with:
           path: |
@@ -132,6 +169,7 @@ jobs:
       # The check that would have caught #172. --all-targets so tests, benches
       # and examples are type-checked too, not just the library and binaries.
       - name: cargo check
+        if: steps.detect.outputs.rust_changed == 'true'
         run: cargo check --workspace --all-targets --locked
         shell: bash
 
@@ -140,8 +178,19 @@ jobs:
       # Cargo.toml without regenerating the lockfile gets caught. Asserted
       # separately here so the failure reason is unambiguous when it happens.
       - name: Cargo.lock is in sync with the manifests
-        if: always()
+        if: always() && steps.detect.outputs.rust_changed == 'true'
         run: cargo metadata --locked --format-version 1 > /dev/null
+        shell: bash
+
+      # Zero tests exist in this workspace today, so this compiles the test
+      # harness and passes trivially -- which is exactly when to add the
+      # gate: the moment the first #[test] lands, it runs here with no
+      # workflow change. The strongest candidates for those first tests are
+      # the pure-logic protocol/frame-parsing paths behind the QUIC and
+      # WebTransport listeners, which need no hardware.
+      - name: cargo test
+        if: always() && steps.detect.outputs.rust_changed == 'true'
+        run: cargo test --workspace --locked
         shell: bash
 
       # Correctness lints only -- the tier that flags real bugs, not style.
@@ -151,7 +200,7 @@ jobs:
       # and `shellcheck -S error` elsewhere in this repo: start at a level that
       # is already clean so the gate means something from day one, then ratchet.
       - name: cargo clippy (correctness only)
-        if: always()
+        if: always() && steps.detect.outputs.rust_changed == 'true'
         run: cargo clippy --workspace --all-targets -- -A clippy::all -W clippy::correctness -D warnings
         shell: bash
 
@@ -169,7 +218,7 @@ jobs:
       # Neither has a fixed version to move to today. Add --deny warnings once
       # they clear.
       - name: cargo audit
-        if: always()
+        if: always() && steps.detect.outputs.rust_changed == 'true'
         run: |
           cargo install cargo-audit --locked --version 0.22.2
           cargo audit
@@ -181,7 +230,7 @@ jobs:
       # the job summary instead, so the number is visible and can be worked
       # down deliberately.
       - name: Formatting (report only)
-        if: always()
+        if: always() && steps.detect.outputs.rust_changed == 'true'
         run: |
           rustup component add rustfmt
           n=$(cargo fmt --all --check 2>/dev/null | grep -c '^Diff in' || true)
@@ -192,4 +241,40 @@ jobs:
             echo
             echo "Not gated -- see the comment in .github/workflows/rust-checks.yml."
           } >> "$GITHUB_STEP_SUMMARY"
+        shell: bash
+
+      # Push-to-main only: proves the release profile actually compiles and
+      # links (check/clippy prove the debug profile without linking) and
+      # stages the binary as an artifact. Header comment discipline: this is
+      # a COMPILE SMOKE on ubuntu-latest, NOT a ship artifact -- the deployed
+      # daemon is built by build_daemon.sh against the box's own OS/glibc and
+      # distributed by hand. Making CI produce the real ship artifact needs a
+      # build container matching the box image; recorded as future work.
+      - name: cargo build --release (compile smoke, push only)
+        if: github.event_name == 'push' && steps.detect.outputs.rust_changed == 'true'
+        run: cargo build --release --workspace --locked
+        shell: bash
+
+      - name: Upload release-profile daemon binary (push only)
+        if: github.event_name == 'push' && steps.detect.outputs.rust_changed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: oscilloscope-daemon-release-smoke-${{ github.sha }}
+          path: box/oscilloscope-daemon/target/release/daemon
+          retention-days: 30
+          if-no-files-found: error
+
+      # Always runs, so a green check is auditable: the log says which arm
+      # produced it.
+      - name: Verdict
+        if: always()
+        working-directory: ${{ github.workspace }}
+        env:
+          RUST_CHANGED: ${{ steps.detect.outputs.rust_changed }}
+        run: |
+          if [ "$RUST_CHANGED" = "true" ]; then
+            echo "Rust paths changed: the step results above are the real result."
+          else
+            echo "No rust paths changed: success via skip, correct by construction."
+          fi
         shell: bash
