@@ -31,6 +31,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Default token: checkout only. A job that needs more must say so itself.
+permissions:
+  contents: read
+
 jobs:
   static-checks:
     name: static-checks
@@ -40,10 +44,14 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/box
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # No job here pushes anything; do not persist the token into
+          # the checkout's config (zizmor: artipacked).
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.11'
 
@@ -58,6 +66,10 @@ jobs:
           # would let a GitHub image bump turn this red with no repo change,
           # which is the same failure this PR pins requirements-unit.txt against.
           pip install 'shellcheck-py==0.11.0.1'
+          # Workflow linters, pinned for the same reason. zizmor's baselines
+          # (.github/zizmor.yml) and actionlint's runner labels
+          # (.github/actionlint.yaml) were measured against these versions.
+          pip install 'zizmor==1.29.0' 'actionlint-py==1.7.12.24'
           pip install -r test/requirements-unit.txt
         shell: bash
 
@@ -73,6 +85,32 @@ jobs:
             echo "which shellcheck: $(which shellcheck)"
             exit 1
           }
+        shell: bash
+
+      # The workflows themselves are code that gates everything else, so they
+      # get linted too. zizmor audits for the classes of workflow bug that
+      # have real security or correctness consequences (unpinned actions,
+      # excessive token permissions, injection surfaces); offline mode keeps
+      # this deterministic -- no API dependency in a required job. Findings
+      # at `low` and above fail; deliberate exceptions live in
+      # .github/zizmor.yml with their reasons.
+      - name: zizmor (workflow audit)
+        if: always()
+        run: |
+          zizmor --no-online-audits --min-severity low \
+            --config .github/zizmor.yml .github/workflows/
+        shell: bash
+
+      # Syntax/semantics for the workflow files: expression typos, bad
+      # `needs:` references, unknown runner labels (custom bench labels are
+      # declared in .github/actionlint.yaml). Its shellcheck/pyflakes
+      # integrations are disabled: embedded run-blocks are already covered at
+      # this repo's own chosen floors by the steps in this job, and a second
+      # tool applying DIFFERENT floors to the same scripts would make the
+      # gate's level ambiguous.
+      - name: actionlint (workflow syntax)
+        if: always()
+        run: actionlint -shellcheck= -pyflakes=
         shell: bash
 
       - name: Bash syntax (bash -n)
@@ -181,10 +219,14 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/box
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # No job here pushes anything; do not persist the token into
+          # the checkout's config (zizmor: artipacked).
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.11'
 
@@ -228,4 +270,53 @@ jobs:
             python -m coverage report --omit="$OMIT" --skip-covered --sort=cover | tail -40
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+        shell: bash
+
+  # Known-vulnerability scan over the resolved Python dependency tree -- the
+  # counterpart of rust-checks' cargo-audit. Dependabot covers the ALERTING
+  # half on GitHub's schedule; this puts the check in the PR run, so a change
+  # that introduces a vulnerable resolution is red before merge, not
+  # discovered after. A separate JOB, not a step in `static-checks`: it
+  # depends on the PyPI advisory service, and that external flake must not
+  # couple into an already-required context. Ignored IDs live in
+  # tools/pip_audit_ignore.txt with reasons and owning issues (empty at
+  # introduction -- the tree was clean).
+  #
+  # SCOPE, stated honestly: this audits the environment CI RESOLVES TODAY
+  # (cli + [mcp] extra + the unit-test requirements). The box RUNTIME
+  # resolves its own dependencies unpinned at image-build time and is NOT
+  # covered here; that needs an audit against the box image's actual
+  # resolution, tracked as follow-up work.
+  pip-audit:
+    name: pip-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # No job here pushes anything; do not persist the token into
+          # the checkout's config (zizmor: artipacked).
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+
+      - name: Install the audited environment
+        run: |
+          # Upgrade the env's own bootstrap tooling first: stale seeded
+          # pip/setuptools carry advisories of their own, and auditing THOSE
+          # tells us about the runner image, not about this project's
+          # dependency tree.
+          pip install --upgrade pip setuptools
+          pip install -e "cli/[mcp]"
+          pip install 'pytest>=9,<10' 'pytest-timeout>=2.3,<3'
+          pip install -r test/requirements-unit.txt
+          pip install 'pip-audit==2.10.1'
+        shell: bash
+
+      - name: pip-audit
+        run: bash tools/run_pip_audit.sh
         shell: bash

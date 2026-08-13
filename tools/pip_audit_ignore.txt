@@ -1,0 +1,12 @@
+# Vulnerability IDs pip-audit must ignore, one per line, read by
+# tools/run_pip_audit.sh in the pip-audit job (static-checks.yml).
+#
+# An entry means "we know, and we cannot act yet" -- each needs the ID, the
+# reason, the date, and the owning issue, like:
+#
+#   PYSEC-2099-9999  # frobnicator<3 cap: fix needs the v3 port, issue #999, 2026-08-13
+#
+# Empty today: the resolved dependency tree had zero known vulnerabilities
+# when the job landed. When the job goes red, either upgrade the dependency
+# (preferred) or add the ID here with its story -- and delete the line the
+# moment the fix ships, or the two-sided review habit rots.

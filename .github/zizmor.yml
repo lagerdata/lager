@@ -1,0 +1,18 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# Config for the zizmor workflow-audit step in static-checks.yml. Every entry
+# here is a DELIBERATE exception with its reason; adding one silences a real
+# audit for real code, so each needs the same scrutiny as a shellcheck
+# exclusion or an import-baseline line.
+
+rules:
+  # nightly-bench.yml passes `secrets: inherit` to the two bench workflows it
+  # calls. Deliberate: the children need the bench credentials
+  # (LAGER_CI_EMAIL/PASSWORD, LAGER_BOX_IP), the caller is trigger-restricted
+  # to schedule + manual dispatch on this repo's refs (no pull_request, no
+  # fork surface), and enumerating secrets one by one here would mean editing
+  # two files every time the bench gains a credential.
+  secrets-inherit:
+    ignore:
+      - nightly-bench.yml

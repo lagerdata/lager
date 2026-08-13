@@ -36,7 +36,8 @@ updates:
         applies-to: version-updates
         patterns: ['*']
 
-  # Pinned action SHAs/tags across the five workflows. These gate every PR, so
+  # Pinned action SHAs across the workflows (SHA-pinned since the zizmor
+  # gate landed; dependabot keeps the pins moving). These gate every PR, so
   # a stale or yanked action is a CI outage, not just a staleness problem.
   - package-ecosystem: github-actions
     directory: /

@@ -29,6 +29,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Default token: checkout only. A job that needs more must say so itself.
+permissions:
+  contents: read
+
 jobs:
   unit-tests:
     name: unit (${{ matrix.name }})
@@ -63,10 +67,14 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # No job here pushes anything; do not persist the token into
+          # the checkout's config (zizmor: artipacked).
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.11'
 
@@ -116,10 +124,14 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # No job here pushes anything; do not persist the token into
+          # the checkout's config (zizmor: artipacked).
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python }}
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ matrix.python }}
 
@@ -179,10 +191,14 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/box
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # No job here pushes anything; do not persist the token into
+          # the checkout's config (zizmor: artipacked).
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.11'
 
