@@ -68,7 +68,7 @@ if __name__ == "__main__":
             prompt_toolkit >= 3.0, < 4
         ''',
         extras_require={
-            'mcp': ['mcp>=1.20.0,<2'],
+            'mcp': ['mcp>=1.20.0,<3'],
         },
         project_urls={
             'Bug Reports': 'https://github.com/lagerdata/lager/issues',
