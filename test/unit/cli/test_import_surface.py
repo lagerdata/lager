@@ -189,7 +189,7 @@ class GuardConsistencyTests(unittest.TestCase):
         root = pathlib.Path(__file__).resolve().parents[3] / 'cli'
         offenders = []
         for path in root.rglob('*.py'):
-            if 'elftools' in path.parts or 'vendor' in path.parts:
+            if 'vendor' in path.parts:
                 continue
             lines = path.read_text(errors='replace').splitlines()
             for i, line in enumerate(lines):

@@ -42,8 +42,6 @@ from .tunnel import serve_tunnel
 __all__ = [
     # Main command group (lazy loaded)
     "_debug",
-    # Helper modules (lazy loaded)
-    "gdb_debug",
     # Eagerly loaded modules
     "get_net_cache",
     "DebugNetCache",
@@ -61,7 +59,4 @@ def __getattr__(name):
     if name == "_debug":
         from .commands import _debug
         return _debug
-    elif name == "gdb_debug":
-        from .gdb import debug as gdb_debug
-        return gdb_debug
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
