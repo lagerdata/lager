@@ -21,6 +21,8 @@ deleted.)
 | `unit-tests.yml` | PR Gate: Unit Tests | `pull_request`, push to `main`, dispatch | `ubuntu-latest` | Unit suites (one pytest process per suite) + Python-version compat matrix |
 | `static-checks.yml` | PR Gate: Static Checks | `pull_request`, push to `main`, dispatch | `ubuntu-latest` | Syntax/lint floors over the tree the unit gate cannot reach, plus a coverage report |
 | `rust-checks.yml` | PR Gate: Rust Checks | `pull_request` + push (path-filtered), dispatch | `ubuntu-latest` | cargo check/clippy/audit for `box/oscilloscope-daemon` |
+| `packaging.yml` | PR Gate: Packaging | `pull_request`, push to `main`, dispatch | `ubuntu-latest` | Builds sdist+wheel, installs each in a clean venv, import-walks the installed package against a two-sided baseline |
+| `release-validation.yml` | Release: Validate Tag | push of `v*` tags, dispatch | `ubuntu-latest` | Same artifact proof against the tagged commit, plus version==tag; uploads `dist-<tag>` for the manual PyPI upload |
 
 Merge gating: the main-branch ruleset requires the six `unit (...)` contexts
 and `static-checks`. Those strings are **job** `name:` fields in

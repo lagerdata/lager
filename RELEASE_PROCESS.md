@@ -190,19 +190,29 @@ git tag -a vX.Y.Z -m "vX.Y.Z"
 git push upstream vX.Y.Z
 ```
 
-### 7. Build Distribution Packages
+### 7. Wait for Tag Validation, Then Download the Artifact
 
-Clean old artifacts and build:
+Pushing the tag triggers the **Release: Validate Tag** workflow
+(`.github/workflows/release-validation.yml`). It builds the sdist and wheel from the tagged
+commit, runs `twine check`, installs each into a clean venv, asserts the installed
+`lager --version` equals the tag, import-walks the installed package against
+`tools/packaging_import_baseline.txt`, and uploads the result as a workflow artifact named
+`dist-vX.Y.Z` (kept 90 days).
+
+Wait for it to go green, then download the artifact:
 
 ```bash
-cd cli
-rm -rf dist/ build/ *.egg-info
-python -m build
+gh run list --repo lagerdata/lager --workflow release-validation.yml --limit 1
+gh run download <run-id> --repo lagerdata/lager --name dist-vX.Y.Z --dir dist
 ```
 
-This creates `.tar.gz` and `.whl` files in `cli/dist/`.
+Do **not** rebuild locally. The artifact is the set of bytes the validation proved; a local
+rebuild is a different, unproven build. (If the workflow is red, the tag has a real problem
+-- fix it before anything reaches PyPI.)
 
 ### 8. Upload to PyPI
+
+Upload the downloaded artifact:
 
 ```bash
 twine upload dist/*
@@ -253,7 +263,7 @@ This project follows [Semantic Versioning](https://semver.org/):
 
 ## Troubleshooting
 
-**`python -m build` fails:** Make sure `build` is installed (`pip install build`) and you are in the `cli/` directory.
+**`python -m build` fails:** Make sure `build` is installed (`pip install build`) and you are in the `cli/` directory. (Local builds are only needed for debugging; releases use the CI artifact from step 7.)
 
 **`twine upload` fails:** Verify your PyPI API token is valid and the version does not already exist on PyPI. Check that the package name is `lager-cli`.
 
