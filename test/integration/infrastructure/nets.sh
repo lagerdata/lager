@@ -70,8 +70,6 @@ fi
 
 BOX="$1"
 TEST_NET_NAME="test_net_temp"
-TEST_NET_NAME2="test_net_temp2"
-BACKUP_FILE="/tmp/lager_nets_backup_$(date +%s).json"
 
 echo "========================================================================"
 echo "LAGER NETS COMPREHENSIVE TEST SUITE"

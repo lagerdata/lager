@@ -304,13 +304,16 @@ sleep 5
 
 echo -n "  Checking no script on box... "
 SCRIPT_EXISTS=$([ -n "$(read_script_on_box)" ] && echo 'yes' || echo 'no')
-# With no DEBUG section, there should be no NEW script written (old ones may persist)
-# The key is that connection succeeds
-if lager debug $NET status --box $BOX 2>&1 | grep -qi "Connected"; then
+# The announced check IS the assertion: with no DEBUG section in the config,
+# no script may be on the box. cleanup_script_file above verifies its own
+# removal, so a 'yes' here means this run WROTE one -- the exact defect this
+# test exists to catch. (This used to check connection status instead, with
+# track_test "pass" in BOTH arms -- a test that could not fail.)
+if [ "$SCRIPT_EXISTS" = 'no' ]; then
     track_test "pass"
 else
-    # Even if disconnected, test passes if no error
-    track_test "pass"
+    echo "(a script is present on the box after a no-DEBUG-section start)"
+    track_test "fail"
 fi
 
 kill $GDB_PID 2>/dev/null || true

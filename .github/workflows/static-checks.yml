@@ -145,10 +145,12 @@ jobs:
       # back on by deleting it from the list.
       #
       #   SC2320  39  `$?` reads echo/printf's status, not the command's.
-      #   SC2034  30  ~17 intentional constants (BMP280/BME280 register maps,
-      #               TEST_DELAY knobs, a color fallback) and ~13 captured-then-
-      #               ignored values that are latent MISSING ASSERTIONS -- see
-      #               test/COVERAGE.md. Fixing those changes what a test asserts.
+      #   SC2034 ~17  Intentional constants only (BMP280/BME280 register maps,
+      #               TEST_DELAY knobs, a color fallback). The ~13 captured-
+      #               then-ignored values that used to share this bucket now
+      #               assert (or were deleted) -- see test/COVERAGE.md.
+      #               Retiring the code entirely needs per-file disables for
+      #               the constants; ratchet follow-up.
       #   SC2155  16  `local x=$(cmd)` masks the command's return value.
       #   SC2164   4  `cd` without `|| exit`.
       #   SC2046   1  Unquoted command substitution.

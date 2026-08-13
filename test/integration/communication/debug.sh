@@ -1316,12 +1316,25 @@ if echo "$STDERR_OUTPUT" | grep -qi "Connecting to.*:.*serial.*Press Ctrl\+C to 
     echo "[OK] Header format: 'Connecting to {net}: {instrument} (serial {serial}) - Press Ctrl+C to exit'"
     mark_test_passed
 elif echo "$STDERR_OUTPUT" | grep -qi "Cannot connect\|Connection refused\|not responding"; then
-    echo "[WARNING] RTT telnet port not responding"
-    echo "  This can occur if firmware doesn't initialize RTT control block"
-    mark_test_passed
+    # The RTT-support probe above (RTT_SUPPORTED) decides whether this arm is
+    # a firmware limitation or a product failure. When the probe SAW RTT
+    # working, a refused connection here is real breakage; the old
+    # unconditional pass meant this test could not fail on RTT-capable
+    # firmware.
+    if [ "$RTT_SUPPORTED" = true ]; then
+        handle_test_error "Test 14.3" "RTT telnet refused although the firmware probe showed RTT working"
+    else
+        echo "[WARNING] RTT telnet port not responding"
+        echo "  This can occur if firmware doesn't initialize RTT control block"
+        mark_test_passed
+    fi
 else
-    echo "[WARNING] RTT startup behavior unclear - check output above"
-    mark_test_passed
+    if [ "$RTT_SUPPORTED" = true ]; then
+        handle_test_error "Test 14.3" "RTT startup output unrecognized although the firmware probe showed RTT working"
+    else
+        echo "[WARNING] RTT startup behavior unclear - check output above"
+        mark_test_passed
+    fi
 fi
 echo ""
 
@@ -1331,6 +1344,10 @@ if command -v nc >/dev/null 2>&1; then
     if timeout 2 bash -c "echo | nc -v localhost 9090" >/dev/null 2>&1; then
         echo "[OK] RTT telnet port (9090) is accessible"
         mark_test_passed
+    elif [ "$RTT_SUPPORTED" = true ]; then
+        # Same gate as 14.3: the probe saw RTT working, so an inaccessible
+        # port is a real failure, not a firmware limitation to wave through.
+        handle_test_error "Test 14.4" "RTT telnet port inaccessible although the firmware probe showed RTT working"
     else
         echo "[WARNING] RTT telnet port not accessible"
         echo "  J-Link GDB server may not have RTT enabled or firmware lacks RTT support"

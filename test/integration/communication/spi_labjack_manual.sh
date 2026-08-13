@@ -193,7 +193,13 @@ RC1=$?
 OUTPUT2=$(lager spi "$SPI_NET" transfer 12 --box "$BOX" 2>&1)
 RC2=$?
 lager gpo "$GPIO_CS" high --box "$BOX" >/dev/null 2>&1
-if [ $RC1 -eq 0 ] && [ $RC2 -eq 0 ]; then
+# Both captured outputs are checked, not just the exit codes: calibration
+# bytes are chip-programmed and vary, so no exact value can be asserted, but
+# a transfer that "succeeded" while printing nothing or an error line is a
+# failure this test used to wave through.
+if [ $RC1 -eq 0 ] && [ $RC2 -eq 0 ] \
+    && [ -n "$OUTPUT1" ] && [ -n "$OUTPUT2" ] \
+    && ! echo "$OUTPUT1$OUTPUT2" | grep -qi "error"; then
     track_test "pass"
 else
     track_test "fail"
