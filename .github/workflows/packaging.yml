@@ -1,0 +1,114 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# Proves that the artifact a user pip-installs actually works. Every other
+# job installs the CLI editable from a full checkout, so until this workflow
+# NOTHING validated the built wheel or sdist -- and the first run of these
+# checks against a built wheel found five defect classes behind twelve green
+# checks: the lager-mcp console script pointing at a module the wheel does
+# not ship, the vendored elftools tree missing a whole subpackage, two
+# cli.impl modules importing from box/, and prompt_toolkit undeclared.
+#
+# Steps, in dependency order (each is meaningless if the previous failed,
+# so no `if: always()` here):
+#
+#   build sdist+wheel -> twine check -> install the WHEEL in a fresh venv
+#   -> entry-point smoke -> import-walk every module against the committed
+#   baseline (tools/packaging_import_baseline.txt, two-sided) -> install the
+#   SDIST in a second venv and smoke it (a wheel built from a full checkout
+#   can be fine while the sdist is missing files -- MANIFEST.in problems
+#   surface only here).
+#
+# The `lager-mcp` entry point is deliberately NOT smoked: it targets
+# lager.mcp.server in the box/ tree, which the wheel has never shipped, so
+# the script is broken in every pip install. Tracked in issue #242; when
+# it is fixed or removed, add the smoke here.
+#
+# Tool versions are pinned like everywhere else in this repo: the baseline
+# was measured against these versions, and a floating builder turning this
+# red with no repo change is the exact failure mode the pins exist to stop.
+
+# Display name only -- the `packaging` JOB name below is intended to become
+# a required context in the main branch ruleset once it has soaked; never
+# rename it.
+name: "PR Gate: Packaging"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  packaging:
+    name: packaging
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Install build tooling (pinned)
+        run: pip install 'build==1.5.0' 'twine==7.0.0'
+        shell: bash
+
+      - name: Build sdist and wheel
+        # --outdir outside the workspace so nothing later can accidentally
+        # resolve modules from build residue.
+        run: |
+          cd cli
+          python -m build --outdir "$RUNNER_TEMP/dist"
+          ls -la "$RUNNER_TEMP/dist"
+        shell: bash
+
+      - name: twine check
+        run: twine check "$RUNNER_TEMP"/dist/*
+        shell: bash
+
+      - name: Install the wheel in a fresh venv and smoke the entry point
+        run: |
+          python -m venv "$RUNNER_TEMP/wheelenv"
+          "$RUNNER_TEMP/wheelenv/bin/pip" install --quiet "$RUNNER_TEMP"/dist/*.whl
+          installed=$("$RUNNER_TEMP/wheelenv/bin/lager" --version)
+          "$RUNNER_TEMP/wheelenv/bin/lager" --help > /dev/null
+          # The version the wheel reports must be the one the source declares;
+          # a mismatch means the build picked up something stale.
+          python - > "$RUNNER_TEMP/declared.txt" <<'PY'
+          import re, pathlib
+          text = pathlib.Path('cli/__init__.py').read_text()
+          print(re.search(r'__version__\s*=\s*[\'"]([^\'"]+)', text).group(1))
+          PY
+          declared=$(cat "$RUNNER_TEMP/declared.txt")
+          echo "wheel reports: $installed / source declares: $declared"
+          [ "$installed" = "$declared" ] || { echo "version mismatch"; exit 1; }
+        shell: bash
+
+      - name: Import-walk the installed wheel against the baseline
+        # Two-sided: new import failures fail, and a baseline entry that
+        # starts importing cleanly also fails ("remove it"). Run with the
+        # venv's python so the walk sees the installed artifact; the script
+        # itself asserts it resolved from inside the venv.
+        run: |
+          "$RUNNER_TEMP/wheelenv/bin/python" tools/check_imports.py \
+            --package cli --baseline tools/packaging_import_baseline.txt
+        shell: bash
+
+      - name: Install the sdist in a second fresh venv and smoke it
+        # The step that catches MANIFEST/package-data omissions: an sdist
+        # missing files still builds a wheel from what it has, so install it
+        # and re-run the same import walk rather than trusting the smoke.
+        run: |
+          python -m venv "$RUNNER_TEMP/sdistenv"
+          "$RUNNER_TEMP/sdistenv/bin/pip" install --quiet "$RUNNER_TEMP"/dist/*.tar.gz
+          "$RUNNER_TEMP/sdistenv/bin/lager" --version
+          "$RUNNER_TEMP/sdistenv/bin/python" tools/check_imports.py \
+            --package cli --baseline tools/packaging_import_baseline.txt
+        shell: bash

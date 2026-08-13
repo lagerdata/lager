@@ -1,0 +1,99 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# Runs on every v* tag push: the same artifact proof as "PR Gate: Packaging",
+# plus the two things only a tag can check -- that the version the artifact
+# reports IS the tag, and that the exact bytes a human will upload to PyPI
+# exist as a CI artifact rather than whatever a laptop rebuilds later.
+#
+# RELEASE_PROCESS.md step 7/8 changes accordingly: tag, wait for this
+# workflow to go green, download the `dist-<tag>` artifact, and
+# `twine upload` THAT. Publishing stays manual and human-owned; this
+# workflow only proves and stages the artifact.
+#
+# Deliberately duplicates the packaging steps rather than `workflow_call`ing
+# them: a tag validation must keep working even mid-refactor of the PR gate,
+# and the two already differ (version==tag assert, artifact upload, no
+# baseline soak concerns). Keep them in step by hand; they are short.
+
+name: "Release: Validate Tag"
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-validate:
+    name: release-validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Install build tooling (pinned)
+        run: pip install 'build==1.5.0' 'twine==7.0.0'
+        shell: bash
+
+      - name: Build sdist and wheel
+        run: |
+          cd cli
+          python -m build --outdir "$GITHUB_WORKSPACE/dist"
+          ls -la "$GITHUB_WORKSPACE/dist"
+        shell: bash
+
+      - name: twine check
+        run: twine check dist/*
+        shell: bash
+
+      - name: Version must equal the tag
+        # v0.36.1 -> 0.36.1. The classic broken release is a tag cut after
+        # bumping the CHANGELOG but not cli/__init__.py; this is the only
+        # place that skew is visible before PyPI.
+        if: github.ref_type == 'tag'
+        run: |
+          python -m venv "$RUNNER_TEMP/tagenv"
+          "$RUNNER_TEMP/tagenv/bin/pip" install --quiet dist/*.whl
+          installed=$("$RUNNER_TEMP/tagenv/bin/lager" --version)
+          expected="${GITHUB_REF_NAME#v}"
+          echo "artifact reports: $installed / tag says: $expected"
+          [ "$installed" = "$expected" ] || { echo "version does not match the tag"; exit 1; }
+        shell: bash
+
+      - name: Wheel install + import walk
+        run: |
+          python -m venv "$RUNNER_TEMP/wheelenv"
+          "$RUNNER_TEMP/wheelenv/bin/pip" install --quiet dist/*.whl
+          "$RUNNER_TEMP/wheelenv/bin/lager" --version
+          "$RUNNER_TEMP/wheelenv/bin/lager" --help > /dev/null
+          "$RUNNER_TEMP/wheelenv/bin/python" tools/check_imports.py \
+            --package cli --baseline tools/packaging_import_baseline.txt
+        shell: bash
+
+      - name: Sdist install + import walk
+        run: |
+          python -m venv "$RUNNER_TEMP/sdistenv"
+          "$RUNNER_TEMP/sdistenv/bin/pip" install --quiet dist/*.tar.gz
+          "$RUNNER_TEMP/sdistenv/bin/lager" --version
+          "$RUNNER_TEMP/sdistenv/bin/python" tools/check_imports.py \
+            --package cli --baseline tools/packaging_import_baseline.txt
+        shell: bash
+
+      - name: Upload the release artifact
+        # These exact bytes are what gets twine-uploaded. 90 days outlives
+        # any reasonable gap between tagging and publishing.
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ github.ref_name }}
+          path: dist/
+          retention-days: 90
+          if-no-files-found: error

@@ -1,0 +1,29 @@
+# Modules in the built lager-cli wheel that are KNOWN not to import from a
+# clean pip install. Read by tools/check_imports.py in the packaging gate.
+#
+# TWO-SIDED: a failure missing from this list fails the gate, and an entry
+# here that starts importing cleanly ALSO fails ("remove it"), so this file
+# can only shrink honestly. Every functional entry names an owning issue;
+# fix the issue, delete the lines, and the gate locks the fix in.
+
+# NOTE, deliberately not listed: setup.py ships inside the wheel as
+# `cli.setup` (the `cli` package root IS the cli/ source dir, and setuptools
+# includes every root-level module). Whether it IMPORTS depends on the venv:
+# Python 3.11's ensurepip still seeds setuptools into fresh venvs, so on the
+# gate's pinned 3.11 it imports cleanly; on 3.12+ venvs (no seeded
+# setuptools) it fails. The gate pins 3.11, so it is not an entry here -- if
+# the packaging job's Python ever moves to 3.12+, this module will surface
+# as a new failure with this note explaining it. Shipping setup.py at all is
+# structural (excluding one module from a package needs a layout change) and
+# harmless to users.
+
+# The vendored pyelftools tree is missing its construct/lib/ subpackage IN
+# THE REPO -- these modules cannot import from any install, dev included,
+# which also breaks the `lager debug gdb` ELF path. Issue #240.
+cli.elftools.*
+cli.commands.development.debug.gdb
+
+# These import from the box/ tree (`lager.*`), which the wheel does not
+# ship; they work only where box/ is on the path. Issue #241.
+cli.impl.box_config
+cli.impl.power.enable_disable
