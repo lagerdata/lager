@@ -1,0 +1,9 @@
+# Windows-only additions to tools/packaging_import_baseline.txt, read by the
+# `xplat (windows)` job in xplat-smoke.yml (both files are passed; entries
+# are unioned). Same two-sided contract: a failure not listed fails the job,
+# and a listed module that starts importing cleanly also fails ("remove it").
+#
+# Seeded empirically from the job's first runs -- Windows had never executed
+# ANY of this package in CI before this workflow, so the honest baseline is
+# what the runner reports, not what we guess. Each functional entry needs a
+# reason and an owning issue, same as every other baseline in this repo.
