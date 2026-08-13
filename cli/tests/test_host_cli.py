@@ -147,15 +147,19 @@ class TestInstallCmdContract:
         for code in HOST_CLI_EXIT_MESSAGES:
             assert f'exit {code}' in cmd
 
-    def test_lager_mcp_symlink_is_guarded_and_best_effort(self):
-        # Older deployed refs don't ship the lager-mcp entry point; the link
-        # must be conditional so no dangling symlink is created, and its
+    def test_lager_mcp_link_is_removed_not_created(self):
+        # The lager-mcp console script targeted lager.mcp.server in the box
+        # tree, which the wheel never shipped, so the symlink this command
+        # used to create always pointed at a script that exited immediately.
+        # Boxes deployed from an older ref still carry it, so the install
+        # actively removes it rather than merely no longer creating it. Its
         # absence must not fail the command.
         mcp_line = next(
             line for line in host_cli_install_cmd().splitlines()
             if 'lager-mcp' in line
         )
-        assert 'test -x' in mcp_line
+        assert mcp_line.startswith('rm -f ')
+        assert 'ln -sfn' not in mcp_line
         assert mcp_line.rstrip().endswith('|| true')
 
     def test_failure_messages(self):

@@ -19,10 +19,11 @@
 #   can be fine while the sdist is missing files -- MANIFEST.in problems
 #   surface only here).
 #
-# The `lager-mcp` entry point is deliberately NOT smoked: it targets
-# lager.mcp.server in the box/ tree, which the wheel has never shipped, so
-# the script is broken in every pip install. Tracked in issue #242; when
-# it is fixed or removed, add the smoke here.
+# The `lager-mcp` entry point was removed rather than fixed (issue #242): it
+# targeted lager.mcp.server in the box/ tree, which the wheel has never
+# shipped, and the MCP server is box-side code serving port 8100 rather than
+# anything a pip install should launch. The wheel smoke asserts the script is
+# ABSENT, so re-adding a console script that cannot resolve fails here.
 #
 # Tool versions are pinned like everywhere else in this repo: the baseline
 # was measured against these versions, and a floating builder turning this
@@ -79,6 +80,15 @@ jobs:
           "$RUNNER_TEMP/wheelenv/bin/pip" install --quiet "$RUNNER_TEMP"/dist/*.whl
           installed=$("$RUNNER_TEMP/wheelenv/bin/lager" --version)
           "$RUNNER_TEMP/wheelenv/bin/lager" --help > /dev/null
+          # Every console script the wheel declares must actually run. pip
+          # creates them without validating the target, so a script pointing
+          # at a module the wheel does not ship installs fine and dies on
+          # first use -- which is exactly what `lager-mcp` did (issue #242).
+          if [ -e "$RUNNER_TEMP/wheelenv/bin/lager-mcp" ]; then
+            echo "lager-mcp is back in the wheel; it targets box-side code" >&2
+            echo "the wheel does not ship. See issue #242." >&2
+            exit 1
+          fi
           # The version the wheel reports must be the one the source declares;
           # a mismatch means the build picked up something stale.
           python - > "$RUNNER_TEMP/declared.txt" <<'PY'
