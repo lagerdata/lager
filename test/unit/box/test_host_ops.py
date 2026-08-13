@@ -203,26 +203,52 @@ class UdevApply(unittest.TestCase):
 
 
 class BoxcfgSudoers(unittest.TestCase):
-    # For the default user, the generated bootstrap command must stay
-    # byte-identical to the command `lager install`/`lager update` shipped
-    # before the rule content was centralized here (v0.31.2) — re-running
-    # against an already-provisioned lagerdata box must be a no-op overwrite.
-    LEGACY_CMD = (
-        "printf '%s\\n' "
-        "'lagerdata ALL=(root) NOPASSWD: SETENV: /usr/bin/apt-get' "
-        "'lagerdata ALL=(root) NOPASSWD: /bin/mkdir, /bin/chown, "
+    # For the default user, the GRANTS must stay byte-identical to what
+    # `lager install`/`lager update` shipped before the rule content was
+    # centralized here (v0.31.2) — re-running against an already-provisioned
+    # lagerdata box must not change what the box user is allowed to do.
+    #
+    # The generated command is no longer byte-identical to that era: the
+    # ownership banner was added ahead of the rules. That is deliberate and
+    # touches no grant — which is exactly what the split below pins. If this
+    # test fails because a rule line moved, that is a real permission change
+    # and needs the same scrutiny as any other.
+    LEGACY_RULES = [
+        "lagerdata ALL=(root) NOPASSWD: SETENV: /usr/bin/apt-get",
+        "lagerdata ALL=(root) NOPASSWD: /bin/mkdir, /bin/chown, "
         "/usr/sbin/sysctl --system, /sbin/sysctl --system, "
         "/usr/bin/tee /etc/sysctl.d/99-lager-box-config.conf, "
         "/bin/rm -f /etc/sysctl.d/99-lager-box-config.conf, "
-        "/bin/cp /etc/lager/box_config.applied.json /etc/lager/box_config.json' "
-        "| sudo tee /etc/sudoers.d/lager-box-config >/dev/null "
-        "&& sudo chmod 440 /etc/sudoers.d/lager-box-config "
-        "&& sudo touch /etc/lager/.boxcfg-sudoers-v2 "
-        "&& sudo chmod 644 /etc/lager/.boxcfg-sudoers-v2"
-    )
+        "/bin/cp /etc/lager/box_config.applied.json /etc/lager/box_config.json",
+    ]
 
-    def test_default_user_matches_legacy_command(self):
-        self.assertEqual(ops.boxcfg_sudoers_bootstrap_cmd(), self.LEGACY_CMD)
+    def test_default_user_grants_match_legacy(self):
+        self.assertEqual(ops.boxcfg_sudoers_rules(), self.LEGACY_RULES)
+
+    def test_bootstrap_cmd_writes_banner_then_legacy_grants(self):
+        cmd = ops.boxcfg_sudoers_bootstrap_cmd()
+        expected_lines = ops.BOXCFG_SUDOERS_BANNER + self.LEGACY_RULES
+        quoted = " ".join(f"'{line}'" for line in expected_lines)
+        self.assertEqual(
+            cmd,
+            f"printf '%s\\n' {quoted} "
+            "| sudo tee /etc/sudoers.d/lager-box-config >/dev/null "
+            "&& sudo chmod 440 /etc/sudoers.d/lager-box-config "
+            f"&& sudo touch {ops.BOXCFG_SUDOERS_MARKER} "
+            f"&& sudo chmod 644 {ops.BOXCFG_SUDOERS_MARKER}",
+        )
+
+    def test_marker_stays_v2_so_existing_boxes_are_not_rewritten(self):
+        # Deliberate: the probe skips the bootstrap while the marker is
+        # present, so keeping v2 means already-provisioned boxes are left
+        # alone. The banner is comments only, and both generations grant
+        # identical commands, so a box on either one is correct. Bumping to
+        # deliver comments would charge every box an interactive sudo prompt
+        # (`sudo tee` into /etc/sudoers.d/ has no NOPASSWD grant) and would
+        # fail outright on tty-less automated updates.
+        #
+        # Bump for a rule-line change, not for a comment.
+        self.assertEqual(ops.BOXCFG_SUDOERS_MARKER, "/etc/lager/.boxcfg-sudoers-v2")
 
     def test_rules_name_the_given_user(self):
         # The whole point of parameterizing: on a box whose login user isn't

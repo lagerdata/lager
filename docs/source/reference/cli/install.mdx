@@ -72,6 +72,41 @@ lager install --ip 192.168.1.100 --skip-jlink --skip-firewall
 lager install --ip 192.168.1.100 --yes
 ```
 
+## Passwordless sudo
+
+Installation configures passwordless `sudo` for the box login user. The CLI drives
+the box over non-interactive SSH, where `sudo` has no terminal to prompt against,
+so the grants have to be in place before provisioning can run.
+
+Lager writes these files, and only these files, under `/etc/sudoers.d/`:
+
+| File | Written by | Grants |
+|------|-----------|--------|
+| `lagerdata-udev` | `lager install` | udev rule deployment, modprobe blacklist, Docker group and service control, firewall helper install/run, `/etc/lager` file writes |
+| `lager-box-config` | `lager install`, `lager update` | `apt-get`, `sysctl`, and the path-scoped writes `lager box-config apply` needs |
+| `lager-bench-json` | Operator, on boxes predating the grant in `lagerdata-udev` | Writing `/etc/lager/bench.json` |
+
+<Warning>
+**The box login user is root-equivalent by design.** Provisioning a box requires
+root — deploying udev rules runs commands as root by construction, and `apt-get`
+executes arbitrary commands as root through its own configuration. The grants
+above are written as specific commands to keep the blast radius small and the
+file readable, but they are **not a privilege boundary**: anyone who can log in
+as the box user can obtain root on that box.
+
+Treat the box login account as equivalent to root when deciding who holds its
+SSH key, and prefer a dedicated user on a dedicated machine.
+</Warning>
+
+Each of the three files is **regenerated in full** on every run — that is what
+keeps a box on the current grant shape. A grant added *inside* one of them is
+lost the next time it is written, so each file opens with a header saying so.
+
+Lager never reads, edits, or removes any other file in `/etc/sudoers.d/`. If you
+or a box-management platform need additional grants, put them in a separate file
+there — for example `/etc/sudoers.d/zz-local`, which sorts after Lager's files so
+its rules win — and Lager will leave it alone, including during `lager uninstall`.
+
 ## SSH Authentication
 
 The command attempts key-based SSH authentication first. If that fails, it offers to continue with password authentication. For new hosts, the SSH host key is accepted automatically.

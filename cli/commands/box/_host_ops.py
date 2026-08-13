@@ -40,6 +40,65 @@ _UDEV_HEADER = (
     "# Managed by `lager box-config udev`; manual edits are overwritten on apply.\n"
 )
 
+# --- Sudoers ownership contract ---------------------------------------------
+#
+# Lager writes exactly three files under /etc/sudoers.d/ and never reads,
+# edits, or removes any other file in that directory:
+#
+#   lagerdata-udev    cli/deployment/scripts/setup_and_deploy_box.sh
+#                     (`lager install` only)
+#   lager-box-config  boxcfg_sudoers_bootstrap_cmd() below
+#                     (`lager install` and `lager update`)
+#   lager-bench-json  the operator-pasted snippet in cli/commands/box/dut.py
+#                     (fallback for boxes predating the bench.json grants in
+#                     lagerdata-udev)
+#
+# Every write is a `tee` to one of those fixed paths, guarded by `visudo -c`.
+# There are no globs, no directory recreation, no renames; the only removal is
+# `lager uninstall`'s `rm -f` naming those same three paths. Operator- and
+# platform-owned files in /etc/sudoers.d/ are safe, by construction.
+#
+# What is NOT safe is a grant added *inside* one of the three: the files are
+# regenerated wholesale on every run, which is deliberate (a box always ends
+# up with the current grant shape) but silently discards anything an operator
+# put there. Nothing on the box said so, which is what sudoers_banner_lines()
+# below fixes — every writer emits the banner, so the warning is where the
+# operator is. test/unit/box/test_sudoers_contract.py pins both the banner and
+# the three-path allowlist.
+#
+# The banner text must survive two hostile quoting contexts, so it contains no
+# single quotes and no backticks: boxcfg_sudoers_bootstrap_cmd() wraps each
+# line in shell single quotes, and setup_and_deploy_box.sh emits its copy from
+# an *unquoted* heredoc where backticks would run as command substitutions.
+# Command names therefore appear bare (`lager install`, not quoted).
+
+# The example filename sorts after every file Lager owns (lager-bench-json,
+# lager-box-config, lagerdata-udev). sudo reads /etc/sudoers.d/ in lexical
+# order and the LAST matching rule wins, so a grant there is never narrowed by
+# one of Lager's — which is the point of sending operators to it. A dot in the
+# name would make sudo skip the file entirely, so the example has none.
+_SUDOERS_CONTRACT_LINES = (
+    "# Lager writes only the files it owns under /etc/sudoers.d/ and never touches",
+    "# any other file in this directory, so keep operator or platform grants in a",
+    "# SEPARATE file (for example /etc/sudoers.d/zz-local); those survive every",
+    "# Lager run.",
+)
+
+
+def sudoers_banner_lines(managed_by: str) -> List[str]:
+    """Comment header for a Lager-managed /etc/sudoers.d/ file. `managed_by`
+    is the file-specific lifecycle sentence (which command rewrites or removes
+    it); the shared contract paragraph follows it unchanged.
+
+    Returns bare lines with no trailing newlines — callers join them the way
+    their transport needs (printf args, heredoc body, pasted snippet)."""
+    if "'" in managed_by or "`" in managed_by:
+        # Would break the shell quoting at one of the two emit sites; see the
+        # contract comment above.
+        raise ValueError(f"sudoers banner text must not be quoted: {managed_by!r}")
+    return [f"# {managed_by}", *_SUDOERS_CONTRACT_LINES]
+
+
 # --- Box-config sudoers rule: single source of truth ------------------------
 #
 # `lager install` and `lager update` write this rule to BOXCFG_SUDOERS_PATH
@@ -51,9 +110,49 @@ _UDEV_HEADER = (
 #
 # The username lands inside a root-owned sudoers file, so callers must gate
 # interpolation on is_valid_unix_username().
+#
+# The marker gates rewrites: `lager update`'s probe skips the bootstrap
+# entirely when the marker is present and `sudo -n apt-get` works, so any
+# change to what this file contains reaches an already-provisioned box only if
+# the marker name changes too.
+#
+# **Deliberately still v2 after the ownership banner was added.** Bumping it
+# would rewrite the file on every existing box, and that rewrite needs an
+# interactive sudo password — `sudo tee` into /etc/sudoers.d/ is not covered
+# by any NOPASSWD grant Lager installs. Charging the whole fleet a password
+# prompt to deliver five comment lines is a bad trade, and on a box updated by
+# a script with no tty the bootstrap cannot succeed at all, so it would fail
+# and warn on every subsequent run. Existing boxes therefore keep the
+# banner-less file until they are reinstalled; both generations grant exactly
+# the same commands, so nothing depends on which one a box has.
+#
+# Bump it for a change to the RULE LINES, where a stale generation is a real
+# defect. Say so in the changelog when you do — see the note in update.py's
+# box-config sudoers step for what a bump costs.
+#
+# Import the constant rather than writing the path out. install/update used to
+# hardcode it in their probes, which meant a bump would have moved the file
+# Lager wrote without moving the file it checked for — the rewrite would have
+# been skipped everywhere, forever. test_sudoers_contract.py fails on any new
+# hardcoded copy.
 
 BOXCFG_SUDOERS_PATH = "/etc/sudoers.d/lager-box-config"
 BOXCFG_SUDOERS_MARKER = "/etc/lager/.boxcfg-sudoers-v2"
+BOXCFG_SUDOERS_BANNER = sudoers_banner_lines(
+    "Managed by lager install and lager update; manual edits are overwritten."
+)
+
+# The udev grants have no marker and no update-path writer: only
+# setup_and_deploy_box.sh (`lager install`) writes /etc/sudoers.d/lagerdata-udev,
+# so this banner reaches an existing box only when someone re-installs it. The
+# lifecycle line says `lager install` alone rather than claiming an update path
+# that does not exist — `lager update` only chowns the file to root:root.
+# The heredoc in setup_and_deploy_box.sh carries a byte-identical copy (it runs
+# from shell, with no access to this module); test_sudoers_contract.py pins the
+# two together.
+UDEV_SUDOERS_BANNER = sudoers_banner_lines(
+    "Managed by lager install; manual edits are overwritten."
+)
 
 # useradd's default charset plus uppercase and dots (both appear in real
 # deployments and are harmless in sudoers). Every allowed character is inert
@@ -69,12 +168,35 @@ def is_valid_unix_username(user: Optional[str]) -> bool:
 
 
 def boxcfg_sudoers_rules(user: str = "lagerdata") -> List[str]:
-    """The NOPASSWD rule lines for `lager box-config apply`. tee/rm/sysctl
-    are path-scoped so a compromised account cannot escalate via them;
-    apt-get and mkdir/chown are unscoped because the package list and host
-    paths are user-defined. SETENV on apt-get is required so
-    DEBIAN_FRONTEND=noninteractive propagates and package postinst scripts
-    (iptables-persistent, etc.) don't prompt.
+    """The NOPASSWD rule lines for `lager box-config apply`.
+
+    THE BOX LOGIN USER IS ROOT-EQUIVALENT BY DESIGN. These grants are a
+    convenience — they keep provisioning from prompting for a password over
+    BatchMode SSH — not a privilege boundary, and they cannot be made into
+    one by narrowing individual entries. Three independent paths to root
+    exist in what Lager must grant to provision a box at all:
+
+      - `apt-get` runs arbitrary commands as root via its own config
+        (`-o APT::Update::Pre-Invoke::=...`), and SETENV widens that further.
+        SETENV is required so DEBIAN_FRONTEND=noninteractive propagates and
+        package postinst scripts (iptables-persistent, etc.) don't prompt.
+      - the lagerdata-udev grants pair `cp /tmp/*.rules /etc/udev/rules.d/`
+        with `udevadm control --reload-rules`; udev rules run commands as
+        root via `RUN+=`, so deploying them IS root by construction.
+      - the same file lets the login user `install` a script from
+        world-writable /tmp to a root-owned path and then execute it.
+
+    Path-scoping tee/rm/sysctl (and any future scoping of mkdir/chown) is
+    blast-radius hygiene: it keeps a mistake from spreading, and makes an
+    audit of this file shorter. It is NOT containment, and describing it that
+    way is worse than saying nothing — a reader who sees a tidy list of
+    specific commands concludes the account is confined when it is not. This
+    docstring used to make exactly that claim.
+
+    Treat the login account as equivalent to root when deciding who may hold
+    its SSH key. Confining it would mean replacing the three paths above with
+    fixed root-owned wrapper scripts the login user cannot edit; that is a
+    real project, not a rule edit.
 
     Raises ValueError on a non-plain username: callers validate first, so
     this is a backstop that makes a future caller that forgets fail loudly
@@ -94,8 +216,13 @@ def boxcfg_sudoers_rules(user: str = "lagerdata") -> List[str]:
 def boxcfg_sudoers_bootstrap_cmd(user: str = "lagerdata") -> str:
     """One shell command that installs the box-config sudoers rule plus the
     versioned marker file. Used verbatim by `lager install` and
-    `lager update`; the manual snippet in sudoers_bootstrap() mirrors it."""
-    quoted_rules = " ".join(f"'{r}'" for r in boxcfg_sudoers_rules(user))
+    `lager update`; the manual snippet in sudoers_bootstrap() mirrors it.
+
+    The banner lines are `#` comments, so they are inert to sudoers and to
+    `visudo -c` — they exist to tell whoever opens the file on the box that
+    Lager rewrites it (see the ownership-contract comment above)."""
+    lines = BOXCFG_SUDOERS_BANNER + boxcfg_sudoers_rules(user)
+    quoted_rules = " ".join(f"'{r}'" for r in lines)
     return (
         f"printf '%s\\n' {quoted_rules} "
         f"| sudo tee {BOXCFG_SUDOERS_PATH} >/dev/null "
@@ -114,13 +241,15 @@ def udev_sudoers_bootstrap(user: str = "lagerdata") -> str:
     # snippet; the operator substitutes their real user.
     if not is_valid_unix_username(user):
         user = "lagerdata"
+    banner = "".join(f"  {line}\n" for line in UDEV_SUDOERS_BANNER)
     return (
         "Applying user udev rules needs the passwordless-sudo udev grant that the "
         "box setup script installs. If it's missing (older box), re-run the box "
         "setup/deploy, or add it ONCE on the box:\n"
         "\n"
         "  sudo tee /etc/sudoers.d/lagerdata-udev >/dev/null <<'SUDOERS'\n"
-        f"  {user} ALL=(ALL) NOPASSWD: /bin/cp /tmp/*.rules /etc/udev/rules.d/\n"
+        + banner
+        + f"  {user} ALL=(ALL) NOPASSWD: /bin/cp /tmp/*.rules /etc/udev/rules.d/\n"
         f"  {user} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/udev/rules.d/*.rules\n"
         f"  {user} ALL=(ALL) NOPASSWD: /usr/bin/udevadm control --reload-rules\n"
         f"  {user} ALL=(ALL) NOPASSWD: /usr/bin/udevadm trigger\n"
@@ -137,25 +266,31 @@ def sudoers_bootstrap(user: str = "lagerdata") -> str:
     # boxcfg_sudoers_rules so its ValueError backstop can't fire mid-error.
     if not is_valid_unix_username(user):
         user = "lagerdata"
-    rules = boxcfg_sudoers_rules(user)
+    # Same line list as boxcfg_sudoers_bootstrap_cmd(), banner included, so a
+    # hand-pasted file is byte-identical to the one install/update write —
+    # otherwise the operator ends up with the grants but not the warning.
+    lines = BOXCFG_SUDOERS_BANNER + boxcfg_sudoers_rules(user)
+    printf_args = "".join(f"    '{line}' \\\n" for line in lines)
     return (
         "Box-config apply needs passwordless sudo for a small set of commands. "
         "Run this ONCE on the box (you'll be prompted for the sudo password "
         "the one time):\n"
         "\n"
         "  printf '%s\\n' \\\n"
-        f"    '{rules[0]}' \\\n"
-        f"    '{rules[1]}' \\\n"
-        f"    | sudo tee {BOXCFG_SUDOERS_PATH} >/dev/null\n"
+        + printf_args
+        + f"    | sudo tee {BOXCFG_SUDOERS_PATH} >/dev/null\n"
         f"  sudo chmod 440 {BOXCFG_SUDOERS_PATH}\n"
         f"  sudo touch {BOXCFG_SUDOERS_MARKER} && sudo chmod 644 {BOXCFG_SUDOERS_MARKER}\n"
         "\n"
-        "Then re-run `lager box-config apply`. tee/rm/sysctl are path-scoped so a "
-        f"compromised {user} account cannot escalate to root via them; apt-get "
-        "and mkdir/chown are unscoped because the package list and host paths are "
-        "user-defined. SETENV on apt-get is required so "
-        "`DEBIAN_FRONTEND=noninteractive` propagates and package postinst scripts "
-        "(iptables-persistent, etc.) don't prompt."
+        "Then re-run `lager box-config apply`.\n"
+        "\n"
+        f"These grants make the {user} account root-equivalent, by design: "
+        "`apt-get` can run arbitrary commands as root through its own config, "
+        "and SETENV on it is required so `DEBIAN_FRONTEND=noninteractive` "
+        "propagates and package postinst scripts (iptables-persistent, etc.) "
+        "don't prompt. Path-scoping on tee/rm/sysctl limits blast radius; it "
+        "is not a privilege boundary. Provisioning a box needs root, so treat "
+        f"anyone holding the {user} SSH key as holding root on this box."
     )
 
 _SUDO_BASE_TEXT = "passwordless sudo is not configured on the box for the apply commands."

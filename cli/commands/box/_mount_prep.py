@@ -25,7 +25,7 @@ import shlex
 from dataclasses import dataclass
 from typing import Optional
 
-from ._host_ops import is_valid_unix_username
+from ._host_ops import sudoers_bootstrap as _boxcfg_sudoers_bootstrap
 from ._ssh import SshRunner, default_ssh_runner, resolve_box_user, sudo_error_message
 
 CONTAINER_UID = 33
@@ -35,23 +35,18 @@ EXPECTED_OWNER = f"{CONTAINER_UID}:{CONTAINER_GID}"
 
 def sudoers_bootstrap(user: str = "lagerdata") -> str:
     """Copy-pasteable sudoers setup, scoped to the box's actual SSH user."""
-    # Error-path text renderer: never raise, never interpolate a non-plain
-    # username (it comes from local box storage unvalidated) into a
-    # paste-into-root-shell snippet. Same rule as _host_ops.sudoers_bootstrap.
-    if not is_valid_unix_username(user):
-        user = "lagerdata"
-    return (
-        "Auto-prep needs passwordless sudo for two specific commands. Run this "
-        "ONCE on the box (you'll be prompted for the sudo password the one "
-        "time):\n"
-        "\n"
-        f"  echo '{user} ALL=(root) NOPASSWD: /bin/mkdir, /bin/chown' \\\n"
-        "    | sudo tee /etc/sudoers.d/lager-box-config\n"
-        "  sudo chmod 440 /etc/sudoers.d/lager-box-config\n"
-        "\n"
-        "Then re-run `lager box-config mount add ...` (or `apply`). The "
-        "rule is narrow-scoped (mkdir + chown only)."
-    )
+    # Delegates to the box-config bootstrap text rather than printing its own
+    # snippet. /etc/sudoers.d/lager-box-config is a Lager-owned file with one
+    # canonical content (see the ownership contract in _host_ops), and this
+    # function used to `tee` a strict subset of it — mkdir + chown alone. An
+    # operator who pasted it got auto-prep working and silently lost the
+    # apt-get/sysctl/cp grants that `lager box-config apply` needs, with no
+    # marker file written, so the next update re-bootstrapped and prompted for
+    # the sudo password again. The full rule set covers mkdir/chown too.
+    #
+    # The never-raise / never-interpolate-an-unvalidated-username rule the old
+    # body implemented lives in the delegate, so it still holds.
+    return _boxcfg_sudoers_bootstrap(user)
 
 _SUDO_BASE_TEXT = "passwordless sudo is not configured on the box for the auto-prep commands."
 

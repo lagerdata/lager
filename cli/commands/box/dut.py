@@ -32,7 +32,7 @@ from typing import Any, Optional
 import click
 
 from .config import _resolve_box
-from ._host_ops import is_valid_unix_username
+from ._host_ops import is_valid_unix_username, sudoers_banner_lines
 from ._ssh import (
     default_ssh_runner,
     resolve_box_user,
@@ -51,6 +51,10 @@ _BENCH_JSON_PATH = "/etc/lager/bench.json"
 # shlex.quote is a no-op and the quoted command still matches the sudoers spec.
 _BENCH_JSON_TMP_PATH = "/tmp/lager-bench.json.tmp"
 
+_BENCH_SUDOERS_BANNER = sudoers_banner_lines(
+    "Managed by Lager; lager uninstall --all removes this file."
+)
+
 _BENCH_SUDO_BASE = (
     "writing /etc/lager/bench.json needs passwordless sudo — a normally-"
     "installed box owns /etc/lager as www-data, so the login user can't write "
@@ -66,13 +70,20 @@ def _bench_sudoers_bootstrap(user: str = "lagerdata") -> str:
     # paste-into-root-shell snippet. Same rule as _host_ops.sudoers_bootstrap.
     if not is_valid_unix_username(user):
         user = "lagerdata"
+    # Third of the three files Lager owns under /etc/sudoers.d/ (see the
+    # ownership contract in _host_ops). Unlike the other two nothing
+    # regenerates it — a modern box carries these grants inside
+    # lagerdata-udev — but `lager uninstall --all` removes it by name, so it
+    # still gets the banner: an operator grant parked here is not safe either.
+    banner = "".join(f"  {line}\n" for line in _BENCH_SUDOERS_BANNER)
     return (
         "This box is missing the bench.json sudo grant (older box, or not yet "
         "re-provisioned). Re-provision with `lager update --box <BOX>` (or "
         "`lager install`), or add it ONCE on the box:\n"
         "\n"
         "  sudo tee /etc/sudoers.d/lager-bench-json >/dev/null <<'SUDOERS'\n"
-        f"  {user} ALL=(ALL) NOPASSWD: /bin/cp /tmp/lager-bench.json.tmp /etc/lager/bench.json\n"
+        + banner
+        + f"  {user} ALL=(ALL) NOPASSWD: /bin/cp /tmp/lager-bench.json.tmp /etc/lager/bench.json\n"
         f"  {user} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/lager/bench.json\n"
         "  SUDOERS\n"
         "  sudo chmod 440 /etc/sudoers.d/lager-bench-json\n"

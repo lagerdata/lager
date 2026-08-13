@@ -22,7 +22,11 @@ from ...box_storage import (
 )
 from ...core.ssh_utils import host_in_known_hosts
 from ...errors import ssh_error, LagerError
-from ..box._host_ops import boxcfg_sudoers_bootstrap_cmd, is_valid_unix_username
+from ..box._host_ops import (
+    BOXCFG_SUDOERS_MARKER,
+    boxcfg_sudoers_bootstrap_cmd,
+    is_valid_unix_username,
+)
 
 
 def get_script_path(script_name: str, subdir: str = "scripts") -> Path:
@@ -511,7 +515,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
         try:
             precheck = subprocess.run(
                 ["ssh", "-o", "BatchMode=yes", ssh_host,
-                 "test -f /etc/lager/.boxcfg-sudoers-v2 "
+                 f"test -f {BOXCFG_SUDOERS_MARKER} "
                  "&& sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1"],
                 capture_output=True, timeout=15,
             )
@@ -548,7 +552,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                     # shape re-bootstrap automatically.
                     verify_result = subprocess.run(
                         ["ssh", "-o", "BatchMode=yes", ssh_host,
-                         "test -f /etc/lager/.boxcfg-sudoers-v2 "
+                         f"test -f {BOXCFG_SUDOERS_MARKER} "
                          "&& sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1"],
                         capture_output=True, timeout=15,
                     )
