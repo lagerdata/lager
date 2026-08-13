@@ -149,3 +149,55 @@ jobs:
           run root        "test/unit/test_*.py test/test_*.py"
           exit $fail
         shell: bash
+
+  # The `unit (mcp)` job above runs the mcp suite against whatever the test
+  # requirements happen to resolve -- the `mcp` package arrives TRANSITIVELY
+  # via fastmcp's own pin, so cli/setup.py's `[mcp]` extra constraint is
+  # never resolved by any check. That is how a widened cap could merge green
+  # while `pip install lager-cli[mcp]` breaks at runtime, and it is why
+  # dependabot had to ignore mcp majors outright. This job installs the
+  # extra EXPLICITLY, so the declared constraint is what gets tested, and a
+  # dependabot PR that widens it now runs the suite against the version the
+  # widened cap admits -- an incompatible major goes red here instead of
+  # merging green. The ignore is lifted in .github/dependabot.yml in the
+  # same change.
+  mcp-extra:
+    name: mcp-extra
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/box
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+
+      - name: Install CLI with the mcp extra + test deps
+        run: |
+          pip install -e "cli/[mcp]"
+          pip install 'pytest>=9,<10' 'pytest-timeout>=2.3,<3'
+          pip install -r test/requirements-unit.txt
+          pip show mcp fastmcp | grep -E '^(Name|Version)'
+        shell: bash
+
+      - name: Import the MCP server module
+        # box/ is on PYTHONPATH (job env), same as every other suite here.
+        # This is the module the lager-mcp console script targets; importing
+        # it with the extra's resolution is the minimum liveness proof.
+        run: python -c "import lager.mcp.server"
+        shell: bash
+
+      - name: Run the mcp unit suite against the extra's resolution
+        run: |
+          pytest test/mcp/unit/ -q --import-mode=importlib -c /dev/null --timeout=60
+        shell: bash
+
+      - name: MCP integration tests still collect
+        run: |
+          pytest test/mcp/integration/ --collect-only -q \
+            --import-mode=importlib -c /dev/null
+        shell: bash
