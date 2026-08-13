@@ -50,7 +50,6 @@ else
   echo "Using box name: $BOX_NAME"
 fi
 TEST_BOX_NAME="test_box_temp"
-BACKUP_LAGER_FILE="/tmp/lager_config_backup_$(date +%s)"
 
 # Cross-platform timestamp function (milliseconds)
 get_timestamp_ms() {
@@ -894,7 +893,14 @@ DEFAULTS_START=$(lager defaults 2>&1)
 lager defaults add --box "test_regression" >/dev/null 2>&1 || true
 lager hello --box "$BOX" >/dev/null 2>&1
 DEFAULTS_END=$(lager defaults 2>&1)
-if echo "$DEFAULTS_END" | grep -q "test_regression"; then
+# The before-state is load-bearing: if test_regression was ALREADY in the
+# defaults (stale state from an earlier aborted run), the end-state check
+# proves nothing about this run's `defaults add`. DEFAULTS_START was captured
+# for exactly this comparison and then never read.
+if echo "$DEFAULTS_START" | grep -q "test_regression"; then
+  echo "  (stale state: test_regression was in defaults before the add)"
+  track_test "fail"
+elif echo "$DEFAULTS_END" | grep -q "test_regression"; then
   track_test "pass"
 else
   track_test "fail"

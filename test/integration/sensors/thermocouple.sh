@@ -756,8 +756,16 @@ OUTPUT_ORIG=$(lager thermocouple $TC_NET --box $BOX 2>&1)
 OUTPUT_UPPER=$(lager thermocouple $TC_NET_UPPER --box $BOX 2>&1)
 OUTPUT_LOWER=$(lager thermocouple $TC_NET_LOWER --box $BOX 2>&1)
 
-# Check if any work (case insensitive) or only exact match (case sensitive)
-if echo "$OUTPUT_UPPER" | grep -q "Temperature:" || echo "$OUTPUT_LOWER" | grep -q "Temperature:"; then
+# The exact-name read is the PRECONDITION: if it does not work, neither
+# case-variant outcome says anything about case sensitivity. OUTPUT_ORIG was
+# captured for exactly this and then never checked, which left the whole test
+# vacuous on a dead net.
+if ! echo "$OUTPUT_ORIG" | grep -q "Temperature:"; then
+  echo -e "${YELLOW}[FAIL] Baseline read with the exact net name failed - case test is meaningless${NC}"
+  track_test "fail"
+# Either variant working = case insensitive; neither = case sensitive. Both
+# are documented behaviors, not failures -- the assertion above is the gate.
+elif echo "$OUTPUT_UPPER" | grep -q "Temperature:" || echo "$OUTPUT_LOWER" | grep -q "Temperature:"; then
   echo -e "${GREEN}[OK] Case insensitive net names supported${NC}"
   track_test "pass"
 else

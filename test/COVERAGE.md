@@ -197,24 +197,30 @@ would blind 20 files to everything after them.
 | Code | Count | Why still open |
 |---|---:|---|
 | `SC2320` | 39 | `$?` reads `echo`/`printf`'s status, not the command's. Fixing turns silently-passing checks into real ones. |
-| `SC2034` | 30 | ~17 intentional constants (BMP280/BME280 register maps, `TEST_DELAY`, a color fallback) and ~13 captured-then-ignored values -- see below. |
+| `SC2034` | ~17 | Intentional constants only (BMP280/BME280 register maps, `TEST_DELAY`, a color fallback). The ~13 captured-then-ignored values that used to share this bucket are FIXED -- see below. |
 | `SC2155` | 16 | `local x=$(cmd)` masks the command's return value. |
 | `SC2164` | 4 | `cd` without `\|\| exit`. |
 | `SC2046` | 1 | Unquoted command substitution. |
 
-**Latent missing assertions.** The ~13 captured-then-ignored `SC2034` values are not lint noise;
-each is a bench test that computes something and never checks it. Two are worth naming:
+**The captured-then-ignored values are fixed.** Each was a bench test that computed something and
+never checked it; each now asserts (or was deleted where the capture was setup for logic that was
+never written):
 
-- `test/integration/communication/jlink_script.sh:227` assigns `SCRIPT_EXISTS` from an SSH probe
-  for a script on the box, then never reads it -- and **both branches of the following `if` call
-  `track_test "pass"`**, so that test cannot fail.
-- `test/integration/communication/debug.sh` sets `RTT_SUPPORTED` in four branches and reads it
-  nowhere, so the RTT-availability probe is performed and discarded.
+- `jlink_script.sh` Test 1.3 asserts `SCRIPT_EXISTS` -- previously **both branches of its `if`
+  called `track_test "pass"`**, so the test could not fail.
+- `debug.sh` gates Tests 14.3/14.4's lenient no-RTT arms on `RTT_SUPPORTED`: a refused RTT
+  connection is a real failure when the firmware probe showed RTT working, a warning otherwise.
+- `sensors/thermocouple.sh` 11.1 asserts the `OUTPUT_ORIG` baseline read before drawing any
+  case-sensitivity conclusion; `infrastructure/generic.sh` 12.5 uses `DEFAULTS_START` as a
+  stale-state guard.
+- The `OUTPUT1`/`OUTPUT2` keep-cs captures in both `spi_*_manual.sh` suites are checked for
+  non-empty, error-free output (calibration bytes vary by chip, so no exact value is assertable).
+- `BACKUP_LAGER_FILE`, `TEST_NET_NAME2`, `BACKUP_FILE` were setup for backup/second-net logic
+  that was never written: deleted.
 
-Others (`OUTPUT_ORIG` in `sensors/thermocouple.sh`, `DEFAULTS_START` in
-`infrastructure/generic.sh`) capture a *baseline* for a comparison the test then never makes.
-Fixing these means adding the missing assertion, which can legitimately turn a bench test red --
-so they are a bench task, not a lint sweep.
+The newly honest checks can legitimately fail on the bench where the old ones could not -- that
+is the point. `SC2034` stays excluded for the intentional constants; retiring it entirely means
+per-file disables for those, tracked as a ratchet follow-up.
 
 ## Coverage by Domain
 
