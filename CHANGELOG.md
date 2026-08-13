@@ -253,6 +253,25 @@ All notable changes to the Lager platform are documented here. For detailed rele
   problem. Blocks written by earlier installs are left alone — Lager does not
   edit that file.
 
+- **`lager logic <NET> enable|disable|start|start-single|stop` did nothing, and
+  reported success doing it.** The box-side worker resolved the net with
+  `Net.get(netname, NetType.Analog)`, but the CLI validates the net as role
+  `logic` before dispatching, and `NetType.from_role('logic')` is
+  `NetType.Logic`. Both of `Net.get`'s lookup paths match on type equality, so
+  the mismatch did not raise -- it returned `None`, the worker's
+  `if target_net:` guard went false, and the command exited 0 having touched
+  no instrument.
+
+  Confirmed on a box with a Rigol MSO logic net configured: the net lists under
+  `lager logic`, which is only possible when its role is `logic`, and the
+  enable was a no-op. All six workers now resolve `NetType.Logic`.
+
+  A unit test pins the worker's net type to `NetType.from_role(LOGIC_ROLE)`,
+  importing the role from the CLI module that validates it, so the two sides
+  cannot drift apart again without failing CI. Nothing covered this before:
+  `cli/impl/*` scripts are uploaded and executed on the box rather than
+  imported, so no unit suite exercised them.
+
 ## [0.37.1] - 2026-08-17
 
 ### Changed

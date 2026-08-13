@@ -7,6 +7,13 @@
 # importable on a host that has no box tree. `lager` lives under box/ and is
 # not in the wheel, so every reference to it is imported inside the function
 # that needs it. Same pattern as cli/impl/measurement/scope.py.
+#
+# The net type below must stay equal to NetType.from_role(LOGIC_ROLE), where
+# LOGIC_ROLE is what cli/commands/measurement/logic.py validates the net
+# against before dispatching here. Net.get matches on type equality in both
+# its lookup paths, so a mismatch does not raise -- it returns None, the
+# `if target_net:` guard goes false, and every command silently does nothing.
+# test/unit/box/test_logic_net_type.py pins the two together.
 
 import os
 import json
@@ -15,7 +22,7 @@ def disable_net(netname, mcu=None):
     """Disable scope channel"""
     from lager.nets.net import Net, NetType
 
-    target_net = Net.get(netname, NetType.Analog)
+    target_net = Net.get(netname, NetType.Logic)
     if target_net:
         target_net.disable(teardown=False)
 
@@ -23,7 +30,7 @@ def enable_net(netname, mcu=None):
     """Enable scope channel"""
     from lager.nets.net import Net, NetType
 
-    target_net = Net.get(netname, NetType.Analog)
+    target_net = Net.get(netname, NetType.Logic)
     if target_net:
         target_net.enable()
 
@@ -31,7 +38,7 @@ def start_capture(netname, mcu=None):
     """Start waveform capture"""
     from lager.nets.net import Net, NetType
 
-    target_net = Net.get(netname, NetType.Analog)
+    target_net = Net.get(netname, NetType.Logic)
     if target_net and hasattr(target_net.device, 'start_capture'):
         target_net.device.start_capture()
 
@@ -39,7 +46,7 @@ def stop_capture(netname, mcu=None):
     """Stop waveform capture"""
     from lager.nets.net import Net, NetType
 
-    target_net = Net.get(netname, NetType.Analog)
+    target_net = Net.get(netname, NetType.Logic)
     if target_net and hasattr(target_net.device, 'stop_capture'):
         target_net.device.stop_capture()
 
@@ -47,7 +54,7 @@ def start_single(netname, mcu=None):
     """Start single waveform capture"""
     from lager.nets.net import Net, NetType
 
-    target_net = Net.get(netname, NetType.Analog)
+    target_net = Net.get(netname, NetType.Logic)
     if target_net and hasattr(target_net.device, 'start_single_capture'):
         target_net.device.start_single_capture()
 
@@ -55,7 +62,7 @@ def force_trigger(netname, mcu=None):
     """Force trigger"""
     from lager.nets.net import Net, NetType
 
-    target_net = Net.get(netname, NetType.Analog)
+    target_net = Net.get(netname, NetType.Logic)
     if target_net and hasattr(target_net.device, 'force_trigger'):
         target_net.device.force_trigger()
 
