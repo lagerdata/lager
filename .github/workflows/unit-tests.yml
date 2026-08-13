@@ -155,12 +155,22 @@ jobs:
   # via fastmcp's own pin, so cli/setup.py's `[mcp]` extra constraint is
   # never resolved by any check. That is how a widened cap could merge green
   # while `pip install lager-cli[mcp]` breaks at runtime, and it is why
-  # dependabot had to ignore mcp majors outright. This job installs the
-  # extra EXPLICITLY, so the declared constraint is what gets tested, and a
-  # dependabot PR that widens it now runs the suite against the version the
-  # widened cap admits -- an incompatible major goes red here instead of
-  # merging green. The ignore is lifted in .github/dependabot.yml in the
-  # same change.
+  # dependabot had to ignore mcp majors outright.
+  #
+  # TWO environments, deliberately. The first is the extra ALONE in a clean
+  # venv: the test requirements also pin fastmcp, whose own mcp cap re-narrows
+  # the resolution -- observed live on the first cap-widening PR, which ran
+  # green here while resolving mcp 1.29.0 under a cap that admitted 2.0. Only
+  # an extra-only venv resolves what a real `pip install lager-cli[mcp]` user
+  # gets. The probe is GENERATED from the server package's own mcp-SDK
+  # imports, so it cannot drift from what the code actually needs (mcp 2.0
+  # removed mcp.server.fastmcp -- the probe proves the resolved major still
+  # has every surface the server imports). The full server module cannot be
+  # imported here: it needs box-runtime deps the extra does not declare
+  # (same entanglement class as issue #242).
+  #
+  # The second environment adds the test requirements and runs the suite --
+  # execution-level proof under the resolution the suite supports.
   mcp-extra:
     name: mcp-extra
     runs-on: ubuntu-latest
@@ -175,6 +185,26 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: '3.11'
+
+      - name: Prove the extra's own resolution (clean venv)
+        run: |
+          python -m venv "$RUNNER_TEMP/extra-only"
+          "$RUNNER_TEMP/extra-only/bin/pip" install --quiet -e "cli/[mcp]"
+          "$RUNNER_TEMP/extra-only/bin/pip" show mcp | grep -E '^(Name|Version)'
+          # Probe = every module-level mcp-SDK import in the server package.
+          grep -rh '^from mcp\|^import mcp' box/lager/mcp/ | sort -u \
+            > "$RUNNER_TEMP/mcp-probe.py"
+          # An empty probe would pass vacuously; if the package ever stops
+          # importing mcp at module level, this check must be rethought, not
+          # silently skipped.
+          [ -s "$RUNNER_TEMP/mcp-probe.py" ] || {
+            echo "no mcp imports found in box/lager/mcp/ -- probe is vacuous"
+            exit 1
+          }
+          cat "$RUNNER_TEMP/mcp-probe.py"
+          "$RUNNER_TEMP/extra-only/bin/python" "$RUNNER_TEMP/mcp-probe.py"
+          echo "resolved mcp provides every surface the server imports"
+        shell: bash
 
       - name: Install CLI with the mcp extra + test deps
         run: |
