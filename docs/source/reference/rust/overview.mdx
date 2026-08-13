@@ -30,8 +30,10 @@ Add the crate to your firmware project's dev-dependencies:
 ```toml
 # Cargo.toml
 [dev-dependencies]
-lager = { package = "lager-net", version = "0.2" }
+lager = { package = "lager-net", version = "0.4" }
 ```
+
+The crate requires Rust **1.75** or newer and builds on edition 2021.
 
 Write a test:
 
@@ -72,12 +74,13 @@ LAGER_BOX_HOST=192.168.1.42 cargo test
 | `blocking` | yes | `LagerBox` on [`ureq`](https://crates.io/crates/ureq) — tiny dependency tree, no tokio |
 | `async` | no | `AsyncLagerBox` on [`reqwest`](https://crates.io/crates/reqwest)/tokio; same methods, `.await`ed |
 | `uart` | no | `Uart` streaming sessions over the box's Socket.IO `/uart` namespace |
+| `rtt` | no | RTT log streaming over the box's Socket.IO namespace, for reading `defmt` output from a running target |
 
 Both clients execute the exact same request builders and response parsers,
 so the two transports cannot drift apart.
 
 ```toml
-lager = { package = "lager-net", version = "0.2", features = ["async"] }
+lager = { package = "lager-net", version = "0.4", features = ["async"] }
 ```
 
 ## Errors
