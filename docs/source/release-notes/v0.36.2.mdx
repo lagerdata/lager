@@ -1,0 +1,48 @@
+---
+title: "Version 0.36.2"
+description: "August 12, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- `lager install` could take Docker down on a fresh Lager Box and then blame the configuration. Docker's service ships a start-rate limit of three starts per minute, and the installer used four in eleven seconds — so systemd refused the last one and latched the service into a failed state where every later restart, including the installer's own retry, failed instantly without attempting a start. Docker itself was healthy throughout. The installer now performs one service start per step and clears the failure counter before each restart, so a Lager Box already stuck in that state recovers instead of staying wedged. The failure is also diagnosed correctly now: it previously reported a malformed `/etc/docker/daemon.json` simply because writing that file is the preceding step, which sent debugging down the wrong path.
+
+- `lager uninstall` warned about a lock heartbeat failure on every successful run. The command holds the Lager Box lock across its teardown so a concurrent `lager python` cannot be pulled out from under a running test — but its first step removes the container that serves the lock, so every later heartbeat was a request to a server the command had just deleted. The warning was guaranteed, and it read as a fault when it was the uninstall working. The lock session is now dissolved once the container is confirmed gone. If the removal fails, nothing is dissolved and a heartbeat failure is real signal again.
+
+- `lager install` warned that its lock was about to expire, on every install. A full image rebuild spends roughly a quarter of an hour with the container — and therefore the lock server — deliberately down, so the renewals during that window could not succeed. Install now declares that outage up front rather than reporting it as a fault, and holds its lock on a longer lease sized to the work. Relatedly, the heartbeat no longer warns on the first missed renewal; it waits until half the lease has gone unrenewed, and says how long it has been.
+
+- `lager uninstall --keep-config` left behind a lock that nothing could clear. The teardown wrote a lock record with no expiry into the configuration directory it was asked to keep, and a record with no expiry is never reclaimed — so the Lager Box stayed locked indefinitely and no later command could release it. The teardown now clears that state explicitly.
+
+- `lager install` warned that it could not reach the Lager Box on installs that had just succeeded. The connectivity check ran a single probe seconds after the container started, racing the services still coming up inside it, and failed often enough on healthy hardware that the warning was routinely ignored — which is the state in which it can no longer report a real failure. It now retries for thirty seconds and distinguishes a genuine failure from a slow start.
+
+- `lager uninstall --dry-run` could report a Lager Box as empty when it had simply failed to look. A query that timed out was indistinguishable in the output from one that found nothing, so a preview could describe a teardown as a no-op when it was not. A timed-out query now says so explicitly and does not claim absence.
+
+- `lager uninstall` reported removing a Lager Box from local configuration when the entry was still there. Only the global configuration is written, but a Lager Box defined in a project-level `.lager` file was reported as removed and then kept resolving. The command now names which file still defines it, and no longer reports a project-only Lager Box as "not found".
+
+- Provisioning could stop and wait for a keypress with nobody there to answer it, leaving automated installs hanging instead of finishing or failing.
+
+- The install summary pointed at `lager nets create`, which is not a command. It now shows `lager nets add`.
+
+## <u>Improvements</u>
+
+- The Lager Box image pins the third-party MCC DAQ library it builds from source. It was previously built from whatever the upstream default branch held at build time, so two Lager Boxes built a week apart could carry different library code with no corresponding change on our side. It is now pinned to an upstream release tag.
+
+- The installer no longer installs pyOCD and no longer offers it as a debug backend. Debugging runs on J-Link and OpenOCD; pyOCD was installed on every Lager Box and advertised in help output despite not being a supported path.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.36.2
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.36.2/)
