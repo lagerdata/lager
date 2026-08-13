@@ -58,6 +58,10 @@ concurrency:
   group: hardware-ci-${{ vars.LAGER_BOX || 'MASTER' }}
   cancel-in-progress: false  # never kill a run mid-measurement
 
+# Default token: checkout only. A job that needs more must say so itself.
+permissions:
+  contents: read
+
 jobs:
   hardware-tests:
     name: Run hardware tests on the bench
@@ -75,10 +79,14 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # No job here pushes anything; do not persist the token into
+          # the checkout's config (zizmor: artipacked).
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.11'
 

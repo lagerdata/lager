@@ -1,0 +1,10 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# Config for the actionlint step in static-checks.yml.
+
+self-hosted-runner:
+  # The MASTER bench runner's label; without this, actionlint flags every
+  # `runs-on: [self-hosted, lager-bench]` as an unknown label.
+  labels:
+    - lager-bench

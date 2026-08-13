@@ -79,8 +79,11 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          # No job here pushes anything; do not persist the token into
+          # the checkout's config (zizmor: artipacked).
+          persist-credentials: false
           # Full history: the detect step below needs the merge base with the
           # target branch to compute what this PR actually changes.
           fetch-depth: 0
@@ -157,7 +160,7 @@ jobs:
 
       - name: Cache cargo registry and target
         if: steps.detect.outputs.rust_changed == 'true'
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
