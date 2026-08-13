@@ -4,6 +4,55 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ## [Unreleased]
 
+### Fixed
+
+- **Every successful `lager update` that rebuilt the container warned that its
+  own lock was failing.** `Warning: update lock heartbeat has failed 5 times in
+  a row (5m); the box may be unreachable.` — printed while nothing was wrong.
+  Update stops the `lager` container in Step 8 and rebuilds it in Step 9, and
+  that container is the process serving the `:9000` lock API the command's own
+  lock lives in. Renewals across that window cannot succeed, and the failures
+  accumulated into a warning about a box that was busy doing exactly what it
+  had been asked to do.
+
+  `lager install` already declares this outage via `LockSession.suspended()`.
+  Update could not: its window spans some 350 lines of branchy logic, so it
+  takes the lock through the imperative `auto_lock_acquire_for_command`, whose
+  release callable offered no way to say so. That callable now carries
+  `suspend()` / `resume()` (and a `suspended()` context manager), and update
+  brackets the container rebuild with them — resuming only once
+  `wait_for_box_ready` confirms `/health` on 9000 answers again.
+
+  No lock semantics change. While the server is down a renewal cannot succeed
+  whether or not it is attempted, so the lock was already riding its TTL
+  either way; only the misreporting stops. A real heartbeat failure outside
+  the rebuild window still warns.
+
+- **`lager update --check` promised a cached build immediately before a
+  ten-minute rebuild.** On a box still using the `box/` subdir layout the
+  preview printed `Deps: cache valid (no rebuild)` and
+  `Estimated: ~90s (cached build)`; the run then flattened the tree and did a
+  full clean rebuild. Two things were wrong, and they pulled in the same
+  direction:
+
+  The preview ignored a pending flatten entirely, though `_rebuild_gate_verdict`
+  treats it as a definite rebuild trigger. It is not merely possible: the
+  flatten moves every source file, and the build hash is taken over
+  `sha256sum` output — which prints each path beside its digest — so a moved
+  file necessarily changes it.
+
+  Separately, `_build_hash_mismatch` returns `False` both for "measured, and
+  unchanged" and for "could not measure", and the preview rendered both as
+  `cache valid`. An unmeasurable hash is now reported as unknown. It still
+  does not predict a rebuild, because the gate does not treat it as one
+  either — saying it might would over-estimate as badly as the old text
+  under-estimated.
+
+  The decision moved into `_deps_preview()` so the property that matters is
+  testable directly: the preview may never promise a cached build when the
+  gate would rebuild. `--check`'s exit code now accounts for a pending
+  flatten too, so a box needing one no longer reports `Nothing to do`.
+
 ### Removed
 
 - **The vendored `pyelftools` tree, which could not be imported in any

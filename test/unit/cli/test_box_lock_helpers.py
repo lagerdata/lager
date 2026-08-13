@@ -1170,3 +1170,143 @@ class TestInstallLockTtl:
         src = inspect.getsource(module)
         assert 'ttl_seconds=INSTALL_LOCK_TTL_SECONDS' in src
         assert 'lock_session.suspended()' in src
+
+
+class TestImperativeAcquireSuspend:
+    """`lager update` stops the lager container in Step 8 and rebuilds it in
+    Step 9 — and that container is the process serving the :9000 lock API its
+    own lock lives in. Every renewal in between fails for a reason that is not
+    a fault, and a wholly successful update printed
+    "update lock heartbeat has failed 5 times in a row (5m)".
+
+    `auto_lock_around_command` already had `suspended()` for this, but update
+    uses the imperative variant (its outage spans ~350 lines of branchy logic
+    that cannot be re-indented under a `with` — the reason that variant
+    exists), and the release callable exposed no way to declare an outage.
+
+    This changes no lock semantics: while the server is down a renewal cannot
+    succeed whether or not it is attempted, so the lock rides its TTL either
+    way. Only the misreporting stops.
+    """
+
+    @staticmethod
+    def _patch(monkeypatch, heartbeat, state='acquired', lock_data=None):
+        monkeypatch.setattr(
+            box_storage, 'acquire_box_lock',
+            lambda *a, **k: (state, lock_data if lock_data is not None else {}),
+        )
+        monkeypatch.setattr(box_storage, 'release_box_lock', lambda *a, **k: True)
+        monkeypatch.setattr(box_storage, 'get_lock_holder', lambda: 'test-holder')
+        monkeypatch.setattr(box_storage, 'HeartbeatThread', lambda *a, **k: heartbeat)
+
+    def test_suspend_and_resume_pause_the_heartbeat(self, monkeypatch):
+        hb = mock.Mock()
+        self._patch(monkeypatch, hb)
+        release = box_storage.auto_lock_acquire_for_command(
+            '10.0.0.1', 'lab-box', 'update')
+        assert hb.pause.call_count == 0
+        release.suspend()
+        assert hb.pause.call_count == 1
+        assert hb.unpause.call_count == 0
+        release.resume()
+        assert hb.unpause.call_count == 1
+        release()
+
+    def test_context_manager_form_also_works(self, monkeypatch):
+        hb = mock.Mock()
+        self._patch(monkeypatch, hb)
+        release = box_storage.auto_lock_acquire_for_command(
+            '10.0.0.1', 'lab-box', 'update')
+        with release.suspended():
+            assert hb.pause.call_count == 1
+            assert hb.unpause.call_count == 0
+        assert hb.unpause.call_count == 1
+        release()
+
+    def test_context_manager_resumes_when_the_body_raises(self, monkeypatch):
+        hb = mock.Mock()
+        self._patch(monkeypatch, hb)
+        release = box_storage.auto_lock_acquire_for_command(
+            '10.0.0.1', 'lab-box', 'update')
+        with pytest.raises(RuntimeError):
+            with release.suspended():
+                raise RuntimeError('rebuild blew up')
+        assert hb.unpause.call_count == 1
+        release()
+
+    def test_resume_after_release_does_not_touch_the_dead_heartbeat(self, monkeypatch):
+        # Update's error paths all end in ctx.exit(), whose atexit release
+        # stops the heartbeat. A late resume must not reset counters on a
+        # thread that is already stopped.
+        hb = mock.Mock()
+        self._patch(monkeypatch, hb)
+        release = box_storage.auto_lock_acquire_for_command(
+            '10.0.0.1', 'lab-box', 'update')
+        release.suspend()
+        release()
+        assert hb.stop.called
+        release.resume()
+        assert hb.unpause.call_count == 0
+
+    def test_suspend_is_a_no_op_when_no_lock_was_taken(self, monkeypatch):
+        # 'unreachable' starts no heartbeat; a caller that declares its outage
+        # unconditionally must not crash there.
+        def no_heartbeat(*a, **k):
+            raise AssertionError('no heartbeat should exist')
+
+        monkeypatch.setattr(box_storage, 'HeartbeatThread', no_heartbeat)
+        monkeypatch.setattr(
+            box_storage, 'acquire_box_lock', lambda *a, **k: ('unreachable', None))
+        monkeypatch.setattr(box_storage, 'get_lock_holder', lambda: 'test-holder')
+        release = box_storage.auto_lock_acquire_for_command(
+            '10.0.0.1', 'lab-box', 'update')
+        release.suspend()
+        release.resume()
+        with release.suspended():
+            pass
+        release()
+
+    def test_disabled_escape_hatch_supports_suspend(self, monkeypatch):
+        # LAGER_AUTO_LOCK_DISABLE returns a different callable entirely; it
+        # must carry the same affordances or update crashes under the hatch.
+        monkeypatch.setenv('LAGER_AUTO_LOCK_DISABLE', '1')
+        monkeypatch.setattr(box_storage, 'get_lock_holder', lambda: 'test-holder')
+        release = box_storage.auto_lock_acquire_for_command(
+            '10.0.0.1', 'lab-box', 'update')
+        assert release.state == 'disabled'
+        release.suspend()
+        release.resume()
+        with release.suspended():
+            pass
+        release()
+
+    def test_a_resumed_leftover_lock_can_also_suspend(self, monkeypatch):
+        # 'already_ours' with a ttl starts a heartbeat but never releases;
+        # it still runs through the same container rebuild.
+        hb = mock.Mock()
+        self._patch(monkeypatch, hb, state='already_ours',
+                    lock_data={'ttl_seconds': 1800})
+        release = box_storage.auto_lock_acquire_for_command(
+            '10.0.0.1', 'lab-box', 'update')
+        release.suspend()
+        assert hb.pause.call_count == 1
+        release.resume()
+        assert hb.unpause.call_count == 1
+
+    def test_update_declares_the_outage_around_its_container_rebuild(self):
+        import importlib
+        import inspect
+        module = importlib.import_module('cli.commands.utility.update')
+        src = inspect.getsource(module)
+        assert '_release_update_lock.suspend()' in src
+        assert '_release_update_lock.resume()' in src
+        # Order matters: suspend before the containers stop, resume only once
+        # wait_for_box_ready has confirmed /health on 9000 answers again.
+        assert src.index('_release_update_lock.suspend()') < src.index('Step 8: Stop containers')
+        assert src.index('wait_for_box_ready') < src.index('_release_update_lock.resume()')
+
+    def test_default_ttl_outlasts_a_container_rebuild(self):
+        # The lock rides its TTL across the outage (nothing can renew it), so
+        # the default has to cover a rebuild. The observed worst case was
+        # ~5 minutes of container-down inside a 10-minute run.
+        assert box_storage._DEFAULT_LOCK_TTL_SECONDS >= 1800

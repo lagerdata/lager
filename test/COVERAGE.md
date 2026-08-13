@@ -36,13 +36,13 @@ are not.
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1232 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1253 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 1580 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 121 (+1 skipped) |
-| | **Total gated** | **3293** |
+| | **Total gated** | **3314** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -441,7 +441,7 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 138 files)
+### Local Unit Tests (`test/unit/` -- 139 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 74 files)
 
@@ -526,7 +526,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_webcam_detection.py` | sysfs-based webcam detection (`_by_camera`) against a fake sysfs tree |
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 52 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 53 files)
 
 | File | What it tests |
 |------|---------------|
@@ -567,6 +567,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_ssh.py` | SSH ensure_lager_box_keypair and key_auth_works helpers |
 | `test_supply_tui.py` | SupplyTUI render output, command parsing, worker threads, connection failure |
 | `test_uart_ws_status_events.py` | CLI handling of box-side `uart_status` events when a UART device re-enumerates |
+| `test_update_deps_preview.py` | `lager update --check`'s build-cache line never promises a cached build the rebuild gate would override — a pending layout flatten is a certain rebuild, and an unmeasurable build hash is reported as unknown rather than as a valid cache |
 | `test_update_flatten.py` | `lager update` sparse-checkout flatten: deletions propagate, root entries preserved, and the docker-build hash covers the source tree |
 | `test_update_probe.py` | `lager box update` probe script modprobe/usbtmc detection and output parsing |
 | `test_update_secret_ownership.py` | `lager update`'s secret-file ownership repair, run as real shell against a throwaway directory with a recording `sudo` stub |
