@@ -77,8 +77,10 @@ if __name__ == "__main__":
         },
         entry_points={
             'console_scripts': [
+                # No `lager-mcp` script here: the MCP server is box-side code
+                # (`lager.mcp.server`, under box/), which this wheel does not
+                # ship. The box serves MCP on port 8100; see the MCP docs.
                 'lager=cli.main:main',
-                'lager-mcp=lager.mcp.server:main',
             ],
         }
     )

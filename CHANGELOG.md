@@ -26,6 +26,26 @@ All notable changes to the Lager platform are documented here. For detailed rele
   path that modern toolchains break anyway. Should ELF or DWARF parsing be
   needed again, depend on `pyelftools` from PyPI. Closes #240.
 
+- **The `lager-mcp` console script, which exited immediately on every pip
+  install.** It targeted `lager.mcp.server` -- box-side code under `box/`
+  that the `lager-cli` wheel has never shipped -- so running it produced
+  `ModuleNotFoundError: No module named 'lager'`. Installing the `mcp` extra
+  did not help: that extra supplies the PyPI `mcp` SDK, not the `lager`
+  package.
+
+  This is a removal rather than a repair because the console script was never
+  how the MCP server runs. The box starts it in-container as
+  `python3 -m lager.mcp` and serves it on port 8100, which is what the MCP
+  documentation describes and what clients connect to.
+
+  `lager install` / `lager update` previously symlinked the script into
+  `~/.local/bin`, so boxes deployed from an older ref carry a link to a script
+  that cannot work. The install command now removes that link instead of
+  creating it, so those boxes self-heal on the next deploy. The `mcp` extra is
+  unchanged. The packaging gate now asserts the script is absent from the
+  built wheel, so a console script that cannot resolve fails CI rather than
+  reaching users. Closes #242.
+
 ## [0.36.2] - 2026-08-12
 
 ### Fixed

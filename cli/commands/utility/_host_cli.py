@@ -88,17 +88,19 @@ def host_cli_install_cmd():
     blobs lazy-fetch on blob:none clones); self-heal the venv by recreating
     it whenever its interpreter can't import pip (covers a missing venv and
     one broken by a host python upgrade); install non-editable so the host
-    CLI only advances when a deploy actually runs; symlink the entry points
-    (`lager-mcp` only where the deployed ref ships it, so no dangling link on
-    older refs); print the installed version, which is also the verification
-    that the venv interpreter and package both work.
+    CLI only advances when a deploy actually runs; symlink the `lager` entry
+    point, and remove any `lager-mcp` link an older ref left behind (that
+    script targeted box-side code the wheel never shipped, so the link always
+    pointed at something that exited immediately); print the installed
+    version, which is also the verification that the venv interpreter and
+    package both work.
     """
     return '\n'.join([
         'test -d "$HOME/box/cli" || git -C "$HOME/box" sparse-checkout add cli 2>/dev/null || exit 41',
         f'{_VENV_PY} -c "import pip" >/dev/null 2>&1 || {{ rm -rf {_VENV} && python3 -m venv {_VENV}; }} || exit 42',
         f'{_VENV_PIP} install --quiet "$HOME/box/cli" || exit 43',
         f'mkdir -p {_LOCAL_BIN} && ln -sfn "$HOME/.lager/venv/bin/lager" "$HOME/.local/bin/lager" || exit 44',
-        f'{{ test -x "$HOME/.lager/venv/bin/lager-mcp" && ln -sfn "$HOME/.lager/venv/bin/lager-mcp" "$HOME/.local/bin/lager-mcp"; }} || true',
+        'rm -f "$HOME/.local/bin/lager-mcp" || true',
         f'{_VENV_PY} -c "import cli; print(cli.__version__)"',
     ])
 
