@@ -59,7 +59,7 @@ for net in lager.nets()? {
 // Box health and capability probing.
 lager.health()?;
 let status = lager.status()?;
-assert!(status.capabilities.net_command, "box image too old — run: lager box update");
+assert!(status.capabilities.net_command, "box image too old — run: lager update");
 ```
 
 `status().capabilities` also reports `net_command_roles` (the newer

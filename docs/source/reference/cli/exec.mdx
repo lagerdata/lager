@@ -21,6 +21,7 @@ lager exec [OPTIONS] [COMMAND] [EXTRA_ARGS]...
 | `--env FOO=BAR` | | multiple | | Set environment variable in the container |
 | `--passenv NAME` | | multiple | | Inherit environment variable from current shell |
 | `--mount NAME` | `-m` | string | | Docker volume to mount |
+| `--volume HOST:CONTAINER[:ro]` | | multiple | | Bind-mount a host path into the container. Repeatable; append `:ro` for read-only |
 | `--interactive / --no-interactive` | `-i` | flag | `--interactive` | Keep STDIN open |
 | `--tty / --no-tty` | `-t` | flag | `--tty` | Allocate a pseudo-TTY |
 | `--user TEXT` | `-u` | string | current UID | User to run as in the container |
