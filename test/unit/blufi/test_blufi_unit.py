@@ -138,31 +138,33 @@ class TestBlufiCrypto:
         c = BlufiCrypto()
         assert c.getGBytes() == b"\x02"
 
+    # These four used to be guarded by `except ValueError: pytest.skip(...)`,
+    # because OpenSSL's default security level refuses a 1024-bit DH modulus --
+    # which meant the exchange was never exercised on the CI runner that gates
+    # merges. The exchange is plain modular exponentiation now, so there is no
+    # backend to refuse it and the guards are gone.
+
     def test_gen_keys(self):
-        """Key generation succeeds. Skip if cryptography rejects the 1024-bit DH prime."""
         c = BlufiCrypto()
-        try:
-            c.genKeys()
-        except ValueError as e:
-            pytest.skip(f"cryptography library rejects 1024-bit DH: {e}")
+        c.genKeys()
         assert c.privKey is not None
         assert c.pubKey is not None
+        # Private exponent stays in [2, p-2].
+        assert 2 <= c.privKey <= c.p - 2
+        assert c.pubKey == pow(c.g, c.privKey, c.p)
 
     def test_get_y_bytes_length(self):
         c = BlufiCrypto()
-        try:
-            c.genKeys()
-        except ValueError:
-            pytest.skip("cryptography library rejects 1024-bit DH")
+        c.genKeys()
         y = c.getYBytes()
         assert len(y) == 256  # 2048 // 8
+        # y is naturally 128 bytes for a 1024-bit modulus, so the wire form
+        # always carries 128 leading zeros. The device parses this width.
+        assert y[:128] == b"\x00" * 128
 
     def test_derive_shared_key_length(self):
         c = BlufiCrypto()
-        try:
-            c.genKeys()
-        except ValueError:
-            pytest.skip("cryptography library rejects 1024-bit DH")
+        c.genKeys()
         # Derive against own public key (self-exchange for testing)
         shared = c.deriveSharedKey(c.getYBytes())
         assert len(shared) == 16  # MD5 digest
@@ -171,15 +173,74 @@ class TestBlufiCrypto:
         """Two BlufiCrypto instances should derive the same shared key."""
         alice = BlufiCrypto()
         bob = BlufiCrypto()
-        try:
-            alice.genKeys()
-            bob.genKeys()
-        except ValueError:
-            pytest.skip("cryptography library rejects 1024-bit DH")
+        alice.genKeys()
+        bob.genKeys()
         key_a = alice.deriveSharedKey(bob.getYBytes())
         key_b = bob.deriveSharedKey(alice.getYBytes())
         assert key_a == key_b
         assert len(key_a) == 16
+
+    # --- known-answer vectors -------------------------------------------
+    #
+    # Both were captured from the previous cryptography-backed implementation
+    # (exchange() + MD5) before it was replaced, and they are what pins the
+    # replacement to the bytes the device already speaks. The capture also
+    # confirmed, over 600 cryptography-generated keypairs, that
+    # pow(peer_y, x, p).to_bytes(128, 'big') is byte-identical to exchange().
+
+    KAT_ORDINARY_X = 0x4caf84ce96fc7df446dd77c15697f99d37f38efc0e38473db26e3c3c1bda22bfff742b0f1dead10c3c61f9bd23c8004804889ee558cd834c4087a8595d1e06537e15dd6690f40faacd626afd8e71d2019325053154aad22bbce61ec62b8fc5b9b951efb2147512997f2a61c6f718b36cd0b2856a77c24c0dde144746e4e4232c
+    KAT_ORDINARY_PEER_Y = 0xa6789bb0099481478735fdf89056d245187aec2a84587164d8fff7dd8d973e15ab45b16fd7d3b420daa36ae62731bec8194bbfdd2af82df88eabd833c38d9712b7135a32eca548012ecd64870057156a9416db37e350571eddaa404288aadf45c546fc182f84aef284bb3389031d17584a3d5a73a9ec0a7efee4c062d9332a3e
+    KAT_ORDINARY_KEY = bytes.fromhex("dcb24bc61fac110dcb90ba5fa9756709")
+
+    # This one's raw shared secret is 127 bytes, not 128. Hashing it unpadded
+    # -- which is what `.to_bytes((n.bit_length() + 7) // 8, 'big')` would do --
+    # gives a different AES key from the device's. It happens in roughly one
+    # exchange in 256, so it presents as an occasional unreproducible
+    # provisioning failure rather than a clean break. This test is the guard.
+    KAT_ZEROPAD_X = 0x4646a565d1d167e3ee584bdda03c8286be4415f18a595622845b5a4150eec0e711d6be9c67533891ff759481481c3e37b2a269f0e5d559bd1971f3417495e72340beeb0a9ef054f253b864e110de434391ba419d4517034a73ad81c49d8be898439af40a7eff358203d85ff0c210ea4b0515424951eb05a2fce68134c5ed0428
+    KAT_ZEROPAD_PEER_Y = 0xbf711fcc81707c6ace6753f43b6dd5fd6b90b23fe5b54ae2d982528c675a1f36bee3ba540a84580953eb446780b0a345e61cb600fe9efa83d1b2bd53660fa1a12108b87aa5bebf6800382368696d2f34fdddcf3a09e62f81e7628835499837d541b97f03dbc214500933ddd30dc0e24de3e68cb9e6e1e215db8686b6bf7e53ae
+    KAT_ZEROPAD_KEY = bytes.fromhex("c8ab800429446dde5ae9f84e57dc160a")
+
+    def _derive_with_fixed_key(self, x, peer_y):
+        c = BlufiCrypto()
+        c.privKey = x
+        return c.deriveSharedKey(peer_y.to_bytes(128, "big"))
+
+    def test_known_answer_ordinary_exchange(self):
+        assert self._derive_with_fixed_key(
+            self.KAT_ORDINARY_X, self.KAT_ORDINARY_PEER_Y
+        ) == self.KAT_ORDINARY_KEY
+
+    def test_known_answer_shared_secret_with_leading_zero(self):
+        c = BlufiCrypto()
+        raw = pow(self.KAT_ZEROPAD_PEER_Y, self.KAT_ZEROPAD_X, c.p)
+        # Precondition: this vector really does exercise the padding path.
+        assert (raw.bit_length() + 7) // 8 == 127
+        assert self._derive_with_fixed_key(
+            self.KAT_ZEROPAD_X, self.KAT_ZEROPAD_PEER_Y
+        ) == self.KAT_ZEROPAD_KEY
+
+    # --- peer key validation --------------------------------------------
+    #
+    # cryptography rejected these inside public_key(); nothing else does now.
+
+    @pytest.mark.parametrize("bad_y", [0, 1])
+    def test_rejects_degenerate_peer_key(self, bad_y):
+        c = BlufiCrypto()
+        c.genKeys()
+        with pytest.raises(ValueError, match="out of range"):
+            c.deriveSharedKey(bad_y.to_bytes(128, "big"))
+
+    def test_rejects_peer_key_at_p_minus_one(self):
+        c = BlufiCrypto()
+        c.genKeys()
+        with pytest.raises(ValueError, match="out of range"):
+            c.deriveSharedKey((c.p - 1).to_bytes(128, "big"))
+
+    def test_rejects_derive_before_gen_keys(self):
+        c = BlufiCrypto()
+        with pytest.raises(ValueError, match="genKeys"):
+            c.deriveSharedKey(b"\x02" * 128)
 
 
 # ============================= FrameCtrl ===================================
