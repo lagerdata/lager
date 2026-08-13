@@ -161,7 +161,7 @@ cli/
 │   ├── scripts/            # setup_and_deploy_box.sh, setup_ssh_key.sh, ...
 │   └── security/           # secure_box_firewall.sh (UFW configuration)
 │
-└── vendor/                 # Vendored third-party libraries (PyCRC, elftools)
+└── vendor/                 # Vendored third-party libraries (PyCRC)
 ```
 
 Additional deployment references (cloud-init, process guides) live in

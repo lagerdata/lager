@@ -4,21 +4,6 @@ Copyright 2024-2026 Lager Data
 This product includes software developed by third parties:
 
 ================================================================================
-pyelftools
-================================================================================
-License: Public Domain (Unlicense)
-Source: https://github.com/eliben/pyelftools
-
-The pyelftools library is in the public domain.
-
-================================================================================
-construct
-================================================================================
-License: MIT License
-Copyright (C) 2009 Tomer Filiba, 2010-2011 Corbin Simpson
-Source: https://github.com/construct/construct
-
-================================================================================
 PyCRC
 ================================================================================
 License: GNU Library or Lesser General Public License (LGPL)

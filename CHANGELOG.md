@@ -2,6 +2,30 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Removed
+
+- **The vendored `pyelftools` tree, which could not be imported in any
+  environment.** `cli/elftools/` was copied in without its
+  `construct/lib/` subpackage, so all 30 of its modules raised
+  `ModuleNotFoundError` everywhere -- pip installs and dev checkouts alike,
+  since the missing directory was absent from the repo itself. Nothing
+  detected it: the tree was excluded from ruff and from coverage, it had no
+  tests, and `compileall` checks syntax without resolving imports.
+
+  Its only consumer was `cli/commands/development/debug/gdb.py`, which was
+  itself unreachable -- `gdb` appears in neither `list_commands` nor
+  `get_command` of the debug group, so there has been no `lager debug gdb`
+  command to invoke. Both are removed, along with the ruff and coverage
+  exclusions that were hiding the tree from static analysis.
+
+  This deletes 13,241 lines and changes no behavior that worked. The vendored
+  copy was pyelftools 0.27 with no local modifications and no DWARF5 line
+  program support, so restoring the missing subpackage would have revived a
+  path that modern toolchains break anyway. Should ELF or DWARF parsing be
+  needed again, depend on `pyelftools` from PyPI. Closes #240.
+
 ## [0.36.2] - 2026-08-12
 
 ### Fixed

@@ -166,7 +166,7 @@ jobs:
         if: always()
         run: |
           ruff check --select E9,F63,F7,F82 \
-            --exclude cli/elftools,cli/vendor \
+            --exclude cli/vendor \
             cli/ box/ test/ tools/
         shell: bash
 
@@ -218,7 +218,7 @@ jobs:
       - name: Report
         if: always()
         run: |
-          OMIT='*/tests/*,*/test/*,*/elftools/*,*/vendor/*,*/__pycache__/*'
+          OMIT='*/tests/*,*/test/*,*/vendor/*,*/__pycache__/*'
           {
             echo '### Coverage'
             echo
