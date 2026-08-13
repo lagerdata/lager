@@ -1423,9 +1423,18 @@ def auto_lock_acquire_for_command(
     import atexit as _atexit
     import os as _os
 
+    @_contextlib_for_lock.contextmanager
+    def _noop_suspended():
+        yield
+
     def _noop_release():
         return None
     _noop_release.state = 'disabled'
+    # The suspend affordances must exist on every return path, or a caller
+    # that declares its outage crashes the moment locking is disabled.
+    _noop_release.suspend = lambda: None
+    _noop_release.resume = lambda: None
+    _noop_release.suspended = _noop_suspended
 
     if _os.getenv('LAGER_AUTO_LOCK_DISABLE'):
         return _noop_release
@@ -1471,6 +1480,45 @@ def auto_lock_acquire_for_command(
                 pass
 
     _release.state = state
+
+    # Suspend affordances, mirroring LockSession.suspended() for the callers
+    # that cannot use it. `lager update` takes down the very container serving
+    # the :9000 lock API (it stops it in Step 8 and rebuilds it in Step 9),
+    # so every renewal across that window fails for a reason that is not a
+    # fault — which is how a wholly successful update came to warn that its
+    # lock heartbeat had failed five times running.
+    #
+    # Exposed as plain suspend()/resume() calls as well as a context manager,
+    # because the whole reason this imperative variant exists is that the
+    # window sits inside a long branchy function that cannot be re-indented
+    # under a `with` (see this function's docstring).
+    #
+    # This changes no lock semantics. While the server is down a renewal
+    # cannot succeed whether or not it is attempted, so the lock is already
+    # riding its TTL either way; suspending only stops the misreporting.
+    # Keeping the lock alive across the outage remains the caller's job, via
+    # a TTL longer than the window.
+    def _suspend():
+        if heartbeat is not None:
+            heartbeat.pause()
+
+    def _resume():
+        # Never un-pause after release: the heartbeat is stopped by then, and
+        # resuming would only reset counters on a dead thread.
+        if heartbeat is not None and not done['done']:
+            heartbeat.unpause()
+
+    @_contextlib_for_lock.contextmanager
+    def _suspended():
+        _suspend()
+        try:
+            yield
+        finally:
+            _resume()
+
+    _release.suspend = _suspend
+    _release.resume = _resume
+    _release.suspended = _suspended
 
     if should_release:
         _atexit.register(_release)

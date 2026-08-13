@@ -480,6 +480,59 @@ def _rebuild_gate_verdict(facts, *, git_sync_confirmed, needs_pull,
     return 'skip'
 
 
+def _deps_preview(new_hash, stored_hash, *, force, needs_flatten,
+                  is_rollback, commits_ahead):
+    """What `--check` reports about the docker-build cache.
+
+    Returns ``(status_text, rebuild_certain, unmeasured)``.
+
+    Extracted from the preview block so the one property that matters can be
+    tested directly: **this must never promise a cached build when
+    `_rebuild_gate_verdict` would rebuild.** It used to, in the single most
+    expensive case — a box still on the `box/` subdir layout printed
+    "Deps: cache valid (no rebuild) / Estimated: ~90s (cached build)"
+    immediately before a ten-minute clean rebuild.
+
+    Two distinct failures were behind that:
+
+    * `needs_flatten` was ignored here, though the gate treats it as a
+      definite rebuild trigger. The flatten moves every source file, and the
+      build hash is over `sha256sum` output — which prints each path beside
+      its digest — so a moved file necessarily changes it.
+    * `_build_hash_mismatch` returns False both for "measured, unchanged"
+      and for "could not measure", and this rendered both as "cache valid".
+
+    `unmeasured` deliberately does NOT imply a rebuild: the gate does not
+    treat it as one either, so predicting one would over-estimate exactly as
+    badly as the old text under-estimated. It only stops the preview
+    claiming knowledge it does not have.
+    """
+    unmeasured = not new_hash or not stored_hash
+    rebuild_certain = _build_hash_mismatch(new_hash, stored_hash) or needs_flatten
+
+    if force:
+        return ('forced clean rebuild (--force: image + cargo/npm volumes wiped)',
+                rebuild_certain, unmeasured)
+    if _build_hash_mismatch(new_hash, stored_hash):
+        return ('will trigger fresh build (Dockerfile, requirements or box source changed)',
+                rebuild_certain, unmeasured)
+    if needs_flatten:
+        return ('will rebuild (flatten moves every source path)',
+                rebuild_certain, unmeasured)
+    if is_rollback or commits_ahead > 0:
+        # Probe measured the *current* (pre-pull) Dockerfile/requirements, so
+        # a backward jump can still trigger a rebuild we can't predict
+        # without actually pulling. Be honest about the unknown.
+        return ('unknown until pull (older ref may differ)',
+                rebuild_certain, unmeasured)
+    if unmeasured:
+        why = ('no successful build recorded yet' if new_hash
+               else 'box source not where the probe looks')
+        return (f'cache state unknown, auto-invalidation skipped ({why})',
+                rebuild_certain, unmeasured)
+    return ('cache valid (no rebuild)', rebuild_certain, unmeasured)
+
+
 def _deployed_version_stale(tree_version, etc_version_raw):
     """True when the box tree's version differs from the last version a
     successful update actually deployed (/etc/lager/version, `box|cli`
@@ -1358,6 +1411,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         deps_will_change = _build_hash_mismatch(_check_new_hash, _check_stored_hash)
         container_down = facts.get('LAGER_RUNNING', '') == '0'
 
+
         if not git_sync_confirmed:
             click.secho('Could not determine update state (git rev-list failed).', fg='red', err=True)
             ctx.exit(2)
@@ -1390,17 +1444,13 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
                 f'will switch ({commits_ahead} ahead / {commits_behind} behind {git_ref})'
             )
 
-        if force:
-            deps_status = 'forced clean rebuild (--force: image + cargo/npm volumes wiped)'
-        elif deps_will_change:
-            deps_status = 'will trigger fresh build (Dockerfile, requirements or box source changed)'
-        elif is_rollback or commits_ahead > 0:
-            # Probe measured the *current* (pre-pull) Dockerfile/requirements,
-            # so a backward jump can still trigger a rebuild we can't predict
-            # without actually pulling. Be honest about the unknown.
-            deps_status = 'unknown until pull (older ref may differ)'
-        else:
-            deps_status = 'cache valid (no rebuild)'
+        deps_status, deps_rebuild_certain, deps_unmeasured = _deps_preview(
+            _check_new_hash, _check_stored_hash,
+            force=force,
+            needs_flatten=needs_flatten,
+            is_rollback=is_rollback,
+            commits_ahead=commits_ahead or 0,
+        )
 
         if force:
             container_status = 'will restart (forced clean rebuild)'
@@ -1409,19 +1459,22 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             # Code may be fully in sync, but there is nothing serving it — a
             # previous update likely failed after removing the containers.
             container_status = 'NOT RUNNING (will rebuild and restart)'
-            est = '~6 min (fresh build possible)' if deps_will_change else '~90s (cached build)'
+            est = '~6 min (fresh build possible)' if deps_rebuild_certain else '~90s (cached build)'
         elif deploy_stale:
             # In sync and running, but the container was deployed from an
             # older version — a prior update pulled and stopped before the
             # rebuild.
             container_status = 'running a STALE build (will rebuild and restart)'
             est = '~90s (cached build)'
-        elif commits_behind == 0 and commits_ahead == 0 and not deps_will_change:
+        elif commits_behind == 0 and commits_ahead == 0 and not deps_rebuild_certain:
             container_status = 'no restart needed'
             est = '~5s'
-        elif deps_will_change or is_rollback or commits_ahead > 0:
+        elif deps_rebuild_certain or is_rollback or commits_ahead > 0:
             # Rollback / branch-switch likely flips at least some COPY layers
-            # in the Dockerfile cache; assume a real build.
+            # in the Dockerfile cache; assume a real build. An unmeasured hash
+            # lands here too — over-estimating a cached build costs the
+            # operator nothing, while under-estimating a fresh one is how
+            # "~90s" preceded ten minutes of waiting.
             container_status = 'will restart'
             est = '~6 min (fresh build possible)'
         else:
@@ -1432,7 +1485,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         # reinstalls it as a matter of course; otherwise compare versions
         # from the probe facts — no extra round trip.
         _rebuild_pending = (
-            force or not code_in_sync or deps_will_change
+            force or not code_in_sync or deps_rebuild_certain
             or container_down or deploy_stale
         )
         host_cli_status, host_cli_will_change = host_cli_check_status(
@@ -1454,7 +1507,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
 
         will_change = (
             force or commits_behind != 0 or commits_ahead != 0
-            or deps_will_change or container_down or deploy_stale
+            or deps_rebuild_certain or container_down or deploy_stale
             or host_cli_will_change
         )
         if will_change:
@@ -2129,6 +2182,22 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         resolved_box, box_name or resolved_box, 'update',
     )
 
+    # Declare the lock outage this command is about to cause. The `lager`
+    # container being stopped on the next line is the process serving the
+    # :9000 lock API our own lock lives in, and it stays gone until Step 11
+    # brings it back and `wait_for_box_ready` confirms /health answers. Every
+    # renewal in between fails for a reason that is not a fault, and left
+    # alone those "failures" accumulate into a warning that the lock is at
+    # risk — printed on every successful update that rebuilds the container.
+    #
+    # Resumed after wait_for_box_ready() succeeds, which is precisely when
+    # :9000 is known to be answering again. Paired imperatively rather than
+    # via `with` because the window spans ~350 lines of branchy logic; the
+    # error paths inside it all end in ctx.exit(), whose atexit release stops
+    # the heartbeat outright, so a suspension that is never resumed cannot
+    # outlive the command.
+    _release_update_lock.suspend()
+
     # Step 8: Stop containers
     if progress:
         progress.update("Stopping containers...")
@@ -2497,6 +2566,12 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         click.echo(f'  ssh {ssh_host} "docker ps"', err=True)
         ctx.exit(1)
     log_status('OK', 'green')
+
+    # The lock server is answering again (wait_for_box_ready probes /health on
+    # 9000, which is the lock API itself), so renewals can resume and any
+    # failure reported from here on is real signal. See the matching
+    # .suspend() before Step 8.
+    _release_update_lock.resume()
 
     # Step 12: Verify the lager container is up, and check J-Link presence —
     # one SSH call returns both. The customer-binaries directory was already
