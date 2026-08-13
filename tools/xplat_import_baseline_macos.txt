@@ -1,0 +1,9 @@
+# macOS-only additions to tools/packaging_import_baseline.txt, read by the
+# `xplat (macos)` job in xplat-smoke.yml (both files are passed; entries are
+# unioned). Same two-sided contract: a failure not listed fails the job, and
+# a listed module that starts importing cleanly also fails ("remove it").
+#
+# Empty: on macOS the wheel's import surface matches Linux exactly -- every
+# platform-gated dependency in cli/ is guarded at import time (termios, tty,
+# bson fallbacks), so the shared baseline covers everything. If a macOS-only
+# failure ever appears here, it is a NEW platform regression, not noise.

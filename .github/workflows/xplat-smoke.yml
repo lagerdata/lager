@@ -1,0 +1,104 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# The CLI advertises support everywhere Python runs, but every gate executes
+# on ubuntu-latest -- six cli/ modules branch on platform, and the known bug
+# class here (an unguarded `import termios` breaking `lager uart` on Windows)
+# was invisible to CI by construction. This workflow installs the BUILT WHEEL
+# on macOS and Windows and proves two things per platform:
+#
+#   1. The console entry point runs -- invoked through PATH, the way users
+#      do, which on Windows exercises the generated lager.exe shim, a
+#      historical packaging bug class of its own.
+#   2. Every module of the installed wheel imports, reconciled against the
+#      shared packaging baseline PLUS a per-OS delta file
+#      (tools/xplat_import_baseline_<os>.txt). Two-sided like every other
+#      baseline here: new failures fail, and stale entries fail with
+#      "remove it".
+#
+# The wheel, not an editable install, on purpose: pkgutil's package
+# discovery differs between source trees and installed wheels (measured: 126
+# vs 177 modules -- a failing subpackage hides its children in source mode),
+# so an editable walk would quietly shrink the checked surface and its
+# baseline would drift from the packaging job's. One artifact, one walk
+# semantics, per-OS deltas only.
+#
+# ADVISORY while it soaks: not in the branch ruleset yet. The `xplat (...)`
+# job names below are the future required contexts -- never rename them.
+
+name: "PR Gate: Cross-Platform Smoke"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  xplat:
+    name: xplat (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macos
+          - os: windows-latest
+            label: windows
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # No job here pushes anything; do not persist the token into
+          # the checkout's config (zizmor: artipacked).
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          # Same interpreter as the packaging gate: the shared baseline's
+          # cli.setup note is 3.11-specific (3.11 venvs seed setuptools).
+          python-version: '3.11'
+
+      - name: Build the wheel
+        # bash on every OS -- the Windows runner's Git Bash keeps one script
+        # dialect across the matrix. Pure-Python wheel, so building it here
+        # tests nothing platform-specific; installing and importing it does.
+        run: |
+          pip install 'build==1.5.0'
+          cd cli
+          python -m build --wheel --outdir "$RUNNER_TEMP/dist"
+        shell: bash
+
+      - name: Install the wheel in a fresh venv
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          BIN="$RUNNER_TEMP/venv/bin"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            BIN="$RUNNER_TEMP/venv/Scripts"
+          fi
+          echo "VENVBIN=$BIN" >> "$GITHUB_ENV"
+          "$BIN/python" -m pip install --quiet "$RUNNER_TEMP"/dist/*.whl
+        shell: bash
+
+      - name: Entry-point smoke, through PATH
+        # PATH lookup, not a direct file path: on Windows the entry point is
+        # lager.exe, and resolving it the way a user's shell does is part of
+        # what this job exists to test.
+        run: |
+          export PATH="$VENVBIN:$PATH"
+          lager --version
+          lager --help > /dev/null
+        shell: bash
+
+      - name: Import-walk the installed wheel against the platform baseline
+        run: |
+          "$VENVBIN/python" tools/check_imports.py --package cli \
+            --baseline tools/packaging_import_baseline.txt \
+            --baseline "tools/xplat_import_baseline_${{ matrix.label }}.txt"
+        shell: bash

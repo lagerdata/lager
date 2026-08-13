@@ -58,7 +58,10 @@ def load_baseline(path: Path) -> tuple[set[str], set[str]]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--package', required=True)
-    ap.add_argument('--baseline', required=True, type=Path)
+    ap.add_argument('--baseline', required=True, type=Path, action='append',
+                    help='baseline file; repeatable -- entries are unioned. '
+                         'The cross-platform smoke passes the shared packaging '
+                         'baseline plus a per-OS delta file.')
     ap.add_argument('--allow-source', action='store_true',
                     help='permit the package to resolve from outside sys.prefix '
                          '(editable installs / dev trees)')
@@ -79,7 +82,11 @@ def main() -> int:
               file=sys.stderr)
         return 2
 
-    exact, prefixes = load_baseline(args.baseline)
+    exact, prefixes = set(), set()
+    for baseline in args.baseline:
+        file_exact, file_prefixes = load_baseline(baseline)
+        exact |= file_exact
+        prefixes |= file_prefixes
 
     modules = [m.name for m in
                pkgutil.walk_packages(pkg.__path__, prefix=f'{args.package}.')]
