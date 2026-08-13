@@ -246,7 +246,7 @@ class TestPreviewDepsStatus:
             needs_pull=False,
         )
         assert change is True
-        assert 'Dockerfile or requirements changed' in status
+        assert 'Dockerfile, requirements or box source changed' in status
 
 
 class TestBuildHashAtRefShellCmd:
@@ -254,6 +254,13 @@ class TestBuildHashAtRefShellCmd:
         script = _build_hash_at_ref_shell_cmd('origin/main')
         assert 'git show origin/main:box/lager/docker/box.Dockerfile' in script
         assert 'git cat-file -e origin/main:box/lager/docker/box.Dockerfile' in script
+
+    def test_emits_source_tree_walk(self):
+        # Must match main's `_BUILD_HASH_SOURCE_DIRS` composition or --check
+        # spuriously reports a rebuild against stored hashes that include
+        # every file under ~/box/lager.
+        script = _build_hash_at_ref_shell_cmd('origin/main')
+        assert 'git ls-tree -r --name-only origin/main box/lager' in script
 
     def test_rejects_metacharacters(self):
         assert _build_hash_at_ref_shell_cmd('main; rm -rf /') == 'echo ""'
@@ -282,16 +289,25 @@ class TestBuildHashAtRefMatchesWorkingTree:
 
     DOCKERFILE_GIT_PATH = 'box/lager/docker/box.Dockerfile'
     DOCKERFILE_TREE_PATH = 'lager/docker/box.Dockerfile'
+    SOURCE_GIT_PATH = 'box/lager/nets/net.py'
+    SOURCE_TREE_PATH = 'lager/nets/net.py'
 
-    def _fake_box(self, tmp_path, dockerfile_body):
+    def _fake_box(self, tmp_path, dockerfile_body, source_body='print("ok")\n'):
         """Build $HOME/box as the boxes have it: git tracks the `box/` prefix,
-        the working tree is the flattened layout."""
+        the working tree is the flattened layout. Includes a source file so
+        the `_BUILD_HASH_SOURCE_DIRS` walk is exercised (not just Dockerfile).
+        """
         home = tmp_path / 'home'
         box = home / 'box'
-        for rel in (self.DOCKERFILE_GIT_PATH, self.DOCKERFILE_TREE_PATH):
+        for rel, body in (
+            (self.DOCKERFILE_GIT_PATH, dockerfile_body),
+            (self.DOCKERFILE_TREE_PATH, dockerfile_body),
+            (self.SOURCE_GIT_PATH, source_body),
+            (self.SOURCE_TREE_PATH, source_body),
+        ):
             path = box / rel
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(dockerfile_body)
+            path.write_text(body)
         env = dict(os.environ, HOME=str(home))
         run = lambda *args: subprocess.run(
             args, cwd=box, env=env, capture_output=True, text=True, timeout=30,
@@ -299,7 +315,7 @@ class TestBuildHashAtRefMatchesWorkingTree:
         run('git', 'init', '-q', '-b', 'main')
         run('git', 'config', 'user.email', 'test@example.com')
         run('git', 'config', 'user.name', 'test')
-        run('git', 'add', self.DOCKERFILE_GIT_PATH)
+        run('git', 'add', self.DOCKERFILE_GIT_PATH, self.SOURCE_GIT_PATH)
         commit = run('git', 'commit', '-q', '-m', 'dockerfile')
         assert commit.returncode == 0, commit.stderr
         return home, env
@@ -333,6 +349,18 @@ class TestBuildHashAtRefMatchesWorkingTree:
         working = self._sh(_build_hash_shell_cmd(), env, box)
         assert after != before
         assert after != working
+
+    def test_ref_digest_differs_when_source_file_changes(self, tmp_path):
+        home, env = self._fake_box(tmp_path, 'FROM python:3.12-slim\n')
+        before = self._sh(_build_hash_at_ref_shell_cmd('HEAD'), env, home)
+        box = home / 'box'
+        (box / self.SOURCE_GIT_PATH).write_text('print("changed")\n')
+        subprocess.run(
+            ['git', 'commit', '-qam', 'touch source'], cwd=box, env=env,
+            capture_output=True, text=True, timeout=30,
+        )
+        after = self._sh(_build_hash_at_ref_shell_cmd('HEAD'), env, home)
+        assert after != before
 
     def test_missing_ref_yields_empty_not_a_bogus_digest(self, tmp_path):
         home, env = self._fake_box(tmp_path, 'FROM python:3.12-slim\n')
