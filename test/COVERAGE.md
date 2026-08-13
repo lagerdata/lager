@@ -131,10 +131,14 @@ to move to: `rustls-pemfile` unmaintained (`RUSTSEC-2025-0134`, two versions in 
 `anyhow` unsound `Error::downcast_mut` (`RUSTSEC-2026-0190`). Add `--deny warnings` once they
 clear.
 
-The workflow is **path-filtered** to `box/oscilloscope-daemon/**`. A path-filtered workflow does
-not report at all when the paths do not match, so making this a required context would leave
-every Python-only PR waiting forever -- drop the filter first, or pair it with an always-runs
-stub.
+The `pull_request` trigger is **not path-filtered**: the job detects rust changes itself
+(merge-base diff of `box/oscilloscope-daemon/` and the workflow file) and succeeds via skip
+when nothing rust-side changed, so it always reports and CAN become a required context. A
+Python-only PR pays ~20 seconds of checkout+detect. The job also runs `cargo test
+--workspace` -- trivially green until the workspace gains its first test, at which point the
+gate exists with no workflow change -- and, on push to main, a release-profile compile smoke
+whose binary is uploaded as an artifact (NOT a ship artifact; the deployed daemon is still
+hand-built by `build_daemon.sh` against the box's own OS).
 
 ### What CI does NOT run
 
