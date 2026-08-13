@@ -433,6 +433,26 @@ fi
 # lacks broad passwordless sudo they would each prompt for the sudo password (the
 # extra prompts on a fresh install). Writing this NOPASSWD sudoers file first
 # means one sudo prompt here, and every privileged step afterward is passwordless.
+#
+# THESE GRANTS MAKE ${BOX_USER} ROOT-EQUIVALENT, BY DESIGN. The list below is
+# long and specific, which makes it look confined. It is not, and it cannot be
+# made so by narrowing entries, because provisioning a box requires root:
+#
+#   - deploying udev rules is root by construction. The cp+reload pair below
+#     is the whole point of this file, and udev runs commands as root via
+#     RUN+=, so anyone who can write a rules file and reload it has root.
+#   - the firewall grants install a script from world-writable /tmp to a
+#     root-owned path and then run it. The root-owned destination stops a
+#     LATER edit by another user; it does not stop the login user from
+#     putting arbitrary content there in the first place.
+#   - the box-config file (see _host_ops.boxcfg_sudoers_rules) grants
+#     apt-get, which runs arbitrary commands as root through its own config.
+#
+# So: treat anyone holding the ${BOX_USER} SSH key as holding root on this
+# box. Scoping individual entries here is blast-radius hygiene and an aid to
+# reading the file -- worth doing, but do not describe it as containment.
+# Real containment means replacing the three paths above with fixed
+# root-owned wrapper scripts the login user cannot edit.
 # =============================================================================
 print_step "Configuring Passwordless Sudo"
 
@@ -448,9 +468,21 @@ cat > "$TEMP_SCRIPT" << SCRIPT_EOF
 echo "Creating sudoers configuration for passwordless udev management..."
 
 # Create sudoers file (using actual username: ${BOX_USER})
+#
+# The banner below is a byte-identical copy of _host_ops.UDEV_SUDOERS_BANNER
+# (this script runs from shell and cannot import it); test_sudoers_contract.py
+# pins the two together. It is what tells an operator who opens this file that
+# Lager rewrites it wholesale -- a grant added here vanishes on the next
+# install, and the incident that motivated the banner was exactly that.
 sudo tee /etc/sudoers.d/lagerdata-udev > /dev/null << 'SUDOERS'
-# Allow ${BOX_USER} user to manage udev rules without password
-# This enables automated deployment of instrument USB permissions
+# Managed by lager install; manual edits are overwritten.
+# Lager writes only the files it owns under /etc/sudoers.d/ and never touches
+# any other file in this directory, so keep operator or platform grants in a
+# SEPARATE file (for example /etc/sudoers.d/zz-local); those survive every
+# Lager run.
+#
+# Purpose: let the ${BOX_USER} user deploy instrument USB permissions and the
+# rest of the box provisioning below without a password prompt.
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/cp /tmp/*.rules /etc/udev/rules.d/
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/udev/rules.d/*.rules
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/udevadm control --reload-rules
@@ -518,9 +550,13 @@ ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart docker
 # self-healing instead of permanently wedged.
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/systemctl reset-failed docker.service docker.socket
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl reset-failed docker.service docker.socket
-# Firewall: install the shipped script to a ROOT-owned path (the login user
-# can't modify it there), then run it. NOPASSWD on a /tmp path would be unsafe
-# (world-writable); a fixed root-owned path is safe.
+# Firewall: install the shipped script to a ROOT-owned path, then run it.
+# The root-owned destination is what stops a LATER edit -- by another user, or
+# by this one -- between install and execution; NOPASSWD directly on a /tmp
+# path would leave that window wide open, since /tmp is world-writable.
+# It does NOT confine the login user, who chooses the /tmp source content and
+# so can install and run arbitrary code as root here. That is accepted: see
+# the root-equivalence note in STEP 2 above.
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/install -D -m 0755 -o root -g root /tmp/secure_box_firewall.sh /usr/local/lib/lager/secure_box_firewall.sh
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/install -D -m 0755 -o root -g root /tmp/secure_box_firewall.sh /usr/local/lib/lager/secure_box_firewall.sh
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/local/lib/lager/secure_box_firewall.sh

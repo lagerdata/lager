@@ -44,10 +44,21 @@ In addition to the above:
 
 | Component | Description |
 |-----------|-------------|
-| Udev rules | `/etc/udev/rules.d/lager-*.rules` |
-| Sudoers config | `/etc/sudoers.d/lagerdata-udev` |
+| Udev rules | `/etc/udev/rules.d/99-instrument.rules`, `/etc/udev/rules.d/99-lager-user.rules`, and legacy `/etc/udev/rules.d/lager-*.rules`, then a rules reload |
+| Modprobe config | `/etc/modprobe.d/blacklist-usbtmc.conf` |
+| Sudoers config | `/etc/sudoers.d/lagerdata-udev`, `/etc/sudoers.d/lager-box-config`, `/etc/sudoers.d/lager-bench-json` |
+| Firewall script | `/usr/local/lib/lager/secure_box_firewall.sh`, and a UFW reset to deny-incoming/allow-ssh |
+| Sysctl config | `/etc/sysctl.d/99-lager-box-config.conf` |
+| `lager` group | Removed if present |
 | `~/third_party` | J-Link, custom binaries |
 | Legacy deploy key | `~/.ssh/lager_deploy_key*` and SSH config entry (from pre-open-source deployments) |
+
+<Note>
+Uninstall removes those three sudoers files **by name**. Lager never touches any
+other file under `/etc/sudoers.d/`, so grants you or your management platform
+added in a separate file there are left alone — both by uninstall and by the
+installs and updates that regenerate Lager's own files.
+</Note>
 
 ## Examples
 

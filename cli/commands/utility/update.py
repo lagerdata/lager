@@ -25,7 +25,11 @@ from ...box_storage import (
 )
 from ...context import get_default_box
 from ...core.ssh_utils import get_ssh_connection_pool
-from ..box._host_ops import boxcfg_sudoers_bootstrap_cmd, is_valid_unix_username
+from ..box._host_ops import (
+    BOXCFG_SUDOERS_MARKER,
+    boxcfg_sudoers_bootstrap_cmd,
+    is_valid_unix_username,
+)
 from ..box._ssh import ensure_lager_box_keypair, key_auth_works
 from ._host_cli import (
     HOST_CLI_PROBE_SNIPPET,
@@ -368,7 +372,7 @@ if [ -f /etc/sudoers.d/lagerdata-udev ]; then
 else
   echo "LAGER_PROBE_SUDOERS_OWNER=NOTFOUND"
 fi
-if test -f /etc/lager/.boxcfg-sudoers-v2 && sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1; then
+if test -f __BOXCFG_SUDOERS_MARKER__ && sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1; then
   echo "LAGER_PROBE_BOXCFG_SUDOERS_OK=1"
 else
   echo "LAGER_PROBE_BOXCFG_SUDOERS_OK=0"
@@ -388,6 +392,7 @@ echo "LAGER_PROBE_ETC_VERSION=$(cat /etc/lager/version 2>/dev/null)"
     return (
         script
         .replace('__BUILD_HASH_CMD__', _build_hash_shell_cmd())
+        .replace('__BOXCFG_SUDOERS_MARKER__', BOXCFG_SUDOERS_MARKER)
         .replace('__HOST_CLI_PROBE__\n', HOST_CLI_PROBE_SNIPPET)
     )
 
@@ -1791,6 +1796,17 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     # works) as that user, so wrong-user boxes come back negative and
     # re-bootstrap here with the corrected rule. Runs on every update so
     # existing boxes gradually pick up the rule; idempotent.
+    #
+    # What a marker bump costs, before you reach for one: it makes every
+    # already-provisioned box come back negative here exactly once, and that
+    # rewrite needs an interactive sudo password — `sudo tee` into
+    # /etc/sudoers.d/ matches no NOPASSWD grant Lager installs. On a box
+    # updated by a script with no tty it cannot succeed at all: the step fails
+    # (non-fatal, the old file and its grants survive intact) and retries on
+    # every subsequent run. A bump is the only way a content change reaches a
+    # provisioned box, so it is right for a rule-line change and wrong for a
+    # comment — the ownership banner deliberately did not get one. Say so in
+    # the changelog when you do bump.
     if progress:
         progress.update("Checking box-config sudoers...")
     log('Checking box-config sudoers...', nl=False)

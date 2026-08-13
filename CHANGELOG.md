@@ -4,6 +4,56 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ## [Unreleased]
 
+### Changed
+
+- **Lager's sudoers files now say on the box that Lager rewrites them.** Lager
+  writes three files under `/etc/sudoers.d/` — `lagerdata-udev`,
+  `lager-box-config`, and `lager-bench-json` — and regenerates each one in full
+  on every run, so the current grant shape is always what lands. That is
+  deliberate and unchanged. What was missing was any sign of it on the box: an
+  operator or a box-management platform that added a `NOPASSWD` grant *inside*
+  one of those files got it silently erased by the next `lager install`, with
+  nothing to explain where it went.
+
+  Each of the three now opens with a comment header naming the command that
+  rewrites it and pointing operator grants at a separate file. Lager has never
+  read, edited, or removed a file under `/etc/sudoers.d/` that it did not
+  write — there is no glob, no directory-level operation, and uninstall's
+  `rm -f` names those same three paths — so a grant kept in its own file (say
+  `/etc/sudoers.d/zz-local`) survives every Lager run. The headers are sudoers
+  comments; `visudo -c` validation is unchanged and still gates every write.
+  `test/unit/box/test_sudoers_contract.py` pins both halves.
+
+  **No existing box is touched, and no box prompts for a sudo password.** New
+  installs get the header; a box that already has these files keeps its
+  banner-less copies until it is reinstalled. Reaching provisioned boxes would
+  mean bumping the marker that lets `lager update` skip the rewrite, and that
+  rewrite needs an interactive sudo password — `sudo tee` into
+  `/etc/sudoers.d/` matches no grant Lager installs — so it would charge every
+  box a prompt to deliver five comment lines, and would fail on every run for
+  boxes updated by a script with no terminal. The header is comments and both
+  generations grant identical commands, so a box on either is correct. The
+  marker stays at `.boxcfg-sudoers-v2`; bump it for a rule change, not a
+  comment.
+
+- **Documented that the box login user is root-equivalent by design.**
+  Provisioning a box requires root, and three of the grants Lager must install
+  to do it are each a full path to root: `apt-get` runs arbitrary commands as
+  root through its own configuration, deploying udev rules is root by
+  construction (udev executes `RUN+=` as root), and the firewall grant
+  installs a script from world-writable `/tmp` to a root-owned path and then
+  runs it.
+
+  Nothing about that changes here — it is the same posture Lager has always
+  had, now written down where the rules are defined, in the deployment script,
+  and in the `lager install` reference. The grants are still spelled out as
+  specific commands, which keeps the blast radius small and the file readable;
+  what they are not is a privilege boundary, and two places in the tree
+  previously said they were, claiming a compromised account "cannot escalate
+  to root" via the path-scoped entries. That was true of those entries alone
+  and false of the file that grants `apt-get` one line above them. Treat
+  anyone holding the box login account's SSH key as holding root on that box.
+
 ### Fixed
 
 - **Every successful `lager update` that rebuilt the container warned that its
@@ -66,6 +116,23 @@ All notable changes to the Lager platform are documented here. For detailed rele
   testable directly: the preview may never promise a cached build when the
   gate would rebuild. `--check`'s exit code now accounts for a pending
   flatten too, so a box needing one no longer reports `Nothing to do`.
+
+- **The sudoers bootstrap snippet printed by `lager box-config mount` wrote a
+  strict subset of the file it was overwriting.** It teed a single
+  `NOPASSWD: /bin/mkdir, /bin/chown` line over `/etc/sudoers.d/lager-box-config`,
+  so an operator who pasted it fixed mount auto-prep and silently dropped the
+  `apt-get`, `sysctl`, `tee`, `rm`, and `cp` grants that `lager box-config
+  apply` needs — and wrote no marker file, so the next update re-bootstrapped
+  and prompted for the sudo password again. It now prints the same content
+  `lager install` and `lager update` write, which already covers mkdir/chown.
+
+- **A bump of the box-config sudoers marker could not have taken effect.**
+  `lager install` and `lager update` hardcoded `/etc/lager/.boxcfg-sudoers-v2`
+  in the probes that decide whether to re-bootstrap, rather than reading the
+  constant the bootstrap command writes. Changing the constant would have
+  moved the file Lager wrote without moving the file it looked for, so the
+  rewrite would have been skipped on every box. All three call sites now use
+  the constant, and a test fails on any new hardcoded copy.
 
 ### Removed
 
