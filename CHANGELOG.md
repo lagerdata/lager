@@ -25,6 +25,29 @@ All notable changes to the Lager platform are documented here. For detailed rele
   program support, so restoring the missing subpackage would have revived a
   path that modern toolchains break anyway. Should ELF or DWARF parsing be
   needed again, depend on `pyelftools` from PyPI. Closes #240.
+### Fixed
+
+- **Two `cli/impl` modules could not be imported from a pip-installed CLI.**
+  `cli/impl/box_config.py` and `cli/impl/power/enable_disable.py` imported
+  `lager.*` at module scope. That package lives under `box/` and is not in the
+  `lager-cli` wheel, so both raised `ModuleNotFoundError` on any clean install
+  -- they worked only where `box/` happened to be on `sys.path`, which is true
+  in dev checkouts and on boxes and false everywhere else.
+
+  These files are uploaded to the box and executed there, so the box-side
+  behavior was never affected. But they also ship inside the wheel, because
+  `get_impl_path()` resolves them from the installed package on disk, which
+  makes them importable modules on the host. Both now defer the `lager` import
+  into the function that needs it, matching what
+  `cli/impl/measurement/scope.py` already did. `box_config.py`'s
+  `/app/lager` path insert moved inside `__main__` for the same reason.
+
+  A new unit test imports every `cli/impl` module in a subprocess with `box/`
+  stripped from the path and the name `lager` blocked outright, so this cannot
+  regress quietly between packaging runs. The two entries naming this defect
+  are deleted from `tools/packaging_import_baseline.txt`, and because that
+  baseline is two-sided, the gate now fails if either module regresses *or* if
+  the entries were left behind. Closes #241.
 
 ## [0.36.2] - 2026-08-12
 
