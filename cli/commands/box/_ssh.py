@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from typing import Callable, Optional, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from ...errors import LagerError
 
@@ -39,6 +39,88 @@ _LAGER_BOX_KEY = os.path.expanduser("~/.ssh/lager_box")
 _KEY_FALLBACK_DESTS: set = set()
 
 _AUTH_FAILURE_MARKERS = ("permission denied", "too many authentication failures")
+
+
+def is_auth_failure(stderr: Optional[str]) -> bool:
+    """True when ssh's stderr says the *server* rejected our credentials.
+
+    This is the one predicate that licenses retrying a keyed attempt
+    without the key: an authentication failure means the remote command
+    never ran, so the retry cannot double-execute anything. Transport
+    failures (timeout, no route, refused) are deliberately excluded — a
+    second attempt fails the same way, only slower.
+    """
+    return any(m in (stderr or "").lower() for m in _AUTH_FAILURE_MARKERS)
+
+
+def lager_box_key_if_present(key_path: str = _LAGER_BOX_KEY) -> Optional[str]:
+    """The lager_box key path when the file exists, else ``None``.
+
+    The shape every caller wants: an identity to offer, or nothing. A box
+    that has never had `lager ssh-setup` (or `lager install`) run against
+    this machine has no such key, and must keep working on whatever
+    identity the operator already uses.
+    """
+    return key_path if os.path.exists(key_path) else None
+
+
+def ssh_identity_args(identity: Optional[str]) -> List[str]:
+    """``['-i', identity]`` when an identity was chosen, else ``[]``.
+
+    Every command that shells out to ssh builds its argv differently
+    (``-t`` here, BatchMode there, multiplexing options from the pool), so
+    what is shared between them is this fragment rather than a whole
+    command builder. Callers get the identity from
+    :func:`probe_box_identity`; ``None`` means "offer ssh's own defaults".
+    """
+    return ["-i", identity] if identity else []
+
+
+def probe_box_identity(
+    dest: str,
+    *,
+    key_path: str = _LAGER_BOX_KEY,
+    connect_timeout: int = 10,
+    timeout: int = 15,
+    extra_args: Sequence[str] = (),
+) -> Tuple[Optional[str], subprocess.CompletedProcess]:
+    """Answer "which identity should this command offer ``dest``?".
+
+    Returns ``(identity, proc)``. ``identity`` is ``key_path`` when the
+    lager_box key authenticated, and ``None`` when it did not — meaning
+    the caller should let ssh offer its own default identities. ``proc``
+    is the attempt whose result the caller should classify, so the
+    existing "connection refused" / "host key verification failed" /
+    "could not resolve hostname" branches keep working unchanged.
+
+    Why a probe rather than an unconditional ``-i``: passing ``-i``
+    *replaces* ssh's built-in default identity list (id_rsa, id_ed25519,
+    …) rather than adding to it, so an unconditional ``-i`` would lock
+    out a box authorized only by a key the operator installed themselves
+    with ssh-copy-id. At most two connections are made, and the second
+    only when the server actually rejected our credentials.
+
+    BatchMode=yes on both attempts: a box that authorizes neither must
+    fail fast with an actionable error, not block on a password prompt
+    that a hardened box would refuse to honor anyway.
+
+    Exceptions (``TimeoutExpired``, ``FileNotFoundError``) propagate —
+    callers already classify those around their connectivity check.
+    """
+    def _probe(identity: Optional[str]) -> subprocess.CompletedProcess:
+        argv = ["ssh"]
+        argv.extend(ssh_identity_args(identity))
+        argv.extend(["-o", f"ConnectTimeout={connect_timeout}"])
+        argv.extend(extra_args)
+        argv.extend(["-o", "BatchMode=yes", dest, "echo ok"])
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+
+    identity = lager_box_key_if_present(key_path)
+    proc = _probe(identity)
+    if identity is not None and proc.returncode != 0 and is_auth_failure(proc.stderr):
+        identity = None
+        proc = _probe(None)
+    return identity, proc
 
 
 def ensure_lager_box_keypair(key_path: str = _LAGER_BOX_KEY) -> bool:
@@ -152,8 +234,7 @@ def default_ssh_runner(
 
     def _run(use_key: bool) -> Tuple[int, str, str]:
         ssh_cmd = ["ssh", "-o", "BatchMode=yes"]
-        if use_key:
-            ssh_cmd.extend(["-i", _LAGER_BOX_KEY])
+        ssh_cmd.extend(ssh_identity_args(_LAGER_BOX_KEY if use_key else None))
         ssh_cmd.extend([dest, cmd])
         try:
             proc = subprocess.run(
@@ -173,7 +254,7 @@ def default_ssh_runner(
 
     use_key = os.path.exists(_LAGER_BOX_KEY) and dest not in _KEY_FALLBACK_DESTS
     rc, stdout, stderr = _run(use_key)
-    if use_key and rc == 255 and any(m in stderr.lower() for m in _AUTH_FAILURE_MARKERS):
+    if use_key and rc == 255 and is_auth_failure(stderr):
         _KEY_FALLBACK_DESTS.add(dest)
         rc, stdout, stderr = _run(False)
     return rc, stdout, stderr

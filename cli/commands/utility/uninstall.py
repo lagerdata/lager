@@ -19,6 +19,7 @@ from ...box_storage import (
     project_files_defining_box,
 )
 from ...core.ssh_utils import host_in_known_hosts, get_ssh_connection_pool
+from ..box._ssh import probe_box_identity, ssh_identity_args
 
 # --- Privileged removal spec -------------------------------------------------
 #
@@ -208,17 +209,21 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
 
     ssh_host = f"{user}@{ip}"
 
-    # 3. Check SSH connectivity (with password fallback)
+    # 3. Check SSH connectivity (with password fallback), and settle which
+    #    identity the rest of this command offers the box.
+    #
+    #    ~/.ssh/lager_box is not one of ssh's default identity filenames, so
+    #    without an explicit -i it is never tried — and on a box where it is
+    #    the only authorized key, every bare `ssh` below fails. Probing it
+    #    here answers the question once for the whole teardown;
+    #    probe_box_identity falls back to ssh's own identities when the box
+    #    rejects the key, so nothing that worked before stops working.
     click.echo(f"Checking SSH connectivity to {ssh_host}...")
     use_interactive_ssh = False
     use_multiplexing = False
+    identity = None
     try:
-        result = subprocess.run(
-            ["ssh", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes", ssh_host, "echo ok"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
+        identity, result = probe_box_identity(ssh_host)
         if result.returncode != 0:
             stderr = result.stderr.lower() if result.stderr else ""
 
@@ -289,12 +294,12 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
                     if yes or click.confirm("Do you want to accept the host key and continue?"):
                         click.echo()
                         click.echo("Accepting host key...")
-                        accept_result = subprocess.run(
-                            ["ssh", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new",
-                             "-o", "BatchMode=yes", ssh_host, "echo ok"],
-                            capture_output=True,
-                            text=True,
-                            timeout=15
+                        # Re-probe rather than reuse the first answer: that
+                        # attempt never got past the host key, so it never
+                        # learned which identity the box accepts.
+                        identity, accept_result = probe_box_identity(
+                            ssh_host,
+                            extra_args=("-o", "StrictHostKeyChecking=accept-new"),
                         )
                         if accept_result.returncode == 0:
                             click.secho("Host key accepted!", fg='green')
@@ -403,12 +408,21 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
 
     click.echo()
 
-    # Set up SSH connection multiplexing for key-based auth
+    # Set up SSH connection multiplexing for key-based auth. The master gets
+    # the identity settled above, and the pool re-offers it on any command
+    # that has to open its own connection because the socket went away.
     ssh_pool = None
     if use_multiplexing:
         ssh_pool = get_ssh_connection_pool()
-        if not ssh_pool.ensure_connection(ip, user):
+        if not ssh_pool.ensure_connection(ip, user, identity_file=identity):
             ssh_pool = None
+
+    # Identity for the non-multiplexed calls. When the pool is live its
+    # options already carry the -i, so adding it here too would offer the
+    # same key twice and burn an authentication attempt against sshd's
+    # MaxAuthTries.
+    def identity_args():
+        return [] if ssh_pool else ssh_identity_args(identity)
 
     # Helper function to run SSH commands
     def run_ssh(cmd, description, allow_fail=False):
@@ -422,6 +436,7 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
         click.echo(f"  {description}...", nl=False)
         try:
             ssh_cmd = ["ssh"]
+            ssh_cmd.extend(identity_args())
             if ssh_pool:
                 ssh_cmd.extend(ssh_pool.get_ssh_options(ip))
             if not use_interactive_ssh:
@@ -492,6 +507,7 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
         """
         try:
             ssh_cmd = ["ssh"]
+            ssh_cmd.extend(identity_args())
             if ssh_pool:
                 ssh_cmd.extend(ssh_pool.get_ssh_options(ip))
             if use_interactive_ssh:
@@ -723,6 +739,7 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
                 f'else echo "{name}=FAIL" >> {_PRIV_RESULTS_PATH}; fi'
             )
         ssh_cmd = ["ssh", "-t"]
+        ssh_cmd.extend(identity_args())
         if ssh_pool:
             ssh_cmd.extend(ssh_pool.get_ssh_options(ip))
         # One `;`-joined command line (each element is a complete compound
