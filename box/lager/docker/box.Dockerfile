@@ -5,10 +5,13 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app/lager
 
-# flex/bison/ccache/ninja are NOT here: they are build-only for uldaq (next
-# stage) and would bloat every image. Node is installed from the official
-# tarball below — Debian's `nodejs npm` meta-packages pull ~400 unused
-# `node-*` packages and dominate cold-build time.
+# flex/bison are not here: they moved to the uldaq stage below, the only
+# place that needs them (autoreconf). ccache/ninja-build are dropped
+# outright -- nothing in this repo invokes either and no build here was
+# wired to use them, so they were pure image weight; a container script
+# that wants them has to install them itself. Node comes from the official
+# tarball below rather than Debian's `nodejs npm` meta-packages, which pull
+# ~400 unused `node-*` packages and dominate cold-build time.
 RUN apt-get update && apt-get install -y ca-certificates libusb-1.0-0-dev libudev-dev \
 	libhidapi-dev git gcc python-dev-is-python3 python3-pip python3-venv xz-utils build-essential bluetooth ssh openssh-client \
 	cups-client lpr zlib1g-dev wget libjpeg-dev libpng-dev libfreetype6-dev \

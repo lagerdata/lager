@@ -19,7 +19,7 @@ from cli.commands.utility.update import (
     _deployed_version_stale,
     _docker_build_line_summary,
     _parse_probe_output,
-    _preview_deps_status,
+    _deps_preview,
     _probe_shell_script,
     _pull_shell_script,
     _rebuild_gate_verdict,
@@ -196,57 +196,65 @@ class TestProbeHostCliFacts:
         assert 'HOST_CLI_VERSION' not in facts
 
 
-class TestPreviewDepsStatus:
+class TestDepsPreviewAtTargetRef:
     """`--check` must hash the *target* ref when a pull is pending.
 
-    Repro (JUL-4): 121 commits behind, pre-pull Dockerfile still matched the
-    stored hash → old code said "cache valid / ~90s", then the pull changed
-    the Dockerfile and the real update took ~6 min.
+    Field repro: a box ~120 commits behind whose pre-pull Dockerfile still
+    matched the stored hash. The preview read that as "cache valid / ~90s";
+    the pull then changed the Dockerfile and the real update took ~6 min.
     """
 
+    # Everything that is not about the target ref, held constant.
+    BASE = dict(force=False, needs_flatten=False, is_rollback=False,
+                commits_ahead=0)
+
     def test_forward_jump_target_mismatch_reports_fresh_build(self):
-        change, status = _preview_deps_status(
-            force=False,
-            stored_hash=SHA_A,
-            working_hash=SHA_A,  # pre-pull tree still matches
-            target_hash=SHA_B,   # origin/main Dockerfile differs
+        status, rebuild_certain, _ = _deps_preview(
+            SHA_A, SHA_A,          # pre-pull tree still matches stored
+            target_hash=SHA_B,     # ref about to be checked out differs
             needs_pull=True,
+            **self.BASE,
         )
-        assert change is True
+        assert rebuild_certain is True
         assert 'target Dockerfile' in status
 
     def test_forward_jump_target_match_reports_cache_valid(self):
-        change, status = _preview_deps_status(
-            force=False,
-            stored_hash=SHA_A,
-            working_hash=SHA_A,
-            target_hash=SHA_A,
-            needs_pull=True,
+        status, rebuild_certain, _ = _deps_preview(
+            SHA_A, SHA_A, target_hash=SHA_A, needs_pull=True, **self.BASE,
         )
-        assert change is False
+        assert rebuild_certain is False
         assert 'target matches' in status
 
     def test_unmeasurable_target_is_unknown_not_cache_valid(self):
-        change, status = _preview_deps_status(
-            force=False,
-            stored_hash=SHA_A,
-            working_hash=SHA_A,
-            target_hash='',
-            needs_pull=True,
+        status, _, _ = _deps_preview(
+            SHA_A, SHA_A, target_hash='', needs_pull=True, **self.BASE,
         )
-        assert change is True
         assert 'unknown until pull' in status
+        assert 'cache valid' not in status
 
     def test_in_sync_uses_working_tree_hash(self):
-        change, status = _preview_deps_status(
-            force=False,
-            stored_hash=SHA_A,
-            working_hash=SHA_B,
-            target_hash='',
-            needs_pull=False,
+        status, rebuild_certain, _ = _deps_preview(
+            SHA_B, SHA_A, target_hash='', needs_pull=False, **self.BASE,
         )
-        assert change is True
+        assert rebuild_certain is True
         assert 'Dockerfile, requirements or box source changed' in status
+
+    def test_flatten_still_wins_over_a_matching_target_hash(self):
+        # Regression guard for the reconciliation of this change with the
+        # flatten fix. A box on the old `box/` subdir layout rebuilds
+        # whatever the target digest says, because the flatten moves every
+        # source path. Reading the target ref must not resurrect the "cache
+        # valid" claim that `needs_flatten` exists to prevent.
+        status, rebuild_certain, _ = _deps_preview(
+            SHA_A, SHA_A,
+            target_hash=SHA_A,
+            needs_pull=True,
+            force=False, needs_flatten=True, is_rollback=False,
+            commits_ahead=0,
+        )
+        assert rebuild_certain is True
+        assert 'cache valid' not in status
+        assert 'flatten' in status
 
 
 class TestBuildHashAtRefShellCmd:
@@ -344,8 +352,8 @@ class TestBuildHashAtRefMatchesWorkingTree:
             capture_output=True, text=True, timeout=30,
         )
         after = self._sh(_build_hash_at_ref_shell_cmd('HEAD'), env, home)
-        # The JUL-4 case: working tree still matches the stored hash while the
-        # ref about to be checked out does not.
+        # The forward-jump case: working tree still matches the stored hash
+        # while the ref about to be checked out does not.
         working = self._sh(_build_hash_shell_cmd(), env, box)
         assert after != before
         assert after != working

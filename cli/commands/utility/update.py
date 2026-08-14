@@ -354,32 +354,6 @@ def _read_build_hash_at_ref(ssh_runner, git_ref):
     return r.stdout.strip() if r.returncode == 0 else ''
 
 
-def _preview_deps_status(*, force, stored_hash, working_hash, target_hash, needs_pull):
-    """Classify Dockerfile/requirements/source drift for ``--check`` preview.
-
-    Returns ``(deps_will_change, deps_status)``. When ``needs_pull``, prefer
-    ``target_hash`` (blob hash at the ref about to be checked out) over the
-    working-tree hash — otherwise a forward jump whose *current* tree still
-    matches the stored hash falsely reports "~90s (cached build)".
-    """
-    if force:
-        return True, 'forced clean rebuild (--force: image + cargo/npm volumes wiped)'
-    if needs_pull:
-        if target_hash:
-            if _build_hash_mismatch(target_hash, stored_hash):
-                return True, (
-                    'will trigger fresh build '
-                    '(target Dockerfile, requirements or box source differ)'
-                )
-            return False, 'cache valid (target matches last build)'
-        # Could not measure the target (sparse checkout, odd ref, …). Be
-        # honest rather than claiming cache-valid from the pre-pull tree.
-        return True, 'unknown until pull (could not hash target build inputs)'
-    if _build_hash_mismatch(working_hash, stored_hash):
-        return True, 'will trigger fresh build (Dockerfile, requirements or box source changed)'
-    return False, 'cache valid (no rebuild)'
-
-
 def _read_box_source_version(ssh_runner):
     """Return the `__version__` string declared in `cli/__init__.py` at the
     box's current HEAD, or empty.
