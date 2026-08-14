@@ -18,6 +18,7 @@ deleted.)
 | `integration-tests.yml` | Bench: Integration Tests | push to `main`, `workflow_call`, dispatch | self-hosted `lager-bench` | Drives every bench instrument through `lager python`, plus the J-Link CLI suite |
 | `update-regression.yml` | Bench: Box Lifecycle | `workflow_call`, dispatch | self-hosted `lager-bench` | Downgrade -> update -> no-op -> forced rebuild -> uninstall -> install, with a hardware smoke per phase |
 | `nightly-bench.yml` | Bench: Nightly | cron 10:17 UTC, dispatch | (calls the two above) | Nightly ordering wrapper: lifecycle first, instruments only if it succeeded; files/closes the `bench-alert` issue |
+| `bench-extended.yml` | Bench: Extended | cron Sat 14:17 UTC, dispatch | self-hosted `lager-bench` | Weekly run of five of the seven infrastructure integration suites (no instruments; bench stays dark); alerts on failure, never closes the alert |
 | `bench-watchdog.yml` | Bench: Watchdog | cron every 6h at :41, dispatch | `ubuntu-latest` | Alerts when nightly runs stop FLOWING (queued too long, stuck, cron dead) — the failure the notify jobs cannot see |
 | `unit-tests.yml` | PR Gate: Unit Tests | `pull_request`, push to `main`, dispatch | `ubuntu-latest` | Unit suites (one pytest process per suite) + Python-version compat matrix |
 | `static-checks.yml` | PR Gate: Static Checks | `pull_request`, push to `main`, dispatch | `ubuntu-latest` | Syntax/lint floors over the tree the unit gate cannot reach, plus a coverage report |

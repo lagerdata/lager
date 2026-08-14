@@ -101,7 +101,11 @@ fi
 echo ""
 
 echo "Test 1.2: Nets command help"
-if lager nets --help 2>&1 | grep -q 'List all saved nets'; then
+# Match the durable part of the group help ("... saved nets"), not the full
+# sentence: the wording has already drifted once (it now reads "List and
+# manage saved nets") and a whole-sentence match makes this a copy-editing
+# tripwire rather than a test that the command exists and describes itself.
+if lager nets --help 2>&1 | grep -q 'saved nets'; then
   echo -e "${GREEN}[OK]${NC}"
   track_test "pass"
 else

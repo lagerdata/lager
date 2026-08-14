@@ -41,7 +41,7 @@ if echo "$BOX_INPUT" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
   BOX_IP="$BOX_INPUT"
   echo "Detected IP address: $BOX_IP"
   echo "Registering as temporary box: $BOX_NAME"
-  lager boxes add --name "$BOX_NAME" --ip "$BOX_IP" --yes >/dev/null 2>&1 || true
+  lager boxes add --name "$BOX_NAME" --ip "$BOX_IP" --user lagerdata --yes >/dev/null 2>&1 || true
   BOX="$BOX_NAME"
 else
   # Input is a box name - use it directly
@@ -199,7 +199,7 @@ lager boxes add --help && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 4.2: Add a test box"
-lager boxes add --name "$TEST_BOX_NAME" --ip "192.168.1.100" --yes >/dev/null 2>&1 && track_test "pass" || track_test "fail"
+lager boxes add --name "$TEST_BOX_NAME" --ip "192.168.1.100" --user testuser --yes >/dev/null 2>&1 && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 4.3: List boxes to verify addition"
@@ -211,7 +211,7 @@ fi
 echo ""
 
 echo "Test 4.4: Attempt to add duplicate box name (should show warning)"
-if lager boxes add --name "$TEST_BOX_NAME" --ip "192.168.1.200" --yes 2>&1 | grep -qi "WARNING.*Duplicate"; then
+if lager boxes add --name "$TEST_BOX_NAME" --ip "192.168.1.200" --user testuser --yes 2>&1 | grep -qi "WARNING.*Duplicate"; then
   track_test "pass"
 else
   track_test "fail"
@@ -228,9 +228,9 @@ echo ""
 
 echo "Test 4.6: Attempt to add duplicate IP (should show warning)"
 # First add a new box with unique name
-lager boxes add --name "${TEST_BOX_NAME}_unique" --ip "192.168.1.150" --yes >/dev/null 2>&1 || true
+lager boxes add --name "${TEST_BOX_NAME}_unique" --ip "192.168.1.150" --user testuser --yes >/dev/null 2>&1 || true
 # Try to add another box with same IP but different name
-if lager boxes add --name "${TEST_BOX_NAME}_duplicate_ip" --ip "192.168.1.150" --yes 2>&1 | grep -qi "WARNING.*Duplicate"; then
+if lager boxes add --name "${TEST_BOX_NAME}_duplicate_ip" --ip "192.168.1.150" --user testuser --yes 2>&1 | grep -qi "WARNING.*Duplicate"; then
   track_test "pass"
 else
   track_test "fail"
@@ -238,7 +238,7 @@ fi
 echo ""
 
 echo "Test 4.7: Add box with special characters in name"
-lager boxes add --name "test-box_123.special" --ip "192.168.1.101" --yes >/dev/null 2>&1 && track_test "pass" || track_test "fail"
+lager boxes add --name "test-box_123.special" --ip "192.168.1.101" --user testuser --yes >/dev/null 2>&1 && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 4.8: Boxes delete subcommand help"
@@ -262,7 +262,7 @@ echo ""
 echo "Test 4.11: Add and delete multiple boxes"
 FAILED=0
 for i in {1..3}; do
-  lager boxes add --name "${TEST_BOX_NAME}_${i}" --ip "192.168.1.$((100+i))" --yes >/dev/null 2>&1 || FAILED=1
+  lager boxes add --name "${TEST_BOX_NAME}_${i}" --ip "192.168.1.$((100+i))" --user testuser --yes >/dev/null 2>&1 || FAILED=1
 done
 echo "Added test boxes"
 lager boxes list
@@ -278,7 +278,7 @@ echo ""
 
 echo "Test 4.13: Edit box IP address"
 # Add a test box first
-lager boxes add --name "${TEST_BOX_NAME}_edit" --ip "192.168.1.50" --yes >/dev/null 2>&1 || true
+lager boxes add --name "${TEST_BOX_NAME}_edit" --ip "192.168.1.50" --user testuser --yes >/dev/null 2>&1 || true
 # Edit its IP
 if lager boxes edit --name "${TEST_BOX_NAME}_edit" --ip "192.168.1.51" --yes 2>&1 | grep -q "Updated box"; then
   track_test "pass"
@@ -295,7 +295,9 @@ echo ""
 
 echo "Test 4.14: Edit box name"
 # Rename the box
-if lager boxes edit --name "${TEST_BOX_NAME}_edit" --new-name "${TEST_BOX_NAME}_renamed" --yes 2>&1 | grep -q "Renamed box"; then
+# `boxes edit` reports every change through one "Updated box: ..." line; there
+# is no separate rename message (cli/commands/box/boxes.py success_msg).
+if lager boxes edit --name "${TEST_BOX_NAME}_edit" --new-name "${TEST_BOX_NAME}_renamed" --yes 2>&1 | grep -q "Updated box"; then
   track_test "pass"
 else
   track_test "fail"
@@ -331,7 +333,9 @@ fi
 echo ""
 
 echo "Test 4.17: Edit with invalid IP (error case)"
-if lager boxes edit --name "${TEST_BOX_NAME}_final" --ip "invalid_ip" --yes 2>&1 | grep -qi "not a valid IP"; then
+# "invalid_ip" is refused for the underscore, not for failing to be an IP:
+# --ip accepts a hostname too. See the note above Test 9.8.
+if lager boxes edit --name "${TEST_BOX_NAME}_final" --ip "invalid_ip" --yes 2>&1 | grep -qi "invalid hostname label"; then
   track_test "pass"
 else
   track_test "fail"
@@ -376,7 +380,7 @@ BOX_COUNT_BEFORE=$(lager boxes list 2>/dev/null | wc -l || echo "0")
 # Try delete-all when there might be existing boxes (from user's .lager file)
 if [ "$BOX_COUNT_BEFORE" -gt 1 ]; then
   echo "Note: .lager file contains user boxes, skipping empty delete-all test"
-  track_test "pass"
+  track_test "skip"
 else
   lager boxes delete-all --yes >/dev/null 2>&1 && track_test "pass" || track_test "fail"
 fi
@@ -394,7 +398,7 @@ fi
 lager boxes delete-all --yes >/dev/null 2>&1 || true
 # Add test boxes
 for i in {1..5}; do
-  lager boxes add --name "deleteall_test_${i}" --ip "192.168.2.${i}" --yes >/dev/null 2>&1 || true
+  lager boxes add --name "deleteall_test_${i}" --ip "192.168.2.${i}" --user testuser --yes >/dev/null 2>&1 || true
 done
 DELETEALL_COUNT=$(lager boxes list 2>/dev/null | grep -c "deleteall_test" || echo "0")
 echo "Added $DELETEALL_COUNT test boxes for delete-all test"
@@ -481,7 +485,7 @@ echo "$DEFAULTS_BEFORE"
 echo ""
 
 echo "Test 6.3: Add box to saved boxes first"
-lager boxes add --name "test_default_box" --ip "$BOX" --yes >/dev/null 2>&1 && track_test "pass" || track_test "fail"
+lager boxes add --name "test_default_box" --ip "$BOX" --user lagerdata --yes >/dev/null 2>&1 && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 6.4: Set default box"
@@ -499,7 +503,7 @@ fi
 echo ""
 
 echo "Test 6.6: Set default with non-existent box (error case)"
-if lager defaults add --box "INVALID_BOX_12345" 2>&1 | grep -qi "does not exist in saved boxes"; then
+if lager defaults add --box "INVALID_BOX_12345" 2>&1 | grep -qi "not found in saved boxes"; then
   track_test "pass"
 else
   track_test "fail"
@@ -553,7 +557,7 @@ done
 echo ""
 
 echo "Test 7.5: Set both box and serial port at once"
-lager boxes add --name "test_combo_default" --ip "192.168.1.123" --yes >/dev/null 2>&1
+lager boxes add --name "test_combo_default" --ip "192.168.1.123" --user testuser --yes >/dev/null 2>&1
 if lager defaults add --box "test_combo_default" --serial-port "/dev/ttyUSB2" 2>&1 | grep -q "Set defaults"; then
   track_test "pass"
 else
@@ -572,7 +576,7 @@ echo "========================================================================"
 echo ""
 
 echo "Test 8.1: Add test box for persistence tests"
-lager boxes add --name "test_persist_box" --ip "$BOX" --yes >/dev/null 2>&1 && track_test "pass" || track_test "fail"
+lager boxes add --name "test_persist_box" --ip "$BOX" --user lagerdata --yes >/dev/null 2>&1 && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 8.2: Set default box and verify persistence"
@@ -614,7 +618,7 @@ echo "========================================================================"
 echo ""
 
 echo "Test 9.1: Empty box name in lager boxes add"
-if lager boxes add --name "" --ip "192.168.1.100" --yes 2>&1 | grep -qi "name cannot be empty"; then
+if lager boxes add --name "" --ip "192.168.1.100" --user testuser --yes 2>&1 | grep -qi "name cannot be empty"; then
   track_test "pass"
 else
   track_test "fail"
@@ -622,7 +626,7 @@ fi
 echo ""
 
 echo "Test 9.2: Whitespace-only box name"
-if lager boxes add --name "   " --ip "192.168.1.100" --yes 2>&1 | grep -qi "name cannot be empty"; then
+if lager boxes add --name "   " --ip "192.168.1.100" --user testuser --yes 2>&1 | grep -qi "name cannot be empty"; then
   track_test "pass"
 else
   track_test "fail"
@@ -653,16 +657,24 @@ echo "Test 9.7: Box name with Unicode characters"
 lager hello --box "test_设备_𝐀" 2>&1 | grep -qi "error" && track_test "pass" || track_test "fail"
 echo ""
 
-echo "Test 9.8: Invalid IP address format in box add"
-if lager boxes add --name "test_invalid_ip" --ip "999.999.999.999" --yes 2>&1 | grep -qi "not a valid IP"; then
+# --ip takes an IP address OR a DNS hostname (cli/address_utils.py
+# validate_ip_or_hostname), so anything shaped like a hostname is accepted by
+# design: "999.999.999.999", "192.168.1.256" and "string" are all syntactically
+# valid hostname labels and are NOT rejected. These six checks therefore cover
+# the inputs the validator genuinely refuses. Do not "restore" assertions that
+# expect an IP-only contract -- that contract does not exist, and asserting it
+# only produces failures that say nothing about the product.
+
+echo "Test 9.8: URL rejected in box add"
+if lager boxes add --name "test_url_ip" --ip "http://box.example.com" --user testuser --yes 2>&1 | grep -qi "looks like a URL"; then
   track_test "pass"
 else
   track_test "fail"
 fi
 echo ""
 
-echo "Test 9.9: Malformed IP address"
-if lager boxes add --name "test_malformed" --ip "not.an.ip.address" --yes 2>&1 | grep -qi "not a valid IP"; then
+echo "Test 9.9: Address with a path rejected"
+if lager boxes add --name "test_path_ip" --ip "box.example.com/path" --user testuser --yes 2>&1 | grep -qi "contains a path"; then
   track_test "pass"
 else
   track_test "fail"
@@ -670,7 +682,7 @@ fi
 echo ""
 
 echo "Test 9.10: Empty IP address"
-if lager boxes add --name "test_empty_ip" --ip "" --yes 2>&1 | grep -qi "IP.*cannot be empty"; then
+if lager boxes add --name "test_empty_ip" --ip "" --user testuser --yes 2>&1 | grep -qi "cannot be empty"; then
   track_test "pass"
 else
   track_test "fail"
@@ -678,23 +690,23 @@ fi
 echo ""
 
 echo "Test 9.11: IP address with whitespace"
-if lager boxes add --name "test_whitespace_ip" --ip "  " --yes 2>&1 | grep -qi "IP.*cannot be empty"; then
+if lager boxes add --name "test_whitespace_ip" --ip "  " --user testuser --yes 2>&1 | grep -qi "cannot be empty"; then
   track_test "pass"
 else
   track_test "fail"
 fi
 echo ""
 
-echo "Test 9.12: String instead of IP address"
-if lager boxes add --name "test_string_ip" --ip "string" --yes 2>&1 | grep -qi "not a valid IP"; then
+echo "Test 9.12: Address carrying an explicit port rejected"
+if lager boxes add --name "test_port_ip" --ip "192.168.1.100:8080" --user testuser --yes 2>&1 | grep -qi "contains a port"; then
   track_test "pass"
 else
   track_test "fail"
 fi
 echo ""
 
-echo "Test 9.13: IP address with invalid octets"
-if lager boxes add --name "test_octet_ip" --ip "192.168.1.256" --yes 2>&1 | grep -qi "not a valid IP"; then
+echo "Test 9.13: Invalid hostname label rejected"
+if lager boxes add --name "test_label_ip" --ip "bad_label.example.com" --user testuser --yes 2>&1 | grep -qi "invalid hostname label"; then
   track_test "pass"
 else
   track_test "fail"
@@ -714,7 +726,7 @@ fi
 echo ""
 
 echo "Test 9.16: Valid IPv4 address acceptance"
-if lager boxes add --name "test_valid_ipv4" --ip "192.168.1.100" --yes 2>&1 | grep -q "Added box"; then
+if lager boxes add --name "test_valid_ipv4" --ip "192.168.1.100" --user testuser --yes 2>&1 | grep -q "Added box"; then
   track_test "pass"
   lager boxes delete --name "test_valid_ipv4" --yes >/dev/null 2>&1 || true
 else
@@ -723,7 +735,7 @@ fi
 echo ""
 
 echo "Test 9.17: Valid IPv6 address acceptance"
-if lager boxes add --name "test_valid_ipv6" --ip "2001:0db8:85a3:0000:0000:8a2e:0370:7334" --yes 2>&1 | grep -q "Added box"; then
+if lager boxes add --name "test_valid_ipv6" --ip "2001:0db8:85a3:0000:0000:8a2e:0370:7334" --user testuser --yes 2>&1 | grep -q "Added box"; then
   track_test "pass"
   lager boxes delete --name "test_valid_ipv6" --yes >/dev/null 2>&1 || true
 else
@@ -732,7 +744,7 @@ fi
 echo ""
 
 echo "Test 9.18: Localhost IP acceptance"
-if lager boxes add --name "test_localhost" --ip "127.0.0.1" --yes 2>&1 | grep -q "Added box"; then
+if lager boxes add --name "test_localhost" --ip "127.0.0.1" --user testuser --yes 2>&1 | grep -q "Added box"; then
   track_test "pass"
   lager boxes delete --name "test_localhost" --yes >/dev/null 2>&1 || true
 else
@@ -759,7 +771,7 @@ else
   TEST_COMBO_IP="192.168.1.100"
 fi
 FAILED=0
-lager boxes add --name "${TEST_BOX_NAME}_combo" --ip "$TEST_COMBO_IP" --yes >/dev/null 2>&1 || FAILED=1
+lager boxes add --name "${TEST_BOX_NAME}_combo" --ip "$TEST_COMBO_IP" --user testuser --yes >/dev/null 2>&1 || FAILED=1
 # Only test set/hello if we used the real BOX IP
 if [ "$TEST_COMBO_IP" = "$BOX" ]; then
   lager defaults add --box "${TEST_BOX_NAME}_combo" >/dev/null 2>&1 || FAILED=1
@@ -770,7 +782,7 @@ lager boxes delete --name "${TEST_BOX_NAME}_combo" --yes >/dev/null 2>&1 || FAIL
 echo ""
 
 echo "Test 10.2: Interleaved list/add operations"
-lager boxes add --name "test_interleave" --ip "$BOX" --yes >/dev/null 2>&1
+lager boxes add --name "test_interleave" --ip "$BOX" --user lagerdata --yes >/dev/null 2>&1
 FAILED=0
 lager defaults >/dev/null 2>&1 || FAILED=1
 lager defaults add --box "test_interleave" >/dev/null 2>&1 || FAILED=1
@@ -838,7 +850,7 @@ echo ""
 echo "Test 11.4: Rapid box add/delete cycles (20 iterations)"
 FAILED=0
 for i in {1..20}; do
-  lager boxes add --name "stress_box_${i}" --ip "192.168.100.${i}" --yes >/dev/null 2>&1 || FAILED=1
+  lager boxes add --name "stress_box_${i}" --ip "192.168.100.${i}" --user testuser --yes >/dev/null 2>&1 || FAILED=1
   lager boxes delete --name "stress_box_${i}" --yes >/dev/null 2>&1 || FAILED=1
 done
 [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
@@ -878,7 +890,7 @@ lager hello --box "$BOX" >/dev/null && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 12.3: Verify box list after failed add"
-lager boxes add --name "" --ip "" --yes >/dev/null 2>&1 || true
+lager boxes add --name "" --ip "" --user testuser --yes >/dev/null 2>&1 || true
 lager boxes list >/dev/null && track_test "pass" || track_test "fail"
 echo ""
 
@@ -888,7 +900,7 @@ lager defaults >/dev/null && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 12.5: Verify configuration consistency after multiple operations"
-lager boxes add --name "test_regression" --ip "$BOX" --yes >/dev/null 2>&1
+lager boxes add --name "test_regression" --ip "$BOX" --user lagerdata --yes >/dev/null 2>&1
 DEFAULTS_START=$(lager defaults 2>&1)
 lager defaults add --box "test_regression" >/dev/null 2>&1 || true
 lager hello --box "$BOX" >/dev/null 2>&1

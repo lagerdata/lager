@@ -119,7 +119,7 @@ jobs:
           fail=0
           while IFS= read -r f; do
             bash -n "$f" || { echo "SYNTAX FAIL: $f"; fail=1; }
-          done < <(find test -name '*.sh')
+          done < <(find test tools -name '*.sh')
           exit $fail
         shell: bash
 
@@ -158,12 +158,18 @@ jobs:
       # All 90 are in test/integration/ and test/manual/, which no workflow
       # executes -- a fix cannot be proven here, only on the bench. They are
       # tracked as a bench task rather than churned blind.
+      # tools/ is in scope as well as test/: the scripts there are CI's own
+      # machinery -- one files public GitHub issues, one gates the bench
+      # suites -- so a shell bug in them is a bug in the gate itself. They are
+      # clean at this severity today, so adding them costs nothing and stops
+      # the next one landing unlinted. The exclusion list above is driven
+      # entirely by test/; tools/ passes with no exclusions at all.
       - name: 'ShellCheck (severity: warning)'
         if: always()
         run: |
           shellcheck -S warning \
             -e SC2034,SC2320,SC2155,SC2164,SC2046 \
-            -f gcc $(find test -name '*.sh')
+            -f gcc $(find test tools -name '*.sh')
         shell: bash
 
       # test/api/ is 81 standalone scripts, not pytest (see test/CONVENTIONS.md),

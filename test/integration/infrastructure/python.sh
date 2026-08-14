@@ -12,7 +12,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../framework/colors.sh"
 source "${SCRIPT_DIR}/../../framework/harness.sh"
 
-DOCKER_IMAGE="${DOCKER_IMAGE:?Set DOCKER_IMAGE to your lagerbox image tag}"
+# Optional: only the two `lager python --image` checks need it, and a hard
+# `:?` guard here aborted the whole suite before a single test ran -- which is
+# why none of the ~100 checks below had ever executed anywhere. Unset means
+# those two checks report as skipped; everything else runs.
+DOCKER_IMAGE="${DOCKER_IMAGE:-}"
 
 set +e  # DON'T exit on error - we want to track failures
 
@@ -21,6 +25,41 @@ init_harness
 
 # Safety delay between tests (seconds)
 TEST_DELAY=0.5
+
+# Kill checks below use `--kill-all`, not `--kill`. `--kill` takes a process
+# ID (`--kill TEXT`); passing it none made click consume the following
+# `--signal` as its argument and then reject the signal name as a script path.
+# Every kill check in this suite was malformed that way, which only became
+# visible once the suite actually ran.
+#
+# Both the launch and the kill are bounded. The first CI run of this section
+# spent over nine minutes here and was killed by the step timeout with the
+# infinite loop it had started still running on the box; the suites after it
+# then ran against a box that was still churning. Bounding turns that into a
+# visible result for the check that caused it instead of damage charged to
+# whatever ran next.
+KILL_TIMEOUT=45
+LAUNCH_TIMEOUT=30
+
+# Bound EVERY lager call in this suite, not just the ones already known to
+# hang. Two separate paths have now stalled indefinitely on the bench --
+# a detached launch that never returned, and `--timeout 3` against a 30s
+# script that ran for seventeen minutes -- and each one cost a full bench
+# round to find because an unbounded hang looks identical to a slow suite
+# until the step timeout kills it. With this wrapper a hang becomes a failed
+# check that names itself, and the suites after this one stop inheriting a
+# box that is still busy.
+#
+# Resolve the real binary first: calling `lager` inside the function would
+# recurse. The ceiling is far above any legitimate operation here (the
+# longest deliberate wait in this file is --timeout 10).
+LAGER_CALL_TIMEOUT="${LAGER_CALL_TIMEOUT:-90}"
+LAGER_BIN="$(command -v lager)"
+if [ -z "$LAGER_BIN" ]; then
+  echo "lager CLI not found on PATH; install it first (pip install -e cli/)" >&2
+  exit 1
+fi
+lager() { timeout "$LAGER_CALL_TIMEOUT" "$LAGER_BIN" "$@"; }
 
 # Check if required arguments are provided
 if [ $# -lt 1 ]; then
@@ -168,7 +207,7 @@ if lager python --box $BOX --image "nonexistent:tag999" -c "print('test')" 2>&1 
   track_test "pass"
 else
   echo -e "${YELLOW}[WARNING] Invalid image may not be validated upfront${NC}"
-  track_test "pass"
+  track_test "skip"
 fi
 echo ""
 sleep $TEST_DELAY
@@ -185,7 +224,7 @@ echo ""
 sleep $TEST_DELAY
 
 echo "Test 2.6: Invalid --signal value"
-if lager python --box $BOX --kill --signal invalid_signal 2>&1 | grep -qi "error\|invalid"; then
+if timeout $KILL_TIMEOUT lager python --box $BOX --kill-all --signal invalid_signal 2>&1 | grep -qi "error\|invalid"; then
   echo -e "${GREEN}[OK] Invalid signal caught${NC}"
   track_test "pass"
 else
@@ -201,18 +240,18 @@ if lager python --box $BOX -p "invalid:port:format" -c "print('test')" 2>&1 | gr
   track_test "pass"
 else
   echo -e "${YELLOW}[WARNING] Port format may not be validated upfront${NC}"
-  track_test "pass"
+  track_test "skip"
 fi
 echo ""
 sleep $TEST_DELAY
 
-echo "Test 2.8: --kill without running script"
-if lager python --box $BOX --kill 2>&1 | grep -qi "error\|not running\|no script"; then
+echo "Test 2.8: --kill-all without running script"
+if timeout $KILL_TIMEOUT lager python --box $BOX --kill-all 2>&1 | grep -qi "error\|not running\|no script"; then
   echo -e "${GREEN}[OK] Kill without script handled${NC}"
   track_test "pass"
 else
   echo -e "${YELLOW}[WARNING] Kill without script may be silently ignored${NC}"
-  track_test "pass"
+  track_test "skip"
 fi
 echo ""
 sleep $TEST_DELAY
@@ -542,7 +581,7 @@ if lager python "$TEST_DIR/no_overwrite.py" --box $BOX --download no_overwrite.t
   track_test "pass"
 else
   echo -e "${YELLOW}[WARNING] Overwrite may not be prevented${NC}"
-  track_test "pass"
+  track_test "skip"
 fi
 rm -f no_overwrite.txt
 echo ""
@@ -585,7 +624,10 @@ echo ""
 sleep $TEST_DELAY
 
 echo "Test 6.2: Specify custom Docker image (using default)"
-if lager python --box $BOX --image "$DOCKER_IMAGE" -c "print('Custom image')" 2>&1 | grep -q "Custom image"; then
+if [ -z "$DOCKER_IMAGE" ]; then
+  echo -e "${YELLOW}[SKIP] DOCKER_IMAGE not set${NC}"
+  track_test "skip"
+elif lager python --box $BOX --image "$DOCKER_IMAGE" -c "print('Custom image')" 2>&1 | grep -q "Custom image"; then
   echo -e "${GREEN}[OK] Custom image specified${NC}"
   track_test "pass"
 else
@@ -676,7 +718,7 @@ if lager python "$TEST_DIR/long_running.py" --box $BOX -d 2>&1 | grep -qi "detac
   track_test "pass"
 else
   echo -e "${YELLOW}[SKIP] Detached mode may not show confirmation${NC}"
-  track_test "pass"
+  track_test "skip"
 fi
 echo ""
 sleep $TEST_DELAY
@@ -697,6 +739,11 @@ echo "========================================================================"
 echo ""
 sleep $TEST_DELAY
 
+# This section starts an INFINITE loop on the box and then asks the CLI to
+# kill it, so it is where an unbounded call does the most damage. Timeouts
+# come from the top of the file; the cleanup at the end of the section does
+# not depend on `--kill` having worked.
+
 echo "Test 9.1: Kill running script (--kill with default signal)"
 cat > "$TEST_DIR/infinite.py" <<'EOF'
 import time
@@ -705,56 +752,62 @@ while True:
     time.sleep(1)
 EOF
 # Start in background
-lager python "$TEST_DIR/infinite.py" --box $BOX -d >/dev/null 2>&1
+timeout $LAUNCH_TIMEOUT lager python "$TEST_DIR/infinite.py" --box $BOX -d >/dev/null 2>&1
 sleep 2
-if lager python --box $BOX --kill 2>&1 | grep -qi "killed\|terminated\|stopped"; then
+if timeout $KILL_TIMEOUT lager python --box $BOX --kill-all 2>&1 | grep -qi "killed\|terminated\|stopped"; then
   echo -e "${GREEN}[OK] Script killed${NC}"
   track_test "pass"
 else
-  echo -e "${YELLOW}[SKIP] Kill may have succeeded without confirmation${NC}"
-  track_test "pass"
+  echo -e "${YELLOW}[SKIP] Kill did not confirm within ${KILL_TIMEOUT}s${NC}"
+  track_test "skip"
 fi
 echo ""
 sleep $TEST_DELAY
 
 echo "Test 9.2: Kill with SIGINT signal"
-lager python "$TEST_DIR/infinite.py" --box $BOX -d >/dev/null 2>&1
+timeout $LAUNCH_TIMEOUT lager python "$TEST_DIR/infinite.py" --box $BOX -d >/dev/null 2>&1
 sleep 2
-if lager python --box $BOX --kill --signal sigint 2>&1; then
+if timeout $KILL_TIMEOUT lager python --box $BOX --kill-all --signal sigint 2>&1; then
   echo -e "${GREEN}[OK] SIGINT sent${NC}"
   track_test "pass"
 else
-  echo -e "${YELLOW}[SKIP] SIGINT may have been sent${NC}"
-  track_test "pass"
+  echo -e "${YELLOW}[SKIP] SIGINT not confirmed within ${KILL_TIMEOUT}s${NC}"
+  track_test "skip"
 fi
 echo ""
 sleep $TEST_DELAY
 
 echo "Test 9.3: Kill with SIGTERM signal"
-lager python "$TEST_DIR/infinite.py" --box $BOX -d >/dev/null 2>&1
+timeout $LAUNCH_TIMEOUT lager python "$TEST_DIR/infinite.py" --box $BOX -d >/dev/null 2>&1
 sleep 2
-if lager python --box $BOX --kill --signal sigterm 2>&1; then
+if timeout $KILL_TIMEOUT lager python --box $BOX --kill-all --signal sigterm 2>&1; then
   echo -e "${GREEN}[OK] SIGTERM sent${NC}"
   track_test "pass"
 else
-  echo -e "${YELLOW}[SKIP] SIGTERM may have been sent${NC}"
-  track_test "pass"
+  echo -e "${YELLOW}[SKIP] SIGTERM not confirmed within ${KILL_TIMEOUT}s${NC}"
+  track_test "skip"
 fi
 echo ""
 sleep $TEST_DELAY
 
 echo "Test 9.4: Kill with SIGKILL signal"
-lager python "$TEST_DIR/infinite.py" --box $BOX -d >/dev/null 2>&1
+timeout $LAUNCH_TIMEOUT lager python "$TEST_DIR/infinite.py" --box $BOX -d >/dev/null 2>&1
 sleep 2
-if lager python --box $BOX --kill --signal sigkill 2>&1; then
+if timeout $KILL_TIMEOUT lager python --box $BOX --kill-all --signal sigkill 2>&1; then
   echo -e "${GREEN}[OK] SIGKILL sent${NC}"
   track_test "pass"
 else
-  echo -e "${YELLOW}[SKIP] SIGKILL may have been sent${NC}"
-  track_test "pass"
+  echo -e "${YELLOW}[SKIP] SIGKILL not confirmed within ${KILL_TIMEOUT}s${NC}"
+  track_test "skip"
 fi
 echo ""
 sleep $TEST_DELAY
+
+# Leave no infinite loop behind, whatever the four checks above concluded.
+# Not a tracked check: this is cleanup, and its failure is reported by the
+# suites that follow rather than counted here.
+echo "Section 9 cleanup: stop any script still running on the box"
+timeout $KILL_TIMEOUT lager python --box $BOX --kill-all --signal sigkill >/dev/null 2>&1 || true
 
 # ============================================================
 # SECTION 10: TIMEOUT OPERATIONS
@@ -789,7 +842,7 @@ if lager python "$TEST_DIR/slow.py" --box $BOX --timeout 3 2>&1 | grep -qi "time
   track_test "pass"
 else
   echo -e "${YELLOW}[SKIP] Timeout may have triggered without message${NC}"
-  track_test "pass"
+  track_test "skip"
 fi
 echo ""
 sleep $TEST_DELAY
@@ -800,7 +853,7 @@ if lager python --box $BOX --timeout 1 -c "import time; time.sleep(10); print('s
   track_test "pass"
 else
   echo -e "${YELLOW}[SKIP] Short timeout may have triggered${NC}"
-  track_test "pass"
+  track_test "skip"
 fi
 echo ""
 sleep $TEST_DELAY
@@ -811,7 +864,7 @@ if lager python --box $BOX --timeout 0 -c "print('test')" 2>&1 | grep -qi "error
   track_test "pass"
 else
   echo -e "${YELLOW}[SKIP] Zero timeout may use default${NC}"
-  track_test "pass"
+  track_test "skip"
 fi
 echo ""
 sleep $TEST_DELAY
@@ -822,7 +875,7 @@ if lager python --box $BOX --timeout -1 -c "print('test')" 2>&1 | grep -qi "erro
   track_test "pass"
 else
   echo -e "${YELLOW}[SKIP] Negative timeout may be rejected${NC}"
-  track_test "pass"
+  track_test "skip"
 fi
 echo ""
 sleep $TEST_DELAY
@@ -907,7 +960,10 @@ echo ""
 sleep $TEST_DELAY
 
 echo "Test 11.5: Custom image with environment variables"
-if lager python --box $BOX --image "$DOCKER_IMAGE" --env CUSTOM=test -c "import os; print(os.environ.get('CUSTOM'))" 2>&1 | grep -q "test"; then
+if [ -z "$DOCKER_IMAGE" ]; then
+  echo -e "${YELLOW}[SKIP] DOCKER_IMAGE not set${NC}"
+  track_test "skip"
+elif lager python --box $BOX --image "$DOCKER_IMAGE" --env CUSTOM=test -c "import os; print(os.environ.get('CUSTOM'))" 2>&1 | grep -q "test"; then
   echo -e "${GREEN}[OK] Custom image + env works${NC}"
   track_test "pass"
 else
@@ -998,7 +1054,10 @@ echo ""
 sleep $TEST_DELAY
 
 echo "Test 12.5: Unicode and UTF-8"
-if lager python --box $BOX -c "print('Hello 世界 🌍')" 2>&1 | grep -q "世界"; then
+# Mixes BMP (CJK, 3-byte) and non-BMP (U+1D400, 4-byte) codepoints, the same
+# pair generic.sh and nets.sh use: they exercise different encoding paths, and
+# a string that is only CJK would not catch a surrogate-pair bug.
+if lager python --box $BOX -c "print('Hello 世界 𝐀')" 2>&1 | grep -q "世界"; then
   echo -e "${GREEN}[OK] Unicode support works${NC}"
   track_test "pass"
 else
@@ -1051,7 +1110,7 @@ if lager python --box $BOX --add-file "$TEST_DIR/large_file.bin" -c "import os; 
   track_test "pass"
 else
   echo -e "${YELLOW}[WARNING] Large file may not have uploaded correctly${NC}"
-  track_test "pass"
+  track_test "skip"
 fi
 echo ""
 sleep $TEST_DELAY
@@ -1250,7 +1309,7 @@ if lager python --box $BOX -c "" 2>&1; then
   track_test "pass"
 else
   echo -e "${YELLOW}[SKIP] Empty script may cause error${NC}"
-  track_test "pass"
+  track_test "skip"
 fi
 echo ""
 sleep $TEST_DELAY
@@ -1261,7 +1320,7 @@ if lager python --box $BOX -c "   " 2>&1; then
   track_test "pass"
 else
   echo -e "${YELLOW}[SKIP] Whitespace-only script may cause error${NC}"
-  track_test "pass"
+  track_test "skip"
 fi
 echo ""
 sleep $TEST_DELAY
@@ -1288,7 +1347,7 @@ if lager python --box $BOX -c "$LONG_SCRIPT" >/dev/null 2>&1; then
   track_test "pass"
 else
   echo -e "${YELLOW}[SKIP] Very long command may be truncated${NC}"
-  track_test "pass"
+  track_test "skip"
 fi
 echo ""
 sleep $TEST_DELAY
@@ -1358,7 +1417,7 @@ echo ""
 sleep $TEST_DELAY
 
 # Make sure no scripts are still running
-lager python --box $BOX --kill >/dev/null 2>&1 || true
+timeout $KILL_TIMEOUT lager python --box $BOX --kill-all >/dev/null 2>&1 || true
 
 # ============================================================
 # TEST SUMMARY
