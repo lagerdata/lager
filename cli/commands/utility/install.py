@@ -27,6 +27,34 @@ from ..box._host_ops import (
     boxcfg_sudoers_bootstrap_cmd,
     is_valid_unix_username,
 )
+from ..box._ssh import _LAGER_BOX_KEY, probe_box_identity, ssh_identity_args
+
+
+def no_usable_identity_error(ssh_host, ip):
+    """The box accepted no SSH key this machine can offer.
+
+    Deliberately *not* "password authentication failed". Install used to
+    offer a password fallback here, but a hardened box sets
+    `PasswordAuthentication no`, so ssh never sent the password it had just
+    asked the operator for — and reported a password problem for what is an
+    identity problem. That sent people hunting for a wrong password when
+    the box had simply never authorized this machine's key.
+
+    What is actionable is getting a key authorized, which is one command.
+    """
+    return LagerError(
+        f'{ssh_host} did not accept any SSH key this machine can offer.',
+        cause=(
+            'Key authentication failed for every identity ssh tried, including '
+            f'{_LAGER_BOX_KEY} when it exists.'
+        ),
+        fixes=[
+            f'Authorize this machine once, then re-run install: lager ssh-setup --box {ip}',
+            f'Or copy a key yourself: ssh-copy-id {ssh_host}',
+            'If the box also refuses passwords (PasswordAuthentication no), a key has '
+            'to be installed on it out of band before either will work.',
+        ],
+    )
 
 
 def get_script_path(script_name: str, subdir: str = "scripts") -> Path:
@@ -146,52 +174,25 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
         click.secho("Try reinstalling lager-cli: pip install --upgrade lager-cli", fg='yellow', err=True)
         ctx.exit(1)
 
-    # 4. Check SSH connectivity (with password fallback)
+    # 4. Check SSH connectivity, and settle which identity the rest of this
+    #    command offers the box.
+    #
+    #    ~/.ssh/lager_box is not one of ssh's default identity filenames, so
+    #    without an explicit -i it is never tried — and on a box where it is
+    #    the only authorized key, every bare `ssh` below fails. probe_box_identity
+    #    offers it first and falls back to ssh's defaults when the box rejects
+    #    it, so a box authorized by the operator's own key, or a fresh box that
+    #    has never had `lager ssh-setup` run, is unaffected.
     click.echo(f"Checking SSH connectivity to {ssh_host}...")
+    identity = None
     try:
-        result = subprocess.run(
-            ["ssh", "-o", "ConnectTimeout=10", "-o", "BatchMode=yes", ssh_host, "echo ok"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
+        identity, result = probe_box_identity(ssh_host)
         if result.returncode != 0:
             stderr = result.stderr.lower() if result.stderr else ""
 
             # Check for specific SSH error types
             if "permission denied" in stderr or "publickey" in stderr:
-                # SSH keys not configured - offer password authentication
-                click.secho("SSH keys not configured", fg='yellow')
-                click.echo()
-                click.echo("SSH key authentication is not set up for this box.")
-                click.echo("You can either:")
-                click.echo(f"  1. Enter your password now (will be prompted during installation)")
-                click.echo(f"  2. Set up SSH keys first with: ssh-copy-id {ssh_host}")
-                click.echo()
-
-                if yes or click.confirm("Would you like to continue with password authentication?"):
-                    click.echo()
-                    click.echo("Please enter your password to verify connectivity:")
-                    test_result = subprocess.run(
-                        ["ssh", "-o", "ConnectTimeout=10", "-o", "NumberOfPasswordPrompts=1",
-                         ssh_host, "echo ok"],
-                        timeout=60
-                    )
-                    if test_result.returncode != 0:
-                        LagerError(
-                            'Password authentication failed.',
-                            cause='The box did not accept that password.',
-                            fixes=[
-                                'Double-check the password and try again.',
-                                'The default box login is the user "lagerdata".',
-                            ],
-                        ).die()
-                    click.secho("Password authentication successful!", fg='green')
-                    click.echo()
-                    click.secho("Note: You may be prompted for your password multiple times during installation.", fg='yellow')
-                else:
-                    click.secho("Installation cancelled.", fg='yellow')
-                    ctx.exit(0)
+                no_usable_identity_error(ssh_host, ip).die()
             elif "connection refused" in stderr or "no route to host" in stderr:
                 ssh_error(result.stderr, ip).die()
             elif "host key verification failed" in stderr:
@@ -210,53 +211,22 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                     if yes or click.confirm("Do you want to accept the host key and continue?"):
                         click.echo()
                         click.echo("Accepting host key...")
-                        # Use StrictHostKeyChecking=accept-new to accept new keys only
-                        accept_result = subprocess.run(
-                            ["ssh", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new",
-                             "-o", "BatchMode=yes", ssh_host, "echo ok"],
-                            capture_output=True,
-                            text=True,
-                            timeout=15
+                        # Use StrictHostKeyChecking=accept-new to accept new keys only.
+                        # Re-probe rather than reuse the first answer: the first
+                        # attempt never got far enough to learn which identity the
+                        # box accepts.
+                        identity, accept_result = probe_box_identity(
+                            ssh_host,
+                            extra_args=("-o", "StrictHostKeyChecking=accept-new"),
                         )
                         if accept_result.returncode == 0:
                             click.secho("Host key accepted!", fg='green')
                         else:
-                            # Key accepted but auth failed - likely needs password
                             accept_stderr = accept_result.stderr.lower() if accept_result.stderr else ""
                             if "permission denied" in accept_stderr or "publickey" in accept_stderr:
                                 click.secho("Host key accepted!", fg='green')
                                 click.echo()
-                                click.secho("SSH keys not configured", fg='yellow')
-                                click.echo()
-                                click.echo("SSH key authentication is not set up for this box.")
-                                click.echo("You can either:")
-                                click.echo(f"  1. Enter your password now (will be prompted during installation)")
-                                click.echo(f"  2. Set up SSH keys first with: ssh-copy-id {ssh_host}")
-                                click.echo()
-
-                                if yes or click.confirm("Would you like to continue with password authentication?"):
-                                    click.echo()
-                                    click.echo("Please enter your password to verify connectivity:")
-                                    test_result = subprocess.run(
-                                        ["ssh", "-o", "ConnectTimeout=10", "-o", "NumberOfPasswordPrompts=1",
-                                         ssh_host, "echo ok"],
-                                        timeout=60
-                                    )
-                                    if test_result.returncode != 0:
-                                        LagerError(
-                                            'Password authentication failed.',
-                                            cause='The box did not accept that password.',
-                                            fixes=[
-                                                'Double-check the password and try again.',
-                                                'The default box login is the user "lagerdata".',
-                                            ],
-                                        ).die()
-                                    click.secho("Password authentication successful!", fg='green')
-                                    click.echo()
-                                    click.secho("Note: You may be prompted for your password multiple times during installation.", fg='yellow')
-                                else:
-                                    click.secho("Installation cancelled.", fg='yellow')
-                                    ctx.exit(0)
+                                no_usable_identity_error(ssh_host, ip).die()
                             else:
                                 click.secho(f"Error: SSH connection failed after accepting host key", fg='red', err=True)
                                 if accept_result.stderr:
@@ -268,40 +238,16 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
             elif "could not resolve hostname" in stderr or "name or service not known" in stderr:
                 ssh_error(result.stderr, ip).die()
             else:
-                # Generic SSH failure - still offer password auth as fallback
-                click.secho("SSH key authentication failed", fg='yellow')
-                click.echo()
-                if result.stderr:
-                    click.echo(f"SSH error: {result.stderr.strip()}", err=True)
-                click.echo()
-                click.echo("You can either:")
-                click.echo(f"  1. Enter your password now (will be prompted during installation)")
-                click.echo(f"  2. Set up SSH keys first with: ssh-copy-id {ssh_host}")
-                click.echo()
-
-                if yes or click.confirm("Would you like to continue with password authentication?"):
-                    click.echo()
-                    click.echo("Please enter your password to verify connectivity:")
-                    test_result = subprocess.run(
-                        ["ssh", "-o", "ConnectTimeout=10", "-o", "NumberOfPasswordPrompts=1",
-                         ssh_host, "echo ok"],
-                        timeout=60
-                    )
-                    if test_result.returncode != 0:
-                        LagerError(
-                            'Password authentication failed.',
-                            cause='The box did not accept that password.',
-                            fixes=[
-                                'Double-check the password and try again.',
-                                'The default box login is the user "lagerdata".',
-                            ],
-                        ).die()
-                    click.secho("Password authentication successful!", fg='green')
-                    click.echo()
-                    click.secho("Note: You may be prompted for your password multiple times during installation.", fg='yellow')
-                else:
-                    click.secho("Installation cancelled.", fg='yellow')
-                    ctx.exit(0)
+                LagerError(
+                    f'SSH connection to {ssh_host} failed.',
+                    cause=(result.stderr or "").strip() or 'ssh exited without explaining why.',
+                    fixes=[
+                        f'Confirm the box is online: ping {ip}',
+                        f'Authorize this machine if it has not been: lager ssh-setup --box {ip}',
+                        f'Reproduce it directly: ssh {ssh_host}',
+                    ],
+                    raw=result.stderr,
+                ).die()
         else:
             click.secho("SSH connection OK", fg='green')
     except subprocess.TimeoutExpired:
@@ -439,9 +385,11 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
         'fi'
     )
 
+    identity_args = ssh_identity_args(identity)
+
     try:
         result = subprocess.run(
-            ["ssh", ssh_host, read_version_cmd],
+            ["ssh", *identity_args, ssh_host, read_version_cmd],
             capture_output=True,
             text=True,
             timeout=10
@@ -464,7 +412,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
         )
 
         subprocess.run(
-            ["ssh", "-t", ssh_host, write_version_cmd],
+            ["ssh", "-t", *identity_args, ssh_host, write_version_cmd],
             timeout=120,  # Increased from 30 to match update.py timeout
             stderr=subprocess.DEVNULL,  # Suppress "Shared connection closed" noise
         )
@@ -514,7 +462,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
         # may have stepped away.
         try:
             precheck = subprocess.run(
-                ["ssh", "-o", "BatchMode=yes", ssh_host,
+                ["ssh", *identity_args, "-o", "BatchMode=yes", ssh_host,
                  f"test -f {BOXCFG_SUDOERS_MARKER} "
                  "&& sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1"],
                 capture_output=True, timeout=15,
@@ -534,7 +482,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                 # bootstrap mid-prompt for a slow (or absent) operator, so give
                 # them 10 minutes; the timeout only guards a genuine hang.
                 bootstrap_result = subprocess.run(
-                    ["ssh", "-t", ssh_host, sudoers_cmd],
+                    ["ssh", "-t", *identity_args, ssh_host, sudoers_cmd],
                     timeout=600,
                 )
                 if bootstrap_result.returncode != 0:
@@ -551,7 +499,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                     # a version suffix so older boxes upgrading to a future rule
                     # shape re-bootstrap automatically.
                     verify_result = subprocess.run(
-                        ["ssh", "-o", "BatchMode=yes", ssh_host,
+                        ["ssh", *identity_args, "-o", "BatchMode=yes", ssh_host,
                          f"test -f {BOXCFG_SUDOERS_MARKER} "
                          "&& sudo -n DEBIAN_FRONTEND=noninteractive apt-get --version >/dev/null 2>&1"],
                         capture_output=True, timeout=15,

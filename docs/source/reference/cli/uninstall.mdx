@@ -82,7 +82,7 @@ lager uninstall --box my-lager-box --yes
 ## Uninstall Flow
 
 1. **Resolve target** - Looks up box IP from `--box` name or uses `--ip` directly
-2. **Verify SSH** - Tests key-based authentication, falls back to password if needed
+2. **Verify SSH** - Offers `~/.ssh/lager_box`, then your own default identities, and falls back to password if neither authenticates
 3. **Show summary** - Lists what will be removed based on flags
 4. **Confirm** - Requires explicit confirmation (unless `--yes`)
 5. **Remove step by step:**

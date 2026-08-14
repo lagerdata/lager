@@ -79,9 +79,16 @@ def ssh(ctx, box, command):
     # Offer the dedicated lager_box key (installed by `lager ssh-setup`) when
     # present. It isn't one of ssh's default identity filenames, so without
     # -i it's never tried and an authorized box still drops to a password
-    # prompt. -i appends to the identity list rather than replacing it (no
-    # IdentitiesOnly), so default keys and the password fallback still work
-    # for boxes that haven't been authorized.
+    # prompt.
+    #
+    # -i does NOT simply append: naming any identity suppresses ssh's built-in
+    # default list (id_rsa, id_ed25519, ...), though identities from
+    # ~/.ssh/config and the agent are still offered after it. That is fine
+    # here because this command is interactive — a box that rejects the key
+    # falls through to the password prompt with a human present. The
+    # non-interactive commands (install, uninstall, box-config) cannot rely on
+    # that, which is why they probe first and retry without the key; see
+    # _ssh.probe_box_identity.
     ssh_cmd = ['ssh']
     if os.path.exists(_LAGER_BOX_KEY):
         ssh_cmd.extend(['-i', _LAGER_BOX_KEY])
