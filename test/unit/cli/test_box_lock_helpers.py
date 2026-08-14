@@ -1310,3 +1310,94 @@ class TestImperativeAcquireSuspend:
         # the default has to cover a rebuild. The observed worst case was
         # ~5 minutes of container-down inside a 10-minute run.
         assert box_storage._DEFAULT_LOCK_TTL_SECONDS >= 1800
+
+
+class TestImperativeAcquirePassesTheTtl:
+    """`auto_lock_around_command` tells the heartbeat which TTL the lock is
+    living under; `auto_lock_acquire_for_command` did not, so a command using
+    the imperative variant fell through to the no-TTL branch.
+
+    `lager update` is its only caller today — install, install-wheel and
+    uninstall all take the `with` form and were never affected. That is
+    exactly why the two must be pinned to agree: a divergence this quiet
+    survived precisely because only one command could show it.
+
+    That branch warns after 5 consecutive failures and says "the box may be
+    unreachable" — which defeats the deliberate design in
+    TestHeartbeatWarningThreshold above, whose whole point is that a
+    container-rebuild window is not worth reporting against a 30-minute TTL.
+    It is why a wholly successful `lager update` printed
+    "update lock heartbeat has failed 5 times in a row (5m)".
+    """
+
+    @staticmethod
+    def _capture(monkeypatch, state='acquired', lock_data=None):
+        captured = {}
+
+        def fake_heartbeat(ip, holder, interval, **kwargs):
+            captured.update(kwargs)
+            return mock.Mock()
+
+        monkeypatch.setattr(
+            box_storage, 'acquire_box_lock',
+            lambda *a, **k: (state, lock_data if lock_data is not None else {}),
+        )
+        monkeypatch.setattr(box_storage, 'release_box_lock', lambda *a, **k: True)
+        monkeypatch.setattr(box_storage, 'get_lock_holder', lambda: 'test-holder')
+        monkeypatch.setattr(box_storage, 'HeartbeatThread', fake_heartbeat)
+        return captured
+
+    def test_an_acquired_lock_passes_its_own_ttl(self, monkeypatch):
+        captured = self._capture(monkeypatch)
+        box_storage.auto_lock_acquire_for_command(
+            '10.0.0.1', 'lab-box', 'update', ttl_seconds=1800)
+        assert captured['ttl_seconds'] == 1800
+
+    def test_a_resumed_lock_passes_the_existing_ttl_not_ours(self, monkeypatch):
+        # We are keeping someone else's lock alive; it expires on their clock.
+        captured = self._capture(
+            monkeypatch, state='already_ours', lock_data={'ttl_seconds': 600})
+        box_storage.auto_lock_acquire_for_command(
+            '10.0.0.1', 'lab-box', 'update', ttl_seconds=1800)
+        assert captured['ttl_seconds'] == 600
+
+    def test_both_helpers_agree_for_the_same_lock(self, monkeypatch):
+        # The two variants exist for indentation reasons, not behavioural
+        # ones. A command should not get a different warning threshold for
+        # picking one over the other.
+        imperative = self._capture(monkeypatch)
+        box_storage.auto_lock_acquire_for_command(
+            '10.0.0.1', 'lab-box', 'update', ttl_seconds=1800)
+        imperative_ttl = imperative['ttl_seconds']
+
+        contextual = self._capture(monkeypatch)
+        with box_storage.auto_lock_around_command(
+                '10.0.0.1', 'lab-box', 'update', ttl_seconds=1800):
+            pass
+        assert contextual['ttl_seconds'] == imperative_ttl == 1800
+
+    def test_the_reported_warning_no_longer_fires(self, monkeypatch, capsys):
+        # The exact case from the field: an update whose container rebuild
+        # kept the lock server down for five minutes, against the default
+        # 1800s TTL. 5m of a 30m budget is not worth a word.
+        monkeypatch.setattr(box_storage, 'heartbeat_box_lock', lambda *a, **k: False)
+        t = box_storage.HeartbeatThread(
+            '10.0.0.1', 'alice', 60, warn_label='update lock heartbeat',
+            ttl_seconds=box_storage._DEFAULT_LOCK_TTL_SECONDS,
+        )
+        _drive(t, attempts=5)
+        assert capsys.readouterr().err == ''
+
+    def test_a_genuinely_endangered_lock_still_warns_and_names_the_risk(
+            self, monkeypatch, capsys):
+        # The fix must not silence the real case. At half the TTL the message
+        # should be about expiry, not about the box being unreachable.
+        monkeypatch.setattr(box_storage, 'heartbeat_box_lock', lambda *a, **k: False)
+        t = box_storage.HeartbeatThread(
+            '10.0.0.1', 'alice', 60, warn_label='update lock heartbeat',
+            ttl_seconds=1800,
+        )
+        _drive(t, attempts=15)
+        err = capsys.readouterr().err
+        assert 'will expire if this continues' in err
+        assert 'may be unreachable' not in err

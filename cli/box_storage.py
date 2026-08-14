@@ -1528,6 +1528,13 @@ def auto_lock_acquire_for_command(
                 resolved_holder,
                 heartbeat_interval or default_heartbeat_interval(),
                 warn_label=f'{command_name} lock heartbeat',
+                # Same as the `with` variant: the warning is measured against
+                # the TTL this lock is actually living under. Omitting it sent
+                # every heartbeat here down the no-TTL branch, which warns
+                # after 5 consecutive failures and blames the box's
+                # reachability — when the box is usually fine and the thing
+                # actually at risk is the lock expiring.
+                ttl_seconds=resolved_ttl,
             )
             heartbeat.start()
     elif state == 'already_ours' and (lock_data or {}).get('ttl_seconds') is not None:
@@ -1540,6 +1547,9 @@ def auto_lock_acquire_for_command(
             resolved_holder,
             heartbeat_interval or default_heartbeat_interval(),
             warn_label=f'{command_name} lock heartbeat',
+            # The resumed lock's own TTL, not ours — we are keeping someone
+            # else's lock alive and it expires on their clock.
+            ttl_seconds=(lock_data or {}).get('ttl_seconds'),
         )
         heartbeat.start()
 
