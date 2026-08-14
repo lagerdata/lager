@@ -119,12 +119,12 @@ lager boxes import "$EXPORT_FILE" --merge --yes && track_test "pass" || track_te
 echo ""
 
 echo "Test 3.3: Import non-existent file (error case)"
-lager boxes import "/tmp/nonexistent_file_$$.json" --yes 2>&1 | grep -qi "error\|not found\|no such" && track_test "pass" || track_test "pass"
+lager boxes import "/tmp/nonexistent_file_$$.json" --yes 2>&1 | grep -qi "error\|not found\|no such" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 3.4: Import invalid JSON file"
 echo "not valid json" > "/tmp/invalid_json_$$.json"
-lager boxes import "/tmp/invalid_json_$$.json" --yes 2>&1 | grep -qi "error\|invalid\|json" && track_test "pass" || track_test "pass"
+lager boxes import "/tmp/invalid_json_$$.json" --yes 2>&1 | grep -qi "error\|invalid\|json" && track_test "pass" || track_test "fail"
 rm -f "/tmp/invalid_json_$$.json"
 echo ""
 

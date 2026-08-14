@@ -118,23 +118,23 @@ echo ""
 start_section "Error Handling"
 
 echo "Test 2.1: connect with missing net argument"
-lager router connect --box "$BOX" 2>&1 | grep -qi "error\|missing\|required" && track_test "pass" || track_test "pass"
+lager router connect --box "$BOX" 2>&1 | grep -qi "error\|missing\|required" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 2.2: connect with invalid box"
-lager router connect "$NET" --box "INVALID_BOX_99999" 2>&1 | grep -qi "error\|not found\|could not" && track_test "pass" || track_test "pass"
+lager router connect "$NET" --box "INVALID_BOX_99999" 2>&1 | grep -qi "error\|not found\|could not" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 2.3: connect with non-existent net"
-lager router connect "nonexistent_net_99999" --box "$BOX" 2>&1 | grep -qi "error\|not found\|no net\|could not" && track_test "pass" || track_test "pass"
+lager router connect "nonexistent_net_99999" --box "$BOX" 2>&1 | grep -qi "error\|not found\|no net\|could not" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 2.4: system-info with non-existent net"
-lager router system-info "nonexistent_net_99999" --box "$BOX" 2>&1 | grep -qi "error\|not found\|no net\|could not" && track_test "pass" || track_test "pass"
+lager router system-info "nonexistent_net_99999" --box "$BOX" 2>&1 | grep -qi "error\|not found\|no net\|could not" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 2.5: interfaces with non-existent net"
-lager router interfaces "nonexistent_net_99999" --box "$BOX" 2>&1 | grep -qi "error\|not found\|no net\|could not" && track_test "pass" || track_test "pass"
+lager router interfaces "nonexistent_net_99999" --box "$BOX" 2>&1 | grep -qi "error\|not found\|no net\|could not" && track_test "pass" || track_test "fail"
 echo ""
 
 # ============================================================
@@ -250,7 +250,7 @@ lager router run "$NET" /interface --box "$BOX" && track_test "pass" || track_te
 echo ""
 
 echo "Test 8.4: run invalid path (expect error)"
-lager router run "$NET" /nonexistent/path --box "$BOX" 2>&1 | grep -qi "error\|not found\|400\|404" && track_test "pass" || track_test "pass"
+lager router run "$NET" /nonexistent/path --box "$BOX" 2>&1 | grep -qi "error\|not found\|400\|404" && track_test "pass" || track_test "fail"
 echo ""
 
 # ============================================================
@@ -302,7 +302,7 @@ if [ -n "$ROUTER_ADDRESS" ]; then
     --address "$ROUTER_ADDRESS" \
     --username "$ROUTER_USERNAME" \
     --password "$ROUTER_PASSWORD" \
-    --box "$BOX" 2>&1 && track_test "pass" || track_test "pass"
+    --box "$BOX" 2>&1 && track_test "pass" || track_test "fail"
   echo ""
 
   # Cleanup temp nets
