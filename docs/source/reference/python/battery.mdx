@@ -28,6 +28,9 @@ The Net-based API provides methods that can either get or set values. When calle
 | `ovp(value)` | Set or read over-voltage protection threshold |
 | `ocp(value)` | Set or read over-current protection threshold |
 | `model(partnumber)` | Set or read battery model |
+| `model_catalog()` | List the battery models available on the instrument (read-only) |
+| `read_model(slot)` | Read a saved model's curve points out of a memory slot (read-only) |
+| `define_model(slot, voc, resistance)` | Write a custom battery model into a memory slot |
 | `enable()` | Enable battery simulation output |
 | `disable()` | Disable battery simulation output |
 | `clear_ovp()` | Clear over-voltage protection fault |
@@ -202,7 +205,54 @@ The Keithley 2281S stores battery models in memory slots (0-9):
 | `'nicd'` | 3 | Requires pre-saved model |
 | `'lead-acid'` | 4 | Requires pre-saved model |
 
-**Note:** If a slot is empty, you'll get an error suggesting to use 'discharge' or save a model via the instrument front panel. Use `'discharge'` for basic battery simulation that works on all instruments.
+**Note:** If a slot is empty, you'll get an error suggesting to use `'discharge'` or
+save a model first — either from the instrument front panel or with
+[`define_model()`](#define-model-slot-voc-resistance) below. Use `'discharge'` for
+basic battery simulation that works on all instruments.
+
+### `model_catalog()`
+
+List the battery models available on the instrument. Returns a list covering the
+numbered memory slots plus any firmware built-in models. Read-only — assembling the
+catalog does not change instrument state.
+
+```python
+for entry in batt.model_catalog():
+    print(entry)
+```
+
+On the Keithley 2281S, slots 1-9 are reported when a model has been saved there, and
+the five firmware built-in models are listed without a slot. Discharge mode is not
+listed: it is front-panel-only and has no SCPI recall form on current firmware.
+
+### `read_model(slot)`
+
+Read a saved model's curve points out of a memory slot. Returns a dict. Read-only —
+exporting a model does not change which model is active.
+
+```python
+model = batt.read_model(1)
+```
+
+On the Keithley 2281S, slots 1-9 hold saved models (there is no exportable slot 0) and
+each model is 101 points per element, for both VOC and resistance. Reading an empty
+slot is rejected, with a pointer to `model_catalog()`.
+
+### `define_model(slot, voc, resistance)`
+
+Write a custom battery model into a memory slot, creating or overwriting it. A model is
+two curves indexed by state of charge: `voc` (non-decreasing) and `resistance`.
+
+```python
+batt.define_model(3, voc=voc_points, resistance=resistance_points)
+```
+
+<Warning>
+Saving to an occupied slot overwrites it silently, and a slot cannot afterwards be
+deleted or emptied — the Keithley 2281S has no SCPI command for it, so slots can only
+be overwritten. Gate overwrites behind an explicit confirmation in your own code.
+Valid target slots are 1-9.
+</Warning>
 
 ### `enable()` / `disable()`
 

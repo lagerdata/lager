@@ -29,6 +29,7 @@ from lager import (
 | `state()` | Read the current power state without changing it (`True`=enabled) |
 | `cycle(off_time=None)` | Power-cycle the port; returns whether the device came back |
 | `recover()` | Restore power after an interrupted operation left a port off |
+| `get_config()` | Return a copy of the net's raw configuration dict |
 
 ## Exception Classes
 

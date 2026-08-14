@@ -22,17 +22,19 @@ Source files live in `source/` as `.mdx` (Markdown + JSX). Page paths in
 
 ## Development
 
-Install the [Mintlify CLI](https://www.npmjs.com/package/mintlify):
-
-```bash
-npm i -g mintlify
-```
-
-Preview the docs locally, from the `docs/` directory where `docs.json` lives:
+The CLI is published as [`mint`](https://www.npmjs.com/package/mint) (it was renamed
+from `mintlify`). You do not need to install it globally — `npx` fetches it:
 
 ```bash
 cd docs
-mintlify dev
+npx mint@latest dev
+```
+
+Before opening a pull request, run the two checks CI should agree with:
+
+```bash
+npx mint@latest validate       # strict build; fails on MDX parse errors
+npx mint@latest broken-links   # fails on dangling internal links
 ```
 
 ## Adding a Page
@@ -44,7 +46,8 @@ mintlify dev
 
 ## Troubleshooting
 
-- **`mintlify dev` is not running** - run `mintlify install` to reinstall
-  dependencies.
 - **A page loads as a 404** - make sure you are running from the `docs/` folder
   (where `docs.json` is), and that the page is listed in `docs.json`.
+- **`Unknown command: build`** - the CLI no longer has a `build` subcommand. Use
+  `npx mint@latest validate` to check a build, or `npx mint@latest export` to
+  produce a static site.
