@@ -66,6 +66,44 @@ def resolve_version_ref(target_version):
     return target_version, f'origin/{target_version}', target_version
 
 
+# Pre-built box agent images published by `.github/workflows/box-image-publish.yml`
+# on every v* tag. `lager update` prefers a pull of this ref over a local
+# `docker build` when the target is a release tag; branches / unpublished tags
+# fall through to the local build path unchanged.
+_BOX_IMAGE_REGISTRY = 'ghcr.io/lagerdata/lager-box'
+
+
+def _box_image_ref_for_version(target_version):
+    """Return the GHCR image ref for a release tag, or ``None``.
+
+    Only release tags are published (see box-image-publish.yml). ``main``,
+    feature branches, and odd refs return ``None`` so the caller falls back
+    to a local build. Accepts ``vX.Y.Z`` or bare ``X.Y.Z`` (same as
+    ``resolve_version_ref``).
+    """
+    if not target_version:
+        return None
+    m = re.match(
+        r'^v?(\d+\.\d+\.\d+(?:-(?:rc|alpha|beta|preview)\d*)?)$',
+        target_version,
+    )
+    if not m:
+        return None
+    return f'{_BOX_IMAGE_REGISTRY}:v{m.group(1)}'
+
+
+def _docker_pull_retag_cmd(image_ref, local_tag='lager'):
+    """Shell snippet: pull ``image_ref`` and retag it as ``local_tag``.
+
+    Both args are shell-quoted. Returns non-zero when the pull fails so the
+    caller can fall back to a local build without inspecting stderr.
+    """
+    return (
+        f'docker pull {shlex.quote(image_ref)} && '
+        f'docker tag {shlex.quote(image_ref)} {shlex.quote(local_tag)}'
+    )
+
+
 def wait_for_box_ready(box_ip, *, timeout_s=60, initial_delay_s=2):
     """Poll the box health endpoints until both services answer or timeout.
 
@@ -1402,6 +1440,12 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         else:
             deps_status = 'cache valid (no rebuild)'
 
+        # Release tags are published to GHCR (box-image-publish.yml). Prefer
+        # that estimate when a rebuild is likely and --force is not set; the
+        # live update still falls back to a local build if the pull fails.
+        _ghcr_ref = None if force else _box_image_ref_for_version(target_version)
+        _pull_est = f'~60s (pull {_ghcr_ref})' if _ghcr_ref else None
+
         if force:
             container_status = 'will restart (forced clean rebuild)'
             est = '~6 min (fresh build)'
@@ -1409,21 +1453,25 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             # Code may be fully in sync, but there is nothing serving it — a
             # previous update likely failed after removing the containers.
             container_status = 'NOT RUNNING (will rebuild and restart)'
-            est = '~6 min (fresh build possible)' if deps_will_change else '~90s (cached build)'
+            if deps_will_change:
+                est = _pull_est or '~6 min (fresh build possible)'
+            else:
+                est = '~90s (cached build)'
         elif deploy_stale:
             # In sync and running, but the container was deployed from an
             # older version — a prior update pulled and stopped before the
             # rebuild.
             container_status = 'running a STALE build (will rebuild and restart)'
-            est = '~90s (cached build)'
+            est = _pull_est or '~90s (cached build)'
         elif commits_behind == 0 and commits_ahead == 0 and not deps_will_change:
             container_status = 'no restart needed'
             est = '~5s'
         elif deps_will_change or is_rollback or commits_ahead > 0:
             # Rollback / branch-switch likely flips at least some COPY layers
-            # in the Dockerfile cache; assume a real build.
+            # in the Dockerfile cache; assume a real build — or a GHCR pull
+            # when the target is a published release tag.
             container_status = 'will restart'
-            est = '~6 min (fresh build possible)'
+            est = _pull_est or '~6 min (fresh build possible)'
         else:
             container_status = 'will restart'
             est = '~90s (cached build)'
@@ -2163,67 +2211,95 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         )
         log_status('OK', 'green')
 
-    # Step 9: Rebuild Docker container (the slow part)
-    if progress:
-        progress.update("Building container...")
-    log('Building container (this may take several minutes)...')
-
-    ssh_cmd = ['ssh']
-    if use_explicit_key:
-        ssh_cmd.extend(['-i', key_file])
-    if not use_interactive_ssh:
-        ssh_cmd.extend(['-o', 'BatchMode=yes'])
-    ssh_cmd.extend(_ssh_mux_opts)
-    ssh_cmd.extend([ssh_host,
-         'cd ~/box/lager && '
-         'DOCKER_BUILDKIT=1 docker build -f docker/box.Dockerfile -t lager .'])
-
-    build_output_lines = []
-    if verbose:
-        # Stream output in verbose mode
-        process = subprocess.Popen(
-            ssh_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding='utf-8',
-            errors='replace',
-            bufsize=1
-        )
-        if process.stdout:
-            for line in process.stdout:
-                click.echo(f'    {line}', nl=False)
-                build_output_lines.append(line.rstrip())
-        return_code = process.wait(timeout=600)
-    else:
-        # Silent mode - capture output for error reporting
-        process = subprocess.Popen(
-            ssh_cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding='utf-8',
-            errors='replace',
-        )
-        # Read and store output for potential error reporting
-        if process.stdout:
-            for line in process.stdout:
-                build_output_lines.append(line.rstrip())
-        return_code = process.wait(timeout=600)
-
-    if return_code != 0:
+    # Step 9: Obtain a `lager` image — prefer a pre-built GHCR pull for
+    # release tags (published by box-image-publish.yml), fall back to a local
+    # `docker build`. `--force` always builds locally so a clean rebuild is
+    # what the flag promises. Branches / unpublished tags have no GHCR ref
+    # and go straight to build.
+    image_ref = None if force else _box_image_ref_for_version(target_version)
+    pulled = False
+    if image_ref:
         if progress:
-            progress.finish(success=False)
-        log_error('Error: Failed to rebuild Docker container')
-        # Show last 20 lines of build output for debugging
-        if build_output_lines:
-            click.echo()
-            click.secho("Docker build output (last 20 lines):", fg='yellow', err=True)
-            for line in build_output_lines[-20:]:
-                click.echo(f"  {line}", err=True)
-            click.echo()
-            # Detect common Docker build errors
-            full_output = "\n".join(build_output_lines)
+            progress.update("Pulling container image...")
+        log(f'Pulling {image_ref}...', nl=False)
+        pull_result = run_ssh_command_with_output(
+            _docker_pull_retag_cmd(image_ref),
+            timeout_secs=600,
+        )
+        if pull_result.returncode == 0:
+            pulled = True
+            log_status('OK', 'green')
+        else:
+            log_status('miss (will build locally)', 'yellow')
+            if verbose and pull_result.stderr:
+                click.echo(f'  pull stderr: {pull_result.stderr.strip()[:400]}')
+
+    if pulled:
+        if progress:
+            progress.update("Image ready (pulled)")
+        log('Using pre-built image from GHCR')
+    else:
+        # Step 9b: Rebuild Docker container (the slow part)
+        if progress:
+            progress.update("Building container...")
+        log('Building container (this may take several minutes)...')
+
+        ssh_cmd = ['ssh']
+        if use_explicit_key:
+            ssh_cmd.extend(['-i', key_file])
+        if not use_interactive_ssh:
+            ssh_cmd.extend(['-o', 'BatchMode=yes'])
+        ssh_cmd.extend(_ssh_mux_opts)
+        ssh_cmd.extend([ssh_host,
+             'cd ~/box/lager && '
+             'DOCKER_BUILDKIT=1 docker build -f docker/box.Dockerfile -t lager .'])
+
+        build_output_lines = []
+        if verbose:
+            # Stream output in verbose mode
+            process = subprocess.Popen(
+                ssh_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                bufsize=1
+            )
+            if process.stdout:
+                for line in process.stdout:
+                    click.echo(f'    {line}', nl=False)
+                    build_output_lines.append(line.rstrip())
+            return_code = process.wait(timeout=600)
+        else:
+            # Silent mode - capture output for error reporting
+            process = subprocess.Popen(
+                ssh_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+            )
+            # Read and store output for potential error reporting
+            if process.stdout:
+                for line in process.stdout:
+                    build_output_lines.append(line.rstrip())
+            return_code = process.wait(timeout=600)
+
+        if return_code != 0:
+            if progress:
+                progress.finish(success=False)
+            log_error('Error: Failed to rebuild Docker container')
+            # Show last 20 lines of build output for debugging
+            full_output = ''
+            if build_output_lines:
+                click.echo()
+                click.secho("Docker build output (last 20 lines):", fg='yellow', err=True)
+                for line in build_output_lines[-20:]:
+                    click.echo(f"  {line}", err=True)
+                click.echo()
+                full_output = "\n".join(build_output_lines)
             if "buildx component is missing" in full_output or "install the buildx" in full_output.lower():
                 click.secho(
                     "Hint: the box's Docker is missing a working buildx plugin, which the "
@@ -2248,57 +2324,57 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             elif "permission denied" in full_output.lower():
                 click.secho("Hint: Permission issue. Check Docker daemon is running and user has access.", fg='yellow', err=True)
 
-        # Poison the stored build-inputs hash so the next run can't read this
-        # box as up to date: the sentinel never equals a recomputed sha256, so
-        # hash_mismatch fires on the retry, blocking the "already at version"
-        # early-exit and forcing a clean image wipe + rebuild. Deleting the
-        # file would NOT do this — _build_hash_mismatch requires both values
-        # non-empty. Best-effort: if the write fails, the liveness gate still
-        # catches the dead-container case.
-        try:
-            store_build_hash('FAILED')
-        except (subprocess.SubprocessError, OSError):
-            pass
-
-        # Step 8 already stopped and removed the containers, so exiting here
-        # would strand the box with no services — the state that previously
-        # made the next run report "already at version" on a dead box. Unless
-        # this run wiped the image (hash change / --force), the previous image
-        # is still tagged `lager` and its baked-in code matches what was
-        # running before the pull, so restart it: the box stays usable on its
-        # prior version while the operator deals with the build failure.
-        restarted = False
-        if not must_wipe_image:
-            click.echo()
-            click.secho('Restarting the box on its previous version...', fg='yellow', err=True)
+            # Poison the stored build-inputs hash so the next run can't read this
+            # box as up to date: the sentinel never equals a recomputed sha256, so
+            # hash_mismatch fires on the retry, blocking the "already at version"
+            # early-exit and forcing a clean image wipe + rebuild. Deleting the
+            # file would NOT do this — _build_hash_mismatch requires both values
+            # non-empty. Best-effort: if the write fails, the liveness gate still
+            # catches the dead-container case.
             try:
-                recover = run_ssh_command_with_output(
-                    'cd ~/box && chmod +x start_box.sh && LAGER_SKIP_BUILD=1 ./start_box.sh',
-                    timeout_secs=600,
-                )
-                # Exit 3 = container up but post-start installs failed; the
-                # box is serving, which is all this recovery promises.
-                restarted = recover.returncode in (0, 3)
+                store_build_hash('FAILED')
             except (subprocess.SubprocessError, OSError):
-                restarted = False
+                pass
+
+            # Step 8 already stopped and removed the containers, so exiting here
+            # would strand the box with no services — the state that previously
+            # made the next run report "already at version" on a dead box. Unless
+            # this run wiped the image (hash change / --force), the previous image
+            # is still tagged `lager` and its baked-in code matches what was
+            # running before the pull, so restart it: the box stays usable on its
+            # prior version while the operator deals with the build failure.
+            restarted = False
+            if not must_wipe_image:
+                click.echo()
+                click.secho('Restarting the box on its previous version...', fg='yellow', err=True)
+                try:
+                    recover = run_ssh_command_with_output(
+                        'cd ~/box && chmod +x start_box.sh && LAGER_SKIP_BUILD=1 ./start_box.sh',
+                        timeout_secs=600,
+                    )
+                    # Exit 3 = container up but post-start installs failed; the
+                    # box is serving, which is all this recovery promises.
+                    restarted = recover.returncode in (0, 3)
+                except (subprocess.SubprocessError, OSError):
+                    restarted = False
+                if restarted:
+                    restarted = wait_for_box_ready(resolved_box, timeout_s=60)
             if restarted:
-                restarted = wait_for_box_ready(resolved_box, timeout_s=60)
-        if restarted:
-            click.secho(
-                'The update FAILED and was not applied. The box has been '
-                'restarted on its previous version.',
-                fg='yellow', err=True,
-            )
-        else:
-            click.secho(
-                'The update FAILED and the box was left with its services '
-                'stopped. Bring it back up manually with:',
-                fg='red', err=True,
-            )
-            click.echo(f'  ssh {ssh_host} "cd ~/box && ./start_box.sh"', err=True)
-        ctx.exit(1)
-    if verbose:
-        click.secho('  Build complete', fg='green')
+                click.secho(
+                    'The update FAILED and was not applied. The box has been '
+                    'restarted on its previous version.',
+                    fg='yellow', err=True,
+                )
+            else:
+                click.secho(
+                    'The update FAILED and the box was left with its services '
+                    'stopped. Bring it back up manually with:',
+                    fg='red', err=True,
+                )
+                click.echo(f'  ssh {ssh_host} "cd ~/box && ./start_box.sh"', err=True)
+            ctx.exit(1)
+        if verbose:
+            click.secho('  Build complete', fg='green')
 
     # The build-inputs hash is persisted later (after Step 10 ensures
     # /etc/lager is world-writable) via store_build_hash — writing it here, to a

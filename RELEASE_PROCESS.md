@@ -192,14 +192,21 @@ git push upstream vX.Y.Z
 
 ### 7. Wait for Tag Validation, Then Download the Artifact
 
-Pushing the tag triggers the **Release: Validate Tag** workflow
-(`.github/workflows/release-validation.yml`). It builds the sdist and wheel from the tagged
-commit, runs `twine check`, installs each into a clean venv, asserts the installed
-`lager --version` equals the tag, import-walks the installed package against
-`tools/packaging_import_baseline.txt`, and uploads the result as a workflow artifact named
-`dist-vX.Y.Z` (kept 90 days).
+Pushing the tag triggers two workflows in parallel:
 
-Wait for it to go green, then download the artifact:
+- **Release: Validate Tag** (`.github/workflows/release-validation.yml`) — builds the
+  sdist and wheel from the tagged commit, runs `twine check`, installs each into a
+  clean venv, asserts the installed `lager --version` equals the tag, import-walks
+  the installed package against `tools/packaging_import_baseline.txt`, and uploads
+  the result as a workflow artifact named `dist-vX.Y.Z` (kept 90 days).
+- **Release: Publish Box Image** (`.github/workflows/box-image-publish.yml`) — builds
+  `box/lager/docker/box.Dockerfile` and pushes
+  `ghcr.io/lagerdata/lager-box:vX.Y.Z` (and `:X.Y.Z`). `lager update --version vX.Y.Z`
+  prefers a pull of that image over a local `docker build` on the box. The package
+  must be **public** for anonymous box pulls — set that once in the GitHub UI after
+  the first successful publish (Packages → lager-box → Package settings).
+
+Wait for Validate Tag to go green, then download the artifact:
 
 ```bash
 gh run list --repo lagerdata/lager --workflow release-validation.yml --limit 1
@@ -210,6 +217,8 @@ Do **not** rebuild locally. The artifact is the set of bytes the validation prov
 rebuild is a different, unproven build. (If the workflow is red, the tag has a real problem
 -- fix it before anything reaches PyPI.)
 
+A red box-image publish does **not** block the PyPI upload — boxes fall back to a local
+build until the image is available — but fix it before cutting the next release.
 ### 8. Upload to PyPI
 
 Upload the downloaded artifact:

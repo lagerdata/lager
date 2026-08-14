@@ -12,8 +12,10 @@ import subprocess
 import pytest
 
 from cli.commands.utility.update import (
+    _box_image_ref_for_version,
     _build_hash_mismatch,
     _deployed_version_stale,
+    _docker_pull_retag_cmd,
     _parse_probe_output,
     _probe_shell_script,
     _pull_shell_script,
@@ -218,3 +220,29 @@ class TestPullShellScript:
         script = _pull_shell_script('v0.32.5', 'v0.32.5')
         assert 'git checkout -f v0.32.5' in script
         assert 'git reset --hard v0.32.5' in script
+
+
+class TestBoxImageRef:
+    def test_release_tag_maps_to_ghcr(self):
+        assert _box_image_ref_for_version('v0.36.0') == 'ghcr.io/lagerdata/lager-box:v0.36.0'
+        assert _box_image_ref_for_version('0.36.0') == 'ghcr.io/lagerdata/lager-box:v0.36.0'
+
+    def test_prerelease_suffix_accepted(self):
+        assert _box_image_ref_for_version('v0.36.0-rc1') == (
+            'ghcr.io/lagerdata/lager-box:v0.36.0-rc1'
+        )
+
+    def test_branches_and_empty_are_not_published(self):
+        assert _box_image_ref_for_version('main') is None
+        assert _box_image_ref_for_version('perf/foo') is None
+        assert _box_image_ref_for_version('') is None
+        assert _box_image_ref_for_version(None) is None
+
+    def test_pull_retag_quotes_refs(self):
+        cmd = _docker_pull_retag_cmd('ghcr.io/lagerdata/lager-box:v0.36.0')
+        assert 'docker pull ghcr.io/lagerdata/lager-box:v0.36.0' in cmd
+        assert 'docker tag ghcr.io/lagerdata/lager-box:v0.36.0 lager' in cmd
+        # Metacharacters must be shell-quoted so a hostile tag cannot break out.
+        nasty = _docker_pull_retag_cmd('ghcr.io/x/y:v1;rm')
+        assert "'ghcr.io/x/y:v1;rm'" in nasty
+        assert nasty.count('&&') == 1
