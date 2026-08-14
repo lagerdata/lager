@@ -28,6 +28,20 @@ All notable changes to the Lager platform are documented here. For detailed rele
   either way; only the misreporting stops. A real heartbeat failure outside
   the rebuild window still warns.
 
+  **That warning had a second, independent cause, also fixed here.** The
+  heartbeat picks its threshold from the lock's TTL: with one, it warns once
+  the unrenewed window reaches half the TTL and names the real risk ("has not
+  renewed for 15m of its 30m TTL; the lock will expire if this continues");
+  without one, it falls back to five consecutive failures and blames the box
+  ("the box may be unreachable"). `auto_lock_around_command` passes the TTL.
+  `auto_lock_acquire_for_command` did not — so every command using the
+  imperative variant took the fallback branch, and a five-minute rebuild
+  window tripped it even though the lock had twenty-five minutes of margin
+  left. Suppressing exactly that case is what the TTL threshold was built for;
+  the omission defeated it. Both variants now pass the TTL the lock is
+  actually living under: ours when we took the lock, the existing lock's when
+  we resumed one.
+
 - **`lager update --check` promised a cached build immediately before a
   ten-minute rebuild.** On a box still using the `box/` subdir layout the
   preview printed `Deps: cache valid (no rebuild)` and
