@@ -2,7 +2,7 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
-## [0.37.1] - 2026-08-17
+## [Unreleased]
 
 ### Added
 
@@ -13,14 +13,77 @@ All notable changes to the Lager platform are documented here. For detailed rele
   dispatchable against an existing tag, so images can be backfilled.
 
   **Nothing consumes these images yet.** `lager update` still builds on the box
-  on every path, and this release changes no box behavior at all. The publisher
-  ships first on purpose: it is the half that has to exist before a pull can be
+  on every path, and this changes no box behavior at all. The publisher ships
+  first on purpose: it is the half that has to exist before a pull can be
   tested against anything real, and it is inert with respect to the fleet until
   a client asks for it. Making the GHCR package public is a separate, manual,
   one-time step — until then even a deliberate pull would fail.
 
   amd64 only, matching the x64-only LabJack and nrfutil downloads already
   hardcoded in the Dockerfile. Retention is manual for now.
+
+### Changed
+
+- **Cold box image builds spend less time installing things nothing uses.**
+  Three changes to `box.Dockerfile`, all of them about build time rather than
+  behavior:
+
+  Node and npm now come from the official upstream tarball, verified against
+  its `SHASUMS256.txt` before extraction, instead of Debian's `nodejs npm`
+  meta-packages — which pull in roughly 400 `node-*` packages the box never
+  touches. `start_box.sh` needs npm only to install the packages named in
+  `box_config.npm_packages`, which the tarball provides.
+
+  `cryptography` moves from 38.0.4 to 43.0.3. The old pin has no cp312 wheel,
+  so every cold pip layer compiled it from Rust source; 43.0.3 ships a
+  manylinux wheel for the image's Python. The BluFi cipher, its only consumer
+  in this tree, switches from `algorithms.AES128` to `algorithms.AES` — stable
+  across both versions and byte-identical for BluFi's fixed 16-byte key.
+
+  `flex` and `bison` move into the uldaq layer, the only stage whose
+  `autoreconf` needs them. `ccache` and `ninja-build` are dropped outright:
+  nothing in this repo invokes either, and no build here was wired to use
+  them.
+
+  **A box carrying globally-installed npm packages should be updated once with
+  `--force`.** Node's major version moves from 18 to 20, and the
+  `lager-npm-global` volume holding those packages survives an ordinary image
+  rebuild — only `--force` wipes it. Any package with a compiled native module
+  needs reinstalling under the new ABI.
+
+- **The update progress bar names what the container build is currently
+  doing** — `Building container... [pip install ...]` — instead of holding one
+  unchanging label for the several minutes a cold build takes. Parsed from
+  BuildKit's own step output; `--verbose` is unchanged.
+
+### Fixed
+
+- **`lager update --check` still promised a cached build when the ref it was
+  about to check out changed the image recipe.** This is the second half of the
+  `--check` estimate fix whose flatten-aware half shipped in 0.37.1, and the
+  more common of the two cases. The probe measured the Dockerfile,
+  requirements and box source in the box's *current* working tree — which on a
+  box a long way behind its target still matched `/etc/lager/build-hash`
+  exactly. The preview printed `Estimated: ~90s (cached build)`; the pull then
+  landed a different Dockerfile and the update took the full six minutes.
+
+  `--check` now reads those same build inputs at the target ref, straight out
+  of the box's git object database via `git cat-file` / `git show` — no
+  checkout, no mutation, and one extra SSH round-trip on the `--check` path
+  only. The snippet is composed to emit a byte-identical digest to the
+  working-tree hasher for an identical tree, so the two are comparable by
+  construction rather than by coincidence; tests execute both under `sh`
+  against a fixture repo and assert the digests agree.
+
+  When the target ref can be measured it replaces the working tree as the
+  basis for the whole preview, which also turns the old
+  `unknown until pull (older ref may differ)` guess on rollbacks and branch
+  switches into a measured answer. When it cannot be measured — a sparse
+  checkout, an odd ref — the preview says so rather than falling back to the
+  pre-pull tree and calling the cache valid. A pending flatten still forces a
+  rebuild whatever the target digest says.
+
+## [0.37.1] - 2026-08-17
 
 ### Changed
 
