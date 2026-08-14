@@ -135,8 +135,8 @@ start_section "Round-Trip"
 
 echo "Test 4.1: Add test boxes, export, delete-all, import, verify"
 # Add test boxes
-lager boxes add --name "roundtrip_test_1" --ip "192.168.200.1" --yes >/dev/null 2>&1
-lager boxes add --name "roundtrip_test_2" --ip "192.168.200.2" --yes >/dev/null 2>&1
+lager boxes add --name "roundtrip_test_1" --ip "192.168.200.1" --user testuser --yes >/dev/null 2>&1
+lager boxes add --name "roundtrip_test_2" --ip "192.168.200.2" --user testuser --yes >/dev/null 2>&1
 
 # Export
 ROUNDTRIP_FILE="/tmp/lager_roundtrip_$$.json"
@@ -172,7 +172,7 @@ start_section "Add-All"
 
 echo "Test 5.1: Add-all (auto-discover boxes)"
 # This requires Tailscale -- may fail if not on Tailscale network
-lager boxes add-all --yes 2>&1
+lager boxes add-all --user testuser --yes 2>&1
 # Pass regardless since Tailscale may not be available
 track_test "pass"
 echo ""

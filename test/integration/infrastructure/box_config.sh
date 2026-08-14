@@ -18,6 +18,12 @@
 #
 # Requires SSH access to the box as the 'lagerdata' user.
 #
+# NOTE: the ~50 calls below all use the deprecated `lager box config` spelling
+# (the CLI now prints a deprecation banner on stderr and the command is
+# `lager box-config`). Every one of them fails the day the alias is removed.
+# Migrating them is its own change -- it is a rename across the whole file,
+# and doing it in the same commit as a behavioural fix makes both unreviewable.
+#
 # USAGE:
 #   ./box_config.sh <BOX>
 #
@@ -79,7 +85,10 @@ lager hello --box "$BOX" 2>&1 | grep -qi "online" \
   && track_test "pass" || track_test "fail"
 
 echo "Test 1.4: lager box config show reports no config"
-lager box config show --box "$BOX" 2>&1 | grep -qi "no box_config" \
+# Bounded: the first CI run of this suite hung here for 15 minutes right
+# after the container restart in 1.2 -- `show` never returned. A hang is a
+# FAIL with a visible reason, not a stall that eats the job timeout.
+timeout 60 lager box config show --box "$BOX" 2>&1 | grep -qi "no box_config" \
   && track_test "pass" || track_test "fail"
 
 # Test mount paths. Use fresh paths under /tmp so auto-prep can mkdir/chown
@@ -462,8 +471,20 @@ EOF
 track_test "pass"
 
 echo "Test 5.2: validate exits non-zero"
-lager box config validate --box "$BOX" 2>&1 | grep -qi "cannot be '/'" \
-  && track_test "pass" || track_test "fail"
+# The assertion stays as-is on purpose. validate and apply share one
+# validate() call (box/lager/box_config/config.py _validate_mounts), and this
+# tree's unit tests pin the "cannot be '/'" wording, so a bench box that does
+# not produce it is running box-side code older than main -- which is a real
+# finding, not a reason to loosen the grep. Print what it actually said so the
+# next reader of this log does not have to reproduce it to find out.
+VALIDATE_OUT=$(lager box config validate --box "$BOX" 2>&1)
+if echo "$VALIDATE_OUT" | grep -qi "cannot be '/'"; then
+  track_test "pass"
+else
+  echo "  validate did not report the root-mount error; it said:"
+  echo "$VALIDATE_OUT" | sed 's/^/    /'
+  track_test "fail"
+fi
 
 echo "Test 5.3: apply refuses"
 OUT=$(lager box config apply --box "$BOX" --yes 2>&1)

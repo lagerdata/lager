@@ -1,0 +1,403 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# Weekly execution for bench tests that exist but run nowhere. Of the 38 bash
+# integration suites, nightly CI executes exactly one (jlink_script.sh); the
+# other 37 were syntax-checked and shellchecked but never run, so a real
+# regression in the CLI surface they cover -- argument parsing, exit codes,
+# box-level commands -- surfaced only when a human happened to run one against
+# a bench. This workflow starts working that debt down.
+#
+# WAVE 1 (this file): five of the seven test/integration/infrastructure/
+# suites -- deployment, devenv, nets, box_config and generic. They need a box
+# but NO instruments, so this workflow has none of integration-tests.yml's
+# relay power, relay-net self-heal, or firmware staging, and the bench stays
+# dark for the whole run.
+#
+# The other two are deliberately excluded, each for its own reason recorded
+# beside the suite steps below: boxes_config.sh would print a network
+# inventory into a public log, and python.sh tests a CLI surface that no
+# longer exists. Wave 2 (test/api/ scripts the existing instruments support)
+# is follow-up work and will need the instrument steps when it lands.
+#
+# Ordering inside the run is load-bearing:
+#   - generic.sh runs LAST: it exercises `lager boxes delete-all` against the
+#     runner's own lager config, which can remove this workflow's box
+#     registration; everything after it would fail to resolve the box.
+#   - box_config.sh runs late: it exercises box-config apply including the
+#     container bounce + rollback path, so the box may be briefly degraded.
+#   - A best-effort re-registration step follows the suites either way: these
+#     scripts mutate the RUNNER's persistent lager config by design, and
+#     every bench workflow re-registers its box at start, so damage is
+#     bounded to one run -- but healing it here keeps this run's own tail
+#     steps working too.
+#
+# Weekly, Saturday 14:17 UTC: clear of the nightly's worst case (10:17 UTC
+# start + ~2.5h), off the hour for GitHub's scheduled-queue congestion, and
+# serialized against the other bench workflows by the shared concurrency
+# group below. This is a LEAF workflow (no workflow_call children), so the
+# caller-holds-the-slot deadlock documented in nightly-bench.yml does not
+# apply here.
+#
+# Security: this repo is PUBLIC and the runner drives real hardware, so this
+# workflow deliberately does NOT trigger on `pull_request` -- a fork PR must
+# not be able to execute code on the bench. To bench-test a branch, push it
+# to this repo and workflow_dispatch on that ref.
+#
+# Output surface: several CLI errors print an "Available boxes:" list, so this
+# log carries whatever the RUNNER's own box registry holds. That is safe only
+# because the runner registers exactly one box and its address is a repository
+# secret, which the runner masks. Registering anything else on the runner
+# turns those error paths into a fleet listing in a public log -- keep the
+# runner's registry to the CI box.
+#
+# Notification: a red run files/updates the single `bench-alert` issue via
+# tools/bench_alert.sh. There is deliberately NO recovery job here: closing
+# the alert issue is exclusively the nightly's signal, because a green weekly
+# must never mask a nightly that is still failing.
+
+name: "Bench: Extended"
+
+on:
+  schedule:
+    - cron: "17 14 * * 6"
+  workflow_dispatch:
+    inputs:
+      box_name:
+        description: "Lager box name (overrides vars.LAGER_BOX)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # One physical bench: queue behind nightly/integration, never collide.
+  group: hardware-ci-${{ vars.LAGER_BOX || 'MASTER' }}
+  cancel-in-progress: false
+
+jobs:
+  extended:
+    name: Run infrastructure suites on the bench
+    runs-on: [self-hosted, lager-bench]
+    timeout-minutes: 75
+    env:
+      LAGER_BOX: ${{ inputs.box_name || vars.LAGER_BOX || 'MASTER' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # No job here pushes anything; do not persist the token into
+          # the checkout's config (zizmor: artipacked).
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+
+      - name: Install lager CLI (editable, from this repo)
+        run: pip install -e cli/
+        shell: bash
+
+      - name: Sign in to the box access gateway
+        env:
+          LAGER_AUTH_URL: ${{ vars.LAGER_AUTH_URL }}
+          LAGER_CI_EMAIL: ${{ secrets.LAGER_CI_EMAIL }}
+          LAGER_CI_PASSWORD: ${{ secrets.LAGER_CI_PASSWORD }}
+        run: lager login "$LAGER_AUTH_URL" --email "$LAGER_CI_EMAIL" --password "$LAGER_CI_PASSWORD"
+        shell: bash
+
+      - name: Register lager box
+        run: |
+          lager boxes add \
+            --name "$LAGER_BOX" \
+            --ip "${{ secrets.LAGER_BOX_IP }}" \
+            --user lagerdata \
+            --yes
+        shell: bash
+
+      - name: Set up lager SSH key
+        # Same identity mapping integration-tests.yml uses: box_config.sh and
+        # deployment.sh ssh into the box directly with the default identity.
+        run: |
+          if [ ! -f ~/.ssh/lager_box ]; then
+            ssh-keygen -t ed25519 -f ~/.ssh/lager_box -N "" -C "lager-box-access"
+          fi
+          grep -qF "$(cat ~/.ssh/lager_box.pub)" ~/.ssh/authorized_keys 2>/dev/null || \
+            cat ~/.ssh/lager_box.pub >> ~/.ssh/authorized_keys
+          touch ~/.ssh/config && chmod 600 ~/.ssh/config
+          if ! grep -q "^# lager integration CI box identity" ~/.ssh/config; then
+            {
+              echo "# lager integration CI box identity"
+              echo "Host ${{ secrets.LAGER_BOX_IP }}"
+              echo "  IdentityFile ~/.ssh/lager_box"
+              echo "Host $LAGER_BOX"
+              echo "  HostName ${{ secrets.LAGER_BOX_IP }}"
+              echo "  IdentityFile ~/.ssh/lager_box"
+            } >> ~/.ssh/config
+          fi
+        shell: bash
+
+      - name: Release a still-held box lock from a killed run
+        # The CLI releases its auto-lock three ways (try/finally, atexit, and
+        # a SIGTERM/SIGINT/SIGHUP handler), but a step timeout ends in
+        # SIGKILL, which cannot be caught. The client-side release never
+        # runs, and the box-side TTL becomes the only backstop -- 1800s by
+        # default (cli/box_storage.py _DEFAULT_LOCK_TTL_SECONDS). An expired
+        # lock is reaped automatically and needs no --force; an unexpired one
+        # blocks the next run outright.
+        #
+        # That is a real collision for back-to-back runs -- dispatches during
+        # a debugging session, or a re-run after a timeout, land well inside
+        # 30 minutes. It is NOT a threat to the schedule: the nightly and
+        # this weekly are hours apart, so any leaked lock has long expired.
+        #
+        # Forcing is safe here because the hardware-ci concurrency group
+        # serialises every bench workflow against this box, so a lock still
+        # held when this job starts belongs to a run that is no longer
+        # running. update-regression.yml carries the same call for its own
+        # leak path (a lost release POST rather than a signal).
+        run: lager boxes unlock --box "$LAGER_BOX" --force 2>/dev/null || true
+        shell: bash
+
+      - name: Verify box connectivity
+        # First authenticated contact after a fresh login can fail exactly
+        # once while the gateway records the box<->auth-server link.
+        run: lager hello --box "$LAGER_BOX" || lager hello --box "$LAGER_BOX"
+        shell: bash
+
+      # Each suite is continue-on-error with an id so every suite runs and
+      # the aggregation gate at the end turns any failure into a job failure
+      # -- same pattern as integration-tests.yml, same reasoning.
+      #
+      # Each suite also declares a BASELINE: the number of its checks known to
+      # fail today. tools/bench_suite_gate.sh ratchets two-sided -- more
+      # failures than the baseline is red, fewer prints a notice telling you to
+      # lower it. This is what lets the workflow land green on day one without
+      # softening a single assertion. Every non-zero baseline names the issue
+      # that owns it; a bare number with no issue behind it is softening.
+      #
+      # The suite's own exit status is deliberately dropped (`|| true`): it
+      # carries the same information as the failure count, and reading it
+      # through `tee` is how a gate ends up reporting tee's status. The gate
+      # fails loudly if a suite produces no summary at all, which is what a
+      # crash or a step timeout looks like.
+
+      - name: Suite deployment.sh (box verification, no instruments)
+        id: suite-deployment
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          # The suite defaults to ssh user `lager`; this bench logs in as
+          # `lagerdata`.
+          SSH_USER: lagerdata
+          # Expected clean. Its two failures were a stale expectation: the
+          # suite inspected containers named `controller` and `python`, which
+          # no longer exist -- there is one container, named `lager`. Fixed
+          # rather than baselined.
+          DEPLOYMENT_BASELINE: "0"
+        run: |
+          LOG="$RUNNER_TEMP/deployment.log"
+          bash test/integration/infrastructure/deployment.sh "$LAGER_BOX" 2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh deployment deployment.sh "$DEPLOYMENT_BASELINE" "$LOG"
+        shell: bash
+
+      # python.sh is deliberately NOT wired, for the same reason as
+      # boxes_config.sh: it does not test the CLI we ship. 53 of its checks
+      # invoke `lager python -c "<code>"` for inline execution, and there is
+      # no `-c` option -- the runner reports "Error: No such option '-c'"
+      # and the suite fails 43 of 84. Three of its checks pass `--image`,
+      # which is likewise gone. It needs the rewrite devenv.sh already had,
+      # against the current interface (a script path as the positional
+      # RUNNABLE), and that is its own reviewable change. Baselining 43
+      # failures here would record "calls an option that does not exist" as
+      # the expected state and leave the ratchet watching for a 44th.
+      #
+      # Its other findings stand on their own and are filed as issue #274:
+      # `--timeout` never fires, and a detached launch does not return.
+
+      - name: Stop anything a suite left running on the box
+        # Cheap insurance that survives python.sh being unwired: any suite
+        # that starts work on the box and is then killed mid-step leaves it
+        # behind, and the next suite inherits a busy box -- failures that
+        # belong to no suite and would otherwise be baselined as if they did.
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          # --kill-all, not --kill: --kill takes a process ID.
+          timeout 45 lager python --box "$LAGER_BOX" --kill-all --signal sigkill >/dev/null 2>&1 || true
+          for attempt in $(seq 1 24); do
+            if lager hello --box "$LAGER_BOX" >/dev/null 2>&1; then
+              echo "box responsive on attempt $attempt"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::warning title=Bench Extended::box unresponsive after the python suite"
+        shell: bash
+
+      - name: Suite devenv.sh (local dev environment, runner-side docker)
+        id: suite-devenv
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          # Clean, and expected to stay that way.
+          DEVENV_BASELINE: "0"
+        run: |
+          LOG="$RUNNER_TEMP/devenv.log"
+          bash test/integration/infrastructure/devenv.sh 2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh harness devenv.sh "$DEVENV_BASELINE" "$LOG"
+        shell: bash
+
+      # boxes_config.sh is deliberately NOT wired: its discovery section
+      # inventories every box reachable from the runner's network and prints
+      # the results, and a full network inventory does not belong in a CI
+      # log. It stays runnable by hand; wiring it here needs a CI-safe output
+      # mode for the discovery commands first (counts, not names).
+
+      - name: Suite nets.sh (net add/delete/rename lifecycle)
+        # Its delete-all section is self-skipped in the script; individual
+        # test-net operations only. Even so, the relay-net self-heal in the
+        # instrumented workflows covers any net damage on their next run.
+        id: suite-nets
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          # Clean. It measured 4 failures while python.sh ran ahead of it;
+          # with that suite unwired every check passes. Keep at 0.
+          NETS_BASELINE: "0"
+        run: |
+          LOG="$RUNNER_TEMP/nets.log"
+          bash test/integration/infrastructure/nets.sh "$LAGER_BOX" 2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh harness nets.sh "$NETS_BASELINE" "$LOG"
+        shell: bash
+
+      - name: Suite box_config.sh (box-config apply, bounce + rollback)
+        # Late on purpose: exercises the container bounce path, so the box
+        # may be briefly degraded; nothing after it needs full box health
+        # except generic.sh's CLI-level checks.
+        id: suite-box-config
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          # 6 of 56: the sysctl/cargo apply+clear cluster, the disabled
+          # box_http_server still running, and the box-side validate
+          # wording. Owned by issue #275; lower this as they are fixed.
+          BOX_CONFIG_BASELINE: "6"
+        run: |
+          LOG="$RUNNER_TEMP/box-config.log"
+          bash test/integration/infrastructure/box_config.sh "$LAGER_BOX" 2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh harness box_config.sh "$BOX_CONFIG_BASELINE" "$LOG"
+        shell: bash
+
+      - name: Wait for the box to come back after the config bounce
+        # box_config.sh ends by restarting the container, and generic.sh opens
+        # with `lager hello`. Without this the first two hello checks failed
+        # and the third passed eleven seconds later -- a race this workflow's
+        # own suite ordering creates, which would otherwise be charged to
+        # generic.sh's baseline and hide a real regression behind it.
+        # continue-on-error so a box that never comes back is reported by the
+        # suites themselves rather than as an opaque step failure here.
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          for attempt in $(seq 1 30); do
+            if lager hello --box "$LAGER_BOX" >/dev/null 2>&1; then
+              echo "box responded on attempt $attempt"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::warning title=Bench Extended::box did not respond within 150s after the box-config bounce"
+        shell: bash
+
+      - name: Suite generic.sh (CLI-generic commands; LAST -- see header)
+        id: suite-generic
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          # 5 of 95: the two 50-iteration stress loops, the mixed-command
+          # sequence, and both works-after-errors checks. Single calls and
+          # the 5- and 10-call loops all pass, so this is specifically
+          # sustained repetition. Owned by issue #273; lower this as it
+          # is fixed.
+          GENERIC_BASELINE: "5"
+        run: |
+          LOG="$RUNNER_TEMP/generic.log"
+          bash test/integration/infrastructure/generic.sh "$LAGER_BOX" 2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh harness generic.sh "$GENERIC_BASELINE" "$LOG"
+        shell: bash
+
+      - name: Restore box registration (best effort)
+        # generic.sh exercises `boxes delete-all` against the runner's lager
+        # config; re-register so this run's remaining steps -- and any human
+        # using the runner before the next workflow -- see a sane state.
+        if: always()
+        continue-on-error: true
+        run: |
+          lager boxes add \
+            --name "$LAGER_BOX" \
+            --ip "${{ secrets.LAGER_BOX_IP }}" \
+            --user lagerdata \
+            --yes || true
+        shell: bash
+
+      - name: Fail job if any suite failed
+        # Reads the steps context rather than a hand-kept id list -- adding a
+        # suite needs no edit here. `outcome` is the pre-continue-on-error
+        # result.
+        env:
+          STEPS_JSON: ${{ toJSON(steps) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          steps = json.loads(os.environ["STEPS_JSON"])
+          bad = sorted(k for k, v in steps.items()
+                       if isinstance(v, dict) and v.get("outcome") == "failure")
+          if bad:
+              print("One or more infrastructure suites failed:")
+              for name in bad:
+                  print(f"  {name}")
+              sys.exit(1)
+          print("All infrastructure suites passed.")
+          PY
+        shell: bash
+
+  notify-failure:
+    # Same alert path as the nightly; see the header for why there is no
+    # recovery counterpart here.
+    name: notify (failure)
+    needs: [extended]
+    if: ${{ !cancelled() && needs.extended.result != 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # No job here pushes anything; do not persist the token into
+          # the checkout's config (zizmor: artipacked).
+          persist-credentials: false
+
+      - name: File or update the bench-alert issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RESULT: ${{ needs.extended.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          cat > "$RUNNER_TEMP/alert-body.md" <<EOF
+          Weekly extended bench run did not succeed (${RESULT}): ${RUN_URL}
+
+          These are the infrastructure suites (no instruments involved), so
+          triage starts at box reachability and the auth service, not at
+          instrument power. This issue is closed only by a fully green
+          NIGHTLY run.
+          EOF
+          bash tools/bench_alert.sh alert "Nightly bench is failing" "$RUNNER_TEMP/alert-body.md"
+        shell: bash

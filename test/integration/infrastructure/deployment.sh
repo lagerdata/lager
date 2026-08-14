@@ -13,7 +13,11 @@
 # Example: ./test_deployment.sh <BOX_IP>
 # Example: ./test_deployment.sh my-box
 
-set -e
+# DON'T exit on error - we want to track failures, matching every other suite
+# in this directory. Under `set -e` the first failing run_test aborted the
+# script, so the summary block at the end never ran and a single early failure
+# hid every later result.
+set +e
 
 SSH_USER="${SSH_USER:-lager}"
 
@@ -42,35 +46,31 @@ if [ -z "$1" ]; then
     echo "Example: $0 <BOX_IP>"
     echo ""
     echo "Note: For best results, add the DUT first using:"
-    echo "  lager duts add --name <name> --ip <ip> [--user <username>]"
+    echo "  lager boxes add --name <name> --ip <ip> --user <username> --yes"
     exit 1
 fi
 
 DUT="$1"
 
-# Check if DUT exists in saved list (by name or IP)
-DUT_CHECK=$(lager duts 2>/dev/null | grep "^${DUT}" | head -1)
+# Check if the box exists in the saved registry (by name or IP). This used
+# to read `lager duts`, a registry that no longer exists in the CLI -- every
+# run took the not-found path -- and then blocked on an interactive prompt,
+# which in a non-TTY context reads EOF and exits. The registry is
+# `lager boxes` now, and the not-found case warns and continues, which was
+# the stated intent all along ("don't fail - allow testing with raw IPs").
+DUT_CHECK=$(lager boxes 2>/dev/null | grep "^${DUT}" | head -1)
 if [ -z "$DUT_CHECK" ]; then
     # Try to find by IP
-    DUT_CHECK=$(lager duts 2>/dev/null | awk -v ip="${DUT}" '$2 == ip {print; exit}')
+    DUT_CHECK=$(lager boxes 2>/dev/null | awk -v ip="${DUT}" '$2 == ip {print; exit}')
 fi
 
-# Warn if DUT not found (but don't fail - allow testing with raw IPs)
 if [ -z "$DUT_CHECK" ]; then
-    echo -e "${YELLOW}Warning: DUT '${DUT}' not found in saved DUTs${NC}"
+    echo -e "${YELLOW}Warning: box '${DUT}' not found in saved boxes${NC}"
     echo -e "${YELLOW}Tests may fail if SSH authentication is not configured${NC}"
     echo ""
-    echo "Saved DUTs:"
-    lager duts 2>/dev/null || echo "  (none)"
+    echo "To register it:"
+    echo "  lager boxes add --name ${DUT} --ip <IP_ADDRESS> --user <username> --yes"
     echo ""
-    echo "To add this DUT:"
-    echo "  lager duts add --name ${DUT} --ip <IP_ADDRESS> [--user <username>]"
-    echo ""
-    read -p "Continue anyway? (y/N): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        exit 1
-    fi
 fi
 
 # Print header
@@ -103,11 +103,13 @@ if ! command -v lager &> /dev/null; then
     exit 1
 fi
 
-# Detect DUT username early for test skipping logic
+# Detect DUT username early for test skipping logic. Same registry rename as
+# the check above: `lager boxes` columns are name / ip / user / version /
+# status, so the $3 read below still lands on the user.
 DETECTED_USER=""
-DUT_INFO_EARLY=$(lager duts 2>/dev/null | grep "^${DUT}" | head -1)
+DUT_INFO_EARLY=$(lager boxes 2>/dev/null | grep "^${DUT}" | head -1)
 if [ -z "$DUT_INFO_EARLY" ]; then
-    DUT_INFO_EARLY=$(lager duts 2>/dev/null | awk -v ip="${DUT}" '$2 == ip {print; exit}')
+    DUT_INFO_EARLY=$(lager boxes 2>/dev/null | awk -v ip="${DUT}" '$2 == ip {print; exit}')
 fi
 if [ -n "$DUT_INFO_EARLY" ]; then
     DETECTED_USER=$(echo "$DUT_INFO_EARLY" | awk '{print $3}')
@@ -238,7 +240,7 @@ run_test_with_output "lager hello --box ${DUT}" "timeout 30 lager hello --box ${
 print_test_header "2. Configuration Management Tests"
 
 run_test "lager defaults --help" "lager defaults --help"
-run_test "lager duts --help" "lager duts --help"
+run_test "lager dut --help" "lager dut --help"
 
 # Note: Some lager commands (like instruments, nets) may not work with custom usernames
 # They try to connect as the default SSH user regardless of box configuration
@@ -342,17 +344,18 @@ run_test "lager ssh --help" "lager ssh --help"
 # Test SSH command execution (non-interactive) - use direct SSH since lager ssh doesn't support --command
 # First resolve DUT to IP and username for SSH
 # Handle both old format (just IP) and new format (with user field)
-# lager duts output format:
+# lager boxes output format:
 #   name          ip                user
 #   <YOUR-BOX>    <BOX_IP>     -
 #   test-deploy   <BOX_IP>    test-deploy
 
-# Try to find DUT by name first
-DUT_INFO=$(lager duts 2>/dev/null | grep "^${DUT}" | head -1)
+# Try to find the box by name first (`lager boxes`; see the registry note
+# at the top of the script)
+DUT_INFO=$(lager boxes 2>/dev/null | grep "^${DUT}" | head -1)
 
 # If not found by name, try to find by IP address (2nd column match)
 if [ -z "$DUT_INFO" ]; then
-    DUT_INFO=$(lager duts 2>/dev/null | awk -v ip="${DUT}" '$2 == ip {print; exit}')
+    DUT_INFO=$(lager boxes 2>/dev/null | awk -v ip="${DUT}" '$2 == ip {print; exit}')
 fi
 
 if [ -n "$DUT_INFO" ]; then
@@ -444,9 +447,11 @@ print_test_header "10. Container Health Tests"
 # Check if all expected containers are running (use direct SSH)
 run_test_with_output "Docker containers running" "timeout 30 ssh ${DUT_USER}@${DUT_IP} 'docker ps --filter name=controller --filter name=python --format \"{{.Names}}\"'"
 
-# Check container health (use direct SSH)
-run_test_with_output "Controller container health" "timeout 30 ssh ${DUT_USER}@${DUT_IP} 'docker inspect controller --format \"{{.State.Status}}\"'"
-run_test_with_output "Python container health" "timeout 30 ssh ${DUT_USER}@${DUT_IP} 'docker inspect python --format \"{{.State.Status}}\"'"
+# Check container health (use direct SSH). One container, named `lager`
+# (box/start_box.sh). This used to inspect `controller` and `python`, which
+# no longer exist -- so both checks failed on every box, reporting a stale
+# expectation as if it were a box fault.
+run_test_with_output "Lager container health" "timeout 30 ssh ${DUT_USER}@${DUT_IP} 'docker inspect lager --format \"{{.State.Status}}\"'"
 
 # =============================================================================
 # Test Section 11: Box Services
