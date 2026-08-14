@@ -1,0 +1,42 @@
+---
+title: "Version 0.37.0"
+description: "August 14, 2026"
+---
+
+## <u>Removed</u>
+
+- The `lager-mcp` console script. It targeted Lager Box code that the `lager-cli` package has never shipped, so running it produced an immediate `ModuleNotFoundError` on every install — and installing the `mcp` extra did not help, because that extra supplies the MCP SDK rather than the Lager Box package. The script was never how the MCP server runs: the Lager Box starts it in-container and serves it on port 8100, which is what the MCP documentation describes and what clients connect to. Installs and updates previously created a `~/.local/bin` symlink to the script, so a Lager Box deployed from an older version carries a link that cannot work. `lager install` now removes that link instead of creating it, and those Lager Boxes self-heal on the next deploy.
+
+- The vendored `pyelftools` copy, whose ELF and DWARF parsing could not be imported in any environment. It had been copied in without one of its subpackages, so 34 of its 45 modules raised `ModuleNotFoundError` on installs and development checkouts alike — including every module that actually reads an ELF file. Its only consumer was a `lager debug gdb` command that was never registered and so could never be invoked; both are removed. This deletes roughly 13,000 lines and changes no behavior that worked. `PyCRC` is now the only third-party code bundled with the CLI, and `NOTICE` reflects that.
+
+## <u>Bug Fixes</u>
+
+- `lager terminal` asked users to install one of its own dependencies by hand. `prompt_toolkit` is imported by the terminal UI but was never declared as a requirement, so on a clean install the command printed `Install with: pip install prompt_toolkit rich` and showed help instead of launching. It is now declared. A new packaging check installs the built package into a clean environment and imports every CLI module, so an undeclared import fails the build rather than reaching users.
+
+- Two CLI helper modules could not be imported from an installed copy of the CLI. Both imported Lager Box code that the CLI package does not ship, so both raised `ModuleNotFoundError` anywhere the Lager Box source was not already on the path — which is every clean install. Lager Box behavior was never affected, since these files are uploaded to the Lager Box and run there. Both now defer the import to the point of use.
+
+- BluFi provisioning no longer depends on a key-agreement primitive that current `cryptography` releases refuse outright. Release 50.0 drops finite-field Diffie-Hellman, and on it the group BluFi uses fails at parameter construction — so key generation, and therefore provisioning, could not complete at all. The exchange now uses direct modular exponentiation over the same published parameters, which works on both the pinned runtime version and 50.0. The wire format is unchanged and is pinned by known-answer tests, including the padding rule behind an intermittent failure that would otherwise appear in roughly one exchange in 256.
+
+- A second BluFi security negotiation on one client could derive a key from two peer public keys joined together, because the receive buffer was not cleared with the rest of the security state. Not reachable in current use, where each request builds a fresh client, but it failed silently rather than loudly.
+
+## <u>Improvements</u>
+
+- Interactive USB hub commands are fast again — roughly 150 ms, rather than the 7 to 9 seconds each had been costing. A change in the 0.32 series moved the Acroname driver to connecting and disconnecting around every operation, and the cache meant to keep repeat connections scan-free had three paths where it silently ran a full USB scan anyway. Warm connections are now genuinely scan-free, a short idle window lets a burst of commands share one connection, and every hub cycle logs a per-phase timing breakdown that escalates in the log when a cycle runs long — so a slow connection path is visible from a Lager Box log rather than invisible. All existing timeouts and fail-fast behavior are preserved, and the 1 Hz state poll cannot hold a hub claimed.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.37.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.37.0/)

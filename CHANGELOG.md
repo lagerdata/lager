@@ -134,15 +134,21 @@ All notable changes to the Lager platform are documented here. For detailed rele
   rewrite would have been skipped on every box. All three call sites now use
   the constant, and a test fails on any new hardcoded copy.
 
+## [0.37.0] - 2026-08-14
+
 ### Removed
 
-- **The vendored `pyelftools` tree, which could not be imported in any
-  environment.** `cli/elftools/` was copied in without its
-  `construct/lib/` subpackage, so all 30 of its modules raised
+- **The vendored `pyelftools` tree, whose ELF and DWARF parsing could not be
+  imported in any environment.** `cli/elftools/` was copied in without its
+  `construct/lib/` subpackage, so 34 of the tree's 45 modules raised
   `ModuleNotFoundError` everywhere -- pip installs and dev checkouts alike,
-  since the missing directory was absent from the repo itself. Nothing
-  detected it: the tree was excluded from ruff and from coverage, it had no
-  tests, and `compileall` checks syntax without resolving imports.
+  since the missing directory was absent from the repo itself. That covers
+  every module that parses anything: `elf/elffile.py`, `elf/structs.py`,
+  `dwarf/dwarfinfo.py` and the whole `construct/` package. The eleven that
+  still imported are constants tables and compatibility shims, which parse
+  nothing on their own. Nothing detected any of it: the tree was excluded
+  from ruff and from coverage, it had no tests, and `compileall` checks
+  syntax without resolving imports.
 
   Its only consumer was `cli/commands/development/debug/gdb.py`, which was
   itself unreachable -- `gdb` appears in neither `list_commands` nor
@@ -154,7 +160,10 @@ All notable changes to the Lager platform are documented here. For detailed rele
   copy was pyelftools 0.27 with no local modifications and no DWARF5 line
   program support, so restoring the missing subpackage would have revived a
   path that modern toolchains break anyway. Should ELF or DWARF parsing be
-  needed again, depend on `pyelftools` from PyPI. Closes #240.
+  needed again, depend on `pyelftools` from PyPI. `NOTICE` drops the
+  `pyelftools` and `construct` attributions accordingly, leaving `PyCRC` in
+  `cli/vendor/PyCRC/` as the only third-party code bundled with the CLI.
+  Closes #240.
 
 - **The `lager-mcp` console script, which exited immediately on every pip
   install.** It targeted `lager.mcp.server` -- box-side code under `box/`
@@ -227,6 +236,21 @@ All notable changes to the Lager platform are documented here. For detailed rele
   BrainStem behavior itself is not testable in CI; the timing log is what
   verifies the win on a real bench.
 
+- **`lager terminal` told users to install one of its own dependencies by
+  hand.** `prompt_toolkit` is imported at module scope by
+  `cli/terminal/ui/repl.py`, `completer.py` and `themes.py`, but it was never
+  in `install_requires`. `_launch_terminal()` catches the resulting
+  `ImportError` and prints `Install with: pip install prompt_toolkit rich`
+  before falling back to help output, so on a clean install the command
+  degraded into a manual instruction rather than a traceback -- which is also
+  why it survived this long. It is now declared as
+  `prompt_toolkit >= 3.0, < 4`.
+
+  The packaging gate added alongside it installs the built wheel into a clean
+  venv and imports every `cli` module against
+  `tools/packaging_import_baseline.txt`, so an undeclared import fails CI
+  instead of reaching users.
+
 - **Two `cli/impl` modules could not be imported from a pip-installed CLI.**
   `cli/impl/box_config.py` and `cli/impl/power/enable_disable.py` imported
   `lager.*` at module scope. That package lives under `box/` and is not in the
@@ -248,7 +272,6 @@ All notable changes to the Lager platform are documented here. For detailed rele
   are deleted from `tools/packaging_import_baseline.txt`, and because that
   baseline is two-sided, the gate now fails if either module regresses *or* if
   the entries were left behind. Closes #241.
-
 
 - **The BluFi key exchange no longer depends on a key-agreement primitive that
   newer `cryptography` releases reject outright.** cryptography 50.0 deprecates
