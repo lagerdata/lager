@@ -1,0 +1,124 @@
+# Copyright 2024-2026 Lager Data
+# SPDX-License-Identifier: Apache-2.0
+#
+# Builds the box agent image (box/lager/docker/box.Dockerfile) and pushes it
+# to GHCR, so that a `lager update` can eventually `docker pull` a release
+# instead of spending ten minutes building it on the box.
+#
+# NOTHING CONSUMES THIS IMAGE YET. `lager update` still builds locally on
+# every path. This half ships first deliberately: it is inert with respect to
+# the fleet, and it is the half that has to exist before the client half can
+# be tested at all -- there is no way to prove a pull works until real images
+# are on the registry. The client side is tracked separately.
+#
+# Triggers on every v* tag — the same cut that release-validation.yml proves
+# for the PyPI wheel. Branches and main are deliberately not published (cost,
+# plus clarity about what is on GHCR); a box tracking those will always have
+# to build.
+#
+# Image refs:
+#   ghcr.io/lagerdata/lager-box:vX.Y.Z
+#   ghcr.io/lagerdata/lager-box:X.Y.Z   (semver without the leading v)
+#
+# Visibility: the package must be public before a box could pull it
+# anonymously. Set that once in the GitHub UI (Packages → lager-box →
+# Package settings → Change visibility) after the first successful publish;
+# subsequent pushes inherit it.
+#
+# Built linux/amd64 only, matching the x64-only LabJack and nrfutil
+# downloads already hardcoded in box.Dockerfile. Any client that later pulls
+# this must pass an explicit --platform so an arm64 box misses cleanly and
+# builds instead of tagging an unrunnable image.
+#
+# Retention is manual for now: delete old versions from the GHCR UI / API
+# when storage becomes a problem. Automating that is a follow-up.
+
+name: "Release: Publish Box Image"
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to rebuild/push (e.g. v0.36.0)'
+        required: true
+        type: string
+
+# packages:write is required to push to GHCR; contents:read for checkout.
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish-box-image:
+    name: publish-box-image
+    runs-on: ubuntu-latest
+    # Cold box builds are 10–15+ minutes; leave headroom for registry push.
+    timeout-minutes: 90
+    env:
+      IMAGE_NAME: ghcr.io/lagerdata/lager-box
+    steps:
+      - name: Resolve tag
+        id: tag
+        # Both expansions come in through env rather than being interpolated
+        # into the script text: `inputs.tag` is dispatch-time attacker-
+        # controllable, and a `${{ }}` in a run block is substituted before
+        # the shell ever sees it, so a crafted value would execute rather
+        # than compare (zizmor: template-injection). The `case` below still
+        # rejects anything that is not vX.Y.Z.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          case "$tag" in
+            v*) ;;
+            *) echo "tag must look like vX.Y.Z (got: $tag)" >&2; exit 1 ;;
+          esac
+          ver="${tag#v}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+        shell: bash
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+          # build-push needs no git credentials after checkout.
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: box/lager
+          file: box/lager/docker/box.Dockerfile
+          push: true
+          # Current Dockerfile downloads LabJack x64 installers; amd64 only.
+          platforms: linux/amd64
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }}
+            ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}
+          # GitHub Actions cache for layer reuse across rebuilds of the same
+          # Dockerfile; does not affect what boxes pull.
+          cache-from: type=gha,scope=lager-box
+          cache-to: type=gha,mode=max,scope=lager-box
+          # Provenance/SBOM off for now — keeps the manifest a plain image
+          # index that older box dockers can pull without attestation
+          # quirks. Revisit when boxes are uniformly on Docker >= 24.
+          provenance: false
+          sbom: false

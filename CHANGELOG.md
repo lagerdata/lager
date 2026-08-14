@@ -4,6 +4,24 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ## [0.37.1] - 2026-08-17
 
+### Added
+
+- **Release tags now publish a pre-built box image to GHCR.** A new
+  `Release: Publish Box Image` workflow (`.github/workflows/box-image-publish.yml`)
+  fires on every `v*` tag, builds `box/lager/docker/box.Dockerfile`, and pushes
+  `ghcr.io/lagerdata/lager-box:vX.Y.Z` (plus a bare `:X.Y.Z` alias). It is also
+  dispatchable against an existing tag, so images can be backfilled.
+
+  **Nothing consumes these images yet.** `lager update` still builds on the box
+  on every path, and this release changes no box behavior at all. The publisher
+  ships first on purpose: it is the half that has to exist before a pull can be
+  tested against anything real, and it is inert with respect to the fleet until
+  a client asks for it. Making the GHCR package public is a separate, manual,
+  one-time step — until then even a deliberate pull would fail.
+
+  amd64 only, matching the x64-only LabJack and nrfutil downloads already
+  hardcoded in the Dockerfile. Retention is manual for now.
+
 ### Changed
 
 - **Lager's sudoers files now say on the box that Lager rewrites them.** Lager
