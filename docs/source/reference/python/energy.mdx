@@ -17,6 +17,7 @@ from lager import Net, NetType
 |--------|-------------|
 | `read_energy(duration)` | Integrate energy and charge over `duration` seconds |
 | `read_stats(duration)` | Compute mean/min/max/std for current, voltage, and power |
+| `close()` | Release instrument resources; a no-op on backends that need no teardown |
 
 ## Method Reference
 

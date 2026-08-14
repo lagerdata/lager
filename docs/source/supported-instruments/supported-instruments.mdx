@@ -187,8 +187,10 @@ scripts and CI pipelines.
 |---|---|---|
 | SEGGER | J-Link | `lager debug` |
 | SEGGER | J-Link Plus | `lager debug` |
+| SEGGER | J-Link Base Compact | `lager debug` |
+| SEGGER | J-Link Flasher Pro | `lager debug` |
 | SEGGER | Flasher ARM | `lager debug` |
-| STMicroelectronics | ST-Link/V2, V2-1, V3 | `lager debug` |
+| STMicroelectronics | ST-Link/V2, V2-1, V3 (including V3 Mini and V3 2VCP) | `lager debug` |
 | Raspberry Pi | Debug Probe (RP2040 / Picoprobe, CMSIS-DAP) | `lager debug` |
 | FTDI | FT232H (e.g. C232HM cable, Adafruit FT232H breakout) | `lager debug` |
 | FTDI | FT2232H (e.g. Olimex ARM-USB-OCD-H) | `lager debug` |
@@ -244,6 +246,7 @@ scripts and CI pipelines.
 |---|---|---|
 | Prolific | PL2303 | `lager uart` |
 | Silicon Labs | CP210x | `lager uart` |
+| FTDI | FT232R | `lager uart` |
 | Espressif | ESP32 JTAG Serial | `lager uart` |
 
 **Enables:**
@@ -256,7 +259,6 @@ scripts and CI pipelines.
 | Protocol | Control Command | Capabilities |
 |---|---|---|
 | Bluetooth Low Energy (BLE) | `lager ble` | Scan, connect, disconnect, service discovery |
-| WiFi | `lager wifi` | Scan, connect, disconnect, status |
 
 **Enables:**
 - Wireless device testing

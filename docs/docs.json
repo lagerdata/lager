@@ -101,7 +101,6 @@
               "source/reference/cli/usb",
               "source/reference/cli/ble",
               "source/reference/cli/blufi",
-              "source/reference/cli/wifi",
               "source/reference/cli/router"
             ]
           },
@@ -173,7 +172,8 @@
               "source/reference/python/uart",
               "source/reference/python/serial",
               "source/reference/python/ble",
-              "source/reference/python/wifi"
+              "source/reference/python/wifi",
+              "source/reference/python/router"
             ]
           },
           {
