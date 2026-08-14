@@ -20,22 +20,30 @@ from .usb_net import (
     HUB_OPEN_FAILED,
     HUB_OP_TIMEOUT_S,
     HUB_SERIAL_MISMATCH,
+    HUB_SESSION_IDLE_S,
     HUB_UNREACHABLE,
     USBNet,
+    HubOperationTimeout,
+    HubSessionPool,
     LibraryMissingError,
     DeviceNotFoundError,
     PortStateError,
-    hub_access,
     run_hub_op,
 )
 
 # BrainStem/USB access to a hub is EXCLUSIVE, and the hub is driven from several
 # box processes — box_http_server (the `lager usb` path), the MCP server, and
 # each `lager python` test (its own subprocess). Serialise their access with the
-# shared cross-process device lock (fcntl.flock, shared /tmp) and NEVER hold a
-# hub connected between operations, so no process pins it open and blocks the
-# others. Mirrors the YKUSH driver; see ykush.py.
+# shared cross-process device lock (fcntl.flock, shared /tmp) and never hold a
+# hub connected between operations beyond the bounded session idle window
+# (``HUB_SESSION_IDLE_S``), so no process pins it open and blocks the others
+# indefinitely. See ``usb_net.HubSessionPool``.
 _LOCK_TIMEOUT_S = 10.0
+
+# Above this, a completed cycle logs at INFO instead of DEBUG: a healthy warm
+# cycle is well under a second, so two seconds means the open path is paying
+# discovery (or worse) and the per-phase breakdown is worth surfacing.
+_SLOW_CYCLE_INFO_S = 2.0
 
 # Acroname Inc. One physical hub enumerates under MORE THAN ONE product id (the
 # control endpoint and the hub silicon are separate USB devices), and the hub
@@ -141,34 +149,42 @@ class AcronameUSBNet(USBNet):
     """USBNet driver for Acroname STEM hubs (0-based port numbers).
 
     Each net binds the *specific* hub named by its address serial, so a box
-    with more than one Acroname hub routes every net to the right hardware. A
-    fresh connection is opened per operation and disconnected immediately after
-    (under a cross-process lock), so the hub is never left claimed — which would
-    otherwise block another process (e.g. a `lager python` test) from opening it.
+    with more than one Acroname hub routes every net to the right hardware.
+    Operations run under a cross-process lock; after a one-shot operation the
+    connection is kept open for a short idle window (``HUB_SESSION_IDLE_S``)
+    so a burst of interactive commands pays one open, then disconnected — the
+    hub is never claimed indefinitely, which would block another process
+    (e.g. a `lager python` test) from opening it.
 
-    To keep each open cheap, DISCOVERY metadata (the hub's link Spec and the
-    hub class that bound it) is cached per physical hub — never the live
-    connection. A cached open is a direct ``connectFromSpec`` with no USB
-    discovery scan; a stale cache entry (hub re-enumerated, unplugged) fails
-    the connect, is invalidated, and the full discovery path runs again.
+    To keep each fresh open cheap, DISCOVERY metadata (the hub's link Spec and
+    the hub class that bound it) is cached per physical hub. A cached open is a
+    direct ``connectFromSpec`` with no USB discovery scan; a stale cache entry
+    (hub re-enumerated, unplugged) fails the connect, is invalidated, and the
+    full discovery path runs again.
     """
 
-    # This driver holds no USB handle between calls: `_with_hub` opens,
-    # operates and disconnects every time, and `_conn_cache` stores discovery
-    # metadata rather than a connection. So a re-enumeration has nothing here to
-    # orphan, and the service self-restart that repairs an orphaned context
-    # cannot repair anything on this path — it would only drop every other
-    # in-flight box operation. Measured on a two-hub bench: a hub that would not
-    # open triggered a restart, and the respawned process, with a brand-new
-    # libusb context, failed identically 37s later.
-    holds_usb_context_between_ops = False
+    # This driver DOES hold a USB handle between calls, for up to the session
+    # idle window after an operation. A re-enumeration inside that window can
+    # orphan the held handle; the next operation discards it and retries on a
+    # fresh open, but if BrainStem's disconnect of an orphaned handle leaves a
+    # partial claim in this process's USB context (observed on some SDK
+    # builds), a service self-restart is the one recovery that clears it. The
+    # sysfs gate and cooldown in util/self_restart.py bound the cost of a
+    # restart that turns out not to help.
+    holds_usb_context_between_ops = True
+
+    # Per-process bounded session reuse (see usb_net.HubSessionPool). Class
+    # level so every net on a hub — and every request's fresh controller
+    # instance — shares one pool, exactly like _conn_cache.
+    _session_pool = HubSessionPool(idle_s=HUB_SESSION_IDLE_S)
 
     _brainstem = None         # cached vendor MODULE (an import, not a handle)
     _Result = None            # brainstem.result.Result alias
     # Per-hub discovery cache: lock key -> {"cls": hub class, "spec": link
-    # Spec or None}. Metadata only — caching a live handle would pin the
-    # hub's exclusive USB claim and block other processes (the bug fixed by
-    # open/operate/close per op).
+    # Spec or None}. Metadata only, and unbounded in time — live handles are
+    # never cached HERE, because an unbounded live handle pins the hub's
+    # exclusive USB claim and blocks other processes. Bounded live reuse is
+    # the session pool's job (_session_pool), which owns the idle window.
     _conn_cache: dict = {}
 
     # ------------------------------------------------------------------ #
@@ -223,6 +239,9 @@ class AcronameUSBNet(USBNet):
         net_info = net_info or {}
         self.address = net_info.get("address")
         self._serial, self._pid = self._parse_address(self.address)
+        # Which path the most recent _open_hub took, for the cycle log.
+        # None means no open ran (or a test stubbed _open_hub out).
+        self._last_open_path = None
 
     # ------------------------------------------------------------------ #
     # cross-process lock + open/operate/close  (never cache a live hub)
@@ -304,8 +323,15 @@ class AcronameUSBNet(USBNet):
             # No address to match against: only safe when exactly one hub.
             diag["spec_match"] = "no address serial to match"
             return specs[0] if len(specs) == 1 else None
+        # Compare NORMALISED serials, not raw values. The address parses to an
+        # int; what the SDK puts on spec.serial_number is the SDK's business
+        # (int on the builds we test, but _fmt_serial has always allowed for
+        # others). A raw == between mismatched types fails silently, and the
+        # cost of that silence is every operation paying full discovery while
+        # the log shows a healthy scan.
+        want = self._norm_serial(self._serial)
         for spec in specs:
-            if getattr(spec, "serial_number", None) == self._serial:
+            if self._norm_serial(getattr(spec, "serial_number", None)) == want:
                 diag["spec_match"] = True
                 return spec
         diag["spec_match"] = False
@@ -315,10 +341,15 @@ class AcronameUSBNet(USBNet):
         """Connect one candidate hub object, preferring the scan-free
         ``connectFromSpec`` path.
 
-        Returns ``(ok, detail)``. The detail carries the vendor return code or
-        the exception text so a failed open can say WHICH step refused and with
-        what code; previously both were discarded and every failure mode
-        collapsed into the same bare "no hub detected".
+        Returns ``(ok, how, detail)``. ``how`` is ``"spec"`` for a scan-free
+        ``connectFromSpec`` and ``"scan"`` for a ``discoverAndConnect`` — the
+        distinction the timing log needs, because a cache hit that quietly
+        falls into ``discoverAndConnect`` (no spec cached, or an SDK without
+        ``connectFromSpec``) pays a full USB discovery while looking healthy.
+        The detail carries the vendor return code or the exception text so a
+        failed open can say WHICH step refused and with what code; previously
+        both were discarded and every failure mode collapsed into the same
+        bare "no hub detected".
         """
         if spec_obj is not None and hasattr(candidate, "connectFromSpec"):
             try:
@@ -326,8 +357,9 @@ class AcronameUSBNet(USBNet):
             except Exception as e:
                 # A spec that no longer connects is stale (re-enumeration);
                 # let the caller fall back to full discovery.
-                return False, f"connectFromSpec {type(e).__name__}: {e}"
-            return rc == self._Result.NO_ERROR, f"connectFromSpec rc={rc}"
+                return False, "spec", f"connectFromSpec {type(e).__name__}: {e}"
+            return (rc == self._Result.NO_ERROR, "spec",
+                    f"connectFromSpec rc={rc}")
         # Deliberately NOT wrapped: a raising discoverAndConnect already
         # propagates with its own type and message, which the dispatcher logs.
         # Catching it here would convert it into a DeviceNotFoundError and
@@ -336,7 +368,8 @@ class AcronameUSBNet(USBNet):
             rc = candidate.discoverAndConnect(self._transport(), self._serial)
         else:
             rc = candidate.discoverAndConnect(self._transport())
-        return rc == self._Result.NO_ERROR, f"discoverAndConnect rc={rc}"
+        return (rc == self._Result.NO_ERROR, "scan",
+                f"discoverAndConnect rc={rc}")
 
     def _open_hub(self):
         """Connect THIS net's hub. Never caches the connection — the caller
@@ -346,8 +379,21 @@ class AcronameUSBNet(USBNet):
         Spec) so the open is a direct connect with no USB discovery scan.
         Slow path (first call, or stale cache): one discovery scan for the
         Spec, then the class-ordered connect loop; the winner is cached.
+
+        Records which path the open actually took on ``self._last_open_path``
+        for the cycle timing log:
+
+        * ``cache-spec``  — cache hit, scan-free ``connectFromSpec``.
+        * ``cache-scan``  — cache hit, but the entry has no usable spec so the
+          "hit" still ran a full ``discoverAndConnect`` scan. This shape used
+          to be indistinguishable from the fast path; it is the silent cost
+          this label exists to expose.
+        * ``discovery``   — cold cache, full scan + connect loop.
+        * ``discovery-after-stale-spec`` — cache hit failed to connect, entry
+          invalidated, full discovery ran.
         """
         self._require_library()
+        self._last_open_path = None
         key = self._lock_key()
         diag = {
             "cache": "miss",
@@ -360,12 +406,16 @@ class AcronameUSBNet(USBNet):
         }
 
         cached = AcronameUSBNet._conn_cache.get(key)
+        stale_cache = False
         if cached is not None:
             candidate = cached["cls"]()
-            ok, detail = self._try_connect(candidate, cached["spec"])
+            ok, how, detail = self._try_connect(candidate, cached["spec"])
             if ok:
+                self._last_open_path = (
+                    "cache-spec" if how == "spec" else "cache-scan")
                 return candidate
             diag["cache"] = f"hit ({cached['cls'].__name__}), {detail}"
+            stale_cache = True
             # Failed connectFromSpec can still leave a partial USB claim on
             # some BrainStem builds — always release before rediscovering.
             self._close_hub(candidate)
@@ -377,16 +427,19 @@ class AcronameUSBNet(USBNet):
         # to the original per-class discoverAndConnect loop.
         attempts = [spec_obj, None] if spec_obj is not None else [None]
         for attempt_spec in attempts:
-            how = "spec" if attempt_spec is not None else "discover"
+            label = "spec" if attempt_spec is not None else "discover"
             for cls in self._ordered_classes():
                 candidate = cls()
-                ok, detail = self._try_connect(candidate, attempt_spec)
+                ok, _how, detail = self._try_connect(candidate, attempt_spec)
                 if ok:
                     AcronameUSBNet._conn_cache[key] = {
                         "cls": cls, "spec": attempt_spec,
                     }
+                    self._last_open_path = (
+                        "discovery-after-stale-spec" if stale_cache
+                        else "discovery")
                     return candidate
-                diag["attempts"].append(f"{cls.__name__}/{how} {detail}")
+                diag["attempts"].append(f"{cls.__name__}/{label} {detail}")
                 self._close_hub(candidate)
 
         # Everything refused. Say what was tried, and cross-check the bus: the
@@ -506,15 +559,8 @@ class AcronameUSBNet(USBNet):
         except Exception:
             pass
 
-    def _with_hub(self, fn, *, retry=True, timeout=None):
-        """Serialise across threads and processes, open a fresh hub connection,
-        run ``fn(hub)``, and always disconnect so the hub is never left claimed.
-
-        The whole cycle runs under a deadline, not just ``fn``: the open is the
-        part most likely to hang. ``discoverAndConnect``/``connectFromSpec``
-        are native BrainStem calls that block indefinitely against a hub whose
-        USB link is wedged, and one of those used to take out every later USB
-        command in the process.
+    def _open_for(self, claim, *, retry, phases):
+        """Open this net's hub for ``claim``, with the evidence-gated retry.
 
         Retries the OPEN once when — and only when — the bus says our serial is
         there but discovery did not return it. That is the shape of a hub caught
@@ -535,51 +581,148 @@ class AcronameUSBNet(USBNet):
           own timeout and are where a lost race actually costs a person a
           re-typed command.
 
-        BOTH attempts run inside the ONE ``run_hub_op`` deadline, not around it.
-        Retrying outside would hand each attempt its own ``HUB_OP_TIMEOUT_S``,
-        so a hub that hangs on open could hold a caller for twice the bound the
-        CLI is waiting on — turning the box's structured 504 into a transport
-        timeout, which is the failure this deadline exists to prevent.
-
-        The retry also stays inside ``hub_access``: dropping the lock between
-        attempts would let another process open the hub in the gap, and the
-        second attempt would then fail for a different reason than the first.
+        Runs inside the caller's ``run_hub_op`` deadline and with both locks
+        held (see ``_with_hub``): retrying outside the deadline would hand each
+        attempt its own ``HUB_OP_TIMEOUT_S``, and dropping the lock between
+        attempts would let another process open the hub in the gap, making the
+        second attempt fail for a different reason than the first.
         """
-        def _session():
-            hub = None
+        t0 = time.monotonic()
+        try:
             try:
-                try:
-                    hub = self._open_hub()
-                except DeviceNotFoundError as first:
-                    if not (retry and first.classification == HUB_UNREACHABLE):
-                        raise
-                    # The cached spec names an enumeration that is gone; drop it
-                    # so the retry pays for a full rediscovery rather than
-                    # repeating the same stale connect.
-                    AcronameUSBNet._conn_cache.pop(self._lock_key(), None)
-                    logger.info(
-                        "Acroname %s: serial is on the bus but discovery missed "
-                        "it; retrying the open once after %.1fs",
-                        self._lock_key(), _OPEN_RETRY_SETTLE_S,
-                    )
-                    time.sleep(_OPEN_RETRY_SETTLE_S)
-                    hub = self._open_hub()  # a second failure propagates
-                return fn(hub)
-            finally:
-                self._close_hub(hub)
+                hub = self._open_hub()
+            except DeviceNotFoundError as first:
+                if not (retry and first.classification == HUB_UNREACHABLE):
+                    raise
+                # The cached spec names an enumeration that is gone; drop it
+                # so the retry pays for a full rediscovery rather than
+                # repeating the same stale connect.
+                AcronameUSBNet._conn_cache.pop(self._lock_key(), None)
+                logger.info(
+                    "Acroname %s: serial is on the bus but discovery missed "
+                    "it; retrying the open once after %.1fs",
+                    self._lock_key(), _OPEN_RETRY_SETTLE_S,
+                )
+                time.sleep(_OPEN_RETRY_SETTLE_S)
+                hub = self._open_hub()  # a second failure propagates
+        finally:
+            phases["open"] = time.monotonic() - t0
+        claim.adopt(hub, self._close_hub)
+        return hub
 
+    def _log_cycle(self, what, key, phases, path, outcome, held):
+        """One line per completed ``_with_hub`` cycle, success or failure,
+        with the per-phase cost in ms. DEBUG normally; INFO once the total
+        crosses ``_SLOW_CYCLE_INFO_S``, because a slow cycle's breakdown —
+        above all which OPEN path ran — is the evidence that says whether the
+        time went to lock contention, discovery, or the operation itself."""
+        total = sum(phases.values())
+        ms = {k: int(phases.get(k, 0.0) * 1000)
+              for k in ("lock", "open", "op", "close")}
+        level = logging.INFO if total >= _SLOW_CYCLE_INFO_S else logging.DEBUG
+        logger.log(
+            level,
+            "Acroname %s: %s cycle %dms (lock %dms, open %dms [%s], "
+            "op %dms, close %s) -> %s",
+            key, what, int(total * 1000), ms["lock"], ms["open"],
+            path or "none", ms["op"],
+            "held" if held else f"{ms['close']}ms", outcome,
+        )
+
+    def _with_hub(self, fn, *, retry=True, timeout=None, hold=False,
+                  what="op"):
+        """Serialise across threads and processes, run ``fn(hub)`` against an
+        open hub, and bound how long the hub stays claimed afterwards.
+
+        The whole open→operate cycle runs under one ``run_hub_op`` deadline,
+        not just ``fn``: the open is the part most likely to hang.
+        ``discoverAndConnect``/``connectFromSpec`` are native BrainStem calls
+        that block indefinitely against a hub whose USB link is wedged, and one
+        of those used to take out every later USB command in the process.
+
+        ``hold=True`` (the one-shot user actions — enable/disable/toggle/
+        state) parks the connection and the cross-process lock for the session
+        idle window after success, so a burst of interactive commands pays one
+        open. ``hold=False`` (the polling sweep, diagnostics) may reuse a
+        parked session but never extends its window and never creates one —
+        1 Hz polling must not be the thing that keeps a hub claimed.
+
+        A reused handle can be stale — the hub may have re-enumerated during
+        the idle window — so a failing operation on one is retried exactly
+        once on a fresh open, inside the same deadline.
+        """
         key = self._lock_key()
-        if timeout is None:
-            with hub_access(key, timeout=_LOCK_TIMEOUT_S):
-                return run_hub_op(key, _session, timeout=HUB_OP_TIMEOUT_S)
-        # A caller-supplied budget bounds the WHOLE cycle: the lock wait and
-        # the native open/read/close both count against it, so a contended
-        # lock cannot silently double the caller's bound (issue #205).
-        budget = min(timeout, HUB_OP_TIMEOUT_S)
+        pool = AcronameUSBNet._session_pool
+        phases = {}
+        open_info = {"path": None}
         start = time.monotonic()
-        with hub_access(key, timeout=min(_LOCK_TIMEOUT_S, budget)):
-            remaining = max(0.5, budget - (time.monotonic() - start))
-            return run_hub_op(key, _session, timeout=remaining)
+        if timeout is None:
+            lock_timeout, budget = _LOCK_TIMEOUT_S, None
+        else:
+            # A caller-supplied budget bounds the WHOLE cycle: the lock wait
+            # and the native open/read both count against it, so a contended
+            # lock cannot silently double the caller's bound (issue #205).
+            budget = min(timeout, HUB_OP_TIMEOUT_S)
+            lock_timeout = min(_LOCK_TIMEOUT_S, budget)
+        claim = pool.claim(key, timeout=lock_timeout)
+        phases["lock"] = time.monotonic() - start
+
+        def _cycle():
+            hub = claim.handle
+            if hub is not None:
+                open_info["path"] = "session-reuse"
+                t0 = time.monotonic()
+                try:
+                    result = fn(hub)
+                    phases["op"] = time.monotonic() - t0
+                    return result
+                except Exception:
+                    # Stale handle (re-enumeration inside the idle window):
+                    # drop it and run the operation once on a fresh open.
+                    phases["op"] = time.monotonic() - t0
+                    claim.discard()
+            hub = self._open_for(claim, retry=retry, phases=phases)
+            if open_info["path"] == "session-reuse":
+                path = self._last_open_path or "unknown"
+                open_info["path"] = f"reopen-after-stale-session:{path}"
+            else:
+                open_info["path"] = self._last_open_path or "unknown"
+            t0 = time.monotonic()
+            result = fn(hub)
+            phases["op"] = time.monotonic() - t0
+            return result
+
+        try:
+            if budget is None:
+                result = run_hub_op(key, _cycle, timeout=HUB_OP_TIMEOUT_S)
+            else:
+                remaining = max(0.5, budget - (time.monotonic() - start))
+                result = run_hub_op(key, _cycle, timeout=remaining)
+        except HubOperationTimeout:
+            claim.abandon_wedged()
+            self._log_cycle(what, key, phases, open_info["path"],
+                            outcome="hung", held=False)
+            raise
+        except BaseException as e:
+            claim.close()
+            self._log_cycle(what, key, phases, open_info["path"],
+                            outcome=type(e).__name__, held=False)
+            raise
+
+        t0 = time.monotonic()
+        if hold:
+            held = claim.hold(refresh=True)
+        elif claim.reused and claim.handle is not None:
+            # The polling path rides an existing session but must never
+            # extend it: re-park only for the window's remainder.
+            held = claim.hold(refresh=False)
+        else:
+            claim.close()
+            held = False
+        phases["close"] = time.monotonic() - t0
+        self._log_cycle(what, key, phases, open_info["path"],
+                        outcome="ok", held=held)
+        return result
 
     # ------------------------------------------------------------------ #
     # internal – decode enable+power bits
@@ -599,13 +742,16 @@ class AcronameUSBNet(USBNet):
     # USBNet interface
     # ------------------------------------------------------------------ #
     def enable(self, net_name: str, port: int) -> None:  # type: ignore[override]
-        self._with_hub(lambda hub: hub.usb.setPortEnable(port))
+        self._with_hub(lambda hub: hub.usb.setPortEnable(port),
+                       hold=True, what="enable")
 
     def disable(self, net_name: str, port: int) -> None:  # type: ignore[override]
-        self._with_hub(lambda hub: hub.usb.setPortDisable(port))
+        self._with_hub(lambda hub: hub.usb.setPortDisable(port),
+                       hold=True, what="disable")
 
     def state(self, net_name: str, port: int) -> bool:  # type: ignore[override]
-        return self._with_hub(lambda hub: self._read_enabled(hub, port))
+        return self._with_hub(lambda hub: self._read_enabled(hub, port),
+                              hold=True, what="state")
 
     def states(self, ports, *, timeout=None) -> dict:  # type: ignore[override]
         """Read every requested port inside ONE hub session.
@@ -636,11 +782,15 @@ class AcronameUSBNet(USBNet):
                     out[port] = None
             return out
 
-        # No open-retry here. This is the polling path: the whole-bench state
-        # sweep budgets one deadline across EVERY instrument on the box, so a
-        # retry would spend other instruments' time to win a race the next poll
-        # wins for free. The one-shot paths retry; see _with_hub.
-        return self._with_hub(_read_all, retry=False, timeout=timeout)
+        # No open-retry here, and no session hold (the ``hold`` default):
+        # this is the polling path. The whole-bench state sweep budgets one
+        # deadline across EVERY instrument on the box, so a retry would spend
+        # other instruments' time to win a race the next poll wins for free —
+        # and a 1 Hz poll that refreshed the idle window would keep the hub
+        # claimed forever. It may ride a session a user action opened, but
+        # never extends or creates one. The one-shot paths do both.
+        return self._with_hub(_read_all, retry=False, timeout=timeout,
+                              what="states")
 
     def toggle(self, net_name: str, port: int) -> bool:  # type: ignore[override]
         def _do(hub):
@@ -651,4 +801,4 @@ class AcronameUSBNet(USBNet):
                 hub.usb.setPortEnable(port)
             return not currently_on
 
-        return self._with_hub(_do)
+        return self._with_hub(_do, hold=True, what="toggle")

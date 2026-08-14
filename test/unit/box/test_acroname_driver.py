@@ -3,11 +3,21 @@
 """
 Unit tests for box/lager/automation/usb_hub/acroname.py.
 
-Same device-contention regression as the YKUSH driver: Acroname hubs were held
-connected indefinitely (class-level _cached_hubs), pinning the exclusive USB
-claim so another process could not connect. The fix opens a fresh connection
-per operation, disconnects immediately after, and serialises the whole cycle
-within and across processes via the shared `hub_access` lock.
+Two regressions bound this driver's shape, pulling in opposite directions:
+
+* Contention: hubs were once held connected indefinitely (class-level
+  _cached_hubs), pinning the exclusive USB claim so another process could not
+  connect. So the hub must never be claimed beyond a KNOWN bound.
+* Latency: opening a hub is a native BrainStem connect costing whole seconds,
+  so paying a fresh open per operation made every interactive command slow.
+
+The resolution is the bounded session hold (``usb_net.HubSessionPool``): a
+one-shot operation parks its connection and the cross-process lock for a short
+idle window; operations inside the window reuse it; the idle timer disconnects
+and releases after it. Most classes here run with the hold disabled
+(``idle_s=0``, byte-identical to the old open/operate/close-per-op cycle) to
+pin the open/cache/retry mechanics; ``AcronameSessionHoldTests`` pins the hold
+itself with a fake clock and hand-fired timers.
 
 BrainStem is stubbed, so no hardware is needed. (The real Acroname path still
 needs a hardware smoke test before merge — see the plan.)
@@ -46,8 +56,10 @@ def _load_real(module_name, relpath):
     return module
 
 
-_load_real("lager.util.device_lock", "lager/util/device_lock.py")
-_load_real("lager.automation.usb_hub.usb_net", "lager/automation/usb_hub/usb_net.py")
+device_lock_mod = _load_real("lager.util.device_lock", "lager/util/device_lock.py")
+usb_net = _load_real(
+    "lager.automation.usb_hub.usb_net", "lager/automation/usb_hub/usb_net.py"
+)
 acroname = _load_real(
     "lager.automation.usb_hub.acroname", "lager/automation/usb_hub/acroname.py"
 )
@@ -123,6 +135,49 @@ def _make_brainstem():
     return types.SimpleNamespace(stem=stem, link=link)
 
 
+# ---------------------------------------------------------------------------
+# Session-pool test doubles: a hand-advanced clock and hand-fired timers, so
+# the idle window is exercised without a single real sleep.
+# ---------------------------------------------------------------------------
+
+class _Clock:
+    def __init__(self, start=1000.0):
+        self.t = start
+
+    def __call__(self):
+        return self.t
+
+    def advance(self, seconds):
+        self.t += seconds
+
+
+class _FakeTimer:
+    """Records its delay and callback; the test fires it by calling .fn()."""
+
+    def __init__(self, delay, fn):
+        self.delay = delay
+        self.fn = fn
+        self.daemon = None
+        self.started = False
+        self.cancelled = False
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
+
+
+def _install_no_hold_pool(testcase):
+    """A session pool with the hold disabled (idle_s=0): every claim closes
+    on release, byte-identical to the old open/operate/close-per-op cycle.
+    Lets the open/cache/retry tests keep pinning exactly what they pinned."""
+    prior = acroname.AcronameUSBNet._session_pool
+    acroname.AcronameUSBNet._session_pool = usb_net.HubSessionPool(idle_s=0)
+    testcase.addCleanup(
+        setattr, acroname.AcronameUSBNet, "_session_pool", prior)
+
+
 class AcronameDriverTests(unittest.TestCase):
     def setUp(self):
         global _port_hook
@@ -137,6 +192,7 @@ class AcronameDriverTests(unittest.TestCase):
         acroname.AcronameUSBNet._Result = _FakeResult
         # The discovery cache is class-level (per-process); isolate tests.
         acroname.AcronameUSBNet._conn_cache = {}
+        _install_no_hold_pool(self)
         self.net = acroname.AcronameUSBNet(
             {"address": "USB0::0x24FF::0x0013::BFABDDC4::INSTR"}
         )
@@ -297,6 +353,7 @@ class AcronameDiscoveryCacheTests(unittest.TestCase):
         acroname.AcronameUSBNet._brainstem = _make_spec_brainstem([self.spec])
         acroname.AcronameUSBNet._Result = _FakeResult
         acroname.AcronameUSBNet._conn_cache = {}
+        _install_no_hold_pool(self)
         self.net = acroname.AcronameUSBNet(
             {"address": "USB0::0x24FF::0x0013::BFABDDC4::INSTR"}
         )
@@ -323,6 +380,30 @@ class AcronameDiscoveryCacheTests(unittest.TestCase):
         self.net.enable("CHARGE", 0)
         self.assertEqual(len(_discover_calls), 2, "stale spec should re-discover")
         self.assertIsNone(_claim["held_by"])
+
+    def test_the_cache_is_shared_across_controller_instances(self):
+        """Every request builds a fresh controller (dispatcher._controller_for),
+        so a cache that lived on the instance would be cold on every request
+        and each command would silently pay full discovery. Pin that the
+        SECOND instance's open is a connectFromSpec with no new scan."""
+        self.net.enable("CHARGE", 0)
+        second = acroname.AcronameUSBNet(
+            {"address": "USB0::0x24FF::0x0013::BFABDDC4::INSTR"})
+        second.disable("CHARGE", 0)
+        self.assertEqual(len(_discover_calls), 1,
+                         "a fresh controller re-ran discovery")
+        self.assertEqual(len(_spec_connects), 2)
+
+    def test_a_string_spec_serial_still_matches_the_address(self):
+        """The address parses to an int; the SDK owns spec.serial_number's
+        type. A raw == between mismatched types fails silently, and the cost
+        is every operation paying full discovery while the scan looks healthy
+        — the exact shape of the multi-second interactive commands."""
+        stringly = _FakeSpec("BFABDDC4")
+        acroname.AcronameUSBNet._brainstem = _make_spec_brainstem([stringly])
+        self.net.enable("CHARGE", 0)
+        self.assertEqual(len(_spec_connects), 1,
+                         "the scanned spec was not matched to the address")
 
     def test_no_matching_serial_falls_back_to_discover_and_connect(self):
         # Discovery sees only some other hub: the driver must still connect
@@ -699,10 +780,12 @@ class AcronameContextHealthTests(unittest.TestCase):
         acroname.AcronameUSBNet._brainstem = brainstem
         self.assertIsNone(self._health())
 
-    def test_the_driver_declares_it_holds_no_context_between_ops(self):
-        """_with_hub opens and closes every call, so there is nothing for a
-        re-enumeration to orphan and nothing a service restart can repair."""
-        self.assertFalse(acroname.AcronameUSBNet.holds_usb_context_between_ops)
+    def test_the_driver_declares_it_holds_a_context_between_ops(self):
+        """The bounded session hold parks a live connection for the idle
+        window after a one-shot operation, so a re-enumeration inside that
+        window CAN orphan a handle — the self-restart recovery must stay
+        reachable for this driver (sysfs-gated and cooldown-bounded)."""
+        self.assertTrue(acroname.AcronameUSBNet.holds_usb_context_between_ops)
 
 
 class AcronameOpenRetryTests(unittest.TestCase):
@@ -722,6 +805,7 @@ class AcronameOpenRetryTests(unittest.TestCase):
         acroname.AcronameUSBNet._Result = _FakeResult
         acroname.AcronameUSBNet._conn_cache = {}
         acroname.AcronameUSBNet._brainstem = _make_failing_brainstem([])
+        _install_no_hold_pool(self)
         self.net = acroname.AcronameUSBNet({"address": self.ADDRESS})
         sleep = patch.object(acroname.time, "sleep")
         self.sleep = sleep.start()
@@ -833,6 +917,251 @@ class AcronameOpenRetryTests(unittest.TestCase):
         self._attempt(self.ON_BUS)
         self.assertIsNone(_claim["held_by"])
         self.assertEqual(sorted(_opened), sorted(_closed))
+
+
+class AcronameSessionHoldTests(unittest.TestCase):
+    """The bounded session hold: reuse inside the idle window, release after.
+
+    Driven entirely by a fake clock and hand-fired timers — no sleeps. The
+    flock is real (a private DeviceLockManager under this test's own lock
+    directory), so "another process can acquire after the window" is proven
+    against the actual fcntl mechanism, not a stand-in: flock conflicts are
+    per open file description, so a second fd in this process is a faithful
+    simulation of a second process.
+    """
+
+    ADDRESS = "USB0::0x24FF::0x0013::BFABDDC4::INSTR"
+
+    def setUp(self):
+        global _port_hook
+        _claim["held_by"] = None
+        _opened.clear()
+        _closed.clear()
+        _hub_ports.clear()
+        _port_hook = None
+        _FakeHub._counter = 0
+        _discover_calls.clear()
+        _spec_connects.clear()
+        self.spec = _FakeSpec(0xBFABDDC4)
+        acroname.AcronameUSBNet._brainstem = _make_spec_brainstem([self.spec])
+        acroname.AcronameUSBNet._Result = _FakeResult
+        acroname.AcronameUSBNet._conn_cache = {}
+
+        self.clock = _Clock()
+        self.timers = []
+
+        def _timer_factory(delay, fn):
+            timer = _FakeTimer(delay, fn)
+            self.timers.append(timer)
+            return timer
+
+        self.mgr = device_lock_mod.DeviceLockManager(
+            lock_subdir=f"lager_test_hub_sessions_{os.getpid()}_{id(self)}")
+        self.pool = usb_net.HubSessionPool(
+            idle_s=2.5, lock_manager=self.mgr, now=self.clock,
+            timer_factory=_timer_factory)
+        prior = acroname.AcronameUSBNet._session_pool
+        acroname.AcronameUSBNet._session_pool = self.pool
+        self.addCleanup(
+            setattr, acroname.AcronameUSBNet, "_session_pool", prior)
+        self.addCleanup(self.pool.drain)
+        self.net = acroname.AcronameUSBNet({"address": self.ADDRESS})
+
+    # -- helpers ------------------------------------------------------- #
+
+    def _flock_from_elsewhere(self):
+        """Try to take the hub's flock the way a second process would.
+        Returns True (and immediately unlocks) if it could be taken."""
+        import fcntl
+        path = self.mgr._get_lock_path(self.ADDRESS)
+        with open(path, "a+") as fh:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return False
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            return True
+
+    def _fire_last_timer(self):
+        self.timers[-1].fn()
+
+    # -- reuse --------------------------------------------------------- #
+
+    def test_a_burst_of_one_shot_ops_pays_one_open(self):
+        self.net.enable("CHARGE", 0)
+        self.net.disable("CHARGE", 0)
+        self.assertTrue(self.net.toggle("CHARGE", 0))
+        self.assertEqual(len(_opened), 1, "ops inside the window reconnected")
+        self.assertEqual(len(_spec_connects), 1)
+        self.assertEqual(_closed, [], "the session closed early")
+        self.assertIsNotNone(_claim["held_by"], "session did not stay open")
+
+    def test_each_one_shot_op_refreshes_the_idle_window(self):
+        self.net.enable("CHARGE", 0)
+        self.clock.advance(2.0)
+        self.net.disable("CHARGE", 0)
+        # The prior timer was cancelled and a fresh full window armed.
+        self.assertTrue(self.timers[-2].cancelled)
+        self.assertEqual(self.timers[-1].delay, 2.5)
+
+    def test_the_idle_timer_is_a_daemon(self):
+        """A parked session must never be what keeps a `lager python`
+        script's interpreter from exiting."""
+        self.net.enable("CHARGE", 0)
+        self.assertTrue(self.timers[-1].started)
+        self.assertIs(self.timers[-1].daemon, True)
+
+    # -- release ------------------------------------------------------- #
+
+    def test_idle_expiry_disconnects_and_releases_the_flock(self):
+        self.net.enable("CHARGE", 0)
+        self.assertFalse(self._flock_from_elsewhere(),
+                         "flock free while the session held the hub")
+        self.clock.advance(2.5)
+        self._fire_last_timer()
+        self.assertIsNone(_claim["held_by"], "hub still claimed after expiry")
+        self.assertEqual(_opened, _closed)
+        self.assertTrue(self._flock_from_elsewhere(),
+                        "another process cannot take the hub after the window")
+
+    def test_an_early_timer_fire_is_a_no_op(self):
+        """A refresh re-arms the window; a stale fire from the cancelled
+        timer must not tear down the refreshed session."""
+        self.net.enable("CHARGE", 0)
+        stale = self.timers[-1]
+        self.clock.advance(1.0)
+        self.net.disable("CHARGE", 0)  # refreshes; cancels `stale`
+        stale.fn()  # fires anyway (cancel raced the fire)
+        self.assertIsNotNone(_claim["held_by"],
+                             "a cancelled timer tore down a live session")
+
+    # -- the polling sweep --------------------------------------------- #
+
+    def test_states_alone_never_creates_a_session(self):
+        self.net.states([0, 1])
+        self.assertEqual(len(_opened), 1)
+        self.assertEqual(_opened, _closed, "the polling sweep parked a session")
+        self.assertIsNone(_claim["held_by"])
+        self.assertEqual(self.timers, [])
+        self.assertTrue(self._flock_from_elsewhere())
+
+    def test_states_rides_a_session_without_extending_it(self):
+        self.net.enable("CHARGE", 0)
+        self.clock.advance(1.0)
+        out = self.net.states([0, 1])
+        self.assertEqual(out, {0: True, 1: False})
+        self.assertEqual(len(_opened), 1, "states() reconnected needlessly")
+        # Re-armed for the REMAINDER of the window the enable opened — under
+        # 1 Hz polling the session still dies at the original expiry.
+        self.assertAlmostEqual(self.timers[-1].delay, 1.5)
+
+    def test_states_does_not_resurrect_an_expired_window(self):
+        self.net.enable("CHARGE", 0)
+        self.clock.advance(3.0)  # window over; timer just hasn't fired yet
+        self.net.states([0, 1])
+        self.assertIsNone(_claim["held_by"],
+                          "polling kept a session alive past its window")
+        self.assertEqual(_opened, _closed)
+
+    # -- staleness and wedges ------------------------------------------ #
+
+    def test_a_stale_held_handle_is_reopened_once(self):
+        global _port_hook
+        self.net.enable("CHARGE", 0)
+        calls = {"n": 0}
+
+        def _fail_first():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("handle orphaned by re-enumeration")
+
+        _port_hook = _fail_first
+        self.net.enable("CHARGE", 0)  # reuse fails once, fresh open succeeds
+        self.assertEqual(len(_opened), 2)
+        self.assertIn(_opened[0], _closed, "the stale handle was not closed")
+        self.assertEqual(_claim["held_by"], _opened[1],
+                         "the fresh handle should be parked for the window")
+
+    def test_a_wedged_op_inside_a_session_poisons_only_this_process(self):
+        global _port_hook
+        address = "USB0::0x24FF::0x0013::BFABDDC4::INSTR::WEDGE"
+        net = acroname.AcronameUSBNet({"address": address})
+        net.enable("CHARGE", 0)
+        def _wedged_native_call():
+            time.sleep(30)
+
+        _port_hook = _wedged_native_call
+        with patch.object(acroname, "HUB_OP_TIMEOUT_S", 0.2):
+            with self.assertRaises(usb_net.HubOperationTimeout):
+                net.enable("CHARGE", 0)
+        # The stuck thread owns the handle: never disconnected...
+        self.assertIsNotNone(_claim["held_by"])
+        # ...the session is gone, so nothing will hand that handle out again...
+        self.assertEqual(self.pool._sessions, {})
+        # ...this process fails fast (thread lock stays held)...
+        self.assertFalse(
+            usb_net._local_hub_lock(address).acquire(timeout=0.05))
+        # ...and the flock is released, because the wedge is per-process.
+        import fcntl
+        path = self.mgr._get_lock_path(address)
+        with open(path, "a+") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+    # -- the warm fast path (regression from the 7-9s/op incident) ------ #
+
+    def test_a_warm_open_after_expiry_is_scan_free(self):
+        """After the window closes, the next op must reopen from the cached
+        spec — one connectFromSpec, zero discovery scans. This is the exact
+        regression behind the multi-second interactive commands: the reopen
+        silently paying full discovery on every call."""
+        self.net.enable("CHARGE", 0)
+        self.clock.advance(2.5)
+        self._fire_last_timer()
+        self.net.enable("CHARGE", 0)
+        self.assertEqual(len(_discover_calls), 1,
+                         "the warm reopen ran a discovery scan")
+        self.assertEqual(len(_spec_connects), 2,
+                         "the warm reopen did not use connectFromSpec")
+
+    # -- the timing log ------------------------------------------------ #
+
+    def test_a_completed_cycle_logs_its_phase_breakdown_at_debug(self):
+        with self.assertLogs(acroname.logger, level="DEBUG") as cm:
+            self.net.enable("CHARGE", 0)
+        line = next(l for l in cm.output if "cycle" in l)
+        self.assertIn("enable cycle", line)
+        self.assertIn("lock", line)
+        self.assertIn("open", line)
+        self.assertIn("[discovery]", line)   # which open path ran
+        self.assertIn("close held", line)    # session parked, not closed
+        self.assertIn("-> ok", line)
+        self.assertTrue(line.startswith("DEBUG"), line)
+
+    def test_a_session_reuse_cycle_names_its_path(self):
+        self.net.enable("CHARGE", 0)
+        with self.assertLogs(acroname.logger, level="DEBUG") as cm:
+            self.net.disable("CHARGE", 0)
+        line = next(l for l in cm.output if "cycle" in l)
+        self.assertIn("[session-reuse]", line)
+
+    def test_a_slow_cycle_logs_at_info(self):
+        """The escalation is what makes a silently-slow open path visible in
+        a box log that only keeps INFO and up."""
+        with patch.object(acroname, "_SLOW_CYCLE_INFO_S", 0.0):
+            with self.assertLogs(acroname.logger, level="INFO") as cm:
+                self.net.enable("CHARGE", 0)
+        line = next(l for l in cm.output if "cycle" in l)
+        self.assertTrue(line.startswith("INFO"), line)
+
+    def test_a_failed_cycle_still_logs_with_its_outcome(self):
+        acroname.AcronameUSBNet._brainstem = _make_failing_brainstem([])
+        with patch.object(acroname, "enumerate_usb_devices", return_value=[]):
+            with self.assertLogs(acroname.logger, level="DEBUG") as cm:
+                with self.assertRaises(acroname.DeviceNotFoundError):
+                    self.net.states([0])
+        line = next(l for l in cm.output if "cycle" in l)
+        self.assertIn("-> DeviceNotFoundError", line)
 
 
 if __name__ == "__main__":

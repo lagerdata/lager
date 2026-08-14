@@ -48,6 +48,55 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- **Interactive USB hub commands went from ~150 ms to 7-9 s per command; a
+  burst of commands now pays one hub connect, and a slow open path is no
+  longer silent.** The cross-process contention fix (0.32.x) moved the
+  Acroname driver to open -> operate -> disconnect per operation. The
+  BrainStem open is native code costing whole seconds, and the discovery
+  cache meant to make warm opens scan-free had three shapes where a "warm"
+  open still ran a full USB discovery scan on every command, silently: a
+  connect that succeeded via the `discoverAndConnect` fallback cached no
+  spec, so every later open scanned again; an SDK without `connectFromSpec`
+  scanned on every open while logging a healthy cache hit; and the scan's
+  serial match compared the address's parsed int against the SDK's
+  `serial_number` with a raw `==`, so a type mismatch failed every match.
+  Successful opens logged nothing, so none of this was visible from a box
+  log.
+
+  Three changes, in `box/lager/automation/usb_hub/`:
+
+  - *Timing instrumentation.* Every completed hub cycle (Acroname and YKUSH)
+    now logs a per-phase breakdown -- lock wait, open (and which open path
+    ran: session reuse, cached spec, cached-but-scanning, full discovery),
+    the operation, close -- at DEBUG, escalating to INFO when the cycle
+    exceeds 2 s. The open-path label is the evidence that separates a healthy
+    fast path from one silently paying discovery.
+  - *Scan-free warm opens.* The spec serial match is normalized on both
+    sides, and regression tests pin that a warm open performs a single
+    `connectFromSpec` with no discovery scan -- including from a fresh
+    controller instance, which is what every HTTP request constructs.
+  - *Bounded session reuse.* After a one-shot operation (enable / disable /
+    toggle / state), the driver parks the open connection and the
+    cross-process lock for a short idle window (2.5 s); operations on the
+    same hub inside the window reuse the handle, and an idle timer
+    disconnects and releases afterwards. Another process's worst-case wait
+    is the window plus one operation -- never an indefinite pin, which was
+    the original contention bug. The 1 Hz state-poll path may ride an
+    existing session but never creates or extends one, so polling cannot
+    keep a hub claimed. A held handle that went stale (hub re-enumerated
+    inside the window) is dropped and the operation retried once on a fresh
+    open, inside the same deadline. All fail-fast bounds are preserved: lock
+    timeouts, the whole-cycle operation deadline, and the hang path -- a
+    wedged call inside a held session still answers 504, releases the flock
+    for other processes, poisons only this process's per-hub lock, and
+    schedules the supervisor respawn. Because the driver now briefly holds a
+    USB handle between operations, `AcronameUSBNet` declares
+    `holds_usb_context_between_ops = True` again, keeping the sysfs-gated
+    self-restart reachable for an orphaned held handle.
+
+  BrainStem behavior itself is not testable in CI; the timing log is what
+  verifies the win on a real bench.
+
 - **Two `cli/impl` modules could not be imported from a pip-installed CLI.**
   `cli/impl/box_config.py` and `cli/impl/power/enable_disable.py` imported
   `lager.*` at module scope. That package lives under `box/` and is not in the
