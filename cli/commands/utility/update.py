@@ -1650,9 +1650,12 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             # in the Dockerfile cache; assume a real build. An unmeasured hash
             # lands here too — over-estimating a cached build costs the
             # operator nothing, while under-estimating a fresh one is how
-            # "~90s" preceded ten minutes of waiting. Kept as a floor even
-            # now that a measured `target_hash` can clear `rebuild_certain`:
-            # the digest covers the image recipe, not every COPY layer.
+            # "~90s" preceded ten minutes of waiting. Deliberately kept as a
+            # floor even when a measured `target_hash` cleared
+            # `rebuild_certain`: the digest proves the build *inputs* match,
+            # not that Docker still holds the layers built from them — a
+            # `docker builder prune` between updates rebuilds everything with
+            # the digest unchanged.
             container_status = 'will restart'
             est = '~6 min (fresh build possible)'
         else:
