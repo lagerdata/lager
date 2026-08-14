@@ -402,11 +402,14 @@ class SelfRestartGateTests(unittest.TestCase):
             usb_handler._self_restart_if_wedged('usb1', 'state', RuntimeError('x'))
         self.assertTrue(m.called)
 
-    def test_the_acroname_driver_declares_itself_stateless(self):
+    def test_the_acroname_driver_declares_itself_stateful(self):
         """Ties the gate to the real driver, so moving the flag breaks a test
-        rather than silently restoring the pointless restarts."""
+        rather than silently changing the restart policy. Since the bounded
+        session hold (a connection parked for the idle window after a one-shot
+        operation), a re-enumeration CAN briefly orphan a held Acroname
+        handle, so the restart path must stay reachable for this driver."""
         from lager.automation.usb_hub.acroname import AcronameUSBNet
-        self.assertFalse(AcronameUSBNet.holds_usb_context_between_ops)
+        self.assertTrue(AcronameUSBNet.holds_usb_context_between_ops)
 
 
 if __name__ == '__main__':

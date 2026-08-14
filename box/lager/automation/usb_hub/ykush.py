@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import re
 import subprocess
 import time
@@ -29,6 +30,12 @@ _SERIAL_RE = re.compile(r"::([^:]+)::INSTR$")
 # them. Generous because a genuinely stuck holder is rare and releasing per op
 # keeps real hold times to milliseconds.
 _LOCK_TIMEOUT_S = 10.0
+
+# Above this, a completed cycle logs at INFO instead of DEBUG — same threshold
+# and line shape as the Acroname driver, so one grep reads both.
+_SLOW_CYCLE_INFO_S = 2.0
+
+logger = logging.getLogger(__name__)
 
 
 def _serial_from_address(addr: str | None) -> str | None:
@@ -168,14 +175,34 @@ class YKUSHUSBNet(USBNet):
 
     def _run_once(self, fn):
         """Open a fresh YKUSH connection, run ``fn(dev)``, and always release
-        the handle — never cache it (see ``_release``)."""
+        the handle — never cache it (see ``_release``).
+
+        Accumulates open/op/close time into ``self._cycle_phases`` (set up by
+        ``_with_device``) — accumulates, because the retry runs this twice.
+        Written via ``getattr`` so a test that stubs this method out, or a
+        direct caller, costs nothing and breaks nothing."""
         _ensure_library()
+        phases = getattr(self, "_cycle_phases", None)
+
+        def _mark(phase, t0):
+            if phases is not None:
+                phases[phase] = phases.get(phase, 0.0) + (time.monotonic() - t0)
+
         dev = None
         try:
-            dev = self._open_device()
-            return fn(dev)
+            t0 = time.monotonic()
+            try:
+                dev = self._open_device()
+            finally:
+                _mark("open", t0)
+            t0 = time.monotonic()
+            result = fn(dev)
+            _mark("op", t0)
+            return result
         finally:
+            t0 = time.monotonic()
             self._release(dev)
+            _mark("close", t0)
 
     def _lock_key(self) -> str:
         """Cross-process lock key identifying the *physical* hub, so every net
@@ -183,7 +210,24 @@ class YKUSHUSBNet(USBNet):
         VISA address is unique per hub; fall back to the serial."""
         return self.address or f"ykush::{self.serial or 'default'}"
 
-    def _with_device(self, fn, *, timeout=None):
+    def _log_cycle(self, what, key, phases, outcome):
+        """One line per completed cycle, mirroring the Acroname driver's:
+        DEBUG normally, INFO when the total says the cycle paid enumeration.
+        No open-path label here — pykush has only the two shapes (cached HID
+        path vs enumeration) and the open time alone separates them."""
+        total = sum(phases.values())
+        ms = {k: int(phases.get(k, 0.0) * 1000)
+              for k in ("lock", "open", "op", "close")}
+        level = logging.INFO if total >= _SLOW_CYCLE_INFO_S else logging.DEBUG
+        logger.log(
+            level,
+            "YKUSH %s: %s cycle %dms (lock %dms, open %dms, op %dms, "
+            "close %dms) -> %s",
+            key, what, int(total * 1000), ms["lock"], ms["open"], ms["op"],
+            ms["close"], outcome,
+        )
+
+    def _with_device(self, fn, *, timeout=None, what="op"):
         """Run ``fn(dev)`` against a freshly-opened hub, retrying once if the
         first attempt fails. A fresh handle per call self-heals a power-cycled
         hub or a transient USB/HID error, and releasing it after each call means
@@ -197,6 +241,7 @@ class YKUSHUSBNet(USBNet):
         separately would still let the pair run forever, and the retry only ever
         existed for errors that surface fast."""
         _ensure_library()
+        phases = {}
 
         def _attempt_with_retry():
             try:
@@ -210,17 +255,32 @@ class YKUSHUSBNet(USBNet):
                 return self._run_once(fn)
 
         key = self._lock_key()
-        if timeout is None:
-            with hub_access(key, timeout=_LOCK_TIMEOUT_S):
-                return run_hub_op(key, _attempt_with_retry, timeout=HUB_OP_TIMEOUT_S)
-        # A caller-supplied budget bounds the WHOLE cycle: the lock wait and
-        # both open attempts count against it, so a contended lock cannot
-        # silently double the caller's bound (issue #205).
-        budget = min(timeout, HUB_OP_TIMEOUT_S)
         start = time.monotonic()
-        with hub_access(key, timeout=min(_LOCK_TIMEOUT_S, budget)):
-            remaining = max(0.5, budget - (time.monotonic() - start))
-            return run_hub_op(key, _attempt_with_retry, timeout=remaining)
+        try:
+            if timeout is None:
+                with hub_access(key, timeout=_LOCK_TIMEOUT_S):
+                    phases["lock"] = time.monotonic() - start
+                    # Handed to _run_once via the instance under the hub lock,
+                    # so concurrent cycles on other hubs cannot mix phases.
+                    self._cycle_phases = phases
+                    result = run_hub_op(key, _attempt_with_retry,
+                                        timeout=HUB_OP_TIMEOUT_S)
+            else:
+                # A caller-supplied budget bounds the WHOLE cycle: the lock
+                # wait and both open attempts count against it, so a contended
+                # lock cannot silently double the caller's bound (issue #205).
+                budget = min(timeout, HUB_OP_TIMEOUT_S)
+                with hub_access(key, timeout=min(_LOCK_TIMEOUT_S, budget)):
+                    phases["lock"] = time.monotonic() - start
+                    self._cycle_phases = phases
+                    remaining = max(0.5, budget - (time.monotonic() - start))
+                    result = run_hub_op(key, _attempt_with_retry,
+                                        timeout=remaining)
+        except Exception as e:
+            self._log_cycle(what, key, phases, outcome=type(e).__name__)
+            raise
+        self._log_cycle(what, key, phases, outcome="ok")
+        return result
 
     # ----------------------------------------------------------------
     def __init__(self, net_info: dict | None = None) -> None:
@@ -272,11 +332,13 @@ class YKUSHUSBNet(USBNet):
     # ----------------------------------------------------------------
     def enable(self, net_name: str, port: int) -> None:        # type: ignore[override]
         self._validate_port(port)
-        self._with_device(lambda dev: self._set_state(dev, port, _PORT_UP))
+        self._with_device(lambda dev: self._set_state(dev, port, _PORT_UP),
+                          what="enable")
 
     def disable(self, net_name: str, port: int) -> None:       # type: ignore[override]
         self._validate_port(port)
-        self._with_device(lambda dev: self._set_state(dev, port, _PORT_DOWN))
+        self._with_device(lambda dev: self._set_state(dev, port, _PORT_DOWN),
+                          what="disable")
 
     @staticmethod
     def _read_enabled(dev, port: int) -> bool:
@@ -288,7 +350,8 @@ class YKUSHUSBNet(USBNet):
 
     def state(self, net_name: str, port: int) -> bool:        # type: ignore[override]
         self._validate_port(port)
-        return self._with_device(lambda dev: self._read_enabled(dev, port))
+        return self._with_device(lambda dev: self._read_enabled(dev, port),
+                                 what="state")
 
     def states(self, ports, *, timeout=None) -> dict:          # type: ignore[override]
         """Read every requested port inside ONE device session.
@@ -310,7 +373,7 @@ class YKUSHUSBNet(USBNet):
                     out[port] = None
             return out
 
-        return self._with_device(_read_all, timeout=timeout)
+        return self._with_device(_read_all, timeout=timeout, what="states")
 
     def toggle(self, net_name: str, port: int) -> bool:        # type: ignore[override]
         self._validate_port(port)
@@ -321,5 +384,5 @@ class YKUSHUSBNet(USBNet):
             self._set_state(dev, port, target)
             return target == _PORT_UP
 
-        return self._with_device(_do)
+        return self._with_device(_do, what="toggle")
 
