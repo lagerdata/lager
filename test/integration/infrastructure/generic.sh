@@ -90,7 +90,7 @@ lager hello --box $BOX && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 1.3: Hello with invalid box (error case)"
-lager hello --box INVALID_BOX_12345 2>&1 | grep -qi "error" && track_test "pass" || track_test "pass"
+lager hello --box INVALID_BOX_12345 2>&1 | grep -qi "error" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 1.4: Multiple hello commands (stability test)"
@@ -133,7 +133,7 @@ lager instruments --box $BOX && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 2.3: Instruments with invalid box (error case)"
-lager instruments --box INVALID_BOX_12345 2>&1 | grep -qi "error" && track_test "pass" || track_test "pass"
+lager instruments --box INVALID_BOX_12345 2>&1 | grep -qi "error" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 2.4: Multiple instrument listings (stability test)"
@@ -256,7 +256,7 @@ done
 echo ""
 
 echo "Test 4.10: Delete non-existent box (error case)"
-lager boxes delete --name "nonexistent_box_12345" --yes 2>&1 | grep -qi "not found" && track_test "pass" || track_test "pass"
+lager boxes delete --name "nonexistent_box_12345" --yes 2>&1 | grep -qi "not found" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 4.11: Add and delete multiple boxes"
@@ -630,27 +630,27 @@ fi
 echo ""
 
 echo "Test 9.3: Empty box name in lager hello"
-lager hello --box "" 2>&1 | grep -qi "error" && track_test "pass" || track_test "pass"
+lager hello --box "" 2>&1 | grep -qi "error" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 9.4: Very long box name"
 LONG_BOX_NAME=$(printf 'a%.0s' {1..500})
-lager hello --box "$LONG_BOX_NAME" 2>&1 | grep -qi "error" && track_test "pass" || track_test "pass"
+lager hello --box "$LONG_BOX_NAME" 2>&1 | grep -qi "error" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 9.5: Box name with special characters"
-lager hello --box "test@#$%^&*()" 2>&1 | grep -qi "error" && track_test "pass" || track_test "pass"
+lager hello --box "test@#$%^&*()" 2>&1 | grep -qi "error" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 9.6: Box name with spaces"
-lager hello --box "test box with spaces" 2>&1 | grep -qi "error" && track_test "pass" || track_test "pass"
+lager hello --box "test box with spaces" 2>&1 | grep -qi "error" && track_test "pass" || track_test "fail"
 echo ""
 
 # The name mixes BMP (CJK) and non-BMP (U+1D400, 4-byte UTF-8) codepoints on
 # purpose: they exercise different encoding paths, and a name that is only CJK
 # would not catch a surrogate-pair bug.
 echo "Test 9.7: Box name with Unicode characters"
-lager hello --box "test_设备_𝐀" 2>&1 | grep -qi "error" && track_test "pass" || track_test "pass"
+lager hello --box "test_设备_𝐀" 2>&1 | grep -qi "error" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 9.8: Invalid IP address format in box add"
@@ -702,7 +702,7 @@ fi
 echo ""
 
 echo "Test 9.14: Box operations without required parameters"
-lager boxes add 2>&1 | grep -qi "error\|missing" && track_test "pass" || track_test "pass"
+lager boxes add 2>&1 | grep -qi "error\|missing" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 9.15: Defaults add without any parameters"

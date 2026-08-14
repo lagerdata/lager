@@ -81,7 +81,7 @@ done
 echo ""
 
 echo "Test 2.3: WiFi status with invalid box"
-lager wifi status --box INVALID_BOX_12345 2>&1 | grep -qi "error" && track_test "pass" || track_test "pass"
+lager wifi status --box INVALID_BOX_12345 2>&1 | grep -qi "error" && track_test "pass" || track_test "fail"
 echo ""
 
 # ============================================================
@@ -111,12 +111,12 @@ echo ""
 start_section "Connect Error Cases"
 
 echo "Test 4.1: Connect without required SSID"
-lager wifi connect --box $BOX 2>&1 | grep -qi "error\|missing\|required" && track_test "pass" || track_test "pass"
+lager wifi connect --box $BOX 2>&1 | grep -qi "error\|missing\|required" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 4.2: Connect to non-existent network (expect error/timeout)"
 # Use a clearly fake SSID that cannot exist
-lager wifi connect --ssid "NONEXISTENT_NETWORK_TEST_12345" --password "fake" --box $BOX 2>&1 | grep -qi "error\|fail\|not found\|timeout" && track_test "pass" || track_test "pass"
+lager wifi connect --ssid "NONEXISTENT_NETWORK_TEST_12345" --password "fake" --box $BOX 2>&1 | grep -qi "error\|fail\|not found\|timeout" && track_test "pass" || track_test "fail"
 echo ""
 
 # ============================================================
@@ -125,7 +125,7 @@ echo ""
 start_section "Delete Error Cases"
 
 echo "Test 5.1: Delete non-existent connection"
-lager wifi delete-connection "NONEXISTENT_NETWORK_TEST_12345" --yes --box $BOX 2>&1 | grep -qi "error\|not found\|does not exist" && track_test "pass" || track_test "pass"
+lager wifi delete-connection "NONEXISTENT_NETWORK_TEST_12345" --yes --box $BOX 2>&1 | grep -qi "error\|not found\|does not exist" && track_test "pass" || track_test "fail"
 echo ""
 
 # ============================================================

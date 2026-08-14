@@ -125,7 +125,7 @@ lager nets --box $BOX >/dev/null 2>&1 && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 1.4: List UART nets (no netname argument)"
-lager uart --box $BOX >/dev/null 2>&1 && track_test "pass" || track_test "pass"
+lager uart --box $BOX >/dev/null 2>&1 && track_test "pass" || track_test "fail"
 echo ""
 
 # ============================================================
@@ -150,7 +150,7 @@ fi
 echo ""
 
 echo "Test 2.2: Attempt to list UART nets (may be empty initially)"
-lager uart --box $BOX 2>&1 && track_test "pass" || track_test "pass"
+lager uart --box $BOX 2>&1 && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 2.3: Create test UART net with /dev/ttyUSB0"
@@ -217,7 +217,7 @@ fi
 echo ""
 
 echo "Test 3.4: Verify parameter storage in net configuration"
-lager nets --box $BOX 2>&1 | grep -q "uart" && track_test "pass" || track_test "pass"
+lager nets --box $BOX 2>&1 | grep -q "uart" && track_test "pass" || track_test "fail"
 echo ""
 
 # ============================================================
@@ -297,7 +297,7 @@ echo "========================================================================"
 echo ""
 
 echo "Test 6.1: List all UART nets"
-lager uart --box $BOX 2>&1 && track_test "pass" || track_test "pass"
+lager uart --box $BOX 2>&1 && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 6.2: Count UART nets created"
@@ -315,7 +315,7 @@ fi
 echo ""
 
 echo "Test 6.4: List nets using general nets command"
-lager nets --box $BOX 2>&1 | grep -q "uart" && track_test "pass" || track_test "pass"
+lager nets --box $BOX 2>&1 | grep -q "uart" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 6.5: Rapid UART net listings (10 iterations)"
@@ -369,7 +369,7 @@ fi
 echo ""
 
 echo "Test 7.5: Delete non-existent UART net (error case)"
-lager nets delete "nonexistent_uart_net_12345" uart --box $BOX 2>&1 | grep -qi "not found\|error" && track_test "pass" || track_test "pass"
+lager nets delete "nonexistent_uart_net_12345" uart --box $BOX 2>&1 | grep -qi "not found\|error" && track_test "pass" || track_test "fail"
 echo ""
 
 # ============================================================
@@ -382,7 +382,7 @@ echo "========================================================================"
 echo ""
 
 echo "Test 8.1: Verify legacy --gateway flag exists (deprecated)"
-lager uart --help 2>&1 | grep -q "\-\-gateway" && track_test "pass" || track_test "pass"
+lager uart --help 2>&1 | grep -q "\-\-gateway" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 8.2: Verify --box flag exists (current)"
@@ -394,7 +394,7 @@ lager uart --help 2>&1 && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 8.4: Verify help mentions net-based configuration"
-lager uart --help 2>&1 | grep -qi "net" && track_test "pass" || track_test "pass"
+lager uart --help 2>&1 | grep -qi "net" && track_test "pass" || track_test "fail"
 echo ""
 
 # ============================================================
@@ -453,7 +453,7 @@ if [ "$HAS_UART_DEVICE" = "true" ]; then
       FAILED=1
     fi
   done
-  [ $FAILED -eq 0 ] && track_test "pass" || track_test "pass"
+  [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
 else
   echo "  No UART device available - skipping"
   track_test "pass"
@@ -471,7 +471,7 @@ if [ "$HAS_UART_DEVICE" = "true" ]; then
       FAILED=1
     fi
   done
-  [ $FAILED -eq 0 ] && track_test "pass" || track_test "pass"
+  [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
 else
   echo "  No UART device available - skipping"
   track_test "pass"
@@ -489,7 +489,7 @@ if [ "$HAS_UART_DEVICE" = "true" ]; then
       FAILED=1
     fi
   done
-  [ $FAILED -eq 0 ] && track_test "pass" || track_test "pass"
+  [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
 else
   echo "  No UART device available - skipping"
   track_test "pass"
@@ -507,7 +507,7 @@ if [ "$HAS_UART_DEVICE" = "true" ]; then
       FAILED=1
     fi
   done
-  [ $FAILED -eq 0 ] && track_test "pass" || track_test "pass"
+  [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
 else
   echo "  No UART device available - skipping"
   track_test "pass"
@@ -525,7 +525,7 @@ if [ "$HAS_UART_DEVICE" = "true" ]; then
       FAILED=1
     fi
   done
-  [ $FAILED -eq 0 ] && track_test "pass" || track_test "pass"
+  [ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
 else
   echo "  No UART device available - skipping"
   track_test "pass"
@@ -557,15 +557,15 @@ for i in {1..5}; do
     FAILED=1
   fi
 done
-[ $FAILED -eq 0 ] && track_test "pass" || track_test "pass"
+[ $FAILED -eq 0 ] && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 11.3: Verify net appears in general nets listing"
-lager nets --box $BOX 2>&1 | grep -q "$TEST_PERSIST_NET" && track_test "pass" || track_test "pass"
+lager nets --box $BOX 2>&1 | grep -q "$TEST_PERSIST_NET" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 11.4: Clean up persistence test net"
-lager nets delete "$TEST_PERSIST_NET" uart --box $BOX >/dev/null 2>&1 && track_test "pass" || track_test "pass"
+lager nets delete "$TEST_PERSIST_NET" uart --box $BOX >/dev/null 2>&1 && track_test "pass" || track_test "fail"
 echo ""
 
 # ============================================================
@@ -612,7 +612,7 @@ lager uart --help 2>&1 | grep -qi "example\|usage" && track_test "pass" || track
 echo ""
 
 echo "Test 12.5: Test with invalid box name"
-lager uart --box "INVALID_BOX_12345" 2>&1 | grep -qi "error\|not found\|don't have" && track_test "pass" || track_test "pass"
+lager uart --box "INVALID_BOX_12345" 2>&1 | grep -qi "error\|not found\|don't have" && track_test "pass" || track_test "fail"
 echo ""
 
 # ============================================================

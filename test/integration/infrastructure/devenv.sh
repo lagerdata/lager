@@ -112,11 +112,11 @@ echo ""
 start_section "Error Cases"
 
 echo "Test 4.1: Remove non-existent environment"
-lager devenv remove --name "nonexistent_env_12345" --yes 2>&1 | grep -qi "error\|not found" && track_test "pass" || track_test "pass"
+lager devenv remove --name "nonexistent_env_12345" --yes 2>&1 | grep -qi "error\|not found" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 4.2: Create with invalid image name"
-lager devenv create --name "test_invalid_$$" --image "!!!invalid!!!" 2>&1 | grep -qi "error\|invalid" && track_test "pass" || track_test "pass"
+lager devenv create --name "test_invalid_$$" --image "!!!invalid!!!" 2>&1 | grep -qi "error\|invalid" && track_test "pass" || track_test "fail"
 # Clean up in case it somehow succeeded
 lager devenv remove --name "test_invalid_$$" --yes >/dev/null 2>&1 || true
 echo ""

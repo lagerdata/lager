@@ -217,11 +217,11 @@ echo ""
 start_section "Error Cases"
 
 echo "Test 7.1: Invalid net name"
-lager logic INVALID_NET enable --box $BOX 2>&1 | grep -qi "error\|not.*logic" && track_test "pass" || track_test "pass"
+lager logic INVALID_NET enable --box $BOX 2>&1 | grep -qi "error\|not.*logic" && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 7.2: Invalid box name"
-lager logic $NET enable --box INVALID_BOX_12345 2>&1 | grep -qi "error" && track_test "pass" || track_test "pass"
+lager logic $NET enable --box INVALID_BOX_12345 2>&1 | grep -qi "error" && track_test "pass" || track_test "fail"
 echo ""
 
 # ============================================================
