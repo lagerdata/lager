@@ -37,12 +37,12 @@ are not.
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1258 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 1603 |
+| `unit (box)` | `test/unit/box/` | 1609 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 121 (+1 skipped) |
-| | **Total gated** | **3342** |
+| | **Total gated** | **3348** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -451,7 +451,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 
 | File | What it tests |
 |------|---------------|
-| `test_acroname_driver.py` | Acroname USB hub driver: contention (bounded session hold, cross-process lock) and latency (discovery cache, scan-free warm opens, cycle timing log) |
+| `test_acroname_driver.py` | Acroname USB hub driver: contention (bounded session hold, cross-process lock), latency (discovery cache, scan-free warm opens, cycle timing log), and exit cleanup (a parked handle is closed at interpreter shutdown, including through a real subprocess exit) |
 | `test_authorized_keys_sync.py` | `start_box.sh` authorized_keys marker-block rebuild (revocation, no duplicates, foreign keys preserved) and its single-instance lock |
 | `test_battery_model_authoring.py` | Battery model authoring (create/export of 2281S memory slots), against hardware-verified ground truth |
 | `test_bench_quiesce.py` | The quiesce registry that makes a starting job wait for the previous one's teardown, and the arithmetic tying its bounds to the reap they must cover |

@@ -56,6 +56,37 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- **A short `lager python` script that touched an Acroname USB hub net aborted
+  at interpreter shutdown, after its own logic had already succeeded.** The
+  script printed its results, called `sys.exit(0)`, and then died: czmq
+  reported a dozen dangling ZeroMQ sockets and failed an assertion in
+  `zsock_set_sndtimeo`, the box-side `python3` took SIGABRT, and the CLI
+  reported exit 250.
+
+  0.37.0 introduced the bounded hub session hold: after a one-shot operation
+  the BrainStem handle stays open for a 2.5s idle window so a burst of
+  commands pays one connect, and a timer closes it when the window ends. That
+  timer is a daemon thread on purpose — a parked hub must never be what keeps
+  a script's interpreter alive — so a script that finishes inside the window
+  exits with the handle still open. The vendor SDK's sockets were then live
+  when CPython finalised, which is the state czmq aborts on. Every other
+  stateful driver on the box registers exit cleanup; the session pool was the
+  one that did not.
+
+  A pool now registers an `atexit` drain for itself the first time it parks
+  anything, so the handle is closed and the hub's cross-process lock released
+  while the interpreter is still whole. The drain closes inline rather than
+  under the usual watchdog deadline: a worker thread cannot be created during
+  interpreter shutdown at all on Python 3.12 and later, and a watchdog timeout
+  fires the hang hook, which for a box service ends in `os._exit(70)` — a
+  clean exit failed by its own cleanup. It never raises, so a hub that will
+  not close cannot turn a passing script into a failing one, and it never
+  touches a handle a wedged thread still owns.
+
+  Only the clean-shutdown path was ever affected. `os._exit`, SIGKILL and the
+  box's `timeout` wrapper all skip finalisation, so czmq never runs and the
+  kernel reclaims the descriptor and the lock.
+
 - **Every successful `lager update` that rebuilt the container warned that its
   own lock was failing.** `Warning: update lock heartbeat has failed 5 times in
   a row (5m); the box may be unreachable.` — printed while nothing was wrong.
