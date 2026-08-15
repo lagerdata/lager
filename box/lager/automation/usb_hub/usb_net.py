@@ -1,6 +1,7 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 
+import atexit
 import logging
 import threading
 import time
@@ -191,6 +192,10 @@ class HubSessionPool:
     but not refcounted, so a nested acquire/release inside a held session would
     silently drop the session's hold.
 
+    A pool that parks anything registers an ``atexit`` drain for itself, so a
+    process that exits inside an idle window still closes its handles; see
+    ``_ensure_exit_drain``.
+
     ``now`` and ``timer_factory`` exist so tests can drive the idle window with
     a fake clock and hand-fired timers; production uses the real ones.
     """
@@ -206,6 +211,9 @@ class HubSessionPool:
         # the per-hub thread lock; this only keeps dict mutation coherent
         # between a claimer and an expiry timer that lost the race.
         self._guard = threading.Lock()
+        # Per pool rather than module-level, so a test that installs its own
+        # pool starts from a clean slate. See _ensure_exit_drain.
+        self._exit_drain_registered = False
 
     # -- internal ------------------------------------------------------ #
 
@@ -217,6 +225,12 @@ class HubSessionPool:
         return session
 
     def _park(self, key, handle, close_fn, expires_at):
+        # Before the dict insert, and outside self._guard: a parked handle
+        # must never be reachable without an exit drain registered for it,
+        # and atexit.register allocates — allocation can trigger a GC, and
+        # DeviceLockManager.__del__ is a real finalizer, which is not
+        # something to run inside a lock the expiry timer also takes.
+        self._ensure_exit_drain()
         remaining = expires_at - self._now()
         timer = self._timer_factory(remaining, lambda: self._expire(key))
         session = _HubSession(handle, close_fn, expires_at, timer)
@@ -247,6 +261,14 @@ class HubSessionPool:
             # hang response as any other hub operation: a disconnect that
             # never returns is a wedged hub, and the hang hook (self-restart)
             # is the recovery for it.
+            #
+            # (Should this timer ever fire inside the interpreter's shutdown
+            # window, run_hub_op cannot create its worker thread and raises
+            # instead — the handler below swallows it and the handle leaks.
+            # The window is sub-millisecond and _drain_at_exit has normally
+            # popped the session already, so this stays a note rather than a
+            # special case. It is also why the exit path closes inline; see
+            # drain().)
             try:
                 run_hub_op(key, lambda: session.close_fn(session.handle))
             except HubOperationTimeout:
@@ -259,6 +281,62 @@ class HubSessionPool:
         finally:
             if not wedged:
                 lock.release()
+
+    # -- exit cleanup -------------------------------------------------- #
+    #
+    # A parked session is an open vendor handle held past the end of the
+    # operation that opened it, and the expiry timer that would close it is a
+    # daemon thread (see _park) — deliberately, so a parked hub can never be
+    # what keeps a `lager python` script's interpreter alive. The cost of that
+    # choice is a script that finishes inside the idle window: it exits with
+    # the handle still open, so BrainStem's ZeroMQ sockets are live when
+    # CPython finalises, and czmq reports them dangling and aborts the
+    # process. A test that passed dies with SIGABRT after printing its
+    # results.
+    #
+    # atexit is the other half of the daemon-timer decision: do not hold the
+    # interpreter open, but do close before it goes. Note that this is the
+    # ONLY exit path where the problem exists — os._exit (self_restart),
+    # SIGKILL and the box's timeout wrapper all skip Py_Finalize, so czmq
+    # never runs its shutdown and the kernel reclaims the fd and the flock.
+
+    def _drain_at_exit(self):
+        """``atexit`` hook: close every parked handle while the interpreter
+        is still whole.
+
+        Never raises. This runs after a script's own logic has finished, so
+        anything escaping here turns a passing test into a failing one — the
+        exact outcome the handler exists to prevent. Same shape as
+        ``io/labjack_handle._cleanup_on_exit``.
+        """
+        try:
+            self.drain()
+        except BaseException:  # noqa: BLE001 — see docstring
+            pass
+
+    def _ensure_exit_drain(self):
+        """Register ``_drain_at_exit`` the first time this pool parks anything.
+
+        On first park rather than at import, for two reasons:
+
+        * ``atexit`` runs LIFO, and the vendor SDK is imported lazily on the
+          first open (``acroname._require_library``). Registering here lands
+          after any vendor import the open path triggered, so a teardown that
+          import registered runs after this one rather than before it. That is
+          ordering insurance, not a guarantee — a vendor module imported later
+          still registers later.
+        * A process that never touches a hub pays nothing.
+
+        The BOUND METHOD is registered on purpose: ``atexit`` then holds a
+        strong reference to the pool. Otherwise the only thing keeping a pool
+        with a parked session reachable is the ``self`` captured by the expiry
+        timer's callback — incidental, and silently undone by anyone who makes
+        that callback a weak reference.
+        """
+        if self._exit_drain_registered:
+            return
+        self._exit_drain_registered = True
+        atexit.register(self._drain_at_exit)
 
     # -- public -------------------------------------------------------- #
 
@@ -289,7 +367,25 @@ class HubSessionPool:
             raise
 
     def drain(self):
-        """Synchronously tear down every parked session (tests, shutdown)."""
+        """Synchronously tear down every parked session (tests, shutdown).
+
+        Deliberately does NOT take the per-hub thread lock. It cannot need it:
+        a session a live thread owns was already popped by ``claim``, so
+        everything still in ``_sessions`` is a handle nobody is inside. And
+        taking it would be actively wrong — after ``abandon_wedged`` that lock
+        is held forever by design, so a drain that waited on it would hang on
+        exactly the hub that poisoned the process. For the same reason a
+        wedged handle is never closed here: it was never parked.
+
+        The close runs INLINE, not through ``run_hub_op``. On the exit path a
+        worker thread cannot be created at all ("can't create new thread at
+        interpreter shutdown", CPython 3.12+), so the deadline would raise
+        rather than bound anything and the handle would leak; and a
+        ``run_hub_op`` timeout fires ``_hang_hook``, which for a box service
+        ends in ``os._exit(70)`` — a clean exit turned into a failure by its
+        own cleanup. A parked handle just completed an operation inside its
+        deadline, so it is the one handle in the process known to be live.
+        """
         with self._guard:
             keys = list(self._sessions)
         for key in keys:
@@ -300,7 +396,14 @@ class HubSessionPool:
                 session.close_fn(session.handle)
             except Exception:
                 logger.exception("hub session close failed for %s", key)
-            self._lock_manager.release_lock(key)
+            finally:
+                # Released per key, and even when the close blew up: one
+                # unresponsive hub must not leave every other hub on the box
+                # claimed for the next process.
+                try:
+                    self._lock_manager.release_lock(key)
+                except Exception:
+                    logger.exception("hub flock release failed for %s", key)
 
 
 class _HubClaim:

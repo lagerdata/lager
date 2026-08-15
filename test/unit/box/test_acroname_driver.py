@@ -23,9 +23,13 @@ BrainStem is stubbed, so no hardware is needed. (The real Acroname path still
 needs a hardware smoke test before merge — see the plan.)
 """
 
+import atexit
 import importlib.util
 import os
+import subprocess
 import sys
+import tempfile
+import textwrap
 import threading
 import time
 import types
@@ -965,6 +969,9 @@ class AcronameSessionHoldTests(unittest.TestCase):
         self.addCleanup(
             setattr, acroname.AcronameUSBNet, "_session_pool", prior)
         self.addCleanup(self.pool.drain)
+        # The pool registers its exit drain on the first park; drop it again
+        # so a pytest process does not accumulate one dead test pool per test.
+        self.addCleanup(atexit.unregister, self.pool._drain_at_exit)
         self.net = acroname.AcronameUSBNet({"address": self.ADDRESS})
 
     # -- helpers ------------------------------------------------------- #
@@ -1023,6 +1030,128 @@ class AcronameSessionHoldTests(unittest.TestCase):
         self.assertEqual(_opened, _closed)
         self.assertTrue(self._flock_from_elsewhere(),
                         "another process cannot take the hub after the window")
+
+    # -- release at interpreter exit ------------------------------------ #
+
+    def test_process_exit_closes_a_parked_session(self):
+        """No open USB handle may survive into interpreter finalisation.
+
+        A `lager python` script that enables a hub net and exits inside the
+        idle window leaves the session parked -- the expiry timer is a daemon
+        and never fires (test_the_idle_timer_is_a_daemon). BrainStem's ZeroMQ
+        sockets are then still open when CPython finalises: czmq reports them
+        dangling and aborts, so a script whose own logic passed dies with
+        SIGABRT after printing its results.
+        """
+        self.net.enable("CHARGE", 0)
+        self.assertIsNotNone(_claim["held_by"], "nothing was parked")
+        self.pool._drain_at_exit()
+        self.assertIsNone(_claim["held_by"],
+                          "the hub was still claimed at interpreter exit")
+        self.assertEqual(_opened, _closed)
+        self.assertEqual(self.pool._sessions, {})
+        self.assertTrue(self._flock_from_elsewhere(),
+                        "the flock outlived the process")
+
+    def test_a_real_interpreter_exit_drains_a_parked_session(self):
+        """The same thing again, but through CPython's own shutdown rather
+        than a hand-called hook -- a real park, a real daemon timer with a
+        window that has not expired, and a real `sys.exit(0)`.
+
+        This is the defect's exact shape: every piece below the registration
+        worked, and the handle still leaked because nothing was wired to
+        process exit. A test that calls the hook itself cannot tell the two
+        apart. No hardware and no vendor SDK: the pool is loaded by path with
+        stub parent packages, the way this module loads it.
+        """
+        box_root = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "box"))
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt = os.path.join(tmp, "closed")
+            script = textwrap.dedent(f"""
+                import os, sys, types
+                box = {box_root!r}
+                for pkg, sub in (
+                        ("lager", "lager"),
+                        ("lager.util", "lager/util"),
+                        ("lager.automation", "lager/automation"),
+                        ("lager.automation.usb_hub", "lager/automation/usb_hub")):
+                    mod = types.ModuleType(pkg)
+                    mod.__path__ = [os.path.join(box, sub)]
+                    sys.modules[pkg] = mod
+                from lager.automation.usb_hub import usb_net
+
+                def _close(handle):
+                    with open({receipt!r}, "w") as fh:
+                        fh.write(handle)
+
+                # A window far longer than the process lives, so the only
+                # thing that can close this handle is the exit drain.
+                pool = usb_net.HubSessionPool(
+                    idle_s=600.0,
+                    lock_manager=types.SimpleNamespace(
+                        acquire_lock=lambda key, timeout=None: True,
+                        release_lock=lambda key: None))
+                pool._park("hub-key", "HANDLE", _close, pool._now() + 600.0)
+                sys.exit(0)
+            """)
+            proc = subprocess.run([sys.executable, "-c", script],
+                                  capture_output=True, text=True, timeout=60)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(proc.stderr, "",
+                             "exit cleanup must be silent, not noisy")
+            self.assertTrue(
+                os.path.exists(receipt),
+                "the parked handle was never closed: it was still open when "
+                "the interpreter finalised, which is what aborts the process")
+            with open(receipt) as fh:
+                self.assertEqual(fh.read(), "HANDLE")
+
+    def test_the_exit_drain_is_registered_the_first_time_a_session_is_parked(self):
+        """Lazy, and exactly once. Registering at import would land before the
+        vendor SDK's own import, and atexit runs LIFO."""
+        with patch.object(usb_net, "atexit") as fake_atexit:
+            self.net.states([0])                 # hold=False: never parks
+            fake_atexit.register.assert_not_called()
+            self.net.enable("CHARGE", 0)
+            fake_atexit.register.assert_called_once_with(
+                self.pool._drain_at_exit)
+            self.net.disable("CHARGE", 0)        # parks again
+            fake_atexit.register.assert_called_once()
+
+    def test_the_exit_drain_does_not_spawn_a_worker_thread(self):
+        """A thread cannot be created during interpreter shutdown (CPython
+        3.12+ raises), so a deadline round the exit close would raise instead
+        of bounding it -- and a run_hub_op timeout fires the hang hook, which
+        for a box service ends in os._exit(70). The exit close is inline."""
+        self.net.enable("CHARGE", 0)
+        with patch.object(usb_net, "run_hub_op",
+                          side_effect=AssertionError(
+                              "the exit drain must not use a worker thread")):
+            self.pool.drain()
+        self.assertEqual(_opened, _closed)
+
+    def test_a_hub_that_refuses_to_close_does_not_strand_the_others(self):
+        """One unresponsive hub must not leave every other hub on the box
+        claimed for the next process. Driven at the pool level: the driver
+        fakes share one global claim slot, so two hubs cannot go through it."""
+        closed = []
+
+        def _refuses(handle):
+            raise RuntimeError("hub will not disconnect")
+
+        self.mgr.acquire_lock("bad-hub", timeout=1.0)
+        self.mgr.acquire_lock("good-hub", timeout=1.0)
+        self.pool._park("bad-hub", object(), _refuses, self.clock() + 2.5)
+        self.pool._park("good-hub", "H", closed.append, self.clock() + 2.5)
+
+        with self.assertLogs(usb_net.logger, level="ERROR"):
+            self.pool._drain_at_exit()
+
+        self.assertEqual(closed, ["H"], "a raising close stranded the next hub")
+        self.assertEqual(self.pool._sessions, {})
+        self.assertEqual(self.mgr.lock_handles, {},
+                         "a hub that would not close kept its flock")
 
     def test_an_early_timer_fire_is_a_no_op(self):
         """A refresh re-arms the window; a stale fire from the cancelled
@@ -1107,6 +1236,38 @@ class AcronameSessionHoldTests(unittest.TestCase):
         with open(path, "a+") as fh:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+    def test_the_exit_drain_never_touches_a_wedged_hub(self):
+        """The stuck thread owns that handle, so closing it from the exit path
+        would be a use-after-free -- and its per-hub thread lock is held
+        forever by design, so a drain that waited on it would hang the
+        interpreter at exit. That this test terminates is the assertion.
+
+        Safe by construction rather than by check: claim() popped the session
+        and abandon_wedged() never re-parks, so a wedged handle is not in
+        _sessions for the drain to find.
+        """
+        global _port_hook
+        address = "USB0::0x24FF::0x0013::BFABDDC4::INSTR::WEDGE-EXIT"
+        net = acroname.AcronameUSBNet({"address": address})
+        net.enable("CHARGE", 0)
+        held, closed_before = _claim["held_by"], list(_closed)
+
+        def _wedged_native_call():
+            time.sleep(30)
+
+        _port_hook = _wedged_native_call
+        with patch.object(acroname, "HUB_OP_TIMEOUT_S", 0.2):
+            with self.assertRaises(usb_net.HubOperationTimeout):
+                net.enable("CHARGE", 0)
+        _port_hook = None
+
+        self.pool._drain_at_exit()
+        self.assertEqual(_closed, closed_before,
+                         "the exit drain closed a handle a stuck thread owns")
+        self.assertEqual(_claim["held_by"], held)
+        self.assertFalse(usb_net._local_hub_lock(address).acquire(timeout=0.05),
+                         "the wedged hub's thread lock was released")
 
     # -- the warm fast path (regression from the 7-9s/op incident) ------ #
 
