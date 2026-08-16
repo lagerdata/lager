@@ -1107,6 +1107,70 @@ class AcronameSessionHoldTests(unittest.TestCase):
             with open(receipt) as fh:
                 self.assertEqual(fh.read(), "HANDLE")
 
+    def _start_expiry(self, key, close_fn):
+        """Park `key`, let its window lapse, and run the expiry on a thread of
+        its own -- the shape production has when the idle timer fires. Returns
+        the thread, having waited until the session is popped and the close is
+        genuinely in flight."""
+        self.mgr.acquire_lock(key, timeout=1.0)
+        self.pool._park(key, "H", close_fn, self.clock() + 2.5)
+        self.clock.advance(2.5)
+        worker = threading.Thread(target=self.timers[-1].fn)
+        worker.start()
+        self.addCleanup(worker.join, 10)
+        deadline = time.monotonic() + 5
+        while key in self.pool._sessions and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return worker
+
+    def test_the_exit_drain_waits_for_a_teardown_already_in_flight(self):
+        """Once the idle timer has fired the session is gone from _sessions,
+        so the drain finds nothing -- while the disconnect it started is still
+        running on a daemon thread that finalisation would kill midway,
+        leaving the same dangling sockets. Exit has to wait for it.
+
+        On a 2.5s window and a ~2s disconnect that gap is about as wide as the
+        window, so any test idling a few seconds after its last hub operation
+        lands in it.
+        """
+        closed = []
+
+        def _slow_close(handle):
+            time.sleep(0.3)
+            closed.append(handle)
+
+        self._start_expiry("slow-hub", _slow_close)
+        self.assertEqual(self.pool._sessions, {},
+                         "the timer had not popped the session yet")
+        self.assertEqual(closed, [], "the close finished before it was tested")
+
+        self.pool._drain_at_exit()
+
+        self.assertEqual(closed, ["H"],
+                         "exit did not wait for the teardown already running")
+
+    def test_the_exit_wait_for_a_teardown_is_bounded(self):
+        """A disconnect slower than the bound is a wedged hub, and waiting one
+        out at exit buys nothing -- the handle is lost either way. Exit must
+        leave rather than hang."""
+        release = threading.Event()
+
+        def _never_finishes(handle):
+            release.wait(30)
+
+        self._start_expiry("wedged-hub", _never_finishes)
+        # Registered AFTER _start_expiry's join, so LIFO cleanup frees the
+        # close before anything waits on it -- otherwise the teardown this
+        # test deliberately wedges is waited out at teardown.
+        self.addCleanup(release.set)
+
+        with patch.object(usb_net, "_EXIT_TEARDOWN_WAIT_S", 0.2):
+            start = time.monotonic()
+            self.pool._drain_at_exit()
+            waited = time.monotonic() - start
+
+        self.assertLess(waited, 5, "exit hung on a teardown that never finishes")
+
     def test_the_exit_drain_is_registered_the_first_time_a_session_is_parked(self):
         """Lazy, and exactly once. Registering at import would land before the
         vendor SDK's own import, and atexit runs LIFO."""
