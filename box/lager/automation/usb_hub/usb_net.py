@@ -153,6 +153,15 @@ HUB_SESSION_IDLE_S = 2.5
 # ownership of the session (re-arm or teardown) has passed to it.
 _EXPIRE_LOCK_WAIT_S = 0.1
 
+# How long process exit will wait, in total, for expiry teardowns that are
+# already running. Sized against a MEASURED healthy disconnect: a BrainStem
+# hub takes on the order of two seconds to disconnect, so a bound any tighter
+# would routinely abandon a teardown that was about to succeed. It stays far
+# below the driver's own HUB_OP_TIMEOUT_S because a disconnect slower than
+# this is a wedged hub, and waiting one out at exit buys nothing — the handle
+# is lost either way, and the process is trying to leave.
+_EXIT_TEARDOWN_WAIT_S = 10.0
+
 
 class _HubSession:
     """One parked hub connection: the open handle, how to close it, and when
@@ -214,6 +223,10 @@ class HubSessionPool:
         # Per pool rather than module-level, so a test that installs its own
         # pool starts from a clean slate. See _ensure_exit_drain.
         self._exit_drain_registered = False
+        # key -> the timer thread currently tearing that session down, so exit
+        # can wait for a disconnect it is too late to start itself. Guarded by
+        # _guard. See _await_expiries.
+        self._expiring: dict = {}
 
     # -- internal ------------------------------------------------------ #
 
@@ -269,15 +282,28 @@ class HubSessionPool:
             # popped the session already, so this stays a note rather than a
             # special case. It is also why the exit path closes inline; see
             # drain().)
+            #
+            # Published for the whole teardown, so an exiting main thread can
+            # wait for a disconnect that started before it (see
+            # _await_expiries). This thread blocks inside run_hub_op until the
+            # close finishes, so joining it is joining the close.
+            me = threading.current_thread()
+            with self._guard:
+                self._expiring[key] = me
             try:
-                run_hub_op(key, lambda: session.close_fn(session.handle))
-            except HubOperationTimeout:
-                wedged = True  # hook already fired inside run_hub_op
-            except Exception:
-                logger.exception("hub session close failed for %s", key)
+                try:
+                    run_hub_op(key, lambda: session.close_fn(session.handle))
+                except HubOperationTimeout:
+                    wedged = True  # hook already fired inside run_hub_op
+                except Exception:
+                    logger.exception("hub session close failed for %s", key)
+                finally:
+                    self._lock_manager.release_lock(key)
+                logger.debug("hub session %s: idle window over, released", key)
             finally:
-                self._lock_manager.release_lock(key)
-            logger.debug("hub session %s: idle window over, released", key)
+                with self._guard:
+                    if self._expiring.get(key) is me:
+                        del self._expiring[key]
         finally:
             if not wedged:
                 lock.release()
@@ -311,8 +337,40 @@ class HubSessionPool:
         """
         try:
             self.drain()
+            self._await_expiries(_EXIT_TEARDOWN_WAIT_S)
         except BaseException:  # noqa: BLE001 — see docstring
             pass
+
+    def _await_expiries(self, timeout):
+        """Wait, bounded, for expiry teardowns already in flight.
+
+        Draining the parked sessions is only half of it. Once the idle timer
+        has fired, the session is gone from ``_sessions`` — so the drain finds
+        nothing to do — while the disconnect it started is still running on a
+        daemon thread. A disconnect costs on the order of seconds, so a script
+        that exits in that gap has finalisation kill the teardown midway and
+        leaves exactly the dangling sockets the drain exists to prevent. On a
+        2.5s idle window and a ~2s disconnect that gap is roughly as wide as
+        the window itself, and any test that idles a few seconds after its
+        last hub operation lands in it.
+
+        Bounded on the total, not per thread: the point is to outlast a
+        healthy disconnect, never to wait out a wedged one.
+        """
+        end = time.monotonic() + timeout
+        while True:
+            with self._guard:
+                pending = [t for t in self._expiring.values() if t.is_alive()]
+            if not pending:
+                return
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                logger.debug(
+                    "hub teardown still running after %.0fs at exit; leaving it",
+                    timeout,
+                )
+                return
+            pending[0].join(remaining)
 
     def _ensure_exit_drain(self):
         """Register ``_drain_at_exit`` the first time this pool parks anything.

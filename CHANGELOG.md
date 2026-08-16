@@ -83,6 +83,21 @@ All notable changes to the Lager platform are documented here. For detailed rele
   not close cannot turn a passing script into a failing one, and it never
   touches a handle a wedged thread still owns.
 
+  Closing what is parked is only half of it, because a disconnect is not
+  instant — it measures around two seconds on real hardware. Once the idle
+  timer has fired there is nothing left parked to close, while the disconnect
+  it started is still running on a daemon thread; a script exiting in that gap
+  had finalisation kill the teardown midway and produced exactly the same
+  abort. On a 2.5s window that gap is about as wide as the window itself, so
+  any test idling a few seconds after its last hub operation hit it. Exit now
+  also waits for a teardown already in flight, bounded well above a healthy
+  disconnect and far below the driver's own deadline — long enough never to
+  abandon one that was about to succeed, short enough never to wait out a
+  wedged hub.
+
+  A script that parked a session consequently takes about a second longer to
+  exit, which is the disconnect it was previously skipping.
+
   Only the clean-shutdown path was ever affected. `os._exit`, SIGKILL and the
   box's `timeout` wrapper all skip finalisation, so czmq never runs and the
   kernel reclaims the descriptor and the lock.
