@@ -308,14 +308,34 @@ IDENTITY_OPT=""
 # BatchMode operation (`lager update`, probes) fails with "Permission
 # denied". Force a genuinely fresh connection so the test exercises key
 # authentication for real.
+# Ask the box whether the lager_box key is in its authorized_keys.
+#
+# NOT "can this machine reach the box" — those differ whenever the operator
+# has a key of their own, and an ssh_config `Host *` IdentityFile gives one
+# for EVERY host. This step used to ask the second question in place of the
+# first, so on such a machine it printed "Passwordless SSH already
+# configured" and then never generated, copied, or registered the key that
+# every later lager command depends on. The install completed, reported
+# success, and left the box without a lager_box key.
+#
+# `-i` does not narrow ssh to the key it names, and neither does
+# IdentitiesOnly=yes — that excludes the agent and ssh's default filenames,
+# but ssh_config identities are still offered. No authentication attempt can
+# answer this; only the file can. Match the base64 blob rather than the
+# comment, because comments differ between the name a key was generated with
+# and the name a key manager renders it under. The blob is [A-Za-z0-9+/=]
+# only, so it is safe to single-quote into the remote shell.
+KEY_BLOB=""
+if [ -f "$KEY_FILE.pub" ]; then
+    KEY_BLOB=$(awk '{print $2}' "$KEY_FILE.pub" 2>/dev/null || true)
+fi
+
 print_info "Testing existing SSH configuration..."
-if [ -f "$KEY_FILE" ] && ssh -i "$KEY_FILE" -o BatchMode=yes -o ConnectTimeout=5 -o ControlPath=none -o ControlMaster=no "${BOX_USER}@${BOX_IP}" "echo 'test'" &>/dev/null; then
+if [ -n "$KEY_BLOB" ] && ssh -o BatchMode=yes -o ConnectTimeout=5 -o ControlPath=none -o ControlMaster=no "${BOX_USER}@${BOX_IP}" "grep -qF '$KEY_BLOB' ~/.ssh/authorized_keys" 2>/dev/null; then
     IDENTITY_OPT="-i $KEY_FILE"
-    print_success "Passwordless SSH already configured (${KEY_FILE})"
-elif ssh -o BatchMode=yes -o ConnectTimeout=5 -o ControlPath=none -o ControlMaster=no "${BOX_USER}@${BOX_IP}" "echo 'test'" &>/dev/null; then
-    print_success "Passwordless SSH already configured"
+    print_success "lager_box key already authorized (${KEY_FILE})"
 else
-    print_warning "Passwordless SSH not configured - will set up now"
+    print_warning "lager_box key not authorized on this box - setting it up now"
     NEEDS_SSH_SETUP=true
 fi
 
