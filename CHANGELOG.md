@@ -2,7 +2,7 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
-## [Unreleased]
+## [0.37.1] - 2026-08-17
 
 ### Changed
 
@@ -96,7 +96,12 @@ All notable changes to the Lager platform are documented here. For detailed rele
   wedged hub.
 
   A script that parked a session consequently takes about a second longer to
-  exit, which is the disconnect it was previously skipping.
+  exit, which is the disconnect it was previously skipping. That is a cost
+  only against the aborting build, not against the driver this replaced:
+  measured end to end on an eight-step hardware suite, the fixed build
+  completes in 77.9s where the pre-0.37.0 open-close-per-operation driver took
+  92.6s, because reusing a session saves considerably more than closing one
+  costs.
 
   Only the clean-shutdown path was ever affected. `os._exit`, SIGKILL and the
   box's `timeout` wrapper all skip finalisation, so czmq never runs and the

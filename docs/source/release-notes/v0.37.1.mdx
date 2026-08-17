@@ -1,0 +1,40 @@
+---
+title: "Version 0.37.1"
+description: "August 17, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- A short Python test that switched an Acroname USB hub net could abort at the very end, after its own work had already succeeded. The test printed its results, exited cleanly, and then died during interpreter shutdown, which the CLI reported as exit code 250 — enough to fail a test that had in fact passed. Version 0.37.0 introduced a short reuse window in which a hub stays connected after an operation, so that a burst of commands pays one connection instead of one per command. Nothing closed that connection if the process exited while the window was still open, and the hub vendor's library aborts when it finds its sockets still open at shutdown. A Lager Box now always closes a held hub connection before the process exits, and waits for a disconnection already under way rather than letting it be cut short. Scripts that exit more than a few seconds after their last hub command were never affected. The fix costs roughly a second at exit for a script that held a hub open, and the reuse window still more than pays for it: an eight-step hardware suite completes in 77.9 seconds against 92.6 seconds on the pre-0.37.0 connect-per-command driver.
+
+- Every successful `lager update` that rebuilt the Lager Box container warned that its own lock was failing. Update stops the container and rebuilds it, and that container serves the lock the command itself holds, so renewals across that window could not succeed and accumulated into a warning about a Lager Box that was busy doing exactly what it had been asked to do. Update now declares the outage for the duration of the rebuild and resumes once the Lager Box is confirmed healthy again. No lock semantics change, and a renewal failure outside that window is real signal again.
+
+- `lager update --check` could promise a cached build immediately before a ten-minute rebuild. On a Lager Box still using the older directory layout the preview reported a valid cache and an estimate of about ninety seconds; the run then reorganised the tree and rebuilt from scratch. The preview ignored the pending reorganisation, which necessarily invalidates the cache, and it also reported "cache valid" when it had simply been unable to measure. Both are fixed: an unmeasurable cache is now reported as unknown, and a Lager Box that needs the reorganisation no longer reports that there is nothing to do.
+
+- The sudoers snippet printed by `lager box-config mount` wrote a strict subset of the file it replaced. An operator who pasted it fixed mount preparation and silently removed the other grants that `lager box-config apply` needs, and left no marker, so the next update asked for the sudo password again. It now prints exactly what `lager install` and `lager update` write.
+
+- A change to the internal marker that decides whether the box-config sudoers file needs rewriting could not have taken effect, because the checks that read it were hardcoded rather than reading the marker itself. Changing it would have moved the file Lager writes without moving the file it looks for, so the rewrite would have been skipped on every Lager Box.
+
+## <u>Improvements</u>
+
+- The three sudoers files Lager writes now say on the Lager Box that Lager rewrites them. Each is regenerated in full on every run, which is deliberate and unchanged — but there was previously no sign of that on the Lager Box, so an operator who added a grant inside one of those files got it silently erased by the next install with nothing to explain where it went. Each file now opens with a header naming the command that rewrites it and pointing operator grants at a separate file, which survives every Lager run. No existing Lager Box is touched and no Lager Box prompts for a sudo password.
+
+- The documentation now states that the Lager Box login account is root-equivalent by design. Provisioning requires root, and several of the grants Lager must install to do it are each a full path to root. Nothing about that posture changes here, but two places previously described those grants as a privilege boundary, which they are not. Treat anyone holding the Lager Box login account's SSH key as holding root on that Lager Box.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.37.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.37.1/)
