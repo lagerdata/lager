@@ -33,7 +33,7 @@ from ..box._host_ops import (
 from ..box._ssh import (
     BOX_KEYS_DIR,
     ensure_lager_box_keypair,
-    key_auth_works,
+    key_installed_on_box,
     register_lager_box_key,
 )
 from ._host_cli import (
@@ -1054,7 +1054,12 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             return False
 
         try:
-            _key_works = copy_result.returncode == 0 and key_auth_works(ssh_host)
+            # Presence, not authentication: a login here would succeed on the
+            # operator's own identity whether or not the append landed.
+            _key_works = (
+                copy_result.returncode == 0
+                and key_installed_on_box(ssh_host, key_path=key_file) is not False
+            )
         except OSError:
             _key_works = False
         if _key_works:
@@ -1081,8 +1086,10 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         if not ok:
             click.secho(
                 f'Warning: SSH key works but could not be registered in '
-                f'{BOX_KEYS_DIR} on the box ({detail}). Run `lager ssh-setup '
-                f'--box {ssh_host.split("@")[-1]}` once the directory is writable.',
+                f'{BOX_KEYS_DIR} on the box ({detail}); it will not survive a '
+                'rebuild of the box\'s authorized_keys. Run `lager ssh-setup '
+                f'--box {ssh_host.split("@")[-1]}` for the grant a tightly '
+                'scoped fleet needs. Do not widen the directory instead.',
                 fg='yellow', err=True,
             )
 
@@ -1090,7 +1097,12 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         # First try with the lager_box key if it exists. Same unattended
         # probe `lager ssh-setup` uses, so "does the key already work?" is
         # answered identically in both commands.
-        if os.path.exists(key_file) and key_auth_works(ssh_host):
+        # "Is the key on the box?", not "did something authenticate?". The
+        # latter is satisfied by any identity ssh offers — including a
+        # `Host *` IdentityFile from ssh_config — so it answered yes on
+        # boxes this key had been purged from, and update then skipped the
+        # setup that would have put it back.
+        if os.path.exists(key_file) and key_installed_on_box(ssh_host, key_path=key_file):
             use_explicit_key = True
             log_status('OK', 'green')
             # Repairs a box whose key predates registration.
@@ -1160,7 +1172,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     _ssh_pool = get_ssh_connection_pool()
     _ssh_control_path = _ssh_pool.get_control_path(ssh_host)
     # StrictHostKeyChecking=accept-new auto-trusts a first-seen host key (matching
-    # the ssh-copy-id / key_auth_works setup phases) so a box that isn't yet in
+    # the ssh-copy-id / key-check setup phases) so a box that isn't yet in
     # known_hosts doesn't fail these BatchMode calls with "Host key verification
     # failed". It also survives environments where known_hosts can't be persisted
     # (e.g. a devenv where it's a single-file bind mount and ssh's atomic replace

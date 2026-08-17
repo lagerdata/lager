@@ -85,9 +85,10 @@ def _invoke(*, copy_results=None, generated=False, auth_sequence=(),
             which="/usr/bin/ssh-copy-id", register=(True, "")):
     """Run `lager ssh-setup` with the helpers mocked.
 
-    auth_sequence drives successive key_auth_works() return values
-    (probe, then post-copy verify). copy_results feeds mod.subprocess.run
-    for the ssh-copy-id call.
+    auth_sequence drives successive key_installed_on_box() return values
+    (probe, then post-copy verify): True installed, False absent, None
+    "could not ask". copy_results feeds mod.subprocess.run for the
+    ssh-copy-id call.
 
     register_lager_box_key MUST be mocked here even where a test does not
     assert on it: it lives in _ssh and runs its own subprocess.run, which
@@ -99,7 +100,7 @@ def _invoke(*, copy_results=None, generated=False, auth_sequence=(),
     auth = list(auth_sequence)
     registered = []
 
-    def fake_auth(dest, **kwargs):
+    def fake_installed(dest, **kwargs):
         return auth.pop(0)
 
     def fake_register(dest, **kwargs):
@@ -110,7 +111,7 @@ def _invoke(*, copy_results=None, generated=False, auth_sequence=(),
          patch.object(mod, "resolve_and_validate_box", lambda ctx, box: "1.2.3.4"), \
          patch.object(mod, "resolve_box_user", lambda ip: "boxuser"), \
          patch.object(mod, "ensure_lager_box_keypair", lambda *a, **k: generated), \
-         patch.object(mod, "key_auth_works", fake_auth), \
+         patch.object(mod, "key_installed_on_box", fake_installed), \
          patch.object(mod, "register_lager_box_key", fake_register), \
          patch.object(mod.shutil, "which", lambda name: which):
         sub.run = copy_run
@@ -156,6 +157,19 @@ class CopyFlow(unittest.TestCase):
         # Must inherit the TTY: no capture_output/text/input kwargs.
         self.assertEqual(kwargs, {})
 
+    def test_forces_the_copy_past_ssh_copy_ids_own_filter(self):
+        """ssh-copy-id decides "already installed?" by logging in with the
+        key -- which succeeds on any identity ssh offers, including an
+        ssh_config `Host *` IdentityFile. Observed on hardware: it reported
+        "All keys were skipped because they already exist on the remote
+        system" for a box that then rejected the key under
+        `ssh -F /dev/null`. -f skips that filter; the caller has already
+        established absence by grepping authorized_keys, which is exact."""
+        _result, copy_run = _invoke(copy_results=[_proc(0)],
+                                    auth_sequence=[False, True])
+        argv, _kwargs = copy_run.calls[0]
+        self.assertIn("-f", argv)
+
     def test_ssh_copy_id_failure_reports_retry(self):
         result, _ = _invoke(copy_results=[_proc(1)], auth_sequence=[False])
         self.assertNotEqual(result.exit_code, 0)
@@ -165,7 +179,7 @@ class CopyFlow(unittest.TestCase):
     def test_verify_failure_after_copy(self):
         result, _ = _invoke(copy_results=[_proc(0)], auth_sequence=[False, False])
         self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("still fails", _text(result))
+        self.assertIn("not in the box's authorized_keys", _text(result))
 
     def test_missing_ssh_copy_id_binary(self):
         result, copy_run = _invoke(auth_sequence=[False], which=None)

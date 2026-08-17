@@ -870,7 +870,7 @@ if [ -f "$KEY_FILE.pub" ]; then
     KEY_REG_NAME=$(printf '%s' "$KEY_REG_NAME" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-58)
     KEY_REG_PATH="/etc/lager/authorized_keys.d/${KEY_REG_NAME}.pub"
     if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" \
-        "mkdir -p /etc/lager/authorized_keys.d && cat > '${KEY_REG_PATH}' && chmod 644 '${KEY_REG_PATH}'" \
+        "{ mkdir -p /etc/lager/authorized_keys.d 2>/dev/null || sudo -n mkdir -p /etc/lager/authorized_keys.d; } && { cat > '${KEY_REG_PATH}' 2>/dev/null || sudo -n tee '${KEY_REG_PATH}' >/dev/null; } && { chmod 644 '${KEY_REG_PATH}' 2>/dev/null || true; }" \
         < "$KEY_FILE.pub" >/dev/null 2>&1; then
         print_success "SSH key registered in /etc/lager/authorized_keys.d"
     else

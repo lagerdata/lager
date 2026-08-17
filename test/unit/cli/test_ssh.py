@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 
-from cli.commands.box._ssh import ensure_lager_box_keypair, key_auth_works
+from cli.commands.box._ssh import ensure_lager_box_keypair, key_installed_on_box
 from cli.errors import LagerError
 
 
@@ -38,20 +38,27 @@ class TestEnsureLagerBoxKeypair(unittest.TestCase):
             self.assertFalse(result)
 
 
-class TestKeyAuthWorks(unittest.TestCase):
+class TestKeyInstalledOnBox(unittest.TestCase):
+    """Replaces the old key_auth_works probe, which inferred "the key is
+    installed" from "something authenticated" -- true of any identity ssh
+    offers, including a `Host *` IdentityFile from ssh_config.
 
-    def test_returns_false_when_ssh_missing(self):
-        """When ssh is not on PATH, returns False instead of raising."""
+    Note these assert None, not False: "could not ask the box" is a third
+    outcome, and collapsing it into "not installed" would make callers
+    reinstall a key that is already there."""
+
+    def test_returns_none_when_ssh_missing(self):
+        """When ssh is not on PATH, returns None instead of raising."""
         with patch('shutil.which', return_value=None):
-            result = key_auth_works('user@192.0.2.1')
-        self.assertFalse(result)
+            result = key_installed_on_box('user@192.0.2.1')
+        self.assertIsNone(result)
 
-    def test_returns_false_on_oserror(self):
-        """When subprocess.run raises OSError (e.g. missing DLL), returns False."""
+    def test_returns_none_on_oserror(self):
+        """When subprocess.run raises OSError (e.g. missing DLL), returns None."""
         with patch('shutil.which', return_value='/usr/bin/ssh'):
             with patch('subprocess.run', side_effect=OSError('test error')):
-                result = key_auth_works('user@192.0.2.1')
-        self.assertFalse(result)
+                result = key_installed_on_box('user@192.0.2.1')
+        self.assertIsNone(result)
 
 
 if __name__ == '__main__':

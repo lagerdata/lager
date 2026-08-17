@@ -103,6 +103,26 @@ class ProbeBoxIdentity(unittest.TestCase):
         for argv in calls:
             self.assertIn("BatchMode=yes", argv)
 
+    def test_keyed_attempt_isolates_the_key(self):
+        """Without IdentitiesOnly, `-i` ADDS the key to a list that still
+        holds the agent's keys and any ~/.ssh/config identity for the host,
+        so the probe answers "can I reach this box at all?" — it returns the
+        key as the working identity on a box where the key is not installed,
+        and the keyless fallback can never fire. Observed on hardware: a box
+        whose lager_box line had been deleted from authorized_keys probed
+        healthy through the operator's own agent key."""
+        _identity, _res, calls = self._run(results=[_proc(0, "ok")])
+        self.assertIn("IdentitiesOnly=yes", calls[0])
+
+    def test_keyless_attempt_does_not_isolate(self):
+        # The fallback's whole job is to let the operator's own identities
+        # through; IdentitiesOnly there would offer nothing at all.
+        _identity, _res, calls = self._run(
+            results=[_proc(255, "", DENIED), _proc(0, "ok")],
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("IdentitiesOnly=yes", calls[1])
+
     def test_extra_args_are_passed_through(self):
         _identity, _res, calls = self._run(
             results=[_proc(0, "ok")],
@@ -151,11 +171,40 @@ class KeyRegistration(unittest.TestCase):
         self.assertIn(">", cmd, "truncating write, not an append")
         self.assertNotIn(">>", cmd)
 
-    def test_command_writes_into_the_key_dir_without_sudo(self):
+    def test_command_writes_into_the_key_dir(self):
         cmd = _ssh.register_key_command(self.PUB, "lager-box-u-h.pub")
         self.assertIn(f"{_ssh.BOX_KEYS_DIR}/lager-box-u-h.pub", cmd)
         self.assertIn("mkdir -p", cmd)
-        self.assertNotIn("sudo", cmd, "/etc/lager is 2775, group-owned by the login user")
+
+    def test_tries_unprivileged_before_sudo(self):
+        """On a plain Lager box the key directory belongs to the box and no
+        sudo is wanted; the fallback exists for a box whose key manager made
+        that directory root-owned, which it did on purpose."""
+        cmd = _ssh.register_key_command(self.PUB, "lager-box-u-h.pub")
+        plain = cmd.index("> ")
+        sudo = cmd.index("sudo -n tee")
+        self.assertLess(plain, sudo, "unprivileged write must be attempted first")
+        self.assertIn("sudo -n", cmd, "and never sudo without -n: it must not prompt")
+
+    def test_the_documented_grant_cannot_escape_the_key_dir(self):
+        """Lager does not install this grant -- it prints it for a fleet that
+        scopes sudo tightly to add through its own provisioning. Scoped to
+        the filename shape, because a sudoers wildcard does not match '/'."""
+        from cli.commands.box.ssh_setup import registration_sudoers_line
+        line = registration_sudoers_line("boxuser")
+        self.assertIn("NOPASSWD:", line)
+        self.assertIn(f"{_ssh.BOX_KEYS_DIR}/lager-box-*.pub", line)
+        self.assertTrue(line.startswith("boxuser "))
+        # A directory-wide or bare-tee grant would let any file be written.
+        self.assertFalse(line.rstrip().endswith("tee"))
+        self.assertNotIn(f"tee {_ssh.BOX_KEYS_DIR} ", line)
+
+    def test_failure_is_not_swallowed_by_the_trailing_chmod(self):
+        # `A && B && C || true` would return 0 even when the write failed.
+        # The `|| true` has to be confined to the chmod alone.
+        cmd = _ssh.register_key_command(self.PUB, "lager-box-u-h.pub")
+        self.assertTrue(cmd.rstrip().endswith("|| true; }"), cmd)
+        self.assertNotIn("&& chmod 644 " + _ssh.BOX_KEYS_DIR, cmd)
 
     def test_pubkey_is_quoted_into_the_remote_shell(self):
         cmd = _ssh.register_key_command("blob; rm -rf ~", "lager-box-u-h.pub")
@@ -192,6 +241,67 @@ class KeyRegistration(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("empty", detail)
         self.assertEqual(calls, [], "nothing sent")
+
+
+class KeyInstalledOnBox(unittest.TestCase):
+    """"Is the key on the box?" cannot be answered by logging in.
+
+    A login proves only that SOME identity worked, and an operator whose
+    ssh_config carries a `Host *` IdentityFile — a common fleet-management
+    layout — has one for every host. Measured on hardware: a box that
+    answered the auth probe rejected lager_box outright under
+    `ssh -F /dev/null`, and because ssh-setup and update both gated their
+    reinstall on that probe, neither could ever repair it.
+    """
+
+    PUB = "ssh-ed25519 AAAATESTBLOB lager-box-access"
+
+    def _check(self, rc, *, pub=PUB):
+        calls = []
+
+        def fake_run(cmd, **_kw):
+            calls.append(list(cmd))
+            return _proc(rc)
+
+        with mock.patch("builtins.open", mock.mock_open(read_data=pub)), \
+                mock.patch.object(_ssh.shutil, "which", lambda _n: "/usr/bin/ssh"), \
+                mock.patch.object(_ssh.subprocess, "run", fake_run):
+            return _ssh.key_installed_on_box("lagerdata@10.0.0.1"), calls
+
+    def test_greps_authorized_keys_for_the_blob_not_the_comment(self):
+        # Comments drift -- the same key is `lager-box-access` locally and
+        # whatever a key manager rendered it as on the box. The blob is the key.
+        result, calls = self._check(0)
+        self.assertIs(result, True)
+        remote = calls[0][-1]
+        self.assertIn("AAAATESTBLOB", remote)
+        self.assertIn("authorized_keys", remote)
+        self.assertNotIn("lager-box-access", remote)
+
+    def test_grep_no_match_means_not_installed(self):
+        self.assertIs(self._check(1)[0], False)
+
+    def test_missing_authorized_keys_means_not_installed(self):
+        # grep exits 2 for a missing file.
+        self.assertIs(self._check(2)[0], False)
+
+    def test_unreachable_box_is_unknown_not_absent(self):
+        # 255 is ssh failing to get there; treating that as "not installed"
+        # would trigger a pointless reinstall, and as "installed" would skip
+        # a needed one. Neither is honest.
+        self.assertIsNone(self._check(255)[0])
+
+    def test_no_local_pubkey_is_unknown_and_asks_nothing(self):
+        result, calls = self._check(0, pub="")
+        self.assertIsNone(result)
+        self.assertEqual(calls, [])
+
+    def test_does_not_force_the_key_for_the_query_itself(self):
+        # This is a question about the box's state, not about which
+        # credential asks it -- any working identity is fine.
+        _result, calls = self._check(0)
+        self.assertNotIn("IdentitiesOnly=yes", calls[0])
+        self.assertIn("BatchMode=yes", calls[0])
 
 
 class ConnectionPoolIdentity(unittest.TestCase):
