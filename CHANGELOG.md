@@ -56,6 +56,30 @@ All notable changes to the Lager platform are documented here. For detailed rele
   unchanging label for the several minutes a cold build takes. Parsed from
   BuildKit's own step output; `--verbose` is unchanged.
 
+- **A USB hub disconnect that fails is now recorded rather than discarded.**
+  `AcronameUSBNet._close_hub` caught every exception from `hub.disconnect()`
+  and dropped it, which made `HubSessionPool.drain`'s existing
+  `logger.exception` for a failed close unreachable: the exception was gone
+  before the drain could see it. The handler stays best-effort — a failed
+  disconnect must not propagate out of teardown, where every caller is either
+  finishing successfully or already unwinding — but it now logs what it
+  caught.
+
+  Also adds an opt-in exit trace behind `LAGER_HUB_EXIT_DEBUG`, for the
+  intermittent abort a `lager python` script takes after an Acroname
+  operation. When set it reports, per exit, which sessions were parked, which
+  teardowns were already in flight, the outcome and duration of each close,
+  and the total time in the hook. Unset by default, so nothing changes for
+  anyone not chasing that bug.
+
+  It writes to stderr rather than through `logging`, for reasons specific to
+  where it runs: by `atexit` time logging may already be torn down and
+  emitting can raise, and anything escaping the exit hook turns a passing
+  script into a failing one — the exact outcome the hook exists to prevent.
+  A `lager python` script also configures no handlers, so `logging.lastResort`
+  would drop these lines for being below WARNING, which as timings they are.
+  Every write is individually guarded.
+
 ### Fixed
 
 - **`lager update --check` still promised a cached build when the ref it was

@@ -25,6 +25,7 @@ needs a hardware smoke test before merge — see the plan.)
 
 import atexit
 import importlib.util
+import io
 import os
 import subprocess
 import sys
@@ -1387,6 +1388,67 @@ class AcronameSessionHoldTests(unittest.TestCase):
                     self.net.states([0])
         line = next(l for l in cm.output if "cycle" in l)
         self.assertIn("-> DeviceNotFoundError", line)
+
+
+class HubExitTraceTests(unittest.TestCase):
+    """The opt-in exit trace, and the swallow it was added to open up.
+
+    Two properties matter more than the text it prints. It must be INERT
+    unless asked for, because it ships enabled-by-default nowhere; and it
+    must never raise, because it runs inside the atexit hook whose whole
+    purpose is that a passing script does not die during cleanup. A trace
+    that throws at shutdown would cause the exact failure it exists to
+    diagnose.
+    """
+
+    def _trace_to(self, stream, enabled):
+        with patch.object(usb_net, "_EXIT_DEBUG", enabled), \
+                patch.object(usb_net.sys, "stderr", stream):
+            usb_net._exit_trace("hello")
+
+    def test_the_exit_trace_is_silent_unless_enabled(self):
+        stream = io.StringIO()
+        self._trace_to(stream, enabled=False)
+        self.assertEqual("", stream.getvalue())
+
+    def test_the_exit_trace_writes_when_enabled(self):
+        stream = io.StringIO()
+        self._trace_to(stream, enabled=True)
+        self.assertEqual("[hub-exit] hello\n", stream.getvalue())
+
+    def test_the_exit_trace_survives_a_stderr_that_is_gone(self):
+        """`sys.stderr` can be None or closed by the time atexit runs."""
+        for stream in (None, _ClosedStream()):
+            with self.subTest(stream=type(stream).__name__):
+                self._trace_to(stream, enabled=True)  # must not raise
+
+    def test_a_failed_disconnect_is_recorded_rather_than_discarded(self):
+        """``_close_hub`` stays best-effort, but no longer silent.
+
+        This is the innermost swallow on the teardown path: ``drain`` logs a
+        failed close and could never see one, because this handler ate the
+        exception first.
+        """
+        class _Boom:
+            def disconnect(self):
+                raise RuntimeError("hub went away")
+
+        with self.assertLogs(acroname.logger, level="DEBUG") as caught:
+            acroname.AcronameUSBNet._close_hub(_Boom())  # must not raise
+        self.assertTrue(
+            any("hub went away" in line for line in caught.output),
+            f"disconnect failure was not recorded: {caught.output}",
+        )
+
+
+class _ClosedStream:
+    """A stream that raises on write, like stderr after finalisation."""
+
+    def write(self, _text):
+        raise ValueError("I/O operation on closed file")
+
+    def flush(self):
+        raise ValueError("I/O operation on closed file")
 
 
 if __name__ == "__main__":
