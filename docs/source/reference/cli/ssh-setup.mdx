@@ -66,10 +66,33 @@ appends to `~/.ssh/authorized_keys` outside every marker block, and while
 them against another key manager that rebuilds the file from its own source —
 that drops every line outside its own markers, and `start_box.sh` then
 re-creates its block from the key directory alone. A key registered in the key
-directory comes back; one that was only appended does not. If registration fails
-(for example on a box where `/etc/lager` is not writable by the login user) the
-command warns and still reports success — the key works — and re-running
-`lager ssh-setup` later retries the registration with no password prompt.
+directory comes back; one that was only appended does not.
+
+The write is attempted unprivileged first, then with `sudo -n`. On a box Lager
+alone manages, the key directory is writable by the box user and no sudo is
+involved. On a box hardened by another key manager the directory is root-owned
+deliberately — a writable key directory would let any user on the box authorize
+any key — and the `sudo -n` fallback covers it wherever the box user has a
+NOPASSWD grant broad enough.
+
+If both attempts fail, the command warns and still reports success (the key
+works; only its durability is lost) and prints the grant to add. **Lager does
+not install this grant** — a fleet that scopes sudo tightly is the system that
+decided the directory should be root-owned, so it is the right place to decide
+who may write there. Add it through that fleet's own provisioning:
+
+```
+<box-user> ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/lager/authorized_keys.d/lager-box-*.pub
+```
+
+A sudoers wildcard does not match `/`, so the grant cannot reach outside the
+directory. It does not restrict what key is written, since the content is the
+box user's to choose — on a box where that user is already root-equivalent that
+changes nothing, and on one where it is not, read it before adding it.
+
+<Warning>Do not widen the key directory's permissions instead. A writable
+`/etc/lager/authorized_keys.d` lets any user on the box authorize any key, which
+is exactly what a hardened box closed.</Warning>
 
 The key lives at `~/.ssh/lager_box`. Because that filename is not one of SSH's
 default identities, `lager ssh` passes `-i ~/.ssh/lager_box` explicitly when the

@@ -114,6 +114,19 @@ def probe_box_identity(
     def _probe(identity: Optional[str]) -> subprocess.CompletedProcess:
         argv = ["ssh"]
         argv.extend(ssh_identity_args(identity))
+        if identity is not None:
+            # IdentitiesOnly=yes ONLY on the keyed attempt, and only here.
+            # Without it, `-i` adds the key to a list that still holds the
+            # agent's keys and any ~/.ssh/config identity for the host, so
+            # this reports "the key works" whenever ANY credential works —
+            # and the keyless fallback below can never fire, because the
+            # first attempt already succeeded on something else.
+            #
+            # Deliberately not applied to the commands themselves: there,
+            # offering the key first while leaving the operator's own
+            # identities available as backup is exactly what is wanted. The
+            # probe is the one place that has to isolate the question.
+            argv.extend(["-o", "IdentitiesOnly=yes"])
         argv.extend(["-o", f"ConnectTimeout={connect_timeout}"])
         argv.extend(extra_args)
         argv.extend(["-o", "BatchMode=yes", dest, "echo ok"])
@@ -167,17 +180,26 @@ def registered_key_name(user: Optional[str] = None, host: Optional[str] = None) 
 def register_key_command(pub_key: str, filename: str) -> str:
     """Remote shell command that publishes `pub_key` into the box's key dir.
 
-    No sudo: `lager install` leaves /etc/lager mode 2775 owned by the login
-    user's group, so the login user can create the directory and write in it.
-    Boxes where that is not true fail this command, and callers report it
-    rather than treating it as fatal — the key itself is already installed and
-    working at that point.
+    Unprivileged first, then `sudo -n`. On a plain Lager box the key
+    directory belongs to the box and no sudo is wanted. A key manager that
+    hardens the box makes it root-owned deliberately — a writable key
+    directory lets any user on the box authorize any key — so the answer
+    there is not to widen the directory but to use the narrow NOPASSWD grant
+    `lager install` writes for exactly this path shape.
+
+    Failure still has to be reportable, so the `|| true` is confined to the
+    trailing chmod (which cannot succeed for the login user when the sudo
+    path was taken, and is redundant there: root's umask already gives 0644).
+    A failing mkdir or write short-circuits and surfaces its own status.
     """
-    path = f"{BOX_KEYS_DIR}/{filename}"
+    directory = shlex.quote(BOX_KEYS_DIR)
+    path = shlex.quote(f"{BOX_KEYS_DIR}/{filename}")
+    line = shlex.quote(pub_key.strip())
     return (
-        f"mkdir -p {shlex.quote(BOX_KEYS_DIR)} && "
-        f"printf '%s\\n' {shlex.quote(pub_key.strip())} > {shlex.quote(path)} && "
-        f"chmod 644 {shlex.quote(path)}"
+        f"{{ mkdir -p {directory} 2>/dev/null || sudo -n mkdir -p {directory}; }} && "
+        f"{{ printf '%s\\n' {line} > {path} 2>/dev/null || "
+        f"printf '%s\\n' {line} | sudo -n tee {path} >/dev/null; }} && "
+        f"{{ chmod 644 {path} 2>/dev/null || true; }}"
     )
 
 
@@ -252,42 +274,73 @@ def ensure_lager_box_keypair(key_path: str = _LAGER_BOX_KEY) -> bool:
     return True
 
 
-def key_auth_works(
+def lager_box_pubkey_blob(key_path: str = _LAGER_BOX_KEY) -> Optional[str]:
+    """The base64 blob of this machine's lager_box public key, or None.
+
+    The blob rather than the whole line, because comments drift: the same key
+    appears as `lager-box-access` here and under whatever name a key manager
+    rendered it with there. The blob is the key. It is `[A-Za-z0-9+/=]` only,
+    so it is safe to single-quote into a remote shell command.
+    """
+    try:
+        with open(f"{key_path}.pub", "r", encoding="utf-8") as fh:
+            fields = fh.read().strip().split()
+    except OSError:
+        return None
+    return fields[1] if len(fields) >= 2 else None
+
+
+def key_installed_on_box(
     dest: str,
     *,
     key_path: str = _LAGER_BOX_KEY,
-    connect_timeout: int = 15,
-) -> bool:
-    """Return True if ``dest`` (user@host) accepts the lager_box key unattended.
+    timeout: int = 30,
+) -> Optional[bool]:
+    """Is this machine's lager_box key in ``dest``'s authorized_keys?
 
-    BatchMode refuses any password/passphrase prompt, so this never hangs:
-    a box that hasn't authorized the key fails fast instead of blocking on
-    a prompt. accept-new auto-trusts a first-seen host key so a brand-new
-    box doesn't wedge on the interactive host-key question either.
+    Returns True/False when the box could be asked, and None when it could
+    not (unreachable, no local public key) — three outcomes, because
+    "couldn't tell" must not be silently read as "not installed" and trigger
+    a needless reinstall, nor as "installed" and skip a needed one.
 
-    The connect timeout is generous (15s) because this is the first, coldest
-    connection to the box and a slow first hop — Tailscale/VPN establishing the
-    path — can take several seconds. A too-short timeout here yields a false
-    "key not authorized", which makes `lager update` spuriously re-prompt
-    "SSH key not configured" on every run for a box that is in fact set up.
+    This asks the box directly instead of inferring installation from a
+    successful authentication, because that inference does not hold. An auth
+    probe is satisfied by ANY identity ssh offers, and an operator whose
+    ssh_config has a `Host *` IdentityFile — a common fleet-management
+    layout — supplies one to every host. Both `lager ssh-setup` and
+    `lager update` gated their reinstall on such a probe, so on exactly the
+    fleets where a key manager might delete lager_box, nothing could ever
+    detect that it had been deleted. Grepping authorized_keys has no such
+    blind spot: the key is there or it is not.
+
+    Any working identity is fine for the query itself — this is a question
+    about the box's state, not about which credential asked.
     """
-    if shutil.which("ssh") is None:
-        return False
+    blob = lager_box_pubkey_blob(key_path)
+    if blob is None or shutil.which("ssh") is None:
+        return None
     try:
         proc = subprocess.run(
             [
-                "ssh", "-i", key_path,
+                "ssh",
                 "-o", "BatchMode=yes",
                 "-o", "StrictHostKeyChecking=accept-new",
-                "-o", f"ConnectTimeout={connect_timeout}",
-                dest, "true",
+                "-o", "ConnectTimeout=15",
+                dest,
+                f"grep -qF '{blob}' ~/.ssh/authorized_keys",
             ],
-            capture_output=True,
-            text=True,
+            capture_output=True, text=True, timeout=timeout,
         )
-    except OSError:
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode == 0:
+        return True
+    # grep exits 1 for "no match" and 2 for a missing file; both mean the key
+    # is not installed. Anything else (255) is ssh failing to get there at
+    # all, which is not an answer about the key.
+    if proc.returncode in (1, 2):
         return False
-    return proc.returncode == 0
+    return None
 
 
 def resolve_box_user(box_ip: str) -> str:

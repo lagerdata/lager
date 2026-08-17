@@ -856,8 +856,12 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
             # registration is the durable half. Leaving the .pub behind under
             # --keep-config (which preserves /etc/lager) would let the next
             # start_box.sh sync re-publish the key this step just removed.
+            # sudo -n fallback for the same reason registration needs one: a
+            # hardened box's key directory is root-owned, so the login user
+            # cannot unlink from it unaided.
+            _reg_path = f"{BOX_KEYS_DIR}/{registered_key_name()}"
             run_ssh(
-                f"rm -f {BOX_KEYS_DIR}/{registered_key_name()}",
+                f"rm -f {_reg_path} 2>/dev/null || sudo -n rm -f {_reg_path}",
                 "De-registering this machine's key",
                 allow_fail=True
             )
