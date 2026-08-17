@@ -36,13 +36,13 @@ are not.
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1274 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 1625 |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1323 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 1632 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
-| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 121 (+1 skipped) |
-| | **Total gated** | **3380** |
+| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 127 (+1 skipped) |
+| | **Total gated** | **3442** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -441,7 +441,7 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 141 files)
+### Local Unit Tests (`test/unit/` -- 143 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 76 files)
 
@@ -528,7 +528,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_webcam_detection.py` | sysfs-based webcam detection (`_by_camera`) against a fake sysfs tree |
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 53 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 54 files)
 
 | File | What it tests |
 |------|---------------|
@@ -538,6 +538,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_box_command_error.py` | `box_command_error`: a 404 that means "net or instrument not found" must not also tell the user their box image is out of date |
 | `test_box_lock_helpers.py` | Lock holder resolution, acquire/release/heartbeat, `LockSession.dissolve`, and format_lock_user CI support |
 | `test_box_request_failure_messages.py` | `echo_box_request_failure`: distinguishing a slow box-side op from a dead box |
+| `test_box_ssh_identity.py` | Admin commands offer the `lager_box` key with keyless fallback (probe, pool, install/uninstall); key registration under `/etc/lager/authorized_keys.d`, de-registration on `uninstall --all`, and install's password-fallback removal |
 | `test_configure_docker_dns.py` | `configure_docker_dns`: daemon.json `dns` entries must be bare IPs or Docker refuses to start |
 | `test_configure_docker_dns_rollback.py` | Rollback behaviour of `configure_docker_dns.sh` when the DNS optimization fails |
 | `test_debug_flash_erase_reconnect.py` | `lager debug flash`'s default erase step: no reconnect between `/debug/erase` and `/debug/flash`, a failing `/debug/connect` cannot abort the flash, and the command's verdict follows the programmer's own output rather than reporting "Flashed!" unconditionally |
@@ -602,13 +603,14 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_blufi_unit.py` | BluFi protocol parsing (696-line pytest suite) |
 | `test_blufi_scan.py` | `BlufiClient.scan()` BLE advertisement presence checks |
 
-#### Root Unit Tests (`test/unit/test_*.py` -- 6 files)
+#### Root Unit Tests (`test/unit/test_*.py` -- 7 files)
 
 | File | What it tests |
 |------|---------------|
 | `test_coverage_checker.py` | `tools/check_coverage_counts.py`: platform-gated rows are not drift (and `--fix` must not rewrite them), plus the anchored summary parse `FORCE_COLOR` defeated |
 | `test_group_usage.py` | Usage-line formatting for CLI command groups (CommandFirstUsageMixin / LagerGroup) |
 | `test_install_wheel.py` | install-wheel command: wheel filename to package name parsing |
+| `test_no_global_os_path_patches.py` | Tree-wide guard: no test may patch `os.path` (process-global; on Python >= 3.14 it also rewrites every `pathlib.Path.exists()`) — patch the module's seam or use a real temp path |
 | `test_pdf_pages.py` | `tools/pdf_pages.py`: PNG and text extraction (skips without pymupdf, which is AGPL) |
 | `test_uninstall_spec.py` | Pins `lager uninstall`'s removal spec to what `install` / `box-config apply` actually create; lock dissolves when the teardown removes the lock server |
 | `test_update_version_ref.py` | Version reference resolution for git checkouts (semver tags vs. named branches) |
