@@ -5,16 +5,18 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app/lager
 
+# flex/bison/ccache/ninja are NOT here: they are build-only for uldaq (next
+# stage) and would bloat every image. Node is installed from the official
+# tarball below — Debian's `nodejs npm` meta-packages pull ~400 unused
+# `node-*` packages and dominate cold-build time.
 RUN apt-get update && apt-get install -y ca-certificates libusb-1.0-0-dev libudev-dev \
 	libhidapi-dev git gcc python-dev-is-python3 python3-pip python3-venv xz-utils build-essential bluetooth ssh openssh-client \
 	cups-client lpr zlib1g-dev wget libjpeg-dev libpng-dev libfreetype6-dev \
 	fswebcam automake g++ libtool libleptonica-dev make pkg-config libpango1.0-dev gdb-multiarch tesseract-ocr libtesseract-dev \
-	flex bison ccache ninja-build \
 	libturbojpeg0-dev v4l-utils \
 	wireless-tools \
 	tini \
 	gnupg \
-	nodejs npm \
 	openocd \
 	&& wget -qO /usr/share/keyrings/phidgets.gpg https://www.phidgets.com/gpgkey/pubring.gpg \
 	&& echo deb [signed-by=/usr/share/keyrings/phidgets.gpg] http://www.phidgets.com/debian bookworm main > /etc/apt/sources.list.d/phidgets.list \
@@ -27,13 +29,32 @@ RUN apt-get update && apt-get install -y ca-certificates libusb-1.0-0-dev libude
       virtualenv \
     && :
 
+# Node.js + npm from the official binary tarball (~50MB) instead of apt's
+# `nodejs` meta-package (~500MB of unused node-* tooling). Needed at runtime
+# so start_box.sh can `npm install -g` box_config.npm_packages. Multi-arch:
+# dpkg arch → node dist arch.
+# Pin + verify: Debian-signed apt packages are replaced by an upstream tarball,
+# so HTTPS alone is not enough — check SHASUMS256.txt before extracting.
+ENV NODE_VERSION=20.18.1
+RUN arch="$(dpkg --print-architecture)" \
+	&& case "$arch" in \
+		amd64) node_arch=x64 ;; \
+		arm64) node_arch=arm64 ;; \
+		armhf) node_arch=armv7l ;; \
+		*) echo "unsupported arch for Node.js: $arch" >&2; exit 1 ;; \
+	esac \
+	&& cd /tmp \
+	&& tarball="node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" \
+	&& wget -q "https://nodejs.org/dist/v${NODE_VERSION}/${tarball}" \
+	&& wget -q "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" \
+	&& grep " ${tarball}$" SHASUMS256.txt | sha256sum -c - \
+	&& tar -xJf "${tarball}" --strip-components=1 -C /usr/local \
+	&& rm -f "${tarball}" SHASUMS256.txt \
+	&& node --version && npm --version
+
 # PicoScope SDK is mounted from host at runtime via start_box.sh
 # The SDK library is at /opt/picoscope/lib/libps2000.so on the host
 # This avoids the systemd reload error that occurs when installing in Docker
-
-
-
-
 
 # MCC uldaq C library -- required by uldaq Python bindings for USB-202 DAQ devices
 # See: https://github.com/mccdaq/uldaq
@@ -56,7 +77,10 @@ RUN apt-get update && apt-get install -y ca-certificates libusb-1.0-0-dev libude
 # a memory-safety bug rather than close it, so the warnings stay: noisy once
 # per image build, and honest. Fixing it means patching upstream source at
 # build time or dropping the library -- upstream has not released since 2022.
-RUN apt-get update && apt-get install -y autoconf automake libtool libusb-1.0-0-dev && rm -rf /var/lib/apt/lists/* \
+#
+# flex/bison stay in this layer only (autoreconf); not needed at runtime.
+RUN apt-get update && apt-get install -y autoconf automake libtool libusb-1.0-0-dev flex bison \
+	&& rm -rf /var/lib/apt/lists/* \
 	&& git clone --depth 1 --branch v1.2.1 https://github.com/mccdaq/uldaq.git /tmp/uldaq \
 	&& cd /tmp/uldaq \
 	&& autoreconf -i \
@@ -111,7 +135,9 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 	'simplejson==3.18.0' \
 	'labjack-ljm==1.23.0' \
 	'pygdbmi==0.11.0.0' \
-	'cryptography==38.0.4' \
+	# 38.0.4 has no cp312 wheel — every cold pip layer compiled Rust from
+	# source (~2-3 min). >=42 ships manylinux wheels for python 3.12.
+	'cryptography==43.0.3' \
 	'psycopg2-binary==2.9.9' \
 	'pyvisa-py==0.5.2' \
 	'PyVISA==1.11.3' \

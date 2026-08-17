@@ -6,15 +6,20 @@ Tests for the update flow's rebuild gate: probe parsing, the build-hash
 mismatch predicate, and the early-exit verdict (including container liveness).
 """
 import os
+import shutil
 import stat
 import subprocess
 
 import pytest
 
 from cli.commands.utility.update import (
+    _build_hash_at_ref_shell_cmd,
     _build_hash_mismatch,
+    _build_hash_shell_cmd,
     _deployed_version_stale,
+    _docker_build_line_summary,
     _parse_probe_output,
+    _preview_deps_status,
     _probe_shell_script,
     _pull_shell_script,
     _rebuild_gate_verdict,
@@ -189,6 +194,194 @@ class TestProbeHostCliFacts:
         # Callers must tolerate probe output that predates the host-CLI facts.
         facts = _parse_probe_output('LAGER_PROBE_ETC_VERSION=1.2.3\n')
         assert 'HOST_CLI_VERSION' not in facts
+
+
+class TestPreviewDepsStatus:
+    """`--check` must hash the *target* ref when a pull is pending.
+
+    Repro (JUL-4): 121 commits behind, pre-pull Dockerfile still matched the
+    stored hash → old code said "cache valid / ~90s", then the pull changed
+    the Dockerfile and the real update took ~6 min.
+    """
+
+    def test_forward_jump_target_mismatch_reports_fresh_build(self):
+        change, status = _preview_deps_status(
+            force=False,
+            stored_hash=SHA_A,
+            working_hash=SHA_A,  # pre-pull tree still matches
+            target_hash=SHA_B,   # origin/main Dockerfile differs
+            needs_pull=True,
+        )
+        assert change is True
+        assert 'target Dockerfile' in status
+
+    def test_forward_jump_target_match_reports_cache_valid(self):
+        change, status = _preview_deps_status(
+            force=False,
+            stored_hash=SHA_A,
+            working_hash=SHA_A,
+            target_hash=SHA_A,
+            needs_pull=True,
+        )
+        assert change is False
+        assert 'target matches' in status
+
+    def test_unmeasurable_target_is_unknown_not_cache_valid(self):
+        change, status = _preview_deps_status(
+            force=False,
+            stored_hash=SHA_A,
+            working_hash=SHA_A,
+            target_hash='',
+            needs_pull=True,
+        )
+        assert change is True
+        assert 'unknown until pull' in status
+
+    def test_in_sync_uses_working_tree_hash(self):
+        change, status = _preview_deps_status(
+            force=False,
+            stored_hash=SHA_A,
+            working_hash=SHA_B,
+            target_hash='',
+            needs_pull=False,
+        )
+        assert change is True
+        assert 'Dockerfile, requirements or box source changed' in status
+
+
+class TestBuildHashAtRefShellCmd:
+    def test_emits_git_show_for_dockerfile_blob(self):
+        script = _build_hash_at_ref_shell_cmd('origin/main')
+        assert 'git show origin/main:box/lager/docker/box.Dockerfile' in script
+        assert 'git cat-file -e origin/main:box/lager/docker/box.Dockerfile' in script
+
+    def test_emits_source_tree_walk(self):
+        # Must match main's `_BUILD_HASH_SOURCE_DIRS` composition or --check
+        # spuriously reports a rebuild against stored hashes that include
+        # every file under ~/box/lager.
+        script = _build_hash_at_ref_shell_cmd('origin/main')
+        assert 'git ls-tree -r --name-only origin/main box/lager' in script
+
+    def test_rejects_metacharacters(self):
+        assert _build_hash_at_ref_shell_cmd('main; rm -rf /') == 'echo ""'
+        assert _build_hash_at_ref_shell_cmd('') == 'echo ""'
+
+    def test_uses_only_posix_shell_constructs(self):
+        # The remote login shell may be dash. Bash pattern substitution and
+        # `printf -v` both silently changed the digest under /bin/sh.
+        script = _build_hash_at_ref_shell_cmd('origin/main')
+        assert 'printf -v' not in script
+        assert '/#' not in script
+
+
+@pytest.mark.skipif(
+    shutil.which('sha256sum') is None,
+    reason='needs GNU sha256sum (present on boxes and CI; macOS ships shasum)',
+)
+class TestBuildHashAtRefMatchesWorkingTree:
+    """Execute both hashers under ``sh`` against a fake box layout.
+
+    This is the invariant #12 depends on: the target-ref digest must equal the
+    working-tree digest that `/etc/lager/build-hash` stores, or every --check
+    would report a spurious rebuild. Verified end-to-end (real git, real
+    sha256sum, dash-compatible) rather than by asserting on substrings.
+    """
+
+    DOCKERFILE_GIT_PATH = 'box/lager/docker/box.Dockerfile'
+    DOCKERFILE_TREE_PATH = 'lager/docker/box.Dockerfile'
+    SOURCE_GIT_PATH = 'box/lager/nets/net.py'
+    SOURCE_TREE_PATH = 'lager/nets/net.py'
+
+    def _fake_box(self, tmp_path, dockerfile_body, source_body='print("ok")\n'):
+        """Build $HOME/box as the boxes have it: git tracks the `box/` prefix,
+        the working tree is the flattened layout. Includes a source file so
+        the `_BUILD_HASH_SOURCE_DIRS` walk is exercised (not just Dockerfile).
+        """
+        home = tmp_path / 'home'
+        box = home / 'box'
+        for rel, body in (
+            (self.DOCKERFILE_GIT_PATH, dockerfile_body),
+            (self.DOCKERFILE_TREE_PATH, dockerfile_body),
+            (self.SOURCE_GIT_PATH, source_body),
+            (self.SOURCE_TREE_PATH, source_body),
+        ):
+            path = box / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(body)
+        env = dict(os.environ, HOME=str(home))
+        run = lambda *args: subprocess.run(
+            args, cwd=box, env=env, capture_output=True, text=True, timeout=30,
+        )
+        run('git', 'init', '-q', '-b', 'main')
+        run('git', 'config', 'user.email', 'test@example.com')
+        run('git', 'config', 'user.name', 'test')
+        run('git', 'add', self.DOCKERFILE_GIT_PATH, self.SOURCE_GIT_PATH)
+        commit = run('git', 'commit', '-q', '-m', 'dockerfile')
+        assert commit.returncode == 0, commit.stderr
+        return home, env
+
+    def _sh(self, snippet, env, cwd):
+        result = subprocess.run(
+            ['sh'], input=snippet, text=True, capture_output=True,
+            env=env, cwd=cwd, timeout=30,
+        )
+        return result.stdout.strip()
+
+    def test_ref_digest_equals_working_tree_digest(self, tmp_path):
+        home, env = self._fake_box(tmp_path, 'FROM python:3.12-slim\n')
+        working = self._sh(_build_hash_shell_cmd(), env, home / 'box')
+        at_ref = self._sh(_build_hash_at_ref_shell_cmd('HEAD'), env, home)
+        assert working, 'working-tree hasher produced nothing'
+        assert at_ref == working
+
+    def test_ref_digest_differs_when_target_dockerfile_changes(self, tmp_path):
+        home, env = self._fake_box(tmp_path, 'FROM python:3.12-slim\n')
+        before = self._sh(_build_hash_at_ref_shell_cmd('HEAD'), env, home)
+        box = home / 'box'
+        (box / self.DOCKERFILE_GIT_PATH).write_text('FROM python:3.13-slim\n')
+        subprocess.run(
+            ['git', 'commit', '-qam', 'bump base'], cwd=box, env=env,
+            capture_output=True, text=True, timeout=30,
+        )
+        after = self._sh(_build_hash_at_ref_shell_cmd('HEAD'), env, home)
+        # The JUL-4 case: working tree still matches the stored hash while the
+        # ref about to be checked out does not.
+        working = self._sh(_build_hash_shell_cmd(), env, box)
+        assert after != before
+        assert after != working
+
+    def test_ref_digest_differs_when_source_file_changes(self, tmp_path):
+        home, env = self._fake_box(tmp_path, 'FROM python:3.12-slim\n')
+        before = self._sh(_build_hash_at_ref_shell_cmd('HEAD'), env, home)
+        box = home / 'box'
+        (box / self.SOURCE_GIT_PATH).write_text('print("changed")\n')
+        subprocess.run(
+            ['git', 'commit', '-qam', 'touch source'], cwd=box, env=env,
+            capture_output=True, text=True, timeout=30,
+        )
+        after = self._sh(_build_hash_at_ref_shell_cmd('HEAD'), env, home)
+        assert after != before
+
+    def test_missing_ref_yields_empty_not_a_bogus_digest(self, tmp_path):
+        home, env = self._fake_box(tmp_path, 'FROM python:3.12-slim\n')
+        assert self._sh(_build_hash_at_ref_shell_cmd('no-such-ref'), env, home) == ''
+
+
+class TestDockerBuildLineSummary:
+    def test_buildkit_run_line(self):
+        assert 'pip3 install' in (
+            _docker_build_line_summary('#12 [8/20] RUN pip3 install cryptography') or ''
+        )
+
+    def test_buildkit_timed_setting_up(self):
+        assert 'Setting up' in (
+            _docker_build_line_summary('#15 3.2 Setting up nodejs (20.x)') or ''
+        )
+
+    def test_ignores_cached_and_blank(self):
+        assert _docker_build_line_summary('#5 CACHED') is None
+        assert _docker_build_line_summary('') is None
+        assert _docker_build_line_summary('   ') is None
 
 
 class TestGateIgnoresHostCliFacts:
