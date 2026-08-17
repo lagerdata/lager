@@ -3,6 +3,8 @@
 
 import atexit
 import logging
+import os
+import sys
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -161,6 +163,39 @@ _EXPIRE_LOCK_WAIT_S = 0.1
 # this is a wedged hub, and waiting one out at exit buys nothing — the handle
 # is lost either way, and the process is trying to leave.
 _EXIT_TEARDOWN_WAIT_S = 10.0
+
+# Opt-in exit tracing, for diagnosing the czmq abort a `lager python` script
+# takes after an Acroname operation (issue #277). Off unless
+# LAGER_HUB_EXIT_DEBUG is set, so it costs nothing and changes nothing by
+# default; the bench passes it with `lager python --passenv`.
+#
+# Writes to stderr directly rather than through `logging`. Two reasons, both
+# specific to where this runs:
+#
+#   * By atexit time logging may already be torn down — handlers closed,
+#     `logging.shutdown` run — and emitting can then raise. Anything that
+#     escapes the exit hook turns a passing script into a failing one, which
+#     is the exact outcome the hook exists to prevent.
+#   * A `lager python` script configures no handlers, so `logging.lastResort`
+#     drops anything below WARNING. The interesting lines here are timings,
+#     which do not deserve WARNING, and would otherwise be invisible in CI.
+#
+# Every call is individually guarded: tracing must never be what breaks exit.
+_EXIT_DEBUG = bool(os.environ.get("LAGER_HUB_EXIT_DEBUG"))
+
+
+def _exit_trace(msg):
+    """Best-effort stderr line during interpreter shutdown. Never raises."""
+    if not _EXIT_DEBUG:
+        return
+    try:
+        stream = sys.stderr
+        if stream is None:          # closed during finalisation
+            return
+        stream.write(f"[hub-exit] {msg}\n")
+        stream.flush()
+    except BaseException:           # noqa: BLE001 — see module comment
+        pass
 
 
 class _HubSession:
@@ -335,11 +370,24 @@ class HubSessionPool:
         exact outcome the handler exists to prevent. Same shape as
         ``io/labjack_handle._cleanup_on_exit``.
         """
+        t0 = time.monotonic()
+        try:
+            with self._guard:
+                parked = list(self._sessions)
+                expiring = [k for k, t in self._expiring.items() if t.is_alive()]
+            _exit_trace(f"drain start: parked={parked} expiring={expiring}")
+        except BaseException:  # noqa: BLE001 — tracing must not break exit
+            pass
         try:
             self.drain()
+            _exit_trace(f"drain done in {time.monotonic() - t0:.3f}s")
             self._await_expiries(_EXIT_TEARDOWN_WAIT_S)
-        except BaseException:  # noqa: BLE001 — see docstring
-            pass
+            _exit_trace(f"exit hook complete in {time.monotonic() - t0:.3f}s")
+        except BaseException as e:  # noqa: BLE001 — see docstring
+            _exit_trace(
+                f"exit hook raised after {time.monotonic() - t0:.3f}s: "
+                f"{type(e).__name__}: {e}"
+            )
 
     def _await_expiries(self, timeout):
         """Wait, bounded, for expiry teardowns already in flight.
@@ -450,9 +498,15 @@ class HubSessionPool:
             session = self._pop_session(key)
             if session is None:
                 continue
+            t0 = time.monotonic()
             try:
                 session.close_fn(session.handle)
-            except Exception:
+                _exit_trace(f"  close {key}: ok in {time.monotonic() - t0:.3f}s")
+            except Exception as e:
+                _exit_trace(
+                    f"  close {key}: {type(e).__name__} after "
+                    f"{time.monotonic() - t0:.3f}s: {e}"
+                )
                 logger.exception("hub session close failed for %s", key)
             finally:
                 # Released per key, and even when the close blew up: one

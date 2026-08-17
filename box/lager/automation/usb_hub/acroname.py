@@ -28,6 +28,7 @@ from .usb_net import (
     LibraryMissingError,
     DeviceNotFoundError,
     PortStateError,
+    _exit_trace,
     run_hub_op,
 )
 
@@ -551,13 +552,32 @@ class AcronameUSBNet(USBNet):
 
     @staticmethod
     def _close_hub(hub) -> None:
-        """Disconnect the hub, releasing the USB claim. Best-effort."""
+        """Disconnect the hub, releasing the USB claim. Best-effort.
+
+        Still best-effort — a disconnect that fails must not propagate, since
+        every caller is either finishing a successful operation or already
+        unwinding — but no longer SILENT. This is the innermost swallow on the
+        teardown path: ``HubSessionPool.drain`` logs a failed close, but could
+        never see one, because this handler ate it first. A disconnect that
+        raises at interpreter shutdown is precisely the evidence issue #277
+        needs, and it was being discarded here.
+        """
         if hub is None:
             return
+        t0 = time.monotonic()
         try:
             hub.disconnect()
-        except Exception:
-            pass
+        except Exception as e:
+            elapsed = time.monotonic() - t0
+            _exit_trace(
+                f"  disconnect: {type(e).__name__} after {elapsed:.3f}s: {e}"
+            )
+            # DEBUG, not exception(): on the normal path a failed disconnect of
+            # an already-gone hub is routine and expected, and this runs on
+            # every operation. The exit path gets the stderr trace above.
+            logger.debug("hub disconnect failed after %.3fs: %s", elapsed, e)
+        else:
+            _exit_trace(f"  disconnect: ok in {time.monotonic() - t0:.3f}s")
 
     def _open_for(self, claim, *, retry, phases):
         """Open this net's hub for ``claim``, with the evidence-gated retry.
