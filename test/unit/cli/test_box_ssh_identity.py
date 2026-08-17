@@ -119,6 +119,81 @@ class IdentityArgs(unittest.TestCase):
         self.assertEqual(_ssh.ssh_identity_args("/k"), ["-i", "/k"])
 
 
+class KeyRegistration(unittest.TestCase):
+    """Installing the key and registering it are different acts.
+
+    ssh-copy-id appends a line to authorized_keys OUTSIDE every manager's
+    marker block. start_box.sh preserves such lines against its own rebuild,
+    but a second key manager that rebuilds the file from its own source drops
+    everything outside its markers — and start_box.sh then re-creates its
+    block from /etc/lager/authorized_keys.d alone. A key never registered
+    there does not come back, and on a box that also refuses passwords there
+    is no way left to put it back. So every install path registers.
+    """
+
+    PUB = "ssh-ed25519 AAAATESTBLOB lager-box-access"
+
+    def test_name_is_stable_and_filesystem_safe(self):
+        name = _ssh.registered_key_name(user="ci", host="build-01")
+        self.assertEqual(name, "lager-box-ci-build-01.pub")
+        self.assertEqual(name, _ssh.registered_key_name(user="ci", host="build-01"))
+
+    def test_name_sanitises_hostile_input(self):
+        name = _ssh.registered_key_name(user="a/../b", host="x y;rm -rf")
+        self.assertRegex(name, r"^lager-box-[A-Za-z0-9._-]+\.pub$")
+        for bad in ("/", " ", ";"):
+            self.assertNotIn(bad, name)
+
+    def test_one_file_per_machine_so_rerun_replaces_not_accumulates(self):
+        # A stale file would leave a superseded key authorized forever.
+        self.assertNotIn(self.PUB, _ssh.registered_key_name(user="u", host="h"))
+        cmd = _ssh.register_key_command(self.PUB, "lager-box-u-h.pub")
+        self.assertIn(">", cmd, "truncating write, not an append")
+        self.assertNotIn(">>", cmd)
+
+    def test_command_writes_into_the_key_dir_without_sudo(self):
+        cmd = _ssh.register_key_command(self.PUB, "lager-box-u-h.pub")
+        self.assertIn(f"{_ssh.BOX_KEYS_DIR}/lager-box-u-h.pub", cmd)
+        self.assertIn("mkdir -p", cmd)
+        self.assertNotIn("sudo", cmd, "/etc/lager is 2775, group-owned by the login user")
+
+    def test_pubkey_is_quoted_into_the_remote_shell(self):
+        cmd = _ssh.register_key_command("blob; rm -rf ~", "lager-box-u-h.pub")
+        self.assertNotIn("; rm -rf ~ ", cmd)
+        self.assertIn("'blob; rm -rf ~'", cmd)
+
+    def _register(self, *, rc=0, stderr="", pub=PUB):
+        calls = []
+
+        def fake_run(cmd, **_kw):
+            calls.append(list(cmd))
+            return _proc(rc, "", stderr)
+
+        with mock.patch("builtins.open", mock.mock_open(read_data=pub)), \
+                mock.patch.object(_ssh.subprocess, "run", fake_run):
+            ok, detail = _ssh.register_lager_box_key("lagerdata@10.0.0.1")
+        return ok, detail, calls
+
+    def test_registers_over_the_key_so_it_costs_no_password(self):
+        ok, _detail, calls = self._register()
+        self.assertTrue(ok)
+        self.assertTrue(_has_identity(calls[0]))
+        self.assertIn("BatchMode=yes", calls[0])
+
+    def test_failure_is_reported_not_raised(self):
+        # The key is already installed and working by this point; a
+        # read-only /etc/lager must not fail the whole command.
+        ok, detail, _calls = self._register(rc=1, stderr="Permission denied")
+        self.assertFalse(ok)
+        self.assertIn("Permission denied", detail)
+
+    def test_empty_pubkey_never_reaches_the_box(self):
+        ok, detail, calls = self._register(pub="   \n")
+        self.assertFalse(ok)
+        self.assertIn("empty", detail)
+        self.assertEqual(calls, [], "nothing sent")
+
+
 class ConnectionPoolIdentity(unittest.TestCase):
     """The pool has to carry the identity too. ControlMaster=auto silently
     opens a fresh connection when the socket is gone, and that one
@@ -378,6 +453,52 @@ class UninstallOffersTheKey(_CommandCase):
         for argv in calls:
             self.assertNotIn("-i", argv, argv)
 
+
+class UninstallDeregisters(_CommandCase):
+    """--all strips the authorized_keys line. Without also removing the
+    registration, --keep-config preserves /etc/lager and the next
+    start_box.sh sync republishes the key uninstall just removed."""
+
+    def test_all_removes_the_registered_pubkey_first(self):
+        calls = []
+
+        def fake_run(cmd, **_kw):
+            cmd = list(cmd) if isinstance(cmd, (list, tuple)) else [cmd]
+            calls.append(cmd)
+            remote = cmd[-1]
+            if remote.startswith("cat ") and uninstall_mod._PRIV_RESULTS_PATH in remote:
+                return _proc(0, "lock_state=OK\n")
+            return _proc(0, "ok")
+
+        pool = mock.Mock()
+        pool.ensure_connection.return_value = False
+        patches = self._lock_patches() + [
+            mock.patch.object(uninstall_mod.subprocess, "run", fake_run),
+            mock.patch.object(uninstall_mod, "get_ssh_connection_pool", return_value=pool),
+            mock.patch.object(uninstall_mod, "get_box_name_by_ip", return_value=None),
+            mock.patch.object(_ssh.os.path, "exists", return_value=True),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        result = CliRunner().invoke(
+            uninstall_mod.uninstall,
+            ["--ip", "10.0.0.1", "--yes", "--keep-config", "--all"],
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+
+        remotes = [c[-1] for c in self._ssh_calls(calls)]
+        dereg = [i for i, r in enumerate(remotes)
+                 if uninstall_mod.BOX_KEYS_DIR in r and r.startswith("rm -f")]
+        strip = [i for i, r in enumerate(remotes) if "authorized_keys" in r and "grep -vF" in r]
+        self.assertTrue(dereg, f"no de-registration in {remotes}")
+        self.assertTrue(strip, "sanity: the authorized_keys strip still runs")
+        self.assertLess(dereg[0], strip[0], "de-register before stripping")
+
+    def test_it_names_only_this_machines_file(self):
+        # A glob would revoke every other operator's registration.
+        cmd = f"rm -f {uninstall_mod.BOX_KEYS_DIR}/{uninstall_mod.registered_key_name()}"
+        self.assertNotIn("*", cmd)
 
 if __name__ == "__main__":
     unittest.main()

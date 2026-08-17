@@ -24,13 +24,37 @@ import click
 from ._ssh import (
     _KEY_FALLBACK_DESTS,
     _LAGER_BOX_KEY,
+    BOX_KEYS_DIR,
     ensure_lager_box_keypair,
     key_auth_works,
+    register_lager_box_key,
     resolve_box_user,
 )
 from ...box_storage import resolve_and_validate_box
 from ...core.net_group import BoxCommand
 from ...errors import LagerError
+
+
+def register_or_warn(dest: str) -> bool:
+    """Register the key in the box's key directory, warning if it fails.
+
+    Not fatal. By the time this runs the key is installed and authenticating,
+    so the command has done its headline job; what registration adds is
+    durability. It is worth a visible warning rather than silence, because
+    the failure mode it prevents is invisible until the day someone rebuilds
+    the box's authorized_keys and every operator loses access at once.
+    """
+    ok, detail = register_lager_box_key(dest)
+    if ok:
+        return True
+    click.secho(
+        f"Warning: the key works, but could not be registered in {BOX_KEYS_DIR} "
+        f"on the box ({detail}). It will keep working until something rebuilds "
+        "the box's authorized_keys; re-run this command after fixing the "
+        "directory's permissions.",
+        fg="yellow", err=True,
+    )
+    return False
 
 
 @click.command(
@@ -52,6 +76,10 @@ def ssh_setup(ctx: click.Context, box: Optional[str]) -> None:
     if key_auth_works(dest):
         _KEY_FALLBACK_DESTS.discard(dest)
         click.secho(f"{dest} is already authorized — no password needed.", fg="green")
+        # Still register: this is the path that repairs a box whose key was
+        # installed before registration existed, and it costs one keyed
+        # round-trip and no prompt.
+        register_or_warn(dest)
         return
 
     if shutil.which("ssh-copy-id") is None:
@@ -88,6 +116,7 @@ def ssh_setup(ctx: click.Context, box: Optional[str]) -> None:
         )
 
     _KEY_FALLBACK_DESTS.discard(dest)
+    register_or_warn(dest)
     click.secho(f"Success — {dest} is authorized.", fg="green")
     click.echo("lager commands for this box now work without a password.")
 

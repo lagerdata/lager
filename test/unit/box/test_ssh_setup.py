@@ -82,27 +82,40 @@ class EnsureKeypair(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 def _invoke(*, copy_results=None, generated=False, auth_sequence=(),
-            which="/usr/bin/ssh-copy-id"):
+            which="/usr/bin/ssh-copy-id", register=(True, "")):
     """Run `lager ssh-setup` with the helpers mocked.
 
     auth_sequence drives successive key_auth_works() return values
     (probe, then post-copy verify). copy_results feeds mod.subprocess.run
     for the ssh-copy-id call.
+
+    register_lager_box_key MUST be mocked here even where a test does not
+    assert on it: it lives in _ssh and runs its own subprocess.run, which
+    patching mod.subprocess does not reach — so leaving it live makes these
+    tests open a real SSH connection to 1.2.3.4 and sit there until the
+    30s timeout.
     """
     copy_run = RecordingRun(copy_results or [])
     auth = list(auth_sequence)
+    registered = []
 
     def fake_auth(dest, **kwargs):
         return auth.pop(0)
+
+    def fake_register(dest, **kwargs):
+        registered.append(dest)
+        return register
 
     with patch.object(mod, "subprocess") as sub, \
          patch.object(mod, "resolve_and_validate_box", lambda ctx, box: "1.2.3.4"), \
          patch.object(mod, "resolve_box_user", lambda ip: "boxuser"), \
          patch.object(mod, "ensure_lager_box_keypair", lambda *a, **k: generated), \
          patch.object(mod, "key_auth_works", fake_auth), \
+         patch.object(mod, "register_lager_box_key", fake_register), \
          patch.object(mod.shutil, "which", lambda name: which):
         sub.run = copy_run
         result = CliRunner().invoke(mod.ssh_setup, [])
+    copy_run.registered = registered
     return result, copy_run
 
 
@@ -159,6 +172,43 @@ class CopyFlow(unittest.TestCase):
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("ssh-copy-id was not found", _text(result))
         self.assertEqual(copy_run.calls, [])
+
+
+class KeyRegistration(unittest.TestCase):
+    """ssh-copy-id appends OUTSIDE every marker block, so the key it installs
+    is dropped by any key manager that rebuilds authorized_keys from its own
+    source. Registering the public half in /etc/lager/authorized_keys.d is
+    what makes it survive — start_box.sh rebuilds its block from there."""
+
+    def test_registers_after_a_successful_copy(self):
+        result, copy_run = _invoke(copy_results=[_proc(0)],
+                                   auth_sequence=[False, True])
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(copy_run.registered, ["boxuser@1.2.3.4"])
+
+    def test_registers_on_an_already_authorized_box(self):
+        # The repair path: a box whose key was installed before registration
+        # existed gets fixed by re-running ssh-setup, with no prompt.
+        result, copy_run = _invoke(auth_sequence=[True])
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(copy_run.registered, ["boxuser@1.2.3.4"])
+
+    def test_registration_failure_warns_but_does_not_fail(self):
+        # The key is installed and working at this point; the command's
+        # headline job is done.
+        result, _copy_run = _invoke(
+            copy_results=[_proc(0)], auth_sequence=[False, True],
+            register=(False, "Permission denied"),
+        )
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("could not be registered", _text(result))
+        self.assertIn("Permission denied", _text(result))
+        self.assertIn("Success", _text(result))
+
+    def test_no_registration_when_the_key_never_got_installed(self):
+        result, copy_run = _invoke(copy_results=[_proc(1)], auth_sequence=[False])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertEqual(copy_run.registered, [])
 
 
 if __name__ == "__main__":
