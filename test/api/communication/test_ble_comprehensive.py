@@ -25,9 +25,30 @@ def _record(name, passed, detail=""):
     status = "PASS" if passed else "FAIL"
     print(f"  {status}: {name}" + (f" -- {detail}" if detail else ""))
 
+class _Skipped:
+    """Sentinel: this check did not run, so it neither passed nor failed."""
+
+    __slots__ = ()
+
+    def __repr__(self):
+        return "SKIPPED"
+
+
+SKIPPED = _Skipped()
+
+
 def _skip(name, reason=""):
-    _results.append((name, True, f"SKIP: {reason}" if reason else "SKIP"))
+    """Report a check as not-run, and return the sentinel to return onward.
+
+    This recorded `(name, True, ...)`, so a skipped check was counted as a
+    passing one in both the sub-test list and the group total. A check that
+    could not run is not a check that passed, and reporting it as one hides
+    exactly the case worth noticing: a fixture or device that has quietly
+    stopped being present.
+    """
+    _results.append((name, SKIPPED, f"SKIP: {reason}" if reason else "SKIP"))
     print(f"  SKIP: {name}" + (f" -- {reason}" if reason else ""))
+    return SKIPPED
 
 def _heading(title):
     print(f"\n{'=' * 60}\nTEST: {title}\n{'=' * 60}")
@@ -124,7 +145,7 @@ def test_get_services(client):
 def test_has_char_true(client, has_svc):
     _heading("Has Characteristic True")
     if not has_svc:
-        _skip("has_characteristic(CHAR_UUID)", "target service not found"); return True
+        return _skip("has_characteristic(CHAR_UUID)", "target service not found")
     try:
         r = client.has_characteristic(CHARACTERISTIC_UUID)
         _record("has_characteristic(CHAR_UUID)", r, f"returned {r}"); return r
@@ -146,7 +167,7 @@ def test_has_char_false(client):
 def test_read_char(client, has_svc):
     _heading("Read Characteristic")
     if not has_svc:
-        _skip("read_gatt_char(CHAR_UUID)", "target service not found"); return True
+        return _skip("read_gatt_char(CHAR_UUID)", "target service not found")
     try:
         val = client.read_gatt_char(CHARACTERISTIC_UUID)
         ok = isinstance(val, (bytes, bytearray))
@@ -159,7 +180,7 @@ def test_read_char(client, has_svc):
 def test_write_char(client, has_svc):
     _heading("Write Characteristic")
     if not has_svc:
-        _skip("write_gatt_char(CHAR_UUID)", "target service not found"); return True
+        return _skip("write_gatt_char(CHAR_UUID)", "target service not found")
     try:
         client.write_gatt_char(CHARACTERISTIC_UUID, b"Test")
         _record("write_gatt_char(CHAR_UUID, b'Test')", True); return True
@@ -170,7 +191,7 @@ def test_write_char(client, has_svc):
 def test_notifications(client, has_svc):
     _heading("Notifications")
     if not has_svc:
-        _skip("start_notify(CHAR_UUID)", "target service not found"); return True
+        return _skip("start_notify(CHAR_UUID)", "target service not found")
     try:
         result = client.start_notify(CHARACTERISTIC_UUID, max_messages=3, timeout=5)
         ok = isinstance(result, tuple) and len(result) == 2
@@ -189,7 +210,7 @@ def test_notifications(client, has_svc):
 def test_stop_notify(client, has_svc):
     _heading("Stop Notify")
     if not has_svc:
-        _skip("stop_notify(CHAR_UUID)", "target service not found"); return True
+        return _skip("stop_notify(CHAR_UUID)", "target service not found")
     try:
         client.stop_notify(CHARACTERISTIC_UUID)
         _record("stop_notify(CHAR_UUID)", True); return True
@@ -253,7 +274,15 @@ def test_error_invalid_uuid(address, loop):
 def _safe(name, fn):
     try:
         ret = fn()
-        passed = ret if isinstance(ret, bool) else ret[0]
+        if ret is SKIPPED:
+            # Must come before the tuple unpack: SKIPPED is not a bool and is
+            # not subscriptable, so `ret[0]` would turn a skip into an
+            # UNEXPECTED ERROR and then into a failure.
+            passed = SKIPPED
+        elif isinstance(ret, bool):
+            passed = ret
+        else:
+            passed = ret[0]
         return (name, passed), ret
     except Exception as e:
         print(f"\nUNEXPECTED ERROR in {name}: {e}"); traceback.print_exc()
@@ -293,7 +322,7 @@ def main():
                    "Read Characteristic", "Write Characteristic",
                    "Notifications", "Stop Notify", "Pairing", "Disconnect",
                    "Context Manager", "Error: Invalid UUID"]:
-            _skip(n, "target device not found"); TR.append((n, True))
+            TR.append((n, _skip(n, "target device not found")))
         return _summary(TR)
 
     # Phase 4: scan by address
@@ -309,7 +338,7 @@ def main():
         for n in ["Get Services", "Has Characteristic True", "Has Characteristic False",
                    "Read Characteristic", "Write Characteristic", "Notifications",
                    "Stop Notify", "Pairing", "Disconnect"]:
-            _skip(n, "connect failed"); TR.append((n, True))
+            TR.append((n, _skip(n, "connect failed")))
     else:
         has_svc = False
         try:
@@ -341,20 +370,42 @@ def main():
 
 def _summary(TR):
     print(f"\n{'=' * 60}\nTEST SUMMARY\n{'=' * 60}")
-    pc = sum(1 for _, p in TR if p)
     for name, p in TR:
-        print(f"  [{'PASS' if p else 'FAIL'}] {name}")
-    print(f"\nTotal: {pc}/{len(TR)} test groups passed")
-    sp = sum(1 for _, p, _ in _results if p)
-    sf = len(_results) - sp
-    print(f"Sub-tests: {sp}/{len(_results)} passed", end="")
-    if sf:
-        print(f" ({sf} failed)\n\nFailed sub-tests:")
+        label = "SKIP" if p is SKIPPED else ("PASS" if p else "FAIL")
+        print(f"  [{label}] {name}")
+
+    skipped = sum(1 for _, p in TR if p is SKIPPED)
+    failed = sum(1 for _, p in TR if p is not SKIPPED and not p)
+    ran = len(TR) - skipped
+    passed = ran - failed
+
+    # Skips sit beside the total, never inside it. A group that did not run is
+    # not a group that passed; counting them together is how a suite reports
+    # green while the device it tests is absent.
+    suffix = f" ({skipped} skipped)" if skipped else ""
+    print(f"\nTotal: {passed}/{ran} test groups passed{suffix}")
+    if skipped:
+        print("Skipped groups did not run and are not counted as passing.")
+
+    # Sub-tests get the same treatment. SKIPPED is a plain object and so is
+    # truthy, which means a bare `if p` would quietly count every skip as a
+    # pass -- the exact bug being fixed, one level down.
+    sub_skipped = sum(1 for _, p, _ in _results if p is SKIPPED)
+    sub_failed = sum(1 for _, p, _ in _results if p is not SKIPPED and not p)
+    sub_ran = len(_results) - sub_skipped
+    sub_passed = sub_ran - sub_failed
+
+    sub_suffix = f" ({sub_skipped} skipped)" if sub_skipped else ""
+    print(f"Sub-tests: {sub_passed}/{sub_ran} passed", end="")
+    if sub_failed:
+        print(f" ({sub_failed} failed){sub_suffix}\n\nFailed sub-tests:")
         for n, p, d in _results:
-            if not p: print(f"  FAIL: {n} -- {d}")
+            if p is not SKIPPED and not p:
+                print(f"  FAIL: {n} -- {d}")
     else:
-        print()
-    return 0 if pc == len(TR) else 1
+        print(sub_suffix)
+
+    return 0 if failed == 0 else 1
 
 if __name__ == "__main__":
     sys.exit(main())

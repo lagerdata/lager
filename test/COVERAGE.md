@@ -37,12 +37,12 @@ are not.
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1274 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 1615 |
+| `unit (box)` | `test/unit/box/` | 1625 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 166 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 121 (+1 skipped) |
-| | **Total gated** | **3370** |
+| | **Total gated** | **3380** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -441,9 +441,9 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 140 files)
+### Local Unit Tests (`test/unit/` -- 141 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 75 files)
+#### Box Unit Tests (`test/unit/box/` -- 76 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported, and stubs the two third-party modules that are neither guarded nor installed
@@ -494,6 +494,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_labjack_batch_read.py` | `POST /labjack/batch_read`: locks on the same device identity `/invoke` does, and writes nothing to the instrument |
 | `test_load_box_secrets.py` | `load_box_secrets()` returns `{}` on every failure, which makes an unreadable secrets file indistinguishable from a box with none configured -- pins that distinction |
 | `test_lock_state.py` | lock_state.py single source of truth for box-side lock behavior |
+| `test_net_ready.py` | `wait_for_net`: polling a net through the re-enumerate / hardware-service-restart window, deadline honoured without overshoot, probe selection, and a progress callback that cannot break the wait |
 | `test_monitor_state.py` | SupplyNet/KeithleyBattery single-call monitor-state helpers reducing lock contention |
 | `test_mount_prep.py` | Mount preparation SSH operations via mocked runner |
 | `test_net_command_handler.py` | Generic POST /net/command Flask handler dispatch by role and error handling |

@@ -60,11 +60,37 @@ def _record(name, passed, detail=""):
     print(msg)
 
 
+class _Skipped:
+    """Sentinel: this group did not run, so it neither passed nor failed.
+
+    A distinct type rather than None, because `None` is what a function that
+    forgot to return gives you, and those two must not look alike in the
+    summary.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self):
+        return "SKIPPED"
+
+
+SKIPPED = _Skipped()
+
+
 def _skip(name, reason=""):
+    """Report a group as not-run, and return the sentinel to return onward.
+
+    Callers do `return _skip(...)`. Returning True here — which is what this
+    did — reported an unconfigured group as a passing one, so
+    `Total: 6/6 test groups passed` counted groups that never executed. The
+    supply-accuracy check sat in exactly that state until its nets were
+    configured: green in every run, never once run.
+    """
     msg = f"  SKIP: {name}"
     if reason:
         msg += f" -- {reason}"
     print(msg)
+    return SKIPPED
 
 
 # ---------------------------------------------------------------------------
@@ -111,16 +137,32 @@ def test_adc_supply_accuracy():
     print("=" * 60)
 
     if not SUPPLY_NET:
-        _skip("supply accuracy", "SUPPLY_NET not set")
-        return True
+        return _skip("supply accuracy", "SUPPLY_NET not set")
     if not SUPPLY_ADC_NET:
-        _skip("supply accuracy", "SUPPLY_ADC_NET not set")
-        return True
+        return _skip("supply accuracy", "SUPPLY_ADC_NET not set")
 
     ok = True
     supply = None
     try:
         from lager import Net, NetType
+
+        # The supply sits behind an AC relay, so this suite may be the first
+        # thing to touch it after a power-on. Enumeration is not readiness --
+        # the USB hotplug restarts the box hardware service, and reads are
+        # refused for a while afterwards. Without this the check fails with
+        # "Device not found" and reads as a broken fixture rather than a race.
+        from lager.util.net_ready import wait_for_net
+        if not wait_for_net(
+            SUPPLY_NET, NetType.PowerSupply,
+            on_wait=lambda attempt, elapsed, exc: (
+                print(f"  waiting for {SUPPLY_NET} ({elapsed:.0f}s): "
+                      f"{type(exc).__name__}")
+                if attempt == 1 else None
+            ),
+        ):
+            return _skip("supply accuracy",
+                         f"{SUPPLY_NET} did not become ready")
+
         supply = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
         supply.set_voltage(SUPPLY_VOLTAGE)
         supply.set_current(SUPPLY_CURRENT)
@@ -201,11 +243,9 @@ def test_dac_labjack_verify():
     print("=" * 60)
 
     if not LABJACK_ADC_NET:
-        _skip("USB-202 DAC → LabJack ADC", "LABJACK_ADC_NET not set")
-        return True
+        return _skip("USB-202 DAC → LabJack ADC", "LABJACK_ADC_NET not set")
     if not DAC_NETS:
-        _skip("USB-202 DAC → LabJack ADC", "DAC_NETS is empty")
-        return True
+        return _skip("USB-202 DAC → LabJack ADC", "DAC_NETS is empty")
 
     test_voltages = [0.5, 1.0, 2.5, 5.0]
     ok = True
@@ -337,8 +377,7 @@ def test_gpio_loopback():
     print("=" * 60)
 
     if not GPIO_LOOPBACK_OUT or not GPIO_LOOPBACK_IN:
-        _skip("GPIO loopback", "GPIO_LOOPBACK_OUT or GPIO_LOOPBACK_IN not set")
-        return True
+        return _skip("GPIO loopback", "GPIO_LOOPBACK_OUT or GPIO_LOOPBACK_IN not set")
 
     try:
         out_bit = _get_usb202_dio_pin(GPIO_LOOPBACK_OUT)
@@ -353,8 +392,7 @@ def test_gpio_loopback():
             DigitalDirection, DigitalPortType,
         )
     except ImportError:
-        _skip("GPIO loopback", "uldaq not available")
-        return True
+        return _skip("GPIO loopback", "uldaq not available")
 
     devices = get_daq_device_inventory(InterfaceType.USB)
     desc = next(
@@ -464,11 +502,29 @@ def main():
     print("\n" + "=" * 60)
     print("TEST SUMMARY")
     print("=" * 60)
+
+    def _label(result):
+        if result is SKIPPED:
+            return "SKIP"
+        return "PASS" if result else "FAIL"
+
     for name, p in test_results:
-        print(f"  [{'PASS' if p else 'FAIL'}] {name}")
-    passed = sum(1 for _, p in test_results if p)
-    print(f"\nTotal: {passed}/{len(test_results)} test groups passed")
-    return 0 if passed == len(test_results) else 1
+        print(f"  [{_label(p)}] {name}")
+
+    skipped = sum(1 for _, p in test_results if p is SKIPPED)
+    failed = sum(1 for _, p in test_results if p is not SKIPPED and not p)
+    ran = len(test_results) - skipped
+    passed = ran - failed
+
+    # Skips are reported beside the total, never inside it. A group that did
+    # not run is not a group that passed, and rolling them together is how
+    # the supply-accuracy check reported green for a fixture that had never
+    # been wired up.
+    suffix = f" ({skipped} skipped)" if skipped else ""
+    print(f"\nTotal: {passed}/{ran} test groups passed{suffix}")
+    if skipped:
+        print("Skipped groups did not run and are not counted as passing.")
+    return 0 if failed == 0 else 1
 
 
 if __name__ == "__main__":
