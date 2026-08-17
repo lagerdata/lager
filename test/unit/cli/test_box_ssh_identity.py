@@ -40,6 +40,19 @@ def _proc(rc, stdout="", stderr=""):
     return mock.Mock(returncode=rc, stdout=stdout, stderr=stderr)
 
 
+def _fake_key_if_present(key_exists):
+    """Stand-in for lager_box_key_if_present, the seam every caller uses to
+    ask "is there a lager_box key to offer?".
+
+    Faked at the seam rather than by patching os.path.exists: _ssh does a
+    plain `import os`, so `_ssh.os.path` IS the stdlib posixpath module and
+    patching it is process-global — on 3.14 pathlib.Path.exists() delegates
+    to os.path.exists, so that patch silently rewrote the answer for every
+    Path.exists() in the process (install's deploy-script check included).
+    """
+    return lambda key_path=KEY: (key_path if key_exists else None)
+
+
 def _has_identity(argv):
     """True when argv offers the lager_box key."""
     return "-i" in argv and KEY in argv
@@ -56,7 +69,8 @@ class ProbeBoxIdentity(unittest.TestCase):
             calls.append(list(cmd))
             return results[len(calls) - 1]
 
-        with mock.patch.object(_ssh.os.path, "exists", return_value=key_exists), \
+        with mock.patch.object(_ssh, "lager_box_key_if_present",
+                               _fake_key_if_present(key_exists)), \
                 mock.patch.object(_ssh.subprocess, "run", fake_run):
             identity, proc = _ssh.probe_box_identity("lagerdata@10.0.0.1", **kwargs)
         return identity, proc, calls
@@ -476,7 +490,12 @@ class InstallOffersTheKey(_CommandCase):
 
         patches = self._lock_patches() + [
             mock.patch.object(install_mod.subprocess, "run", fake_run),
-            mock.patch.object(_ssh.os.path, "exists", return_value=key_exists),
+            # Both bindings: probe_box_identity resolves the seam through
+            # _ssh's globals, but install imports the name directly.
+            mock.patch.object(_ssh, "lager_box_key_if_present",
+                              _fake_key_if_present(key_exists)),
+            mock.patch.object(install_mod, "lager_box_key_if_present",
+                              _fake_key_if_present(key_exists)),
         ]
         for p in patches:
             p.start()
@@ -528,7 +547,10 @@ class InstallHasNoPasswordFallback(_CommandCase):
 
         patches = self._lock_patches() + [
             mock.patch.object(install_mod.subprocess, "run", fake_run),
-            mock.patch.object(_ssh.os.path, "exists", return_value=True),
+            mock.patch.object(_ssh, "lager_box_key_if_present",
+                              _fake_key_if_present(True)),
+            mock.patch.object(install_mod, "lager_box_key_if_present",
+                              _fake_key_if_present(True)),
             mock.patch.object(install_mod, "provision_lager_box_key",
                               provision or refuses),
         ]
@@ -599,7 +621,8 @@ class UninstallOffersTheKey(_CommandCase):
             mock.patch.object(uninstall_mod.subprocess, "run", fake_run),
             mock.patch.object(uninstall_mod, "get_ssh_connection_pool", return_value=pool),
             mock.patch.object(uninstall_mod, "get_box_name_by_ip", return_value=None),
-            mock.patch.object(_ssh.os.path, "exists", return_value=key_exists),
+            mock.patch.object(_ssh, "lager_box_key_if_present",
+                              _fake_key_if_present(key_exists)),
         ]
         for p in patches:
             p.start()
@@ -659,7 +682,8 @@ class UninstallDeregisters(_CommandCase):
             mock.patch.object(uninstall_mod.subprocess, "run", fake_run),
             mock.patch.object(uninstall_mod, "get_ssh_connection_pool", return_value=pool),
             mock.patch.object(uninstall_mod, "get_box_name_by_ip", return_value=None),
-            mock.patch.object(_ssh.os.path, "exists", return_value=True),
+            mock.patch.object(_ssh, "lager_box_key_if_present",
+                              _fake_key_if_present(True)),
         ]
         for p in patches:
             p.start()

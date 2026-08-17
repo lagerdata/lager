@@ -10,6 +10,8 @@ ssh-copy-id -> verify. The behavior worth guarding hardest: ssh-copy-id
 must run WITHOUT capture/stdin kwargs so its password prompt inherits
 the TTY.
 """
+import os
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -43,25 +45,34 @@ class RecordingRun:
 # ---------------------------------------------------------------------------
 
 class EnsureKeypair(unittest.TestCase):
+    """Driven with real paths in a temp dir: ensure_lager_box_keypair takes
+    the key path as a parameter, so nothing about the filesystem needs to be
+    faked. The old global os.path.exists patch reached far past the function
+    under test — it made shutil.which lie too, so the keygen-failure case
+    was passing on the "ssh-keygen not found" guard without keygen ever
+    running. shutil.which stays pinned so the tests don't depend on
+    ssh-keygen being installed on the machine running them."""
+
     def test_existing_key_skips_keygen(self):
         run = RecordingRun([])
-        with patch.object(_ssh, "subprocess") as sub, \
-             patch.object(_ssh.os.path, "exists", lambda p: True):
-            sub.run = run
-            self.assertFalse(_ssh.ensure_lager_box_keypair("/tmp/nope/lager_box"))
+        with tempfile.TemporaryDirectory() as td:
+            key = os.path.join(td, "lager_box")
+            open(key, "w", encoding="utf-8").close()
+            with patch.object(_ssh, "subprocess") as sub:
+                sub.run = run
+                self.assertFalse(_ssh.ensure_lager_box_keypair(key))
         self.assertEqual(run.calls, [])
 
     def test_missing_key_runs_ssh_keygen(self):
         run = RecordingRun([_proc(0)])
-        # shutil.which must be pinned: it calls os.path.exists internally, so
-        # the always-False exists patch below would otherwise make it return
-        # None and trip the "ssh-keygen not found" guard before keygen runs.
-        with patch.object(_ssh, "subprocess") as sub, \
-             patch.object(_ssh.shutil, "which", lambda _: "ssh-keygen"), \
-             patch.object(_ssh.os.path, "exists", lambda p: False), \
-             patch.object(_ssh.os, "makedirs", lambda *a, **k: None):
-            sub.run = run
-            self.assertTrue(_ssh.ensure_lager_box_keypair("/tmp/nope/lager_box"))
+        with tempfile.TemporaryDirectory() as td:
+            key = os.path.join(td, "keys", "lager_box")
+            with patch.object(_ssh, "subprocess") as sub, \
+                 patch.object(_ssh.shutil, "which", lambda _: "ssh-keygen"):
+                sub.run = run
+                self.assertTrue(_ssh.ensure_lager_box_keypair(key))
+            self.assertTrue(os.path.isdir(os.path.dirname(key)),
+                            "the key's directory is created for keygen")
         argv, _kwargs = run.calls[0]
         self.assertEqual(argv[:4], ["ssh-keygen", "-t", "ed25519", "-f"])
         self.assertIn("-N", argv)
@@ -69,12 +80,16 @@ class EnsureKeypair(unittest.TestCase):
 
     def test_keygen_failure_raises_lager_error(self):
         run = RecordingRun([_proc(1, stderr="disk full")])
-        with patch.object(_ssh, "subprocess") as sub, \
-             patch.object(_ssh.os.path, "exists", lambda p: False), \
-             patch.object(_ssh.os, "makedirs", lambda *a, **k: None):
-            sub.run = run
-            with self.assertRaises(LagerError):
-                _ssh.ensure_lager_box_keypair("/tmp/nope/lager_box")
+        with tempfile.TemporaryDirectory() as td:
+            key = os.path.join(td, "keys", "lager_box")
+            with patch.object(_ssh, "subprocess") as sub, \
+                 patch.object(_ssh.shutil, "which", lambda _: "ssh-keygen"):
+                sub.run = run
+                with self.assertRaises(LagerError):
+                    _ssh.ensure_lager_box_keypair(key)
+        self.assertEqual(len(run.calls), 1,
+                         "the failure must come from keygen itself, not an "
+                         "earlier guard")
 
 
 # ---------------------------------------------------------------------------
