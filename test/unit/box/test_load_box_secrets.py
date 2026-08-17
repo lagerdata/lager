@@ -57,64 +57,58 @@ from lager.python.executor import load_box_secrets  # noqa: E402
 
 
 class LoadBoxSecretsTests(unittest.TestCase):
+    """load_box_secrets takes its path as a parameter, so every case here
+    runs against a REAL file in a temp dir — no patching of os.path (which
+    is process-global) and no redirected open. The only fake left is the
+    PermissionError, which cannot be produced reliably from file modes (a
+    root-run test would read straight through 0o000)."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = os.path.join(self.tmp.name, 'org_secrets.json')
-        # The module reads a hardcoded path; point it at the fixture.
-        patcher = patch('lager.python.executor.os.path.exists',
-                        lambda p: p == '/etc/lager/org_secrets.json')
-        patcher.start()
-        self.addCleanup(patcher.stop)
 
     def _write(self, payload, mode=0o600):
         with open(self.path, 'w') as fh:
             json.dump(payload, fh)
         os.chmod(self.path, mode)
 
-    def _load(self):
-        """Run load_box_secrets() with the fixture standing in for the real
-        file. `open` is redirected rather than the path, so the code under test
-        keeps its own hardcoded filename in the log messages."""
-        real_open = open
-
-        def _open(path, *a, **kw):
-            if path == '/etc/lager/org_secrets.json':
-                return real_open(self.path, *a, **kw)
-            return real_open(path, *a, **kw)
-
-        with patch('builtins.open', _open):
-            return load_box_secrets()
+    def test_production_callers_get_the_box_path(self):
+        import inspect
+        default = inspect.signature(load_box_secrets).parameters[
+            'secrets_file'].default
+        self.assertEqual(default, '/etc/lager/org_secrets.json')
 
     def test_readable_secrets_are_returned(self):
         self._write({'API_KEY': 'shh', 'REGION': 'eu'})
-        with patch('lager.python.executor.os.stat') as stat:
-            stat.return_value = os.stat_result(
-                (0o100600, 0, 0, 1, os.getuid(), os.getgid(), 0, 0, 0, 0))
-            self.assertEqual(self._load(), {'API_KEY': 'shh', 'REGION': 'eu'})
+        self.assertEqual(load_box_secrets(self.path),
+                         {'API_KEY': 'shh', 'REGION': 'eu'})
+
+    def test_loose_permissions_are_tightened_before_reading(self):
+        self._write({'API_KEY': 'shh'}, mode=0o644)
+        with self.assertLogs('lager.python.executor', level='WARNING'):
+            self.assertEqual(load_box_secrets(self.path), {'API_KEY': 'shh'})
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
 
     def test_permission_error_returns_empty_dict(self):
         """Callers must not start crashing — the empty dict is the contract."""
         self._write({'API_KEY': 'shh'})
-        with patch('lager.python.executor.os.stat', side_effect=OSError('nope')), \
-                patch('builtins.open', side_effect=PermissionError(
-                    13, 'Permission denied')):
+        with patch('builtins.open', side_effect=PermissionError(
+                13, 'Permission denied')):
             with self.assertLogs('lager.python.executor', level='ERROR'):
-                self.assertEqual(load_box_secrets(), {})
+                self.assertEqual(load_box_secrets(self.path), {})
 
     def test_permission_error_logs_at_error_with_remediation(self):
         """The whole point of separating this branch: the consequence is
         invisible downstream, so the log line has to carry the diagnosis."""
         self._write({'API_KEY': 'shh'})
-        with patch('lager.python.executor.os.stat', side_effect=OSError('nope')), \
-                patch('builtins.open', side_effect=PermissionError(
-                    13, 'Permission denied')):
+        with patch('builtins.open', side_effect=PermissionError(
+                13, 'Permission denied')):
             with self.assertLogs('lager.python.executor', level='ERROR') as caught:
-                load_box_secrets()
+                load_box_secrets(self.path)
 
         blob = '\n'.join(caught.output)
-        self.assertIn('/etc/lager/org_secrets.json', blob)
+        self.assertIn(self.path, blob, 'the log must name the unreadable file')
         self.assertIn(str(os.getuid()), blob, 'the uid is the actionable detail')
         self.assertIn('chown', blob)
         self.assertIn('chmod 600', blob)
@@ -125,22 +119,19 @@ class LoadBoxSecretsTests(unittest.TestCase):
         with a different fix, and must not claim to be a permissions issue."""
         with open(self.path, 'w') as fh:
             fh.write('{not json')
-        with patch('lager.python.executor.os.stat') as stat:
-            stat.return_value = os.stat_result(
-                (0o100600, 0, 0, 1, os.getuid(), os.getgid(), 0, 0, 0, 0))
-            with self.assertLogs('lager.python.executor', level='WARNING') as caught:
-                self.assertEqual(self._load(), {})
+        os.chmod(self.path, 0o600)
+        with self.assertLogs('lager.python.executor', level='WARNING') as caught:
+            self.assertEqual(load_box_secrets(self.path), {})
 
         blob = '\n'.join(caught.output)
         self.assertNotIn('ERROR', blob.split(':')[0])
         self.assertNotIn('chown', blob)
 
     def test_missing_file_returns_empty_without_logging(self):
-        with patch('lager.python.executor.os.path.exists', lambda p: False):
-            with patch.object(logging.getLogger('lager.python.executor'),
-                              'error') as err:
-                self.assertEqual(load_box_secrets(), {})
-                err.assert_not_called()
+        with patch.object(logging.getLogger('lager.python.executor'),
+                          'error') as err:
+            self.assertEqual(load_box_secrets(self.path), {})
+            err.assert_not_called()
 
 
 if __name__ == '__main__':

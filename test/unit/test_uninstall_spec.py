@@ -12,6 +12,8 @@ heartbeating and releasing into the void.
 """
 
 import importlib
+import os
+import tempfile
 import unittest
 from unittest import mock
 
@@ -71,11 +73,24 @@ class PrivStepSpec(unittest.TestCase):
 
 
 class AuthorizedKeysCleanup(unittest.TestCase):
+    """lager_key_matcher reads ~/.ssh/lager_box.pub through expanduser, so a
+    temp HOME with (or without) a real pubkey file drives both branches —
+    no patching of os.path, which is the process-global posixpath module."""
+
+    def _cmd(self, pub=None):
+        with tempfile.TemporaryDirectory() as home:
+            if pub is not None:
+                os.makedirs(os.path.join(home, ".ssh"))
+                with open(os.path.join(home, ".ssh", "lager_box.pub"),
+                          "w", encoding="utf-8") as fh:
+                    fh.write(pub)
+            # USERPROFILE is what expanduser reads on Windows.
+            with mock.patch.dict(os.environ,
+                                 {"HOME": home, "USERPROFILE": home}):
+                return u.authorized_keys_cleanup_cmd()
+
     def test_uses_local_pubkey_blob_when_available(self):
-        with mock.patch.object(u.os.path, "isfile", return_value=True), \
-                mock.patch("builtins.open", mock.mock_open(
-                    read_data="ssh-ed25519 AAAATESTBLOB some-comment\n")):
-            cmd = u.authorized_keys_cleanup_cmd()
+        cmd = self._cmd(pub="ssh-ed25519 AAAATESTBLOB some-comment\n")
         # Match by the key blob, not the comment — comments vary across
         # installs; the blob is exact.
         self.assertIn("grep -vF 'AAAATESTBLOB'", cmd)
@@ -83,17 +98,13 @@ class AuthorizedKeysCleanup(unittest.TestCase):
         self.assertIn("chmod 600", cmd)
 
     def test_falls_back_to_default_comment(self):
-        with mock.patch.object(u.os.path, "isfile", return_value=False):
-            cmd = u.authorized_keys_cleanup_cmd()
-        self.assertIn(u._LAGER_KEY_COMMENT, cmd)
+        self.assertIn(u._LAGER_KEY_COMMENT, self._cmd())
 
     def test_empty_result_is_tolerated(self):
         # grep exits 1 when every line matches (authorized_keys held only the
         # lager key); the pipeline must still complete so the file is emptied
         # rather than left untouched.
-        with mock.patch.object(u.os.path, "isfile", return_value=False):
-            cmd = u.authorized_keys_cleanup_cmd()
-        self.assertIn("|| true", cmd)
+        self.assertIn("|| true", self._cmd())
 
 
 class LockDissolveOnContainerRemoval(unittest.TestCase):

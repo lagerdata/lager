@@ -150,15 +150,18 @@ def safe_unlink(path):
         logger.exception('Failed to unlink tmpfile', exc_info=exc)
 
 
-def load_box_secrets():
+def load_box_secrets(secrets_file='/etc/lager/org_secrets.json'):
     """
     Load organization secrets from box filesystem.
+
+    The path is a parameter (production callers take the default) so tests
+    can hand it a real fixture file instead of patching os.path.exists —
+    which is process-global and, on Python >= 3.14, also rewrites every
+    pathlib.Path.exists().
 
     Returns:
         dict: Secrets from /etc/lager/org_secrets.json or empty dict
     """
-    secrets_file = '/etc/lager/org_secrets.json'
-
     if os.path.exists(secrets_file):
         try:
             mode = os.stat(secrets_file).st_mode & 0o777

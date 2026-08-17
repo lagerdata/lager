@@ -399,7 +399,8 @@ def default_ssh_runner(
             return 255, "", f"ssh timed out after {timeout}s to {dest}"
         return proc.returncode, proc.stdout, proc.stderr
 
-    use_key = os.path.exists(_LAGER_BOX_KEY) and dest not in _KEY_FALLBACK_DESTS
+    use_key = (lager_box_key_if_present() is not None
+               and dest not in _KEY_FALLBACK_DESTS)
     rc, stdout, stderr = _run(use_key)
     if use_key and rc == 255 and is_auth_failure(stderr):
         _KEY_FALLBACK_DESTS.add(dest)

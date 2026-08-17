@@ -33,8 +33,15 @@ class _RunnerCase(unittest.TestCase):
 
     def setUp(self):
         _ssh._KEY_FALLBACK_DESTS.clear()
+        # The key's presence is faked at the module's own seam, not by
+        # patching os.path.exists: `_ssh.os.path` IS the stdlib posixpath, so
+        # that patch was process-global (and on 3.14 would leak into every
+        # pathlib.Path.exists() too).
+        key_exists = self.KEY_EXISTS
         patches = [
-            patch("cli.commands.box._ssh.os.path.exists", return_value=self.KEY_EXISTS),
+            patch.object(_ssh, "lager_box_key_if_present",
+                         lambda key_path=_ssh._LAGER_BOX_KEY:
+                             key_path if key_exists else None),
             patch("cli.box_storage.get_box_name_by_ip", return_value="test-box"),
             patch("cli.box_storage.get_box_user", return_value="boxuser"),
         ]
