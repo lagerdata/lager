@@ -357,9 +357,15 @@ jobs:
         env:
           USB_NET: ${{ vars.USB_NET || 'usb1' }}
           USB_NETS: ${{ vars.USB_NETS || 'usb1' }}
+          # Diagnostic only, for #277. The suite passes 9/9 standalone on this
+          # bench but aborts here most runs, so the difference is the CI
+          # context rather than the test -- which means the trace has to be
+          # collected from a real run, not a hand-run reproduction.
+          LAGER_HUB_EXIT_DEBUG: "1"
         run: |
           lager python test/api/usb/test_Acroname.py --box "$LAGER_BOX" \
-            --passenv USB_NET --passenv USB_NETS
+            --passenv USB_NET --passenv USB_NETS \
+            --passenv LAGER_HUB_EXIT_DEBUG
         shell: bash
 
       - name: Test Keithley 2281S power supply
