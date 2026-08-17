@@ -146,7 +146,8 @@ Lager boxes publish SSH keys from a key directory, `/etc/lager/authorized_keys.d
 `start_box.sh` owns only the region of `authorized_keys` between its `# BEGIN LAGER MANAGED KEYS` and `# END LAGER MANAGED KEYS` markers, and rebuilds that region from the key directory on every pass. Two consequences worth knowing:
 
 - **Deleting a `.pub` revokes the key.** Nothing else does; editing `authorized_keys` by hand inside the marked region is undone on the next pass.
-- **Keys installed by other means are untouched.** `lager ssh-setup`, `ssh-copy-id`, and cloud-init all append outside the marked region, and are preserved verbatim. Any other system that manages this file must claim its own distinct marker pair — two managers sharing one pair would each rebuild the other's region on every pass.
+- **Keys installed by other means are untouched.** `ssh-copy-id` and cloud-init append outside the marked region, and are preserved verbatim. Any other system that manages this file must claim its own distinct marker pair — two managers sharing one pair would each rebuild the other's region on every pass.
+- **Preserved is not the same as durable.** `start_box.sh` preserves a loose line against *its own* rebuild; it cannot preserve it against someone else's. A second key manager that rebuilds `authorized_keys` from its own source, keeping only its own marked region, drops every loose line — and `start_box.sh` then re-creates its region from the key directory alone, so a key that was never registered there does not come back. For that reason `lager ssh-setup`, `lager update`, and `lager install` write their public key into the key directory as well as appending it, under `lager-box-<user>-<host>.pub`. Any tooling that installs a key it expects to survive should do the same.
 
 Lager itself does not require or run a control plane -- this is a hook, not a dependency. Leaving the key directory absent or empty simply means no keys are published from it.
 

@@ -30,7 +30,12 @@ from ..box._host_ops import (
     boxcfg_sudoers_bootstrap_cmd,
     is_valid_unix_username,
 )
-from ..box._ssh import ensure_lager_box_keypair, key_auth_works
+from ..box._ssh import (
+    BOX_KEYS_DIR,
+    ensure_lager_box_keypair,
+    key_auth_works,
+    register_lager_box_key,
+)
 from ._host_cli import (
     HOST_CLI_PROBE_SNIPPET,
     HOST_VENV_APT_CMD,
@@ -1058,10 +1063,28 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             click.echo('Future connections will not require a password.')
             click.echo()
             use_explicit_key = True
+            register_key_or_warn()
             return True
 
         click.secho('Failed to set up SSH key.', fg='yellow')
         return False
+
+    def register_key_or_warn():
+        """Publish the key into the box's key directory.
+
+        Appending to authorized_keys installs the key; only a `.pub` in
+        /etc/lager/authorized_keys.d survives another key manager rebuilding
+        that file. Best-effort — the key is already working when this runs —
+        but warned about, because the failure is invisible until the rebuild.
+        """
+        ok, detail = register_lager_box_key(ssh_host, key_path=key_file)
+        if not ok:
+            click.secho(
+                f'Warning: SSH key works but could not be registered in '
+                f'{BOX_KEYS_DIR} on the box ({detail}). Run `lager ssh-setup '
+                f'--box {ssh_host.split("@")[-1]}` once the directory is writable.',
+                fg='yellow', err=True,
+            )
 
     try:
         # First try with the lager_box key if it exists. Same unattended
@@ -1070,6 +1093,8 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         if os.path.exists(key_file) and key_auth_works(ssh_host):
             use_explicit_key = True
             log_status('OK', 'green')
+            # Repairs a box whose key predates registration.
+            register_key_or_warn()
 
         # If lager_box key didn't work for this box, we need to set it up
         if not use_explicit_key:

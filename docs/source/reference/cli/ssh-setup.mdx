@@ -51,11 +51,25 @@ is installed, no further password prompts appear for that box.
    [SSH username resolution](/source/reference/cli/ssh#username-resolution)).
 2. **Generates** the key pair `~/.ssh/lager_box` (and `lager_box.pub`) if it does
    not already exist.
-3. **Skips early if already authorized** — if key authentication already works for
-   the box, it reports success and changes nothing (the command is idempotent).
+3. **Skips the copy if already authorized** — if key authentication already works
+   for the box, it goes straight to step 6 (the command is idempotent).
 4. **Copies** the public key to the box with `ssh-copy-id` (one password prompt).
 5. **Verifies** that passwordless key authentication now works, reporting a clear
    error if it does not.
+6. **Registers** the public key on the box as
+   `/etc/lager/authorized_keys.d/lager-box-<user>-<host>.pub`, over the key it
+   just installed, so no extra prompt.
+
+Step 6 is what makes the key durable rather than merely present. `ssh-copy-id`
+appends to `~/.ssh/authorized_keys` outside every marker block, and while
+`start_box.sh` preserves such lines against its own rebuild, it cannot preserve
+them against another key manager that rebuilds the file from its own source —
+that drops every line outside its own markers, and `start_box.sh` then
+re-creates its block from the key directory alone. A key registered in the key
+directory comes back; one that was only appended does not. If registration fails
+(for example on a box where `/etc/lager` is not writable by the login user) the
+command warns and still reports success — the key works — and re-running
+`lager ssh-setup` later retries the registration with no password prompt.
 
 The key lives at `~/.ssh/lager_box`. Because that filename is not one of SSH's
 default identities, `lager ssh` passes `-i ~/.ssh/lager_box` explicitly when the

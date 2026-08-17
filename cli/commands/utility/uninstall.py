@@ -19,7 +19,12 @@ from ...box_storage import (
     project_files_defining_box,
 )
 from ...core.ssh_utils import host_in_known_hosts, get_ssh_connection_pool
-from ..box._ssh import probe_box_identity, ssh_identity_args
+from ..box._ssh import (
+    BOX_KEYS_DIR,
+    probe_box_identity,
+    registered_key_name,
+    ssh_identity_args,
+)
 
 # --- Privileged removal spec -------------------------------------------------
 #
@@ -847,6 +852,15 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
                 allow_fail=True
             )
 
+            # De-register before stripping the authorized_keys line: the
+            # registration is the durable half. Leaving the .pub behind under
+            # --keep-config (which preserves /etc/lager) would let the next
+            # start_box.sh sync re-publish the key this step just removed.
+            run_ssh(
+                f"rm -f {BOX_KEYS_DIR}/{registered_key_name()}",
+                "De-registering this machine's key",
+                allow_fail=True
+            )
             run_ssh(
                 authorized_keys_cleanup_cmd(),
                 "Removing this machine's key from authorized_keys",

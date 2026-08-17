@@ -844,6 +844,40 @@ print_info "Ensuring correct permissions on /etc/lager..."
 ssh_t "${BOX_USER}@${BOX_IP}" 'sudo chown -R 33:"$(id -g)" /etc/lager && sudo chmod 2775 /etc/lager'
 print_success "Permissions set correctly (www-data UID 33, group-writable by ${BOX_USER})"
 
+# Register the lager_box key in the box's key directory.
+#
+# MUST run after the chmod above, not back in STEP 1: /etc/lager does not
+# exist (or is not group-writable) until this point, so an earlier attempt
+# would fail on a fresh box for want of permission rather than for any real
+# reason.
+#
+# Appending to authorized_keys — which STEP 1, `lager ssh-setup`, and
+# `lager update` all do — INSTALLS the key but does not make it durable.
+# start_box.sh rebuilds its managed block from this directory and preserves
+# loose lines only against itself; another key manager that rebuilds
+# authorized_keys from its own source drops every line outside its own
+# markers, this key included, and start_box.sh then re-creates its block from
+# the key directory alone. A key that was never registered here does not come
+# back — and on a box that also sets PasswordAuthentication no, there is no
+# route left to put it back.
+#
+# No sudo needed: /etc/lager is now 2775, group-owned by the login user.
+# Non-fatal — the key works either way — but warned about, because the
+# failure stays invisible until the day someone rebuilds that file.
+if [ -f "$KEY_FILE.pub" ]; then
+    KEY_REG_NAME="lager-box-$(id -un 2>/dev/null || echo user)-$(hostname -s 2>/dev/null || echo host)"
+    # Plain filenames only, matching the CLI's own sanitising.
+    KEY_REG_NAME=$(printf '%s' "$KEY_REG_NAME" | tr -c 'A-Za-z0-9._-' '-' | cut -c1-58)
+    KEY_REG_PATH="/etc/lager/authorized_keys.d/${KEY_REG_NAME}.pub"
+    if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" \
+        "mkdir -p /etc/lager/authorized_keys.d && cat > '${KEY_REG_PATH}' && chmod 644 '${KEY_REG_PATH}'" \
+        < "$KEY_FILE.pub" >/dev/null 2>&1; then
+        print_success "SSH key registered in /etc/lager/authorized_keys.d"
+    else
+        print_warning "Could not register the SSH key in /etc/lager/authorized_keys.d — it works now, but will not survive a rebuild of the box's authorized_keys"
+    fi
+fi
+
 # Ensure saved_nets.json exists and is writable
 if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "test -f /etc/lager/saved_nets.json" 2>/dev/null; then
     print_info "Initializing /etc/lager/saved_nets.json..."

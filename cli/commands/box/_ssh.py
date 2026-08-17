@@ -13,8 +13,12 @@ fixes don't have to be made three times.
 
 from __future__ import annotations
 
+import getpass
 import os
+import re
+import shlex
 import shutil
+import socket
 import subprocess
 from typing import Callable, List, Optional, Sequence, Tuple
 
@@ -121,6 +125,96 @@ def probe_box_identity(
         identity = None
         proc = _probe(None)
     return identity, proc
+
+
+# Where box/start_box.sh's authorized-keys sync reads managed keys from.
+#
+# Installing the key and REGISTERING it are not the same thing. ssh-copy-id
+# (and the `>> ~/.ssh/authorized_keys` equivalents in `lager update` and the
+# deploy script) append a line OUTSIDE every manager's marker block, and
+# start_box.sh's sync preserves such lines byte-for-byte — but only against
+# itself. Any other key manager on the box that rebuilds authorized_keys from
+# its own source, keeping only its own block, takes that loose line with it,
+# and start_box.sh then re-creates its block from this directory alone. A key
+# that is not here does not come back.
+#
+# So every path that installs the lager_box key also drops the public half
+# here. A `.pub` in this directory is durable by construction: it is the
+# sync's source of truth, and it is what makes the key survive a rebuild
+# rather than depend on nobody having done one.
+BOX_KEYS_DIR = "/etc/lager/authorized_keys.d"
+
+
+def registered_key_name(user: Optional[str] = None, host: Optional[str] = None) -> str:
+    """Filename this machine's lager_box public key is registered under.
+
+    One file per operator machine, overwritten by every ssh-setup, so
+    re-running after regenerating the keypair replaces the entry instead of
+    leaving the superseded key authorized forever. The `lager-box-` prefix
+    keeps it clear of names other key managers claim.
+    """
+    if user is None:
+        try:
+            user = getpass.getuser()
+        except Exception:
+            user = "user"
+    if host is None:
+        host = (socket.gethostname() or "host").split(".")[0]
+    slug = re.sub(r"[^A-Za-z0-9._-]", "-", f"{user}-{host}")[:48].strip("-._")
+    return f"lager-box-{slug or 'unknown'}.pub"
+
+
+def register_key_command(pub_key: str, filename: str) -> str:
+    """Remote shell command that publishes `pub_key` into the box's key dir.
+
+    No sudo: `lager install` leaves /etc/lager mode 2775 owned by the login
+    user's group, so the login user can create the directory and write in it.
+    Boxes where that is not true fail this command, and callers report it
+    rather than treating it as fatal — the key itself is already installed and
+    working at that point.
+    """
+    path = f"{BOX_KEYS_DIR}/{filename}"
+    return (
+        f"mkdir -p {shlex.quote(BOX_KEYS_DIR)} && "
+        f"printf '%s\\n' {shlex.quote(pub_key.strip())} > {shlex.quote(path)} && "
+        f"chmod 644 {shlex.quote(path)}"
+    )
+
+
+def register_lager_box_key(
+    dest: str,
+    *,
+    key_path: str = _LAGER_BOX_KEY,
+    timeout: int = 30,
+) -> Tuple[bool, str]:
+    """Publish this machine's lager_box public key into the box's key dir.
+
+    Returns ``(ok, detail)``; `detail` is a short reason when ok is False.
+    Call only once the key authenticates — it runs over that key, so it costs
+    no extra password prompt.
+
+    Idempotent: writes the same file with the same content on every run.
+    """
+    pub_path = f"{key_path}.pub"
+    try:
+        with open(pub_path, "r", encoding="utf-8") as fh:
+            pub_key = fh.read().strip()
+    except OSError as exc:
+        return False, f"could not read {pub_path}: {exc}"
+    if not pub_key:
+        return False, f"{pub_path} is empty"
+
+    cmd = register_key_command(pub_key, registered_key_name())
+    try:
+        proc = subprocess.run(
+            ["ssh", "-i", key_path, "-o", "BatchMode=yes", dest, cmd],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, str(exc)
+    if proc.returncode != 0:
+        return False, strip_ssh_banner(proc.stderr) or f"ssh exited {proc.returncode}"
+    return True, ""
 
 
 def ensure_lager_box_keypair(key_path: str = _LAGER_BOX_KEY) -> bool:
