@@ -27,11 +27,21 @@ from ..box._host_ops import (
     boxcfg_sudoers_bootstrap_cmd,
     is_valid_unix_username,
 )
-from ..box._ssh import _LAGER_BOX_KEY, probe_box_identity, ssh_identity_args
+from ..box._ssh import (
+    _LAGER_BOX_KEY,
+    lager_box_key_if_present,
+    probe_box_identity,
+    ssh_identity_args,
+)
+from ..box.ssh_setup import provision_lager_box_key
 
 
 def no_usable_identity_error(ssh_host, ip):
     """The box accepted no SSH key this machine can offer.
+
+    Reached only when the operator declines to set the key up now — install
+    offers to do that itself, so this is the "no thanks" exit rather than a
+    dead end.
 
     Deliberately *not* "password authentication failed". Install used to
     offer a password fallback here, but a hardened box sets
@@ -39,8 +49,6 @@ def no_usable_identity_error(ssh_host, ip):
     asked the operator for — and reported a password problem for what is an
     identity problem. That sent people hunting for a wrong password when
     the box had simply never authorized this machine's key.
-
-    What is actionable is getting a key authorized, which is one command.
     """
     return LagerError(
         f'{ssh_host} did not accept any SSH key this machine can offer.',
@@ -192,7 +200,34 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
 
             # Check for specific SSH error types
             if "permission denied" in stderr or "publickey" in stderr:
-                no_usable_identity_error(ssh_host, ip).die()
+                # No identity this machine holds is authorized. Set the key up
+                # here rather than dead-ending on "run lager ssh-setup first":
+                # that is one command doing what this one could, and the box
+                # password it asks for is the same password install would have
+                # needed anyway. `lager ssh-setup` still exists and is still
+                # the fix when any OTHER command hits this — it just is not a
+                # prerequisite for install.
+                click.secho("No SSH key on this machine is authorized on the box.", fg='yellow')
+                click.echo()
+                if not (yes or click.confirm(
+                    "Set up the lager_box key now? (one box-password prompt, "
+                    "then the rest of the install runs unattended)",
+                    default=True,
+                )):
+                    no_usable_identity_error(ssh_host, ip).die()
+                click.echo()
+                # .die() rather than letting the LagerError propagate: this
+                # sits inside the broad `except Exception` below, which would
+                # otherwise re-wrap it as a generic "SSH connectivity check
+                # failed" and discard the guidance it carries. SystemExit is a
+                # BaseException and passes straight through — the convention
+                # LagerError.die() exists for.
+                try:
+                    provision_lager_box_key(ssh_host)
+                except LagerError as exc:
+                    exc.die()
+                identity = lager_box_key_if_present()
+                click.secho("SSH connection OK", fg='green')
             elif "connection refused" in stderr or "no route to host" in stderr:
                 ssh_error(result.stderr, ip).die()
             elif "host key verification failed" in stderr:

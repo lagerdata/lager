@@ -304,6 +304,49 @@ class KeyInstalledOnBox(unittest.TestCase):
         self.assertIn("BatchMode=yes", calls[0])
 
 
+class DeployScriptKeyCheck(unittest.TestCase):
+    """The deploy script asks the same question the CLI does, the same way.
+
+    It used to decide "is SSH set up?" by connecting, and fell through to a
+    bare `ssh <box> echo test` when the keyed attempt failed. On a machine
+    with an ssh_config `Host *` IdentityFile that bare probe always
+    succeeds, so the script reported "Passwordless SSH already configured"
+    and skipped generating, copying, and registering the key — on hardware,
+    an install that reported success and left the box without a lager_box
+    key at all.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from pathlib import Path
+        import cli
+        cls.script = (Path(cli.__file__).parent / "deployment" / "scripts"
+                      / "setup_and_deploy_box.sh").read_text()
+
+    def _probe_block(self):
+        start = self.script.index('print_info "Testing existing SSH configuration')
+        return self.script[start:self.script.index("\nfi", start)]
+
+    def test_it_greps_authorized_keys_rather_than_connecting(self):
+        block = self._probe_block()
+        self.assertIn("grep -qF", block)
+        self.assertIn("authorized_keys", block)
+
+    def test_no_bare_reachability_fallback(self):
+        # `elif ssh ... "echo 'test'"` is the exact shape that made an
+        # install skip key setup on a box that had no lager_box key.
+        block = self._probe_block()
+        self.assertNotIn("elif ssh", block)
+        self.assertNotIn("echo 'test'", block)
+
+    def test_missing_local_pubkey_means_set_it_up(self):
+        # A first install has no key yet; the guard must not read an empty
+        # blob as "already authorized".
+        block = self._probe_block()
+        self.assertIn('[ -n "$KEY_BLOB" ]', block)
+        self.assertIn("NEEDS_SSH_SETUP=true", block)
+
+
 class ConnectionPoolIdentity(unittest.TestCase):
     """The pool has to carry the identity too. ControlMaster=auto silently
     opens a fresh connection when the socket is gone, and that one
@@ -463,32 +506,62 @@ class InstallHasNoPasswordFallback(_CommandCase):
     password install had just asked for — and then reported a password
     failure for what was an identity failure."""
 
-    def _install_rejected(self):
+    def _install_rejected(self, *, decline=False, provision=None):
+        """Drive install against a box that authorizes nothing.
+
+        `provision` replaces the key-setup helper; None means "the box
+        refuses the key too", which is what a box with
+        PasswordAuthentication no does.
+        """
         calls = []
 
         def fake_run(cmd, **_kw):
             cmd = list(cmd) if isinstance(cmd, (list, tuple)) else [cmd]
             calls.append(cmd)
+            # The deploy script; only SSH is being refused here.
+            if cmd and cmd[0] != "ssh":
+                return _proc(0)
             return _proc(255, "", DENIED)
+
+        def refuses(dest, **_kw):
+            raise install_mod.LagerError(f"ssh-copy-id to {dest} failed.")
 
         patches = self._lock_patches() + [
             mock.patch.object(install_mod.subprocess, "run", fake_run),
             mock.patch.object(_ssh.os.path, "exists", return_value=True),
+            mock.patch.object(install_mod, "provision_lager_box_key",
+                              provision or refuses),
         ]
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
-        result = CliRunner().invoke(install_mod.install, ["--ip", "10.0.0.1", "--yes"])
+        args = ["--ip", "10.0.0.1"] + ([] if decline else ["--yes"])
+        result = CliRunner().invoke(install_mod.install, args, input="n\n")
         return result, self._ssh_calls(calls)
 
-    def test_it_fails_instead_of_prompting(self):
+    def test_it_sets_the_key_up_rather_than_dead_ending(self):
+        # Install used to stop and tell you to run `lager ssh-setup` first.
+        # The password it would have asked for is the same one install needs,
+        # so it does that work itself now.
+        provisioned = []
+        result, _calls = self._install_rejected(
+            provision=lambda dest, **_kw: provisioned.append(dest) or False)
+        self.assertEqual(provisioned, ["lagerdata@10.0.0.1"])
+        self.assertEqual(result.exit_code, 0, result.output)
+
+    def test_declining_still_names_the_command_that_fixes_it(self):
+        result, _calls = self._install_rejected(decline=True)
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("lager ssh-setup", result.output)
+
+    def test_a_setup_failure_keeps_its_own_guidance(self):
+        # The provisioning error is raised inside install's broad
+        # `except Exception`, which would re-wrap it as a generic
+        # "SSH connectivity check failed" and discard what it said.
         result, _calls = self._install_rejected()
         self.assertNotEqual(result.exit_code, 0)
-        self.assertNotIn("password authentication", result.output.lower())
-
-    def test_the_error_names_the_command_that_fixes_it(self):
-        result, _calls = self._install_rejected()
-        self.assertIn("lager ssh-setup", result.output)
+        self.assertIn("ssh-copy-id", result.output)
+        self.assertNotIn("SSH connectivity check failed", result.output)
 
     def test_no_password_prompt_is_ever_attempted(self):
         _result, calls = self._install_rejected()
@@ -496,7 +569,7 @@ class InstallHasNoPasswordFallback(_CommandCase):
             self.assertNotIn("NumberOfPasswordPrompts=1", argv, argv)
 
     def test_it_probed_with_the_key_before_giving_up(self):
-        # The error is only honest if the key really was offered.
+        # Offering to install the key is only honest if it really was tried.
         _result, calls = self._install_rejected()
         self.assertTrue(any(_has_identity(argv) for argv in calls))
         self.assertTrue(any(not _has_identity(argv) for argv in calls),

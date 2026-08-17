@@ -909,8 +909,15 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
         click.secho("the DNS entry in /etc/docker/daemon.json) and pip/apt packages that were", fg='yellow')
         click.secho("installed for lager workflows.", fg='yellow')
         click.echo()
-        click.secho("This machine's SSH key was removed from the box's authorized_keys —", fg='yellow')
-        click.secho("the next SSH connection to this box will require a password.", fg='yellow')
+        # Only lager_box is removed, so "you will need a password now" is a
+        # claim about every credential made from a fact about one. Any key the
+        # operator installed themselves, and any key another manager renders
+        # into this file, is untouched and still works — saying otherwise sends
+        # someone hunting for a box password they do not need.
+        click.secho("This machine's lager_box key was removed from the box's authorized_keys", fg='yellow')
+        click.secho("and de-registered. Other keys are untouched: your own, and any installed", fg='yellow')
+        click.secho("by another key manager, still work. If lager_box was the only one, the", fg='yellow')
+        click.secho("next connection will need the box password.", fg='yellow')
 
     # 10. Local config cleanup - offer to remove box from .lager config
     box_name = box

@@ -87,19 +87,15 @@ def register_or_warn(dest: str) -> bool:
     return False
 
 
-@click.command(
-    name="ssh-setup",
-    cls=BoxCommand,
-    help="Set up passwordless SSH to a box (enter the box password "
-         "once; lager commands work passwordless after).",
-)
-@click.option("--box", help="Lagerbox name or IP")
-@click.pass_context
-def ssh_setup(ctx: click.Context, box: Optional[str]) -> None:
-    ip = resolve_and_validate_box(ctx, box)
-    user = resolve_box_user(ip)
-    dest = f"{user}@{ip}"
+def provision_lager_box_key(dest: str) -> bool:
+    """Generate, install, verify and register the lager_box key on `dest`.
 
+    The body of `lager ssh-setup`, extracted so `lager install` can call it
+    instead of dead-ending on "run this other command first". Returns True
+    when the key was already present (nothing to do), False when it was
+    installed. Raises :class:`LagerError` for the failures worth stopping
+    on; a registration failure is not one of them and only warns.
+    """
     if ensure_lager_box_keypair():
         click.echo(f"Generated SSH key at {_LAGER_BOX_KEY}")
 
@@ -116,12 +112,11 @@ def ssh_setup(ctx: click.Context, box: Optional[str]) -> None:
     # unattended anyway.
     if key_installed_on_box(dest) is True:
         _KEY_FALLBACK_DESTS.discard(dest)
-        click.secho(f"{dest} is already authorized — no password needed.", fg="green")
         # Still register: this is the path that repairs a box whose key was
         # installed before registration existed, and it costs one keyed
         # round-trip and no prompt.
         register_or_warn(dest)
-        return
+        return True
 
     if shutil.which("ssh-copy-id") is None:
         raise LagerError(
@@ -175,6 +170,25 @@ def ssh_setup(ctx: click.Context, box: Optional[str]) -> None:
 
     _KEY_FALLBACK_DESTS.discard(dest)
     register_or_warn(dest)
+    return False
+
+
+@click.command(
+    name="ssh-setup",
+    cls=BoxCommand,
+    help="Set up passwordless SSH to a box (enter the box password "
+         "once; lager commands work passwordless after).",
+)
+@click.option("--box", help="Lagerbox name or IP")
+@click.pass_context
+def ssh_setup(ctx: click.Context, box: Optional[str]) -> None:
+    ip = resolve_and_validate_box(ctx, box)
+    dest = f"{resolve_box_user(ip)}@{ip}"
+
+    if provision_lager_box_key(dest):
+        click.secho(f"{dest} is already authorized — no password needed.", fg="green")
+        return
+
     click.secho(f"Success — {dest} is authorized.", fg="green")
     click.echo("lager commands for this box now work without a password.")
 
