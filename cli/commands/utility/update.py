@@ -246,11 +246,29 @@ def _docker_pull_cmd(image_ref, digest):
     `dpkg --print-architecture` is the same normalisation
     setup_and_deploy_box.sh already uses to pick per-arch SEGGER downloads. It
     stays unquoted so the box's shell expands it.
+
+    Pulls through a THROWAWAY, empty docker config so the request goes out
+    anonymously. The image is public, and inheriting the box's ambient
+    credentials makes the pull depend on state that has nothing to do with
+    this feature: a box that ever logged in to ghcr.io for something else
+    sends those credentials, GHCR evaluates them against *this* repository
+    rather than falling back to anonymous, and returns `denied: denied` for a
+    package anyone can read. Observed exactly that on a workstation with
+    credentials for a different ghcr.io org. The update still recovers -- the
+    denial is classified and falls back to a build -- but the feature would
+    silently stop helping that box for a reason unrelated to the image.
+
+    Safe on a box because nothing here uses a docker *context*; the box talks
+    to the default local socket, the same way start_box.sh's plain
+    `docker build` does. The directory is removed even when the pull fails,
+    and the pull's exit status is preserved for the caller to classify.
     """
     platform = 'linux/$(dpkg --print-architecture 2>/dev/null || uname -m)'
     return (
-        f'docker pull --platform "{platform}" '
-        f'{shlex.quote(_digest_ref(image_ref, digest))}'
+        'cfg=$(mktemp -d) || exit 1; '
+        f'docker --config "$cfg" pull --platform "{platform}" '
+        f'{shlex.quote(_digest_ref(image_ref, digest))}; '
+        'rc=$?; rm -rf "$cfg"; exit $rc'
     )
 
 

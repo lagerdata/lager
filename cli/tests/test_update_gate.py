@@ -459,21 +459,23 @@ class _FakeSSH:
 
     def __call__(self, cmd, timeout_secs=None):
         self.calls.append(cmd)
-        if 'docker pull' in cmd:
-            if isinstance(self.pull, BaseException):
-                raise self.pull
-            return self.pull
+        # Order matters: the pull is wrapped in a throwaway-config shell
+        # snippet, so match the specific commands before the general one.
         if 'docker image inspect' in cmd:
             if isinstance(self.inspect, BaseException):
                 raise self.inspect
             return self.inspect
         if 'docker rmi' in cmd:
             return _R(0)
+        if ' pull ' in cmd:
+            if isinstance(self.pull, BaseException):
+                raise self.pull
+            return self.pull
         raise AssertionError(f'unexpected command: {cmd}')
 
     @property
     def pulled_ref(self):
-        return [c for c in self.calls if 'docker pull' in c]
+        return [c for c in self.calls if ' pull ' in c]
 
     @property
     def discarded(self):
@@ -572,6 +574,28 @@ class TestDockerCommandBuilders:
         nasty = _docker_untag_cmd('ghcr.io/x/y:v1;rm -rf /')
         assert "'ghcr.io/x/y:v1;rm -rf /'" in nasty
         assert nasty.count('||') == 1
+
+    def test_pull_uses_a_throwaway_docker_config(self):
+        cmd = _docker_pull_cmd(REF, DIGEST)
+        # Anonymous by construction. Inheriting the box's ambient ghcr.io
+        # credentials makes a PUBLIC image return `denied: denied` when those
+        # credentials belong to another org -- observed on a real workstation.
+        assert 'mktemp -d' in cmd
+        assert '--config "$cfg"' in cmd
+
+    def test_pull_cleans_up_and_preserves_exit_status(self):
+        cmd = _docker_pull_cmd(REF, DIGEST)
+        # The temp dir must go even when the pull fails, and the caller
+        # classifies on the pull's own return code -- not rm's.
+        assert 'rc=$?' in cmd
+        assert 'rm -rf "$cfg"' in cmd
+        assert cmd.rstrip().endswith('exit $rc')
+        assert cmd.index('rc=$?') < cmd.index('rm -rf "$cfg"')
+
+    def test_pull_snippet_is_valid_shell(self):
+        assert subprocess.run(
+            ['bash', '-n', '-c', _docker_pull_cmd(REF, DIGEST)],
+        ).returncode == 0
 
     def test_inspect_reads_the_oci_version_label(self):
         cmd = _docker_inspect_label_cmd(_digest_ref(REF, DIGEST))
