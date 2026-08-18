@@ -18,10 +18,19 @@
 # without fighting shell quoting (a heredoc inside `$()` with an apostrophe
 # in it does not even parse under bash 3.2, which is what macOS ships).
 #
-# Requires: gh on PATH, GH_TOKEN with issues:write, GH_REPO set. The
-# `bench-alert` label must already exist in the repo -- `gh issue create`
-# fails on an unknown label, and that failure is deliberate: a missing label
-# means the alerting setup is broken, which should be loud, not papered over.
+# Requires: gh on PATH, GH_TOKEN with issues:write, GH_REPO set. The label
+# must already exist in the repo -- issue creation fails on an unknown label,
+# and that failure is deliberate: a missing label means the alerting setup is
+# broken, which should be loud, not papered over.
+#
+# BENCH_ALERT_LABEL selects which issue stream to write (default
+# `bench-alert`). This is the ONLY thing that separates two streams: dedupe,
+# reuse and recover all key on the label, never on the title, so two callers
+# passing different titles under one label still share one issue -- and
+# whichever fired first names it. `bench-extended.yml` sets
+# `bench-alert-extended` for exactly that reason. A `recover` closes only the
+# label it was invoked with, so a stream with no recovery caller (Extended) is
+# closed by hand, and the nightly's recovery cannot close it by accident.
 #
 # Pinning is best-effort: it needs more than issues:write, so it is allowed
 # to fail without failing the alert itself. Issues are unpinned before being

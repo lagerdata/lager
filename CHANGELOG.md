@@ -2,6 +2,83 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Fixed
+
+- **`lager logic <NET> enable|disable|start|start-single|stop` did nothing, and
+  reported success doing it.** The box-side worker resolved the net with
+  `Net.get(netname, NetType.Analog)`, but the CLI validates the net as role
+  `logic` before dispatching, and `NetType.from_role('logic')` is
+  `NetType.Logic`. Both of `Net.get`'s lookup paths match on type equality, so
+  the mismatch did not raise -- it returned `None`, the worker's
+  `if target_net:` guard went false, and the command exited 0 having touched
+  no instrument.
+
+  Confirmed on a box with a Rigol MSO logic net configured: the net lists under
+  `lager logic`, which is only possible when its role is `logic`, and the
+  enable was a no-op. All six workers now resolve `NetType.Logic`.
+
+  A unit test pins the worker's net type to `NetType.from_role(LOGIC_ROLE)`,
+  importing the role from the CLI module that validates it, so the two sides
+  cannot drift apart again without failing CI. Nothing covered this before:
+  `cli/impl/*` scripts are uploaded and executed on the box rather than
+  imported, so no unit suite exercised them.
+
+- **A bench run against a stale box reported a result for code the box was not
+  running.** `lager python` ships the script to the box and executes it there,
+  so anything under `box/` runs from the box's checkout rather than the
+  runner's. Only `update-regression.yml`'s lifecycle job updates the box, and
+  only `nightly-bench.yml` chains lifecycle into integration — so a
+  push-triggered `integration-tests.yml` run tested whatever the last nightly
+  left behind, while producing output shaped exactly like a run that tested
+  the commit. The run's own probe said so, in a step marked
+  `continue-on-error` that nothing read: three days of triage once concluded a
+  merged box-side fix had failed, from a run reporting the box 3 commits
+  behind.
+
+  That step is now a hard gate, and it compares against the ref being tested
+  rather than the CLI's default of `main`. The exit code could not carry this
+  — `--check` exits 1 for any pending change, including a deps rebuild or
+  host-CLI drift — so it reads the `Code:` line, whose vocabulary is closed.
+  Both the box's state and what triggered the run now go to the job summary,
+  on every run rather than only on failure.
+
+  Bench-testing a branch consequently needs `lager update --box <box>
+  --version <branch>` first. That was always true; it now fails loudly instead
+  of silently reporting results about `main`.
+
+- **A weekly `Bench: Extended` failure filed itself under the nightly's alert
+  issue, titled "Nightly bench is failing", and nothing could close it.**
+  `tools/bench_alert.sh` dedupes by **label**, not by title, so passing a
+  different title would not have separated the two — an Extended failure
+  appended a comment to whichever issue the nightly was currently using, and a
+  reader of a Saturday `17 14 * * 6` run was sent to the wrong workflow, the
+  wrong schedule and the wrong triage order. Extended deliberately has no
+  recovery job, so it could extend that issue but never resolve it, while a
+  green nightly would close an issue describing a live Extended failure.
+
+  Extended now writes its own `bench-alert-extended` label and its own title,
+  which is what actually separates the streams. Its no-recovery design is
+  unchanged and now safe to state plainly: the issue body says it does not
+  self-close.
+
+- **`.github/workflows/README.md` had no "triage order" section, though every
+  bench alert body told the reader to go and read it.** The pointer had never
+  resolved. That section now exists, and leads with the check that was
+  missing entirely — whether the box contains the change under test at all.
+
+  Added alongside it: a concurrency section documenting the shared
+  `hardware-ci-<box>` group and why `nightly-bench.yml` deliberately declares
+  none, and the fact that **dispatching displaces a run already queued**.
+  GitHub holds at most one pending run per group, so with one executing and
+  one waiting, a third arrival silently cancels the one in the middle;
+  `cancel-in-progress: false` only ever protected the executing run. There is
+  no setting for queue depth, so the remedy is to check the run list before
+  dispatching — and each bench workflow now records its trigger, ref and
+  commit in the job summary, so a displaced run can be identified afterwards.
+
+
 ## [0.37.2] - 2026-08-17
 
 ### Added
@@ -252,25 +329,6 @@ All notable changes to the Lager platform are documented here. For detailed rele
   breaking access through a jump host. Passing `-i` per command has neither
   problem. Blocks written by earlier installs are left alone — Lager does not
   edit that file.
-
-- **`lager logic <NET> enable|disable|start|start-single|stop` did nothing, and
-  reported success doing it.** The box-side worker resolved the net with
-  `Net.get(netname, NetType.Analog)`, but the CLI validates the net as role
-  `logic` before dispatching, and `NetType.from_role('logic')` is
-  `NetType.Logic`. Both of `Net.get`'s lookup paths match on type equality, so
-  the mismatch did not raise -- it returned `None`, the worker's
-  `if target_net:` guard went false, and the command exited 0 having touched
-  no instrument.
-
-  Confirmed on a box with a Rigol MSO logic net configured: the net lists under
-  `lager logic`, which is only possible when its role is `logic`, and the
-  enable was a no-op. All six workers now resolve `NetType.Logic`.
-
-  A unit test pins the worker's net type to `NetType.from_role(LOGIC_ROLE)`,
-  importing the role from the CLI module that validates it, so the two sides
-  cannot drift apart again without failing CI. Nothing covered this before:
-  `cli/impl/*` scripts are uploaded and executed on the box rather than
-  imported, so no unit suite exercised them.
 
 ## [0.37.1] - 2026-08-17
 

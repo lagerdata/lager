@@ -57,6 +57,26 @@ jobs:
       LAGER_BOX: ${{ vars.LAGER_BOX || 'MASTER' }}
 
     steps:
+      - name: Record what triggered this run
+        # A run cancelled while queued shows only as `cancelled` in the run
+        # list, with no annotation and no notification (see "Concurrency" in
+        # README.md). Naming the trigger and ref in the job summary is what
+        # makes it possible to tell afterwards WHICH run was displaced, and by
+        # what. Cheap, and it costs nothing when nothing goes wrong.
+        run: |
+          {
+            echo "### Run provenance"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Workflow | ${GITHUB_WORKFLOW} |"
+            echo "| Triggered by | \`${GITHUB_EVENT_NAME}\` |"
+            echo "| Ref | \`${GITHUB_REF_NAME}\` |"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+            echo "| Box | \`${LAGER_BOX}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+        shell: bash
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

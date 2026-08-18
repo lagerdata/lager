@@ -51,10 +51,15 @@
 # turns those error paths into a fleet listing in a public log -- keep the
 # runner's registry to the CI box.
 #
-# Notification: a red run files/updates the single `bench-alert` issue via
-# tools/bench_alert.sh. There is deliberately NO recovery job here: closing
-# the alert issue is exclusively the nightly's signal, because a green weekly
-# must never mask a nightly that is still failing.
+# Notification: a red run files/updates a `bench-alert-extended` issue via
+# tools/bench_alert.sh -- its OWN label, separate from the nightly's
+# `bench-alert`. There is deliberately NO recovery job here: a green weekly
+# must never close an alert while the nightly is still failing. The separate
+# label is what makes that safe to say out loud -- while both shared one
+# label, the nightly's recovery job would close an issue describing a live
+# Extended failure, and an Extended failure would append itself to the
+# nightly's issue under the nightly's title. Nothing closes the Extended
+# issue automatically; the body says so.
 
 name: "Bench: Extended"
 
@@ -84,6 +89,26 @@ jobs:
     env:
       LAGER_BOX: ${{ inputs.box_name || vars.LAGER_BOX || 'MASTER' }}
     steps:
+      - name: Record what triggered this run
+        # A run cancelled while queued shows only as `cancelled` in the run
+        # list, with no annotation and no notification (see "Concurrency" in
+        # README.md). Naming the trigger and ref in the job summary is what
+        # makes it possible to tell afterwards WHICH run was displaced, and by
+        # what. Cheap, and it costs nothing when nothing goes wrong.
+        run: |
+          {
+            echo "### Run provenance"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Workflow | ${GITHUB_WORKFLOW} |"
+            echo "| Triggered by | \`${GITHUB_EVENT_NAME}\` |"
+            echo "| Ref | \`${GITHUB_REF_NAME}\` |"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+            echo "| Box | \`${LAGER_BOX}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+        shell: bash
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -384,10 +409,18 @@ jobs:
           # the checkout's config (zizmor: artipacked).
           persist-credentials: false
 
-      - name: File or update the bench-alert issue
+      - name: File or update the bench-extended alert issue
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          # Extended owns a SEPARATE label, and therefore a separate issue.
+          # Sharing `bench-alert` meant a Saturday infrastructure failure
+          # appended itself to whatever issue the NIGHTLY happened to be
+          # using, under the title "Nightly bench is failing" -- pointing the
+          # reader at the wrong workflow, the wrong schedule and the wrong
+          # triage order. bench_alert.sh dedupes by LABEL, not by title, so
+          # the label is what actually separates the two.
+          BENCH_ALERT_LABEL: bench-alert-extended
           RESULT: ${{ needs.extended.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -396,8 +429,13 @@ jobs:
 
           These are the infrastructure suites (no instruments involved), so
           triage starts at box reachability and the auth service, not at
-          instrument power. This issue is closed only by a fully green
-          NIGHTLY run.
+          instrument power.
+
+          **This issue does not close itself.** Extended has no recovery job
+          by design -- a green weekly must never close an alert the nightly is
+          still filing -- and it now carries its own \`bench-alert-extended\`
+          label, so the nightly's recovery job does not see it either. Close
+          it by hand once a weekly run is green.
           EOF
-          bash tools/bench_alert.sh alert "Nightly bench is failing" "$RUNNER_TEMP/alert-body.md"
+          bash tools/bench_alert.sh alert "Weekly extended bench is failing" "$RUNNER_TEMP/alert-body.md"
         shell: bash

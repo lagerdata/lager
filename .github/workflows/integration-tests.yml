@@ -78,6 +78,26 @@ jobs:
       # LAGER_LOCK_HEARTBEAT: '60' # seconds between heartbeat refreshes
 
     steps:
+      - name: Record what triggered this run
+        # A run cancelled while queued shows only as `cancelled` in the run
+        # list, with no annotation and no notification (see "Concurrency" in
+        # README.md). Naming the trigger and ref in the job summary is what
+        # makes it possible to tell afterwards WHICH run was displaced, and by
+        # what. Cheap, and it costs nothing when nothing goes wrong.
+        run: |
+          {
+            echo "### Run provenance"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Workflow | ${GITHUB_WORKFLOW} |"
+            echo "| Triggered by | \`${GITHUB_EVENT_NAME}\` |"
+            echo "| Ref | \`${GITHUB_REF_NAME}\` |"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+            echo "| Box | \`${LAGER_BOX}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+        shell: bash
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -146,14 +166,79 @@ jobs:
         run: lager hello --box "$LAGER_BOX" || lager hello --box "$LAGER_BOX"
         shell: bash
 
-      - name: Verify update probe (non-fatal)
-        # rc 0 = up to date, rc 1 = update available; both are fine. Anything
-        # higher is a real failure. Surfaces CLI/box version skew without
-        # gating the hardware suites.
-        continue-on-error: true
+      - name: Verify the box is running the ref under test
+        # HARD GATE. This used to be `continue-on-error` and nobody read it.
+        #
+        # `lager python` ships the script to the box and runs it THERE, so a
+        # box-side change is exercised from the box's checkout, not the
+        # runner's. Only update-regression.yml's lifecycle job updates the
+        # box, and only nightly-bench.yml chains lifecycle -> integration. A
+        # push-triggered run therefore tests whatever the last nightly left,
+        # which can be arbitrarily old -- while producing output shaped
+        # exactly like a run that tested the commit.
+        #
+        # That cost three days of triage: a merged box-side fix was judged a
+        # failure from a run whose own probe said the box was 3 commits
+        # behind, in a step marked non-fatal. A bench run against a stale box
+        # is not evidence about this commit, so reporting it as a pass or a
+        # fail is worse than not running.
+        #
+        # The exit code cannot carry this. `--check` exits 1 for ANY pending
+        # change -- deps rebuild, container down, stale deploy, host-CLI
+        # drift -- so rc alone cannot distinguish version skew from the rest.
+        # Only the `Code:` line does, and its vocabulary is closed:
+        # `in sync` / `will update (...)` / `will roll back (...)` /
+        # `will switch (...)`.
+        #
+        # Compared against github.ref_name, NOT against `main` (the CLI's own
+        # default). The lifecycle job deploys `main` unconditionally -- it is
+        # an N-1 -> main upgrade regression, not a deploy-the-ref job -- so a
+        # dispatch on a branch leaves the box on main and this step is what
+        # says so. See "Bench-testing a branch" in README.md.
+        env:
+          REF: ${{ github.ref_name }}
         run: |
-          rc=0; lager update --check --box "$LAGER_BOX" || rc=$?
-          [ "$rc" -le 1 ] || exit "$rc"
+          rc=0
+          out=$(lager update --check --box "$LAGER_BOX" --version "$REF" 2>&1) || rc=$?
+          printf '%s\n' "$out"
+
+          # rc 0 = in sync, rc 1 = something would change; both are normal and
+          # the `Code:` line below decides. Anything higher means the probe
+          # could not run at all -- an unreachable box, or one whose SSH key
+          # was never set up, which exits 2 before printing any preview.
+          # Annotate rather than exiting on a bare code: this workflow's whole
+          # point is that a bench failure should name its own cause.
+          if [ "$rc" -gt 1 ]; then
+            echo "::error title=Cannot determine box state::lager update --check exited ${rc} against '${LAGER_BOX}' before reporting a preview (box unreachable, or SSH key not set up). No bench result can be trusted until this is fixed."
+            exit "$rc"
+          fi
+
+          code=$(printf '%s\n' "$out" \
+            | tr -d '\r' \
+            | sed 's/\x1b\[[0-9;]*m//g' \
+            | sed -n 's/^[[:space:]]*Code:[[:space:]]*//p' \
+            | head -1)
+
+          {
+            echo "### Bench box state"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Box | \`${LAGER_BOX}\` |"
+            echo "| Ref under test | \`${REF}\` |"
+            echo "| Triggered by | \`${GITHUB_EVENT_NAME}\` |"
+            echo "| Box code | ${code:-unknown} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -z "$code" ]; then
+            echo "::error title=Box state unknown::lager update --check printed no 'Code:' line, so the box's code cannot be compared against '${REF}'. Refusing to report a bench result."
+            exit 1
+          fi
+
+          if [ "$code" != "in sync" ]; then
+            echo "::error title=Box is not running the ref under test::Box code is '${code}' against '${REF}'. A bench run against a stale box is not evidence about this commit. Run Bench: Box Lifecycle (or lager update --box ${LAGER_BOX} --version ${REF}), then re-run."
+            exit 1
+          fi
         shell: bash
 
       - name: Ensure relay nets exist (self-heal)
@@ -550,7 +635,9 @@ jobs:
         # named all seven ids twice — in the `if:` and again in the echo block —
         # and omitting one from the `if:` would have turned a failing instrument
         # into a silently green job. Steps deliberately left without an `id`
-        # (the non-fatal update probe) remain non-fatal.
+        # (the best-effort cleanup and power-off steps) remain non-fatal. The
+        # box-state gate above is also id-less, but it is NOT continue-on-error
+        # -- it fails the job directly, before any instrument is touched.
         #
         # `outcome`, not `conclusion`: outcome is the result BEFORE
         # continue-on-error is applied. No `if:` key, so — as before — this

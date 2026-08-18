@@ -18,7 +18,7 @@ deleted.)
 | `integration-tests.yml` | Bench: Integration Tests | push to `main`, `workflow_call`, dispatch | self-hosted `lager-bench` | Drives every bench instrument through `lager python`, plus the J-Link CLI suite |
 | `update-regression.yml` | Bench: Box Lifecycle | `workflow_call`, dispatch | self-hosted `lager-bench` | Downgrade -> update -> no-op -> forced rebuild -> uninstall -> install, with a hardware smoke per phase |
 | `nightly-bench.yml` | Bench: Nightly | cron 10:17 UTC, dispatch | (calls the two above) | Nightly ordering wrapper: lifecycle first, instruments only if it succeeded; files/closes the `bench-alert` issue |
-| `bench-extended.yml` | Bench: Extended | cron Sat 14:17 UTC, dispatch | self-hosted `lager-bench` | Weekly run of five of the seven infrastructure integration suites (no instruments; bench stays dark); alerts on failure, never closes the alert |
+| `bench-extended.yml` | Bench: Extended | cron Sat 14:17 UTC, dispatch | self-hosted `lager-bench` | Weekly run of five of the seven infrastructure integration suites (no instruments; bench stays dark); alerts on failure under its own `bench-alert-extended` label, and never closes it |
 | `bench-watchdog.yml` | Bench: Watchdog | cron every 6h at :41, dispatch | `ubuntu-latest` | Alerts when nightly runs stop FLOWING (queued too long, stuck, cron dead) — the failure the notify jobs cannot see |
 | `unit-tests.yml` | PR Gate: Unit Tests | `pull_request`, push to `main`, dispatch | `ubuntu-latest` | Unit suites (one pytest process per suite) + Python-version compat matrix |
 | `static-checks.yml` | PR Gate: Static Checks | `pull_request`, push to `main`, dispatch | `ubuntu-latest` | Syntax/lint floors over the tree the unit gate cannot reach, plus a coverage report |
@@ -36,14 +36,34 @@ updated. Workflow display names and file names are not part of the gate.
 
 The bench workflows have no `pull_request` trigger on purpose: this repo is
 public and the runner drives real hardware, so a fork PR must never execute
-code on the bench. To bench-test a branch, push it to this repo and
-`workflow_dispatch` on that ref.
+code on the bench. To bench-test a branch, push it to this repo, **update the
+box to it**, then `workflow_dispatch` on that ref:
 
-## Bench alerting (the `bench-alert` issue)
+```
+lager update --box <box> --version <branch>
+```
 
-A red or half-run night files (or comments on) ONE open issue labeled
-`bench-alert`, via `tools/bench_alert.sh`; the next fully green nightly closes
-it. Two writers, one reader path:
+That middle step is not optional and is easy to skip. `lager python` ships the
+script to the box and runs it THERE, so anything under `box/` is exercised
+from the box's checkout, not the runner's — a bench run only tests a box-side
+change if the box is carrying it. The `lifecycle` job does not do this for
+you: it deploys `main` unconditionally, because it is an N-1 -> main upgrade
+regression rather than a deploy-the-ref job. `integration-tests.yml` now fails
+outright when the box is not on the ref under test, so a skipped update shows
+up as a clear error rather than as twelve minutes of results about the wrong
+code.
+
+## Bench alerting (the alert issues)
+
+`tools/bench_alert.sh` upserts ONE open issue per label, so a run of red
+nights produces one issue rather than one issue per night. It dedupes by
+**label**, never by title — which is why each alerting workflow owns its own
+label rather than just passing a different title.
+
+| Label | Filed by | Closed by |
+|---|---|---|
+| `bench-alert` | `nightly-bench.yml` `notify (failure)`, `bench-watchdog.yml` | `nightly-bench.yml` `notify (recovery)`, on a fully green night |
+| `bench-alert-extended` | `bench-extended.yml` `notify (failure)` | nothing — close it by hand |
 
 - `nightly-bench.yml`'s `notify (failure)` job fires when either child is not
   `success` — including integration SKIPPED behind a failed lifecycle — and
@@ -51,14 +71,75 @@ it. Two writers, one reader path:
 - `bench-watchdog.yml` covers the night that never runs: a run queued > 3h
   (runner offline), running > 5h (stuck), or no scheduled run created in 26h
   (cron dead). It only ever adds to the issue; recovery is the nightly's call.
+- `bench-extended.yml` is weekly and deliberately has **no recovery job**: a
+  green weekly must never close an alert while the nightly is still failing.
+  The separate label is what makes that safe. While both shared `bench-alert`,
+  a Saturday infrastructure failure appended itself to whichever issue the
+  nightly was using — under the title "Nightly bench is failing", sending the
+  reader to the wrong workflow and the wrong triage order — and a green
+  nightly would then close an issue describing a live Extended failure.
 
 Both notify paths run on HOSTED runners — the bench being down is exactly the
 condition they must survive. Manual `workflow_dispatch` of the child bench
 workflows does not notify; a dispatch has a human watching by definition.
 
-The `bench-alert` label must exist in the repo. If alerting itself breaks
-(missing label, token without `issues: write`), the notify job goes red inside
-the run — loud, not silent.
+Both labels must exist in the repo. If alerting itself breaks (missing label,
+token without `issues: write`), the notify job goes red inside the run — loud,
+not silent.
+
+## Concurrency: one bench, one slot
+
+There is one physical bench, so `integration-tests.yml`, `update-regression.yml`
+and `bench-extended.yml` all declare the same group:
+
+```yaml
+concurrency:
+  group: hardware-ci-${{ vars.LAGER_BOX || 'MASTER' }}
+  cancel-in-progress: false
+```
+
+`cancel-in-progress: false` means "never kill a run mid-measurement".
+
+`nightly-bench.yml` deliberately declares **no** `concurrency:` key. It only
+calls two workflows that already hold the group; a caller sharing it would
+hold the slot while waiting on a child that wants the same slot, which
+deadlocks. The bench stays serialized by the group on the children and by the
+box's own lock.
+
+**Dispatching displaces a run that is already queued.** GitHub holds at most
+one *pending* run per concurrency group, so with one run executing and one
+queued behind it, a third arrival cancels the one that was waiting.
+`cancel-in-progress: false` does not protect it — that setting is only about
+the executing run. The cancelled run shows as `cancelled` in the run list with
+no annotation and no notification.
+
+There is no GitHub setting for "queue depth > 1", so this is a habit rather
+than a config: **check the run list before dispatching.** Every bench workflow
+is dispatchable and dispatching is routine, so the collision is easy to hit; the cost is one silently discarded run, which is most damaging
+when the displaced run was the only post-merge verification of something.
+
+## Triage order
+
+When a bench run goes red, work in this order. It is ordered by how much of
+the run each cause invalidates, not by likelihood: the first one makes every
+later answer meaningless, so it is cheapest to rule out first.
+
+1. **Is the box running the code under test?** `integration-tests.yml` fails
+   fast on this now and names it, but check it first on any older run or any
+   suite driven by hand. A push-triggered run tests whatever the last nightly
+   left on the box; only `lifecycle` updates it, and only the nightly chains
+   `lifecycle -> integration`. A box-side change under `box/` executes from
+   the box's checkout, so a run against a stale box is not evidence about the
+   commit either way. This is not hypothetical: three days of triage once
+   concluded a merged fix had failed, from a run whose own probe reported the
+   box 3 commits behind.
+2. **Instrument power relays and USB enumeration.** See "Bench instrument
+   power" below, including the self-heal and pin-conflict footguns. Cutting AC
+   power to an instrument produces a sequence, not an event — enumeration is
+   not readiness, and `box/lager/util/net_ready.py` is the gate for it.
+3. **Is the box's auth service reachable?** `lager hello` failing here is a
+   box/gateway problem, not a test problem.
+4. **Only then, the change under test.**
 
 ## Bench instrument power (AC relays)
 
