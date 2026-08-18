@@ -24,6 +24,33 @@ import pytest
 def _clear_env(monkeypatch):
     for key in ('LAGER_AUTO_LOCK_DISABLE', 'LAGER_LOCK_HOLDER', 'LAGER_USER'):
         monkeypatch.delenv(key, raising=False)
+    # `CI` and friends are not incidental here. get_lock_holder() returns the
+    # local user on a host but a synthesized `ci:<provider>:<host>:<pid>`
+    # identity under CI -- so a test that pins the holder by patching
+    # get_lager_user() passes on a developer's machine and fails on the
+    # runner, which is the worst way for a test to be wrong. Clear them so
+    # these tests describe the code rather than the machine.
+    for key in ('CI', 'GITHUB_ACTIONS', 'GITLAB_CI', 'JENKINS_URL',
+                'BITBUCKET_BUILD_NUMBER', 'BUILD_NUMBER'):
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    """No unit test may open a socket.
+
+    `resolve_box_locked` falls through from the GET short-circuit to a POST
+    whenever the holder does not match, so a test that mocks only
+    `requests.get` reaches the network for real and blocks for the full 5s
+    connect timeout. Fail loudly instead of hanging.
+    """
+    def _forbidden(*args, **kwargs):
+        raise AssertionError(
+            'a unit test attempted a real HTTP request; mock it explicitly'
+        )
+
+    for verb in ('get', 'post', 'put', 'delete', 'request'):
+        monkeypatch.setattr(f'requests.{verb}', _forbidden, raising=False)
 
 
 class _FakeResp:
@@ -69,7 +96,7 @@ class TestResolveBoxLocked:
         from cli.core.net_helpers import resolve_box_locked
 
         ctx = _make_ctx()
-        with mock.patch('cli.box_storage.get_lager_user', return_value='alice'):
+        with mock.patch('cli.box_storage.get_lock_holder', return_value='alice'):
             ip = resolve_box_locked(ctx, 'test-box', 'gpi')
 
         assert ip == '10.0.0.1'
@@ -110,7 +137,7 @@ class TestResolveBoxLocked:
         from cli.core.net_helpers import resolve_box_locked
 
         ctx = _make_ctx()
-        with mock.patch('cli.box_storage.get_lager_user', return_value='bob'):
+        with mock.patch('cli.box_storage.get_lock_holder', return_value='bob'):
             resolve_box_locked(ctx, 'my-box', 'debug')
 
         releases = getattr(ctx.obj, '_lock_releases', [])
@@ -133,11 +160,13 @@ class TestResolveBoxLocked:
         from cli.core.net_helpers import resolve_box_locked
 
         ctx = _make_ctx()
-        with mock.patch('cli.box_storage.get_lager_user', return_value='carol'):
+        with mock.patch('cli.box_storage.get_lock_holder', return_value='carol'):
             ip = resolve_box_locked(ctx, 'shared-box', 'uart')
 
         assert ip == '10.0.0.4'
         releases = getattr(ctx.obj, '_lock_releases', [])
-        # Release is stashed but its .state should be 'already_ours'
-        if releases:
-            assert releases[0].state == 'already_ours'
+        # Unconditional: `if releases:` made this pass vacuously whenever the
+        # short-circuit did not fire, which is exactly the case it exists to
+        # catch.
+        assert len(releases) == 1
+        assert releases[0].state == 'already_ours'

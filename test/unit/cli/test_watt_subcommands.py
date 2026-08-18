@@ -63,7 +63,8 @@ def _run(args):
     display_mock = MagicMock()
 
     with patch.object(watt_mod, "post_net_command", fake_post), \
-         patch.object(watt_mod, "resolve_box", lambda ctx, box: "1.2.3.4"), \
+         patch.object(watt_mod, "resolve_box", lambda *a, **k: "1.2.3.4"), \
+         patch.object(watt_mod, "resolve_box_locked", lambda *a, **k: "1.2.3.4"), \
          patch.object(watt_mod, "validate_net_exists",
                       lambda ctx, ip, name, role: {"name": name}), \
          patch.object(watt_mod, "display_nets", display_mock), \
@@ -188,7 +189,8 @@ class TestBackwardCompatible:
 
         display_mock = MagicMock()
         with patch.object(watt_mod, "post_net_command", fake_post), \
-             patch.object(watt_mod, "resolve_box", lambda ctx, box: "1.2.3.4"), \
+             patch.object(watt_mod, "resolve_box", lambda *a, **k: "1.2.3.4"), \
+             patch.object(watt_mod, "resolve_box_locked", lambda *a, **k: "1.2.3.4"), \
              patch.object(watt_mod, "validate_net_exists",
                           lambda ctx, ip, name, role: {"name": name}), \
              patch.object(watt_mod, "display_nets", display_mock), \
