@@ -307,20 +307,21 @@ jobs:
         continue-on-error: true
         timeout-minutes: 15
         env:
-          # 6 of 56 when this was set, but the composition was misread. Four
-          # of the six (6.10, 6.14, 6.16, 6.19) traced to CARGO_TEST_CRATE
-          # naming a crate that does not exist on crates.io: `cargo install`
-          # returned 101, and that alone is enough to make the whole apply
-          # report as not-applied. Fixed in box_config.sh. Sysctl was never
-          # broken -- 6.11/6.12/6.13 pass, and the log shows the key written
-          # and live in the kernel.
+          # 2 of 56, measured after the CARGO_TEST_CRATE fix. It was 6, and
+          # four of those were one fixture bug: the crate named did not exist
+          # on crates.io, `cargo install` returned 101, and that alone made
+          # the whole apply report as not-applied. With a real crate, 6.10,
+          # 6.16 and 6.19 pass -- so sysctl was never broken, which is what
+          # 6.11/6.12/6.13 had been saying all along. 5.2 passes too, once it
+          # stopped mistaking an unreachable box for a wrong answer.
           #
-          # Deliberately NOT lowered here: the ratchet exists so the number
-          # comes from a measurement rather than a prediction. The gate emits
-          # a ::notice when a run comes in under baseline; lower it to
-          # whatever that says. Expect the disabled box_http_server (3.13) to
-          # remain, which is the one genuine product defect in issue #275.
-          BOX_CONFIG_BASELINE: "6"
+          # The two that remain are real, and both are issue #275:
+          #   3.13  box_http_server.py still running with
+          #         LAGER_DISABLE_UART_SERVICE set
+          #   6.14  the cargo crate is absent from the container after an
+          #         apply that reported success -- now a SILENT failure,
+          #         where the nonexistent crate used to make it a loud one
+          BOX_CONFIG_BASELINE: "2"
         run: |
           LOG="$RUNNER_TEMP/box-config.log"
           bash test/integration/infrastructure/box_config.sh "$LAGER_BOX" 2>&1 | tee "$LOG" || true
