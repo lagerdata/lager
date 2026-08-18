@@ -19,6 +19,7 @@ legacy :5000 ``lager python`` script-upload path was removed. These tests:
 from __future__ import annotations
 
 import importlib
+from contextlib import ExitStack
 import json
 import os
 import sys
@@ -183,6 +184,30 @@ class TestFetchNets:
 # Simple Tier-1 commands dispatch via post_net_command                        #
 # --------------------------------------------------------------------------- #
 
+# The auto-lock work renamed the resolver these commands call and changed its
+# signature: `resolve_box(ctx, box)` -> `resolve_box_locked(ctx, box, action)`.
+# Modules differ in what they kept importable afterwards -- `solar` dropped
+# `resolve_and_validate_box` entirely, most kept `resolve_box` beside the new
+# name -- so a fixed list of names is wrong for some module either way.
+#
+# Patching a name a module no longer CALLS is a silent no-op: the real resolver
+# runs, reaches the network, and the test fails with "No box named 'b'", which
+# points nowhere near the rename. Patch every resolver the module actually
+# defines, and fail loudly when it defines none, so the next rename is a clear
+# error here rather than a puzzle in some unrelated assertion.
+_RESOLVER_NAMES = ("resolve_box", "resolve_box_locked", "resolve_and_validate_box")
+
+
+def _resolver_patchers(mod, ip="1.2.3.4"):
+    """patch.object entries for every resolver symbol `mod` defines."""
+    found = [n for n in _RESOLVER_NAMES if hasattr(mod, n)]
+    assert found, (
+        f"{mod.__name__} defines none of {_RESOLVER_NAMES}; the box resolver "
+        "was renamed again and this helper needs the new name"
+    )
+    return [patch.object(mod, n, lambda *a, **k: ip) for n in found]
+
+
 def _invoke_simple(module_name, command_attr, argv, patch_extra=None,
                    mock_value=1):
     """Invoke a standalone Tier-1 command with the box boundary mocked.
@@ -201,7 +226,9 @@ def _invoke_simple(module_name, command_attr, argv, patch_extra=None,
 
     patchers = {
         "post_net_command": fake_post,
-        "resolve_box": lambda ctx, box: "1.2.3.4",
+        "resolve_box": lambda *a, **k: "1.2.3.4",
+        "resolve_box_locked": lambda *a, **k: "1.2.3.4",
+        "resolve_and_validate_box": lambda *a, **k: "1.2.3.4",
         "validate_net_exists": lambda ctx, ip, name, role: {"name": name},
         "get_default_net": lambda ctx, t: None,
     }
@@ -299,7 +326,9 @@ def _invoke_output(module_name, command_attr, argv, *, value, patch_extra=None):
 
     patchers = {
         "post_net_command": fake_post,
-        "resolve_box": lambda ctx, box: "1.2.3.4",
+        "resolve_box": lambda *a, **k: "1.2.3.4",
+        "resolve_box_locked": lambda *a, **k: "1.2.3.4",
+        "resolve_and_validate_box": lambda *a, **k: "1.2.3.4",
         "validate_net_exists": lambda ctx, ip, name, role: {"name": name},
         "get_default_net": lambda ctx, t: None,
     }
@@ -341,11 +370,13 @@ def _invoke_eload(argv, *, value):
                       "quiet": quiet, "params": params})
         return {"success": True, "value": value, "message": "ok"}
 
-    with patch.object(mod, "post_net_command", fake_post), \
-            patch.object(mod, "resolve_box", lambda ctx, box: "1.2.3.4"), \
-            patch.object(mod, "require_netname", lambda ctx, role: "NET1"), \
-            patch.object(mod, "display_nets", lambda *a, **k: None), \
-            patch.object(mod, "get_default_net", lambda ctx, t: None):
+    with ExitStack() as stack:
+        for _p in _resolver_patchers(mod):
+            stack.enter_context(_p)
+        stack.enter_context(patch.object(mod, "post_net_command", fake_post))
+        stack.enter_context(patch.object(mod, "require_netname", lambda ctx, role: "NET1"))
+        stack.enter_context(patch.object(mod, "display_nets", lambda *a, **k: None))
+        stack.enter_context(patch.object(mod, "get_default_net", lambda ctx, t: None))
         result = CliRunner().invoke(mod.eload, argv, obj=_Obj(),
                                     catch_exceptions=False)
     assert result.exit_code == 0, result.output
@@ -450,12 +481,12 @@ def _invoke_solar(argv, *, message="ok", value=None):
                       "params": params})
         return {"success": True, "message": message, "value": value}
 
-    with patch.object(mod, "post_net_command", fake_post), \
-            patch.object(mod, "resolve_and_validate_box",
-                         lambda ctx, box: "1.2.3.4"), \
-            patch.object(mod, "resolve_box", lambda ctx, box: "1.2.3.4"), \
-            patch.object(mod, "display_nets", lambda *a, **k: None), \
-            patch.object(mod, "get_default_net", lambda ctx, t: None):
+    with ExitStack() as stack:
+        for _p in _resolver_patchers(mod):
+            stack.enter_context(_p)
+        stack.enter_context(patch.object(mod, "post_net_command", fake_post))
+        stack.enter_context(patch.object(mod, "display_nets", lambda *a, **k: None))
+        stack.enter_context(patch.object(mod, "get_default_net", lambda ctx, t: None))
         result = CliRunner().invoke(mod.solar, argv, obj=_Obj(),
                                     catch_exceptions=False)
     assert result.exit_code == 0, result.output
@@ -545,12 +576,14 @@ def _invoke_energy(argv):
         value = _ENERGY_VALUE if action == "read_energy" else _STATS_VALUE
         return {"success": True, "value": value, "message": "ok"}
 
-    with patch.object(mod, "post_net_command", fake_post), \
-            patch.object(mod, "resolve_box", lambda ctx, box: "1.2.3.4"), \
-            patch.object(mod, "validate_net_exists",
-                         lambda ctx, ip, name, role: {"name": name}), \
-            patch.object(mod, "display_nets", lambda *a, **k: None), \
-            patch.object(mod, "get_default_net", lambda ctx, t: None):
+    with ExitStack() as stack:
+        for _p in _resolver_patchers(mod):
+            stack.enter_context(_p)
+        stack.enter_context(patch.object(mod, "post_net_command", fake_post))
+        stack.enter_context(patch.object(
+            mod, "validate_net_exists", lambda ctx, ip, name, role: {"name": name}))
+        stack.enter_context(patch.object(mod, "display_nets", lambda *a, **k: None))
+        stack.enter_context(patch.object(mod, "get_default_net", lambda ctx, t: None))
         result = CliRunner().invoke(mod.energy, argv, obj=_Obj(),
                                     catch_exceptions=False)
     assert result.exit_code == 0, result.output
