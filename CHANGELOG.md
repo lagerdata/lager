@@ -4,7 +4,34 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ## [Unreleased]
 
+### Added
+
+- **`lager update --pull` fetches a pre-built box image instead of building it
+  on the box.** Release tags are published to `ghcr.io/lagerdata/lager-box` by
+  the tag-publish workflow, so updating to `vX.Y.Z` can replace a multi-minute
+  `docker build` with a pull. Opt-in for now (`--pull`, or
+  `LAGER_BOX_IMAGE_PULL=1`); `--no-pull` disables it once it becomes the
+  default.
+
+  The image is pulled by resolved digest rather than by tag, for the box's own
+  architecture, and is rejected unless it carries an
+  `org.opencontainers.image.version` label matching the requested tag. The
+  digest is recorded in `/etc/lager/image-source`, which `/etc/lager/build-hash`
+  could not express: that hash is computed from the box's own tree and reads
+  the same whether the image was built locally or pulled.
+
+  Every failure -- branch target, unpublished tag, unreachable registry,
+  wrong architecture, missing or mismatched label -- falls back to the local
+  build that has always run. The pull happens *before* the containers stop, so
+  a box keeps serving through the download and a miss costs nothing but the
+  time it took to notice.
+
 ### Fixed
+
+- **A box whose Docker lacks the buildx plugin can now be updated.** The
+  BuildKit preflight rejected such a box before doing anything else. That is
+  still correct when the update has to build, but a pulled image needs no
+  buildx, so the preflight now runs only on the path that actually builds.
 
 - **`lager logic <NET> enable|disable|start|start-single|stop` did nothing, and
   reported success doing it.** The box-side worker resolved the net with

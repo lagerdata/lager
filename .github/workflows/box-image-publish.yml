@@ -2,14 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Builds the box agent image (box/lager/docker/box.Dockerfile) and pushes it
-# to GHCR, so that a `lager update` can eventually `docker pull` a release
-# instead of spending ten minutes building it on the box.
+# to GHCR so `lager update --pull` can `docker pull` a release instead of
+# spending ten minutes building it on the box.
 #
-# NOTHING CONSUMES THIS IMAGE YET. `lager update` still builds locally on
-# every path. This half ships first deliberately: it is inert with respect to
-# the fleet, and it is the half that has to exist before the client half can
-# be tested at all -- there is no way to prove a pull works until real images
-# are on the registry. The client side is tracked separately.
+# The consumer is `_acquire_box_image` in cli/commands/utility/update.py. It
+# is opt-in (`--pull` / LAGER_BOX_IMAGE_PULL=1) while the path soaks, and it
+# falls back to a local build on every miss.
+#
+# The version label below is load-bearing, not decoration: the client refuses
+# to deploy an image whose org.opencontainers.image.version is missing or
+# disagrees with the tag it asked for. Publishing an image without labels
+# means every box quietly falls back to building.
 #
 # Triggers on every v* tag — the same cut that release-validation.yml proves
 # for the PyPI wheel. Branches and main are deliberately not published (cost,
@@ -25,10 +28,17 @@
 # Package settings → Change visibility) after the first successful publish;
 # subsequent pushes inherit it.
 #
-# Built linux/amd64 only, matching the x64-only LabJack and nrfutil
-# downloads already hardcoded in box.Dockerfile. Any client that later pulls
-# this must pass an explicit --platform so an arm64 box misses cleanly and
-# builds instead of tagging an unrunnable image.
+# Built linux/amd64 only, matching the x64-only LabJack and nrfutil downloads
+# already hardcoded in box.Dockerfile. The manifest is therefore
+# single-platform, NOT a multi-arch index -- there is nothing for docker to
+# negotiate against, so a bare `docker pull` hands an arm64 box the amd64
+# image and start_box.sh then dies with `exec format error`. The client
+# passes an explicit --platform for exactly this reason (_docker_pull_cmd);
+# an arm64 box gets a clean manifest miss and builds instead.
+#
+# Publishing arm64 here would need the LabJack/nrfutil fetches in
+# box.Dockerfile made arch-aware first, and costs QEMU emulation time on
+# every release.
 #
 # Retention is manual for now: delete old versions from the GHCR UI / API
 # when storage becomes a problem. Automating that is a follow-up.
@@ -92,6 +102,15 @@ jobs:
           # build-push needs no git credentials after checkout.
           persist-credentials: false
 
+      - name: Resolve checked-out commit
+        id: commit
+        # NOT github.sha: on a workflow_dispatch rebuild that is the commit of
+        # the ref the run was dispatched on, while the checkout above took the
+        # tag. Labelling an image with a revision it was not built from is
+        # worse than leaving it unlabelled, because the client trusts these.
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        shell: bash
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
@@ -113,6 +132,17 @@ jobs:
           tags: |
             ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }}
             ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}
+          # Provenance the client can actually check. `lager update` asserts
+          # org.opencontainers.image.version equals the tag it asked for before
+          # promoting a pulled image to `lager`, so an image published under
+          # the wrong tag misses cleanly and falls back to a local build
+          # instead of deploying as a version it is not. A correctness check,
+          # not a security control: it does not defend against anything that
+          # can push to the package.
+          labels: |
+            org.opencontainers.image.version=${{ steps.tag.outputs.tag }}
+            org.opencontainers.image.revision=${{ steps.commit.outputs.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           # GitHub Actions cache for layer reuse across rebuilds of the same
           # Dockerfile; does not affect what boxes pull.
           cache-from: type=gha,scope=lager-box
