@@ -102,9 +102,10 @@ jobs:
           | Box Lifecycle | ${LIFECYCLE} |
           | Integration Tests | ${INTEGRATION} |
 
-          Triage order (see .github/workflows/README.md): instrument power
-          relays and USB enumeration first, then whether the box's auth
-          service is reachable, then the change under test. This issue is
+          Triage order (see "Triage order" in .github/workflows/README.md):
+          confirm the box is running the code under test first, then
+          instrument power relays and USB enumeration, then whether the box's
+          auth service is reachable, then the change under test. This issue is
           closed automatically by the next fully green nightly run.
           EOF
           bash tools/bench_alert.sh alert "Nightly bench is failing" "$RUNNER_TEMP/alert-body.md"
