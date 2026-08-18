@@ -13,6 +13,10 @@ import subprocess
 import pytest
 
 from cli.commands.utility.update import (
+    _REGISTRY_TIMEOUT,
+    _acquire_box_image,
+    _box_image_pull_enabled,
+    _box_image_ref_for_version,
     _build_hash_at_ref_shell_cmd,
     _build_hash_mismatch,
     _build_hash_shell_cmd,
@@ -21,8 +25,16 @@ from cli.commands.utility.update import (
     _parse_probe_output,
     _deps_preview,
     _probe_shell_script,
+    _digest_ref,
+    _docker_inspect_label_cmd,
+    _docker_pull_cmd,
+    _docker_tag_cmd,
+    _docker_untag_cmd,
+    _pull_miss_is_actionable,
     _pull_shell_script,
     _rebuild_gate_verdict,
+    _resolve_image_digest,
+    resolve_version_ref,
 )
 
 IN_SYNC = dict(
@@ -419,3 +431,316 @@ class TestPullShellScript:
         script = _pull_shell_script('v0.32.5', 'v0.32.5')
         assert 'git checkout -f v0.32.5' in script
         assert 'git reset --hard v0.32.5' in script
+
+
+# --- Pre-built box image (GHCR) --------------------------------------------
+
+
+class _R:
+    """Stand-in for subprocess.CompletedProcess."""
+
+    def __init__(self, returncode=0, stdout='', stderr=''):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class _FakeSSH:
+    """Fake for the `run_ssh_command_with_output` closure.
+
+    The real one is defined inside `_update_logic` and cannot be patched,
+    which is why `_acquire_box_image` takes the runner as an argument.
+    """
+
+    def __init__(self, *, pull=None, inspect=None):
+        self.calls = []
+        self.pull = _R(0) if pull is None else pull
+        self.inspect = _R(0, 'v0.37.2') if inspect is None else inspect
+
+    def __call__(self, cmd, timeout_secs=None):
+        self.calls.append(cmd)
+        if 'docker pull' in cmd:
+            if isinstance(self.pull, BaseException):
+                raise self.pull
+            return self.pull
+        if 'docker image inspect' in cmd:
+            if isinstance(self.inspect, BaseException):
+                raise self.inspect
+            return self.inspect
+        if 'docker rmi' in cmd:
+            return _R(0)
+        raise AssertionError(f'unexpected command: {cmd}')
+
+    @property
+    def pulled_ref(self):
+        return [c for c in self.calls if 'docker pull' in c]
+
+    @property
+    def discarded(self):
+        return [c for c in self.calls if 'docker rmi' in c]
+
+
+class _FakeResp:
+    def __init__(self, status_code=200, payload=None, headers=None):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+        self.headers = headers if headers is not None else {}
+
+    def json(self):
+        return self._payload
+
+
+class _FakeHTTP:
+    def __init__(self, token=None, manifest=None):
+        self.token = token if token is not None else _FakeResp(200, {'token': 't0k'})
+        self.manifest = manifest if manifest is not None else _FakeResp(
+            200, headers={'Docker-Content-Digest': f'sha256:{"c" * 64}'})
+        self.get_calls = []
+        self.head_calls = []
+
+    def get(self, url, params=None, timeout=None, headers=None):
+        self.get_calls.append((url, params, headers))
+        if isinstance(self.token, BaseException):
+            raise self.token
+        return self.token
+
+    def head(self, url, headers=None, timeout=None):
+        self.head_calls.append((url, headers))
+        if isinstance(self.manifest, BaseException):
+            raise self.manifest
+        return self.manifest
+
+
+REF = 'ghcr.io/lagerdata/lager-box:v0.37.2'
+DIGEST = f'sha256:{"c" * 64}'
+
+
+class TestBoxImageRef:
+    def test_release_tag_maps_to_ghcr(self):
+        assert _box_image_ref_for_version('v0.37.2') == REF
+        assert _box_image_ref_for_version('0.37.2') == REF
+
+    def test_prerelease_suffix_accepted(self):
+        assert _box_image_ref_for_version('v0.37.2-rc1') == (
+            'ghcr.io/lagerdata/lager-box:v0.37.2-rc1'
+        )
+
+    def test_branches_and_empty_are_not_published(self):
+        for bad in ('main', 'staging', 'de/some-branch', '', None):
+            assert _box_image_ref_for_version(bad) is None
+
+    def test_matches_resolve_version_ref_on_what_is_a_tag(self):
+        # The two must agree: an image may exist only where a tag exists.
+        for v in ('v0.37.2', '0.37.2', 'v1.2.3-beta2', 'main', 'de/x', '0.1'):
+            checkout, _reset, _fetch = resolve_version_ref(v)
+            is_tag = checkout.startswith('v') and checkout[1:2].isdigit()
+            assert bool(_box_image_ref_for_version(v)) == is_tag, v
+
+
+class TestBoxImagePullEnabled:
+    def test_off_by_default(self):
+        assert _box_image_pull_enabled(False, env={}) is False
+
+    def test_flag_enables(self):
+        assert _box_image_pull_enabled(True, env={}) is True
+
+    def test_env_enables(self):
+        for val in ('1', 'true', 'TRUE', 'yes'):
+            assert _box_image_pull_enabled(False, env={'LAGER_BOX_IMAGE_PULL': val})
+
+    def test_env_junk_does_not_enable(self):
+        for val in ('0', 'no', '', 'maybe'):
+            assert not _box_image_pull_enabled(False, env={'LAGER_BOX_IMAGE_PULL': val})
+
+
+class TestDockerCommandBuilders:
+    def test_pull_uses_digest_not_tag(self):
+        cmd = _docker_pull_cmd(REF, DIGEST)
+        # Pulling the tag would reintroduce the mutable-reference window the
+        # digest resolution exists to close.
+        assert f'lager-box@{DIGEST}' in cmd
+        assert ':v0.37.2' not in cmd
+
+    def test_pull_pins_platform_to_the_box(self):
+        cmd = _docker_pull_cmd(REF, DIGEST)
+        # Without this an arm64 box silently tags an amd64 image it cannot
+        # execute -- a box that is down, not merely slow.
+        assert '--platform "linux/$(dpkg --print-architecture 2>/dev/null || uname -m)"' in cmd
+
+    def test_tag_and_untag_quote_refs(self):
+        assert _docker_tag_cmd(_digest_ref(REF, DIGEST)).endswith(' lager')
+        nasty = _docker_untag_cmd('ghcr.io/x/y:v1;rm -rf /')
+        assert "'ghcr.io/x/y:v1;rm -rf /'" in nasty
+        assert nasty.count('||') == 1
+
+    def test_inspect_reads_the_oci_version_label(self):
+        cmd = _docker_inspect_label_cmd(_digest_ref(REF, DIGEST))
+        assert 'org.opencontainers.image.version' in cmd
+        assert 'docker image inspect --format' in cmd
+
+
+class TestResolveImageDigest:
+    def test_happy_path(self):
+        http = _FakeHTTP()
+        digest, reason = _resolve_image_digest(REF, http=http)
+        assert digest == DIGEST
+        assert reason == 'ok'
+
+    def test_requests_anonymous_pull_scope(self):
+        http = _FakeHTTP()
+        _resolve_image_digest(REF, http=http)
+        _url, params, _h = http.get_calls[0]
+        # Anonymous on purpose: authenticating as the operator would make a
+        # package boxes cannot read look fine in testing.
+        assert params['scope'] == 'repository:lagerdata/lager-box:pull'
+
+    def test_accepts_oci_manifest_types(self):
+        http = _FakeHTTP()
+        _resolve_image_digest(REF, http=http)
+        _url, headers = http.head_calls[0]
+        assert 'application/vnd.oci.image.manifest.v1+json' in headers['Accept']
+        assert headers['Authorization'] == 'Bearer t0k'
+
+    def test_unpublished_tag_is_a_clean_miss(self):
+        http = _FakeHTTP(manifest=_FakeResp(404))
+        digest, reason = _resolve_image_digest(REF, http=http)
+        assert digest is None
+        assert reason == 'not published'
+
+    def test_registry_unreachable_is_a_clean_miss(self):
+        import requests as _rq
+        http = _FakeHTTP(token=_rq.exceptions.ConnectTimeout('boom'))
+        digest, reason = _resolve_image_digest(REF, http=http)
+        assert digest is None
+        assert 'unreachable' in reason
+
+    def test_token_rejection_is_a_clean_miss(self):
+        http = _FakeHTTP(token=_FakeResp(403, {}))
+        digest, reason = _resolve_image_digest(REF, http=http)
+        assert digest is None
+        assert '403' in reason
+
+    def test_missing_content_digest_header_is_a_miss(self):
+        http = _FakeHTTP(manifest=_FakeResp(200, headers={}))
+        digest, reason = _resolve_image_digest(REF, http=http)
+        assert digest is None
+        assert 'no content digest' in reason
+
+    def test_uses_short_timeouts(self):
+        # A black-holed ghcr.io must not cost the update minutes before it
+        # falls back to the build that always worked.
+        http = _FakeHTTP()
+        _resolve_image_digest(REF, http=http)
+        assert max(_REGISTRY_TIMEOUT) <= 10
+
+
+class TestAcquireBoxImage:
+    def test_happy_path_reports_ok(self):
+        ssh = _FakeSSH()
+        res = _acquire_box_image(ssh, image_ref=REF, digest=DIGEST,
+                                 expect_version='v0.37.2')
+        assert res.ok is True
+        assert res.digest == DIGEST
+
+    def test_does_not_tag_lager(self):
+        # Tagging happens only after the containers are stopped; if this
+        # function tagged, a failure downstream would have already replaced
+        # the image a running box depends on.
+        ssh = _FakeSSH()
+        _acquire_box_image(ssh, image_ref=REF, digest=DIGEST,
+                           expect_version='v0.37.2')
+        assert not any('docker tag' in c for c in ssh.calls)
+
+    def test_version_label_mismatch_is_rejected_and_discarded(self):
+        ssh = _FakeSSH(inspect=_R(0, 'v0.36.0'))
+        res = _acquire_box_image(ssh, image_ref=REF, digest=DIGEST,
+                                 expect_version='v0.37.2')
+        assert res.ok is False
+        assert 'claims v0.36.0' in res.reason
+        assert ssh.discarded, 'a rejected ~1 GB image must not be left on the box'
+
+    def test_unlabelled_image_is_rejected(self):
+        # Images published before the labelling workflow landed carry no
+        # provenance at all; no evidence is not good evidence.
+        for out in ('', '<no value>'):
+            ssh = _FakeSSH(inspect=_R(0, out))
+            res = _acquire_box_image(ssh, image_ref=REF, digest=DIGEST,
+                                     expect_version='v0.37.2')
+            assert res.ok is False
+            assert 'no version label' in res.reason
+            assert ssh.discarded
+
+    def test_pull_timeout_is_a_miss_not_a_crash(self):
+        # subprocess.run RAISES on timeout rather than returning.
+        ssh = _FakeSSH(pull=subprocess.TimeoutExpired(cmd='docker pull', timeout=300))
+        res = _acquire_box_image(ssh, image_ref=REF, digest=DIGEST,
+                                 expect_version='v0.37.2')
+        assert res.ok is False
+        assert 'exceeded' in res.reason
+
+    def test_manifest_unknown_is_a_miss(self):
+        ssh = _FakeSSH(pull=_R(1, stderr='manifest unknown'))
+        res = _acquire_box_image(ssh, image_ref=REF, digest=DIGEST,
+                                 expect_version='v0.37.2')
+        assert res.ok is False
+        assert res.reason == 'not published'
+
+    def test_wrong_architecture_is_a_miss(self):
+        ssh = _FakeSSH(pull=_R(1, stderr='image ... does not match the specified platform'))
+        res = _acquire_box_image(ssh, image_ref=REF, digest=DIGEST,
+                                 expect_version='v0.37.2')
+        assert res.ok is False
+        assert 'architecture' in res.reason
+
+    def test_auth_failure_is_a_miss(self):
+        ssh = _FakeSSH(pull=_R(1, stderr='denied: denied'))
+        res = _acquire_box_image(ssh, image_ref=REF, digest=DIGEST,
+                                 expect_version='v0.37.2')
+        assert res.ok is False
+        assert 'denied access' in res.reason
+
+    def test_disk_full_is_a_miss(self):
+        ssh = _FakeSSH(pull=_R(1, stderr='write /var/lib/docker: no space left on device'))
+        res = _acquire_box_image(ssh, image_ref=REF, digest=DIGEST,
+                                 expect_version='v0.37.2')
+        assert res.ok is False
+        assert 'no space left' in res.reason
+
+    def test_unreachable_registry_from_the_box_is_a_miss(self):
+        ssh = _FakeSSH(pull=_R(1, stderr='dial tcp: lookup ghcr.io: no such host'))
+        res = _acquire_box_image(ssh, image_ref=REF, digest=DIGEST,
+                                 expect_version='v0.37.2')
+        assert res.ok is False
+        assert 'cannot reach the registry' in res.reason
+
+    def test_every_failure_mode_falls_back_rather_than_raising(self):
+        failures = [
+            _R(1, stderr='manifest unknown'),
+            _R(1, stderr='denied'),
+            _R(1, stderr='no space left on device'),
+            _R(125, stderr='something nobody has seen before'),
+            subprocess.TimeoutExpired(cmd='docker pull', timeout=1),
+            subprocess.SubprocessError('transport died'),
+        ]
+        for f in failures:
+            ssh = _FakeSSH(pull=f)
+            res = _acquire_box_image(ssh, image_ref=REF, digest=DIGEST,
+                                     expect_version='v0.37.2')
+            assert res.ok is False and res.reason
+
+
+class TestPullMissReporting:
+    def test_config_problems_are_actionable(self):
+        for reason in ('registry denied access (is the package still public?)',
+                       'image carries no version label',
+                       'image claims v0.1.0, expected v0.37.2'):
+            assert _pull_miss_is_actionable(reason)
+
+    def test_benign_misses_stay_quiet(self):
+        # These are self-correcting and would otherwise fire on every update
+        # at a restricted site until people learned to ignore the message.
+        for reason in ('not published',
+                       'box cannot reach the registry',
+                       'registry unreachable (ConnectTimeout)',
+                       'pull exceeded 300s'):
+            assert not _pull_miss_is_actionable(reason)

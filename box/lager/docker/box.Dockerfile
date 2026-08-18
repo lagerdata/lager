@@ -346,4 +346,8 @@ CMD ["/usr/local/bin/start-services.sh"]
 
 USER www-data
 
-LABEL version=v0.1.92
+# Provenance labels are set by the publisher workflow
+# (.github/workflows/box-image-publish.yml), which is the only thing that
+# knows the tag and commit being built. A hardcoded LABEL here went stale the
+# moment it was written and would be mistaken for real provenance by anything
+# that checks the image before deploying it.

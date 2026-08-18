@@ -10,6 +10,8 @@
 """
 import click
 import requests
+import collections
+import os
 import re
 import shlex
 import shutil
@@ -73,6 +75,316 @@ def resolve_version_ref(target_version):
         tag = f'v{m.group(1)}'
         return tag, tag, f'refs/tags/{tag}:refs/tags/{tag}'
     return target_version, f'origin/{target_version}', target_version
+
+
+# --- Pre-built box image (GHCR) --------------------------------------------
+#
+# `.github/workflows/box-image-publish.yml` builds box.Dockerfile on every v*
+# tag and pushes it to ghcr.io/lagerdata/lager-box. `lager update` prefers
+# pulling that image over building it on the box, which costs 6+ minutes cold.
+#
+# The premise is that a CI-built image is interchangeable with a box-built one:
+# everything box-specific -- PicoScope, SEGGER, /etc/lager, customer binaries,
+# the cargo/npm volumes -- is bind-mounted by start_box.sh at `docker run`
+# time, never COPY'd into the image. So the same Dockerfile at the same tag
+# produces an equivalent image wherever it is built.
+#
+# EVERY failure on this path is a miss that falls back to the local build:
+# branch targets, unpublished tags, an unreachable registry, a wrong-arch
+# manifest, a missing or mismatched provenance label. That bias is deliberate
+# and load-bearing. The local build is slow but has always produced something
+# that runs; the new failure mode a pull introduces is a box that comes up
+# FAST AND BROKEN, which on a customer box is strictly worse than slow. Never
+# trade the second for the first.
+
+_BOX_IMAGE_REGISTRY = 'ghcr.io/lagerdata/lager-box'
+_GHCR_HOST = 'https://ghcr.io'
+
+# The OCI label the publisher stamps with the tag it built, and the only
+# evidence a pulled image offers about what is inside it.
+_IMAGE_VERSION_LABEL = 'org.opencontainers.image.version'
+
+# Manifest types to accept when resolving a digest. Sending the wrong Accept
+# can make a registry hand back a CONVERTED manifest, whose digest is not the
+# one docker will resolve on the box -- the pull would then miss on a digest
+# we ourselves just published.
+_MANIFEST_ACCEPT = (
+    'application/vnd.oci.image.manifest.v1+json',
+    'application/vnd.oci.image.index.v1+json',
+    'application/vnd.docker.distribution.manifest.v2+json',
+    'application/vnd.docker.distribution.manifest.list.v2+json',
+)
+
+# Registry probes must fail FAST. They run before the container is stopped and
+# they double as the reachability test deciding whether to attempt a pull at
+# all. On a restricted network where ghcr.io black-holes (DROP rather than
+# REJECT), a generous timeout would be paid on EVERY update before falling
+# back -- turning a speedup into a multi-minute regression at exactly the
+# sites least able to absorb one.
+_REGISTRY_TIMEOUT = (3, 5)  # (connect, read) seconds
+
+# Ceiling on the on-box `docker pull`. The image is ~1 GB, so this is generous
+# for a healthy link while staying bounded: resolving the digest proves
+# ghcr.io is reachable from the OPERATOR's machine, not from the box, and a
+# box on a different egress path can still stall.
+_PULL_TIMEOUT_S = 300
+
+_BoxImageResult = collections.namedtuple(
+    '_BoxImageResult', ('ok', 'digest', 'reason'),
+)
+
+
+def _box_image_pull_enabled(flag, env=None):
+    """Whether a GHCR pull may be attempted at all.
+
+    OFF by default, deliberately. This path changes how the most load-bearing
+    command in the fleet obtains the code it runs, and it soaks on Lager's own
+    boxes before any customer box sees it. ``--pull`` opts a single run in;
+    ``LAGER_BOX_IMAGE_PULL=1`` opts a whole shell in for bulk testing.
+
+    When the soak is done, flip the default here and delete this function.
+    ``--no-pull`` is the switch that outlives it -- it is what routes the
+    fleet around a bad published image without shipping a CLI release.
+    """
+    if flag:
+        return True
+    env = os.environ if env is None else env
+    return env.get('LAGER_BOX_IMAGE_PULL', '').strip().lower() in ('1', 'true', 'yes')
+
+
+def _box_image_ref_for_version(target_version):
+    """Return the GHCR image ref for a release tag, or ``None``.
+
+    Only release tags are published, so ``main``, feature branches and
+    anything else return ``None`` and the caller builds locally. The accepted
+    shapes mirror ``resolve_version_ref`` above -- and the identical regex in
+    ``cli/deployment/scripts/setup_and_deploy_box.sh`` -- so "what has an
+    image" cannot drift from "what has a tag".
+    """
+    if not target_version:
+        return None
+    m = re.match(
+        r'^v?(\d+\.\d+\.\d+(?:-(?:rc|alpha|beta|preview)\d*)?)$',
+        target_version,
+    )
+    if not m:
+        return None
+    return f'{_BOX_IMAGE_REGISTRY}:v{m.group(1)}'
+
+
+def _resolve_image_digest(image_ref, *, http=requests):
+    """Resolve a GHCR tag reference to an immutable ``sha256:`` digest.
+
+    Returns ``(digest, reason)``; ``digest`` is ``None`` on every failure and
+    ``reason`` is a short string for the verbose log.
+
+    Pulling by digest rather than by tag is what makes the deploy
+    reproducible. A tag is mutable: between deciding to pull and pulling it
+    can move, so two boxes updated to "the same version" minutes apart can
+    legitimately end up running different bytes, with nothing on either box
+    recording which. Resolving once here and pulling that digest closes the
+    window and gives us something worth writing to /etc/lager/image-source.
+
+    Uses the ANONYMOUS token flow on purpose. The package is public, and
+    authenticating with the operator's own credentials would make a package
+    that boxes cannot read appear to work perfectly in testing.
+
+    ``http`` is injected so tests drive this without patching requests
+    globally.
+    """
+    repo, _, tag = image_ref.rpartition(':')
+    repo_path = repo.split('/', 1)[1] if '/' in repo else repo
+    try:
+        tok = http.get(
+            f'{_GHCR_HOST}/token',
+            params={'scope': f'repository:{repo_path}:pull', 'service': 'ghcr.io'},
+            timeout=_REGISTRY_TIMEOUT,
+        )
+        if tok.status_code != 200:
+            return None, f'token request returned {tok.status_code}'
+        token = (tok.json() or {}).get('token')
+        if not token:
+            return None, 'token request returned no token'
+        resp = http.head(
+            f'{_GHCR_HOST}/v2/{repo_path}/manifests/{tag}',
+            headers={
+                'Authorization': f'Bearer {token}',
+                'Accept': ', '.join(_MANIFEST_ACCEPT),
+            },
+            timeout=_REGISTRY_TIMEOUT,
+        )
+    except requests.exceptions.RequestException as exc:
+        return None, f'registry unreachable ({type(exc).__name__})'
+    except ValueError:
+        return None, 'token response was not JSON'
+    if resp.status_code == 404:
+        return None, 'not published'
+    if resp.status_code != 200:
+        return None, f'manifest request returned {resp.status_code}'
+    digest = (resp.headers or {}).get('Docker-Content-Digest', '')
+    if not digest.startswith('sha256:'):
+        return None, 'registry returned no content digest'
+    return digest, 'ok'
+
+
+def _digest_ref(image_ref, digest):
+    """``repo:tag`` + digest -> the immutable ``repo@sha256:...`` reference."""
+    return f'{image_ref.rpartition(":")[0]}@{digest}'
+
+
+def _docker_pull_cmd(image_ref, digest):
+    """Shell snippet: pull the image by digest, for THIS box's architecture.
+
+    The published manifest is single-platform amd64 (box.Dockerfile downloads
+    x64-only LabJack and nrfutil installers) and is NOT a multi-arch index, so
+    there is nothing for docker to negotiate against. Without an explicit
+    --platform an arm64 box pulls the amd64 image anyway, tags it `lager`, and
+    start_box.sh then dies with `exec format error` -- a box that is down,
+    where before it merely built slowly. With --platform the same box gets a
+    clean manifest miss and falls back to building.
+
+    `dpkg --print-architecture` is the same normalisation
+    setup_and_deploy_box.sh already uses to pick per-arch SEGGER downloads. It
+    stays unquoted so the box's shell expands it.
+    """
+    platform = 'linux/$(dpkg --print-architecture 2>/dev/null || uname -m)'
+    return (
+        f'docker pull --platform "{platform}" '
+        f'{shlex.quote(_digest_ref(image_ref, digest))}'
+    )
+
+
+def _docker_inspect_label_cmd(ref, label=_IMAGE_VERSION_LABEL):
+    """Shell snippet printing one label of a local image, or empty."""
+    fmt = '{{index .Config.Labels "' + label + '"}}'
+    return (
+        f'docker image inspect --format {shlex.quote(fmt)} '
+        f'{shlex.quote(ref)} 2>/dev/null'
+    )
+
+
+def _docker_tag_cmd(ref, local_tag='lager'):
+    """Shell snippet: point the local ``lager`` tag at a pulled image."""
+    return f'docker tag {shlex.quote(ref)} {shlex.quote(local_tag)}'
+
+
+def _docker_untag_cmd(ref):
+    """Shell snippet: drop a reference without touching the underlying image.
+
+    Best-effort by construction. After the pulled image is tagged `lager` its
+    digest reference is redundant, and leaving it attached is what would stop
+    the existing `docker image prune -f` from ever reclaiming the image: prune
+    removes only images with no references left, so a lingering digest ref
+    keeps every superseded ~1 GB image on disk forever.
+    """
+    return f'docker rmi {shlex.quote(ref)} >/dev/null 2>&1 || true'
+
+
+def _pull_failure_reason(result):
+    """Classify a failed `docker pull` into a short, actionable reason.
+
+    The build-failure hints further down are all docker-BUILD specific, so a
+    pull failing on auth, an absent manifest, or a full disk would otherwise
+    report nothing anyone can act on.
+    """
+    err = ((result.stderr or '') + (result.stdout or '')).lower()
+    if 'no space left' in err:
+        return 'no space left on the box'
+    if 'unauthorized' in err or 'authentication required' in err or 'denied' in err:
+        return 'registry denied access (is the package still public?)'
+    if ('does not match the specified platform' in err
+            or 'no matching manifest' in err):
+        return "no image published for this box's architecture"
+    if 'manifest unknown' in err or 'not found' in err:
+        return 'not published'
+    if ('timeout' in err or 'temporary failure' in err
+            or 'no such host' in err or 'dial tcp' in err
+            or 'connection refused' in err):
+        return 'box cannot reach the registry'
+    return 'pull failed'
+
+
+def _pull_miss_is_actionable(reason):
+    """True when a pull miss is worth reporting outside --verbose.
+
+    Most misses are benign and self-correcting: the tag has no image, or this
+    box cannot reach ghcr.io. The update falls back and works, and shouting
+    about it on every restricted-network box would train people to ignore the
+    message.
+
+    These four are different -- each means the feature is silently disabled by
+    something a person has to go fix (package flipped private, publish
+    workflow broken or not yet run for this tag, an image published under a
+    tag it was not built from). Left quiet, the fleet would just go on
+    building locally and nobody would know why.
+    """
+    return any(s in reason for s in (
+        'denied access',
+        'no version label',
+        'claims',
+        'no content digest',
+    ))
+
+
+def _acquire_box_image(ssh_runner, *, image_ref, digest, expect_version,
+                       pull_timeout_s=_PULL_TIMEOUT_S):
+    """Pull a published box image onto the box and verify it is what it claims.
+
+    Deliberately does NOT tag it as `lager`: the caller does that only after
+    the containers are stopped, so every failure here leaves a running box
+    completely untouched.
+
+    Returns a ``_BoxImageResult``. ``ok`` False always means "fall back to the
+    local build", never "fail the update".
+
+    The verification is the reason this function exists. A local build is
+    provably made from the tree the box just checked out and hashed; a pulled
+    image carries no such proof, and Step 12 only ever confirms that *a*
+    container is running -- it would report success on a box serving the wrong
+    version entirely. So the image has to claim, in a label the publisher
+    stamps from the tag it actually built, to be the version we asked for.
+
+    An image carrying NO version label is rejected too. Images published
+    before the labelling workflow landed are indistinguishable from an image
+    built from anything at all, and "no evidence" is not "good evidence".
+    """
+    ref = _digest_ref(image_ref, digest)
+
+    def _discard():
+        # A rejected image is ~1 GB; do not leave it parked on the box.
+        try:
+            ssh_runner(_docker_untag_cmd(ref), timeout_secs=60)
+        except (subprocess.SubprocessError, OSError):
+            pass
+
+    try:
+        pull = ssh_runner(_docker_pull_cmd(image_ref, digest),
+                          timeout_secs=pull_timeout_s)
+    except subprocess.TimeoutExpired:
+        # subprocess.run RAISES rather than returning on timeout, so this is
+        # the black-holed-registry path, not an error case.
+        return _BoxImageResult(False, None, f'pull exceeded {pull_timeout_s}s')
+    except (subprocess.SubprocessError, OSError) as exc:
+        return _BoxImageResult(False, None, f'pull failed ({type(exc).__name__})')
+    if pull.returncode != 0:
+        return _BoxImageResult(False, None, _pull_failure_reason(pull))
+
+    try:
+        got = ssh_runner(_docker_inspect_label_cmd(ref), timeout_secs=60)
+    except (subprocess.SubprocessError, OSError) as exc:
+        _discard()
+        return _BoxImageResult(
+            False, None, f'could not inspect pulled image ({type(exc).__name__})')
+    # A Go template indexing a missing key prints the literal `<no value>`.
+    label = (got.stdout or '').strip() if got.returncode == 0 else ''
+    if label in ('', '<no value>'):
+        _discard()
+        return _BoxImageResult(False, None, 'image carries no version label')
+    if label != expect_version:
+        _discard()
+        return _BoxImageResult(
+            False, None, f'image claims {label}, expected {expect_version}')
+    return _BoxImageResult(True, digest, 'ok')
 
 
 def wait_for_box_ready(box_ip, *, timeout_s=60, initial_delay_s=2):
@@ -909,7 +1221,8 @@ class ProgressBar:
             self._start_periodic_thread()
 
 
-def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
+def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
+                  pull=False, no_pull=False):
     """Core update logic behind `lager update`.
 
     Not a Click command itself — the thin Click wrapper at the bottom of this
@@ -1323,6 +1636,39 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
                 time.sleep(5)
         return False
 
+    def store_image_source(value):
+        """Record WHERE the running `lager` image came from, in
+        /etc/lager/image-source (``ghcr:sha256:...`` or ``local:<hash>``).
+
+        Best-effort: nothing gates on this file, so a failed write is not
+        worth warning about.
+
+        /etc/lager/build-hash cannot answer this question. It hashes
+        box.Dockerfile + requirements.txt from the box's own tree, which is
+        the same whether the image was built here or pulled — so it cannot
+        distinguish the two, and it cannot notice a republished tag whose
+        contents moved underneath it (`python:3.12-slim-bookworm` is a moving
+        base, and pip re-resolves transitive deps on every rebuild). Recording
+        the digest gives the exact bytes running on the box, which is what a
+        rollback or an incident actually needs to know.
+
+        Same tmp+`mv -f` technique as store_build_hash, for the same
+        www-data-ownership reason.
+        """
+        if not value:
+            return True
+        write_cmd = (
+            'tmp=$(mktemp /etc/lager/.image-source.XXXXXX) && '
+            f'printf "%s\\n" "{value}" > "$tmp" && '
+            'chmod 644 "$tmp" && '
+            'mv -f "$tmp" /etc/lager/image-source'
+        )
+        try:
+            return run_ssh_command_with_output(
+                write_cmd, timeout_secs=30).returncode == 0
+        except (subprocess.SubprocessError, OSError):
+            return False
+
     # Step 2: Inspect box state — one SSH round-trip gathers every read-only
     # fact the rest of the flow needs (git-repo check, remote URL, layout,
     # current commit, docker-build cache inputs, udev/sudoers state, on-box
@@ -1665,6 +2011,16 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             needs_pull=needs_pull,
         )
 
+        # A GHCR pull only ever displaces a FRESH build. It is ~1 GB, so
+        # against the ~90s cached-build branches it is a coin flip at best and
+        # a loss on a slow link — quoting it there would replace an honest
+        # estimate with an optimistic one. Only offered where the alternative
+        # is the ~6 min path, and only when a pull will actually be attempted.
+        _pull_est = None
+        if not (force or no_pull) and _box_image_pull_enabled(pull):
+            if _box_image_ref_for_version(target_version):
+                _pull_est = '~2 min (pull ~1 GB, or ~6 min if it misses)'
+
         if force:
             container_status = 'will restart (forced clean rebuild)'
             est = '~6 min (fresh build)'
@@ -1672,7 +2028,10 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             # Code may be fully in sync, but there is nothing serving it — a
             # previous update likely failed after removing the containers.
             container_status = 'NOT RUNNING (will rebuild and restart)'
-            est = '~6 min (fresh build possible)' if deps_rebuild_certain else '~90s (cached build)'
+            if deps_rebuild_certain:
+                est = _pull_est or '~6 min (fresh build possible)'
+            else:
+                est = '~90s (cached build)'
         elif deploy_stale:
             # In sync and running, but the container was deployed from an
             # older version — a prior update pulled and stopped before the
@@ -1694,7 +2053,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             # `docker builder prune` between updates rebuilds everything with
             # the digest unchanged.
             container_status = 'will restart'
-            est = '~6 min (fresh build possible)'
+            est = _pull_est or '~6 min (fresh build possible)'
         else:
             container_status = 'will restart'
             est = '~90s (cached build)'
@@ -2324,6 +2683,72 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         if progress:
             progress.resume()
 
+    # Step 8a: try to obtain a pre-built image from GHCR — BEFORE the lock and
+    # BEFORE the containers stop.
+    #
+    # The placement carries as much of the design as the pull does:
+    #   * the box keeps serving through the whole ~1 GB transfer instead of
+    #     being down for it;
+    #   * a miss still lands ahead of the stop, so the BuildKit preflight
+    #     below can keep its promise to fail fast without taking a box
+    #     offline;
+    #   * nothing is tagged `lager` yet, so any failure here leaves the box
+    #     exactly where it started, still serving its previous version.
+    #
+    # `--force` skips the pull outright. It promises a clean rebuild from
+    # source, and quietly satisfying that from a registry would make the one
+    # flag people reach for when a box is misbehaving stop meaning what it says.
+    image_ref = None if (force or no_pull) else _box_image_ref_for_version(target_version)
+    if image_ref and not _box_image_pull_enabled(pull):
+        log(f'Pre-built image exists for {target_version}; '
+            'pass --pull to use it (building locally)')
+        image_ref = None
+
+    pulled = None
+    if image_ref:
+        _miss = None
+        if progress:
+            progress.update("Resolving image...")
+        log(f'Resolving {image_ref}...', nl=False)
+        _digest, _why = _resolve_image_digest(image_ref)
+        if not _digest:
+            _miss = _why
+            log_status(f'miss ({_why})', 'yellow')
+        else:
+            log_status('OK', 'green')
+            if progress:
+                progress.update("Pulling image...")
+            log(f'Pulling {_digest[:16]}... (box still serving)', nl=False)
+            _acquired = _acquire_box_image(
+                run_ssh_command_with_output,
+                image_ref=image_ref,
+                digest=_digest,
+                expect_version=target_version,
+            )
+            if _acquired.ok:
+                pulled = _acquired
+                log_status('OK', 'green')
+            else:
+                _miss = _acquired.reason
+                log_status(f'miss ({_acquired.reason})', 'yellow')
+        if _miss:
+            # The update is fine either way — it builds locally, exactly as it
+            # always has. Only surface the miss outside --verbose when it
+            # means someone has to go fix something; see
+            # _pull_miss_is_actionable.
+            if not verbose and _pull_miss_is_actionable(_miss):
+                if progress:
+                    progress.pause()
+                click.secho(
+                    f'Note: pre-built image unusable ({_miss}); '
+                    'building on the box instead.',
+                    fg='yellow', err=True,
+                )
+                if progress:
+                    progress.resume()
+            elif verbose:
+                click.echo('  Falling back to a local build.')
+
     # BuildKit preflight — run BEFORE the lock and the container stop below so a
     # box whose Docker can't build the image fails fast WITHOUT being taken
     # offline. box.Dockerfile uses a `# syntax=` directive and `RUN
@@ -2333,6 +2758,12 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
     # fast path already exited above), so a working buildx is required — probe
     # once and fail with an actionable message instead of stopping the container
     # and then dying minutes into a doomed build.
+    #
+    # Skipped entirely when the pull above succeeded: `docker tag` needs no
+    # buildx. A box on Docker >= 23 without the plugin is PRECISELY the box a
+    # pre-built image exists to rescue, and blocking it here would turn the
+    # feature away from the fleet it helps most. The check still runs, ahead of
+    # the stop, on every path that will actually build.
     def _docker_supports_buildkit():
         # The box image is built with `DOCKER_BUILDKIT=1 docker build`, and on
         # modern Docker (>= 23) that path delegates to the buildx plugin. A
@@ -2384,7 +2815,10 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             return False, ver_line
         return True, ver_line
 
-    buildkit_ok, docker_ver = _docker_supports_buildkit()
+    if pulled:
+        buildkit_ok, docker_ver = True, 'not needed (using pulled image)'
+    else:
+        buildkit_ok, docker_ver = _docker_supports_buildkit()
     if not buildkit_ok:
         if progress:
             progress.finish(success=False)
@@ -2461,133 +2895,160 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
         )
         log_status('OK', 'green')
 
-    # Step 9: Rebuild Docker container (the slow part)
-    if progress:
-        progress.update("Building container...")
-    log('Building container (this may take several minutes)...')
-
-    ssh_cmd = ['ssh']
-    if use_explicit_key:
-        ssh_cmd.extend(['-i', key_file])
-    if not use_interactive_ssh:
-        ssh_cmd.extend(['-o', 'BatchMode=yes'])
-    ssh_cmd.extend(_ssh_mux_opts)
-    ssh_cmd.extend([ssh_host,
-         'cd ~/box/lager && '
-         'DOCKER_BUILDKIT=1 docker build -f docker/box.Dockerfile -t lager .'])
-
-    build_output_lines = []
-    # Always read the build stream so non-verbose mode can still surface a
-    # live detail on the progress bar (and so failures still get the last
-    # 20 lines). Verbose additionally echoes each line to the terminal.
-    process = subprocess.Popen(
-        ssh_cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding='utf-8',
-        errors='replace',
-        bufsize=1,
-    )
-    if process.stdout:
-        for line in process.stdout:
-            build_output_lines.append(line.rstrip())
-            if verbose:
-                click.echo(f'    {line}', nl=False)
-            elif progress:
-                summary = _docker_build_line_summary(line)
-                if summary:
-                    progress.set_detail(summary)
-    return_code = process.wait(timeout=600)
-
-    if return_code != 0:
+    # Step 9: obtain the `lager` image — promote the pulled one, or build it.
+    if pulled:
         if progress:
-            progress.finish(success=False)
-        log_error('Error: Failed to rebuild Docker container')
-        # Show last 20 lines of build output for debugging
-        if build_output_lines:
-            click.echo()
-            click.secho("Docker build output (last 20 lines):", fg='yellow', err=True)
-            for line in build_output_lines[-20:]:
-                click.echo(f"  {line}", err=True)
-            click.echo()
-            # Detect common Docker build errors
-            full_output = "\n".join(build_output_lines)
-            if "buildx component is missing" in full_output or "install the buildx" in full_output.lower():
-                click.secho(
-                    "Hint: the box's Docker is missing a working buildx plugin, which the "
-                    "box image requires. Install it on the box (Ubuntu/Debian: "
-                    "`sudo apt-get install -y docker-buildx`), then re-run `lager update`.",
-                    fg='yellow', err=True,
-                )
-            elif "failed to prepare extraction snapshot" in full_output or (
-                "parent snapshot" in full_output and "does not exist" in full_output
-            ):
-                click.secho(
-                    "Hint: the box's Docker build cache is corrupted (a cached snapshot "
-                    "references a parent that no longer exists). Clear it with: "
-                    f"ssh {ssh_host} 'docker builder prune -af' and re-run `lager update`. "
-                    "The next build runs cold and can take 10-15 minutes.",
-                    fg='yellow', err=True,
-                )
-            elif "No space left on device" in full_output:
-                click.secho("Hint: Disk space is full on the box. Run: ssh lagerdata@[BOX_NAME] 'docker system prune -af'", fg='yellow', err=True)
-            elif "network" in full_output.lower() and ("timeout" in full_output.lower() or "error" in full_output.lower()):
-                click.secho("Hint: Network issue during build. Check box internet connectivity.", fg='yellow', err=True)
-            elif "permission denied" in full_output.lower():
-                click.secho("Hint: Permission issue. Check Docker daemon is running and user has access.", fg='yellow', err=True)
-
-        # Poison the stored build-inputs hash so the next run can't read this
-        # box as up to date: the sentinel never equals a recomputed sha256, so
-        # hash_mismatch fires on the retry, blocking the "already at version"
-        # early-exit and forcing a clean image wipe + rebuild. Deleting the
-        # file would NOT do this — _build_hash_mismatch requires both values
-        # non-empty. Best-effort: if the write fails, the liveness gate still
-        # catches the dead-container case.
-        try:
-            store_build_hash('FAILED')
-        except (subprocess.SubprocessError, OSError):
-            pass
-
-        # Step 8 already stopped and removed the containers, so exiting here
-        # would strand the box with no services — the state that previously
-        # made the next run report "already at version" on a dead box. Unless
-        # this run wiped the image (hash change / --force), the previous image
-        # is still tagged `lager` and its baked-in code matches what was
-        # running before the pull, so restart it: the box stays usable on its
-        # prior version while the operator deals with the build failure.
-        restarted = False
-        if not must_wipe_image:
-            click.echo()
-            click.secho('Restarting the box on its previous version...', fg='yellow', err=True)
-            try:
-                recover = run_ssh_command_with_output(
-                    'cd ~/box && chmod +x start_box.sh && LAGER_SKIP_BUILD=1 ./start_box.sh',
-                    timeout_secs=600,
-                )
-                # Exit 3 = container up but post-start installs failed; the
-                # box is serving, which is all this recovery promises.
-                restarted = recover.returncode in (0, 3)
-            except (subprocess.SubprocessError, OSError):
-                restarted = False
-            if restarted:
-                restarted = wait_for_box_ready(resolved_box, timeout_s=60)
-        if restarted:
-            click.secho(
-                'The update FAILED and was not applied. The box has been '
-                'restarted on its previous version.',
-                fg='yellow', err=True,
-            )
+            progress.update("Tagging image...")
+        log('Tagging pulled image as lager...', nl=False)
+        _pulled_ref = _digest_ref(image_ref, pulled.digest)
+        _tag_res = run_ssh_command_with_output(
+            _docker_tag_cmd(_pulled_ref), timeout_secs=60)
+        if _tag_res.returncode == 0:
+            log_status('OK', 'green')
+            # Drop the digest reference now that `lager` points at the image.
+            # Leaving it attached is what would stop the `docker image prune
+            # -f` below from EVER reclaiming a superseded image: prune removes
+            # only images with no references left, so a lingering digest ref
+            # parks every old ~1 GB release on the box permanently.
+            run_ssh_command_with_output(
+                _docker_untag_cmd(_pulled_ref), timeout_secs=60)
         else:
-            click.secho(
-                'The update FAILED and the box was left with its services '
-                'stopped. Bring it back up manually with:',
-                fg='red', err=True,
-            )
-            click.echo(f'  ssh {ssh_host} "cd ~/box && ./start_box.sh"', err=True)
-        ctx.exit(1)
-    if verbose:
-        click.secho('  Build complete', fg='green')
+            # Local retag of an image we just verified should not fail. If it
+            # does, build instead rather than starting a box with no image.
+            # The BuildKit preflight was skipped on this path, so that build
+            # may fail too — which lands in the recovery below and restarts
+            # the box on its previous version, the same as any build failure.
+            log_status('FAILED (building instead)', 'yellow')
+            pulled = None
+
+    if not pulled:
+        # Step 9b: Rebuild Docker container (the slow part)
+        if progress:
+            progress.update("Building container...")
+        log('Building container (this may take several minutes)...')
+
+        ssh_cmd = ['ssh']
+        if use_explicit_key:
+            ssh_cmd.extend(['-i', key_file])
+        if not use_interactive_ssh:
+            ssh_cmd.extend(['-o', 'BatchMode=yes'])
+        ssh_cmd.extend(_ssh_mux_opts)
+        ssh_cmd.extend([ssh_host,
+             'cd ~/box/lager && '
+             'DOCKER_BUILDKIT=1 docker build -f docker/box.Dockerfile -t lager .'])
+
+        build_output_lines = []
+        # Always read the build stream so non-verbose mode can still surface a
+        # live detail on the progress bar (and so failures still get the last
+        # 20 lines). Verbose additionally echoes each line to the terminal.
+        process = subprocess.Popen(
+            ssh_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            bufsize=1,
+        )
+        if process.stdout:
+            for line in process.stdout:
+                build_output_lines.append(line.rstrip())
+                if verbose:
+                    click.echo(f'    {line}', nl=False)
+                elif progress:
+                    summary = _docker_build_line_summary(line)
+                    if summary:
+                        progress.set_detail(summary)
+        return_code = process.wait(timeout=600)
+
+        if return_code != 0:
+            if progress:
+                progress.finish(success=False)
+            log_error('Error: Failed to rebuild Docker container')
+            # Show last 20 lines of build output for debugging
+            if build_output_lines:
+                click.echo()
+                click.secho("Docker build output (last 20 lines):", fg='yellow', err=True)
+                for line in build_output_lines[-20:]:
+                    click.echo(f"  {line}", err=True)
+                click.echo()
+                # Detect common Docker build errors
+                full_output = "\n".join(build_output_lines)
+                if "buildx component is missing" in full_output or "install the buildx" in full_output.lower():
+                    click.secho(
+                        "Hint: the box's Docker is missing a working buildx plugin, which the "
+                        "box image requires. Install it on the box (Ubuntu/Debian: "
+                        "`sudo apt-get install -y docker-buildx`), then re-run `lager update`.",
+                        fg='yellow', err=True,
+                    )
+                elif "failed to prepare extraction snapshot" in full_output or (
+                    "parent snapshot" in full_output and "does not exist" in full_output
+                ):
+                    click.secho(
+                        "Hint: the box's Docker build cache is corrupted (a cached snapshot "
+                        "references a parent that no longer exists). Clear it with: "
+                        f"ssh {ssh_host} 'docker builder prune -af' and re-run `lager update`. "
+                        "The next build runs cold and can take 10-15 minutes.",
+                        fg='yellow', err=True,
+                    )
+                elif "No space left on device" in full_output:
+                    click.secho("Hint: Disk space is full on the box. Run: ssh lagerdata@[BOX_NAME] 'docker system prune -af'", fg='yellow', err=True)
+                elif "network" in full_output.lower() and ("timeout" in full_output.lower() or "error" in full_output.lower()):
+                    click.secho("Hint: Network issue during build. Check box internet connectivity.", fg='yellow', err=True)
+                elif "permission denied" in full_output.lower():
+                    click.secho("Hint: Permission issue. Check Docker daemon is running and user has access.", fg='yellow', err=True)
+
+            # Poison the stored build-inputs hash so the next run can't read this
+            # box as up to date: the sentinel never equals a recomputed sha256, so
+            # hash_mismatch fires on the retry, blocking the "already at version"
+            # early-exit and forcing a clean image wipe + rebuild. Deleting the
+            # file would NOT do this — _build_hash_mismatch requires both values
+            # non-empty. Best-effort: if the write fails, the liveness gate still
+            # catches the dead-container case.
+            try:
+                store_build_hash('FAILED')
+            except (subprocess.SubprocessError, OSError):
+                pass
+
+            # Step 8 already stopped and removed the containers, so exiting here
+            # would strand the box with no services — the state that previously
+            # made the next run report "already at version" on a dead box. Unless
+            # this run wiped the image (hash change / --force), the previous image
+            # is still tagged `lager` and its baked-in code matches what was
+            # running before the pull, so restart it: the box stays usable on its
+            # prior version while the operator deals with the build failure.
+            restarted = False
+            if not must_wipe_image:
+                click.echo()
+                click.secho('Restarting the box on its previous version...', fg='yellow', err=True)
+                try:
+                    recover = run_ssh_command_with_output(
+                        'cd ~/box && chmod +x start_box.sh && LAGER_SKIP_BUILD=1 ./start_box.sh',
+                        timeout_secs=600,
+                    )
+                    # Exit 3 = container up but post-start installs failed; the
+                    # box is serving, which is all this recovery promises.
+                    restarted = recover.returncode in (0, 3)
+                except (subprocess.SubprocessError, OSError):
+                    restarted = False
+                if restarted:
+                    restarted = wait_for_box_ready(resolved_box, timeout_s=60)
+            if restarted:
+                click.secho(
+                    'The update FAILED and was not applied. The box has been '
+                    'restarted on its previous version.',
+                    fg='yellow', err=True,
+                )
+            else:
+                click.secho(
+                    'The update FAILED and the box was left with its services '
+                    'stopped. Bring it back up manually with:',
+                    fg='red', err=True,
+                )
+                click.echo(f'  ssh {ssh_host} "cd ~/box && ./start_box.sh"', err=True)
+            ctx.exit(1)
+        if verbose:
+            click.secho('  Build complete', fg='green')
 
     # The build-inputs hash is persisted later (after Step 10 ensures
     # /etc/lager is world-writable) via store_build_hash — writing it here, to a
@@ -2681,6 +3142,12 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False):
             'the next `lager update` may rebuild even when nothing changed.',
             fg='yellow', err=True,
         )
+
+    # Record which image is actually running. See store_image_source: the
+    # build hash alone cannot tell a pulled image from a built one.
+    store_image_source(
+        f'ghcr:{pulled.digest}' if pulled else f'local:{new_build_hash}'
+    )
 
     # Write the version file BEFORE the container restart (SSH is stable here).
     # A version tag (v0.3.14 / 0.3.14) is used directly. For a branch target
@@ -3062,6 +3529,8 @@ def _update_options(fn):
         click.option('--verbose', '-v', is_flag=True, help='Show detailed output (default shows progress bar only)'),
         click.option('--check', is_flag=True, help='Dry run: report what would change without modifying the box'),
         click.option('--force', is_flag=True, help='Update even if the box reports it is already up to date, and force a clean rebuild (wipes the cached image and cargo/npm volumes)'),
+        click.option('--pull', is_flag=True, help='Pull the pre-built box image from GHCR for a release tag instead of building it on the box (falls back to a local build on any miss)'),
+        click.option('--no-pull', is_flag=True, help='Never pull a pre-built image; always build on the box'),
     ]):
         fn = opt(fn)
     return fn
@@ -3070,9 +3539,12 @@ def _update_options(fn):
 @click.command(name='update')
 @click.pass_context
 @_update_options
-def update(ctx, box, yes, version, verbose, check, force):
+def update(ctx, box, yes, version, verbose, check, force, pull, no_pull):
     """Update box code from GitHub repository"""
+    if pull and no_pull:
+        raise click.UsageError('--pull and --no-pull are mutually exclusive')
     _update_logic(
         ctx,
         box=box, yes=yes, version=version, verbose=verbose, check=check, force=force,
+        pull=pull, no_pull=no_pull,
     )

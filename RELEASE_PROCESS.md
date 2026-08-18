@@ -201,12 +201,18 @@ Pushing the tag triggers two workflows in parallel:
   the result as a workflow artifact named `dist-vX.Y.Z` (kept 90 days).
 - **Release: Publish Box Image** (`.github/workflows/box-image-publish.yml`) — builds
   `box/lager/docker/box.Dockerfile` and pushes
-  `ghcr.io/lagerdata/lager-box:vX.Y.Z` (and `:X.Y.Z`). **Nothing consumes this image
-  yet**: `lager update` still builds on the box every time. It is published now so
-  that real images exist to test a pull against before any box depends on one. For
-  a box to pull it anonymously the package must be **public** — set that once in the
-  GitHub UI after the first successful publish (Packages → lager-box → Package
-  settings).
+  `box/lager/docker/box.Dockerfile` and pushes
+  `ghcr.io/lagerdata/lager-box:vX.Y.Z` (and `:X.Y.Z`), labelled with the tag and
+  commit it was built from. `lager update --pull --version vX.Y.Z` fetches that
+  image by digest instead of building on the box; without `--pull` (the default
+  while this soaks) nothing consumes it. For a box to pull it anonymously the
+  package must be **public** — set that once in the GitHub UI after the first
+  successful publish (Packages → lager-box → Package settings).
+
+  The `org.opencontainers.image.version` label is what the client checks before
+  deploying a pulled image. If this workflow is ever changed such that the label
+  stops matching the tag, every box silently falls back to building — slower, but
+  never wrong.
 
 Wait for Validate Tag to go green, then download the artifact:
 
