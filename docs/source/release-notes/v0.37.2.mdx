@@ -1,0 +1,50 @@
+---
+title: "Version 0.37.2"
+description: "August 17, 2026"
+---
+
+## <u>Features</u>
+
+- Release tags now publish a pre-built Lager Box container image to GitHub Container Registry, as groundwork for faster updates. Nothing consumes these images yet: `lager update` still builds on the Lager Box on every path, and no Lager Box behavior changes in this release. Publishing ships first so that pulling can later be tested against real images.
+
+## <u>Improvements</u>
+
+- Cold Lager Box container builds are faster. Node and npm now come from the official upstream tarball (verified against its published checksums) instead of Debian packages that pulled in roughly 400 packages the Lager Box never touches; the `cryptography` dependency moved to a version with a pre-built wheel for the image's Python, so it is no longer compiled from source on every cold build; and several build tools that nothing used were dropped. Note that Node's major version moves from 18 to 20: a Lager Box carrying globally-installed npm packages with compiled native modules should be updated once with `lager update --force`, which rebuilds the volume those packages live in.
+
+- The update progress bar now names what the container build is currently doing — for example `Building container... [pip install ...]` — instead of holding one unchanging label for the several minutes a cold build can take. `--verbose` output is unchanged.
+
+- A USB hub disconnect that fails during teardown is now logged rather than silently discarded. Teardown remains best-effort — a failed disconnect never turns a passing script into a failing one — but the failure is no longer invisible. An opt-in exit trace (set `LAGER_HUB_EXIT_DEBUG`) reports each held hub session's close outcome and timing at process exit, for diagnosing intermittent exit-time aborts after Acroname operations. Unset, nothing changes.
+
+## <u>Bug Fixes</u>
+
+- `lager update --check` could still promise a cached build immediately before a long rebuild. The preview measured the build inputs in the Lager Box's current working tree, so on a Lager Box far behind its target it reported `Estimated: ~90s (cached build)` and then rebuilt for six minutes once the update landed a different image recipe. The preview now measures the build inputs at the target version itself, without touching the working tree, which also turns the old "unknown until pull" answer on rollbacks and branch switches into a measured one. Where the target genuinely cannot be measured, the preview says so instead of guessing.
+
+- `lager install` and `lager uninstall` now offer the SSH key Lager itself installs. `~/.ssh/lager_box` is not one of ssh's default identity filenames, so both commands were relying on the operator's `~/.ssh/config` naming an identity for the Lager Box — and where that entry was missing, they failed with `Permission denied (publickey)` while `lager ssh` kept working from the same machine. Every SSH connection those commands make now offers the key first and falls back to ssh's own default identities if the Lager Box rejects it, so a Lager Box authorized only by an operator's own key is unaffected, and an unreachable Lager Box still fails once rather than twice.
+
+- `lager ssh-setup` and `lager update` could not tell whether the key was actually installed, so they never reinstalled a deleted one. Both decided by logging in — but a login proves only that *some* identity worked, and on a machine whose ssh configuration supplies an identity for every host, the check could never come back negative. Both now ask the Lager Box directly, checking `authorized_keys` for the key itself, with three honest outcomes: installed, absent, or "could not ask" — so an unreachable Lager Box no longer reads as a missing key. The install script's own SSH pre-flight had the same blind spot with a worse consequence — an install could report success and leave the Lager Box with no key at all — and now asks the same way.
+
+- The `lager_box` key is now registered on the Lager Box, not just appended to `authorized_keys`. A key that is only appended can be silently dropped by another key manager that rebuilds `authorized_keys` from its own source — and on a Lager Box that also refuses password authentication, that was unrecoverable from the CLI. All install paths now also record the public key in the Lager Box's managed key directory, which survives any rebuild, and `lager uninstall --all` removes that registration so a revoked key cannot be republished. No new sudo permissions are installed for this: on hardened fleets where the key directory is deliberately root-owned, `lager ssh-setup` prints the exact narrowly-scoped grant for the fleet's own provisioning to add, and registration failure is a warning rather than an error. Existing Lager Boxes are repaired by one `lager ssh-setup` or `lager update`.
+
+- `lager install` no longer offers password authentication when key authentication fails. A Lager Box configured to refuse passwords never received the password install asked for, so the resulting "Password authentication failed" pointed at the wrong problem. When no key on the machine is authorized, install now offers to set up the `lager_box` key inline — one password prompt, after which the rest of the install runs unattended — instead of stopping and sending you to run `lager ssh-setup` first. Declining still exits with an error naming that command as the fix.
+
+- `lager uninstall` no longer claims the next SSH connection will require a password. It removes the `lager_box` key and nothing else, so it now says exactly that: which key was removed, and that other credentials are untouched.
+
+- `lager install` no longer writes a `Host` block into `~/.ssh/config`. That file is commonly managed by other tools, whose next rebuild deleted the block — taking with it the only thing telling ssh which identity to present, so a Lager Box that worked yesterday failed today for no visible reason. The block also permanently disabled host-key verification for that Lager Box and broke access through jump hosts. Passing the identity per command has neither problem, and blocks written by earlier installs are left alone.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.37.2
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.37.2/)
