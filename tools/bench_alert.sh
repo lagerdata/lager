@@ -54,6 +54,19 @@
 set -euo pipefail
 
 LABEL="${BENCH_ALERT_LABEL:-bench-alert}"
+# Labels applied ALONGSIDE $LABEL when this script files a new issue. Every
+# auto-filed bench alert is CI work by construction -- the fix lands in a
+# workflow, on the runner box, or in the bench fixture -- so it should carry
+# the CI label without anyone remembering to add it.
+#
+# It has to happen at CREATION. These issues are closed by the recovery job and
+# a fresh one is opened by the next failure, so a label added by hand lives
+# exactly until the next green night. Dedupe, reuse and recover all key on
+# $LABEL alone, so extra labels cannot affect which issue is found or closed.
+# Set to empty to file with $LABEL only -- note `-` rather than `:-`, so an
+# explicitly empty value means "no extra labels" instead of falling back to
+# the default the way an unset one does.
+EXTRA_LABELS="${BENCH_ALERT_EXTRA_LABELS-CI}"
 # Grace window for list-after-write consistency. Measured lag is 1-5s; 10s
 # gives margin without meaningfully slowing an alert.
 RECHECK_SECONDS="${BENCH_ALERT_RECHECK_SECONDS:-10}"
@@ -101,8 +114,14 @@ case "$mode" in
             gh issue comment "$existing" --repo "$GH_REPO" --body-file "$body_file"
             echo "commented on open ${LABEL} issue #${existing}"
         else
-            url=$(gh issue create --repo "$GH_REPO" --title "$title" \
-                --body-file "$body_file" --label "$LABEL")
+            create_args=(--repo "$GH_REPO" --title "$title"
+                         --body-file "$body_file" --label "$LABEL")
+            # An array, so an empty EXTRA_LABELS omits the flag entirely
+            # rather than passing --label "", which errors.
+            if [ -n "$EXTRA_LABELS" ]; then
+                create_args+=(--label "$EXTRA_LABELS")
+            fi
+            url=$(gh issue create "${create_args[@]}")
             echo "created ${url}"
             number=${url##*/}
             pin_mutation pinIssue "$number" \
