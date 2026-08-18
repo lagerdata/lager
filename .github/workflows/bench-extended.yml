@@ -307,9 +307,19 @@ jobs:
         continue-on-error: true
         timeout-minutes: 15
         env:
-          # 6 of 56: the sysctl/cargo apply+clear cluster, the disabled
-          # box_http_server still running, and the box-side validate
-          # wording. Owned by issue #275; lower this as they are fixed.
+          # 6 of 56 when this was set, but the composition was misread. Four
+          # of the six (6.10, 6.14, 6.16, 6.19) traced to CARGO_TEST_CRATE
+          # naming a crate that does not exist on crates.io: `cargo install`
+          # returned 101, and that alone is enough to make the whole apply
+          # report as not-applied. Fixed in box_config.sh. Sysctl was never
+          # broken -- 6.11/6.12/6.13 pass, and the log shows the key written
+          # and live in the kernel.
+          #
+          # Deliberately NOT lowered here: the ratchet exists so the number
+          # comes from a measurement rather than a prediction. The gate emits
+          # a ::notice when a run comes in under baseline; lower it to
+          # whatever that says. Expect the disabled box_http_server (3.13) to
+          # remain, which is the one genuine product defect in issue #275.
           BOX_CONFIG_BASELINE: "6"
         run: |
           LOG="$RUNNER_TEMP/box-config.log"

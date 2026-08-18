@@ -325,7 +325,18 @@ start_section "apt_packages / sysctl / cargo_packages declarative provisioning"
 # config hash, and are applied during `lager box config apply`.
 
 APT_TEST_PKG="bsdmainutils"  # tiny, harmless, ships hexdump — easy to verify
-CARGO_TEST_CRATE="cargo-hello"  # ~3KB crate; fast to install for smoke tests
+# A real crate with a binary target and NO dependencies. Both properties are
+# load-bearing:
+#   - `cargo-hello` was here before and does not exist on crates.io, so
+#     `cargo install` returned 101 every run. That failure is enough to make
+#     the whole apply report as not-applied, so it took 6.10, 6.14, 6.16 and
+#     6.19 down with it -- four of the six failures this suite was baselined
+#     for, none of them a product defect.
+#   - start_box.sh caps each crate at LAGER_CARGO_INSTALL_TIMEOUT (180s) and
+#     `cargo install` builds from source, so anything pulling clap or similar
+#     risks timing out on a box rather than testing what it means to test.
+# 1KB, zero deps, builds in about a second.
+CARGO_TEST_CRATE="rust-hello"
 SYSCTL_TEST_KEY="net.ipv4.ip_forward"
 
 echo "Test 6.1: lager box config apt add"
@@ -471,15 +482,34 @@ EOF
 track_test "pass"
 
 echo "Test 5.2: validate exits non-zero"
-# The assertion stays as-is on purpose. validate and apply share one
-# validate() call (box/lager/box_config/config.py _validate_mounts), and this
-# tree's unit tests pin the "cannot be '/'" wording, so a bench box that does
-# not produce it is running box-side code older than main -- which is a real
-# finding, not a reason to loosen the grep. Print what it actually said so the
-# next reader of this log does not have to reproduce it to find out.
+# validate and apply share one validate() call
+# (box/lager/box_config/config.py _validate_mounts), and this tree's unit tests
+# pin the "cannot be '/'" wording, so a bench box that does not produce it is
+# running box-side code older than main -- a real finding, not a reason to
+# loosen the grep.
+#
+# The grep alone cannot tell that apart from a box that never answered, and
+# this check runs shortly after the section-3 bounce. A box still coming back
+# reports "Could not connect", which the old assertion recorded as a wording
+# mismatch -- a verdict about code it never reached. Same defect class as
+# issue #283. Retry once past the bounce, then say which of the two happened.
+_validate_unreachable() {
+  echo "$1" | grep -qiE "could not connect to the box|may be offline"
+}
+
 VALIDATE_OUT=$(lager box config validate --box "$BOX" 2>&1)
+if _validate_unreachable "$VALIDATE_OUT"; then
+  sleep 15
+  VALIDATE_OUT=$(lager box config validate --box "$BOX" 2>&1)
+fi
+
 if echo "$VALIDATE_OUT" | grep -qi "cannot be '/'"; then
   track_test "pass"
+elif _validate_unreachable "$VALIDATE_OUT"; then
+  echo "  INCONCLUSIVE: the box was unreachable, so validate never ran. This is"
+  echo "  NOT evidence about the root-mount check. It said:"
+  echo "$VALIDATE_OUT" | sed 's/^/    /'
+  track_test "fail"
 else
   echo "  validate did not report the root-mount error; it said:"
   echo "$VALIDATE_OUT" | sed 's/^/    /'
