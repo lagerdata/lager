@@ -107,6 +107,15 @@ lager usb USB2 cycle --box my-lager-box
 #      re-enumeration was not confirmed
 ```
 
+<Note>
+`cycle` returns as soon as the **hub** reports the device reconnecting, which is
+a few hundred milliseconds. Linux has not finished re-enumerating at that
+instant, so a device node or `/dev/ttyUSB*` may not be back yet, and a `/sys`
+read taken immediately still shows the pre-cycle values. If the next step opens
+the device, wait for its node rather than assuming `cycle` returning means it is
+ready.
+</Note>
+
 That is **not** the same as "the port is unused". A hub only sees a device that
 pulls up its data lines, so a **charge-only cable** — powering a DUT with no data
 connection — looks exactly like an empty socket. The port was still cut and

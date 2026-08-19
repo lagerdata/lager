@@ -142,6 +142,13 @@ the whole sequence, so nothing else can switch the port while it is dark, and it
 restores power on every failure path, so an exception partway through cannot
 leave a port stranded.
 
+<Note>
+`cycle` returns on the **hub's** reconnect signal, a few hundred milliseconds
+after power returns — not on Linux finishing enumeration. So `/dev/ttyUSB*` may
+not exist yet when it returns, and a `/sys` read taken immediately still shows
+the pre-cycle device number. Poll for what you need rather than reading once.
+</Note>
+
 <Warning>
 **A powered-off port still appears in `lsusb` and keeps its `/dev/ttyUSB*`.**
 Hubs raise no change notification while a port is unpowered, so the kernel does

@@ -24,7 +24,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
   one they can apply, while a pull needs no buildx at all -- so the error now
   also points at `--pull` for targets that have a published image.
 
-## [0.38.0] - 2026-08-18
+## [0.39.0] - 2026-08-19
 
 ### Added
 
@@ -107,6 +107,10 @@ All notable changes to the Lager platform are documented here. For detailed rele
   never change — and the bus facts, which are accurate, are still reported.
   Addresses carrying a topology path instead of a serial also resolve to their
   sysfs device rather than reporting the hub as not enumerated.
+
+## [0.38.0] - 2026-08-18
+
+### Added
 
 - **`lager update --pull` fetches a pre-built box image instead of building it
   on the box.** Release tags are published to `ghcr.io/lagerdata/lager-box` by
