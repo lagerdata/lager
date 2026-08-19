@@ -1,0 +1,67 @@
+---
+title: "Version 0.39.0"
+description: "August 19, 2026"
+---
+
+## <u>Features</u>
+
+- **`lager usb <net> cycle` power-cycles a port** — off, wait, on — for every
+  supported USB hub. `--off-time` sets how long the port stays unpowered
+  (default 1s, range 0.5-10s), set above the slowest cold boot measured on real
+  hardware. Too *short* an off time is the failure that matters: the DUT's rails
+  do not fully discharge and it warm-starts while appearing to have been reset.
+  Prefer it over a scripted disable/sleep/enable — it holds the hub for the whole
+  sequence so nothing else can switch the port while it is dark, restores power
+  on every failure path, and reports whether the device came back.
+
+- **`lager usb <net> recover` re-powers a port left unpowered** by an interrupted
+  command. On hubs where the whole physical device can be identified it
+  re-asserts power on every port, since the reason to reach for it is usually
+  that something is off and it is not obvious what.
+
+- **Plugable RTS5411 USB docks are supported as switchable-USB-power
+  instruments**, a third option alongside Acroname and Yepkit hubs. Plugable
+  ships no SDK, so control is the standard USB hub class per-port power
+  switching rather than a vendor library. Only the four external Type-A sockets
+  switch VBUS; the dock's internal tier (billboard, audio, ethernet) does not,
+  even though both tiers advertise per-port switching identically. Requires the
+  udev rule for vendor `2230`, shipped in `99-instrument.rules`.
+
+## <u>Bug Fixes</u>
+
+- **Disabling a USB hub port no longer reports a false failure and undoes
+  itself.** A powered-off port raises no change notification, so the kernel never
+  processes the disconnect: the device keeps its `lsusb` entry and its `/dev`
+  nodes for the whole off window. The driver had treated that as proof the
+  hardware could not switch power, and then powered the port back on. It now
+  checks the hub's own power bit, which is the only thing observable while a port
+  is off. **Never test for a device's absence to decide whether a port is off** —
+  use `state`, or compare a device's USB device number either side of a `cycle`.
+
+- **`lager diagnose` no longer reports a non-Acroname USB hub as wedged.** Hub
+  diagnostics are vendor-specific but every USB net reached them, so a hub from
+  another vendor was opened with the wrong driver and the failure reported as an
+  electrical fault. Such a hub now reports `NOT SUPPORTED`, kept distinct from
+  the transient `BUSY` state, and its bus facts are still shown.
+
+- **`PlugableUSBNet` is importable from the Python API, and `YKUSHUSBNet` is the
+  YKUSH driver again.** A copy-pasted entry in the driver export table had given
+  one driver the other's name.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.39.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.39.0/)
