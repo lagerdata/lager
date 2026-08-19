@@ -12,6 +12,7 @@ import sys
 import json
 
 import click
+from click.exceptions import Abort, Exit
 import requests
 from texttable import Texttable
 
@@ -223,6 +224,11 @@ def _connect_uart_http(ctx, box_ip, netname, overrides, interactive):
             exit_code = connect_func(box_url, netname, overrides)
             ctx.exit(exit_code)
             return
+        except (Exit, Abort):
+            # ctx.exit() above is how this function returns. Catching it as a
+            # connection error retried the whole session and then rewrote the
+            # session's exit code to 1.
+            raise
         except Exception as e:
             last_error = e
             error_str = str(e)
@@ -258,12 +264,12 @@ def _connect_uart_http(ctx, box_ip, netname, overrides, interactive):
         click.secho(f"Error: Could not resolve hostname {box_ip}", fg='red', err=True)
         click.secho("Check that the box name is spelled correctly.", err=True)
     else:
-        # Exit code 0 is not an error - it's a clean disconnect
-        if str(last_error) != "0":
-            click.secho(f"Error: WebSocket connection failed: {last_error}", fg='red', err=True)
-            ctx.exit(1)
-        else:
-            ctx.exit(0)
+        # Reaching here means a genuine exception, not a session exit: the
+        # `except (Exit, Abort)` above re-raises those. This used to compare
+        # `str(last_error) != "0"` -- matching str(Exit(0)) -- to recover a
+        # clean disconnect that had been captured as an error.
+        click.secho(f"Error: WebSocket connection failed: {last_error}", fg='red', err=True)
+        ctx.exit(1)
 
 
 # ---------- CLI ----------

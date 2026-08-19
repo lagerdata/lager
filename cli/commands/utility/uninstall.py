@@ -7,6 +7,7 @@
     Uninstall Lager box code from a box
 """
 import click
+from click.exceptions import Abort, Exit
 import os
 import subprocess
 from ...address_utils import validate_ip_or_hostname, VALID_FORMATS_CHEATSHEET
@@ -407,6 +408,8 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
             click.secho("  Linux: sudo apt install openssh-client (Debian/Ubuntu)", err=True)
             click.secho("         sudo dnf install openssh-clients (Fedora/RHEL)", err=True)
         ctx.exit(1)
+    except (Exit, Abort):
+        raise
     except Exception as e:
         click.secho(f"Error: {e}", fg='red', err=True)
         ctx.exit(1)

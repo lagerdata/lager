@@ -204,6 +204,18 @@ jobs:
         run: python tools/check_coverage_counts.py
         shell: bash
 
+      # click's Exit and Abort subclass RuntimeError, so a broad
+      # `except Exception` catches the command's own ctx.exit() -- printing a
+      # traceback for a designed exit and rewriting the code to 1. It reached
+      # eleven try blocks across seven files before anyone noticed, because
+      # both halves look like ordinary code in review and only running the
+      # command shows it. Ruff has no rule for this; ordering is the whole
+      # point, and a handler after `except Exception` never runs.
+      - name: No broad handler swallows its own ctx.exit()
+        if: always()
+        run: python tools/check_control_flow_handlers.py cli/commands
+        shell: bash
+
       # Errors only: undefined names, syntax errors, f-string and assert
       # mistakes. Not style. The full default ruleset reports ~6300 findings on
       # this tree, which would be noise, not a gate. Vendored trees are

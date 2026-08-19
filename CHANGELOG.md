@@ -24,6 +24,38 @@ All notable changes to the Lager platform are documented here. For detailed rele
   one they can apply, while a pull needs no buildx at all -- so the error now
   also points at `--pull` for targets that have a published image.
 
+- **A deliberate `ctx.exit()` is no longer reported as a crash, and no longer
+  has its exit code rewritten to 1.** `click.exceptions.Exit` subclasses
+  `RuntimeError`, so a broad `except Exception` caught every intentional exit
+  raised inside its own `try` block: the command printed a Python traceback for
+  a designed exit, rendered the exception payload as the message (`Error: 2`),
+  and then exited 1.
+
+  The visible case was `lager update --check` against a box whose SSH key is not
+  set up. That path asks for 2 -- "the probe could not run" -- and delivered 1,
+  which in `--check`'s vocabulary means "an update is available": a claim the
+  command was in no position to make, having never reached the box. Anything
+  branching on the code got the wrong answer, and
+  `integration-tests.yml`'s `rc -gt 1` branch was unreachable.
+
+  It was not one call site. Eleven `try` blocks across seven files had the same
+  shape, and two were doing visible damage of their own:
+  `lager binaries remove <nonexistent>` printed "binary not found", had its
+  `ctx.exit(1)` cancelled outright by an `except Exception: pass`, and continued
+  on into the removal; `lager uart` treated the `ctx.exit()` that ends a session
+  as a connection error, retried the whole session, and rewrote the session's
+  exit code to 1 -- worked around until now by comparing `str(last_error) != "0"`
+  against `str(Exit(0))`, which is now deleted. All eleven re-raise `Exit` and
+  `Abort` ahead of the broad handler, as `cli/commands/box/ssh.py` already did.
+
+  `tools/check_control_flow_handlers.py` runs in the `static-checks` gate to keep
+  the shape from coming back. It is ordering-aware -- a handler placed after
+  `except Exception` never runs -- and its own detection cases are tested, since
+  a gate that cannot fail is not a gate.
+
+  `lager update`'s traceback is now printed only under `--verbose`, and to
+  stderr rather than stdout, where it had been corrupting piped output.
+
 ## [0.39.1] - 2026-08-19
 
 ### Fixed
