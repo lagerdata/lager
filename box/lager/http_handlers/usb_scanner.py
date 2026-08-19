@@ -134,6 +134,10 @@ SUPPORTED_USB: Dict[str, Dict] = {
     "Acroname_8Port":    {"vid": "24ff", "pid": "0013", "net_type": ["usb"]},
     "Acroname_4Port":    {"vid": "24ff", "pid": "0011", "net_type": ["usb"]},
     "YKUSH_Hub":         {"vid": "04d8", "pid": "f2f7", "net_type": ["usb"]},
+    # 0x2230 is Plugable's OWN vendor ID; 0x5411 tracks the Realtek RTS5411
+    # hub silicon Plugable reuses across its dock line, so this entry matches
+    # any Plugable RTS5411 hub. Validated on a UD-CAM.
+    "Plugable_USB_Hub":  {"vid": "2230", "pid": "5411", "net_type": ["usb"]},
     # eload
     "Rigol_DL3021":      {"vid": "1ab1", "pid": "0e11", "net_type": ["eload"]},
     # camera — detection is catalog-driven: any entry with a ``webcam``
@@ -255,6 +259,10 @@ CHANNEL_MAPS: Dict[str, Dict[str, List[str]]] = {
     "Acroname_8Port":         {"usb": ["0", "1", "2", "3", "4", "5", "6", "7"]},
     "Acroname_4Port":         {"usb": ["0", "1", "2", "3"]},
     "YKUSH_Hub":              {"usb": ["1", "2", "3"]},
+    # The dock cascades two 4-port hubs; the upstream tier is entirely
+    # internal (billboard, audio codec, NIC, inter-hub link), so only the
+    # downstream tier's four external sockets are exposed.
+    "Plugable_USB_Hub":       {"usb": ["1", "2", "3", "4"]},
     "Rigol_DL3021":           {"eload": ["1"]},
     "Yocto_Watt":             {"watt-meter": ["0"]},
     "Joulescope_JS220":       {"watt-meter": ["0"], "energy-analyzer": ["0"]},
@@ -272,6 +280,59 @@ for _name, _meta in SUPPORTED_USB.items():
     if _name in ("Rigol_DL3021", "Rigol_DP811", "Rigol_DP832"):
         continue  # differentiated by serial number, handled in _scan_usb
     _VIDPID_TO_NAME[(_meta["vid"].lower(), _meta["pid"].lower())] = _name
+
+# ─────────────  Instruments addressed by USB topology, not serial  ─────────────
+#
+# Most instruments carry a unique iSerialNumber, so the VISA address below
+# identifies them wherever they are plugged in. Hubs generally do not: an
+# RTS5411 reports iSerial 0, and a Plugable dock enumerates TWO of them, so the
+# generic form would synthesize the SAME address for both and neither would be
+# addressable.
+#
+# For these, the sysfs topology path goes in the VISA serial slot behind a
+# `port-` prefix that can never be mistaken for a real serial. The trade-off is
+# the one serial_id.py already documents and accepts: the net is pinned to a
+# physical box port, so moving the cable breaks it loudly instead of silently
+# driving different hardware.
+_TOPOLOGY_ADDRESSED = {"Plugable_USB_Hub"}
+
+
+def _vidpid_serial_unique(vid, pid, serial, own_dir_name):
+    """True if *serial* identifies exactly one device of this vid:pid.
+
+    Cannot reuse ``serial_id._serial_is_unique``: that module walks
+    /sys/class/tty and a hub has no tty.
+    """
+    if not serial:
+        return False
+    seen = 0
+    try:
+        for d in Path("/sys/bus/usb/devices").iterdir():
+            if ":" in d.name:
+                continue
+            try:
+                if (d / "idVendor").read_text().strip().lower() != vid:
+                    continue
+                if (d / "idProduct").read_text().strip().lower() != pid:
+                    continue
+                if (d / "serial").read_text().strip() == serial:
+                    seen += 1
+            except OSError:
+                continue
+    except OSError:
+        return False
+    return seen == 1
+
+
+def _has_same_model_parent(dev_dir, vid, pid):
+    """True if this device's USB parent is the same vid:pid (a cascaded tier)."""
+    try:
+        parent = Path(os.path.realpath(dev_dir)).parent
+        return ((parent / "idVendor").read_text().strip().lower() == vid
+                and (parent / "idProduct").read_text().strip().lower() == pid)
+    except OSError:
+        return False
+
 
 
 # ---------------------------------------------------------------------------
@@ -488,6 +549,10 @@ def scan_usb() -> List[dict]:
 
         if meta_name == "Nordic_PPK2":
             address = f"ppk2:{serial or ''}"
+        elif meta_name in _TOPOLOGY_ADDRESSED:
+            slot = (serial if _vidpid_serial_unique(vid, pid, serial, dev.name)
+                    else f"port-{dev.name}")
+            address = f"USB0::0x{vid.upper()}::0x{pid.upper()}::{slot}::INSTR"
         else:
             address = f"USB0::0x{vid.upper()}::0x{pid.upper()}::{serial or ''}::INSTR"
 
@@ -552,6 +617,15 @@ def scan_usb() -> List[dict]:
                     entry["channels"] = {
                         k: v for k, v in entry["channels"].items() if k != "uart"
                     }
+
+        # One dock = one instrument = one address = one lock key. A Plugable
+        # dock cascades two identical hubs; surfacing both would show the dock
+        # twice in `lager instruments`, make `nets add`'s address lookup
+        # ambiguous, and split dispatcher.states' per-hub grouping across two
+        # halves of the same physical device. The driver resolves the
+        # downstream tier itself, so only the root tier is registered.
+        if meta_name in _TOPOLOGY_ADDRESSED and _has_same_model_parent(dev, vid, pid):
+            continue
 
         results.append(entry)
 
