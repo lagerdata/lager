@@ -115,6 +115,37 @@ All notable changes to the Lager platform are documented here. For detailed rele
   module's. The drift guard now compares each exit-code message exactly rather
   than by substring, which is what let them diverge unnoticed.
 
+- **A command that dispatches to a missing helper script now says so, instead of
+  raising a `ValueError` traceback that looks like a box problem.**
+  `get_impl_path()` searched `cli/impl/{power,measurement,communication,device}/`
+  with `os.path.exists`, then fell through to the root `impl/` directory and
+  returned that path **without checking it existed**. A caller asking for a
+  script that is not in the tree received a well-formed path to a file that is
+  not there.
+
+  Nothing failed at that point. The dead path travelled on to
+  `run_python_internal`, which raised a bare
+  `ValueError: Could not find runnable ...` -- and by then the box had been
+  resolved and the net validated over the network, so the traceback read as a
+  box or connectivity fault rather than a missing file. Sixteen `lager logic`
+  subcommands (`measure`, `trigger` and `cursor`, dispatching to
+  `measurement.py`, `trigger.py` and `cursor.py`) had been failing exactly that
+  way, with nothing pointing at the reason.
+
+  `get_impl_path()` now checks the root fallback like every other candidate and
+  raises a `LagerError` naming the script, with the searched directories under
+  `--debug`. The root fallback still resolves -- `cli/impl/box_config.py` lives
+  there -- so this is a missing check, not a removed code path.
+
+  `test/unit/cli/test_impl_script_dispatch.py` walks every `run_backend` and
+  `get_impl_path` call site in `cli/` and asserts each script name resolves.
+  Nothing could see this before: the scripts are read off disk and uploaded to
+  the box rather than imported, so no import test, linter or type checker
+  resolves the filename strings that couple a command to its implementation.
+  The three scripts `lager logic` needs are recorded in a two-sided
+  `KNOWN_MISSING` baseline (#261) -- a new unresolvable dispatch fails, and so
+  does a listed name that starts resolving, so the baseline can only shrink.
+
 ## [0.39.1] - 2026-08-19
 
 ### Fixed
