@@ -15,7 +15,7 @@ The **Lager CLI** (`lager`) enables direct control of your hardware from the com
 
 ## Prerequisites
 
-- A Lager Box
+- A Lager Box -- see [Setting Up a Lager Box](/source/getting-started/setting-up-a-lager-box) if you have not set one up yet
 - Python 3.10 or higher
 - `pip3` package manager
 
@@ -53,7 +53,7 @@ and give it a name!
 </Note>
 
 ```bash
-lager boxes add --name my-lager-box --ip 100.64.1.42
+lager boxes add --name my-lager-box --ip 100.64.1.42 --user <box-user>
 ```
 
 You can add all of your configured Lager Boxes using the command below and view your list of them using the following command.
@@ -87,7 +87,7 @@ If your Lager Box says hello back, then you are ready to start using it!
 | Error | Cause | Fix |
 |-------|-------|-----|
 | `No route to host` | The Lager Box is unreachable on the network | Make sure your VPN (Tailscale) is connected. Run `tailscale status` to verify. |
-| `Connection refused` | The Lager Box service is not running | The box may need a restart or a software update. Contact your administrator. |
+| `Connection refused` | The Lager Box service is not running, or the box was never set up | The box may need a restart or a software update. Contact your administrator, or see [Setting Up a Lager Box](/source/getting-started/setting-up-a-lager-box). |
 | `Connection timed out` | Network path exists but the box is not responding | Verify the IP address is correct with `lager boxes`. Check that the box is powered on. |
 | `command not found: lager` | The CLI is not installed or not in your PATH | Re-run `pip3 install -U lager-cli`. If using a virtual environment, make sure it is activated. |
 

@@ -1,0 +1,300 @@
+---
+title: Setting Up a Lager Box
+description: Turn an Ubuntu machine into a Lager Box
+---
+
+A **Lager Box** is an ordinary Ubuntu machine running the Lager box software. This page takes a
+machine you already have -- a mini PC on your bench, a rack server, or a virtual machine -- and
+turns it into one.
+
+<Note>
+If someone has already set up a box for you, you do not need this page. Go straight to
+[Adding your First Lager Box](/source/getting-started/adding-first-lager-box).
+</Note>
+
+---
+
+## What You Need
+
+**On the machine that will become the box:**
+
+- An **x86-64** processor. This is the only supported box architecture.
+- **Ubuntu 22.04 or newer**, including 24.04 LTS.
+- A network connection, and an IP address or hostname you can reach.
+- An SSH server, and a **login account with `sudo`** whose password you know.
+- **`git`** installed. Everything else the box needs, including Docker, is installed for you.
+
+**On your computer:**
+
+- **Python 3.10 or higher** and `pip3`.
+- An SSH client (`ssh` and `ssh-keygen`).
+
+<Note>
+A first install builds the Lager container on the box itself and can take up to 30 minutes.
+Plan for the box to be busy for that long.
+</Note>
+
+<Warning>
+**The box login account is root-equivalent by design.** Provisioning a box requires root, so
+installation grants that account passwordless `sudo` for the commands Lager needs. Anyone who
+can log in as that account can obtain root on the box. Prefer a dedicated user on a dedicated
+machine, and treat its SSH key accordingly. The
+[Install reference](/source/reference/cli/install) describes exactly which grants are written.
+</Warning>
+
+---
+
+## Step 1: Prepare the Machine
+
+SSH into the machine and install `git`:
+
+```bash
+sudo apt update && sudo apt install -y git
+```
+
+Confirm the account can use `sudo`. You will be asked for its password once during
+installation:
+
+```bash
+sudo true
+```
+
+<Note>
+The login account does not have to be named `lagerdata`. Whatever it is called, pass it as
+`--user` in Step 3, and record it with the box so later commands use the right account.
+</Note>
+
+Note the machine's IP address or hostname -- you need it in Step 3:
+
+```bash
+ip -br addr
+```
+
+---
+
+## Step 2: Install the Lager CLI
+
+On your own computer, not on the box:
+
+```bash
+pip3 install -U lager-cli
+```
+
+Check that it is available:
+
+```bash
+lager --version
+```
+
+---
+
+## Step 3: Run the Installer
+
+`lager install` does the rest: it configures SSH keys and sudo, deploys the box code, installs
+Docker if the machine does not have it, builds and starts the Lager container, and configures
+the firewall.
+
+```bash
+lager install --ip <box-ip> --user <box-user>
+```
+
+The command checks SSH connectivity, prints a summary of what it is about to do, and asks you
+to confirm before it changes anything.
+
+**The first time, SSH will not be authorized yet.** Lager notices, and offers to fix it:
+
+```
+No SSH key on this machine is authorized on the box.
+
+Set up the lager_box key now? (one box-password prompt, then the rest of the
+install runs unattended) [Y/n]:
+```
+
+Accept it and enter the box account's password once. Lager installs a dedicated key at
+`~/.ssh/lager_box`, and every later step -- and every later command -- runs without a password.
+If you decline, the install stops and tells you to run `lager ssh-setup --box <name-or-ip>`,
+which does the same thing on its own.
+
+Deployment then runs, streaming its output. Leave it alone until it finishes.
+
+<Note>
+To install a specific release instead of the latest code, add `--version` -- for example
+`--version v0.39.0`. See the [Install reference](/source/reference/cli/install) for every
+option.
+</Note>
+
+---
+
+## Step 4: Networking and the Firewall
+
+Installation configures a UFW firewall on the box that restricts the Lager service ports to
+your VPN, the Docker bridge, and localhost. SSH on port 22 is always left open, so this cannot
+lock you out of the machine.
+
+How you point it at your network depends on what you use:
+
+**Tailscale.** Nothing to do. If Tailscale is running on the box, the installer detects the
+`tailscale0` interface and allows the Lager ports on it.
+
+**A corporate VPN.** Name the interface explicitly. Find it on the box:
+
+```bash
+ip -br link
+```
+
+Then pass it to the installer -- `cscotun0` for Cisco Secure Client, `tun0` for OpenConnect,
+and so on:
+
+```bash
+lager install --ip <box-ip> --user <box-user> --corporate-vpn cscotun0
+```
+
+<Warning>
+The interface must exist on the box **at the moment you run the installer**. If the VPN is not
+connected, the firewall step fails with `Corporate VPN interface <name> not found` and lists
+the interfaces it did find. Connect the VPN and run the install again.
+</Warning>
+
+**Neither.** Add `--skip-firewall` to leave UFW alone entirely, and secure the machine by
+whatever means you already use.
+
+---
+
+## Step 5: Name the Box and Verify
+
+When deployment finishes, the installer offers to add the box to your local configuration:
+
+```
+Add this box to your configuration? [Y/n]: y
+Box name: bench-1
+```
+
+The name is yours to choose and is local to your computer. If you skipped that prompt, add it
+by hand -- `--user` is required:
+
+```bash
+lager boxes add --name bench-1 --ip <box-ip> --user <box-user>
+```
+
+Check that the box answers:
+
+```bash
+lager hello --box bench-1
+```
+
+**Expected output:**
+
+```
+Box: bench-1
+IP: 100.64.1.42
+Version: 0.39.0
+
+bench-1 is online and responding!
+```
+
+Then see what hardware it can find:
+
+```bash
+lager instruments --box bench-1
+```
+
+An empty list is the correct answer if you have not connected any instruments yet.
+
+---
+
+## Running a Lager Box in a Virtual Machine
+
+A VM works as a Lager Box, provided the guest is x86-64 and runs Ubuntu 22.04 or newer.
+Everything above applies unchanged.
+
+The one thing that differs is hardware access. Instruments and debug probes are USB devices,
+and the Lager container reaches them through the host's `/dev`. **A USB device the guest cannot
+see is a device Lager cannot use.** So if the box will drive real hardware, configure USB
+passthrough in your hypervisor before you connect anything.
+
+Prefer passing through an **entire USB controller** rather than individual devices. Debug
+probes re-enumerate when they reset, and Lager power-cycles USB hub ports as a normal part of
+testing -- both of which change or drop a device identity that per-device passthrough is
+pinned to. A whole controller keeps working across those events.
+
+A VM with no hardware attached is still useful for trying Lager out, and needs no passthrough
+at all.
+
+---
+
+## Troubleshooting
+
+<Accordion title="git is not installed on box">
+
+Installation stops before deploying anything. Install `git` on the box and run the command
+again:
+
+```bash
+sudo apt update && sudo apt install -y git
+```
+
+</Accordion>
+
+<Accordion title="No SSH key on this machine is authorized on the box">
+
+Expected on a first install -- answer **yes** to the prompt that follows and enter the box
+account's password once. To do it as a separate step instead:
+
+```bash
+lager ssh-setup --box <box-ip>
+```
+
+If the password is rejected, confirm you are using the box account's own password, and that
+the box allows password authentication for that account.
+
+</Accordion>
+
+<Accordion title="Corporate VPN interface not found">
+
+The interface named by `--corporate-vpn` did not exist on the box when the firewall step ran.
+The error lists the interfaces that do exist. Connect the VPN, confirm the name with
+`ip -br link` on the box, and run the install again.
+
+</Accordion>
+
+<Accordion title="The install seems to have stopped">
+
+A first install builds the container image on the box, which is the longest step by far and can
+run for many minutes with little output. Let it run. The command gives up on its own after 30
+minutes.
+
+</Accordion>
+
+<Accordion title="Failed to install Docker">
+
+Installation prints the manual commands to run on the box:
+
+```bash
+sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2
+sudo systemctl daemon-reload && sudo systemctl restart docker
+sudo usermod -aG docker <box-user>
+```
+
+Log out and back in so the group membership takes effect, then run `lager install` again.
+
+</Accordion>
+
+<Accordion title="The machine is not x86-64">
+
+x86-64 is the only supported box architecture. Check with `uname -m` on the machine -- it must
+report `x86_64`. Other architectures are not supported, and an install may appear to succeed
+while hardware support is missing.
+
+</Accordion>
+
+For problems that appear after the box is up and running, see
+[Troubleshooting](/source/getting-started/troubleshooting).
+
+---
+
+## Next Steps
+
+Your box is running. Now connect to it and give it something to do:
+
+- **[Adding your First Lager Box](/source/getting-started/adding-first-lager-box)** -- Add the box on any other machine that needs to reach it
+- **[Setting Up Your Instruments](/source/getting-started/setting-up-instruments)** -- Discover the hardware connected to your box and define nets

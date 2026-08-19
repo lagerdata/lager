@@ -16,7 +16,7 @@ lager install [OPTIONS]
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `--box TEXT` | string | | Box name (uses stored IP and username from `.lager` config) |
-| `--ip TEXT` | string | | Target box IP address |
+| `--ip TEXT` | string | | Target box IP address or DNS hostname |
 | `--user TEXT` | string | `lagerdata` | SSH username |
 | `--version TEXT` | string | `main` | Box version to deploy: a release tag (e.g. `v0.15.0`) or a git branch |
 | `--skip-jlink` | flag | | Skip J-Link installation (pyOCD is always installed) |
@@ -115,17 +115,23 @@ that is not a filename ssh tries on its own. If the box does not accept it,
 install falls back to your own default identities, so a box you authorized with
 `ssh-copy-id` works unchanged.
 
-If neither authenticates, install stops and tells you to run:
+If neither authenticates, install offers to set the key up for you:
 
-```bash
-lager ssh-setup --box <name-or-ip>
+```
+No SSH key on this machine is authorized on the box.
+
+Set up the lager_box key now? (one box-password prompt, then the rest of the
+install runs unattended) [Y/n]:
 ```
 
-That prompts for the box password **once**, installs the key, and every later
-step of the install runs unattended. Install does not offer a password fallback
-of its own: a box configured with `PasswordAuthentication no` never receives
-the password, so the resulting "password failed" message described something
-that had not happened.
+Accepting prompts for the box password **once**, installs the key, and every
+later step of the install runs unattended. `--yes` accepts it without asking.
+Declining stops the install and points you at `lager ssh-setup --box
+<name-or-ip>`, which does the same thing as a separate step.
+
+Install does not offer a password fallback for the deployment itself: a box
+configured with `PasswordAuthentication no` never receives the password, so the
+resulting "password failed" message described something that had not happened.
 
 For new hosts, the SSH host key is accepted automatically. If the host key has
 changed since a previous connection, the command asks you to verify the change
@@ -138,6 +144,7 @@ The identity is passed per command instead.
 
 ## Notes
 
+- For a step-by-step walkthrough, see [Setting Up a Lager Box](/source/getting-started/setting-up-a-lager-box)
 - Requires SSH client tools (`ssh`, `ssh-keygen`) to be installed locally
 - The deployment script is bundled with the `lager-cli` package
 - After installation, verify connectivity with `lager hello --box <name>`
