@@ -291,6 +291,7 @@ Hardware suites only. Several domains marked "No" below do have hardware-free un
 | **Logic Analyzer** | Rigol MSO5000 (embedded) | — | `logic.sh` | Yes |
 | **USB Hub** | Acroname USBHub3+ | 7 files | `acroname.sh` | Yes |
 | **USB Hub** | Yepkit YKUSH | — | `ykush.sh` | — |
+| **USB Hub** | Plugable UD-CAM (RTS5411) | — | — | — |
 | **Debug Probe** | Segger J-Link | 1 file | `debug.sh`, `jlink_script.sh` | Yes |
 | **Energy Analyzer** | Joulescope JS220 | 3 files | — | Yes |
 | **Power Profiler** | Nordic PPK2 | 1 file | — | Yes |
@@ -299,8 +300,9 @@ Hardware suites only. Several domains marked "No" below do have hardware-free un
 | **Webcam** | Logitech BRIO / C930e | 1 file | — | Yes |
 | **Robotic Arm** | Rotrics Dexarm | 1 file | `arm.sh` | Yes |
 
-The Acroname and YKUSH USB-hub drivers also have hardware-free unit coverage
-(`test/unit/box/test_acroname_driver.py`, `test_ykush_driver.py`).
+The Acroname, YKUSH, and Plugable USB-hub drivers also have hardware-free unit coverage
+(`test/unit/box/test_acroname_driver.py`, `test_ykush_driver.py`,
+`test_plugable_driver.py`).
 
 ## Coverage Gaps
 
@@ -527,6 +529,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_usb_scanner_custom.py` | Custom-device surfacing in box HTTP scanner GET /instruments/list |
 | `test_usb_scanner_uart_fallback.py` | UART enumeration without USB serial by matching sysfs path; two identical adapters keep distinct ttys and the channel catalog stays unmutated |
 | `test_webcam_detection.py` | sysfs-based webcam detection (`_by_camera`) against a fake sysfs tree |
+| `test_plugable_driver.py` | Plugable RTS5411 dock driver: USB hub-class per-port power switching over pyusb -- ganged/no-switching hubs refused without touching a port, a hub that advertises switching but leaves VBUS up detected, network-device and inter-hub-link guards, one-session batch reads, handle disposal on every path |
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 
 #### CLI Unit Tests (`test/unit/cli/` -- 55 files)

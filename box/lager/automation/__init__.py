@@ -71,6 +71,9 @@ def __getattr__(name: str):
         from .usb_hub.acroname import AcronameUSBNet
         return AcronameUSBNet
     if name == "YKUSHUSBNet":
+        from .usb_hub.plugable import PlugableUSBNet
+        return PlugableUSBNet
+    if name == "YKUSHUSBNet":
         from .usb_hub.ykush import YKUSHUSBNet
         return YKUSHUSBNet
     if name in ("enable", "disable", "toggle"):

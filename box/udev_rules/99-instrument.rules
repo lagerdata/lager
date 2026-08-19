@@ -122,6 +122,13 @@ SUBSYSTEM=="usb", ATTRS{idVendor}=="24ff", MODE="0660", GROUP="lager"
 # Allows control of YKUSH programmable USB hubs via pykush library
 SUBSYSTEM=="usb", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="f2f7", MODE="0660", GROUP="lager"
 SUBSYSTEM=="usb", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="0042", MODE="0660", GROUP="lager"
+# Plugable USB-C docking stations / hubs: VID=0x2230 (all models)
+# Control is the STANDARD USB hub class per-port power switching over libusb --
+# Plugable ships no SDK. libusb needs WRITE access to the usbfs node even for
+# control transfers, so without this rule every operation fails with EACCES.
+# VID-only for the same reason as the SEGGER rule above: Plugable reuses PIDs
+# across an evolving line and a per-PID allow-list keeps silently breaking.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2230", MODE="0660", GROUP="lager"
 
 # ============================================================================
 # ELECTRONIC LOADS

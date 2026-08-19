@@ -15,7 +15,8 @@ from ...core.net_group import BoxCommand
 from collections import defaultdict
 from ...sort_utils import natural_sort_key
 
-_MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port"}
+_MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port",
+               "Plugable_USB_Hub"}
 
 @click.command(cls=BoxCommand)
 @click.option("--box", required=False, help="Lagerbox name or IP")

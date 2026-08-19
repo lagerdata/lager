@@ -106,7 +106,8 @@ def _debug_channel_suffix(value) -> str:
 # they pick a role per channel via the @A/@B/... suffix.
 _MODE_EXCLUSIVE_INST = {"FTDI_FT232H"}
 
-_MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port"}
+_MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port",
+               "Plugable_USB_Hub"}
 # Role tuples use the canonical saved-role vocabulary (what nets actually
 # carry: "power-supply", "battery"), matching the table in nets.py.
 _SINGLE_CHANNEL_INST = {

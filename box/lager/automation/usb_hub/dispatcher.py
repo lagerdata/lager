@@ -12,6 +12,7 @@ from typing import Dict
 from .usb_net import HUB_SKIPPED, USBNet
 from .acroname import AcronameUSBNet
 from .ykush import YKUSHUSBNet
+from .plugable import PlugableUSBNet
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,11 @@ def _load_net_definitions() -> Dict[str, Dict]:
             "port": int(port),
             "instrument": row.get("instrument", ""),
             "address": row.get("address", ""),
+            # Carried through because a driver may take per-net options (the
+            # Plugable guard's allow_network override). Without this the HTTP
+            # path silently never sees them while USBNetWrapper -- which passes
+            # the whole record -- does, which is the worst possible split.
+            "params": row.get("params") or {},
         }
 
     if not mapping:
@@ -64,6 +70,8 @@ def _controller_for(net_info: Dict) -> USBNet:
         return AcronameUSBNet(net_info)
     if "ykush" in instr:
         return YKUSHUSBNet(net_info)
+    if "plugable" in instr:
+        return PlugableUSBNet(net_info)
     raise RuntimeError(f"Unsupported USB instrument type '{instr or 'unknown'}'")
 
 

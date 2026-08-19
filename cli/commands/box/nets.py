@@ -370,7 +370,8 @@ def _serial_from_visa_address(address) -> str:
     return m.group(1).strip() if m else ""
 
 
-_MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port"}
+_MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port",
+               "Plugable_USB_Hub"}
 _SINGLE_CHANNEL_INST = {
     "Keithley_2281S": ("battery", "power-supply"),
     "EA_PSB_10060_60": ("solar", "power-supply"),
@@ -465,6 +466,7 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     "Acroname_8Port": ["usb"],
     "Acroname_4Port": ["usb"],
     "YKUSH_Hub": ["usb"],
+    "Plugable_USB_Hub": ["usb"],
 
     # eload
     "Rigol_DL3021": ["eload"],

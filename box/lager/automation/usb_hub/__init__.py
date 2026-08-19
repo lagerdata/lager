@@ -19,6 +19,7 @@ from .usb_net import (
 # Import driver classes for export
 from .acroname import AcronameUSBNet
 from .ykush import YKUSHUSBNet
+from .plugable import PlugableUSBNet
 
 # Backward-compatible aliases
 AcronameUSB = AcronameUSBNet  # Shorter alias for convenience
@@ -39,6 +40,7 @@ __all__ = [
     "AcronameUSBNet",
     "AcronameUSB",  # Alias for backward compatibility
     "YKUSHUSBNet",
+    "PlugableUSBNet",
 ]
 
 

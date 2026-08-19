@@ -28,6 +28,28 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Added
 
+- **Plugable RTS5411 USB docks are supported as switchable-USB-power
+  instruments** (`lager usb <net> enable|disable|toggle|state`), adding a third
+  option alongside Acroname and Yepkit hubs. Plugable ships no SDK, so control
+  is the standard USB hub class per-port power switching over pyusb rather than
+  a vendor library. Notes:
+  - Matches VID:PID `2230:5411`, which Plugable reuses across its RTS5411 dock
+    line, so the instrument is named `Plugable_USB_Hub` rather than for one
+    model. Developed and validated against a UD-CAM.
+  - These hubs report no serial number and a dock enumerates two of them, so the
+    saved address carries a USB topology path (`...::port-1-1.4::INSTR`) instead
+    of a serial. That pins the net to a physical box port: re-cabling the dock
+    breaks the net loudly rather than silently driving different hardware.
+  - A hub advertising ganged or absent power switching is refused outright, and
+    one that advertises per-port switching but does not actually drop VBUS is
+    detected and reported — neither degrades to a silent no-op.
+  - Ports whose downstream subtree carries a network device are refused by
+    default (override with `params.allow_network`), since cutting one can drop
+    the box off the network.
+  - Requires the udev rule for vendor `2230`; without it libusb cannot open the
+    hub. Shipped in `99-instrument.rules`, or add it ahead of a release with
+    `lager box-config udev add 2230:5411`.
+
 - **`lager update --pull` fetches a pre-built box image instead of building it
   on the box.** Release tags are published to `ghcr.io/lagerdata/lager-box` by
   the tag-publish workflow, so updating to `vX.Y.Z` can replace a multi-minute
