@@ -138,25 +138,56 @@ class TestNetStatus:
 
 @pytest.mark.unit
 class TestPowerCycleHub:
-    def test_disable_then_enable_in_order(self):
+    """The tool delegates to dispatcher.cycle rather than driving
+    disable/sleep/enable itself.
+
+    That is not a refactor for tidiness: a driver that can hold the hub lock
+    across the whole sequence stops anything else switching the port while it
+    is dark, and restores power on every failure path. Doing it inline here
+    reimplemented the sequence without either guarantee.
+    """
+
+    def test_delegates_to_dispatcher_cycle(self):
         manager = MagicMock()
-        with patch("lager.automation.usb_hub.dispatcher.disable", manager.disable), \
-                patch("lager.automation.usb_hub.dispatcher.enable", manager.enable), \
+        manager.cycle.return_value = True
+        with patch("lager.automation.usb_hub.dispatcher.cycle", manager.cycle), \
                 patch("lager.mcp.tools.control.time.sleep") as mock_sleep:
             import json
 
             result = json.loads(control.power_cycle_hub("usb0"))
-        assert manager.mock_calls == [call.disable("usb0"), call.enable("usb0")]
-        # Two sleeps: de-enumerate settle (before enable) + re-enumerate wait (after).
-        assert mock_sleep.call_count == 2
+        assert manager.mock_calls == [call.cycle("usb0", control._HUB_SETTLE_SECONDS)]
         assert result["ok"] is True
         assert result["actions"] == ["disable", "enable"]
         assert result["hub"] == "usb0"
-        assert result["reenum_wait_ms"] > 0
+        assert result["reconnected"] is True
+        # The driver already waited for the device to come back, so the blind
+        # re-enumeration sleep must be skipped.
+        assert mock_sleep.call_count == 0
+
+    def test_falls_back_to_waiting_when_the_driver_cannot_tell(self):
+        # A driver with no way to observe re-enumeration returns None. The
+        # caller re-checks probe presence straight after, so something still
+        # has to wait.
+        with patch("lager.automation.usb_hub.dispatcher.cycle", return_value=None), \
+                patch("lager.mcp.tools.control.time.sleep") as mock_sleep:
+            import json
+
+            result = json.loads(control.power_cycle_hub("usb0"))
+        assert mock_sleep.call_count == 1
+        assert result["ok"] is True
+        assert result["reconnected"] is None
+
+    def test_reports_a_device_that_did_not_come_back(self):
+        with patch("lager.automation.usb_hub.dispatcher.cycle", return_value=False), \
+                patch("lager.mcp.tools.control.time.sleep"):
+            import json
+
+            result = json.loads(control.power_cycle_hub("usb0"))
+        assert result["reconnected"] is False
 
     def test_unknown_hub_returns_error(self):
         with patch(
-            "lager.automation.usb_hub.dispatcher.disable",
+            "lager.automation.usb_hub.dispatcher.cycle",
             side_effect=KeyError("USB net 'usb0' not found"),
         ), patch("lager.mcp.tools.control.time.sleep"):
             import json
@@ -166,7 +197,7 @@ class TestPowerCycleHub:
 
     def test_hub_hardware_error_returns_error(self):
         with patch(
-            "lager.automation.usb_hub.dispatcher.disable",
+            "lager.automation.usb_hub.dispatcher.cycle",
             side_effect=Exception("Acroname error code 5"),
         ), patch("lager.mcp.tools.control.time.sleep"):
             import json

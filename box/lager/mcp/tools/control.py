@@ -200,28 +200,35 @@ def net_status(net: str) -> str:
 
 
 def power_cycle_hub(hub: str) -> str:
-    """Power-cycle an Acroname-controlled USB hub port (disable, settle, enable).
+    """Power-cycle a programmable USB hub port (off, settle, on).
 
-    The single *action* tool: toggles the named USB net's hub port off, waits
-    for the downstream device to de-enumerate, then re-enables it. Used to
-    recover a debug probe (or other USB device) that has hung on the bus.
+    The single *action* tool: cuts power to the named USB net's hub port, holds
+    it down long enough for the device to lose its rails, then restores it.
+    Used to recover a debug probe (or other USB device) that has hung on the bus.
+
+    Delegates to ``dispatcher.cycle`` so there is one implementation of the
+    sequence. That matters beyond tidiness: a driver that can hold the hub lock
+    across the whole cycle keeps another caller from switching the port while it
+    is dark, and restores power on every failure path. Drivers that cannot do
+    that fall back to the base disable/sleep/enable, which is what this tool
+    used to do inline.
 
     Args:
         hub: Name of the USB net whose hub port to power-cycle (e.g. 'usb0').
 
-    Returns JSON: {hub, actions, settled_ms, ok} on success, {"error": ...} when
-    the net is unknown or the hub is unavailable.
+    Returns JSON: {hub, actions, settled_ms, reconnected, ok} on success,
+    {"error": ...} when the net is unknown or the hub is unavailable.
     """
     from lager.automation.usb_hub import dispatcher
 
     try:
-        dispatcher.disable(hub)
-        time.sleep(_HUB_SETTLE_SECONDS)
-        dispatcher.enable(hub)
-        # Wait for the downstream device to re-enumerate before returning, so a
-        # caller that re-checks probe presence immediately sees the recovered
-        # device rather than a still-absent one.
-        time.sleep(_HUB_REENUM_SECONDS)
+        reconnected = dispatcher.cycle(hub, _HUB_SETTLE_SECONDS)
+        if reconnected is None:
+            # The driver could not observe re-enumeration (or the port was
+            # empty). Fall back to waiting it out, so a caller that re-checks
+            # probe presence immediately sees the recovered device rather than
+            # a still-absent one.
+            time.sleep(_HUB_REENUM_SECONDS)
     except (KeyError, FileNotFoundError, RuntimeError) as exc:
         return json.dumps({"error": f"Cannot power-cycle '{hub}': {exc}"})
     except Exception as exc:  # hub/library errors surface as data, not a crash
@@ -232,6 +239,7 @@ def power_cycle_hub(hub: str) -> str:
         "actions": ["disable", "enable"],
         "settled_ms": int(_HUB_SETTLE_SECONDS * 1000),
         "reenum_wait_ms": int(_HUB_REENUM_SECONDS * 1000),
+        "reconnected": reconnected,
         "ok": True,
     })
 

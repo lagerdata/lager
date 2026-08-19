@@ -31,6 +31,8 @@ __all__ = [
     "toggle",
     "state",
     "states",
+    "cycle",
+    "recover",
     "USBBackendError",
     "LibraryMissingError",
     "DeviceNotFoundError",
@@ -68,3 +70,5 @@ disable = _make_proxy("disable")  # type: ignore[assignment]
 toggle = _make_proxy("toggle")    # type: ignore[assignment]
 state = _make_proxy("state")      # type: ignore[assignment]
 states = _make_proxy("states")    # type: ignore[assignment]
+cycle = _make_proxy("cycle")      # type: ignore[assignment]
+recover = _make_proxy("recover")  # type: ignore[assignment]

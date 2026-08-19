@@ -4,11 +4,12 @@
 """
 USB HTTP handlers for the Lager Box HTTP+WebSocket Server.
 
-- POST /usb/command — hub-port control (enable/disable/toggle/state).
+- POST /usb/command — hub-port control
+  (enable/disable/toggle/state/cycle/recover).
   Mirrors the supply/battery fast-path: the CLI POSTs here on port 9000
   instead of uploading a Python script to :5000/python, avoiding the
   subprocess+import cost per call. The hub drivers (Acroname BrainStem,
-  YKUSH) open the hub fresh per operation and release it immediately
+  YKUSH, Plugable) open the hub fresh per operation and release it immediately
   (see automation/usb_hub/) so no process pins the exclusive USB claim;
   they cache discovery metadata to keep each open cheap.
 - GET /usb/devices — lightweight sysfs USB bus enumeration (lsusb-like),
@@ -45,7 +46,11 @@ from lager.util.device_lock import DeviceLockError
 
 logger = logging.getLogger(__name__)
 
-_VALID_ACTIONS = ("enable", "disable", "toggle", "state")
+_VALID_ACTIONS = ("enable", "disable", "toggle", "state", "cycle", "recover")
+
+# Actions that take an off_time argument. Kept as a set rather than branching on
+# the action name at the call site so adding one is a single-line change.
+_ACTIONS_WITH_OFF_TIME = ("cycle",)
 
 # Per-service cooldown stamp for the shared self-restart (box_http_server runs
 # under start-services.sh's `while true` supervisor, like hardware_service).
@@ -276,7 +281,9 @@ def register_usb_routes(app: Flask) -> None:
         Request body:
         {
             "netname": "usb1",
-            "action": "enable" | "disable" | "toggle"
+            "action": "enable" | "disable" | "toggle" | "state"
+                    | "cycle" | "recover",
+            "off_time": 1.0        # optional, `cycle` only
         }
 
         Returns:
@@ -295,8 +302,16 @@ def register_usb_routes(app: Flask) -> None:
             if not netname or action not in _VALID_ACTIONS:
                 return jsonify({
                     'success': False,
-                    'error': 'netname and action (enable|disable|toggle|state) are required',
+                    'error': ('netname and action (' + '|'.join(_VALID_ACTIONS)
+                              + ') are required'),
                 }), 400
+
+            # Validated in the driver layer (usb_net.validate_off_time), so the
+            # range and its reasoning live in one place; here we only forward it
+            # when the action actually takes one.
+            call_args = ()
+            if action in _ACTIONS_WITH_OFF_TIME and data.get('off_time') is not None:
+                call_args = (data.get('off_time'),)
 
             # Bounded acquire, not `with`: a hub call wedged in native code
             # holds this lock for the life of the process, and queueing behind
@@ -311,7 +326,7 @@ def register_usb_routes(app: Flask) -> None:
                 }), 503
 
             try:
-                result = getattr(usb_hub, action)(netname)
+                result = getattr(usb_hub, action)(netname, *call_args)
             # HubOperationTimeout is a USBBackendError; it must be matched
             # first or a hang reports as an ordinary backend error (502).
             except HubOperationTimeout as e:
@@ -363,22 +378,58 @@ def register_usb_routes(app: Flask) -> None:
 
             # toggle and state both return the live port state from the
             # dispatcher; enable/disable are unambiguous from the action itself.
+            reconnected = None
             if action == "toggle":
                 state = "enabled" if result else "disabled"
                 message = f"USB port '{netname}' toggled → {state}"
             elif action == "state":
                 state = "enabled" if result else "disabled"
                 message = f"USB port '{netname}' is {state}"
+            elif action == "cycle":
+                # A cycle always ends powered, so the port state is not in
+                # question; what the caller wants to know is whether the device
+                # came back. None means the port was empty or the driver cannot
+                # observe re-enumeration -- report that honestly rather than
+                # claiming a device returned.
+                state = "enabled"
+                reconnected = result
+                if result is True:
+                    message = (f"USB port '{netname}' power-cycled; "
+                               "device re-enumerated")
+                elif result is False:
+                    message = (f"USB port '{netname}' power-cycled, but the "
+                               "device did not come back before the timeout")
+                else:
+                    message = (f"USB port '{netname}' power-cycled; no device "
+                               "on this port to watch for, so re-enumeration "
+                               "was not confirmed")
+            elif action == "recover":
+                state = "enabled"
+                ports = ", ".join(str(p) for p in result) if result else ""
+                message = (f"USB port '{netname}': power restored"
+                           + (f" on port(s) {ports}" if ports else ""))
+            elif action == "disable":
+                state = "disabled"
+                message = f"USB port '{netname}' disabled"
+                if result:
+                    # The single most misread behaviour of USB power switching,
+                    # said where someone is about to go and check lsusb.
+                    message += (" — the device stays listed in lsusb, and keeps "
+                                "its /dev nodes, until power returns; the kernel "
+                                "cannot see the disconnect while the port is off")
             else:
                 state = "enabled" if action == "enable" else "disabled"
                 message = f"USB port '{netname}' {action}d"
 
-            return jsonify({
+            body = {
                 'success': True,
                 'action': action,
                 'state': state,
                 'message': message,
-            })
+            }
+            if reconnected is not None:
+                body['reconnected'] = reconnected
+            return jsonify(body)
         except Exception as e:
             logger.exception("[HTTP] /usb/command unexpected error")
             # YKUSH/pykush raises a plain "device not found" (not lager's

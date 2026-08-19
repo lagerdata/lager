@@ -27,6 +27,8 @@ from lager import (
 | `disable()` | Disable (power off) USB port |
 | `toggle()` | Toggle USB port power state; returns the resulting state (`True`=enabled) |
 | `state()` | Read the current power state without changing it (`True`=enabled) |
+| `cycle(off_time=None)` | Power-cycle the port; returns whether the device came back |
+| `recover()` | Restore power after an interrupted operation left a port off |
 
 ## Exception Classes
 
@@ -108,6 +110,57 @@ if not usb.state():
     usb.enable()   # only power on if it isn't already
 ```
 
+### `cycle(off_time=None)`
+
+Power-cycle the port: off, wait, on. Returns `True` if the device was seen to
+re-enumerate, `False` if it did not come back in time, and `None` if the hub
+reports nothing attached or the driver cannot observe re-enumeration.
+
+<Note>
+**`None` does not mean the port is unused.** A hub only sees a device that pulls
+up its data lines, so a **charge-only cable** — power on the other end, no data —
+is indistinguishable from an empty socket. Power is cut and restored either way;
+there is simply nothing on the bus to watch come back. Confirm a DUT on such a
+port by its own behaviour instead: its UART output, or a current measurement.
+</Note>
+
+`off_time` is how long the port stays unpowered, defaulting to 1 second and
+limited to 0.5-10 seconds. **Too short an off time is the failure that matters**:
+the device's rails do not fully discharge and it warm-starts while appearing to
+have been reset. Raise it for a device with large bulk capacitance.
+
+```python
+from lager import Net, NetType
+
+usb = Net.get('DUT_USB', type=NetType.Usb)
+if usb.cycle(off_time=2):
+    print("DUT cold-booted and came back")
+```
+
+Prefer this over a hand-rolled `disable`/`sleep`/`enable`: it holds the hub for
+the whole sequence, so nothing else can switch the port while it is dark, and it
+restores power on every failure path, so an exception partway through cannot
+leave a port stranded.
+
+<Warning>
+**A powered-off port still appears in `lsusb` and keeps its `/dev/ttyUSB*`.**
+Hubs raise no change notification while a port is unpowered, so the kernel does
+not process the disconnect until power returns. Never check for a device's
+absence to decide whether a port is off — use `state()`, which reads the hub's
+own power bit.
+</Warning>
+
+### `recover()`
+
+Restore power after an interrupted operation left a port unpowered. On hubs where
+lager can identify the whole physical device, this re-powers every port on it.
+
+```python
+from lager import Net, NetType
+
+Net.get('DUT_USB', type=NetType.Usb).recover()
+```
+
 ## Examples
 
 ### Basic Power Control
@@ -137,10 +190,11 @@ def power_cycle(net_name, delay=2):
     """Power cycle a USB device."""
     usb = Net.get(net_name, type=NetType.Usb)
     print(f"Power cycling {net_name}...")
-    usb.disable()
-    time.sleep(delay)
-    usb.enable()
-    print(f"{net_name} restarted")
+    came_back = usb.cycle(off_time=delay)
+    if came_back is False:
+        print(f"{net_name} did not re-enumerate")
+    else:
+        print(f"{net_name} restarted")
 
 power_cycle('DUT_USB')
 ```
@@ -222,32 +276,27 @@ def teardown_test():
 from lager import Net, NetType
 import time
 
-def reset_usb_device(net_name, reset_time=2, settle_time=3):
+def reset_usb_device(net_name, reset_time=2):
     """
     Reset a USB device by power cycling.
 
     Args:
         net_name: USB net name
         reset_time: Time to keep power off (seconds)
-        settle_time: Time to wait after power on (seconds)
     """
     usb = Net.get(net_name, type=NetType.Usb)
-    print(f"Resetting {net_name}...")
+    print(f"Resetting {net_name} (power off for {reset_time}s)...")
 
-    # Power off
-    usb.disable()
-    print(f"  Power off for {reset_time}s")
-    time.sleep(reset_time)
+    # cycle() waits for the port to re-enumerate itself, so there is no
+    # settle_time to guess at -- and no risk of the guess being too short.
+    came_back = usb.cycle(off_time=reset_time)
 
-    # Power on
-    usb.enable()
-    print(f"  Power on, waiting {settle_time}s for enumeration")
-    time.sleep(settle_time)
-
+    if came_back is False:
+        raise RuntimeError(f"{net_name} did not come back after a power cycle")
     print(f"  {net_name} reset complete")
 
 # Usage
-reset_usb_device('DUT_USB', reset_time=2, settle_time=5)
+reset_usb_device('DUT_USB', reset_time=2)
 ```
 
 ### Toggle for Quick State Change
@@ -271,12 +320,17 @@ for i in range(5):
 |----------|----------|
 | Acroname BrainStem USB Hub | Individual port power control, current monitoring |
 | YKUSH USB Hub | Per-port power switching |
+| Plugable RTS5411 dock | Per-port power switching on the four external Type-A sockets |
 
 ## Notes
 
 - USB nets must be configured on the Lager Box with hub serial number and port mapping
 - Power state changes take effect immediately
-- Allow time for USB enumeration after powering on (~1-3 seconds)
-- Power cycling can be useful for device reset/recovery
+- Allow time for USB enumeration after powering on (~1-3 seconds). `cycle()`
+  does this waiting for you and tells you whether the device returned
+- Power cycling can be useful for device reset/recovery; prefer `cycle()` over a
+  hand-rolled `disable`/`sleep`/`enable` so a failure cannot leave a port off
+- A port that is powered off still appears in `lsusb` and keeps its device
+  nodes, so never use device presence to test whether a port is off
 - The `toggle()` function is useful for quick state changes
 - Use exception handling for robust error recovery

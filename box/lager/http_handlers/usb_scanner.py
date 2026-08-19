@@ -334,6 +334,55 @@ def _has_same_model_parent(dev_dir, vid, pid):
         return False
 
 
+# Module-level so unit tests can point it at a fixture tree, matching
+# plugable._SYS_USB. The rest of this file predates that and inlines the path.
+_SYS_USB_DEVICES = Path("/sys/bus/usb/devices")
+
+
+def _bus_controller_path(busnum):
+    """Realpath of the host controller owning a USB bus, or None."""
+    root = _SYS_USB_DEVICES / f"usb{busnum}"
+    # realpath() normalises a path that does not exist, which would resolve
+    # every bus to the same parent and pair unrelated hubs. Require the root hub.
+    if not root.exists():
+        return None
+    try:
+        return os.path.dirname(os.path.realpath(root))
+    except OSError:
+        return None
+
+
+def _is_companion_of_seen(dev_name, seen_names):
+    """True if this hub is the other virtual half of one already registered.
+
+    UNTESTED PATH -- no SuperSpeed-linked dock has been available to exercise
+    it. A hub linked at SuperSpeed enumerates as TWO virtual hubs, on different
+    buses of the same host controller, at the same port path (`1-1.4` and
+    `2-1.4`). Without this they would list as two instruments for one dock,
+    which is the same ambiguity `_has_same_model_parent` removes for the
+    cascaded tier.
+    """
+    bus, _, port_path = dev_name.partition("-")
+    if not port_path:
+        return False
+    try:
+        ours = _bus_controller_path(int(bus))
+    except ValueError:
+        return False
+    if ours is None:
+        return False
+    for name in seen_names:
+        other_bus, _, other_path = name.partition("-")
+        if other_path != port_path or other_bus == bus:
+            continue
+        try:
+            if _bus_controller_path(int(other_bus)) == ours:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 
 # ---------------------------------------------------------------------------
 #  UART tty helper
@@ -493,11 +542,23 @@ def _walk_ttys(*, match):
 def scan_usb() -> List[dict]:
     """Quick VID:PID scan via /sys/bus/usb/devices (Linux only)."""
     results: List[dict] = []
+    # Topology-addressed hubs already emitted, for the SuperSpeed companion
+    # dedupe below. Only meaningful if iteration order is stable, hence the sort.
+    topology_seen: List[str] = []
     sys_usb = Path("/sys/bus/usb/devices")
     if not sys_usb.exists():
         return results
 
-    for dev in sys_usb.iterdir():
+    def _bus_order(entry):
+        """Sort by (bus, port path) so the same dock always registers the same
+        half. Lexical sort alone would put bus 10 before bus 2."""
+        bus, _, port_path = entry.name.partition("-")
+        try:
+            return (0, int(bus), port_path)
+        except ValueError:
+            return (1, 0, entry.name)
+
+    for dev in sorted(sys_usb.iterdir(), key=_bus_order):
         try:
             vid_path = dev / "idVendor"
             pid_path = dev / "idProduct"
@@ -624,8 +685,15 @@ def scan_usb() -> List[dict]:
         # ambiguous, and split dispatcher.states' per-hub grouping across two
         # halves of the same physical device. The driver resolves the
         # downstream tier itself, so only the root tier is registered.
-        if meta_name in _TOPOLOGY_ADDRESSED and _has_same_model_parent(dev, vid, pid):
-            continue
+        if meta_name in _TOPOLOGY_ADDRESSED:
+            if _has_same_model_parent(dev, vid, pid):
+                continue
+            # Same reasoning one level out: a SuperSpeed-linked hub is two
+            # virtual hubs for one physical device. The driver drives both
+            # halves from the one registered address.
+            if _is_companion_of_seen(dev.name, topology_seen):
+                continue
+            topology_seen.append(dev.name)
 
         results.append(entry)
 

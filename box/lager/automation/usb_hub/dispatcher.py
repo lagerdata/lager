@@ -92,8 +92,9 @@ def disable(net_name: str) -> None:
     if net_name not in nets:
         raise KeyError(f"USB net '{net_name}' not found")
     info = nets[net_name]
-    _controller_for(info).disable(net_name, info["port"])
+    had_device = _controller_for(info).disable(net_name, info["port"])
     print(f"{GREEN}USB port '{net_name}' disabled{RESET}")
+    return had_device
 
 
 def toggle(net_name: str) -> bool:
@@ -116,6 +117,33 @@ def state(net_name: str) -> bool:
     label = "enabled" if enabled else "disabled"
     print(f"{GREEN}USB port '{net_name}' is {label}{RESET}")
     return enabled
+
+
+def cycle(net_name: str, off_time=None):
+    """Power-cycle a port: off, wait, on.
+
+    Returns True/False when the driver could tell whether the device came back,
+    and None when it cannot (an empty port, or a driver with no way to observe
+    re-enumeration).
+    """
+    nets = _load_net_definitions()
+    if net_name not in nets:
+        raise KeyError(f"USB net '{net_name}' not found")
+    info = nets[net_name]
+    came_back = _controller_for(info).cycle(net_name, info["port"], off_time)
+    print(f"{GREEN}USB port '{net_name}' power-cycled{RESET}")
+    return came_back
+
+
+def recover(net_name: str):
+    """Restore power after an interrupted operation left a port dark."""
+    nets = _load_net_definitions()
+    if net_name not in nets:
+        raise KeyError(f"USB net '{net_name}' not found")
+    info = nets[net_name]
+    restored = _controller_for(info).recover(net_name, info["port"])
+    print(f"{GREEN}USB port '{net_name}': power restored{RESET}")
+    return restored
 
 
 # Below this much remaining budget a hub is skipped rather than probed: even a

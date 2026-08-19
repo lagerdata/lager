@@ -236,12 +236,97 @@ scripts and CI pipelines.
 
 [^plugable]: Unlike the Acroname and Yepkit hubs, Plugable ships no SDK. Control
     uses the standard USB hub class per-port power switching (PPPS), so support
-    depends on the individual hub genuinely implementing it — a hub that
-    advertises PPPS but does not switch VBUS is detected and reported rather
-    than silently ignored. Matched by VID:PID `2230:5411`, which Plugable reuses
-    across its RTS5411 dock line; validated on a UD-CAM. The dock cascades two
-    internal hubs and only the four external USB-A sockets are exposed. Requires
-    the udev rule for vendor `2230` (shipped in `99-instrument.rules`).
+    depends on the individual hub genuinely implementing it. Matched by VID:PID
+    `2230:5411`, which Plugable reuses across its RTS5411 dock line; validated on
+    a UD-CAM. **Only the four external Type-A sockets switch VBUS** — see below.
+    Requires the udev rule for vendor `2230` (shipped in `99-instrument.rules`);
+    without it libusb cannot open the hub and every operation fails with a
+    permission error.
+
+### Which Plugable dock ports actually switch power
+
+A Plugable dock enumerates as **two cascaded 4-port hubs with identical
+descriptors**. Both advertise per-port power switching
+(`wHubCharacteristics=0x00a9`, `PortPwrCtrlMask=0xff`), so the descriptor cannot
+tell them apart. Only the topology can:
+
+| Tier | What is on it | Switches VBUS |
+|---|---|---|
+| Downstream (user) | the dock's four external Type-A sockets | Yes — verified |
+| Upstream (internal) | DP-AltMode billboard, audio codec, the dock's own ethernet, the link to the user tier | No |
+
+Lager exposes only the user tier, so the four lager ports are the four external
+Type-A sockets (on the validated model: three on the rear, one on the front) and
+the dock's own network adapter can never be switched off by accident.
+
+**Which lager port number is which physical socket is not defined** — nothing
+ties USB hub port order to the order of connectors on a case, and it may differ
+between models. Determine it once, empirically, by moving a device that
+enumerates (any USB stick, or a debug probe) through each socket in turn and
+reading back which port it lands on:
+
+```bash
+lager ssh --box <BOX> -- ls -l /sys/bus/usb/devices/<hub-path>
+```
+
+A **charge-only cable cannot be used for this** — it presents no device to the
+hub, so it is indistinguishable from an empty socket (see the warning above).
+
+<Warning>
+**Moving a cable between sockets silently repoints the net.** A `usb` net names a
+hub *port*, not the device plugged into it, so after someone reseats a cable the
+same command switches something else — with no error, because from the hub's
+point of view nothing is wrong.
+
+This cuts the opposite way to every other instrument on the box. A debug probe,
+a USB-UART bridge, and a power supply are addressed by **serial number**, so
+their nets follow the device wherever it is plugged in. A hub port net is
+addressed by **topology**, so it stays with the socket. Both are correct, and
+they behave oppositely under exactly the same physical change.
+
+So: after any bench rework, re-derive the map before running anything scripted.
+For automation that must survive reseating, locate the device by VID:PID under
+the hub and drive whichever port it is actually on, rather than hard-coding a
+net name.
+</Warning> Verified by
+writing a volatile setting to a device on a user port, cycling power, and
+reading the power-on default back — a real cold boot, not a logical disconnect.
+The upstream tier's behaviour is inferred from re-power timing (a device there
+reasserts CONNECT within a millisecond, so it never lost power) rather than from
+a register, so treat it as strong evidence rather than proof.
+
+<Warning>
+**A powered-off port still shows up everywhere.** While a port is unpowered the
+hub raises no change bit, so Linux never polls it and never processes the
+disconnect. The device keeps its entry in `lsusb`, its `/sys` node, and any
+`/dev/ttyUSB*` it owns, for as long as the port stays off — the kernel logs
+`USB disconnect` only when power comes *back*. An off port stays off
+indefinitely; nothing re-powers it on its own.
+
+So **never test for a device's absence to decide whether a port is off.** It is
+wrong in both directions. Use `lager usb <net> state`, which reads the hub's own
+power bit, or `lager usb <net> cycle`, which waits for the port to re-enumerate
+after power returns.
+</Warning>
+
+<Note>
+**SuperSpeed docks are untested.** A dock linked over USB 3 enumerates as two
+virtual hubs, and VBUS drops only when power is cleared on both halves. Lager
+implements that pairing, but no SuperSpeed-linked dock has been available to
+validate it; a topology it cannot pair unambiguously is refused rather than
+half-switched. The validated configuration is a USB 2.0 link.
+</Note>
+
+**Recovering a port left unpowered.** `lager usb <net> recover` re-asserts power
+on every port of that dock. If that cannot reach the hub, unbinding and
+rebinding the kernel hub driver re-powers every port and re-enumerates the
+children. That must be run **on the box host**, not in the container, which
+mounts `/sys` read-only — replace the path with your hub's:
+
+```bash
+echo 1-1.4.4:1.0 | sudo tee /sys/bus/usb/drivers/hub/unbind
+echo 1-1.4.4:1.0 | sudo tee /sys/bus/usb/drivers/hub/bind
+```
 
 **Enables:**
 - Automated USB device cycling

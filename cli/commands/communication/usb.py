@@ -12,6 +12,9 @@
       lager usb [NET_NAME] enable         -> enable USB port
       lager usb [NET_NAME] disable        -> disable USB port
       lager usb [NET_NAME] toggle         -> toggle USB port
+      lager usb [NET_NAME] state          -> read port power state
+      lager usb [NET_NAME] cycle          -> power-cycle (off, wait, on)
+      lager usb [NET_NAME] recover        -> re-power after an interrupted command
 """
 from __future__ import annotations
 
@@ -68,6 +71,7 @@ def _invoke_remote(
     net_name: str,
     target_box: str,
     command: str,
+    off_time: float | None = None,
 ) -> None:
     """Send a USB hub command over the box's warm HTTP endpoint (:9000/usb/command).
 
@@ -82,10 +86,13 @@ def _invoke_remote(
     from ...box_storage import _check_gateway
 
     url = f"http://{target_box}:{NET_HTTP_PORT}/usb/command"
+    payload = {"netname": net_name, "action": command}
+    if off_time is not None:
+        payload["off_time"] = off_time
     try:
         resp = requests.post(
             url,
-            json={"netname": net_name, "action": command},
+            json=payload,
             timeout=_USB_COMMAND_TIMEOUT_S,
             headers=auth_headers_for_box(target_box),
         )
@@ -141,8 +148,8 @@ def usb(ctx, netname, box):
         _display_usb_nets(ctx, resolved_box)
 
 
-def _run_usb_action(ctx, box, action: str) -> None:
-    """Shared body for the enable/disable/toggle subcommands."""
+def _run_usb_action(ctx, box, action: str, off_time: float | None = None) -> None:
+    """Shared body for the enable/disable/toggle/state/cycle/recover subcommands."""
     netname = require_netname(ctx, "usb")
     resolved_box = resolve_box_locked(ctx, box, 'usb')
 
@@ -150,7 +157,7 @@ def _run_usb_action(ctx, box, action: str) -> None:
     if _validate_usb_net(ctx, resolved_box, netname) is None:
         return  # Error already displayed
 
-    _invoke_remote(ctx, netname, resolved_box, action)
+    _invoke_remote(ctx, netname, resolved_box, action, off_time)
 
 
 @usb.command()
@@ -185,9 +192,33 @@ def state(ctx, box):
     _run_usb_action(ctx, box, "state")
 
 
+@usb.command()
+@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option(
+    "--off-time", type=float, default=None, metavar="SECONDS",
+    help="How long to hold the port unpowered (default 1.0, range 0.5-10). "
+         "Too short a time lets a DUT warm-start instead of cold-booting.",
+)
+@click.pass_context
+def cycle(ctx, box, off_time):
+    """Power-cycle the USB port (off, wait, on) to cold-boot the device"""
+    _run_usb_action(ctx, box, "cycle", off_time)
+
+
+@usb.command()
+@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.pass_context
+def recover(ctx, box):
+    """Restore power after an interrupted command left a port unpowered"""
+    _run_usb_action(ctx, box, "recover")
+
+
 usb.net_examples = [
     "lager usb usb1 enable --box <BOX>",
     "lager usb usb1 toggle --box <BOX>",
     "lager usb usb1 state --box <BOX>   (read-only: enabled/disabled)",
+    "lager usb usb1 cycle --box <BOX>   (power-cycle to cold-boot the device)",
+    "lager usb usb1 cycle --off-time 2 --box <BOX>",
+    "lager usb usb1 recover --box <BOX> (re-power after an interrupted command)",
     "lager usb --box <BOX>          (list USB nets)",
 ]
