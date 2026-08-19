@@ -2,7 +2,7 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
-## [Unreleased]
+## [0.38.0] - 2026-08-18
 
 ### Added
 
@@ -25,6 +25,32 @@ All notable changes to the Lager platform are documented here. For detailed rele
   build that has always run. The pull happens *before* the containers stop, so
   a box keeps serving through the download and a miss costs nothing but the
   time it took to notice.
+
+### Changed
+
+- **Every hardware-interacting CLI command now takes the box lock, not just
+  `lager python` and the admin commands.** Toggling a GPIO, driving a supply,
+  flashing over SWD or opening a UART could previously collide with a running
+  test or another operator with nothing to stop it, which was the most common
+  source of unexplained failures on a shared bench. Measurement (`gpi`, `gpo`,
+  `adc`, `dac`, `thermocouple`, `watt`, `energy`, `scope`, `logic`),
+  communication (`spi`, `i2c`, `uart`, `wifi`, `ble`, `blufi`, `usb`,
+  `router`), power (`supply`, `battery`, `eload`, `solar`) and development
+  (`debug`, `arm`, `webcam`) all acquire an ephemeral TTL+heartbeat lock as
+  they resolve the box.
+
+  Read-only paths are deliberately untouched: `lager supply --box X` with no
+  subcommand, `lager boxes list`, and the bare net listings still resolve
+  without locking, so inspecting a bench never blocks anyone.
+
+  This is the behaviour reverted in v0.13.4, brought back on the infrastructure
+  that made it safe. The three failures that forced that revert each have an
+  answer now: locks are released by an `atexit` hook on any exit path and
+  reaped by TTL on SIGKILL, so a supply command cannot strand one; only
+  hardware-interacting subcommands acquire, so a long-running command no longer
+  blocks status queries; and every ephemeral lock carries a 1800s TTL with a
+  60s heartbeat, so a detached process that dies is reaped rather than leaving
+  the bench held. `LAGER_AUTO_LOCK_DISABLE=1` remains the escape hatch.
 
 ### Fixed
 
@@ -183,30 +209,6 @@ All notable changes to the Lager platform are documented here. For detailed rele
   A `lager python` script also configures no handlers, so `logging.lastResort`
   would drop these lines for being below WARNING, which as timings they are.
   Every write is individually guarded.
-
-- **Every hardware-interacting CLI command now takes the box lock, not just
-  `lager python` and the admin commands.** Toggling a GPIO, driving a supply,
-  flashing over SWD or opening a UART could previously collide with a running
-  test or another operator with nothing to stop it, which was the most common
-  source of unexplained failures on a shared bench. Measurement (`gpi`, `gpo`,
-  `adc`, `dac`, `thermocouple`, `watt`, `energy`, `scope`, `logic`),
-  communication (`spi`, `i2c`, `uart`, `wifi`, `ble`, `blufi`, `usb`,
-  `router`), power (`supply`, `battery`, `eload`, `solar`) and development
-  (`debug`, `arm`, `webcam`) all acquire an ephemeral TTL+heartbeat lock as
-  they resolve the box.
-
-  Read-only paths are deliberately untouched: `lager supply --box X` with no
-  subcommand, `lager boxes list`, and the bare net listings still resolve
-  without locking, so inspecting a bench never blocks anyone.
-
-  This is the behaviour reverted in v0.13.4, brought back on the infrastructure
-  that made it safe. The three failures that forced that revert each have an
-  answer now: locks are released by an `atexit` hook on any exit path and
-  reaped by TTL on SIGKILL, so a supply command cannot strand one; only
-  hardware-interacting subcommands acquire, so a long-running command no longer
-  blocks status queries; and every ephemeral lock carries a 1800s TTL with a
-  60s heartbeat, so a detached process that dies is reaped rather than leaving
-  the bench held. `LAGER_AUTO_LOCK_DISABLE=1` remains the escape hatch.
 
 ### Fixed
 
