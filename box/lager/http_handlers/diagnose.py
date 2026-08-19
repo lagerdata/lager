@@ -53,6 +53,27 @@ def _parse_visa_address(addr: str):
     return m.group(1).lower(), m.group(2).lower(), m.group(3)
 
 
+# Hub diagnostics below the generic sysfs facts are BrainStem-specific: the SDK
+# scan, the SDK version, and the driver open all assume an Acroname hub. Other
+# hub vendors still reach this endpoint (any usb-role net does), so they are
+# reported as unsupported rather than run through the wrong driver and reported
+# as wedged.
+_ACRONAME_VID = '24ff'
+
+# Hubs with no usable iSerial carry a sysfs topology path in the VISA serial
+# slot instead (see usb_scanner._TOPOLOGY_ADDRESSED). It names the device
+# directly, so it needs no vid/pid walk.
+_PORT_SLOT_PREFIX = 'port-'
+
+
+def _sysfs_for_port_slot(serial):
+    """Resolve a 'port-1-1.4' address slot straight to its sysfs directory."""
+    if not serial or not serial.lower().startswith(_PORT_SLOT_PREFIX):
+        return None
+    path = os.path.join('/sys/bus/usb/devices', serial[len(_PORT_SLOT_PREFIX):])
+    return path if os.path.isdir(path) else None
+
+
 def _find_usb_sysfs(vid_hex, pid_hex, serial=None):
     """Walk /sys/bus/usb/devices/ for a device matching (vid, pid). Returns
     sysfs path like '/sys/bus/usb/devices/1-4' or None.
@@ -307,10 +328,14 @@ def register_diagnose_routes(app: Flask) -> None:
             }), 400
 
         vid, pid, serial = parts
-        sysfs = _find_usb_sysfs(vid, pid, serial)
+        acroname = vid.lower() == _ACRONAME_VID
+        # A topology-path slot names the device outright; falling through to the
+        # vid/pid walk with it would compare it against iSerial and report the
+        # hub as not enumerated.
+        sysfs = _sysfs_for_port_slot(serial) or _find_usb_sysfs(vid, pid, serial)
         devnums = _all_usb_devnums()
         bus = _acroname_bus_report(vid)
-        scan_serials, scan_error = _brainstem_scan()
+        scan_serials, scan_error = (_brainstem_scan() if acroname else (None, None))
 
         # Does the SDK see OUR hub, as opposed to any hub? Compared loosely:
         # the address parses to hex, the SDK reports an int, sysfs a string.
@@ -348,18 +373,30 @@ def register_diagnose_routes(app: Flask) -> None:
             'devnum_min': devnums[0] if devnums else None,
             'devnum_max': devnums[-1] if devnums else None,
             'devnum_median': (devnums[len(devnums) // 2] if devnums else None),
-            'sdk_version': _brainstem_version(),
+            'sdk_version': _brainstem_version() if acroname else None,
             'sdk_scan_serials': scan_serials,
             'sdk_scan_error': scan_error,
-            'serial_visible_to_sdk': visible,
+            'serial_visible_to_sdk': visible if acroname else None,
             'holders': _holders_via_proc(device_path) if device_path else [],
+            'hub_diagnostics_supported': acroname,
         }
+        if not acroname:
+            # Deliberately NOT `probe_skipped`: that flag means "the hub was
+            # busy, try again when it is idle", and the CLI classifies it that
+            # way. Nothing is busy here -- this hub simply has no BrainStem
+            # driver to probe with, which is a permanent property of the
+            # vendor, not a transient one.
+            body['hub_diagnostics_skip_reason'] = (
+                f'hub diagnostics are implemented for Acroname hubs only, and '
+                f'vendor {vid} is not one'
+            )
 
         # The intrusive part: can it actually be opened? Skipped rather than
         # queued when something else holds the hub -- taking the lock for
         # several seconds could land in the middle of a running test toggling
         # ports. Same shape as /diagnose/jlink's connect_skipped.
-        body.update(_try_hub_open(addr))
+        if acroname:
+            body.update(_try_hub_open(addr))
         return jsonify(body)
 
     @app.route('/diagnose/visa', methods=['GET'])

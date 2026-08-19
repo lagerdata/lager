@@ -4,7 +4,7 @@
 """
 USB Net wrapper class for the lager Python API.
 
-Provides clean access to USB hub nets (Acroname, YKUSH) from Python scripts.
+Provides clean access to USB hub nets (Acroname, YKUSH, Plugable) from Python scripts.
 """
 from __future__ import annotations
 
@@ -88,6 +88,32 @@ class USBNetWrapper:
         if self.port is None:
             raise ValueError(f"USB net '{self.name}' has no port configured")
         return self._controller.state(self.name, self.port)
+
+    def cycle(self, off_time: Optional[float] = None):
+        """Power-cycle this USB port: off, wait, on.
+
+        Args:
+            off_time: seconds to hold the port unpowered. Defaults to 1.0s,
+                comfortably above the slowest cold boot measured on real
+                hardware. Values outside 0.5-10s are rejected.
+
+        Returns:
+            bool | None: True if the device was seen to re-enumerate, False if
+            it did not come back in time, None if the hub reports nothing
+            attached or the driver cannot observe re-enumeration. None does not
+            mean the port is unused -- a charge-only cable presents no device to
+            the bus, so it looks identical to an empty socket. Power is cut and
+            restored either way.
+        """
+        if self.port is None:
+            raise ValueError(f"USB net '{self.name}' has no port configured")
+        return self._controller.cycle(self.name, self.port, off_time)
+
+    def recover(self):
+        """Restore power after an interrupted operation left a port dark."""
+        if self.port is None:
+            raise ValueError(f"USB net '{self.name}' has no port configured")
+        return self._controller.recover(self.name, self.port)
 
     def get_config(self) -> dict:
         """Get the raw net configuration dict."""

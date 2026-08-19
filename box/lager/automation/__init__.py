@@ -8,7 +8,7 @@ Automation module for robotic arms, USB hub control, and webcam streaming.
 
 This package groups physical automation-related hardware interfaces:
 - arm/: Robotic arm control (Rotrics Dexarm)
-- usb_hub/: USB hub port control (Acroname, YKUSH)
+- usb_hub/: USB hub port control (Acroname, YKUSH, Plugable)
 - webcam/: Webcam streaming service
 """
 from __future__ import annotations
@@ -32,6 +32,7 @@ __all__ = [
     "AcronameUSBNet",
     "AcronameUSB",  # Alias for AcronameUSBNet
     "YKUSHUSBNet",
+    "PlugableUSBNet",
     "enable",
     "disable",
     "toggle",
@@ -70,13 +71,13 @@ def __getattr__(name: str):
         # Alias for AcronameUSBNet - shorter convenience name
         from .usb_hub.acroname import AcronameUSBNet
         return AcronameUSBNet
-    if name == "YKUSHUSBNet":
+    if name == "PlugableUSBNet":
         from .usb_hub.plugable import PlugableUSBNet
         return PlugableUSBNet
     if name == "YKUSHUSBNet":
         from .usb_hub.ykush import YKUSHUSBNet
         return YKUSHUSBNet
-    if name in ("enable", "disable", "toggle"):
+    if name in ("enable", "disable", "toggle", "state", "cycle", "recover"):
         from . import usb_hub
         return getattr(usb_hub, name)
 

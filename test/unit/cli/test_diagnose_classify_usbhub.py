@@ -86,6 +86,50 @@ class ClassifyUsbHubTests(unittest.TestCase):
             _hub(serial_visible_to_sdk=False, hub_opens=False))
         self.assertNotIn('re-enumerating', headline)
 
+    def test_an_unsupported_vendor_is_not_reported_as_busy(self):
+        """Caught on hardware. A Plugable hub has no BrainStem driver to probe
+        with, which is permanent -- but reusing `probe_skipped` for it made
+        diagnose print "BUSY ... rerun when it is idle", sending someone to
+        wait for a condition that can never change. It must be its own state.
+        """
+        color, headline = _classify_usb_hub(_hub(
+            hub_diagnostics_supported=False,
+            hub_diagnostics_skip_reason=(
+                'hub diagnostics are implemented for Acroname hubs only, and '
+                'vendor 2230 is not one'),
+            serial_visible_to_sdk=None, hub_opens=None))
+        self.assertEqual('yellow', color)
+        self.assertIn('NOT SUPPORTED', headline)
+        self.assertNotIn('BUSY', headline)
+        self.assertNotIn('rerun when it is idle', headline)
+        self.assertIn('not a fault', headline)
+
+    def test_an_unsupported_vendor_outranks_the_sdk_wedge(self):
+        # serial_visible_to_sdk is None (never scanned), not False. A hub that
+        # was never probed must not be reported as invisible to the SDK.
+        _, headline = _classify_usb_hub(_hub(
+            hub_diagnostics_supported=False,
+            hub_diagnostics_skip_reason='vendor 2230 is not Acroname',
+            serial_visible_to_sdk=None, hub_opens=None))
+        self.assertNotIn('WEDGED', headline)
+
+    def test_an_older_box_omitting_the_flag_still_classifies(self):
+        # `hub_diagnostics_supported` is absent from an older box's payload;
+        # `.get()` returns None and must not trip the new branch.
+        color, headline = _classify_usb_hub(_hub())
+        self.assertEqual('green', color)
+        self.assertIn('REACHABLE', headline)
+
+    def test_the_rendered_line_says_n_a_not_skipped(self):
+        lines = _fmt_usbhub_lines(_hub(
+            hub_diagnostics_supported=False,
+            hub_diagnostics_skip_reason='vendor 2230 is not Acroname',
+            hub_opens=None))
+        hub_open = [l for l in lines if l.startswith('hub open:')]
+        self.assertEqual(len(hub_open), 1)
+        self.assertIn('n/a', hub_open[0])
+        self.assertNotIn('skipped', hub_open[0])
+
     def test_a_busy_hub_is_reported_not_guessed_at(self):
         color, headline = _classify_usb_hub(
             _hub(probe_skipped=True, probe_skip_reason='hub is busy: locked',

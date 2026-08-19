@@ -23,7 +23,7 @@ lager usb [OPTIONS] [NET_NAME] [COMMAND]
 | Argument | Description |
 |----------|-------------|
 | `NET_NAME` | USB net name (optional - lists nets if omitted) |
-| `COMMAND` | Power command: `enable`, `disable`, `toggle`, or `state` |
+| `COMMAND` | Power command: `enable`, `disable`, `toggle`, `state`, `cycle`, or `recover` |
 
 ## Commands
 
@@ -33,6 +33,14 @@ lager usb [OPTIONS] [NET_NAME] [COMMAND]
 | `disable` | Disable (power off) the USB port |
 | `toggle` | Toggle the current power state |
 | `state` | Show whether the port is enabled or disabled (read-only) |
+| `cycle` | Power-cycle the port: off, wait, on |
+| `recover` | Restore power after an interrupted command left a port off |
+
+### `cycle` options
+
+| Option | Description |
+|--------|-------------|
+| `--off-time SECONDS` | How long to hold the port unpowered. Default `1.0`, range `0.5`-`10`. |
 
 ---
 
@@ -73,7 +81,71 @@ lager usb USB1 toggle --box my-lager-box
 
 # Read the current state without changing it
 lager usb USB1 state --box my-lager-box
+
+# Power-cycle the port to cold-boot the device
+lager usb USB1 cycle --box my-lager-box
+
+# Hold the port off longer for a device with large capacitors
+lager usb USB1 cycle --off-time 3 --box my-lager-box
 ```
+
+### Power cycle a device
+
+`cycle` cuts power, waits, restores it, and waits for the device to come back:
+
+```bash
+lager usb USB1 cycle --box my-lager-box
+# [OK] USB port 'USB1' power-cycled; device re-enumerated
+```
+
+If the hub reports nothing attached, it says so rather than claiming a device
+returned:
+
+```bash
+lager usb USB2 cycle --box my-lager-box
+# [OK] USB port 'USB2' power-cycled; no device on this port to watch for, so
+#      re-enumeration was not confirmed
+```
+
+That is **not** the same as "the port is unused". A hub only sees a device that
+pulls up its data lines, so a **charge-only cable** — powering a DUT with no data
+connection — looks exactly like an empty socket. The port was still cut and
+restored. Confirm the DUT by its own behaviour: its UART, or a current
+measurement.
+
+Prefer it over a scripted `disable`/`sleep`/`enable`. It holds the hub for the
+whole sequence, so nothing else can switch the port while it is dark; it
+restores power on every failure path, so a command that dies partway through
+cannot strand a port; and it reports whether the device actually came back
+instead of leaving you to guess.
+
+`--off-time` defaults to 1 second, comfortably above the slowest cold boot
+measured on real hardware. **Too short an off time is the failure that
+matters**: the device's rails do not fully discharge, so it warm-starts while
+looking like it was reset. Raise it for a device with large bulk capacitance;
+values below 0.5s or above 10s are refused.
+
+<Warning>
+**A powered-off port still appears in `lsusb` and still has its `/dev/ttyUSB*`.**
+Hubs raise no change notification while a port is unpowered, so the kernel never
+processes the disconnect until power returns. Do not script "is the device gone?"
+as a check that a port is off — it is wrong in both directions. Use `state`,
+which reads the hub's own power bit.
+</Warning>
+
+### Recover a port left unpowered
+
+If a command was interrupted between powering a port down and back up, `recover`
+restores power:
+
+```bash
+lager usb USB1 recover --box my-lager-box
+# [OK] USB port 'USB1': power restored on port(s) 1, 2, 3, 4
+```
+
+On hubs where lager can identify the whole device (such as a Plugable dock) this
+re-powers every port on it, since the reason to reach for `recover` is usually
+that something is off and it is not obvious what.
 
 ### Read port state (read-only)
 
@@ -114,10 +186,11 @@ lager usb USB1 disable --box my-lager-box
 # Toggle power state (useful for power cycling)
 lager usb USB1 toggle --box my-lager-box
 
-# Power cycle a device (disable then enable)
-lager usb USB1 disable --box my-lager-box
-sleep 2
-lager usb USB1 enable --box my-lager-box
+# Power cycle a device
+lager usb USB1 cycle --box my-lager-box
+
+# Re-power a port after an interrupted command
+lager usb USB1 recover --box my-lager-box
 ```
 
 ---
@@ -129,6 +202,10 @@ lager usb USB1 enable --box my-lager-box
 | Acroname | USBHub3+ | Programmable USB 3.0 hub |
 | Acroname | USBHub2x4 | 4-port programmable hub |
 | YKUSH | YKUSH3 | USB switchable hub |
+| Plugable | RTS5411 docks (e.g. UD-CAM) | 4 external Type-A sockets; standard USB hub-class switching |
+
+See [Supported Instruments](/supported-instruments/supported-instruments) for
+which ports on a Plugable dock switch power and which do not.
 
 ---
 

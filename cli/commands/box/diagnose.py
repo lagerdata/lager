@@ -439,7 +439,9 @@ def _fmt_usbhub_lines(d: dict):
             f'  devnum={dev.get("devnum")}  {dev.get("product") or ""}'.rstrip()
         )
 
-    if d.get('probe_skipped'):
+    if d.get('hub_diagnostics_supported') is False:
+        lines.append(f'hub open:     n/a — {d.get("hub_diagnostics_skip_reason")}')
+    elif d.get('probe_skipped'):
         lines.append(f'hub open:     skipped — {d.get("probe_skip_reason")}')
     elif d.get('hub_opens') is True:
         lines.append('hub open:     OK')
@@ -463,6 +465,15 @@ def _classify_usb_hub(d: dict):
         return ('red',
                 'NOT ENUMERATED — the kernel does not see this hub at all. '
                 'Check its upstream cable and whether its port has power.')
+
+    # Checked before `probe_skipped`, and kept separate from it: an
+    # unsupported vendor is permanent, so telling someone to "rerun when it is
+    # idle" sends them to wait for a condition that will never change.
+    if d.get('hub_diagnostics_supported') is False:
+        return ('yellow',
+                f'NOT SUPPORTED — {d.get("hub_diagnostics_skip_reason")}. '
+                'The bus facts above are accurate; only the SDK scan and the '
+                'driver open were skipped. This is not a fault.')
 
     if d.get('probe_skipped'):
         return ('yellow',

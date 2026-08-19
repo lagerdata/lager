@@ -19,6 +19,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 BOX_DIR = os.path.join(REPO_ROOT, "box")
@@ -218,3 +219,63 @@ class UsbScannerCustomTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSuperSpeedCompanionDedupe(unittest.TestCase):
+    """One physical dock must list as ONE instrument.
+
+    UNTESTED against hardware -- a dock linked over USB 3 enumerates as two
+    virtual hubs, on different buses of the same controller, at the same port
+    path. Listing both would show the dock twice, make `nets add`'s
+    address lookup ambiguous, and split the per-hub lock across two halves of
+    one device. Pairing requires the bus root hubs to actually exist and share
+    a parent: realpath() normalises a path that is not there, so without the
+    existence check every bus resolves to the same parent and unrelated hubs
+    pair up.
+    """
+
+    def setUp(self):
+        import pathlib
+        import shutil
+        import tempfile
+        self.tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.flat = self.tmp / "devices"
+        self.flat.mkdir(parents=True)
+        patcher = mock.patch.object(us, "_SYS_USB_DEVICES", self.flat)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _roots(self, *specs):
+        """Create usbN root hubs; specs are (busnum, controller_dir_name)."""
+        for busnum, controller in specs:
+            ctrl = self.tmp / "pci" / controller
+            ctrl.mkdir(parents=True, exist_ok=True)
+            target = ctrl / f"usb{busnum}"
+            target.mkdir(exist_ok=True)
+            os.symlink(target, self.flat / f"usb{busnum}")
+
+    def test_same_controller_same_port_path_is_a_companion(self):
+        self._roots((1, "xhci0"), (2, "xhci0"))
+        self.assertTrue(us._is_companion_of_seen("2-1.4", ["1-1.4"]))
+
+    def test_different_controller_is_not_a_companion(self):
+        self._roots((1, "xhci0"), (2, "xhci1"))
+        self.assertFalse(us._is_companion_of_seen("2-1.4", ["1-1.4"]))
+
+    def test_different_port_path_is_not_a_companion(self):
+        self._roots((1, "xhci0"), (2, "xhci0"))
+        self.assertFalse(us._is_companion_of_seen("2-1.5", ["1-1.4"]))
+
+    def test_same_bus_is_never_its_own_companion(self):
+        self._roots((1, "xhci0"))
+        self.assertFalse(us._is_companion_of_seen("1-1.4", ["1-1.4"]))
+
+    def test_missing_bus_root_pairs_nothing(self):
+        # No usbN symlinks created at all.
+        self.assertIsNone(us._bus_controller_path(1))
+        self.assertFalse(us._is_companion_of_seen("2-1.4", ["1-1.4"]))
+
+    def test_a_name_without_a_port_path_is_ignored(self):
+        self._roots((1, "xhci0"), (2, "xhci0"))
+        self.assertFalse(us._is_companion_of_seen("usb2", ["1-1.4"]))

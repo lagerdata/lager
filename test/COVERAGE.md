@@ -36,13 +36,13 @@ are not.
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1363 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 1640 |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1373 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 1704 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
-| `unit (mcp)` | `test/mcp/unit/` | 166 |
+| `unit (mcp)` | `test/mcp/unit/` | 168 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 127 (+1 skipped) |
-| | **Total gated** | **3490** |
+| | **Total gated** | **3566** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -291,7 +291,7 @@ Hardware suites only. Several domains marked "No" below do have hardware-free un
 | **Logic Analyzer** | Rigol MSO5000 (embedded) | — | `logic.sh` | Yes |
 | **USB Hub** | Acroname USBHub3+ | 7 files | `acroname.sh` | Yes |
 | **USB Hub** | Yepkit YKUSH | — | `ykush.sh` | — |
-| **USB Hub** | Plugable UD-CAM (RTS5411) | — | — | — |
+| **USB Hub** | Plugable UD-CAM (RTS5411) | 1 file | — | — |
 | **Debug Probe** | Segger J-Link | 1 file | `debug.sh`, `jlink_script.sh` | Yes |
 | **Energy Analyzer** | Joulescope JS220 | 3 files | — | Yes |
 | **Power Profiler** | Nordic PPK2 | 1 file | — | Yes |
@@ -443,9 +443,9 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 145 files)
+### Local Unit Tests (`test/unit/` -- 148 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 77 files)
+#### Box Unit Tests (`test/unit/box/` -- 79 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported, and stubs the two third-party modules that are neither guarded nor installed
@@ -526,13 +526,14 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_uart_bridge_reconnect.py` | UARTBridge re-enumeration healing after an adapter changes its /dev/tty node |
 | `test_uart_session_cleanup.py` | Websocket UART read loop heals in place instead of stopping on a failed read |
 | `test_usb_devices_dfu.py` | `GET /usb/devices` sysfs enumeration and `POST /usb/dfu` list/download/detach argument building |
-| `test_usb_scanner_custom.py` | Custom-device surfacing in box HTTP scanner GET /instruments/list |
+| `test_usb_scanner_custom.py` | Custom-device surfacing in box HTTP scanner GET /instruments/list. Also the SuperSpeed companion dedupe: one physical dock lists as one instrument, and a missing bus root pairs nothing rather than pairing everything. |
 | `test_usb_scanner_uart_fallback.py` | UART enumeration without USB serial by matching sysfs path; two identical adapters keep distinct ttys and the channel catalog stays unmutated |
 | `test_webcam_detection.py` | sysfs-based webcam detection (`_by_camera`) against a fake sysfs tree |
-| `test_plugable_driver.py` | Plugable RTS5411 dock driver: USB hub-class per-port power switching over pyusb -- ganged/no-switching hubs refused without touching a port, a hub that advertises switching but leaves VBUS up detected, network-device and inter-hub-link guards, one-session batch reads, handle disposal on every path |
+| `test_plugable_driver.py` | Plugable RTS5411 dock driver: USB hub-class per-port power switching over pyusb -- ganged/no-switching hubs refused without touching a port, a disable NOT judged by device presence (the kernel cannot see a disconnect while a port is unpowered, so the sysfs node persists), cycle restoring power on every failure path and reporting re-enumeration, off-time range enforced before any transfer, SuperSpeed companion pairing refused when ambiguous, network-device and inter-hub-link guards, one-session batch reads, handle disposal on every path |
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
+| `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 55 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 56 files)
 
 | File | What it tests |
 |------|---------------|
@@ -552,7 +553,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_docker_start_limit.py` | The installer must not trip docker.service's `StartLimitBurst=3`: one service start per step, `reset-failed` before every restart, and `start-limit-hit` diagnosed as itself rather than a bad daemon.json |
 | `test_diagnose_classify.py` | `lager diagnose` classification decision tree for one-line user diagnosis |
 | `test_diagnose_classify_jlink.py` | `lager diagnose` J-Link classification from `/diagnose/usb` + `/diagnose/jlink` payloads |
-| `test_diagnose_classify_usbhub.py` | `lager diagnose` USB hub classification from `/diagnose/usbhub`, including the wedged hub that sysfs and lsof both call healthy |
+| `test_diagnose_classify_usbhub.py` | `lager diagnose` USB hub classification from `/diagnose/usbhub`, including the wedged hub that sysfs and lsof both call healthy Also that an unsupported hub vendor gets its own permanent-state classification instead of the transient BUSY one, which told people to rerun when idle for a condition that never changes. |
 | `test_error_mapping.py` | map_system_error errno mapping [16/19/110] to actionable headlines and actions |
 | `test_gateway_auth_refresh.py` | Gateway-auth refresh margin scaling with token lifetime -- pins the refresh-storm fix |
 | `test_gdbserver_interactive_rtt.py` | `gdbserver --rtt --interactive`: the flag is rejected without `--rtt`, the streaming leg moves to the `/rtt` WebSocket, and plain `--rtt` still uses the HTTP stream |
@@ -580,6 +581,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_update_probe.py` | `lager box update` probe script modprobe/usbtmc detection and output parsing |
 | `test_update_secret_ownership.py` | `lager update`'s secret-file ownership repair, run as real shell against a throwaway directory with a recording `sudo` stub |
 | `test_usb_command_errors.py` | `lager usb <net> <command>` error wiring: a 404 for a missing device must not be reported as an out-of-date box image |
+| `test_usb_cycle_command.py` | `lager usb <net> cycle|recover` wiring: off-time reaches the box, no client-side default that could drift from the box's, and the client budget outlasts the longest legal cycle |
 | `test_version_skew.py` | Version skew warning when CLI minor > box minor with per-process caching |
 | `test_watt_subcommands.py` | `lager watt` NetGroup reading power/current/voltage/all over the box API |
 | `test_ws_diagnose.py` | WebSocket failure message generation pointing to instrument vs. box based on health |

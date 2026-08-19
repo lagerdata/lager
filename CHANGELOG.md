@@ -28,27 +28,85 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Added
 
+- **`lager usb <net> cycle` power-cycles a port** — off, wait, on — for every
+  supported hub. `--off-time` sets how long the port stays unpowered (default
+  1s, range 0.5-10s); the default is set above the slowest cold boot measured on
+  real hardware, because too *short* an off time is the failure that matters: the
+  DUT's rails do not fully discharge and it warm-starts while appearing to have
+  been reset. Drivers that can hold the hub for the whole sequence do, so no
+  other caller can switch the port while it is dark, and power is restored on
+  every failure path.
+
+- **`lager usb <net> recover` re-powers a port left dark** by an interrupted
+  command. On a Plugable dock this re-asserts power on every port of that dock,
+  which is the situation it exists for: something died partway through and it is
+  not obvious what is off.
+
 - **Plugable RTS5411 USB docks are supported as switchable-USB-power
-  instruments** (`lager usb <net> enable|disable|toggle|state`), adding a third
-  option alongside Acroname and Yepkit hubs. Plugable ships no SDK, so control
-  is the standard USB hub class per-port power switching over pyusb rather than
-  a vendor library. Notes:
+  instruments** (`lager usb <net> enable|disable|toggle|state|cycle|recover`),
+  adding a third option alongside Acroname and Yepkit hubs. Plugable ships no
+  SDK, so control is the standard USB hub class per-port power switching over
+  pyusb rather than a vendor library. Notes:
   - Matches VID:PID `2230:5411`, which Plugable reuses across its RTS5411 dock
     line, so the instrument is named `Plugable_USB_Hub` rather than for one
     model. Developed and validated against a UD-CAM.
+  - **Only the four external Type-A sockets switch VBUS.** A dock cascades two
+    identical hubs and the upstream one is entirely internal (billboard, audio
+    codec, ethernet); its ports do not appear to switch power. Both hubs
+    advertise per-port switching identically, so the descriptor cannot tell them
+    apart — only the topology can, and only the external tier is ever exposed.
   - These hubs report no serial number and a dock enumerates two of them, so the
     saved address carries a USB topology path (`...::port-1-1.4::INSTR`) instead
     of a serial. That pins the net to a physical box port: re-cabling the dock
     breaks the net loudly rather than silently driving different hardware.
-  - A hub advertising ganged or absent power switching is refused outright, and
-    one that advertises per-port switching but does not actually drop VBUS is
-    detected and reported — neither degrades to a silent no-op.
+  - A hub advertising ganged or absent power switching is refused outright
+    rather than degrading to a silent no-op that would cut every port at once.
   - Ports whose downstream subtree carries a network device are refused by
     default (override with `params.allow_network`), since cutting one can drop
     the box off the network.
+  - SuperSpeed-linked docks, where VBUS drops only when both virtual halves are
+    switched, are handled in code but have **not** been validated against
+    hardware; anything ambiguous is refused rather than half-switched.
   - Requires the udev rule for vendor `2230`; without it libusb cannot open the
     hub. Shipped in `99-instrument.rules`, or add it ahead of a release with
     `lager box-config udev add 2230:5411`.
+
+### Fixed
+
+- **Disabling a USB hub port no longer reports a false failure and undo itself.**
+  The Plugable driver confirmed a power-down by waiting for the device to
+  disappear from sysfs. It never can: with the port unpowered the hub raises no
+  change bit, so the kernel never polls the port and never processes the
+  disconnect — the device node, its `lsusb` entry, and any `/dev/ttyUSB*` all
+  persist for the whole off window, and the kernel logs `USB disconnect` only
+  when power comes *back*. So every successful `disable` was reported as a hub
+  with no VBUS power switch, and then powered back on. The port's own
+  `PORT_POWER` bit is the only thing observable while a port is off, so it is now
+  the only thing checked; proof that power really drops belongs to `cycle`,
+  which watches for the port to re-enumerate after power returns.
+
+  The same reasoning applies to anything scripted around these commands: **do not
+  test for a device's absence to decide whether a port is off.** `disable` now
+  says so in its own output when the port had a device on it, and `cycle`
+  reports whether the device came back, so neither needs checking by hand. To
+  confirm a device really lost power, compare its USB device number either side
+  of a cycle — a device cannot be renumbered without leaving the bus.
+
+- **`lager.automation.PlugableUSBNet` is importable, and
+  `lager.automation.YKUSHUSBNet` is the YKUSH driver again.** A copy-pasted
+  branch in the lazy export table guarded the Plugable driver with the YKUSH
+  name, so the YKUSH name returned the wrong class and the Plugable name raised
+  `AttributeError`. Both names now resolve to their own driver.
+
+- **`lager diagnose` no longer reports a non-Acroname USB hub as wedged.** Hub
+  diagnostics are BrainStem-specific but every usb-role net reached them, so a
+  hub from another vendor was opened with the wrong driver and the failure
+  reported as an electrical fault. Such a hub now classifies as `NOT SUPPORTED`
+  — a permanent property of the vendor, kept distinct from the transient `BUSY`
+  state so nobody is told to "rerun when it is idle" for a condition that will
+  never change — and the bus facts, which are accurate, are still reported.
+  Addresses carrying a topology path instead of a serial also resolve to their
+  sysfs device rather than reporting the hub as not enumerated.
 
 - **`lager update --pull` fetches a pre-built box image instead of building it
   on the box.** Release tags are published to `ghcr.io/lagerdata/lager-box` by

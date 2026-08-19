@@ -42,6 +42,47 @@ _local_hub_locks_guard = threading.Lock()
 # several seconds — so expiry means "wedged", not "slow".
 HUB_OP_TIMEOUT_S = 30.0
 
+# ─────────────  Power-cycle timing  ─────────────
+#
+# How long a port stays unpowered during `cycle`. The default is set from the
+# slowest cold boot measured on real hardware -- a J-Link PLUS reasserts CONNECT
+# 323 ms after power returns -- with generous headroom, because too SHORT an off
+# time is the failure that matters: the DUT's rails do not fully discharge and
+# it warm-starts instead of cold-booting, which looks like success and is not.
+#
+# The maximum is bounded so a whole cycle (off time + the re-enumeration wait +
+# the open/close either side) stays inside HUB_OP_TIMEOUT_S, and therefore
+# inside the CLI's own 45 s budget for POST /usb/command.
+USB_CYCLE_OFF_TIME_S = 1.0
+USB_CYCLE_MIN_OFF_TIME_S = 0.5
+USB_CYCLE_MAX_OFF_TIME_S = 10.0
+
+
+def validate_off_time(off_time) -> float:
+    """Coerce and range-check a cycle off time, or raise ``PortStateError``.
+
+    Rejected before any control transfer is issued, so a bad value can never
+    leave a port powered down while the error is raised.
+    """
+    if off_time is None:
+        return USB_CYCLE_OFF_TIME_S
+    try:
+        value = float(off_time)
+    except (TypeError, ValueError):
+        raise PortStateError(
+            f"off-time must be a number of seconds, got {off_time!r}"
+        ) from None
+    if value != value or value in (float("inf"), float("-inf")):
+        raise PortStateError(f"off-time must be a finite number, got {off_time!r}")
+    if not USB_CYCLE_MIN_OFF_TIME_S <= value <= USB_CYCLE_MAX_OFF_TIME_S:
+        raise PortStateError(
+            f"off-time {value}s is outside the supported range "
+            f"{USB_CYCLE_MIN_OFF_TIME_S}-{USB_CYCLE_MAX_OFF_TIME_S}s. Below the "
+            "minimum a DUT can warm-start instead of cold-booting; above the "
+            "maximum the operation outlives the box's hub deadline."
+        )
+    return value
+
 
 def _local_hub_lock(key: str) -> threading.Lock:
     with _local_hub_locks_guard:
@@ -616,7 +657,15 @@ class USBNet(ABC):
 
     @abstractmethod
     def disable(self, net_name, port):
-        """Disable (power off) the specified port on the given USB net."""
+        """Disable (power off) the specified port on the given USB net.
+
+        Returns:
+            bool | None: True if a device was attached to the port when it was
+            switched off, so a caller can warn that the device will REMAIN
+            enumerated until power returns (hubs raise no change notification
+            for an unpowered port, so the kernel never processes the
+            disconnect). None from a driver that does not report this.
+        """
         raise NotImplementedError()
 
     @abstractmethod
@@ -638,6 +687,44 @@ class USBNet(ABC):
             it is currently disabled (powered off).
         """
         raise NotImplementedError()
+
+    def cycle(self, net_name, port, off_time=None):
+        """Power-cycle one port: off, wait, on.
+
+        Concrete but overridable. The default drives the driver's own
+        ``disable``/``enable``, which costs two hub sessions and two lock
+        acquisitions, so a port is briefly switchable by another caller while
+        it is dark. A driver that can do the whole sequence in one session
+        should override this and do so.
+
+        The re-power runs in a ``finally``: leaving a port unpowered because
+        something failed halfway is how a bench nobody can reach physically
+        gets stranded.
+
+        Returns:
+            bool | None: True if the driver could confirm the device came back,
+            False if it could not, None if the driver cannot tell -- either
+            because it has no way to observe re-enumeration, or because the hub
+            reports nothing attached. The latter includes a charge-only cable,
+            which draws power but presents no device to the bus.
+        """
+        off_time = validate_off_time(off_time)
+        self.disable(net_name, port)
+        try:
+            time.sleep(off_time)
+        finally:
+            self.enable(net_name, port)
+        return None
+
+    def recover(self, net_name, port):
+        """Restore power after a failed or interrupted operation.
+
+        The default re-enables just this net's own port, which is the most any
+        driver can promise. A driver that can re-power a whole physical hub
+        should override and do that, since the reason to reach for recover is
+        usually "something is dark and I am not sure what".
+        """
+        self.enable(net_name, port)
 
     def _lock_key(self) -> str:
         """Key identifying the *physical* hub this controller talks to.
