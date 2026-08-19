@@ -475,7 +475,15 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
 
         post_data.append(('module', zipped_folder))
     else:
-        raise ValueError(f'Could not find runnable {runnable}')
+        # Was a bare ValueError, i.e. a traceback. Anything reaching here has
+        # already resolved the box and validated its arguments, so the failure
+        # reads as a box problem unless it says otherwise.
+        from ...errors import LagerError
+        raise LagerError(
+            f'Could not find {runnable}',
+            cause='It is neither a file nor a directory on this machine.',
+            fixes=['Check the path, then re-run.'],
+        )
 
     try:
         resp = session.run_python(box_ip, files=post_data)

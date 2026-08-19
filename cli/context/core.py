@@ -108,6 +108,9 @@ def get_default_box(ctx):
         raise box_not_found_error(name)
 
 
+IMPL_SUBDIRS = ('power', 'measurement', 'communication', 'device')
+
+
 def get_impl_path(filename):
     """
         Get the path to an implementation script in cli/impl/
@@ -115,26 +118,53 @@ def get_impl_path(filename):
         Searches subdirectories first (power/, measurement/, communication/, device/),
         then falls back to the root impl/ directory for backward compatibility.
 
+        These scripts are resolved from the installed package on disk and then
+        uploaded to the box, so a name that does not resolve can never work.
+        This used to return the root-directory path without checking it existed,
+        which turned "the script is missing" into a bare
+        ``ValueError: Could not find runnable ...`` traceback raised much later,
+        in `run_python_internal` -- after the box had already been resolved and
+        the net validated, so it read as a box problem. Sixteen `lager logic`
+        subcommands dispatched to three scripts that are not in the tree and
+        failed exactly that way.
+
         Args:
             filename: The implementation script filename (e.g., 'scope.py')
 
         Returns:
             Full path to the implementation script
+
+        Raises:
+            LagerError: the script is not present in this installation.
     """
     base = os.path.dirname(os.path.dirname(__file__))
     impl_dir = os.path.join(base, 'impl')
 
-    # Subdirectories to search (in order)
-    subdirs = ['power', 'measurement', 'communication', 'device']
+    candidates = [os.path.join(impl_dir, subdir, filename) for subdir in IMPL_SUBDIRS]
+    # Root impl/ directory last, for backward compatibility (box_config.py lives there).
+    candidates.append(os.path.join(impl_dir, filename))
 
-    # First check subdirectories
-    for subdir in subdirs:
-        subdir_path = os.path.join(impl_dir, subdir, filename)
-        if os.path.exists(subdir_path):
-            return subdir_path
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
 
-    # Fall back to root impl/ directory (backward compatibility)
-    return os.path.join(impl_dir, filename)
+    from ..errors import LagerError
+    raise LagerError(
+        f"This subcommand has no implementation in this release "
+        f"(missing helper script '{filename}').",
+        cause=(
+            'Commands dispatch to a helper script that ships inside the '
+            'lager-cli wheel and runs on the box. This one is not in the '
+            'installation, so the subcommand is advertised in --help but '
+            'cannot do anything.'
+        ),
+        fixes=[
+            'Check whether a newer release implements it: pip install --upgrade lager-cli',
+            'Otherwise please report it, quoting this message: '
+            'https://github.com/lagerdata/lager/issues',
+        ],
+        raw='searched:\n  ' + '\n  '.join(candidates),
+    )
 
 
 def get_default_net(ctx, net_type):
