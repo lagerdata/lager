@@ -134,8 +134,38 @@ class TestInstallCmdContract:
         cmd = host_cli_install_cmd()
         assert 'python3 -m venv' in cmd
         assert 'install --quiet "$HOME/box/cli"' in cmd
-        assert 'ln -sfn "$HOME/.lager/venv/bin/lager" "$HOME/.local/bin/lager"' in cmd
+        assert 'ln -sfn "$HOME/.lager_venv/bin/lager" "$HOME/.local/bin/lager"' in cmd
         assert 'import cli; print(cli.__version__)' in cmd
+
+    def test_venv_is_not_under_the_config_file_path(self):
+        # ~/.lager is the CLI's own global config FILE and box registry, so a
+        # venv inside it can never coexist with it: whichever is created first
+        # makes the other impossible. v0.32.6-v0.38.0 shipped that collision.
+        # The only line allowed to name the old path is the cleanup.
+        cmd = host_cli_install_cmd()
+        assert '"$HOME/.lager_venv"' in cmd
+        legacy = '$HOME/.lager' + '/venv'
+        for line in cmd.splitlines():
+            if line.startswith('if [ -d "$HOME/.lager" ]'):
+                continue
+            assert legacy not in line, line
+
+    def test_legacy_venv_is_retired_without_risking_the_config_file(self):
+        cmd = host_cli_install_cmd()
+        # Guarded on -d, so it is inert where ~/.lager is the config file...
+        assert 'if [ -d "$HOME/.lager" ]' in cmd
+        # ...and rmdir, so it cannot take anything else with it.
+        assert 'rmdir "$HOME/.lager"' in cmd
+        # An unguarded recursive delete of ~/.lager would destroy the box
+        # registry of every box that never had the broken venv.
+        assert 'rm -rf "$HOME/.lager"' not in cmd
+
+    def test_cleanup_runs_only_after_the_new_venv_is_proven(self):
+        lines = host_cli_install_cmd().splitlines()
+        cleanup = next(i for i, l in enumerate(lines) if l.startswith('if [ -d "$HOME/.lager"'))
+        venv = next(i for i, l in enumerate(lines) if 'python3 -m venv' in l)
+        pip = next(i for i, l in enumerate(lines) if 'install --quiet' in l)
+        assert cleanup > venv and cleanup > pip
 
     def test_non_editable_install(self):
         # An editable install would advance the host CLI on every git pull,
@@ -191,7 +221,7 @@ class TestProbeSnippetShellExecution:
         assert facts['HOST_ENSUREPIP'] in ('0', '1')
 
     def test_venv_version_passes_through(self, tmp_path):
-        venv_bin = tmp_path / '.lager' / 'venv' / 'bin'
+        venv_bin = tmp_path / '.lager_venv' / 'bin'
         venv_bin.mkdir(parents=True)
         shim = venv_bin / 'python'
         shim.write_text('#!/bin/sh\necho 9.9.9\n')
@@ -228,13 +258,35 @@ class TestDeployScriptDrift:
 
     def test_install_sequence_literals(self, deploy_script):
         for literal in (
-            '.lager/venv',
+            '.lager_venv',
             '.local/bin/lager',
             'python3 -m venv',
             'python3 -Im ensurepip',
             'import cli; print(cli.__version__)',
         ):
             assert literal in deploy_script, literal
+        # The collision this feature shipped with: the old path may appear
+        # only inside the guarded cleanup line.
+        assert 'if [ -d "$HOME/.lager" ]' in deploy_script
+        legacy = '$HOME/.lager' + '/venv'
+        for line in deploy_script.splitlines():
+            if 'if [ -d "$HOME/.lager" ]' in line:
+                continue
+            assert legacy not in line, line
+
+    def test_exit_code_reasons_match_the_python_side(self, deploy_script):
+        # Substring checks let these drift once already: the shell said
+        # "is python3-venv installed?" while _host_cli said "is the
+        # python3-venv package installed?", and nothing noticed. Pin each
+        # reason string the shell reports to the module's own text.
+        for code, message in HOST_CLI_EXIT_MESSAGES.items():
+            assert f'{code}) HOST_CLI_REASON="{message}"' in deploy_script, code
+
+    def test_shell_does_not_create_the_lager_mcp_link_python_removes(self, deploy_script):
+        # _host_cli removes ~/.local/bin/lager-mcp (it pointed at box-side code
+        # the wheel never shipped). The shell mirror used to create it.
+        assert 'rm -f "$HOME/.local/bin/lager-mcp"' in deploy_script
+        assert 'ln -sfn "$HOME/.lager_venv/bin/lager-mcp"' not in deploy_script
 
     def test_venv_apt_package_matches(self, deploy_script):
         assert 'python3-venv' in deploy_script

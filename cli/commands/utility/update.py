@@ -2096,7 +2096,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             container_status = 'will restart'
             est = '~90s (cached build)'
 
-        # Host CLI (~/.lager/venv; see _host_cli). Any pending rebuild
+        # Host CLI (~/.lager_venv; see _host_cli). Any pending rebuild
         # reinstalls it as a matter of course; otherwise compare versions
         # from the probe facts — no extra round trip.
         _rebuild_pending = (
@@ -2623,7 +2623,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             _gate = 'stale-deploy'
 
     if _gate == 'skip':
-        # Host CLI reconcile (~/.lager/venv; see _host_cli). Box code is
+        # Host CLI reconcile (~/.lager_venv; see _host_cli). Box code is
         # unchanged this run, but the host-OS CLI may be missing, broken, or
         # older — e.g. a box that was already current when this feature
         # shipped. Fixing it here means boxes pick the CLI up on any routine
@@ -3485,7 +3485,13 @@ fi
                 click.echo('         drives ST-Link, CMSIS-DAP and FTDI adapters')
                 click.echo()
 
-    # Step 14: Host-OS CLI (~/.lager/venv; see _host_cli). Deployed code
+    # Carried to the end-of-run summary: this step is non-fatal, so its
+    # warning would otherwise scroll past inside a 19-step progress render
+    # that then prints `Complete!` and "updated to version" -- and the box
+    # looks fully updated when a shipped feature is silently absent.
+    _host_cli_failure = ''
+
+    # Step 14: Host-OS CLI (~/.lager_venv; see _host_cli). Deployed code
     # changed this run, so always reinstall — a version compare can't detect
     # a branch deploy that changed code without bumping `__version__`. Runs
     # after every fatal gate (build, start, health, container verify), so a
@@ -3509,18 +3515,24 @@ fi
                 log_status(f'OK ({host_cli_v or "version unknown"})', 'green')
         else:
             log_status('FAILED', 'yellow')
+            _host_cli_failure = host_cli_failure_message(host_res.returncode)
             click.secho(
-                'Warning: host CLI install failed: '
-                f'{host_cli_failure_message(host_res.returncode)}',
+                f'Warning: host CLI install failed: {_host_cli_failure}',
                 fg='yellow', err=True,
             )
-            if verbose and host_res.stderr and host_res.stderr.strip():
+            # Unconditionally, not behind --verbose: several of these messages
+            # now say "see the error above", and for years the one for exit 42
+            # guessed at a cause ("is the python3-venv package installed?")
+            # that was wrong on every box where the real error was
+            # `[Errno 20] Not a directory`. The command's own stderr is the
+            # only thing that actually knows.
+            if host_res.stderr and host_res.stderr.strip():
                 for _line in host_res.stderr.strip().splitlines()[-5:]:
                     click.echo(f'  {_line}', err=True)
             click.echo(
                 '  The box works without it. Manual fix: '
-                f"ssh {ssh_host} 'python3 -m venv ~/.lager/venv && "
-                "~/.lager/venv/bin/pip install ~/box/cli'",
+                f"ssh {ssh_host} 'python3 -m venv ~/.lager_venv && "
+                "~/.lager_venv/bin/pip install ~/box/cli'",
                 err=True,
             )
     else:
@@ -3548,6 +3560,11 @@ fi
         f'{box_name} updated to version {_to_version} ({target_version})',
         fg='green', bold=True,
     )
+    if _host_cli_failure:
+        click.secho(
+            f'  Host CLI on the box host was NOT updated: {_host_cli_failure}',
+            fg='yellow',
+        )
     click.echo()
 
     # Release the auto-lock on the success path. SystemExit/error paths

@@ -1409,7 +1409,7 @@ fi
 print_step "Installing Lager CLI on Box Host"
 
 # Installs the CLI from the box's own checkout (~/box/cli, materialized by the
-# sparse checkout above) into a dedicated venv at ~/.lager/venv, with the
+# sparse checkout above) into a dedicated venv at ~/.lager_venv, with the
 # `lager` entry point symlinked into ~/.local/bin. The venv sidesteps PEP 668
 # (externally-managed system Python on Ubuntu 23.04+/Debian 12+) and works on
 # hosts with no pip3, and installing from the checkout keeps the host CLI
@@ -1435,7 +1435,7 @@ else
         ssh_t "${BOX_USER}@${BOX_IP}" "sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y --no-install-recommends python3-venv" || true
     fi
 
-    print_info "Installing lager CLI into ~/.lager/venv on the box host..."
+    print_info "Installing lager CLI into ~/.lager_venv on the box host..."
     # Exit-code based on purpose: pip's stdout is not parsed. Grepping pip
     # output through a pipe loses the real exit code, which is how the removed
     # pyOCD step managed to report "encountered issues" for a pip3 that was
@@ -1444,11 +1444,12 @@ else
     set +e
     HOST_CLI_OUTPUT=$(ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" '
         test -d "$HOME/box/cli" || git -C "$HOME/box" sparse-checkout add cli 2>/dev/null || exit 41
-        "$HOME/.lager/venv/bin/python" -c "import pip" >/dev/null 2>&1 || { rm -rf "$HOME/.lager/venv" && python3 -m venv "$HOME/.lager/venv"; } || exit 42
-        "$HOME/.lager/venv/bin/pip" install --quiet "$HOME/box/cli" || exit 43
-        mkdir -p "$HOME/.local/bin" && ln -sfn "$HOME/.lager/venv/bin/lager" "$HOME/.local/bin/lager" || exit 44
-        { test -x "$HOME/.lager/venv/bin/lager-mcp" && ln -sfn "$HOME/.lager/venv/bin/lager-mcp" "$HOME/.local/bin/lager-mcp"; } || true
-        "$HOME/.lager/venv/bin/python" -c "import cli; print(cli.__version__)"
+        "$HOME/.lager_venv/bin/python" -c "import pip" >/dev/null 2>&1 || { rm -rf "$HOME/.lager_venv" && python3 -m venv "$HOME/.lager_venv"; } || exit 42
+        "$HOME/.lager_venv/bin/pip" install --quiet "$HOME/box/cli" || exit 43
+        mkdir -p "$HOME/.local/bin" && ln -sfn "$HOME/.lager_venv/bin/lager" "$HOME/.local/bin/lager" || exit 44
+        rm -f "$HOME/.local/bin/lager-mcp" || true
+        if [ -d "$HOME/.lager" ]; then rm -rf "$HOME/.lager/venv"; rmdir "$HOME/.lager" 2>/dev/null || true; fi
+        "$HOME/.lager_venv/bin/python" -c "import cli; print(cli.__version__)"
     ' 2>&1)
     HOST_CLI_RC=$?
     set -e
@@ -1460,8 +1461,8 @@ else
         print_info "~/.local/bin may not be on PATH until the next login; the absolute path always works"
     else
         case "$HOST_CLI_RC" in
-            41) HOST_CLI_REASON="could not materialize ~/box/cli (git sparse-checkout add failed)" ;;
-            42) HOST_CLI_REASON="venv creation failed (is python3-venv installed?)" ;;
+            41) HOST_CLI_REASON="could not materialize ~/box/cli (git sparse-checkout add failed — git too old, or fetch blocked?)" ;;
+            42) HOST_CLI_REASON="venv creation failed (see the error above; on Debian/Ubuntu it is python3-venv that provides the ensurepip a venv needs)" ;;
             43) HOST_CLI_REASON="pip install of ~/box/cli failed" ;;
             44) HOST_CLI_REASON="could not symlink lager into ~/.local/bin" ;;
             *)  HOST_CLI_REASON="install command failed (exit ${HOST_CLI_RC})" ;;
@@ -1470,7 +1471,7 @@ else
         HOST_CLI_STATUS="FAILED (${HOST_CLI_REASON})"
         echo ""
         echo "  The box works without it. You can install it manually later:"
-        echo "    ssh ${BOX_USER}@${BOX_IP} 'python3 -m venv ~/.lager/venv && ~/.lager/venv/bin/pip install ~/box/cli'"
+        echo "    ssh ${BOX_USER}@${BOX_IP} 'python3 -m venv ~/.lager_venv && ~/.lager_venv/bin/pip install ~/box/cli'"
         echo ""
     fi
 fi

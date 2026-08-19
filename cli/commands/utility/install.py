@@ -325,7 +325,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     click.echo(f"  Version: {version}")
     click.echo(f"  User: {user}")
     click.echo(f"  Mode: Git sparse checkout (enables 'lager update')")
-    click.echo("  Host CLI: ~/.lager/venv (installed from the box checkout)")
+    click.echo("  Host CLI: ~/.lager_venv (installed from the box checkout)")
     if skip_jlink:
         click.echo(f"  Skip J-Link: Yes")
     if skip_firewall:
