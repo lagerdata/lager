@@ -247,6 +247,47 @@ class TestAddTreeRows:
 
 
 # --------------------------------------------------------------------------- #
+# AddScreen: dismissable warnings/tip block                                    #
+# --------------------------------------------------------------------------- #
+
+class TestAddScreenNotices:
+    def test_dismiss_button_removes_notices_block(self):
+        net = _make_net(type='i2c', chan='FIO4-FIO5', net='i2c1')
+
+        async def main():
+            app = tui.NetApp(ctx=None, dut="box", inst_list=[], nets=[net])
+            async with app.run_test(size=(100, 40)) as pilot:
+                await pilot.pause()
+                screen = tui.AddScreen([net], False)
+                app.push_screen(screen)
+                await pilot.pause()
+                # The pin tip renders inside the dismissable block.
+                notices = screen.query_one("#add_notices")
+                assert notices is not None
+                screen.on_button_pressed(
+                    Button.Pressed(screen.query_one("#dismiss-notices", Button)))
+                await pilot.pause()
+                assert not screen.query("#add_notices")
+                # The net list is still there and the add flow still works.
+                assert screen.add_tree is not None
+        asyncio.run(main())
+
+    def test_no_notices_block_without_warnings_or_labjack_nets(self):
+        net = tui.Net("Rigol_DP832", "1", "power-supply", "supply1",
+                      "USB0::0x1AB1::INSTR", saved=False)
+
+        async def main():
+            app = tui.NetApp(ctx=None, dut="box", inst_list=[], nets=[net])
+            async with app.run_test(size=(100, 40)) as pilot:
+                await pilot.pause()
+                screen = tui.AddScreen([net], False)
+                app.push_screen(screen)
+                await pilot.pause()
+                assert not screen.query("#add_notices")
+        asyncio.run(main())
+
+
+# --------------------------------------------------------------------------- #
 # _save_nets_batch: params passthrough                                         #
 # --------------------------------------------------------------------------- #
 

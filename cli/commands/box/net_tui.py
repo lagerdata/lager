@@ -1828,23 +1828,30 @@ class AddScreen(Screen):
         # CRITICAL: Filter to only unsaved nets - multiple safety checks
         unsaved_only = [n for n in remaining if not n.saved]
 
+        pin_hint = unsaved_only and any(
+            _is_pin_configurable(n) for n in unsaved_only)
+
         with Vertical(classes="dialog"):
             yield Static("Add Available Nets", classes="dialog-title")
 
-            if warnings:
-                yield Static("Warnings:", classes="dialog-content")
-                for w in warnings:
-                    yield Static(f"• {w}", classes="warning")
+            # Warnings and tips share one dismissable block so they can't
+            # crowd the net list out of view.
+            if warnings or pin_hint:
+                with Vertical(id="add_notices"):
+                    with Horizontal(classes="notices-header"):
+                        yield Button("✕ Dismiss", id="dismiss-notices")
+                    for w in warnings:
+                        yield Static(f"• {w}", classes="warning")
+                    if pin_hint:
+                        yield Static(
+                            "Tip: I2C/SPI pins shown are defaults, not fixed — "
+                            "change them with a row's ⚙ button, or in the "
+                            "dialog shown when you add the net.",
+                            classes="info",
+                        )
 
             if unsaved_only:
                 yield Static(f"Found {len(unsaved_only)} available nets.", classes="dialog-content")
-                if any(_is_pin_configurable(n) for n in unsaved_only):
-                    yield Static(
-                        "I2C/SPI pins shown are defaults, not fixed — change them "
-                        "now with a row's ⚙ button, or in the dialog shown when "
-                        "you add the net.",
-                        classes="info",
-                    )
                 self.add_tree = AddNetsTree(id="add_tree")
                 self.add_tree.build(unsaved_only)
                 yield self.add_tree
@@ -1891,6 +1898,13 @@ class AddScreen(Screen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle *Cancel* / *Confirm* / *Rename* buttons in the Add-dialog."""
         main: NetApp = self.app
+
+        if event.button.id == "dismiss-notices":
+            try:
+                self.query_one("#add_notices").remove()
+            except NoMatches:
+                pass
+            return
 
         if event.button.id == "select-all":
             if self.add_tree:
@@ -2755,6 +2769,39 @@ class NetApp(App):
         padding: 1;
         margin: 1 0;
         border-left: thick $success;
+    }
+
+    /* Dismissable warnings/tip block on the Add-Nets screen. Notices are
+       compact (no vertical padding) so they can't crowd out the net list,
+       and the ✕ button removes the whole block. */
+    #add_notices {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    #add_notices .warning, #add_notices .info {
+        padding: 0 1;
+        margin: 0;
+        height: auto;
+    }
+
+    .notices-header {
+        height: 1;
+        align-horizontal: right;
+    }
+
+    #dismiss-notices {
+        height: 1;
+        min-width: 11;
+        border: none;
+        padding: 0 1;
+        background: $surface-darken-1;
+        color: $text-muted;
+    }
+
+    #dismiss-notices:hover {
+        background: hotpink 40%;
+        color: $text;
     }
 
     /* Footer Styling */
