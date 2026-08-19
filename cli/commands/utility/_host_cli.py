@@ -11,8 +11,30 @@ checkout (`~/box/cli`, materialized via cone-mode `git sparse-checkout add
 cli`), not PyPI: branch and RC deploys have no PyPI release, and installing
 from the checkout guarantees the host CLI matches the deployed ref exactly.
 
-The install target is a dedicated venv at `~/.lager/venv` with the `lager`
-entry point symlinked into `~/.local/bin`. A venv sidesteps PEP 668
+The install target is a dedicated venv at `~/.lager_venv` with the `lager`
+entry point symlinked into `~/.local/bin`.
+
+It is deliberately NOT under `~/.lager`: that path is the CLI's own global
+config *file* (`config.DEFAULT_CONFIG_FILE_NAME`, and the box registry that
+`box_storage` keeps beside it). v0.32.6 through v0.38.0 installed to
+`~/.lager/venv`, so the two collided on one name -- one wanting a file, the
+other a directory -- and whichever ran first broke the other:
+
+  * host CLI first -> `~/.lager` is a directory, the venv works, and the host
+    CLI can no longer read or write its own config or box registry
+    (`IsADirectoryError`). Worse than not installing it at all, because it runs
+    but cannot keep state.
+  * anyone runs `lager` on the host first -> `~/.lager` is a config file, and
+    `python3 -m venv "$HOME/.lager/venv"` fails for the rest of time with
+    `[Errno 20] Not a directory` -- reported, until this change, as "is the
+    python3-venv package installed?" on hosts where it was installed and
+    working.
+
+`~/.lager_venv` follows the convention every other piece of host-side lager
+state already uses: a sibling with a `.lager_` prefix (`~/.lager_update_check`,
+`~/.lager_gateway_auth`).
+
+A venv sidesteps PEP 668
 (`externally-managed-environment` on Ubuntu 23.04+/Debian 12+, where a plain
 `pip3 install --user` fails outright), works on hosts with no pip3 at all,
 and keeps the CLI's dependencies out of the system Python. Creating a venv
@@ -29,9 +51,14 @@ the load-bearing literals in both scripts to this module.
 # Keep in sync with `python_requires` in cli/setup.py.
 HOST_MIN_PYTHON = (3, 10)
 
-_VENV = '"$HOME/.lager/venv"'
-_VENV_PY = '"$HOME/.lager/venv/bin/python"'
-_VENV_PIP = '"$HOME/.lager/venv/bin/pip"'
+HOST_VENV_DIR = '$HOME/.lager_venv'
+# The pre-v0.39 location. Retired on the next successful install; see the module
+# docstring for why it could never work.
+HOST_VENV_LEGACY_DIR = '$HOME/.lager'
+
+_VENV = '"' + HOST_VENV_DIR + '"'
+_VENV_PY = '"' + HOST_VENV_DIR + '/bin/python"'
+_VENV_PIP = '"' + HOST_VENV_DIR + '/bin/pip"'
 _LOCAL_BIN = '"$HOME/.local/bin"'
 
 # Spliced into `lager update`'s one-shot box-state probe. Same contract as the
@@ -72,7 +99,8 @@ HOST_VENV_APT_CMD = (
 # which lost the exit code in a `grep -q "Successfully installed"` pipeline).
 HOST_CLI_EXIT_MESSAGES = {
     41: 'could not materialize ~/box/cli (git sparse-checkout add failed — git too old, or fetch blocked?)',
-    42: 'venv creation failed (is the python3-venv package installed?)',
+    42: 'venv creation failed (see the error above; on Debian/Ubuntu it is '
+        'python3-venv that provides the ensurepip a venv needs)',
     43: 'pip install of ~/box/cli failed',
     44: 'could not symlink lager into ~/.local/bin',
 }
@@ -99,8 +127,21 @@ def host_cli_install_cmd():
         'test -d "$HOME/box/cli" || git -C "$HOME/box" sparse-checkout add cli 2>/dev/null || exit 41',
         f'{_VENV_PY} -c "import pip" >/dev/null 2>&1 || {{ rm -rf {_VENV} && python3 -m venv {_VENV}; }} || exit 42',
         f'{_VENV_PIP} install --quiet "$HOME/box/cli" || exit 43',
-        f'mkdir -p {_LOCAL_BIN} && ln -sfn "$HOME/.lager/venv/bin/lager" "$HOME/.local/bin/lager" || exit 44',
+        'mkdir -p ' + _LOCAL_BIN + ' && ln -sfn "' + HOST_VENV_DIR
+        + '/bin/lager" "$HOME/.local/bin/lager" || exit 44',
         'rm -f "$HOME/.local/bin/lager-mcp" || true',
+        # Retire the pre-v0.39 venv, now that the new one is proven working by
+        # the version print below. `rmdir`, not `rm -rf`, on ~/.lager itself:
+        # it removes the directory only if nothing else is in there, and it is
+        # a no-op on every box where ~/.lager is the config FILE -- which must
+        # never be deleted, it holds the box registry. The -d guard is the same
+        # protection stated twice on purpose. Best-effort: a box that keeps the
+        # stale directory still gets a working CLI, it just cannot write config
+        # until the directory goes.
+        'if [ -d "$HOME/.lager" ]; then'
+        ' rm -rf "$HOME/.lager/venv";'
+        ' rmdir "$HOME/.lager" 2>/dev/null || true;'
+        ' fi',
         f'{_VENV_PY} -c "import cli; print(cli.__version__)"',
     ])
 

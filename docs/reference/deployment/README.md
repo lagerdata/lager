@@ -122,7 +122,7 @@ lager update --box <BOX_IP> --version staging --yes
 4. Clones box code via git sparse-checkout (HTTPS)
 5. Deploys udev rules for USB instruments
 6. Installs J-Link (if available; OpenOCD ships in the container)
-7. Installs the lager CLI on the box host (`~/.lager/venv`)
+7. Installs the lager CLI on the box host (`~/.lager_venv`)
 8. Builds and starts Docker containers
 
 ---

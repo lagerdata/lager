@@ -73,6 +73,48 @@ All notable changes to the Lager platform are documented here. For detailed rele
   works end to end, having previously been unable to satisfy the comparison at
   all.
 
+- **The host CLI installs to `~/.lager_venv`, because `~/.lager/venv` could
+  never work.** `~/.lager` is the CLI's own global config file and box registry
+  (`config.DEFAULT_CONFIG_FILE_NAME`, and the path `box_storage` reads). The
+  host-CLI feature shipped in v0.32.6 put its venv *inside* that same name, so
+  the two collided -- one wanting a file, the other a directory -- and whichever
+  was created first made the other impossible:
+
+  - Config file first: `python3 -m venv "$HOME/.lager/venv"` fails with
+    `[Errno 20] Not a directory`, permanently. Every update reported
+    `venv creation failed (is the python3-venv package installed?)` on hosts
+    where that package was installed and working -- the message named a cause
+    nothing had checked.
+  - Host CLI first: the venv works, and the CLI on that host can no longer read
+    or write its config or box registry (`IsADirectoryError`). That is worse
+    than not installing it, because the CLI runs but cannot keep state -- and
+    the whole point of the feature is that someone SSH-ing in gets a working,
+    version-matched CLI.
+
+  Measured across the fleet: every box was in one state or the other, so the
+  feature had not worked anywhere since it shipped. `~/.lager_venv` follows the
+  convention the rest of the host-side state already uses
+  (`~/.lager_update_check`, `~/.lager_gateway_auth`).
+
+  Boxes carrying the old venv are migrated on their next install or update: the
+  stale `~/.lager/venv` is removed and `~/.lager` is retired with `rmdir` --
+  guarded on the path being a directory, and `rmdir` rather than a recursive
+  delete, so it is inert wherever `~/.lager` is the config file and cannot take
+  anything else with it.
+
+  The exit-42 message now points at the command's own error instead of guessing,
+  and that error is printed whether or not `--verbose` is set. A failed host-CLI
+  step is also repeated in the end-of-run summary, next to
+  `<box> updated to version ...`; previously the only mention was one yellow
+  line inside a 19-step progress render that then printed `Complete!`, so a box
+  looked fully updated while a shipped feature was silently absent.
+
+  Two pieces of drift surfaced while pinning the two implementations together:
+  `setup_and_deploy_box.sh` created the `~/.local/bin/lager-mcp` symlink that
+  `_host_cli` deliberately removes, and its exit-41 text had diverged from the
+  module's. The drift guard now compares each exit-code message exactly rather
+  than by substring, which is what let them diverge unnoticed.
+
 ## [0.39.1] - 2026-08-19
 
 ### Fixed
