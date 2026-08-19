@@ -438,6 +438,12 @@ class Net:
     # cs_pin/clk_pin/mosi_pin/miso_pin). None means default pins; the box
     # dispatchers decode the legacy channel string in that case.
     params: dict | None = None
+    # The scanner's channel string from before the pin dialog replaced it
+    # with a labeled summary — restored if the user reverts to defaults.
+    legacy_chan: str | None = None
+    # True once the user has been through the pin dialog for this net, so
+    # the add flow doesn't prompt again for pins already chosen.
+    pins_confirmed: bool = False
     _uid: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -470,6 +476,11 @@ class Net:
 
     def key(self) -> str:
         return self._uid
+
+
+def _is_pin_configurable(net: "Net") -> bool:
+    """True for nets whose DIO pins the pin-picker dialog can reassign."""
+    return net.instrument == "LabJack_T7" and net.type in ("i2c", "spi")
 
 
 @dataclass
@@ -796,9 +807,16 @@ class AddNetsTree(Tree[TreeNodeData]):
         self.custom_names: dict[str, str] = {}  # key -> custom name
         self.net_nodes: dict[str, TreeNode] = {}  # key -> node for updates
         self._hover_node_key: str | None = None  # Track which net node is hovered
-        self._hover_button: bool = False  # Track if rename button is hovered
+        self._hover_button: str | None = None  # "rename", "pins", or None
         self._focus_node_key: str | None = None  # Track which net has keyboard focus
-        self._focus_button: str | None = None  # Track keyboard focus: "rename" or None
+        self._focus_button: str | None = None  # Keyboard focus: "rename", "pins", or None
+
+    def _chan_display(self, net: Net) -> str:
+        """Channel text for a row; marks LabJack i2c/spi default pins as
+        changeable so users don't read them as fixed assignments."""
+        if _is_pin_configurable(net) and net.params is None:
+            return f"{net.chan} (default)"
+        return net.chan
 
     def _get_net_label(self, net: Net, highlight_button: str | None = None) -> str:
         """Generate label for a net with optional button highlighting (hover or focus)."""
@@ -807,12 +825,17 @@ class AddNetsTree(Tree[TreeNodeData]):
         selected = net_key in self.chosen
         status = "[SELECTED]" if selected else "[ADD]"
         rename_btn = "[reverse][✎][/reverse]" if highlight_button == "rename" else "[✎]"
-        return f"{status} [bold]{custom_name}[/bold] | {net.type.upper()} | Ch: {net.chan}   {rename_btn}"
+        label = (f"{status} [bold]{custom_name}[/bold] | {net.type.upper()} | "
+                 f"Ch: {self._chan_display(net)}   {rename_btn}")
+        if _is_pin_configurable(net):
+            pins_btn = "[reverse][⚙][/reverse]" if highlight_button == "pins" else "[⚙]"
+            label += f" {pins_btn}"
+        return label
 
     def _get_highlighted_button(self, net_key: str) -> str | None:
         """Get which button should be highlighted for a given net (hover takes precedence)."""
         if self._hover_node_key == net_key and self._hover_button:
-            return "rename"
+            return self._hover_button
         if self._focus_node_key == net_key and self._focus_button:
             return self._focus_button
         return None
@@ -822,7 +845,7 @@ class AddNetsTree(Tree[TreeNodeData]):
         if self._focus_node_key and self._focus_node_key in self.net_nodes:
             old_node = self.net_nodes[self._focus_node_key]
             if old_node.data and old_node.data.net:
-                highlight = "rename" if self._hover_node_key == self._focus_node_key and self._hover_button else None
+                highlight = self._hover_button if self._hover_node_key == self._focus_node_key else None
                 old_node.set_label(self._get_net_label(old_node.data.net, highlight))
         self._focus_node_key = None
         self._focus_button = None
@@ -839,26 +862,32 @@ class AddNetsTree(Tree[TreeNodeData]):
                 highlight = self._get_highlighted_button(net_key)
                 self.cursor_node.set_label(self._get_net_label(data.net, highlight))
 
-    def _get_button_at_position(self, net: Net, x: int) -> bool:
-        """Determine if the rename button is at the given x position."""
-        # Calculate content length without the button
+    def _get_button_at_position(self, net: Net, x: int) -> str | None:
+        """Determine which button (if any) is at the given x position."""
+        # Calculate content length without the buttons
         net_key = net.key()
         custom_name = self.custom_names.get(net_key, net.net)
         selected = net_key in self.chosen
         status = "[SELECTED]" if selected else "[ADD]"
-        content = f"{status} {custom_name} | {net.type.upper()} | Ch: {net.chan}   "
-        # Button: [✎] is 3 chars
+        content = f"{status} {custom_name} | {net.type.upper()} | Ch: {self._chan_display(net)}   "
+        # Buttons: [✎] (and [⚙] for LabJack i2c/spi) — each 3 chars, 1 char space between
 
         content_end = len(content)
         # Add offset to shift clickable area right to match visual button
         offset = 4
 
-        rename_start = content_end + 7
-        rename_end = content_end + 3 + 7
+        rename_start = content_end + offset + 3
+        rename_end = rename_start + 3
+        pins_start = rename_end + 1
+        pins_end = pins_start + 3
 
-        return x >= rename_start and x < rename_end
+        if x >= rename_start and x < rename_end:
+            return "rename"
+        if _is_pin_configurable(net) and x >= pins_start and x < pins_end:
+            return "pins"
+        return None
 
-    def _update_hover(self, node_key: str | None, hover_button: bool) -> None:
+    def _update_hover(self, node_key: str | None, hover_button: str | None) -> None:
         """Update hover state and refresh affected labels."""
         if node_key == self._hover_node_key and hover_button == self._hover_button:
             return  # No change
@@ -866,7 +895,7 @@ class AddNetsTree(Tree[TreeNodeData]):
         # Store old values and clear hover state first
         old_node_key = self._hover_node_key
         self._hover_node_key = None
-        self._hover_button = False
+        self._hover_button = None
 
         # Clear old hover
         if old_node_key and old_node_key in self.net_nodes:
@@ -892,7 +921,7 @@ class AddNetsTree(Tree[TreeNodeData]):
         line = scroll_y + event.y - 1
 
         if line < 0:
-            self._update_hover(None, False)
+            self._update_hover(None, None)
             return
 
         # Try to get the node at this line
@@ -904,12 +933,12 @@ class AddNetsTree(Tree[TreeNodeData]):
                 pass
 
         if node is None or node.data is None or node.data.node_type != "net":
-            self._update_hover(None, False)
+            self._update_hover(None, None)
             return
 
         net = node.data.net
         if net is None:
-            self._update_hover(None, False)
+            self._update_hover(None, None)
             return
 
         hover_button = self._get_button_at_position(net, event.x)
@@ -917,7 +946,7 @@ class AddNetsTree(Tree[TreeNodeData]):
 
     def on_leave(self, event: Leave) -> None:
         """Clear hover state when mouse leaves the widget."""
-        self._update_hover(None, False)
+        self._update_hover(None, None)
 
     def on_key(self, event: Key) -> None:
         """Handle keyboard navigation for button focus."""
@@ -941,14 +970,20 @@ class AddNetsTree(Tree[TreeNodeData]):
             return
 
         if event.key == "right":
-            # Move focus: None -> rename (only one button)
+            # Move focus: None -> rename -> pins (pins only on LabJack i2c/spi)
             if self._focus_button is None:
                 self._focus_button = "rename"
                 self._update_focus_display()
+            elif self._focus_button == "rename" and _is_pin_configurable(data.net):
+                self._focus_button = "pins"
+                self._update_focus_display()
             event.stop()
         elif event.key == "left":
-            # Move focus: rename -> None
-            if self._focus_button == "rename":
+            # Move focus: pins -> rename -> None
+            if self._focus_button == "pins":
+                self._focus_button = "rename"
+                self._update_focus_display()
+            elif self._focus_button == "rename":
                 self._focus_button = None
                 self._clear_focus()
             event.stop()
@@ -959,6 +994,9 @@ class AddNetsTree(Tree[TreeNodeData]):
                     if hasattr(screen, 'add_tree') and screen.add_tree is self:
                         self.app.push_screen(RenameNewNetDialog(data.net, screen))
                         break
+                event.stop()
+            elif self._focus_button == "pins":
+                self._open_pin_dialog(data.net)
                 event.stop()
             # If no button focused, let default handler toggle selection
 
@@ -997,12 +1035,15 @@ class AddNetsTree(Tree[TreeNodeData]):
             # Toggle expand/collapse on click
             node.toggle()
         elif data.node_type == "net" and data.net is not None:
-            if self._get_button_at_position(data.net, event.x):
+            button = self._get_button_at_position(data.net, event.x)
+            if button == "rename":
                 # Find the AddScreen and show rename dialog
                 for screen in self.app.screen_stack:
                     if hasattr(screen, 'add_tree') and screen.add_tree is self:
                         self.app.push_screen(RenameNewNetDialog(data.net, screen))
                         return
+            elif button == "pins":
+                self._open_pin_dialog(data.net)
             else:
                 # Toggle selection on click elsewhere
                 self.toggle_net(data.net.key())
@@ -1073,6 +1114,24 @@ class AddNetsTree(Tree[TreeNodeData]):
         node = self.net_nodes.get(net_key)
         if node and node.data and node.data.net:
             node.set_label(self._get_net_label(node.data.net))
+
+    def _open_pin_dialog(self, net: Net) -> None:
+        """Open the pin-picker for a LabJack i2c/spi net before it's added.
+
+        A successful pick updates the row's channel display and marks the
+        net so the add flow doesn't prompt for these pins a second time.
+        """
+        claimed = _labjack_claimed_pin_map(getattr(self.app, "nets", []), net)
+
+        def done(success: bool) -> None:
+            if not success:
+                return
+            net.pins_confirmed = True
+            node = self.net_nodes.get(net.key())
+            if node:
+                node.set_label(self._get_net_label(net))
+
+        self.app.push_screen(LabJackPinDialog(net, claimed, done))
 
 
 # ─────────────────── dialogs ────────────────────
@@ -1534,12 +1593,15 @@ def _labjack_claimed_pin_map(all_nets: list["Net"], target: "Net") -> dict[str, 
 class LabJackPinDialog(Screen):
     """Pick the LabJack DIO pins for an i2c/spi net before saving it.
 
-    Dropdowns are prefilled with the historical defaults (I2C: SDA=FIO4
-    SCL=FIO5; SPI: CS=FIO0 SCK=FIO1 MOSI=FIO2 MISO=FIO3), so accepting the
-    dialog unchanged saves exactly what the TUI saved before this dialog
-    existed (the legacy channel string, no params). Custom selections are
-    written to the net's ``params`` dict — the format the box dispatchers
-    already consume — plus a labeled channel summary for display.
+    Dropdowns are prefilled with the net's current selection — the
+    historical defaults (I2C: SDA=FIO4 SCL=FIO5; SPI: CS=FIO0 SCK=FIO1
+    MOSI=FIO2 MISO=FIO3) for an untouched net, or the pins chosen in an
+    earlier pass through this dialog. Accepting the defaults unchanged
+    saves exactly what the TUI saved before this dialog existed (the
+    legacy channel string, no params); reverting a customized net back to
+    the defaults restores that same record. Custom selections are written
+    to the net's ``params`` dict — the format the box dispatchers already
+    consume — plus a labeled channel summary for display.
 
     Pins already claimed by saved LabJack nets show a warning but don't
     block: that matches the runtime PinRegistry behavior and the
@@ -1557,9 +1619,7 @@ class LabJackPinDialog(Screen):
         self.claimed = claimed
         self.callback = callback
         self.signals = _lj.I2C_SIGNALS if net.type == "i2c" else _lj.SPI_SIGNALS
-        self.defaults = (
-            _lj.I2C_DEFAULT_PINS if net.type == "i2c" else _lj.SPI_DEFAULT_PINS
-        )
+        self.initial = _lj.current_pin_selection(net.type, net.params)
 
     def _select_id(self, signal: str) -> str:
         return f"pin_{signal.lower()}"
@@ -1572,7 +1632,8 @@ class LabJackPinDialog(Screen):
             )
             yield Static(
                 f"Net: {self.net.net}  |  Instrument: LabJack T7\n"
-                f"Any DIO pin may be used. Defaults are preselected.",
+                f"Any DIO pin may be used; the preselected pins are just "
+                f"{'defaults' if self.net.params is None else 'your current selection'}.",
                 classes="dialog-content",
             )
             for signal in self.signals:
@@ -1583,7 +1644,7 @@ class LabJackPinDialog(Screen):
                     yield Label(f"{signal:<5}", classes="pin-label")
                     yield Select(
                         options,
-                        value=self.defaults[signal],
+                        value=self.initial[signal],
                         allow_blank=False,
                         id=self._select_id(signal),
                     )
@@ -1636,8 +1697,15 @@ class LabJackPinDialog(Screen):
             # Custom pins: labeled summary for display, params for the
             # box dispatchers. Default selection leaves the net untouched
             # so the saved record is identical to a pre-dialog save.
+            if self.net.params is None:
+                self.net.legacy_chan = self.net.chan
             self.net.chan = label
             self.net.params = params
+        elif self.net.params is not None:
+            # A previously customized net reverted to the defaults:
+            # restore the legacy record.
+            self.net.chan = self.net.legacy_chan or _lj.DEFAULT_CHAN[self.net.type]
+            self.net.params = None
 
         self.app.pop_screen()
         self.callback(True)
@@ -1787,6 +1855,13 @@ class AddScreen(Screen):
 
             if unsaved_only:
                 yield Static(f"Found {len(unsaved_only)} available nets.", classes="dialog-content")
+                if any(_is_pin_configurable(n) for n in unsaved_only):
+                    yield Static(
+                        "I2C/SPI pins shown are defaults, not fixed — change them "
+                        "now with a row's ⚙ button, or in the dialog shown when "
+                        "you add the net.",
+                        classes="info",
+                    )
                 self.add_tree = AddNetsTree(id="add_tree")
                 self.add_tree.build(unsaved_only)
                 yield self.add_tree
@@ -1921,10 +1996,11 @@ class AddScreen(Screen):
 
         # LabJack i2c/spi nets get a pin-picker dialog before saving;
         # defaults are preselected so accepting unchanged behaves exactly
-        # like the pre-dialog flow.
+        # like the pre-dialog flow. Nets whose pins were already chosen via
+        # the row's [⚙] button aren't prompted again.
         labjack_pin_nets = [
             n for n in selected_nets
-            if n.type in ("i2c", "spi") and n.instrument == "LabJack_T7"
+            if _is_pin_configurable(n) and not n.pins_confirmed
         ]
 
         def after_pin_dialogs():
