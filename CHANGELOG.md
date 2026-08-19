@@ -734,6 +734,23 @@ All notable changes to the Lager platform are documented here. For detailed rele
   README now carries a fixture table, on the principle that an undeclared wire
   reads as a hardware failure.
 
+
+- **The Net-Manager Add screen now makes LabJack I2C/SPI default pins
+  obviously changeable.** Users read `Ch: FIO4-FIO5` on an available I2C net
+  as a fixed assignment and didn't discover the pin-picker dialog behind the
+  Add button. Three changes, all in the TUI:
+  - LabJack I2C/SPI rows tag default pins as `(default)` and drop the tag
+    once custom pins are chosen, and the screen carries a hint line saying
+    the pins can be changed.
+  - Each such row grows a `[⚙]` button (mouse or arrow-key + Enter) that
+    opens the existing pin-picker right away, so pins can be set while
+    selecting nets instead of only after pressing Add. Nets configured this
+    way aren't re-prompted during the add.
+  - The pin dialog now prefills with the net's current selection rather
+    than always the defaults, and reverting a customized net back to the
+    defaults restores the original scanner record (legacy channel string,
+    no params) byte-for-byte.
+
 ## [0.43.0] - 2026-08-25
 
 ### Added

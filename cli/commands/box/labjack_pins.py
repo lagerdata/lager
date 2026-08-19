@@ -45,6 +45,9 @@ PARAM_KEYS = {
 I2C_DEFAULT_PINS = {"SDA": "FIO4", "SCL": "FIO5"}
 SPI_DEFAULT_PINS = {"CS": "FIO0", "SCK": "FIO1", "MOSI": "FIO2", "MISO": "FIO3"}
 
+#: Legacy channel strings the box scanner emits for default-pin nets.
+DEFAULT_CHAN = {"i2c": "FIO4-FIO5", "spi": "FIO0-FIO3"}
+
 
 def pin_name(dio: int) -> str:
     """Convert a DIO number to its canonical LabJack pin name."""
@@ -109,6 +112,24 @@ def claimed_pins_from_chan(role: str, chan: str) -> list[str]:
         if dio is not None:
             pins.append(pin_name(dio))
     return pins
+
+
+def current_pin_selection(role: str, params: Optional[dict]) -> dict[str, str]:
+    """Decode a net's ``params`` dict back into a pin-picker selection
+    (signal name -> pin name). ``params`` of None means default pins. A
+    spi params dict without ``cs_pin`` round-trips to :data:`NO_CS`."""
+    signals = I2C_SIGNALS if role == "i2c" else SPI_SIGNALS
+    defaults = I2C_DEFAULT_PINS if role == "i2c" else SPI_DEFAULT_PINS
+    if not params:
+        return dict(defaults)
+    selection = {}
+    for signal in signals:
+        dio = try_parse_pin(params.get(PARAM_KEYS[signal], ""))
+        if dio is not None:
+            selection[signal] = pin_name(dio)
+        else:
+            selection[signal] = NO_CS if signal == "CS" else defaults[signal]
+    return selection
 
 
 def resolve_pin_selection(role: str, chosen: dict[str, str]):

@@ -101,6 +101,32 @@ class TestClaimedPinsFromChan:
         assert lj.claimed_pins_from_chan('dac', 'DAC0') == []
 
 
+class TestCurrentPinSelection:
+    def test_no_params_returns_defaults(self):
+        assert lj.current_pin_selection('i2c', None) == lj.I2C_DEFAULT_PINS
+        assert lj.current_pin_selection('spi', None) == lj.SPI_DEFAULT_PINS
+        assert lj.current_pin_selection('i2c', {}) == lj.I2C_DEFAULT_PINS
+
+    def test_custom_params_decode(self):
+        assert lj.current_pin_selection('i2c', {'sda_pin': 8, 'scl_pin': 9}) == {
+            'SDA': 'EIO0', 'SCL': 'EIO1'}
+        assert lj.current_pin_selection(
+            'spi', {'cs_pin': 6, 'clk_pin': 7, 'mosi_pin': 8, 'miso_pin': 9}
+        ) == {'CS': 'FIO6', 'SCK': 'FIO7', 'MOSI': 'EIO0', 'MISO': 'EIO1'}
+
+    def test_spi_without_cs_round_trips_to_no_cs(self):
+        assert lj.current_pin_selection(
+            'spi', {'clk_pin': 1, 'mosi_pin': 2, 'miso_pin': 3}
+        ) == {'CS': lj.NO_CS, 'SCK': 'FIO1', 'MOSI': 'FIO2', 'MISO': 'FIO3'}
+
+    def test_round_trip_with_resolve(self):
+        # resolve -> current_pin_selection must reproduce the chosen pins.
+        chosen = {'SDA': 'CIO0', 'SCL': 'MIO1'}
+        _label, params, error = lj.resolve_pin_selection('i2c', chosen)
+        assert error is None
+        assert lj.current_pin_selection('i2c', params) == chosen
+
+
 class TestResolvePinSelection:
     def test_i2c_defaults_return_none(self):
         label, params, error = lj.resolve_pin_selection(
@@ -174,6 +200,50 @@ class TestClaimedPinMap:
             'EIO0': 'gpio_led',
             'FIO0': 'spi1', 'FIO1': 'spi1', 'FIO2': 'spi1', 'FIO3': 'spi1',
         }
+
+
+# --------------------------------------------------------------------------- #
+# AddNetsTree: default-pin messaging + pin button on LabJack i2c/spi rows      #
+# --------------------------------------------------------------------------- #
+
+class TestAddTreeRows:
+    def test_default_pin_row_marks_default_and_offers_pin_button(self):
+        tree = tui.AddNetsTree()
+        net = _make_net(type='i2c', chan='FIO4-FIO5', net='i2c1')
+        label = tree._get_net_label(net)
+        assert 'Ch: FIO4-FIO5 (default)' in label
+        assert '[⚙]' in label
+
+    def test_custom_pin_row_drops_default_tag(self):
+        tree = tui.AddNetsTree()
+        net = _make_net(type='i2c', chan='SDA:EIO0 SCL:EIO1', net='i2c1',
+                        params={'sda_pin': 8, 'scl_pin': 9})
+        label = tree._get_net_label(net)
+        assert '(default)' not in label
+        assert '[⚙]' in label
+
+    def test_non_labjack_row_unchanged(self):
+        tree = tui.AddNetsTree()
+        net = _make_net(instrument='Aardvark', chan='SPI0')
+        label = tree._get_net_label(net)
+        assert '(default)' not in label
+        assert '[⚙]' not in label
+        assert '[✎]' in label
+
+    def test_button_hit_regions(self):
+        tree = tui.AddNetsTree()
+        net = _make_net(type='i2c', chan='FIO4-FIO5', net='i2c1')
+        content_end = len(f"[ADD] {net.net} | I2C | Ch: {net.chan} (default)   ")
+        rename_start = content_end + 4 + 3
+        pins_start = rename_start + 4
+        assert tree._get_button_at_position(net, rename_start) == 'rename'
+        assert tree._get_button_at_position(net, pins_start) == 'pins'
+        assert tree._get_button_at_position(net, 0) is None
+        # Non-configurable nets have no pins region.
+        plain = _make_net(instrument='Aardvark', chan='SPI0')
+        plain_end = len(f"[ADD] {plain.net} | SPI | Ch: {plain.chan}   ")
+        assert tree._get_button_at_position(plain, plain_end + 4 + 3) == 'rename'
+        assert tree._get_button_at_position(plain, plain_end + 4 + 3 + 4) is None
 
 
 # --------------------------------------------------------------------------- #
@@ -309,6 +379,50 @@ class TestLabJackPinDialog:
         app = _run_dialog(net, {}, lambda dlg: "pin-cancel")
         assert app.result is False
         assert net.chan == 'FIO0-FIO3'
+        assert net.params is None
+
+    def test_customizing_stashes_legacy_chan(self):
+        net = _make_net(type='i2c', chan='FIO4-FIO5', net='i2c1')
+
+        def interact(dlg):
+            dlg.query_one("#pin_sda", Select).value = "EIO0"
+            dlg.query_one("#pin_scl", Select).value = "EIO1"
+            return "pin-confirm"
+
+        app = _run_dialog(net, {}, interact)
+        assert app.result is True
+        assert net.chan == 'SDA:EIO0 SCL:EIO1'
+        assert net.legacy_chan == 'FIO4-FIO5'
+
+    def test_prefills_from_existing_params(self):
+        net = _make_net(
+            type='i2c', chan='SDA:EIO0 SCL:EIO1', net='i2c1',
+            params={'sda_pin': 8, 'scl_pin': 9}, legacy_chan='FIO4-FIO5',
+        )
+
+        async def main():
+            app = _DialogApp(net, {})
+            async with app.run_test(size=(100, 50)) as pilot:
+                await pilot.pause()
+                dialog = app.screen
+                assert dialog.query_one("#pin_sda", Select).value == "EIO0"
+                assert dialog.query_one("#pin_scl", Select).value == "EIO1"
+        asyncio.run(main())
+
+    def test_revert_to_defaults_restores_legacy_record(self):
+        net = _make_net(
+            type='i2c', chan='SDA:EIO0 SCL:EIO1', net='i2c1',
+            params={'sda_pin': 8, 'scl_pin': 9}, legacy_chan='FIO4-FIO5',
+        )
+
+        def interact(dlg):
+            dlg.query_one("#pin_sda", Select).value = "FIO4"
+            dlg.query_one("#pin_scl", Select).value = "FIO5"
+            return "pin-confirm"
+
+        app = _run_dialog(net, {}, interact)
+        assert app.result is True
+        assert net.chan == 'FIO4-FIO5'
         assert net.params is None
 
     def test_claimed_pin_shows_warning(self):
