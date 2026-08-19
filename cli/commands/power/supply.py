@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 
 import click
+from click.exceptions import Abort, Exit
 
 from ...core.net_group import NetGroup
 # Import consolidated helpers from cli.core.net_helpers
@@ -356,6 +357,8 @@ def tui(ctx, box):
         else:
             click.secho(f"Error: {e}", fg='red', err=True)
         ctx.exit(1)
+    except (Exit, Abort):
+        raise
     except KeyboardInterrupt:
         # User pressed Ctrl+C, exit gracefully
         click.echo("\nTUI closed.")

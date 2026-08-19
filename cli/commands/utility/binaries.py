@@ -7,6 +7,7 @@
     Commands for managing custom binaries on boxes
 """
 import click
+from click.exceptions import Abort, Exit
 import requests
 from pathlib import Path
 from ...box_storage import resolve_and_validate_box
@@ -148,6 +149,8 @@ def add(ctx, binary_path, box, name, yes):
         click.secho("Error: Upload timed out", fg='red', err=True)
         click.secho("The file may be too large or the connection is slow", err=True)
         ctx.exit(1)
+    except (Exit, Abort):
+        raise
     except Exception as e:
         click.secho(f"Error: {e}", fg='red', err=True)
         ctx.exit(1)
@@ -222,6 +225,8 @@ def list_binaries(ctx, box):
     except requests.exceptions.Timeout:
         click.secho("Error: Request timed out", fg='red', err=True)
         ctx.exit(1)
+    except (Exit, Abort):
+        raise
     except Exception as e:
         click.secho(f"Error: {e}", fg='red', err=True)
         ctx.exit(1)
@@ -260,6 +265,10 @@ def remove(ctx, binary_name, box, yes):
                     for name in binaries_list:
                         click.echo(f"  - {name}")
                 ctx.exit(1)
+    except (Exit, Abort):
+        # The ctx.exit() above is the whole point of this pre-check. Swallowing
+        # it here let `remove` sail past "binary not found" into the removal.
+        raise
     except Exception:
         pass  # Continue anyway, the remove endpoint will handle it
 
@@ -301,6 +310,8 @@ def remove(ctx, binary_name, box, yes):
     except requests.exceptions.Timeout:
         click.secho("Error: Request timed out", fg='red', err=True)
         ctx.exit(1)
+    except (Exit, Abort):
+        raise
     except Exception as e:
         click.secho(f"Error: {e}", fg='red', err=True)
         ctx.exit(1)

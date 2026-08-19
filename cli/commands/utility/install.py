@@ -7,6 +7,7 @@
     Install lager box code onto a new box
 """
 import click
+from click.exceptions import Abort, Exit
 import subprocess
 import tempfile
 import shutil
@@ -303,6 +304,8 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                 'Windows: install OpenSSH, or run this from Git Bash.',
             ],
         ).die()
+    except (Exit, Abort):
+        raise
     except Exception as e:
         LagerError(
             'SSH connectivity check failed.',
@@ -391,6 +394,8 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
             click.echo()
             click.secho("Deployment timed out after 30 minutes.", fg='red', err=True)
             ctx.exit(1)
+        except (Exit, Abort):
+            raise
         except Exception as e:
             click.echo()
             click.secho("Deployment failed!", fg='red', err=True)

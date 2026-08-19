@@ -9,6 +9,7 @@
     Migrated from cli/update/commands.py to cli/commands/utility/update.py.
 """
 import click
+from click.exceptions import Abort, Exit
 import requests
 import collections
 import os
@@ -1482,6 +1483,17 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             log_error('Error: No SSH authentication method available')
             ctx.exit(1)
 
+    except (Exit, Abort):
+        # click's control-flow exceptions subclass RuntimeError, so the broad
+        # `except Exception` below catches every deliberate ctx.exit() raised in
+        # this block -- rendering a designed exit as a traceback plus
+        # `Error: <code>`, and rewriting the code to 1. That collapsed
+        # `--check`'s rc 2 ("could not probe the box") into rc 1 ("an update is
+        # available"), a claim the command was in no position to make.
+        # Re-raise before the generic handler can see them.
+        if progress:
+            progress.finish(success=False)
+        raise
     except subprocess.TimeoutExpired:
         if progress:
             progress.finish(success=False)
@@ -1495,7 +1507,11 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                 progress.finish(success=False)
         except Exception:
             pass
-        click.echo(tb_str)
+        # The traceback is signal for a genuine crash and noise for everything
+        # else, and it goes to stdout -- so it corrupts anything piping this
+        # command. Behind --verbose, and on stderr.
+        if verbose:
+            click.echo(tb_str, err=True)
         log_error(f'Error: {str(e)}')
         ctx.exit(1)
 

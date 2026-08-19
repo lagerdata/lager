@@ -8,6 +8,7 @@
 """
 import itertools
 import click
+from click.exceptions import Abort, Exit
 import json
 import requests
 import signal
@@ -1138,6 +1139,11 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
         click.secho(f"Flash failed: {error_detail}", fg='red', err=True)
         client.close()
         ctx.exit(1)
+    except (Exit, Abort):
+        # Control flow, not a flash failure -- but the client still owns a
+        # session on the box, so close it on the way out.
+        client.close()
+        raise
     except Exception as e:
         click.secho(f"Flash failed: {e}", fg='red', err=True)
         client.close()
