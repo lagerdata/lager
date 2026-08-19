@@ -28,17 +28,20 @@
 # Package settings → Change visibility) after the first successful publish;
 # subsequent pushes inherit it.
 #
-# Built linux/amd64 only, matching the x64-only LabJack and nrfutil downloads
-# already hardcoded in box.Dockerfile. The manifest is therefore
-# single-platform, NOT a multi-arch index -- there is nothing for docker to
-# negotiate against, so a bare `docker pull` hands an arm64 box the amd64
-# image and start_box.sh then dies with `exec format error`. The client
-# passes an explicit --platform for exactly this reason (_docker_pull_cmd);
-# an arm64 box gets a clean manifest miss and builds instead.
+# Built linux/amd64 only. That is the whole supported surface: a Lager Box is
+# documented as x86-64 (docs/source/getting-started/overview.mdx), and
+# box.Dockerfile hardcodes x64-only LabJack and nrfutil downloads, so it could
+# not build on another architecture anyway.
 #
-# Publishing arm64 here would need the LabJack/nrfutil fetches in
-# box.Dockerfile made arch-aware first, and costs QEMU emulation time on
-# every release.
+# The manifest is therefore single-platform, NOT a multi-arch index -- there is
+# nothing for docker to negotiate against, so a bare `docker pull` would hand a
+# non-amd64 host the amd64 image and start_box.sh would die with `exec format
+# error`. The client passes an explicit --platform for that reason
+# (_docker_pull_cmd), which turns it into a clean manifest miss. Defence in
+# depth rather than support for another architecture.
+#
+# Publishing other architectures would mean making the LabJack/nrfutil fetches
+# arch-aware first, plus QEMU emulation time on every release.
 #
 # Retention is manual for now: delete old versions from the GHCR UI / API
 # when storage becomes a problem. Automating that is a follow-up.

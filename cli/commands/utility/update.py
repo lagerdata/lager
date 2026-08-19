@@ -235,17 +235,21 @@ def _digest_ref(image_ref, digest):
 def _docker_pull_cmd(image_ref, digest):
     """Shell snippet: pull the image by digest, for THIS box's architecture.
 
-    The published manifest is single-platform amd64 (box.Dockerfile downloads
-    x64-only LabJack and nrfutil installers) and is NOT a multi-arch index, so
-    there is nothing for docker to negotiate against. Without an explicit
-    --platform an arm64 box pulls the amd64 image anyway, tags it `lager`, and
-    start_box.sh then dies with `exec format error` -- a box that is down,
-    where before it merely built slowly. With --platform the same box gets a
-    clean manifest miss and falls back to building.
+    The published manifest is single-platform amd64 and is NOT a multi-arch
+    index, so there is nothing for docker to negotiate against: without an
+    explicit --platform, a non-amd64 host pulls the amd64 image anyway, tags it
+    `lager`, and start_box.sh then dies with `exec format error`.
 
-    `dpkg --print-architecture` is the same normalisation
-    setup_and_deploy_box.sh already uses to pick per-arch SEGGER downloads. It
-    stays unquoted so the box's shell expands it.
+    This is defence in depth, not support for another architecture. A box is
+    documented as x86-64 only (docs/source/getting-started/overview.mdx), and
+    box.Dockerfile could not build anywhere else regardless -- the LabJack and
+    nrfutil installers below are fetched from hardcoded x64 URLs with no arch
+    branch. So the guard does not rescue a working arm box; it makes an
+    unsupported host fail the way it always did (cleanly, at the build) instead
+    of newly failing at container start with a confusing exec error. Cheap
+    insurance against a wrong-arch tag from any source.
+
+    `dpkg --print-architecture` stays unquoted so the box's shell expands it.
 
     Pulls through a THROWAWAY, empty docker config so the request goes out
     anonymously. The image is public, and inheriting the box's ambient
@@ -2848,6 +2852,16 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             "`sudo apt-get install -y docker-buildx`, or Docker's "
             "`docker-buildx-plugin`), then re-run `lager update`."
         )
+        # A pull needs no buildx, so this box CAN be updated to any release
+        # that has a published image -- it just cannot build one. Without this
+        # line the only advice is "install a plugin", which is the slower fix
+        # and sometimes not one the operator can apply.
+        if not pull and not no_pull and not force:
+            click.secho(
+                'Alternatively, target a published release tag with --pull: '
+                'a pre-built image needs no buildx.',
+                fg='yellow', err=True,
+            )
         ctx.exit(1)
 
     # Acquire the auto-lock now — the first action below stops the lager
