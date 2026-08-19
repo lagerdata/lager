@@ -31,6 +31,41 @@ FAILED_TO_RETRIEVE_EXIT_CODE = -1
 SIGTERM_EXIT_CODE = 124
 SIGKILL_EXIT_CODE = 137
 
+
+def normalize_exit_code(raw):
+    """Turn a box-reported return code into a conventional process exit status.
+
+    The box reports Python's ``Popen.wait()`` value, which is **negative** when
+    the process died of a signal: -9 for SIGKILL. Shells render that as 128+N,
+    and SIGKILL_EXIT_CODE above is written in that convention -- so a raw -9
+    matched nothing, and ``sys.exit(-9)`` left the caller looking at 247
+    (256-9), which means nothing to anyone.
+
+    That became reachable once ``--timeout`` grew a ``--kill-after``: GNU
+    timeout puts itself in the child's process group, so the SIGKILL it sends at
+    the end of the grace window kills the wrapper too, and the box sees -9
+    rather than the 137 a shell would have shown. The timeout fired correctly
+    and then reported itself as gibberish.
+
+    -1 is deliberately passed through. It is FAILED_TO_RETRIEVE_EXIT_CODE, and
+    it is also what ``exec.process.terminate_process`` returns when it had to
+    kill a process -- and what SIGHUP death produces. Those three are already
+    indistinguishable on the wire; mapping it to 129 would invent a signal
+    nobody sent and break the "failed to retrieve" path.
+
+    Args:
+        raw: the return code as reported by the box.
+
+    Returns:
+        The same value for 0, positive codes and -1; 128+N for death by
+        signal N where N >= 2.
+    """
+    if raw is None:
+        return FAILED_TO_RETRIEVE_EXIT_CODE
+    if raw < -1:
+        return 128 + abs(raw)
+    return raw
+
 def stream_output(response, chunk_size=1):
     """
         Stream an http response to stdout

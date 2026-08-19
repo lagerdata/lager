@@ -234,6 +234,49 @@ All notable changes to the Lager platform are documented here. For detailed rele
   instrument, so the next omission fails a gate instead of quietly removing a
   capability.
 
+- **`lager python --timeout` now stops the script.** The option was never being
+  dropped -- it reached the box and was applied as `/usr/bin/timeout N` -- but
+  GNU `timeout` sends SIGTERM at the deadline and nothing more. A script that
+  does not return from SIGTERM therefore did not stop: one blocked in an
+  uninterruptible call (a pyvisa, libusb or serial read, which is the normal
+  case on a box) or one that installs its own handler. `--timeout 3` against a
+  30-second script was measured still running 17 minutes later, ended by a CI
+  step timeout rather than by the timeout it was given.
+
+  The wrapper now carries `--kill-after`, so the deadline escalates to SIGKILL
+  after `CLEANUP_GRACE_S` -- the same escalation `_signal_and_reap` already
+  applied wherever else a job is stopped. Verified on a box: a script that
+  installs a SIGTERM handler and sleeps 30 seconds now returns in 9 with
+  `--timeout 3`, and one that honours SIGTERM still exits 124 at its deadline,
+  unchanged.
+
+- **A script killed by its timeout reports 137 instead of 247.** Fixing the
+  above exposed a second defect immediately behind it. GNU `timeout` puts itself
+  in its child's process group, so the SIGKILL it sends at the end of the grace
+  window kills the wrapper too; the box reports Python's `Popen.wait()` value,
+  which is `-9` for a signal death rather than the 137 a shell would show. The
+  CLI passed that straight to `sys.exit`, so the caller saw 247 (256-9) and no
+  explanation -- and `SIGKILL_EXIT_CODE = 137` matched nothing, leaving
+  "Script forcibly killed due to timeout." unreachable, as it had been for the
+  whole life of the feature.
+
+  Box-reported codes are now mapped onto the 128+N convention those constants
+  are written in. `-1` is passed through: it is `FAILED_TO_RETRIEVE_EXIT_CODE`,
+  and also what `terminate_process` returns when it had to kill something, and
+  also SIGHUP death -- already indistinguishable on the wire, and mapping it
+  would invent a signal nobody sent.
+
+- **`--timeout` above the box's ceiling says so instead of quietly running
+  shorter.** Values over `MAX_TIMEOUT` were reduced by a bare `min()`, so a job
+  asking for 600 seconds ran 300 with nothing said -- which reads as the timeout
+  firing early rather than as a ceiling being applied. The ceiling is unchanged
+  and now logged. `--timeout` is also a no-op with `--detach`, now stated in
+  `--help` and logged rather than left to be discovered.
+
+  A regression test pins the box ceiling below the CLI's HTTP read timeout. The
+  two sit either side of the wheel boundary with 15 seconds between them, and a
+  deadline the client stops waiting for reports a connection error rather than a
+  timeout.
 
 - **The sixteen `lager logic measure` / `trigger` / `cursor` subcommands work
   again.** They dispatched to `measurement.py`, `trigger.py` and `cursor.py`,

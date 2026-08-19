@@ -30,6 +30,7 @@ import trio
 from .debug.tunnel import serve_tunnel
 from ...context import get_default_box
 from ...core.utils import (
+    normalize_exit_code,
     stream_python_output, zip_dir, SizeLimitExceeded,
     FAILED_TO_RETRIEVE_EXIT_CODE,
     SIGTERM_EXIT_CODE,
@@ -581,7 +582,7 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
                     return context
             else:
                 if datatype == StreamDatatypes.EXIT:
-                    _do_exit(content, box_ip, session, download)
+                    _do_exit(normalize_exit_code(content), box_ip, session, download)
                 elif datatype == StreamDatatypes.STDOUT:
                     click.echo(content.decode("utf-8", errors="ignore"), nl=False)
                 elif datatype == StreamDatatypes.STDERR:
@@ -781,8 +782,9 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
         for (datatype, content) in stream_python_output(resp):
             if datatype == StreamDatatypes.EXIT:
                 _restore_stop_handlers()
-                click.echo(f'Process exited with code {content}')
-                sys.exit(content)
+                code = normalize_exit_code(content)
+                click.echo(f'Process exited with code {code}')
+                sys.exit(code)
             elif datatype == StreamDatatypes.STDOUT:
                 click.echo(content.decode("utf-8", errors="ignore"), nl=False)
             elif datatype == StreamDatatypes.STDERR:
@@ -818,7 +820,7 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
 @click.option('--download', type=click.Path(exists=False, dir_okay=False), multiple=True, help='File to download after completion')
 @click.option('--allow-overwrite', is_flag=True, default=False, help='Overwrite existing files when downloading')
 @click.option('--signal', 'signum', default='SIGTERM', type=_SIGNAL_CHOICES, help='Signal to use with --kill/--kill-all', show_default=True)
-@click.option('--timeout', type=click.IntRange(min=0), default=0, required=False, help='Max runtime in seconds (0=no timeout)')
+@click.option('--timeout', type=click.IntRange(min=0), default=0, required=False, help='Max runtime in seconds (0=no timeout). The box applies a ceiling and logs when it does. Not applied with --detach.')
 @click.option('--detach', '-d', is_flag=True, required=False, default=False, help='Detach')
 @click.option('--port', '-p', multiple=True, help='Port forwarding (SRC_PORT[:DST_PORT][/PROTOCOL])', type=PortForwardType())
 @click.option('--org', default=None, hidden=True)

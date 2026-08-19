@@ -70,6 +70,85 @@ LAGER_PYTHON_IP_ADDR = '172.18.0.10'  # Docker-internal network default; overrid
 QUIESCE_WAIT_S = CLEANUP_MAX_S + 2 * TERMINATE_GRACE_S + 5.0
 
 
+
+def _wrap_with_timeout(command, timeout, detach):
+    """Wrap a job's argv in /usr/bin/timeout, or return it unchanged.
+
+    Pure: no processes, no filesystem. Extracted from ``execute`` so the
+    contract can be asserted without standing up a job -- what the deadline
+    is, what happens when it passes, and when the wrapper is absent.
+
+    ``--kill-after`` is what makes the deadline enforceable. GNU timeout sends
+    SIGTERM at the deadline and nothing more, so a script that never returns
+    from it never dies: one blocked in an uninterruptible call (a
+    pyvisa/libusb/serial read -- the normal case on a box) or one that installs
+    its own SIGTERM handler runs on until something else kills it.
+    ``lager python --timeout 3`` against a 30-second sleep was measured still
+    running 17 minutes later, ended by a CI step timeout rather than by the
+    timeout it was given. Measured against coreutils 9.1 with the grace in
+    place, the same script exits at deadline+grace with 137 --
+    ``SIGKILL_EXIT_CODE``, which the CLI has always had a message for and could
+    never reach.
+
+    The grace window is ``CLEANUP_GRACE_S``, matching the SIGTERM->SIGKILL
+    escalation ``_signal_and_reap`` already applies, so a job is escalated the
+    same way however it is being stopped. Longer would let a wedged job hold
+    the bench past the point ``QUIESCE_WAIT_S`` assumes it has been reaped.
+
+    What the grace does NOT buy is a script's own ``finally``. Measured against
+    coreutils 9.1 and CPython 3: SIGTERM's default disposition terminates the
+    interpreter outright, so a ``try/finally`` around the work does not unwind
+    on this path -- and did not before this change either. (``_signal_targets``
+    reasons carefully about truncating cleanup, but that is about SIGINT, which
+    CPython does raise as ``KeyboardInterrupt``; ``timeout`` sends SIGTERM.) So
+    the grace is what it looks like -- a wait before force-killing -- and it
+    matters for the two cases that outlive SIGTERM: a script that installs its
+    own handler, and one wedged in an uninterruptible call where no grace
+    length would have helped.
+
+    Making the deadline run bench teardown would mean sending SIGINT instead
+    (``timeout --signal=INT``), which changes the exit code a script can report
+    and is a larger behavioural change than the deadline not working.
+
+    Args:
+        command: the job's argv
+        timeout: requested seconds; 0 means no limit. Values above
+            MAX_TIMEOUT are capped to it, with a warning -- the cap used to be
+            a silent ``min()``, so a job asking for 600s ran 300 and nothing
+            said so, which reads as the timeout firing early rather than as a
+            ceiling being applied.
+        detach: detached jobs are not wrapped. The wrapper would become the
+            group leader ``_signal_targets`` reasons about, and detached jobs
+            are torn down through a different path (``start_new_session``,
+            ``_kill_by_proc_id``). ``--timeout`` therefore does not apply to
+            ``-d``, which is worth saying rather than leaving to be discovered.
+
+    Returns:
+        The argv to execute.
+    """
+    if detach:
+        if timeout:
+            logger.warning(
+                'timeout=%ss ignored: detached jobs are not run under '
+                '/usr/bin/timeout', timeout,
+            )
+        return command
+
+    effective = min(timeout, MAX_TIMEOUT)
+    if timeout > MAX_TIMEOUT:
+        logger.warning(
+            'requested timeout %ss exceeds the box ceiling of %ss; using %ss',
+            timeout, MAX_TIMEOUT, effective,
+        )
+    # A duration of 0 disables the timeout (coreutils), so the wrapper is inert
+    # on the default path and --kill-after never comes into play. Verified
+    # against coreutils 9.1 rather than assumed.
+    return [
+        '/usr/bin/timeout',
+        '--kill-after', str(CLEANUP_GRACE_S),
+        str(effective),
+    ] + command
+
 def _release_hardware_service_direct_usb_claims():
     """Best-effort handoff: drop hardware_service's direct-USB claims.
 
@@ -265,7 +344,11 @@ class PythonExecutor:
             args: List of command-line arguments (bytes)
             env_vars: List of environment variable strings ("KEY=value")
             detach: Run in detached mode (don't wait for completion)
-            timeout: Maximum execution time in seconds
+            timeout: Maximum execution time in seconds. 0 means no limit;
+                values above MAX_TIMEOUT are capped to it, with a warning.
+                Enforced by /usr/bin/timeout, which sends SIGTERM at the
+                deadline and SIGKILL CLEANUP_GRACE_S later. Not applied to
+                detached jobs.
             stdout_is_stderr: Redirect stderr to stdout
             client_ip: IP address of the client (for logging)
             muxes: Multiplexer configuration JSON
@@ -345,11 +428,7 @@ class PythonExecutor:
             if args:
                 command.extend([arg.decode() if isinstance(arg, bytes) else arg for arg in args])
 
-            # Set up timeout (use timeout command directly, not docker exec)
-            if not detach:
-                base_command = ['/usr/bin/timeout', str(min(timeout, MAX_TIMEOUT))] + command
-            else:
-                base_command = command
+            base_command = _wrap_with_timeout(command, timeout, detach)
 
             # Merge environment variables with current environment
             full_env = os.environ.copy()
