@@ -272,20 +272,14 @@ def echo_box_request_failure(box_ip: str, exc, timeout=None) -> None:
 _fetch_nets_unreachable_warned: set[str] = set()
 
 
-def fetch_nets(box_ip: str) -> list[dict]:
-    """Fetch all saved nets from the box over HTTP (:9000/nets/list).
+def fetch_nets_checked(box_ip: str) -> tuple[list[dict], bool]:
+    """Fetch saved nets and report whether the box was reachable.
 
-    Returns the raw saved-net records (name/role/instrument/pin/address/params).
-    This replaces the old `net.py list` exec on :5000 — listing is now a plain
-    read against the long-lived box HTTP server.
-
-    Falls back to the older `/uart/nets/list` shape ({"nets": [...]}) so the CLI
-    keeps listing on box images that predate `/nets/list`.
-
-    Returns [] when the box has no nets — and also when it is unreachable, so
-    callers can keep treating the result uniformly. To stop connectivity
-    problems masquerading as "no nets configured", the unreachable case prints
-    a stderr warning (once per box per process) before returning [].
+    Same as :func:`fetch_nets`, but returns ``(nets, reachable)``. Callers that
+    turn an empty listing into a user-facing verdict need the second value:
+    "no nets configured" and "could not reach the box" both arrive here as [],
+    and telling someone to create a net that already exists sends the diagnosis
+    somewhere the fault never was.
     """
     import requests
     from ..gateway_auth import auth_headers_for_box
@@ -303,7 +297,7 @@ def fetch_nets(box_ip: str) -> list[dict]:
             if isinstance(data, dict):
                 data = data.get("nets", [])
             if isinstance(data, list):
-                return data
+                return data, True
     except (requests.ConnectionError, requests.Timeout):
         connect_failures += 1
     except (requests.RequestException, ValueError):
@@ -317,7 +311,7 @@ def fetch_nets(box_ip: str) -> list[dict]:
             data = resp.json()
             nets = data.get("nets", []) if isinstance(data, dict) else data
             if isinstance(nets, list):
-                return nets
+                return nets, True
     except (requests.ConnectionError, requests.Timeout):
         connect_failures += 1
     except (requests.RequestException, ValueError):
@@ -332,7 +326,26 @@ def fetch_nets(box_ip: str) -> list[dict]:
             fg="yellow", err=True,
         )
 
-    return []
+    return [], connect_failures < 2
+
+
+
+def fetch_nets(box_ip: str) -> list[dict]:
+    """Fetch all saved nets from the box over HTTP (:9000/nets/list).
+
+    Returns the raw saved-net records (name/role/instrument/pin/address/params).
+    This replaces the old `net.py list` exec on :5000 — listing is now a plain
+    read against the long-lived box HTTP server.
+
+    Falls back to the older `/uart/nets/list` shape ({"nets": [...]}) so the CLI
+    keeps listing on box images that predate `/nets/list`.
+
+    Returns [] when the box has no nets — and also when it is unreachable, so
+    callers can keep treating the result uniformly. To stop connectivity
+    problems masquerading as "no nets configured", the unreachable case prints
+    a stderr warning (once per box per process) before returning [].
+    """
+    return fetch_nets_checked(box_ip)[0]
 
 
 def post_net_command(
@@ -966,10 +979,25 @@ def validate_net_exists(
         if net is None:
             return  # Error already displayed
     """
-    nets = list_nets_by_role(ctx, box, role)
+    records, reachable = fetch_nets_checked(box)
+    nets = [r for r in records if r.get("role") == role]
     matching = next((n for n in nets if n.get('name') == netname), None)
 
     if not matching:
+        # An unreachable box also yields an empty listing. Reporting that as
+        # "net not found" — and then telling the user to create a net that
+        # already exists on the box — points the diagnosis at the wrong thing.
+        if not reachable:
+            click.secho(
+                f"Error: cannot reach box at {box}:{NET_HTTP_PORT}, so net "
+                f"'{netname}' could not be verified. Check network/Tailscale "
+                f"and that the box is online and updated.",
+                fg='red', err=True,
+            )
+            if exit_on_error:
+                ctx.exit(1)
+            return None
+
         available = [n.get('name') for n in nets]
         click.secho(f"Error: Net '{netname}' with role '{role}' not found", fg='red', err=True)
         if available:

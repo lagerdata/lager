@@ -1,0 +1,46 @@
+---
+title: "Version 0.39.1"
+description: "August 19, 2026"
+---
+
+## <u>Bug Fixes</u>
+
+- **`lager supply <net> tui` now works when `--box` is a saved box name.** The
+  subcommand looked up the box's address and then ignored it, sending the
+  net-listing request to a host literally named after the saved box name. That
+  name resolves only by accident — if it also happens to be a real DNS name.
+  Where it did not, the request never reached the box; the listing came back
+  empty and the command reported `'BATT' is not a power supply net` for a net
+  `lager nets` displayed correctly. The error pointed at the net when the real
+  fault was that the box was never contacted.
+
+  Only `supply ... tui` was affected — every other `supply` subcommand already
+  used the resolved address. Passing an IP instead of a name always worked, and
+  remains the workaround on older CLIs. The fault is entirely client-side: no
+  box needs updating, and box version is irrelevant. Present since 0.32.0, when
+  net listing moved to the `:9000` HTTP API and the argument that had been
+  harmless became the URL host.
+
+- **A net check against an unreachable box no longer reports the net as
+  missing.** An unreachable box and a box with no nets both produce an empty
+  listing, and the two were indistinguishable — so an unreachable box produced
+  "net not found" plus advice to create a net that already existed on it. The
+  check now separates the two cases and reports the connectivity failure.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.39.1
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.39.1/)
