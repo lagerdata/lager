@@ -24,6 +24,29 @@ All notable changes to the Lager platform are documented here. For detailed rele
   one they can apply, while a pull needs no buildx at all -- so the error now
   also points at `--pull` for targets that have a published image.
 
+## [0.39.1] - 2026-08-19
+
+### Fixed
+
+- **`lager supply <net> tui` now reaches the box when `--box` is a saved name.**
+  The subcommand resolved the box name to its address, then passed the *raw*
+  `--box` value to the net-listing validation, so the listing was requested from
+  a host literally named after the saved box name -- which resolves only by
+  accident, if that name also happens to be a real DNS name. Where it does not,
+  every listing failed, came back empty, and the command reported `'BATT' is not
+  a power supply net` while `lager nets` listed that exact net. Only the TUI
+  subcommand was affected; every other `supply` subcommand already resolved
+  first. Passing an IP always worked, and so did a name DNS happened to resolve,
+  which is why the bug looked intermittent. Present since 0.32.0, when net
+  listing moved to the `:9000` HTTP API and the previously harmless argument
+  became the URL host.
+
+- **A net check against an unreachable box no longer reports the net as
+  missing.** `fetch_nets` returns `[]` both when a box has no nets and when it
+  cannot be reached, and `validate_net_exists` read that as "not found" -- then
+  advised creating a net that already existed on the box. It now distinguishes
+  the two and reports the connectivity failure instead.
+
 ## [0.39.0] - 2026-08-19
 
 ### Added

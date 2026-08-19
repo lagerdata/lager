@@ -398,5 +398,109 @@ class TestSupplyStartupNonBlocking:
         asyncio.run(main())
 
 
+# --------------------------------------------------------------------------- #
+# `lager supply <NET> tui` command-level validation                            #
+#                                                                              #
+# Regression: the subcommand resolved the box, then passed the RAW --box value #
+# to the net-listing validation. A saved name like "bench-1" is not            #
+# DNS-resolvable, so http://bench-1:9000/nets/list always failed, the listing  #
+# came back empty, and the user was told "'BATT' is not a power supply net"    #
+# while `lager nets --box bench-1` listed BATT perfectly well.                 #
+# --------------------------------------------------------------------------- #
+
+import requests
+from click.testing import CliRunner
+
+net_helpers = importlib.import_module('cli.core.net_helpers')
+supply_mod = importlib.import_module('cli.commands.power.supply')
+
+BOX_NAME = "bench-1"
+BOX_IP = "192.0.2.10"
+
+_BATT = {"name": "BATT", "role": "power-supply", "channel": "1"}
+_SWD = {"name": "SWD", "role": "debug", "channel": "da14695"}
+
+
+class _Obj:
+    """Settable stand-in for the LagerContext."""
+
+
+class _Resp:
+    def __init__(self, status_code=200, payload=None):
+        self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+
+    def json(self):
+        return self._payload
+
+
+def _invoke_tui(argv, get_impl):
+    """Run `supply ... tui` with the box boundary and the TUI itself mocked.
+
+    Returns (result, urls) where urls is every URL fetch_nets_checked requested.
+    """
+    urls: list[str] = []
+
+    def get(url, timeout=None, headers=None):
+        urls.append(url)
+        return get_impl(url)
+
+    fake_tui_mod = MagicMock()
+    fake_tui_mod.SupplyTUI.return_value = MagicMock(exit_error=None)
+
+    net_helpers._fetch_nets_unreachable_warned.clear()
+
+    with patch("requests.get", get), \
+            patch.object(supply_mod, "resolve_box_locked",
+                         lambda ctx, box, kind: BOX_IP), \
+            patch.object(supply_mod, "asyncio", MagicMock()), \
+            patch.dict(sys.modules, {"cli.supply.supply_tui": fake_tui_mod}):
+        result = CliRunner().invoke(
+            supply_mod.supply, argv, obj=_Obj(), catch_exceptions=False)
+    return result, urls
+
+
+class TestSupplyTuiValidation:
+
+    def test_lists_nets_against_resolved_ip_not_box_name(self):
+        """The bug: the listing URL was built from the raw --box name."""
+        result, urls = _invoke_tui(
+            ["BATT", "tui", "--box", BOX_NAME], lambda url: _Resp(200, [_BATT]))
+
+        assert urls, "expected a /nets/list request"
+        assert all(BOX_IP in u for u in urls), urls
+        assert not any(BOX_NAME in u for u in urls), urls
+        assert result.exit_code == 0, result.output
+
+    def test_launches_tui_when_net_is_a_supply(self):
+        result, _ = _invoke_tui(
+            ["BATT", "tui", "--box", BOX_NAME], lambda url: _Resp(200, [_BATT]))
+
+        assert result.exit_code == 0, result.output
+        assert "not a power supply net" not in result.output
+
+    def test_wrong_role_names_the_available_supply_nets(self):
+        result, _ = _invoke_tui(
+            ["SWD", "tui", "--box", BOX_NAME],
+            lambda url: _Resp(200, [_BATT, _SWD]))
+
+        assert result.exit_code != 0
+        assert "SWD" in result.output
+        assert "Available power-supply nets: BATT" in result.output
+
+    def test_unreachable_box_reports_connectivity_not_missing_net(self):
+        def get(url):
+            raise requests.ConnectionError()
+
+        result, _ = _invoke_tui(["BATT", "tui", "--box", BOX_NAME], get)
+
+        assert result.exit_code != 0
+        assert f"cannot reach box at {BOX_IP}" in result.output
+        # The old failure mode: blaming the net, then telling the user to
+        # create one that already exists on the box.
+        assert "not found" not in result.output
+        assert "lager nets add" not in result.output
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

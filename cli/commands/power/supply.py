@@ -28,7 +28,6 @@ from ...core.net_helpers import (
     require_netname,
     resolve_box,
     resolve_box_locked,
-    validate_net,
     validate_net_exists,
     display_nets,
     echo_box_request_failure,
@@ -317,9 +316,12 @@ def tui(ctx, box):
     resolved_box = resolve_box_locked(ctx, box, 'supply')
     netname = require_netname(ctx, "supply")
 
-    if not validate_net(ctx, box, netname, SUPPLY_ROLE):
-        click.secho(f"Error: '{netname}' is not a power supply net", fg='red', err=True)
-        ctx.exit(1)
+    # Must be the RESOLVED box: validate_net_exists lists nets over
+    # http://<box>:9000, and a saved name like "bench-1" is not DNS-resolvable,
+    # so passing the raw --box value made every listing fail and reported the
+    # net as missing rather than the box as unreachable.
+    if validate_net_exists(ctx, resolved_box, netname, SUPPLY_ROLE) is None:
+        return  # Error already displayed
 
     try:
         # Import from the original supply location for TUI
