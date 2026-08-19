@@ -2,6 +2,28 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Fixed
+
+- **`lager update --pull` now pulls anonymously, so a box's own registry
+  credentials cannot disable it.** A box that ever authenticated to `ghcr.io`
+  for something unrelated sent those credentials on the pull; GHCR evaluated
+  them against the `lager-box` repository rather than falling back to
+  anonymous, and answered `denied: denied` for a package anyone can read. The
+  update recovered -- the denial is classified and falls back to a local build
+  -- but the pull silently stopped helping that box for a reason unrelated to
+  the image. The pull now runs through a throwaway empty docker config, so it
+  behaves identically on every box. Verified on a box by planting a
+  deliberately wrong `ghcr.io` credential and confirming the pull still
+  succeeded.
+
+- **A box that cannot build is now told it can still pull.** When Docker >= 23
+  has no buildx plugin, `lager update` fails the BuildKit preflight and tells
+  the operator to install the plugin. That is the slower fix and sometimes not
+  one they can apply, while a pull needs no buildx at all -- so the error now
+  also points at `--pull` for targets that have a published image.
+
 ## [0.38.0] - 2026-08-18
 
 ### Added
