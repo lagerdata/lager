@@ -12,7 +12,9 @@ All notable changes to the Lager platform are documented here. For detailed rele
   Add button. Three changes, all in the TUI:
   - LabJack I2C/SPI rows tag default pins as `(default)` and drop the tag
     once custom pins are chosen, and the screen carries a hint line saying
-    the pins can be changed.
+    the pins can be changed. Warnings and the hint render as compact
+    single-line notices in one block with a `✕ Dismiss` button, so they
+    can't crowd the net list out of view.
   - Each such row grows a `[⚙]` button (mouse or arrow-key + Enter) that
     opens the existing pin-picker right away, so pins can be set while
     selecting nets instead of only after pressing Add. Nets configured this
