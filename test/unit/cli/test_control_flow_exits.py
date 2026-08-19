@@ -19,6 +19,7 @@ Two layers here:
      because a static check that cannot fail is worse than none.
 """
 
+import importlib
 import os
 import subprocess
 import sys
@@ -32,7 +33,14 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))))
 sys.path.insert(0, REPO_ROOT)
 
-from cli.commands.utility.update import update  # noqa: E402
+# The MODULE, resolved explicitly. `cli/commands/utility/__init__.py` re-exports
+# the click Command as `update`, so the dotted string
+# 'cli.commands.utility.update' is ambiguous: mock.patch resolves it to the
+# module on 3.11+ and to the Command on 3.10, where the patches then fail with
+# "<Command update> does not have the attribute ...". patch.object against this
+# does no string resolution at all.
+update_mod = importlib.import_module('cli.commands.utility.update')
+update = update_mod.update
 
 CHECKER = os.path.join(REPO_ROOT, 'tools', 'check_control_flow_handlers.py')
 
@@ -46,12 +54,12 @@ class CheckExitCodeSurvives(unittest.TestCase):
 
     def _run(self, extra=()):
         runner = CliRunner()
-        with mock.patch('cli.commands.utility.update.resolve_and_validate_box',
-                        return_value='192.0.2.10'), \
-             mock.patch('cli.commands.utility.update.get_box_user',
-                        return_value='lagerdata'), \
-             mock.patch('cli.commands.utility.update.key_installed_on_box',
-                        return_value=False):
+        with mock.patch.object(update_mod, 'resolve_and_validate_box',
+                               return_value='192.0.2.10'), \
+             mock.patch.object(update_mod, 'get_box_user',
+                               return_value='lagerdata'), \
+             mock.patch.object(update_mod, 'key_installed_on_box',
+                               return_value=False):
             return runner.invoke(
                 update, ['--box', 'testbox', '--check', *extra],
                 catch_exceptions=False)
