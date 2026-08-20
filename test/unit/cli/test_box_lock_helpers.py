@@ -1401,3 +1401,144 @@ class TestImperativeAcquirePassesTheTtl:
         err = capsys.readouterr().err
         assert 'will expire if this continues' in err
         assert 'may be unreachable' not in err
+
+
+# ---------------------------------------------------------------------------
+# lock_scope / _lock_held_by_self  (issue #307)
+# ---------------------------------------------------------------------------
+
+
+GITHUB_HOLDER = 'ci:github:lagerdata/lager#32207024869-1/hardware-tests@MASTER:{}'
+
+
+class TestLockScope:
+    """The pid is the only part that may differ between two commands of one job."""
+
+    @pytest.mark.parametrize('template', [
+        # Trailing pid.
+        'ci:github:r/r#1-1/job@runner:{}',
+        'ci:generic:bench:{}',
+        # Pid mid-string, before @host -- the shape a suffix strip would miss.
+        'ci:drone:org/proj#15:{}@runner-7',
+        'ci:gitlab:grp/proj#991/test:{}@runner-7',
+        'ci:bitbucket:team/repo#77:{}@runner-7',
+        'ci:jenkins:job-main-42:{}@runner-7',
+    ])
+    def test_pid_does_not_change_the_scope(self, template):
+        assert (box_storage.lock_scope(template.format(11))
+                == box_storage.lock_scope(template.format(22222)))
+
+    @pytest.mark.parametrize('identity', [
+        'alice',
+        'alice@example.com',          # an @ with no pid must survive intact
+        'web:17:alice@example.com',   # dashboard reservation
+        '',
+        None,
+    ])
+    def test_non_ci_identities_pass_through_unchanged(self, identity):
+        assert box_storage.lock_scope(identity) == identity
+
+    def test_a_numeric_jenkins_build_tag_is_not_mistaken_for_the_pid(self):
+        # BUILD_TAG can be all digits; only the pid run is followed by @ or EOS.
+        assert (box_storage.lock_scope('ci:jenkins:42:7@host')
+                == box_storage.lock_scope('ci:jenkins:42:8@host')
+                == 'ci:jenkins:42@host')
+
+    def test_different_jobs_of_one_run_stay_distinct(self):
+        a = box_storage.lock_scope('ci:github:r/r#1-1/jobA@M:1')
+        b = box_storage.lock_scope('ci:github:r/r#1-1/jobB@M:1')
+        assert a != b
+
+    def test_different_runs_of_one_job_stay_distinct(self):
+        a = box_storage.lock_scope('ci:github:r/r#1-1/job@M:1')
+        b = box_storage.lock_scope('ci:github:r/r#2-1/job@M:1')
+        assert a != b
+
+
+class TestLockHeldBySelf:
+    """Both acquire paths must be recognised, or a job is refused its own lock."""
+
+    def _github_env(self, monkeypatch, pid):
+        monkeypatch.setenv('CI', 'true')
+        monkeypatch.setenv('GITHUB_RUN_ID', '32207024869')
+        monkeypatch.setenv('GITHUB_REPOSITORY', 'lagerdata/lager')
+        monkeypatch.setenv('GITHUB_RUN_ATTEMPT', '1')
+        monkeypatch.setenv('GITHUB_JOB', 'hardware-tests')
+        monkeypatch.setenv('RUNNER_NAME', 'MASTER')
+        monkeypatch.setattr(os, 'getpid', lambda: pid)
+
+    def test_ci_job_recognises_its_own_lock_from_a_later_process(self, monkeypatch):
+        # This is issue #307: every `lager` call is a new pid, so the second
+        # command of a job was refused by the lock the first one acquired.
+        self._github_env(monkeypatch, 4242)
+        held = box_storage.get_lock_holder()
+        self._github_env(monkeypatch, 9999)
+        assert box_storage._lock_held_by_self(held)
+
+    def test_a_different_job_in_the_same_run_is_still_refused(self, monkeypatch):
+        self._github_env(monkeypatch, 1)
+        monkeypatch.setenv('GITHUB_JOB', 'unit-tests')
+        other = box_storage.get_lock_holder()
+        monkeypatch.setenv('GITHUB_JOB', 'hardware-tests')
+        assert not box_storage._lock_held_by_self(other)
+
+    def test_a_manual_boxes_lock_is_still_recognised_under_ci(self, monkeypatch):
+        # test/framework/harness.sh acquires `lager boxes lock`, which stores a
+        # plain user rather than a CI holder. Fixing auto-lock must not break it.
+        self._github_env(monkeypatch, 1)
+        monkeypatch.setattr(box_storage, 'get_lager_user', lambda: 'ci-bench')
+        assert box_storage._lock_held_by_self('ci-bench')
+
+    def test_lager_lock_holder_override_now_matches(self, monkeypatch):
+        # The override existed but could never satisfy the old comparison.
+        monkeypatch.setenv('LAGER_LOCK_HOLDER', 'shared-matrix-identity')
+        assert box_storage._lock_held_by_self('shared-matrix-identity')
+
+    def test_dev_machine_own_lock(self, monkeypatch):
+        monkeypatch.setattr(box_storage, 'get_lager_user', lambda: 'alice')
+        assert box_storage._lock_held_by_self('alice')
+
+    def test_a_genuinely_foreign_holder_is_refused(self, monkeypatch):
+        monkeypatch.setattr(box_storage, 'get_lager_user', lambda: 'alice')
+        assert not box_storage._lock_held_by_self('bob')
+        assert not box_storage._lock_held_by_self('ci:github:r/r#9-1/j@rn:5')
+
+
+class TestCheckBoxLock:
+    """The refusal path itself, which had no coverage before #307."""
+
+    @pytest.fixture(autouse=True)
+    def _no_gateway(self, monkeypatch):
+        monkeypatch.setattr(box_storage, '_gateway_kwargs', lambda ip: {})
+        monkeypatch.setattr(box_storage, '_check_gateway', lambda resp, ip: resp)
+        box_storage._lock_check_unsupported_warned.clear()
+
+    def _locked_by(self, monkeypatch, holder):
+        monkeypatch.setattr(
+            requests, 'get',
+            lambda *a, **k: _FakeResp(200, {'locked': True, 'user': holder}))
+
+    def test_a_job_is_not_refused_its_own_lock(self, monkeypatch):
+        monkeypatch.setenv('LAGER_LOCK_HOLDER', 'mine')
+        self._locked_by(monkeypatch, 'mine')
+        box_storage._check_box_lock('10.0.0.1', 'MASTER')   # must not raise
+
+    def test_a_foreign_lock_still_exits_1(self, monkeypatch, capsys):
+        monkeypatch.setattr(box_storage, 'get_lager_user', lambda: 'alice')
+        self._locked_by(monkeypatch, 'bob')
+        with pytest.raises(SystemExit) as exc:
+            box_storage._check_box_lock('10.0.0.1', 'MASTER')
+        assert exc.value.code == 1
+        assert 'locked by' in capsys.readouterr().err
+
+    def test_an_unlocked_box_passes(self, monkeypatch):
+        monkeypatch.setattr(
+            requests, 'get', lambda *a, **k: _FakeResp(200, {'locked': False}))
+        box_storage._check_box_lock('10.0.0.1', 'MASTER')
+
+    def test_an_old_image_warns_once_instead_of_refusing(self, monkeypatch, capsys):
+        monkeypatch.setattr(requests, 'get', lambda *a, **k: _FakeResp(404))
+        box_storage._check_box_lock('10.0.0.1', 'MASTER')
+        assert 'without lock support' in capsys.readouterr().err
+        box_storage._check_box_lock('10.0.0.1', 'MASTER')
+        assert capsys.readouterr().err == ''

@@ -6,6 +6,7 @@
 """
 import json
 import os
+import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -470,6 +471,44 @@ def get_lock_holder():
     return f'ci:generic:{host}:{pid}'
 
 
+# The pid that makes a holder unique per process sits in a different place
+# depending on the provider (see ``get_lock_holder``): trailing for GitHub and
+# generic, mid-string before ``@{host}`` for Drone, GitLab, Bitbucket and
+# Jenkins. Both shapes are a ``:<digits>`` run that is either at the end of the
+# string or immediately before an ``@``.
+_LOCK_PID_RE = re.compile(r':\d+(?=@|$)')
+
+
+def lock_scope(identity):
+    """Return ``identity`` with the per-process part removed.
+
+    Every ``lager`` invocation is a new process, so comparing raw holder
+    strings means a CI job never recognises its own lock on its second
+    command. Dropping the pid leaves the run/attempt/job/runner scope, which
+    is what "the same job" means: two jobs of one run stay distinct, and so do
+    two runs of one workflow.
+    """
+    if not identity:
+        return identity
+    return _LOCK_PID_RE.sub('', identity)
+
+
+def _lock_held_by_self(locked_by):
+    """Is ``locked_by`` a lock this process is entitled to use?
+
+    There are two acquire paths writing two kinds of holder, and the check has
+    to accept both: ``lager boxes lock`` (and ``test/framework/harness.sh``)
+    stores a plain user, while auto-lock stores ``get_lock_holder()``'s CI
+    identity. Comparing only against ``get_lager_user()`` is what refused a CI
+    job its own auto-lock -- the two strings can never be equal in CI, and the
+    bug is invisible on a dev machine because ``get_lock_holder()`` falls back
+    to ``get_lager_user()`` there, making both arms the same string.
+    """
+    if lock_scope(locked_by) == lock_scope(get_lock_holder()):
+        return True
+    return locked_by == get_lager_user()
+
+
 # Boxes we've already warned about missing :9000 lock support (old images);
 # once per CLI process so every command doesn't repeat the warning.
 _lock_check_unsupported_warned = set()
@@ -505,8 +544,7 @@ def _check_box_lock(ip, box_name):
             data = resp.json()
             if data.get('locked'):
                 locked_by = data.get('user', 'unknown')
-                current_user = get_lager_user()
-                if locked_by != current_user:
+                if not _lock_held_by_self(locked_by):
                     display = box_name or ip
                     display_user = format_lock_user(locked_by)
                     click.secho(
