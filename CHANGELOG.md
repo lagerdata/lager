@@ -74,6 +74,32 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- **A failed Docker install step now names the command that failed.** The step
+  ran eight commands as one `&&` chain behind a single
+  `[ERROR] Failed to install Docker`; four of them print nothing on success, so
+  a failure in any of those left a transcript that simply stopped, with no
+  command named and nothing to act on. Each link now reports its own label and
+  exit status, the failure message points at that line, and it offers
+  `systemctl status docker` / `journalctl -xeu docker.service` when the
+  packages landed and the daemon is the likely cause.
+
+- **`ssh_t` no longer prints ssh's own errors out of order.** The
+  "connection closed" filter ran in a process substitution, which bash does not
+  wait for, so a real diagnostic ("Permission denied", "Connection refused")
+  could land after the caller had already printed its generic failure -- 26 of
+  200 runs against a stub ssh that fails immediately, 0 of 200 after. The
+  filter now runs over captured output, in order.
+
+- **The printed manual-recovery commands are equivalent to the step they
+  replace again.** `systemctl enable docker` was missing from them, and a
+  re-run skips the whole install block once `command -v docker` succeeds, so a
+  box recovered by hand worked until its next reboot and then came up with no
+  docker daemon. The `enable` in the container step also announced success
+  whether or not it worked; it now checks `systemctl is-enabled` and warns when
+  the unit is not enabled. `systemctl enable docker` is granted on both
+  `/bin` and `/usr/bin` in the generated sudoers, matching `restart` and
+  `reset-failed`.
+
 - **`lager update --pull` now pulls anonymously, so a box's own registry
   credentials cannot disable it.** A box that ever authenticated to `ghcr.io`
   for something unrelated sent those credentials on the pull; GHCR evaluated
