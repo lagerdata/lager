@@ -159,9 +159,9 @@ class TestListDir:
 @pytest.mark.unit
 class TestGating:
     def test_register_adds_exactly_the_primitives(self):
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server.mcpserver import MCPServer
 
-        m = FastMCP("test-exec")
+        m = MCPServer("test-exec")
         exec_tools.register(m)
         names = {t.name for t in _run(m.list_tools)}
         assert {"box_exec", "read_file", "write_file", "list_dir"} <= names

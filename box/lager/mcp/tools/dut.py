@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 
+from mcp.server.mcpserver import Context
+
 from ..server import connecting_host, mcp
 from ..server_state import get_bench
 
@@ -30,7 +32,7 @@ def _find_dut_for_net(bench, net_name: str):
 
 
 @mcp.tool()
-def discover_dut() -> str:
+def discover_dut(ctx: Context) -> str:
     """Quick orientation: what is this box and what does it test?
 
     Returns the DUT purpose, MCU, key peripherals, subsystem list, and
@@ -43,7 +45,7 @@ def discover_dut() -> str:
     """
     bench = get_bench()
     duts = bench.dut_slots
-    host = connecting_host()
+    host = connecting_host(ctx)
     box_arg = host or "<box-ip>"
 
     if not duts:

@@ -38,6 +38,40 @@ All notable changes to the Lager platform are documented here. For detailed rele
   an image" cannot drift from "what has a tag". A test pins that agreement
   against the client's own answer.
 
+### Changed
+
+- **The box's MCP server is ported to MCP Python SDK v2, and the `mcp`
+  dependency is uncapped.** v0.33.1 pinned `mcp` below 2.0 in both the box
+  image and the CLI's optional `mcp` extra, because SDK 2.0 renamed `FastMCP`
+  to `MCPServer` and moved transport configuration (`host`, `port`,
+  `transport_security`) off `mcp.settings` onto `run()` /
+  `streamable_http_app()`. `box/lager/mcp/server.py` now uses the 2.x API and
+  both constraints move to `>=2.0.0,<3` -- a floor, not just a wider ceiling,
+  since the server can no longer import under 1.x. Boxes pick this up on the
+  next `lager update`.
+
+  Two behaviours worth knowing about, neither visible in the tool surface:
+
+  - SDK 2.0 removed the ambient `mcp.get_context()`, so the per-request
+    context is now injected as a tool parameter and handed down explicitly.
+    `discover_bench` and `discover_dut` still echo the address you connected
+    on into their `lager python ... --box <addr>` hint; that address is read
+    from the request `Host` header, falling back to the socket peer, exactly
+    as before.
+  - DNS-rebinding protection now auto-arms inside `streamable_http_app()`
+    unless transport security is passed explicitly. The server passes it, so
+    a box reached at its LAN address keeps answering rather than returning
+    `421 Invalid Host header`.
+
+  The MCP endpoint is unchanged: `http://<box-ip>:8100/mcp`.
+
+- **`mcp` is now a direct test requirement instead of arriving under
+  `fastmcp`.** Nothing in the tree imports `fastmcp`; it was listed only as a
+  way to pull the SDK in, and its own dependency chain capped `mcp` below 2.0
+  -- which silently decided which SDK major every unit suite ran against, and
+  would have made the test requirements unresolvable against the widened
+  extra. `test/requirements-unit.txt` names `mcp` itself.
+
 ### Fixed
 
 - **`lager update --pull` now pulls anonymously, so a box's own registry

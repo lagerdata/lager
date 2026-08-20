@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 
+from mcp.server.mcpserver import Context
+
 from ..server import connecting_host, mcp
 from ..server_state import get_bench, get_capability_graph
 
@@ -34,7 +36,7 @@ def _instrument_entry(inst) -> dict:
 
 
 @mcp.tool()
-def discover_bench(net_name: str | None = None) -> str:
+def discover_bench(ctx: Context, net_name: str | None = None) -> str:
     """Discover hardware on this bench.
 
     Without arguments, returns a summary: box ID, DUT slots, instruments,
@@ -87,7 +89,7 @@ def discover_bench(net_name: str | None = None) -> str:
     # The address the agent connected on is the right --box value. Echo it
     # literally when we can see the request; otherwise fall back to a
     # placeholder the agent must fill in itself.
-    host = connecting_host()
+    host = connecting_host(ctx)
     box_arg = host or "<box-ip>"
 
     role_counts: dict[str, int] = {}

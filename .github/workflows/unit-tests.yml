@@ -163,26 +163,30 @@ jobs:
         shell: bash
 
   # The `unit (mcp)` job above runs the mcp suite against whatever the test
-  # requirements happen to resolve -- the `mcp` package arrives TRANSITIVELY
-  # via fastmcp's own pin, so cli/setup.py's `[mcp]` extra constraint is
-  # never resolved by any check. That is how a widened cap could merge green
-  # while `pip install lager-cli[mcp]` breaks at runtime, and it is why
-  # dependabot had to ignore mcp majors outright.
+  # requirements resolve, which is NOT cli/setup.py's `[mcp]` extra. That is
+  # how a widened cap could merge green while `pip install lager-cli[mcp]`
+  # breaks at runtime, and it is why dependabot had to ignore mcp majors
+  # outright. It was worse before: `mcp` was not even named in the test
+  # requirements, arriving transitively under `fastmcp`, so an unrelated
+  # package's own cap silently decided which major every suite ran against.
+  # test/requirements-unit.txt now declares `mcp` directly.
   #
-  # TWO environments, deliberately. The first is the extra ALONE in a clean
-  # venv: the test requirements also pin fastmcp, whose own mcp cap re-narrows
-  # the resolution -- observed live on the first cap-widening PR, which ran
-  # green here while resolving mcp 1.29.0 under a cap that admitted 2.0. Only
-  # an extra-only venv resolves what a real `pip install lager-cli[mcp]` user
-  # gets. The probe is GENERATED from the server package's own mcp-SDK
+  # TWO environments, deliberately, because a direct declaration still is not
+  # the extra. The first is the extra ALONE in a clean venv -- the only thing
+  # that resolves what a real `pip install lager-cli[mcp]` user gets, with no
+  # test requirement able to re-narrow it. That re-narrowing is not
+  # hypothetical: the first cap-widening PR ran green here while resolving mcp
+  # 1.29.0 under a cap that admitted 2.0, because fastmcp was still pulling the
+  # ceiling down. The probe is GENERATED from the server package's own mcp-SDK
   # imports, so it cannot drift from what the code actually needs (mcp 2.0
-  # removed mcp.server.fastmcp -- the probe proves the resolved major still
-  # has every surface the server imports). The full server module cannot be
-  # imported here: it needs box-runtime deps the extra does not declare
-  # (same entanglement class as issue #242).
+  # renamed mcp.server.fastmcp to mcp.server.mcpserver -- the probe proves the
+  # resolved major still has every surface the server imports). The full server
+  # module cannot be imported here: it needs box-runtime deps the extra does
+  # not declare (same entanglement class as issue #242).
   #
   # The second environment adds the test requirements and runs the suite --
-  # execution-level proof under the resolution the suite supports.
+  # execution-level proof under the resolution the suite supports, and the
+  # check that the two declarations can still co-resolve at all.
   mcp-extra:
     name: mcp-extra
     runs-on: ubuntu-latest
@@ -227,7 +231,7 @@ jobs:
           pip install -e "cli/[mcp]"
           pip install 'pytest>=9,<10' 'pytest-timeout>=2.3,<3'
           pip install -r test/requirements-unit.txt
-          pip show mcp fastmcp | grep -E '^(Name|Version)'
+          pip show mcp | grep -E '^(Name|Version)'
         shell: bash
 
       - name: Import the MCP server module

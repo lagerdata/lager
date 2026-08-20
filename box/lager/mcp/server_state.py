@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 
 from .schemas.bench import BenchDefinition
 from .schemas.capability import CapabilityGraph
@@ -85,6 +86,14 @@ def init_state(
     )
 
 
+# Serialises the reload below. MCP SDK 2.0 runs synchronous tool/resource
+# handlers on anyio worker threads instead of inline on the event loop, so two
+# requests can now be inside _maybe_reload() at once. Without this, both see
+# the same mtime change and both call init_state(), which rebuilds _bench and
+# _graph in sequence -- briefly exposing a torn pair to a third reader.
+_reload_lock = threading.Lock()
+
+
 def _maybe_reload() -> None:
     """Reload bench state if any watched config file changed on disk.
 
@@ -93,7 +102,13 @@ def _maybe_reload() -> None:
     """
     if not _config_mtimes:
         return
-    if _snapshot_config_mtimes() != _config_mtimes:
+    if _snapshot_config_mtimes() == _config_mtimes:
+        return
+    with _reload_lock:
+        # Re-check under the lock: a thread that queued behind the reload
+        # would otherwise repeat work the winner already did.
+        if not _config_mtimes or _snapshot_config_mtimes() == _config_mtimes:
+            return
         logger.info("Config change detected on disk; reloading bench state.")
         init_state()
 
