@@ -434,7 +434,7 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     "Yocto_Watt": ["watt-meter"],
 
     # scope
-    "Rigol_MS05204": ["scope"],
+    "Rigol_MS05204": ["scope", "logic"],
     "Picoscope_2000": ["scope"],
 
     # adc / gpio / dac / spi

@@ -145,6 +145,20 @@ All notable changes to the Lager platform are documented here. For detailed rele
   The three scripts `lager logic` needs are recorded in a two-sided
   `KNOWN_MISSING` baseline (#261) -- a new unresolvable dispatch fails, and so
   does a listed name that starts resolving, so the baseline can only shrink.
+- **A Rigol MSO5204's logic channel can now have a net.** `lager instruments`
+  advertised `logic: 1` on the scope, but `lager nets add <name> logic ...` was
+  refused: the instrument's role list said `scope` only, while its channel map
+  listed both. `lager nets add` is the only gate on role -- the box stores what
+  it is given -- so the CLI's narrower copy made `lager logic` unusable on the
+  one instrument in the fleet that does logic capture.
+
+  The roles are written down three times (the box's `SUPPORTED_USB` and
+  `CHANNEL_MAPS`, and the CLI's `INSTRUMENT_NET_MAP`), which `nets.py` already
+  flagged as duplication. This was the only instrument where they disagreed;
+  `test_instrument_role_tables.py` now asserts all three agree for every
+  instrument, so the next omission fails a gate instead of quietly removing a
+  capability.
+
 
 ## [0.39.1] - 2026-08-19
 
