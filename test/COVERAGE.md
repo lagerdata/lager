@@ -36,13 +36,13 @@ are not.
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1602 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 1729 |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1610 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 1742 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 177 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 127 (+1 skipped) |
-| | **Total gated** | **3829** |
+| | **Total gated** | **3850** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -443,9 +443,9 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 154 files)
+### Local Unit Tests (`test/unit/` -- 156 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 80 files)
+#### Box Unit Tests (`test/unit/box/` -- 81 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported, and stubs the two third-party modules that are neither guarded nor installed
@@ -535,7 +535,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 61 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 62 files)
 
 | File | What it tests |
 |------|---------------|
