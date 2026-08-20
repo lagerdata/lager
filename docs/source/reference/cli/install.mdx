@@ -24,9 +24,38 @@ lager install [OPTIONS]
 | `--skip-verify` | flag | | Skip post-deployment verification |
 | `--corporate-vpn TEXT` | string | | Corporate VPN interface name for firewall rules (e.g., `tun0`) |
 | `--yes` | flag | | Skip confirmation prompts |
+| `--pull` | flag | on | Use the pre-built box image when the target is a release tag (the default) |
+| `--no-pull` | flag | | Always build the box image on the box |
 | `--help` | | | Show help message and exit |
 
 Either `--box` or `--ip` is required. If both are provided, the command exits with an error.
+
+## The Box Image
+
+The slowest part of an install is obtaining the box's Docker image. Building it
+on the box takes roughly 14 minutes -- an install always pays the full cost,
+because the deployment prunes the builder cache before it starts, so there is
+never a warm layer cache to reuse.
+
+Every release tag publishes a pre-built image, and `lager install` uses it by
+default: about 2 minutes instead of 14.
+
+This only applies when `--version` names a **release tag**. Branches such as
+`main` and `staging` have no published image and always build on the box, so
+pinning a release tag is the difference between a two-minute install and a
+fourteen-minute one.
+
+The image is verified before it is used. It is fetched by immutable digest
+rather than by tag, and it must carry a label naming the exact version that was
+requested; an image that is unlabelled or claims a different version is
+discarded. If anything at all goes wrong -- the tag has no published image, the
+box cannot reach the registry, the image fails verification -- the install
+falls back to building on the box, exactly as it always did. A slow install
+that works beats a fast one that does not.
+
+Pass `--no-pull` to skip the pre-built image and always build. Setting
+`LAGER_BOX_IMAGE_PULL=0` in the environment does the same for every command in
+that shell.
 
 ## What Gets Installed
 
@@ -43,7 +72,8 @@ Either `--box` or `--ip` is required. If both are provided, the command exits wi
 1. **Resolve target** - Looks up box IP from `--box` name or uses `--ip` directly
 2. **Verify SSH** - Tests key-based authentication and settles which identity the rest of the command offers
 3. **Show summary** - Displays what will be installed and asks for confirmation
-4. **Deploy** - Runs the deployment script (up to 30 minutes for a fresh install)
+4. **Deploy** - Runs the deployment script. About 2 minutes when the pre-built
+   image is used, or up to 30 minutes when the box builds it (see below)
 5. **Store version** - Writes the CLI version to `/etc/lager/version` on the box
 6. **Add to config** - Optionally adds the box to your local `.lager` config
 
@@ -67,6 +97,9 @@ lager install --ip 192.168.1.100 --corporate-vpn tun0
 
 # Skip optional components
 lager install --ip 192.168.1.100 --skip-jlink --skip-firewall
+
+# Force a local build of the box image instead of using the published one
+lager install --box my-lager-box --version v0.39.1 --no-pull
 
 # Non-interactive installation
 lager install --ip 192.168.1.100 --yes

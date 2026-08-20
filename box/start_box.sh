@@ -139,18 +139,171 @@ if [ "$JLINK_FOUND" = false ]; then
 fi
 echo ""
 
-# 1. Build Lager box container
+# --- BEGIN pre-built image (extracted verbatim by test/unit/box/test_prebuilt_image.py) ---
+# A rejected image is ~1 GB; do not leave it parked on the box.
+discard_prebuilt_box_image() {
+    docker rmi "$1" >/dev/null 2>&1 || true
+}
+
+# Pull the pre-built box image named by LAGER_BOX_IMAGE and promote it to the
+# local `lager` tag. Returns non-zero for EVERY miss, and the caller then falls
+# through to the build below.
+#
+# That bias is deliberate and load-bearing. The local build is slow but has
+# always produced something that runs; the new failure mode a pull introduces
+# is a box that comes up FAST AND BROKEN, which on a real box is strictly worse
+# than slow. Never trade the second for the first.
+#
+# The premise that makes a CI-built image interchangeable with a box-built one:
+# everything box-specific -- PicoScope, SEGGER, /etc/lager, customer binaries,
+# the cargo/npm volumes -- is bind-mounted at `docker run` time below, never
+# COPY'd into the image.
+use_prebuilt_box_image() {
+    local ref="${LAGER_BOX_IMAGE:-}"
+    local want="${LAGER_BOX_IMAGE_VERSION:-}"
+    local platform cfg rc label tmp
+
+    # Pull by digest, never by tag -- enforced by shape rather than by trust.
+    # A tag is mutable: between resolving it and pulling it the tag can move,
+    # so two boxes installed minutes apart could run different bytes with
+    # nothing on either recording which. A caller holding only a tag has not
+    # resolved it, and resolving it is not this script's job.
+    case "$ref" in
+        *@sha256:*) ;;
+        *)
+            echo "  LAGER_BOX_IMAGE is not a digest reference (no @sha256:); building instead."
+            return 1
+            ;;
+    esac
+
+    # An image that cannot be checked against anything is not worth pulling.
+    if [ -z "$want" ]; then
+        echo "  LAGER_BOX_IMAGE_VERSION is unset, so the image cannot be verified; building instead."
+        return 1
+    fi
+
+    echo "[1/1] Pulling pre-built Lager Box image..."
+    echo "      ${ref}"
+
+    # The published manifest is single-platform amd64 and is NOT a multi-arch
+    # index, so there is nothing for docker to negotiate against: without an
+    # explicit --platform a non-amd64 host pulls the amd64 image anyway, tags
+    # it `lager`, and the container dies with `exec format error`. This is
+    # defence in depth, not support for another architecture -- a box is
+    # documented x86-64 only, and box.Dockerfile fetches LabJack and nrfutil
+    # from hardcoded x64 URLs regardless. It makes an unsupported host fail
+    # cleanly at the manifest instead of confusingly at container start.
+    platform="linux/$(dpkg --print-architecture 2>/dev/null || uname -m)"
+
+    # Pull through a THROWAWAY, empty docker config so the request goes out
+    # anonymously. The image is public, and inheriting the box's ambient
+    # credentials makes the pull depend on state that has nothing to do with
+    # this feature: a box that ever logged in to ghcr.io for something else
+    # sends those credentials, GHCR evaluates them against *this* repository
+    # rather than falling back to anonymous, and returns `denied: denied` for a
+    # package anyone can read. Observed on a real workstation, not theorised.
+    #
+    # Safe here because nothing on a box uses a docker *context* -- it talks to
+    # the default local socket, the same way the `docker build` below does.
+    cfg=$(mktemp -d) || return 1
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 300 docker --config "$cfg" pull --platform "$platform" "$ref" && rc=0 || rc=$?
+    else
+        docker --config "$cfg" pull --platform "$platform" "$ref" && rc=0 || rc=$?
+    fi
+    # The exit status is captured before the cleanup so a failed pull is still
+    # classifiable, and the directory goes away either way.
+    rm -rf "$cfg"
+    if [ "$rc" -ne 0 ]; then
+        echo "  Pull failed (exit ${rc}); building instead."
+        return 1
+    fi
+
+    # The verification is the reason this function exists. A local build is
+    # provably made from the tree the box just checked out; a pulled image
+    # carries no such proof, and the post-deploy check only ever confirms that
+    # *a* container is running -- it would report success on a box serving the
+    # wrong version entirely. So the image has to claim, in a label the
+    # publisher stamps from the tag it actually built, to be what was asked for.
+    label=$(docker image inspect \
+        --format '{{index .Config.Labels "org.opencontainers.image.version"}}' \
+        "$ref" 2>/dev/null) || label=""
+
+    # A Go template indexing a missing key prints the literal `<no value>`.
+    # An image carrying no label at all is rejected too: images published
+    # before the labelling workflow landed are indistinguishable from an image
+    # built from anything at all, and "no evidence" is not "good evidence".
+    if [ -z "$label" ] || [ "$label" = "<no value>" ]; then
+        echo "  Pulled image carries no version label; discarding it and building instead."
+        discard_prebuilt_box_image "$ref"
+        return 1
+    fi
+    if [ "$label" != "$want" ]; then
+        echo "  Pulled image claims ${label}, expected ${want}; discarding it and building instead."
+        discard_prebuilt_box_image "$ref"
+        return 1
+    fi
+
+    if ! docker tag "$ref" lager; then
+        echo "  Could not tag the pulled image as 'lager'; discarding it and building instead."
+        discard_prebuilt_box_image "$ref"
+        return 1
+    fi
+
+    # Drop the digest reference now that `lager` points at the image. Leaving
+    # it attached is what would stop `docker image prune -f` from EVER
+    # reclaiming a superseded image: prune removes only images with no
+    # references left, so a lingering digest ref parks every old ~1 GB release
+    # on the box permanently.
+    docker rmi "$ref" >/dev/null 2>&1 || true
+
+    # Record WHERE the running image came from. /etc/lager/build-hash cannot
+    # answer this -- it hashes the box's own tree, which reads identically
+    # whether the image was built here or pulled. Best-effort: nothing gates on
+    # this file, and /etc/lager may not exist yet on a standalone run (the
+    # deployment script creates it, and the check below requires it anyway).
+    if [ -d /etc/lager ]; then
+        if tmp=$(mktemp /etc/lager/.image-source.XXXXXX 2>/dev/null); then
+            if printf 'ghcr:%s\n' "${ref##*@}" > "$tmp" 2>/dev/null \
+                && chmod 644 "$tmp" 2>/dev/null; then
+                mv -f "$tmp" /etc/lager/image-source 2>/dev/null || rm -f "$tmp"
+            else
+                rm -f "$tmp"
+            fi
+        fi
+    fi
+
+    return 0
+}
+# --- END pre-built image ---
+
+# 1. Obtain the Lager box container image
 # LAGER_SKIP_BUILD lets a caller that already built the image (e.g. `lager
 # update`, which builds it in its own step with full error reporting) skip the
 # redundant rebuild here and go straight to starting the container. Standalone
 # and deployment runs leave it unset, so they still build.
+#
+# LAGER_BOX_IMAGE names a pre-built image to pull instead of building. It must
+# be an immutable digest reference, and LAGER_BOX_IMAGE_VERSION must carry the
+# release tag the image is required to claim. `lager install` sets both after
+# resolving the tag on the operator's machine. Any miss falls through to the
+# build: a slow install that works beats a fast one that does not.
+#
+# Note the errexit subtlety -- `use_prebuilt_box_image` is called as an `elif`
+# condition, which suppresses `set -e` for its whole body. That is exactly what
+# lets a failed pull fall through instead of killing the deploy, and it is also
+# why every step inside it checks its own status explicitly.
 if [ -n "${LAGER_SKIP_BUILD:-}" ]; then
     echo "[1/1] Skipping build (LAGER_SKIP_BUILD set; image already built by caller)"
+    IMAGE_SOURCE_DESC="supplied by the caller"
     if ! docker image inspect lager >/dev/null 2>&1; then
         echo "ERROR: LAGER_SKIP_BUILD is set but no 'lager' image exists to start."
         echo "       Re-run without LAGER_SKIP_BUILD to build it."
         exit 1
     fi
+elif [ -n "${LAGER_BOX_IMAGE:-}" ] && use_prebuilt_box_image; then
+    echo "Pre-built image verified and tagged 'lager'; no build needed."
+    IMAGE_SOURCE_DESC="pulled from the registry"
 else
     echo "[1/1] Building Lager Box container..."
     cd "${SCRIPT_DIR}/lager"
@@ -160,15 +313,25 @@ else
     # falls back to the legacy builder (which errors on `--mount`).
     DOCKER_BUILDKIT=1 docker build -f docker/box.Dockerfile -t lager .
     echo "Lager Box container built successfully!"
+    IMAGE_SOURCE_DESC="built on this box"
+    # Clear any registry provenance left by an earlier pull. Without this the
+    # file outlives the image it describes: a box that pulled once and then
+    # rebuilt would keep claiming to run registry bytes it no longer runs,
+    # which is worse than recording nothing at all. `lager update` avoids the
+    # same trap by always writing one of ghcr:/local:, but it computes a build
+    # hash to write and this path has none, so the honest record is no record.
+    rm -f /etc/lager/image-source 2>/dev/null || true
 fi
 echo ""
 
 echo "========================================"
-echo "Container built successfully!"
+echo "Container image ready"
 echo "========================================"
 echo ""
-echo "Container image created:"
-echo "  - lager (includes Python Execution, Debug, and UART services)"
+# Say where it came from rather than asserting a build. Two of the three
+# branches above do not build, and reporting "built successfully" after a pull
+# is the kind of small untruth that costs someone an hour during an incident.
+echo "Image 'lager' (${IMAGE_SOURCE_DESC}) -- Python Execution, Debug and UART services"
 echo ""
 
 echo "========================================"

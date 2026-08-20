@@ -4,6 +4,40 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ## [Unreleased]
 
+### Added
+
+- **`lager install` now uses the pre-built box image for a release tag, taking a
+  fresh install from about 14 minutes to about 2.** Building the box image is by
+  far the slowest part of an install, and an install always pays the full cold
+  cost: the deployment prunes the builder cache before it starts, so there is
+  never a warm layer cache to reuse. `lager update --pull` already avoided that
+  build for release tags; install was the one path that could not.
+
+  On by default here, unlike `lager update`. The reason update's pull stays
+  opt-in -- it loses to a warm layer cache on a code-only update -- cannot apply
+  to an install, whose cache is always cold. `--no-pull` forces a local build,
+  and `LAGER_BOX_IMAGE_PULL=0` does the same for a whole shell.
+
+  Only release tags publish an image, so `--version main` and other branch
+  targets still build on the box and now say so, with the time a release tag
+  would have cost instead.
+
+  The image is verified the same way `lager update` verifies it: resolved to an
+  immutable digest and pulled by digest rather than by tag, pulled anonymously
+  through a throwaway docker config so a box's unrelated registry credentials
+  cannot deny it, pinned to the box's architecture, and required to carry an
+  `org.opencontainers.image.version` label naming the exact tag requested. An
+  unlabelled or mismatched image is discarded rather than trusted. Every miss
+  falls back to the local build -- a slow install that works beats a fast one
+  that does not. The digest that was used is recorded in
+  `/etc/lager/image-source`, which `lager install` previously did not write at
+  all.
+
+  The decision about which versions have a published image is made in the same
+  conditional that already resolves a semver pin to a release tag, so "what has
+  an image" cannot drift from "what has a tag". A test pins that agreement
+  against the client's own answer.
+
 ### Fixed
 
 - **`lager update --pull` now pulls anonymously, so a box's own registry
