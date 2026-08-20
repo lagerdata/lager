@@ -356,10 +356,34 @@ else
 fi
 
 # Wrapper for ssh -t that includes multiplexing and suppresses
-# "Shared connection to X closed." noise from pseudo-terminal sessions
+# "Shared connection to X closed." noise from pseudo-terminal sessions.
+#
+# The filter runs AFTER the session, over a captured file. It used to be a
+# process substitution -- `2> >(grep -v ... >&2)` -- and bash does not wait for
+# a substituted process, so ssh's own diagnostics ("Permission denied",
+# "Connection refused", a failed host-key check) were emitted whenever grep
+# next happened to be scheduled, which could be after the caller had already
+# printed its own failure message. Measured against a stub ssh that fails
+# immediately: 26 of 200 runs put the real error AFTER the caller's generic
+# "[ERROR] Failed to install Docker" line, and that is precisely the pairing
+# an operator has to read together. Capturing and filtering in order costs one
+# temp file per call and makes the sequence deterministic.
+#
+# What this filter sees is ssh's LOCAL stderr, and only that. `-t` allocates a
+# pty, so the remote command's stdout and stderr are merged onto the session
+# and arrive on ssh's STDOUT; remote error text has never passed through here
+# and cannot be dropped by it. Deferring the local stream to end-of-session
+# therefore holds back ssh's own one-shot messages and nothing else -- the
+# remote command's output still streams live.
 ssh_t() {
     local rc=0
-    ssh -t $SSH_OPTS "$@" 2> >(grep -v "onnection to .* closed\." >&2) || rc=$?
+    local err_file
+    err_file=$(mktemp "${TMPDIR:-/tmp}/lager-ssh-stderr.XXXXXX")
+    ssh -t $SSH_OPTS "$@" 2>"$err_file" || rc=$?
+    # grep exits 1 when nothing matches, which is the ordinary case (an empty
+    # or fully-filtered stderr); that must not become ssh_t's status.
+    grep -v "onnection to .* closed\." "$err_file" >&2 || true
+    rm -f "$err_file"
     return $rc
 }
 
@@ -634,8 +658,15 @@ ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/mv /tmp/lager_version_tmp /etc/lager/versio
 # byte-for-byte or sudo -n falls through to "a password is required".
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/cp /tmp/lager-bench.json.tmp /etc/lager/bench.json
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/lager/bench.json
-# Allow ${BOX_USER} user to enable Docker service for auto-start
+# Allow ${BOX_USER} user to enable Docker service for auto-start.
+# Both path variants, for the reason stated in the block below: the grant has
+# to match however the box's secure_path resolves systemctl. Only /bin was
+# listed here, while restart and reset-failed list both -- so on a box that
+# resolves /usr/bin/systemctl this grant missed, and the sudo systemctl enable
+# docker call fell through to a password prompt, in a step that had no way to
+# report one. (No backticks in this heredoc -- see the NOTE below.)
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/systemctl enable docker
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl enable docker
 # --- Cover the deploy steps that run AFTER this block so they don't re-prompt
 # for the sudo password. Absolute paths, with both /usr/sbin+/sbin and
 # /bin+/usr/bin variants, so they match however the box's secure_path resolves
@@ -753,19 +784,36 @@ else
         # `if ssh_t ...` (not `ssh_t; if [ $? ... ]`): under `set -e` a bare
         # failing ssh_t aborts the whole script with an unexplained
         # "Deployment failed!" before the manual-fix message below can print.
+        #
+        # EVERY LINK NAMES ITSELF. This was one `&&` chain of eight commands
+        # behind a single "Failed to install Docker", and four of them
+        # (daemon-reload, enable, restart, usermod) print nothing on success --
+        # so a failure in any of those left a transcript that simply stopped,
+        # with no indication of which link broke. `run_step` prints the step's
+        # label and exit status to the box's stderr, which `-t` merges onto the
+        # session, so it lands in the operator's transcript immediately after
+        # that command's own error output. The chain shape, the single service
+        # start and the socket fallback are all unchanged.
         if ssh_t "${BOX_USER}@${BOX_IP}" "
-            sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update && \
-            sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker.io docker-compose-v2 && \
+            run_step() {
+                step_label=\$1; shift
+                \"\$@\" && return 0
+                step_rc=\$?
+                echo \"[lager] STEP FAILED: \${step_label} (exit \${step_rc})\" >&2
+                return \${step_rc}
+            }
+            run_step 'apt-get update' sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update && \
+            run_step 'apt-get install -y docker.io docker-compose-v2' sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker.io docker-compose-v2 && \
             { sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx || sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx-plugin || true; } && \
-            sudo systemctl daemon-reload && \
-            sudo systemctl enable docker && \
+            run_step 'systemctl daemon-reload' sudo systemctl daemon-reload && \
+            run_step 'systemctl enable docker' sudo systemctl enable docker && \
             { sudo systemctl reset-failed docker.service docker.socket 2>/dev/null || true; } && \
             { sudo systemctl restart docker || {
                 sudo systemctl reset-failed docker.service docker.socket 2>/dev/null || true
                 sudo systemctl restart docker.socket 2>/dev/null || true
-                sudo systemctl restart docker
+                run_step 'systemctl restart docker' sudo systemctl restart docker
             }; } && \
-            sudo usermod -aG docker ${BOX_USER}
+            run_step 'usermod -aG docker ${BOX_USER}' sudo usermod -aG docker ${BOX_USER}
         "; then
             print_success "Docker installed successfully"
             echo ""
@@ -774,10 +822,31 @@ else
         else
             print_error "Failed to install Docker"
             echo ""
+            echo "The failing command is named above as '[lager] STEP FAILED: <command>',"
+            echo "with that command's own error output on the lines before it."
+            echo ""
+            # Which half failed decides which follow-up is useful. If the
+            # packages landed, apt is not the problem and the daemon's own
+            # account of itself is; guessing at apt there wastes the operator's
+            # next ten minutes. This is a fresh connection on purpose -- the
+            # session above has already exited.
+            if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "command -v docker >/dev/null 2>&1"; then
+                echo "Docker IS installed on the box, so the failure was after apt --"
+                echo "the daemon or the group change. Ask the unit why:"
+                echo "  ssh ${BOX_USER}@${BOX_IP}"
+                echo "  systemctl status docker"
+                echo "  journalctl -xeu docker.service"
+                echo ""
+            fi
+            # These commands must stay equivalent to the chain above. They were
+            # not: `systemctl enable docker` was missing, so a box recovered by
+            # hand kept working until its next reboot and then came up without
+            # a docker daemon.
             echo "Please install Docker manually on the box:"
             echo "  ssh ${BOX_USER}@${BOX_IP}"
             echo "  sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2"
-            echo "  sudo systemctl daemon-reload && sudo systemctl restart docker"
+            echo "  sudo systemctl daemon-reload"
+            echo "  sudo systemctl enable docker && sudo systemctl restart docker"
             echo "  sudo usermod -aG docker ${BOX_USER}"
             echo "  # Log out and back in, then re-run this script"
             exit 1
@@ -1589,9 +1658,23 @@ fi
 # =============================================================================
 print_step "Starting Docker Containers"
 
+# This is the step that covers a box recovered by hand: the install block
+# above is skipped entirely once `command -v docker` succeeds, so this is the
+# only place a manually-installed docker gets enabled for boot.
+#
+# It is best-effort by design -- a box that cannot enable the unit still works
+# until it reboots, and failing the whole deploy over it would be worse. But it
+# used to discard the result and print "Docker service enabled" either way,
+# which is the same defect as the install step: a claim the script never
+# checked. Report what is actually true and let the deploy continue.
 print_info "Ensuring Docker service is enabled (for auto-start on boot)..."
-ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "sudo systemctl enable docker >/dev/null 2>&1 || true"
-print_success "Docker service enabled"
+ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "sudo systemctl enable docker >/dev/null 2>&1" || true
+if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "systemctl is-enabled --quiet docker"; then
+    print_success "Docker service enabled"
+else
+    print_warning "Docker is NOT enabled for auto-start - the box will come up without a docker daemon after a reboot"
+    echo "  Enable it by hand: ssh ${BOX_USER}@${BOX_IP} 'sudo systemctl enable docker'"
+fi
 
 print_info "Stopping and removing lager containers..."
 # Scoped to the containers this deployment owns (lager, pigpio, and the
