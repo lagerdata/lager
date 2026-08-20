@@ -582,7 +582,7 @@ imported. It also stubs the two third-party modules that are neither guarded nor
 | `test_gdbserver_interactive_rtt.py` | `gdbserver --rtt --interactive`: the flag is rejected without `--rtt`, the streaming leg moves to the `/rtt` WebSocket, and plain `--rtt` still uses the HTTP stream |
 | `test_net_9000_migration.py` | Tier-1 net CLI commands (adc, dac, gpi, gpo, spi, i2c, watt, energy, ...) driving the box `:9000` API |
 | `test_net_tui_assign.py` | Custom-device assignment TUI helpers; per-device uart tty preference over the shared channel map |
-| `test_net_tui_labjack_pins.py` | TUI LabJack pin dialog (prefill/revert/legacy-channel preservation) + Add-row default tag, pin button, dismissable notices |
+| `test_net_tui_labjack_pins.py` | TUI LabJack pin dialog (prefill/revert/legacy-channel preservation) + combined name+pin editor behind the Add-row pencil, dismissable notices |
 | `test_net_tui_uart_guard.py` | UART net save validation rejecting bare interface indices and empty pins |
 | `test_nets_add_labjack_pins.py` | LabJack I2C/SPI arbitrary pin selection via --sda/--scl/--cs/--sck/--mosi/--miso |
 | `test_nets_add_roles.py` | Role-token normalization converting legacy supply/batt to power-supply/battery |
