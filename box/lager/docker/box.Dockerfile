@@ -162,12 +162,13 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
 	'rich' \
 	'cbor2' \
 	'websocket-client>=1.6.0' \
-	# Cap below 2.x: server.py still uses the v1 FastMCP surface
-	# (mcp.settings.host/port/transport_security + streamable_http_app()
-	# with no kwargs). mcp 2.0 moved those onto run()/streamable_http_app()
-	# and renamed FastMCP → MCPServer; an unconstrained `>=1.0.0` started
-	# resolving to 2.0.0 and crash-looping the on-box MCP service.
-	'mcp>=1.0.0,<2' \
+	# This is the pin that governs the running MCP service -- the container
+	# starts it with `python3 -m lager.mcp` (see start-services.sh). server.py
+	# is now on the 2.x MCPServer API and cannot import under 1.x, so the
+	# floor is a requirement, not just a ceiling-widening. Both bounds matter:
+	# an unconstrained `>=1.0.0` is what silently picked up 2.0.0 on release
+	# day and crash-looped the service with nothing listening on port 8100.
+	'mcp>=2.0.0,<3' \
 	'git+https://github.com/Vaskivskyi/asusrouter.git@8de97bfa8ffe3efa2f6d1ec30bb95187d13ab37a'
 
 RUN git config --global http.version HTTP/1.1

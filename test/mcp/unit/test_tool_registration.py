@@ -108,10 +108,84 @@ class TestToolRegistration:
         )
 
 
+class _StubCtx:
+    """Stands in for the SDK Context injected into a tool.
+
+    Only the two accessors connecting_host() reads are modelled. Both raise on
+    a real Context that is not bound to a live request, so ``raises`` covers
+    that path without needing a server.
+    """
+
+    def __init__(self, headers=None, peer=None, raises=False):
+        self._headers = headers
+        self._peer = peer
+        self._raises = raises
+
+    @property
+    def headers(self):
+        if self._raises:
+            raise ValueError("Context is not available outside of a request")
+        return self._headers
+
+    @property
+    def request_context(self):
+        if self._raises:
+            raise ValueError("Context is not available outside of a request")
+        client = type("Client", (), {"host": self._peer})() if self._peer else None
+        request = type("Request", (), {"client": client})()
+        return type("RequestContext", (), {"request": request})()
+
+
 @pytest.mark.unit
 class TestConnectingHost:
-    def test_returns_none_outside_request(self):
-        """connecting_host() must degrade to None when there's no HTTP request."""
+    def test_returns_none_without_ctx(self):
+        """connecting_host() must degrade to None when there's no Context.
+
+        SDK 2.0 removed the ambient mcp.get_context(), so a caller with no
+        request in scope (stdio transport, unit tests) passes None and the
+        discovery tools keep the <box-ip> placeholder.
+        """
         from lager.mcp.server import connecting_host
 
-        assert connecting_host() is None
+        assert connecting_host(None) is None
+
+    def test_returns_none_outside_request(self):
+        """A Context not bound to a live request must not propagate its raise."""
+        from lager.mcp.server import connecting_host
+
+        assert connecting_host(_StubCtx(raises=True)) is None
+
+    def test_returns_none_when_transport_carries_no_headers(self):
+        """stdio gives headers=None and no socket peer."""
+        from lager.mcp.server import connecting_host
+
+        assert connecting_host(_StubCtx(headers=None)) is None
+
+    @pytest.mark.parametrize(
+        "header,expected",
+        [
+            ("192.168.1.50:8100", "192.168.1.50"),  # the on-box case
+            ("192.168.1.50", "192.168.1.50"),       # no port
+            ("[::1]:8100", "::1"),                  # IPv6 literal with port
+            ("[fe80::1]", "fe80::1"),               # IPv6 literal, no port
+            ("  box.local:8100  ", "box.local"),    # surrounding whitespace
+        ],
+    )
+    def test_strips_port_from_host_header(self, header, expected):
+        """The Host header is what the agent connected on -- minus any port."""
+        from lager.mcp.server import connecting_host
+
+        assert connecting_host(_StubCtx(headers={"host": header})) == expected
+
+    def test_falls_back_to_socket_peer(self):
+        """No Host header: use the socket peer rather than giving up."""
+        from lager.mcp.server import connecting_host
+
+        assert connecting_host(_StubCtx(headers={}, peer="10.0.0.4")) == "10.0.0.4"
+
+    def test_host_header_wins_over_socket_peer(self):
+        """The address the agent addressed beats the address it came from."""
+        from lager.mcp.server import connecting_host
+
+        ctx = _StubCtx(headers={"host": "192.168.1.50:8100"}, peer="10.0.0.4")
+        assert connecting_host(ctx) == "192.168.1.50"

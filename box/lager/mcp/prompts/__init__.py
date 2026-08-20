@@ -13,7 +13,7 @@ from __future__ import annotations
 
 
 def register(mcp) -> None:
-    """Register prompt templates on the given FastMCP server."""
+    """Register prompt templates on the given MCPServer."""
 
     @mcp.prompt(
         name="write_lager_test",

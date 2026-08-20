@@ -54,13 +54,13 @@ from __future__ import annotations
 import logging
 import os
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer, Context
 from mcp.server.transport_security import TransportSecuritySettings
 
 logger = logging.getLogger(__name__)
 
 
-mcp = FastMCP(
+mcp = MCPServer(
     "lager",
     instructions=(
         "Lager hardware-in-the-loop test bench. "
@@ -87,7 +87,7 @@ mcp = FastMCP(
 )
 
 
-def connecting_host() -> str | None:
+def connecting_host(ctx: Context | None) -> str | None:
     """Best-effort: the host the MCP client connected on, minus any port.
 
     The agent reaches this server at ``http://<host>:8100/mcp`` and that same
@@ -96,24 +96,35 @@ def connecting_host() -> str | None:
     discovery tools can hand back a *literal* runnable command instead of a
     ``<box-ip>`` placeholder.
 
-    Returns None when there is no HTTP request in scope (e.g. stdio transport
-    or unit tests), in which case callers should keep the placeholder.
+    ``ctx`` is the per-request Context the SDK injects into a tool, and callers
+    must hand it down: the v1 ``mcp.get_context()`` ambient lookup was removed
+    in SDK 2.0, and a helper called by a tool never gets a Context of its own.
+
+    Returns None when there is no HTTP request in scope (e.g. stdio transport,
+    or ``ctx`` is None in unit tests), in which case callers keep the
+    placeholder.
     """
-    try:
-        request = mcp.get_context().request_context.request
-    except Exception:
-        return None
-    if request is None:
+    if ctx is None:
         return None
 
     host: str | None = None
+    # Both accessors reach through ``ctx.request_context``, which raises when
+    # the Context is not bound to a live request.
     try:
-        host = request.headers.get("host")
+        headers = ctx.headers
     except Exception:
-        host = None
+        headers = None
+    if headers:
+        host = headers.get("host")
+
     if not host:
+        try:
+            request = ctx.request_context.request
+        except Exception:
+            request = None
         client = getattr(request, "client", None)
         host = getattr(client, "host", None)
+
     if not host:
         return None
 
@@ -215,9 +226,18 @@ def main():
     host = os.environ.get("LAGER_MCP_HOST", "0.0.0.0")
     logger.info("Lager MCP server starting on %s:%d (streamable-http)", host, MCP_PORT)
 
-    mcp.settings.host = host
-    mcp.settings.port = MCP_PORT
-    mcp.settings.transport_security = TransportSecuritySettings(
+    # SDK 2.0 moved transport config off ``mcp.settings`` (which no longer
+    # carries host/port/transport_security -- assigning raises) and onto the
+    # app factory. uvicorn already owns the bind below, so only the security
+    # setting has to be threaded through.
+    #
+    # Passing it is NOT optional: with no ``transport_security``,
+    # streamable_http_app() arms DNS-rebinding protection against its own
+    # ``host`` default of 127.0.0.1, and every request addressed to the box's
+    # LAN IP is answered with "421 Invalid Host header". The box is reached at
+    # an arbitrary address on the local network, so the check is switched off
+    # here rather than given an allowlist we cannot know ahead of time.
+    transport_security = TransportSecuritySettings(
         enable_dns_rebinding_protection=False,
     )
 
@@ -226,8 +246,16 @@ def main():
         async with mcp.session_manager.run():
             yield
 
+    # streamable_http_path still defaults to "/mcp", so the documented client
+    # URL (http://<box-ip>:8100/mcp) is unchanged. The routes are built before
+    # the lifespan runs, which is what makes mcp.session_manager exist by the
+    # time the lifespan touches it.
     app = Starlette(
-        routes=[Mount("/", app=mcp.streamable_http_app())],
+        routes=[
+            Mount("/", app=mcp.streamable_http_app(
+                transport_security=transport_security,
+            )),
+        ],
         lifespan=lifespan,
     )
 

@@ -14,6 +14,7 @@ Covers:
 - ``lager://dut/context`` and ``lager://dut/overview.md`` resources.
 """
 
+import functools
 import json
 
 import pytest
@@ -31,6 +32,17 @@ from lager.mcp.engine.bench_loader import (
     _net_from_raw,
     load_from_dicts,
 )
+
+
+def _call_dut(dut_tools):
+    """Call discover_dut with a None ctx.
+
+    discover_dut takes the SDK-injected ``ctx`` first. These tests exercise the
+    payload, not the host echo, so None is correct: connecting_host() returns
+    None and the ``--box`` hint keeps its <box-ip> placeholder.
+    """
+    fn = getattr(dut_tools.discover_dut, "fn", dut_tools.discover_dut)
+    return fn(None)
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +413,7 @@ class TestDiscoverDUTTool:
     def test_returns_warning_when_empty(self, monkeypatch):
         import lager.mcp.tools.dut as dut_tools
         monkeypatch.setattr(dut_tools, "get_bench", lambda: BenchDefinition())
-        body = dut_tools.discover_dut.fn() if hasattr(dut_tools.discover_dut, "fn") else dut_tools.discover_dut()
+        body = _call_dut(dut_tools)
         payload = json.loads(body)
         assert payload["dut_slots"] == []
         assert "No DUT context" in payload["warning"]
@@ -409,7 +421,7 @@ class TestDiscoverDUTTool:
     def test_populated(self, populated_bench, monkeypatch):
         import lager.mcp.tools.dut as dut_tools
         monkeypatch.setattr(dut_tools, "get_bench", lambda: populated_bench)
-        body = dut_tools.discover_dut.fn() if hasattr(dut_tools.discover_dut, "fn") else dut_tools.discover_dut()
+        body = _call_dut(dut_tools)
         payload = json.loads(body)
         assert payload["box_id"] == "HW-7"
         slot = payload["dut_slots"][0]
@@ -464,8 +476,8 @@ class TestDiscoverBenchEnrichment:
         monkeypatch.setattr(discover_tool, "get_bench", lambda: populated_bench)
         monkeypatch.setattr(discover_tool, "get_capability_graph", lambda: graph)
 
-        fn = discover_tool.discover_bench.fn if hasattr(discover_tool.discover_bench, "fn") else discover_tool.discover_bench
-        body = fn("flash_cs")
+        fn = getattr(discover_tool.discover_bench, "fn", discover_tool.discover_bench)
+        body = fn(None, "flash_cs")
         payload = json.loads(body)
         assert payload["dut"] == "main"
         assert payload["subsystem"]["name"] == "Flash subsystem"
@@ -480,8 +492,8 @@ class TestDiscoverBenchEnrichment:
         monkeypatch.setattr(discover_tool, "get_bench", lambda: populated_bench)
         monkeypatch.setattr(discover_tool, "get_capability_graph", lambda: graph)
 
-        fn = discover_tool.discover_bench.fn if hasattr(discover_tool.discover_bench, "fn") else discover_tool.discover_bench
-        body = fn()
+        fn = getattr(discover_tool.discover_bench, "fn", discover_tool.discover_bench)
+        body = fn(None)
         payload = json.loads(body)
         slot = payload["dut_slots"][0]
         assert slot["purpose"].startswith("Power-regression")
@@ -599,9 +611,17 @@ class TestBenchIdentityResource:
 # ---------------------------------------------------------------------------
 
 def _discover_fn():
+    """Return (module, callable) for discover_bench with its ctx pre-bound.
+
+    discover_bench takes the SDK-injected ``ctx`` as its first parameter. These
+    tests exercise the payload, not the host echo, so they pass None -- which
+    makes connecting_host() return None and the ``--box`` hint keep its
+    <box-ip> placeholder.
+    """
     import lager.mcp.tools.discover as discover_tool
     fn = discover_tool.discover_bench
-    return discover_tool, getattr(fn, "fn", fn)
+    fn = getattr(fn, "fn", fn)
+    return discover_tool, functools.partial(fn, None)
 
 
 class TestDiscoverBenchInstrumentDetail:

@@ -60,9 +60,16 @@ updates:
   # `pip install lager-cli[mcp]` broke at runtime. The `mcp-extra` job in
   # unit-tests.yml now installs the extra explicitly and runs the mcp suite
   # against whatever the declared constraint resolves, so majors can flow
-  # again and fail HONESTLY: until the server code is ported off the 1.x
-  # FastMCP API, expect a cap-widening PR to sit red on that job -- that red
-  # is the port's to-do signal, not noise to be suppressed.
+  # again and fail HONESTLY. That is exactly what happened next: the SDK 2.0
+  # cap-widening PR sat red on that job until the server was ported to the
+  # MCPServer API, which is the signal working as designed rather than noise
+  # to be suppressed. The same will hold at 3.0 -- expect the next major's PR
+  # to be red until someone does the porting work behind it.
+  #
+  # Note the extra's FLOOR moves with a port, not just its ceiling: the server
+  # cannot import under 1.x any more, so `mcp>=2.0.0,<3` is the honest
+  # constraint. A dependabot PR that only widens the ceiling is superseded by
+  # the port, not merged alongside it.
   - package-ecosystem: pip
     directory: /cli
     versioning-strategy: increase-if-necessary

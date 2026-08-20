@@ -36,7 +36,14 @@ flask>=3,<4
 pyserial>=3.5,<4
 pyusb>=1.2,<2
 cryptography>=42,<51
-fastmcp>=3,<4
+# The MCP SDK, needed to import lager.mcp.* for test/mcp/unit/. Declared
+# DIRECTLY and not left to arrive under `fastmcp`, which used to be listed
+# here: nothing in this repo imports fastmcp, and its own dependency chain
+# (fastmcp -> fastmcp-slim[client,server]) caps `mcp<2.0`. That cap made
+# this file unresolvable against cli/setup.py's `[mcp]` extra once the
+# extra moved to 2.x, and before that it silently decided which mcp major
+# every suite here ran against.
+mcp>=2,<3
 pexpect>=4.8,<5
 # NB: pymupdf (PyMuPDF) is intentionally NOT listed — it is AGPL-3.0, which
 # conflicts with this project's Apache-2.0 license. Without it,

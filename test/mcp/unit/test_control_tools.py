@@ -209,9 +209,9 @@ class TestPowerCycleHub:
 @pytest.mark.unit
 class TestGating:
     def test_register_adds_exactly_the_control_tools(self):
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server.mcpserver import MCPServer
 
-        m = FastMCP("test-control")
+        m = MCPServer("test-control")
         control.register(m)
         names = {t.name for t in _run(m.list_tools)}
         assert {"debug_probe_status", "net_status", "power_cycle_hub"} <= names
