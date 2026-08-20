@@ -201,6 +201,26 @@ All notable changes to the Lager platform are documented here. For detailed rele
   capability.
 
 
+- **The sixteen `lager logic measure` / `trigger` / `cursor` subcommands work
+  again.** They dispatched to `measurement.py`, `trigger.py` and `cursor.py`,
+  which had been consolidated into `scope.py` -- the actions themselves never
+  moved, and `scope.py` has handled all three families for PicoScope and Rigol
+  the whole time. Only the three helpers in `logic.py` were left naming the old
+  files, so every one of these subcommands failed after resolving a box and
+  validating a net over the network, which made a local dispatch fault read as a
+  box or connectivity problem.
+
+  Two of them were wrong in a second way: `measure pw-pos` and `measure pw-neg`
+  sent `measure_pw_pos`/`measure_pw_neg`, but `scope.py` registers those actions
+  as `measure_pulse_width_pos`/`measure_pulse_width_neg` -- the names
+  `lager scope` has always sent. Repointing the file alone would have left these
+  two broken, in a way a file-existence check cannot see.
+
+  `test_logic_dispatch_actions.py` now asserts the real contract: every action a
+  command sends is one the script it targets actually handles. The previous
+  check was that the script *file* existed, which the pulse-width pair satisfied
+  while still being undeliverable.
+
 ## [0.39.1] - 2026-08-19
 
 ### Fixed
