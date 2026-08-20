@@ -19,20 +19,47 @@ If someone has already set up a box for you, you do not need this page. Go strai
 **On the machine that will become the box:**
 
 - An **x86-64** processor. This is the only supported box architecture.
-- **Ubuntu 22.04 or newer**, including 24.04 LTS.
+- **Ubuntu 22.04 or newer**, including 24.04 LTS. See the note on Ubuntu 25.10 and later below.
 - A network connection, and an IP address or hostname you can reach.
 - An SSH server, and a **login account with `sudo`** whose password you know.
-- **`git`** installed. Everything else the box needs, including Docker, is installed for you.
+- **`git`** installed. Everything else the box needs, including Docker, is installed for you --
+  though see Step 1 for why installing Docker yourself is worth the extra minute.
 
 **On your computer:**
 
 - **Python 3.10 or higher** and `pip3`.
 - An SSH client (`ssh` and `ssh-keygen`).
 
+Run this on the machine to check all three at once before you start:
+
+```bash
+uname -m           # must be x86_64
+lsb_release -ds    # Ubuntu 22.04 or newer
+sudo --version     # see the sudo-rs note below
+```
+
 <Note>
 A first install builds the Lager container on the box itself and can take up to 30 minutes.
 Plan for the box to be busy for that long.
 </Note>
+
+<Warning>
+**Ubuntu 25.10 and later, including 26.04 LTS, need one change before installing.** Those
+releases default to `sudo-rs`, a reimplementation of `sudo` that does not accept the wildcard
+rules Lager writes to `/etc/sudoers.d/`. Installation stops early with
+`wildcards are not allowed in command arguments` and `visudo: invalid sudoers file`.
+
+Classic `sudo` is still installed on those releases. Switch to it on the box before you begin:
+
+```bash
+sudo update-alternatives --set sudo /usr/bin/sudo.ws
+sudo --version
+```
+
+Keep a second session open with a working root shell while you do this, so you are not locked
+out if the switch does not take. Tracked in
+[issue #313](https://github.com/lagerdata/lager/issues/313).
+</Warning>
 
 <Warning>
 **The box login account is root-equivalent by design.** Provisioning a box requires root, so
@@ -58,6 +85,22 @@ installation:
 ```bash
 sudo true
 ```
+
+<Note>
+**Optional, but it makes a failure easier to read: install Docker yourself now.** The installer
+installs Docker if the machine does not have it, but it runs that step over SSH and reports
+package problems with less detail than apt gives you directly. Installing it by hand first
+means any problem surfaces with a real error message, in front of you:
+
+```bash
+sudo apt install -y docker.io docker-compose-v2 docker-buildx
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER
+```
+
+Log out and back in afterward so the group membership takes effect, then check `docker ps`
+works without `sudo`.
+</Note>
 
 <Note>
 The login account does not have to be named `lagerdata`. Whatever it is called, pass it as
@@ -116,6 +159,10 @@ If you decline, the install stops and tells you to run `lager ssh-setup --box <n
 which does the same thing on its own.
 
 Deployment then runs, streaming its output. Leave it alone until it finishes.
+
+**If it fails partway, fix what it reports and run the same command again.** `lager install`
+is safe to re-run: it rewrites its own configuration each time and skips work that is already
+done, so a second run picks up rather than starting over.
 
 <Note>
 To install a specific release instead of the latest code, add `--version` -- for example
@@ -265,17 +312,46 @@ minutes.
 
 </Accordion>
 
+<Accordion title="wildcards are not allowed in command arguments">
+
+The box is running `sudo-rs`, the default `sudo` on Ubuntu 25.10 and later. Installation stops
+at the passwordless-sudo step with `visudo: invalid sudoers file` before anything is deployed.
+
+Switch the box to classic `sudo` and run the install again:
+
+```bash
+sudo update-alternatives --set sudo /usr/bin/sudo.ws
+sudo --version
+```
+
+See the warning near the top of this page for the full explanation.
+
+</Accordion>
+
 <Accordion title="Failed to install Docker">
 
-Installation prints the manual commands to run on the box:
+Installation prints the manual commands to run on the box. Run them **one at a time** rather
+than as a block, so you can see which one actually fails -- the installer reports this whole
+sequence as a single error:
 
 ```bash
 sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2
-sudo systemctl daemon-reload && sudo systemctl restart docker
+sudo systemctl daemon-reload
+sudo systemctl enable docker
+sudo systemctl restart docker
 sudo usermod -aG docker <box-user>
 ```
 
-Log out and back in so the group membership takes effect, then run `lager install` again.
+If `restart` is the step that fails, Docker itself is not starting and installing it again will
+not help. Ask it why:
+
+```bash
+systemctl status docker
+journalctl -xeu docker.service
+```
+
+Once Docker runs, log out and back in so the group membership takes effect, then run
+`lager install` again. It detects the working Docker and skips this step.
 
 </Accordion>
 
