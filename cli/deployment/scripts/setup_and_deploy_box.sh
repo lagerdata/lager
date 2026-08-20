@@ -62,6 +62,26 @@ JLINK_VERSION=""
 # BuildKit, which requires the buildx plugin).
 BUILDX_VERSION="v0.35.0"
 
+# Pre-built box image published on every release tag by
+# .github/workflows/box-image-publish.yml. Pulling it replaces an on-box
+# `docker build`, which an install always pays in full: the step below prunes
+# the builder cache before starting containers, so an install is the cold-build
+# case by definition even on a box that has been deployed before.
+BOX_IMAGE_REGISTRY="ghcr.io/lagerdata/lager-box"
+
+# ON by default here, unlike `lager update`. The reason update stays off -- a
+# pull loses to a warm layer cache on a code-only update -- cannot apply to an
+# install, whose cache is always cold. Every miss falls back to the local
+# build, so the worst case is what this script has always done.
+#
+# LAGER_BOX_IMAGE_PULL=0 disables it for a whole shell, --no-pull for one run.
+# `lager update` reads the same variable as an opt-IN, so =1 turns both on and
+# =0 turns both off; it never means opposite things in the two commands.
+BOX_IMAGE_PULL="${LAGER_BOX_IMAGE_PULL:-1}"
+
+# Set at version-resolution time below, and only for a release tag.
+BOX_IMAGE_TAG_REF=""
+
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -90,6 +110,8 @@ show_help() {
     echo "  --skip-jlink          Skip J-Link installation even if available"
     echo "  --jlink-version <ver> Pin J-Link to a specific SEGGER version (default: latest)"
     echo "  --skip-verify         Skip post-deployment verification"
+    echo "  --pull                Use the pre-built box image for a release tag (default)"
+    echo "  --no-pull             Always build the box image on the box"
     echo "  --skip-add-box        Skip prompt to add box to .lager config"
     echo "  --help                Show this help message"
     echo ""
@@ -102,6 +124,7 @@ show_help() {
     echo "  $0 <BOX_IP> --corporate-vpn tun0"
     echo "  $0 <BOX_IP> --skip-jlink"
     echo "  $0 <BOX_IP> --skip-firewall"
+    echo "  $0 <BOX_IP> --version v0.39.1 --no-pull"
     echo ""
 }
 
@@ -148,6 +171,14 @@ while [[ $# -gt 0 ]]; do
             SKIP_VERIFY=true
             shift
             ;;
+        --pull)
+            BOX_IMAGE_PULL=1
+            shift
+            ;;
+        --no-pull)
+            BOX_IMAGE_PULL=0
+            shift
+            ;;
         --skip-add-box)
             SKIP_ADD_BOX=true
             shift
@@ -182,12 +213,22 @@ fi
 # to the release TAG vX.Y.Z; version branches are deprecated in favour of tags.
 # Named branches (main, staging, ...) use origin/<name>.
 # This mirrors resolve_version_ref() in cli/commands/utility/update.py.
+#
+# The pre-built image ref is computed in the SAME arm of the SAME test, so
+# "what has an image" cannot drift from "what has a tag" -- only release tags
+# are published, and a branch target must fall through to a local build. The
+# normalisation on the next line is what makes the ref exact: the publisher
+# stamps org.opencontainers.image.version with the v-prefixed tag, so the
+# string built here is also the string start_box.sh asserts the image carries.
+# --- BEGIN version resolution (extracted verbatim by test/unit/cli/test_deploy_box_image_ref.py) ---
 if [[ "$GIT_VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|preview)[0-9]*)?$ ]]; then
     GIT_VERSION="v${GIT_VERSION#v}"
     GIT_REF="$GIT_VERSION"
+    BOX_IMAGE_TAG_REF="${BOX_IMAGE_REGISTRY}:${GIT_VERSION}"
 else
     GIT_REF="origin/$GIT_VERSION"
 fi
+# --- END version resolution ---
 
 # Print header
 echo ""
@@ -227,6 +268,73 @@ print_error() {
 print_info() {
     echo -e "${BLUE}[INFO] $1${NC}"
 }
+
+# --- BEGIN image digest resolution (extracted verbatim by test/unit/cli/test_deploy_box_image_ref.py) ---
+# Resolve a GHCR tag reference to an immutable sha256 digest, printed on stdout.
+# Non-zero on every failure, and the caller then simply does not pass
+# LAGER_BOX_IMAGE -- the box builds, exactly as it always has.
+#
+# Pulling by digest rather than by tag is what makes the install reproducible.
+# A tag is mutable: between deciding to pull and pulling it can move, so two
+# boxes installed minutes apart can legitimately end up running different bytes
+# with nothing on either box recording which.
+#
+# This runs on the OPERATOR's machine, not the box, which is deliberate. It
+# mirrors `lager update` (resolve here, pull there), it doubles as the
+# reachability test that decides whether to attempt a pull at all, and it keeps
+# every HTTP dependency off the box -- start_box.sh needs nothing but docker.
+#
+# The ANONYMOUS token flow is also deliberate. The package is public, and
+# authenticating with the operator's own credentials would make a package that
+# boxes cannot read appear to work perfectly here.
+#
+# The Accept list is copied from _MANIFEST_ACCEPT in
+# cli/commands/utility/update.py: sending the wrong Accept can make a registry
+# hand back a CONVERTED manifest, whose digest is not the one docker resolves
+# on the box -- the pull would then miss on a digest we ourselves published.
+#
+# Timeouts are tight (3s connect / 8s total) for the same reason update's are.
+# On a restricted network where ghcr.io black-holes rather than refusing, a
+# generous timeout would be paid on EVERY install before falling back, turning
+# a speedup into a regression at exactly the sites least able to absorb one.
+resolve_box_image_digest() {
+    local ref="$1"
+    local repo tag repo_path token headers digest
+    local accept="application/vnd.oci.image.manifest.v1+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.docker.distribution.manifest.list.v2+json"
+
+    # No wget fallback on purpose. The buildx step's curl-or-wget dance exists
+    # because it runs on the box; this runs on the operator's machine, where
+    # curl is universal. One clean branch beats a second fiddly transport when
+    # the alternative is just "build like we always did".
+    command -v curl >/dev/null 2>&1 || { echo "curl not found" >&2; return 1; }
+
+    repo="${ref%:*}"
+    tag="${ref##*:}"
+    repo_path="${repo#*/}"
+
+    token=$(curl -sS --connect-timeout 3 --max-time 8 \
+        "https://ghcr.io/token?service=ghcr.io&scope=repository:${repo_path}:pull" 2>/dev/null \
+        | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+    [ -n "$token" ] || { echo "no registry token" >&2; return 1; }
+
+    headers=$(curl -sS -I --connect-timeout 3 --max-time 8 \
+        -H "Authorization: Bearer ${token}" -H "Accept: ${accept}" \
+        "https://ghcr.io/v2/${repo_path}/manifests/${tag}" 2>/dev/null) || {
+        echo "registry unreachable" >&2
+        return 1
+    }
+
+    # tolower() is POSIX awk; gawk's IGNORECASE is not available on macOS awk,
+    # and the operator's machine is as often a Mac as a Linux runner.
+    digest=$(printf '%s' "$headers" | tr -d '\r' \
+        | awk -F': ' 'tolower($1)=="docker-content-digest"{print $2}')
+
+    case "$digest" in
+        sha256:*) printf '%s\n' "$digest" ;;
+        *) echo "no content digest (tag not published?)" >&2; return 1 ;;
+    esac
+}
+# --- END image digest resolution ---
 
 # SSH connection multiplexing configuration
 # Reuses a single TCP connection for all SSH commands,
@@ -1567,9 +1675,40 @@ fi
 print_success "Docker daemon is running"
 echo ""
 
-print_info "Building and starting containers..."
+# Resolve the pre-built image before handing off. On a hit, start_box.sh pulls
+# the digest instead of building; on any miss -- unpublished tag, unreachable
+# registry, no curl -- LAGER_BOX_IMAGE_ENV stays empty and the line below is
+# byte-identical to what it has always been.
+LAGER_BOX_IMAGE_ENV=""
+if [ "$BOX_IMAGE_PULL" != "0" ] && [ -n "$BOX_IMAGE_TAG_REF" ]; then
+    print_info "Resolving pre-built image ${BOX_IMAGE_TAG_REF}..."
+    # The reason is captured rather than left to scroll past as bare stderr:
+    # "not published" for a tag that should have one means the publish workflow
+    # did not run, which is a thing someone has to go fix, and it is invisible
+    # if it arrives unlabelled among a hundred other lines.
+    RESOLVE_ERR=$(mktemp)
+    if BOX_IMAGE_DIGEST=$(resolve_box_image_digest "$BOX_IMAGE_TAG_REF" 2>"$RESOLVE_ERR"); then
+        LAGER_BOX_IMAGE_ENV="LAGER_BOX_IMAGE=${BOX_IMAGE_REGISTRY}@${BOX_IMAGE_DIGEST} LAGER_BOX_IMAGE_VERSION=${GIT_VERSION} "
+        print_success "Pre-built image resolved (${BOX_IMAGE_DIGEST:0:19}...)"
+    else
+        print_warning "Pre-built image unavailable ($(tr -d '\n' < "$RESOLVE_ERR")); building on the box instead"
+    fi
+    rm -f "$RESOLVE_ERR"
+elif [ "$BOX_IMAGE_PULL" != "0" ]; then
+    # Only release tags are published, so a branch target has no image and
+    # never will. Say so once, with the number, rather than silently spending
+    # fifteen minutes on a build the operator could have skipped.
+    print_info "No pre-built image for '${GIT_VERSION}' -- only release tags are published."
+    print_info "A release tag (--version v0.39.1) installs in about 2 minutes instead of 14."
+fi
+
+if [ -n "$LAGER_BOX_IMAGE_ENV" ]; then
+    print_info "Starting containers with the pre-built image..."
+else
+    print_info "Building and starting containers..."
+fi
 echo ""
-ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "cd ~/box && chmod +x start_box.sh && ./start_box.sh"
+ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "cd ~/box && chmod +x start_box.sh && ${LAGER_BOX_IMAGE_ENV}./start_box.sh"
 
 echo ""
 print_success "Docker containers started successfully"

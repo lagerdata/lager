@@ -113,13 +113,23 @@ jobs:
         run: actionlint -shellcheck= -pyflakes=
         shell: bash
 
+      # box/ and cli/deployment/ are included deliberately. They hold the two
+      # scripts a deploy actually runs -- start_box.sh and
+      # setup_and_deploy_box.sh -- and until this was widened neither was
+      # syntax-checked by anything, while every script under test/ was. A typo
+      # in those two breaks an install on a real box, which is a worse place to
+      # find it than a PR. All 11 added scripts were clean when this landed.
+      #
+      # shellcheck below is deliberately NOT widened to match: these are 900-
+      # and 1700-line scripts that have never been linted, and their backlog
+      # would swamp the gate. Widening it is its own change.
       - name: Bash syntax (bash -n)
         if: always()
         run: |
           fail=0
           while IFS= read -r f; do
             bash -n "$f" || { echo "SYNTAX FAIL: $f"; fail=1; }
-          done < <(find test tools -name '*.sh')
+          done < <(find test tools box cli/deployment -name '*.sh')
           exit $fail
         shell: bash
 

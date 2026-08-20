@@ -35,6 +35,11 @@ from ..box._ssh import (
     ssh_identity_args,
 )
 from ..box.ssh_setup import provision_lager_box_key
+# Reuse update's single answer to "does this version have a published image?"
+# rather than re-deriving it. That agreement is load-bearing: the same test
+# lives in setup_and_deploy_box.sh, and a third copy here is a third thing to
+# drift.
+from .update import _box_image_ref_for_version
 
 
 def no_usable_identity_error(ssh_host, ip):
@@ -131,10 +136,15 @@ def get_script_path(script_name: str, subdir: str = "scripts") -> Path:
 @click.option("--skip-verify", is_flag=True, help="Skip post-deployment verification")
 @click.option("--corporate-vpn", default=None, help="Corporate VPN interface name (e.g., tun0)")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompts")
-def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify, corporate_vpn, yes):
+@click.option("--pull", is_flag=True, help="Use the pre-built box image for a release tag instead of building it on the box (the default; falls back to a local build on any miss)")
+@click.option("--no-pull", "no_pull", is_flag=True, help="Never use a pre-built image; always build on the box")
+def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify, corporate_vpn, yes, pull, no_pull):
     """
     Install lager box code onto a new box
     """
+    if pull and no_pull:
+        raise click.UsageError('--pull and --no-pull are mutually exclusive')
+
     # 1. Resolve box name to IP and username if --box is provided
     if box and ip:
         click.secho("Error: Cannot specify both --box and --ip", fg='red', err=True)
@@ -326,6 +336,14 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     click.echo(f"  User: {user}")
     click.echo(f"  Mode: Git sparse checkout (enables 'lager update')")
     click.echo("  Host CLI: ~/.lager_venv (installed from the box checkout)")
+    # The image step dominates the wait, so say up front where it will come
+    # from. Only release tags have a published image; a branch always builds.
+    if no_pull:
+        click.echo("  Box image: build on the box (--no-pull)")
+    elif _box_image_ref_for_version(version):
+        click.echo(f"  Box image: pre-built {version} if published, else build on the box")
+    else:
+        click.echo(f"  Box image: build on the box ('{version}' is not a release tag)")
     if skip_jlink:
         click.echo(f"  Skip J-Link: Yes")
     if skip_firewall:
@@ -358,6 +376,12 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
         deploy_args.append("--skip-firewall")
     if skip_verify:
         deploy_args.append("--skip-verify")
+    # Only ever pass the flag that OVERRIDES a default, so the script keeps
+    # ownership of what the default is.
+    if no_pull:
+        deploy_args.append("--no-pull")
+    elif pull:
+        deploy_args.append("--pull")
     if corporate_vpn:
         deploy_args.extend(["--corporate-vpn", corporate_vpn])
 

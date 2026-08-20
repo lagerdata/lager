@@ -36,13 +36,13 @@ are not.
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1524 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 1704 |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1581 (+2 xfailed) |
+| `unit (box)` | `test/unit/box/` | 1729 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 168 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 127 (+1 skipped) |
-| | **Total gated** | **3717** |
+| | **Total gated** | **3799** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -72,8 +72,8 @@ anywhere in the tree.
 
 | Check | Scope | Baseline when added |
 |---|---|---|
-| `bash -n` | 42 shell scripts under `test/` | clean |
-| `shellcheck -S warning`, excluding `SC2034,SC2320,SC2155,SC2164,SC2046` | same 42 | clean. Pinned to `shellcheck-py==0.11.0.1`, not the runner image's binary. See below for what the exclusions cost. |
+| `bash -n` | 56 shell scripts under `test/ tools/ box/ cli/deployment/` | clean |
+| `shellcheck -S warning`, excluding `SC2034,SC2320,SC2155,SC2164,SC2046` | the 45 under `test/ tools/` only -- `box/` and `cli/deployment/` are syntax-checked but not linted | clean. Pinned to `shellcheck-py==0.11.0.1`, not the runner image's binary. See below for what the exclusions cost. |
 | `compileall` | every `.py` in `cli/ box/ test/ tools/` | clean |
 | `pytest --collect-only` | `test/mcp/integration/` | 8 tests collect |
 | `ruff --select E9,F63,F7,F82` | `cli/ box/ test/ tools/`, vendored excluded | clean (default ruleset would be ~6300) |
@@ -443,9 +443,9 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 151 files)
+### Local Unit Tests (`test/unit/` -- 153 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 79 files)
+#### Box Unit Tests (`test/unit/box/` -- 80 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported, and stubs the two third-party modules that are neither guarded nor installed
@@ -506,6 +506,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_nets_safety_limits_endpoint.py` | `/nets/safety-limits`: reading and writing a net's voltage/current ceilings |
 | `test_nets_state_endpoint.py` | `GET /nets/state`: wedged-instrument resilience, per-instrument probing, LabJack cross-role batch routing through hardware_service (no USB contention), I2C bus scan, and the request deadline handed to the USB batch as a per-hub budget |
 | `test_openocd_dispatch.py` | OpenOCD interface .cfg dispatch and user-cfg override behavior |
+| `test_prebuilt_image.py` | The pre-built-image block in `box/start_box.sh`: a mutable tag refused before any docker call, the OCI version label asserted and an unlabelled image rejected, `--platform` pinned, the pull sent through a throwaway docker config, and every miss falling back to the local build rather than failing the deploy |
 | `test_probes_visa_parsing.py` | VISA address parsing for empty-serial FTDI probes |
 | `test_python_kill.py` | `/python/kill` signals every PID in a job, once per process group, and shares one grace window across the whole set; real forked children, not mocks |
 | `test_python_service_breakpoint.py` | Breakpoint endpoints on box python/service.py POST routes |
@@ -533,7 +534,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 59 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 60 files)
 
 | File | What it tests |
 |------|---------------|
@@ -546,6 +547,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_box_ssh_identity.py` | Admin commands offer the `lager_box` key with keyless fallback (probe, pool, install/uninstall); key registration under `/etc/lager/authorized_keys.d`, de-registration on `uninstall --all`, and install's password-fallback removal |
 | `test_configure_docker_dns.py` | `configure_docker_dns`: daemon.json `dns` entries must be bare IPs or Docker refuses to start |
 | `test_configure_docker_dns_rollback.py` | Rollback behaviour of `configure_docker_dns.sh` when the DNS optimization fails |
+| `test_deploy_box_image_ref.py` | `setup_and_deploy_box.sh` and `_box_image_ref_for_version` agree on which versions have a published image, computed in one conditional so the two cannot drift; plus the anonymous GHCR digest resolution and the `LAGER_BOX_IMAGE` handoff to `start_box.sh` |
 | `test_debug_flash_erase_reconnect.py` | `lager debug flash`'s default erase step: no reconnect between `/debug/erase` and `/debug/flash`, a failing `/debug/connect` cannot abort the flash, and the command's verdict follows the programmer's own output rather than reporting "Flashed!" unconditionally |
 | `test_debug_service_client_auth.py` | Gateway auth on the debug service client |
 | `test_devenv_config_commands.py` | `lager devenv mount` / `env`: editing project-local `.lager` volumes and environment keys |
