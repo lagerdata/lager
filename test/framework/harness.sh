@@ -41,6 +41,33 @@ GLOBAL_FAILED=0
 GLOBAL_EXCLUDED=0
 
 # ============================================================
+# Cleanup stack
+# ============================================================
+
+# Cleanup actions to run on EXIT, most-recent-first.
+#
+# A bare `trap ... EXIT` REPLACES whatever trap is already installed, so two
+# features that each want cleanup silently cancel each other. Everything that
+# needs to run at exit registers here instead.
+_HARNESS_CLEANUP=()
+
+# Usage: harness_add_cleanup "command string"
+harness_add_cleanup() {
+    _HARNESS_CLEANUP+=("$1")
+    # Single-quoted handler name: nothing to expand, so re-arming on every
+    # registration is idempotent.
+    trap _harness_run_cleanup EXIT
+}
+
+_harness_run_cleanup() {
+    local i
+    for (( i=${#_HARNESS_CLEANUP[@]}-1 ; i>=0 ; i-- )); do
+        eval "${_HARNESS_CLEANUP[$i]}" || true
+    done
+    _HARNESS_CLEANUP=()
+}
+
+# ============================================================
 # Initialization
 # ============================================================
 
@@ -79,8 +106,9 @@ init_harness() {
             # mode we're trying to prevent. With INT/TERM untrapped,
             # bash exits on those signals and then fires EXIT, so
             # the lock is still released.
-            # shellcheck disable=SC2064  # we want $BOX expanded at trap-time, not later
-            trap "release_box_lock_harness '$BOX'" EXIT
+            # $BOX is expanded HERE, at registration time, so the cleanup
+            # still names the right box if the variable changes later.
+            harness_add_cleanup "release_box_lock_harness '$BOX'"
         fi
     fi
 }
@@ -110,6 +138,53 @@ release_box_lock_harness() {
     local box="$1"
     [ -n "$box" ] || return 0
     lager boxes unlock --box "$box" >/dev/null 2>&1 || true
+}
+
+# ============================================================
+# Lager config snapshot/restore
+# ============================================================
+
+# Path to the config file `lager boxes` actually reads and writes.
+#
+# Mirrors get_lager_file_path() in cli/box_storage.py: LAGER_CONFIG_FILE_DIR
+# wins, otherwise $HOME. A bare relative ".lager" is NOT it -- the CLI never
+# writes the current directory, so backing that up silently protects nothing
+# and lets `delete-all` take out the real registry (issue #273).
+lager_config_path() {
+    echo "${LAGER_CONFIG_FILE_DIR:-$HOME}/.lager"
+}
+
+# Snapshot the config before a destructive test, and register the restore as a
+# harness cleanup so a `set -e` abort, a step timeout or Ctrl+C still heals it.
+lager_config_backup() {
+    LAGER_FILE="$(lager_config_path)"
+    LAGER_BACKUP="${TMPDIR:-/tmp}/.lager_backup_$$"
+    if [ -f "$LAGER_FILE" ]; then
+        cp "$LAGER_FILE" "$LAGER_BACKUP"
+        LAGER_BACKUP_EXISTED=1
+        echo "Backed up $LAGER_FILE"
+    else
+        LAGER_BACKUP_EXISTED=0
+        echo "No config at $LAGER_FILE to back up"
+    fi
+    harness_add_cleanup lager_config_restore
+}
+
+# Put the snapshot back. Idempotent: safe to call explicitly and then again
+# from the cleanup stack.
+lager_config_restore() {
+    [ -n "${LAGER_FILE:-}" ] || return 0
+    if [ "${LAGER_BACKUP_EXISTED:-0}" = "1" ] && [ -f "${LAGER_BACKUP:-}" ]; then
+        cp "$LAGER_BACKUP" "$LAGER_FILE"
+        rm -f "$LAGER_BACKUP"
+        echo "Restored $LAGER_FILE from backup"
+    elif [ "${LAGER_BACKUP_EXISTED:-0}" = "0" ]; then
+        # There was no config before the destructive tests; leaving the boxes
+        # they added behind would be its own kind of contamination.
+        rm -f "$LAGER_FILE"
+        echo "Removed $LAGER_FILE (no config existed beforehand)"
+    fi
+    LAGER_FILE=""
 }
 
 # ============================================================

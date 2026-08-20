@@ -370,6 +370,13 @@ echo "Test 4.21: Delete-all command help"
 lager boxes delete-all --help && track_test "pass" || track_test "fail"
 echo ""
 
+# Tests 4.22 and 4.23 both run `lager boxes delete-all`, which rewrites the
+# config the CLI owns -- including the box this suite was invoked against.
+# Snapshot it here and restore after 4.23, so the destructive pair cannot take
+# the remaining ~50 checks down with it (issue #273).
+lager_config_backup
+echo ""
+
 echo "Test 4.22: Delete-all with no boxes"
 # Make sure all test boxes are deleted first
 for name in "$TEST_BOX_NAME" "test-box_123.special" "${TEST_BOX_NAME}_1" "${TEST_BOX_NAME}_2" "${TEST_BOX_NAME}_3"; do
@@ -387,13 +394,7 @@ fi
 echo ""
 
 echo "Test 4.23: Add multiple boxes and delete-all (with backup/restore)"
-# Backup current .lager file if it exists
-LAGER_FILE=".lager"
-LAGER_BACKUP="/tmp/.lager_backup_deleteall_$$"
-if [ -f "$LAGER_FILE" ]; then
-  cp "$LAGER_FILE" "$LAGER_BACKUP"
-  echo "Backed up .lager file"
-fi
+# The snapshot was taken before 4.22 -- see lager_config_backup there.
 # Start fresh
 lager boxes delete-all --yes >/dev/null 2>&1 || true
 # Add test boxes
@@ -414,12 +415,9 @@ if [ "$BOX_COUNT_AFTER" -eq 1 ]; then
 else
   track_test "fail"
 fi
-# Restore backup
-if [ -f "$LAGER_BACKUP" ]; then
-  cp "$LAGER_BACKUP" "$LAGER_FILE"
-  rm "$LAGER_BACKUP"
-  echo "Restored .lager file from backup"
-fi
+# Restore the snapshot taken before 4.22. Also registered on the harness
+# cleanup stack, so an abort anywhere in 4.22-4.23 still heals the config.
+lager_config_restore
 echo ""
 
 # ============================================================

@@ -22,8 +22,11 @@
 #
 # Ordering inside the run is load-bearing:
 #   - generic.sh runs LAST: it exercises `lager boxes delete-all` against the
-#     runner's own lager config, which can remove this workflow's box
-#     registration; everything after it would fail to resolve the box.
+#     runner's own lager config. It now snapshots and restores that config
+#     around the destructive tests (issue #273 -- before that fix it wiped the
+#     registry outright, taking out ~50 of its own later checks as well as
+#     everything after it), but it still goes last: the restore is a bash
+#     trap, and a SIGKILL or a step timeout can outrun it.
 #   - box_config.sh runs late: it exercises box-config apply including the
 #     container bounce + rollback path, so the box may be briefly degraded.
 #   - A best-effort re-registration step follows the suites either way: these
@@ -354,12 +357,15 @@ jobs:
         continue-on-error: true
         timeout-minutes: 15
         env:
-          # 5 of 95: the two 50-iteration stress loops, the mixed-command
-          # sequence, and both works-after-errors checks. Single calls and
-          # the 5- and 10-call loops all pass, so this is specifically
-          # sustained repetition. Owned by issue #273; lower this as it
-          # is fixed.
-          GENERIC_BASELINE: "5"
+          # 0 of 95. Was 5, and NOT because of repetition: Test 4.23 backed up
+          # ".lager" relative to the checkout while the CLI writes
+          # ${LAGER_CONFIG_FILE_DIR:-$HOME}/.lager, so the backup silently
+          # never happened, `delete-all` wiped the real registry, and every
+          # later check resolving --box failed 100% of the time. The 5- and
+          # 10-call loops "passed" only because they run before 4.23. The
+          # suite now snapshots and restores the config the CLI actually owns
+          # (issue #273).
+          GENERIC_BASELINE: "0"
         run: |
           LOG="$RUNNER_TEMP/generic.log"
           bash test/integration/infrastructure/generic.sh "$LAGER_BOX" 2>&1 | tee "$LOG" || true
