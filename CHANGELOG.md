@@ -56,6 +56,23 @@ All notable changes to the Lager platform are documented here. For detailed rele
   `lager update`'s traceback is now printed only under `--verbose`, and to
   stderr rather than stdout, where it had been corrupting piped output.
 
+- **A CI job is no longer refused by its own box lock.** Auto-lock acquires with
+  `get_lock_holder()`, which under CI is a per-process identity ending in the
+  pid, but the pre-command check compared the stored holder against
+  `get_lager_user()`. Those two strings can never be equal in CI, so every
+  command after the first was refused by the lock the first one had just taken,
+  and the error named the running job as the culprit. It was invisible on a
+  developer machine, where `get_lock_holder()` falls back to `get_lager_user()`
+  and both sides of the comparison are the same string.
+
+  The check now compares lock *scope* -- the holder with its per-process pid
+  removed -- so consecutive commands in one job match, while two jobs of one
+  run, and two runs of one workflow, stay distinct as before. It still accepts a
+  plain user, because `lager boxes lock` and the bash test harness record one;
+  fixing only the CI identity would have broken those. `LAGER_LOCK_HOLDER` now
+  works end to end, having previously been unable to satisfy the comparison at
+  all.
+
 ## [0.39.1] - 2026-08-19
 
 ### Fixed
