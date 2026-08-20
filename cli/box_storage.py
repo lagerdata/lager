@@ -822,7 +822,10 @@ def acquire_box_lock(
                 pre_data = pre.json()
             except ValueError:
                 pre_data = {}
-            if pre_data.get('locked') and pre_data.get('user') == holder:
+            # Scope, not raw equality: the stored holder ends in the pid of
+            # whichever process took the lock, and this is a later one.
+            if pre_data.get('locked') and \
+                    lock_scope(pre_data.get('user', '')) == lock_scope(holder):
                 return ('already_ours', pre_data)
     except requests.exceptions.RequestException:
         # Unreachable for the GET; let the POST loop below produce the
@@ -865,7 +868,7 @@ def acquire_box_lock(
                 # pre-existing lock of ours, so reaching a 200 here means
                 # we genuinely created the lock.
                 state = 'acquired'
-            elif previous_holder == holder:
+            elif lock_scope(previous_holder) == lock_scope(holder):
                 state = 'already_ours'
             else:
                 state = 'acquired'
@@ -878,6 +881,13 @@ def acquire_box_lock(
                 data = {}
             lock_info = data.get('lock', {}) or {}
             other = lock_info.get('user', 'unknown')
+
+            # A 409 naming our own scope means the pre-acquire GET raced, or
+            # the box did not report the lock on that GET. Waiting here blocks
+            # for LAGER_LOCK_WAIT -- 1800s under CI -- on a lock this job
+            # already holds, which is how a refusal became a half-hour stall.
+            if lock_scope(other) == lock_scope(holder):
+                return ('already_ours', lock_info or data)
 
             now = time.monotonic()
             if now >= deadline:

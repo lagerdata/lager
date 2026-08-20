@@ -73,6 +73,13 @@ All notable changes to the Lager platform are documented here. For detailed rele
   works end to end, having previously been unable to satisfy the comparison at
   all.
 
+  The same comparison appears four times on the lock path, and all four now
+  compare scope: the pre-command check, the pre-acquire probe, the
+  `previous_user` classification after an acquire, and the conflict branch that
+  decides whether to wait. Fixing only the first would have been worse than the
+  original bug -- the command would stop being refused and instead block on the
+  wait loop for `LAGER_LOCK_WAIT`, 1800s under CI, on a lock it already held.
+
 - **The host CLI installs to `~/.lager_venv`, because `~/.lager/venv` could
   never work.** `~/.lager` is the CLI's own global config file and box registry
   (`config.DEFAULT_CONFIG_FILE_NAME`, and the path `box_storage` reads). The

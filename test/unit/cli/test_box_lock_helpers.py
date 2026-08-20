@@ -1542,3 +1542,91 @@ class TestCheckBoxLock:
         assert 'without lock support' in capsys.readouterr().err
         box_storage._check_box_lock('10.0.0.1', 'MASTER')
         assert capsys.readouterr().err == ''
+
+
+# ---------------------------------------------------------------------------
+# The acquire path must recognise our own lock too  (issue #307, second half)
+# ---------------------------------------------------------------------------
+
+
+CI_HOLDER = 'ci:github:lagerdata/lager#32408637976-1/hardware-tests@MASTER:{}'
+
+
+class TestAcquireRecognisesOurOwnLockAcrossProcesses:
+    """Fixing only the refusal check turned a fast failure into a 30-minute stall.
+
+    `_check_box_lock` stopped refusing, so commands proceeded to
+    `acquire_box_lock` -- which compared the stored holder to `holder` by raw
+    equality at three points. None could match across processes, so every
+    command fell through to the wait loop and blocked for `LAGER_LOCK_WAIT`,
+    1800s under CI. On the bench that read as a 15-minute step timeout and a
+    19-minute cleanup rather than as a lock problem.
+    """
+
+    def _no_post(self, monkeypatch):
+        def boom(*a, **k):
+            raise AssertionError('must not POST over a lock we already hold')
+        monkeypatch.setattr(requests, 'post', boom)
+
+    def _no_sleep(self, monkeypatch):
+        # `time` is imported inside acquire_box_lock, so patch it at source.
+        def boom(_):
+            raise AssertionError('must not wait on a lock we already hold')
+        monkeypatch.setattr('time.sleep', boom)
+
+    def test_preexisting_own_ci_lock_is_ours_despite_a_different_pid(self, monkeypatch):
+        monkeypatch.setattr(
+            requests, 'get',
+            lambda *a, **k: _FakeResp(200, {'locked': True,
+                                            'user': CI_HOLDER.format(4242)}))
+        self._no_post(monkeypatch)
+        state, _ = box_storage.acquire_box_lock(
+            '10.0.0.1', 'MASTER', CI_HOLDER.format(9999), wait_seconds=0)
+        assert state == 'already_ours'
+
+    def test_previous_user_from_another_pid_is_ours(self, monkeypatch):
+        monkeypatch.setattr(
+            requests, 'get', lambda *a, **k: _FakeResp(200, {'locked': False}))
+        monkeypatch.setattr(
+            requests, 'post',
+            lambda *a, **k: _FakeResp(200, {'locked': True,
+                                            'user': CI_HOLDER.format(9999),
+                                            'previous_user': CI_HOLDER.format(4242)}))
+        state, _ = box_storage.acquire_box_lock(
+            '10.0.0.1', 'MASTER', CI_HOLDER.format(9999), wait_seconds=0)
+        assert state == 'already_ours'
+
+    def test_a_409_naming_our_own_scope_does_not_wait(self, monkeypatch):
+        # The regression's actual shape: GET raced or under-reported, the POST
+        # came back 409, and the wait loop engaged on our own lock.
+        monkeypatch.setattr(
+            requests, 'get', lambda *a, **k: _FakeResp(200, {'locked': False}))
+        monkeypatch.setattr(
+            requests, 'post',
+            lambda *a, **k: _FakeResp(409, {'lock': {'user': CI_HOLDER.format(4242)}}))
+        self._no_sleep(monkeypatch)
+        state, _ = box_storage.acquire_box_lock(
+            '10.0.0.1', 'MASTER', CI_HOLDER.format(9999), wait_seconds=1800)
+        assert state == 'already_ours'
+
+    def test_a_409_from_a_genuinely_different_job_still_waits_then_fails(self, monkeypatch):
+        # The guarantee that must survive: a foreign holder is still a conflict.
+        monkeypatch.setattr(
+            requests, 'get', lambda *a, **k: _FakeResp(200, {'locked': False}))
+        other = 'ci:github:lagerdata/lager#32408637976-1/unit-tests@MASTER:1'
+        monkeypatch.setattr(
+            requests, 'post',
+            lambda *a, **k: _FakeResp(409, {'lock': {'user': other}}))
+        with pytest.raises(SystemExit) as exc:
+            box_storage.acquire_box_lock(
+                '10.0.0.1', 'MASTER', CI_HOLDER.format(9999), wait_seconds=0)
+        assert exc.value.code == 1
+
+    def test_a_dev_users_own_lock_still_works(self, monkeypatch):
+        monkeypatch.setattr(
+            requests, 'get',
+            lambda *a, **k: _FakeResp(200, {'locked': True, 'user': 'alice'}))
+        self._no_post(monkeypatch)
+        state, _ = box_storage.acquire_box_lock(
+            '10.0.0.1', 'lab-box', 'alice', wait_seconds=0)
+        assert state == 'already_ours'
