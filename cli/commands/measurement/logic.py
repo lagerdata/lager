@@ -155,19 +155,25 @@ def measure():
     """
     pass
 
+# measurement.py, trigger.py and cursor.py were consolidated into scope.py,
+# which handles all three families for both PicoScope and Rigol -- see its
+# `measurement_actions`, `cursor_actions` and the `trigger_*` branches of its
+# `main()`. These three helpers were never repointed, so all sixteen actions
+# below dispatched to filenames that had stopped existing (#261). The actions
+# themselves never moved.
 def _run_measurement_backend(ctx, dut, action: str, **params):
     """Run backend command for measurement operations"""
-    return run_backend(ctx, dut, "measurement.py", action, **params)
+    return run_backend(ctx, dut, "scope.py", action, **params)
 
 
 def _run_trigger_backend(ctx, dut, action: str, **params):
     """Run backend command for trigger operations"""
-    return run_backend(ctx, dut, "trigger.py", action, **params)
+    return run_backend(ctx, dut, "scope.py", action, **params)
 
 
 def _run_cursor_backend(ctx, dut, action: str, **params):
     """Run backend command for cursor operations"""
-    return run_backend(ctx, dut, "cursor.py", action, **params)
+    return run_backend(ctx, dut, "scope.py", action, **params)
 
 
 @measure.command()
@@ -253,7 +259,7 @@ def pw_pos(ctx, mcu, box, display, cursor):
 
     _validate_logic_net(ctx, box_ip, netname)
 
-    _run_measurement_backend(ctx, box_ip, "measure_pw_pos", netname=netname, display=display, cursor=cursor, mcu=mcu)
+    _run_measurement_backend(ctx, box_ip, "measure_pulse_width_pos", netname=netname, display=display, cursor=cursor, mcu=mcu)
 
 @measure.command()
 @click.pass_context
@@ -270,7 +276,7 @@ def pw_neg(ctx, mcu, box, display, cursor):
 
     _validate_logic_net(ctx, box_ip, netname)
 
-    _run_measurement_backend(ctx, box_ip, "measure_pw_neg", netname=netname, display=display, cursor=cursor, mcu=mcu)
+    _run_measurement_backend(ctx, box_ip, "measure_pulse_width_neg", netname=netname, display=display, cursor=cursor, mcu=mcu)
 
 
 @logic.group()

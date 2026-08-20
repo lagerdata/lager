@@ -36,13 +36,13 @@ are not.
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1581 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1602 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 1729 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 168 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 127 (+1 skipped) |
-| | **Total gated** | **3799** |
+| | **Total gated** | **3820** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -443,7 +443,7 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 153 files)
+### Local Unit Tests (`test/unit/` -- 154 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 80 files)
 
@@ -534,7 +534,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 60 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 61 files)
 
 | File | What it tests |
 |------|---------------|
@@ -592,8 +592,9 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_config_roundtrip.py` | `cli/config.py` JSON<->ConfigParser round-trip, legacy-key migration, `read`/`write_lager_json`, `expand_devenv_path`, `get_debug_script_for_net` |
 | `test_impl_host_importable.py` | Every `cli/impl/*` module must import with `box/` off `sys.path` and `lager` blocked -- they ship in the wheel but the box tree does not, so a module-level `import lager` breaks them on any pip install |
 | `test_import_surface.py` | Import guards: `cli/status.py` needs pymongo's `bson.decode`, and `termios`/`tty` must stay optional (simulated via a `meta_path` finder) |
+| `test_impl_script_dispatch.py` | Every `run_backend`/`get_impl_path` call site names an impl script that exists on disk, against a two-sided `KNOWN_MISSING` baseline (now empty, #261); plus `get_impl_path` subdir/root resolution, its raise-on-missing behaviour, and that the formerly-dead `lager logic` subcommands reach the backend |
 | `test_instrument_role_tables.py` | The three instrument role tables -- the box's `SUPPORTED_USB` and `CHANNEL_MAPS`, the CLI's `INSTRUMENT_NET_MAP` -- agree for every instrument; a channel advertised for a role the CLI will not create a net for is a silently unusable capability |
-| `test_impl_script_dispatch.py` | Every `run_backend`/`get_impl_path` call site names an impl script that exists on disk, against a two-sided `KNOWN_MISSING` baseline (#261); plus `get_impl_path` subdir/root resolution and its raise-on-missing behaviour |
+| `test_logic_dispatch_actions.py` | Every action `lager logic` sends is one the impl script it targets actually handles -- the contract that broke in #261, which a file-existence check cannot see (the pulse-width pair named an existing file with an action it does not register) |
 | `test_login_commands.py` | `lager login`/`logout`/`whoami`: display-name fallback, MFA prompt wiring, logout URL rstrip, and the four `whoami` session states |
 | `test_matchers.py` | Test-output matchers and the v1 stream framing parser; markers split across chunk boundaries must still set the exit code |
 | `test_param_types.py` | Every custom click ParamType, valid and invalid, incl. the five on live command paths |

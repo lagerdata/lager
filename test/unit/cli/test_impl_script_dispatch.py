@@ -62,7 +62,9 @@ _DISPATCHERS = {'run_backend': 2, 'run_impl_script': 2, 'get_impl_path': 0}
 # raising, so a logic net would silently do nothing -- the defect #256 fixed for
 # the five subcommands that do work. They need their own scripts on
 # NetType.Logic, modelled on cli/impl/power/enable_disable.py.
-KNOWN_MISSING = frozenset({'measurement.py', 'trigger.py', 'cursor.py'})
+# Empty, and it should stay that way. The three names that used to sit here
+# were repointed at scope.py, which had always implemented their actions.
+KNOWN_MISSING = frozenset()
 
 
 def _resolves(script):
@@ -202,22 +204,50 @@ class TheUserSeesAMessageNotATraceback(unittest.TestCase):
                                       obj=self._Obj(),
                                       catch_exceptions=False)
 
-    def test_measure_period_names_the_missing_script(self):
-        result = self._invoke(['logic1', 'measure', 'period'])
+    def test_a_genuinely_missing_script_names_itself_without_a_traceback(self):
+        """The guardrail's user-facing contract, through a real command.
+
+        Driven with a script name that is deliberately absent rather than with
+        `measure period`, which used to be absent and is not any more (#261).
+        A test that needs a real bug in the tree to pass stops testing anything
+        the moment the bug is fixed.
+        """
+        def _dispatch_missing(ctx, dut, action, **params):
+            return logic_mod.run_backend(ctx, dut, 'definitely_not_here.py',
+                                         action, **params)
+
+        with mock.patch.object(logic_mod, '_run_measurement_backend',
+                               _dispatch_missing):
+            result = self._invoke(['logic1', 'measure', 'period'])
         self.assertNotIn('Traceback (most recent call last)', result.output)
         self.assertNotIn('Could not find runnable', result.output)
-        self.assertIn('measurement.py', result.output)
+        self.assertIn('definitely_not_here.py', result.output)
         self.assertEqual(result.exit_code, 1)
 
-    def test_trigger_edge_names_the_missing_script(self):
-        result = self._invoke(['logic1', 'trigger', 'edge'])
-        self.assertNotIn('Traceback (most recent call last)', result.output)
-        self.assertIn('trigger.py', result.output)
+    def test_the_formerly_dead_commands_now_reach_the_backend(self):
+        """#261's sixteen actions dispatch instead of erroring.
 
-    def test_cursor_hide_names_the_missing_script(self):
-        result = self._invoke(['logic1', 'cursor', 'hide'])
-        self.assertNotIn('Traceback (most recent call last)', result.output)
-        self.assertIn('cursor.py', result.output)
+        Asserts the script *and* the action, because both were wrong:
+        `measurement.py`/`trigger.py`/`cursor.py` had been consolidated into
+        `scope.py`, and the two pulse-width actions were additionally sent
+        under names `scope.py` does not register.
+        """
+        cases = [
+            (['logic1', 'measure', 'period'], 'scope.py', 'measure_period'),
+            (['logic1', 'measure', 'pw-pos'], 'scope.py', 'measure_pulse_width_pos'),
+            (['logic1', 'measure', 'pw-neg'], 'scope.py', 'measure_pulse_width_neg'),
+            (['logic1', 'trigger', 'edge'], 'scope.py', 'trigger_edge'),
+            (['logic1', 'cursor', 'hide'], 'scope.py', 'hide_cursor'),
+        ]
+        for args, script, action in cases:
+            with self.subTest(command=' '.join(args)):
+                with mock.patch.object(logic_mod, 'run_backend') as backend:
+                    result = self._invoke(args)
+                self.assertNotIn('has no implementation in this release',
+                                 result.output)
+                backend.assert_called_once()
+                self.assertEqual(backend.call_args.args[2], script)
+                self.assertEqual(backend.call_args.args[3], action)
 
 
 if __name__ == '__main__':
