@@ -207,43 +207,131 @@ class TestClaimedPinMap:
 # --------------------------------------------------------------------------- #
 
 class TestAddTreeRows:
-    def test_default_pin_row_marks_default_and_offers_pin_button(self):
+    def test_rows_show_plain_channel_and_single_edit_button(self):
         tree = tui.AddNetsTree()
         net = _make_net(type='i2c', chan='FIO4-FIO5', net='i2c1')
         label = tree._get_net_label(net)
-        assert 'Ch: FIO4-FIO5 (default)' in label
-        assert '[⚙]' in label
-
-    def test_custom_pin_row_drops_default_tag(self):
-        tree = tui.AddNetsTree()
-        net = _make_net(type='i2c', chan='SDA:EIO0 SCL:EIO1', net='i2c1',
-                        params={'sda_pin': 8, 'scl_pin': 9})
-        label = tree._get_net_label(net)
+        assert 'Ch: FIO4-FIO5' in label
         assert '(default)' not in label
-        assert '[⚙]' in label
-
-    def test_non_labjack_row_unchanged(self):
-        tree = tui.AddNetsTree()
-        net = _make_net(instrument='Aardvark', chan='SPI0')
-        label = tree._get_net_label(net)
-        assert '(default)' not in label
+        assert label.count('[✎]') == 1
         assert '[⚙]' not in label
-        assert '[✎]' in label
 
-    def test_button_hit_regions(self):
+    def test_button_hit_region(self):
         tree = tui.AddNetsTree()
         net = _make_net(type='i2c', chan='FIO4-FIO5', net='i2c1')
-        content_end = len(f"[ADD] {net.net} | I2C | Ch: {net.chan} (default)   ")
-        rename_start = content_end + 4 + 3
-        pins_start = rename_start + 4
-        assert tree._get_button_at_position(net, rename_start) == 'rename'
-        assert tree._get_button_at_position(net, pins_start) == 'pins'
+        content_end = len(f"[ADD] {net.net} | I2C | Ch: {net.chan}   ")
+        edit_start = content_end + 4 + 3
+        assert tree._get_button_at_position(net, edit_start) == 'edit'
+        assert tree._get_button_at_position(net, edit_start + 4) is None
         assert tree._get_button_at_position(net, 0) is None
-        # Non-configurable nets have no pins region.
-        plain = _make_net(instrument='Aardvark', chan='SPI0')
-        plain_end = len(f"[ADD] {plain.net} | SPI | Ch: {plain.chan}   ")
-        assert tree._get_button_at_position(plain, plain_end + 4 + 3) == 'rename'
-        assert tree._get_button_at_position(plain, plain_end + 4 + 3 + 4) is None
+
+
+class TestAddTreeEditDispatch:
+    def _app_with_screen(self, nets):
+        app = tui.NetApp(ctx=None, dut="box", inst_list=[], nets=list(nets))
+        return app
+
+    def test_labjack_net_gets_combined_editor(self):
+        net = _make_net(type='i2c', chan='FIO4-FIO5', net='i2c1')
+
+        async def main():
+            app = self._app_with_screen([net])
+            async with app.run_test(size=(100, 40)) as pilot:
+                await pilot.pause()
+                screen = tui.AddScreen([net], False)
+                app.push_screen(screen)
+                await pilot.pause()
+                screen.add_tree._edit_net(net)
+                await pilot.pause()
+                dialog = app.screen
+                assert isinstance(dialog, tui.LabJackPinDialog)
+                # Combined flavor: name field present and prefilled.
+                assert dialog.query_one("#edit_name_input", Input).value == 'i2c1'
+        asyncio.run(main())
+
+    def test_other_net_gets_rename_dialog(self):
+        net = _make_net(instrument='Aardvark', chan='SPI0')
+
+        async def main():
+            app = self._app_with_screen([net])
+            async with app.run_test(size=(100, 40)) as pilot:
+                await pilot.pause()
+                screen = tui.AddScreen([net], False)
+                app.push_screen(screen)
+                await pilot.pause()
+                screen.add_tree._edit_net(net)
+                await pilot.pause()
+                assert isinstance(app.screen, tui.RenameNewNetDialog)
+        asyncio.run(main())
+
+    def test_combined_editor_saves_name_and_pins(self):
+        net = _make_net(type='i2c', chan='FIO4-FIO5', net='i2c1')
+
+        async def main():
+            app = self._app_with_screen([net])
+            async with app.run_test(size=(100, 40)) as pilot:
+                await pilot.pause()
+                screen = tui.AddScreen([net], False)
+                app.push_screen(screen)
+                await pilot.pause()
+                screen.add_tree._edit_net(net)
+                await pilot.pause()
+                dialog = app.screen
+                dialog.query_one("#edit_name_input", Input).value = "SENSORS_I2C"
+                dialog.query_one("#pin_sda", Select).value = "FIO1"
+                dialog.query_one("#pin_scl", Select).value = "FIO0"
+                await pilot.pause()
+                dialog._on_pin_button(
+                    Button.Pressed(dialog.query_one("#pin-confirm", Button)))
+                await pilot.pause()
+                assert app.screen is screen
+                assert screen.add_tree.custom_names[net.key()] == "SENSORS_I2C"
+        asyncio.run(main())
+        assert net.chan == 'SDA:FIO1 SCL:FIO0'
+        assert net.params == {'sda_pin': 1, 'scl_pin': 0}
+        assert net.pins_confirmed is True
+
+    def test_combined_editor_name_conflict_applies_nothing(self):
+        net = _make_net(type='i2c', chan='FIO4-FIO5', net='i2c1')
+        saved = _make_net(net='SENSORS_I2C', type='gpio', chan='FIO6', saved=True)
+
+        async def main():
+            app = self._app_with_screen([net, saved])
+            async with app.run_test(size=(100, 40)) as pilot:
+                await pilot.pause()
+                screen = tui.AddScreen([net, saved], False)
+                app.push_screen(screen)
+                await pilot.pause()
+                screen.add_tree._edit_net(net)
+                await pilot.pause()
+                dialog = app.screen
+                dialog.query_one("#edit_name_input", Input).value = "sensors_i2c"
+                dialog.query_one("#pin_sda", Select).value = "FIO1"
+                await pilot.pause()
+                dialog._on_pin_button(
+                    Button.Pressed(dialog.query_one("#pin-confirm", Button)))
+                await pilot.pause()
+                # Dialog stays up; neither the name nor the pins applied.
+                assert app.screen is dialog
+                warn = _static_text(dialog.query_one("#pin_warn", Static))
+                assert 'already used' in warn
+                assert net.key() not in screen.add_tree.custom_names
+        asyncio.run(main())
+        assert net.chan == 'FIO4-FIO5'
+        assert net.params is None
+        assert net.pins_confirmed is False
+
+    def test_add_prompt_dialog_has_no_name_field(self):
+        net = _make_net(type='i2c', chan='FIO4-FIO5', net='i2c1')
+        app = _run_dialog(net, {}, lambda dlg: "pin-cancel")
+        assert app.result is False
+
+        async def main():
+            app = _DialogApp(net, {})
+            async with app.run_test(size=(100, 50)) as pilot:
+                await pilot.pause()
+                assert not app.screen.query("#edit_name_input")
+        asyncio.run(main())
 
 
 # --------------------------------------------------------------------------- #
@@ -318,7 +406,7 @@ class TestSaveBatchParams:
 # --------------------------------------------------------------------------- #
 
 from textual.app import App  # noqa: E402
-from textual.widgets import Button, Select, Static  # noqa: E402
+from textual.widgets import Button, Input, Select, Static  # noqa: E402
 
 
 class _DialogApp(App):

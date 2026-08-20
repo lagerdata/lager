@@ -10,15 +10,16 @@ All notable changes to the Lager platform are documented here. For detailed rele
   obviously changeable.** Users read `Ch: FIO4-FIO5` on an available I2C net
   as a fixed assignment and didn't discover the pin-picker dialog behind the
   Add button. Three changes, all in the TUI:
-  - LabJack I2C/SPI rows tag default pins as `(default)` and drop the tag
-    once custom pins are chosen, and the screen carries a hint line saying
-    the pins can be changed. Warnings and the hint render as compact
-    single-line notices in one block with a `✕ Dismiss` button, so they
-    can't crowd the net list out of view.
-  - Each such row grows a `[⚙]` button (mouse or arrow-key + Enter) that
-    opens the existing pin-picker right away, so pins can be set while
-    selecting nets instead of only after pressing Add. Nets configured this
-    way aren't re-prompted during the add.
+  - The Add screen carries a hint line saying the pins can be changed.
+    Warnings and the hint render as compact single-line notices in one
+    block with a `✕ Dismiss` button, so they can't crowd the net list out
+    of view.
+  - A LabJack I2C/SPI row's `[✎]` button now opens a combined editor —
+    name field plus the pin dropdowns — instead of the rename-only dialog,
+    so the net can be fully configured while selecting nets instead of
+    only after pressing Add. Nets edited this way aren't re-prompted for
+    pins during the add; rename validation is shared with the plain
+    rename dialog, which all other net types keep.
   - The pin dialog now prefills with the net's current selection rather
     than always the defaults, and reverting a customized net back to the
     defaults restores the original scanner record (legacy channel string,
