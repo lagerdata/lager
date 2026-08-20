@@ -27,6 +27,7 @@ nothing escalated to SIGKILL.
 import logging
 import os
 import platform
+import signal
 import subprocess
 import sys
 import textwrap
@@ -145,7 +146,16 @@ class TestARealScriptThatIgnoresSigterm:
             lambda cmd: _wrap_with_timeout(cmd, self.DEADLINE, False),
             tmp_path, bound=self.DEADLINE + CLEANUP_GRACE_S + 15,
         )
-        assert rc == 137, f'expected SIGKILL_EXIT_CODE 137, got {rc}'
+        # -9, NOT 137. This layer reports Python's returncode, which is
+        # negative for a signal death; 137 is the shell's 128+N convention, and
+        # cli/core/utils.py's normalize_exit_code is what maps one to the other
+        # (pinned in test/unit/cli/test_python_exit_codes.py). Asserting 137
+        # here asserted something the box never produces -- which went unnoticed
+        # because this class is gated on GNU coreutils and skips on the macOS
+        # it was written on.
+        assert rc == -signal.SIGKILL, (
+            f'expected death by SIGKILL ({-signal.SIGKILL}), got {rc}'
+        )
         assert elapsed >= self.DEADLINE, (
             f'died at {elapsed:.1f}s, before its {self.DEADLINE}s deadline'
         )
