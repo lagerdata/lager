@@ -41,8 +41,8 @@ are not.
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 177 |
-| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 127 (+1 skipped) |
-| | **Total gated** | **3901** |
+| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 131 (+1 skipped) |
+| | **Total gated** | **3905** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -620,10 +620,11 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_blufi_unit.py` | BluFi protocol parsing (696-line pytest suite) |
 | `test_blufi_scan.py` | `BlufiClient.scan()` BLE advertisement presence checks |
 
-#### Root Unit Tests (`test/unit/test_*.py` -- 7 files)
+#### Root Unit Tests (`test/unit/test_*.py` -- 8 files)
 
 | File | What it tests |
 |------|---------------|
+| `test_bench_cleanup_timeouts.py` | Tree-wide guard: every `if: always()` step on a `self-hosted` bench job carries `timeout-minutes` and `continue-on-error`, and the bench jobs are still serialized on one non-cancelling concurrency group |
 | `test_coverage_checker.py` | `tools/check_coverage_counts.py`: platform-gated rows are not drift (and `--fix` must not rewrite them), plus the anchored summary parse `FORCE_COLOR` defeated |
 | `test_group_usage.py` | Usage-line formatting for CLI command groups (CommandFirstUsageMixin / LagerGroup) |
 | `test_install_wheel.py` | install-wheel command: wheel filename to package name parsing |

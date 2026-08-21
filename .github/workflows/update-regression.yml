@@ -463,6 +463,7 @@ jobs:
         # window — the post-recovery step below gets a second chance once
         # recovery has reinstalled it.
         if: always()
+        timeout-minutes: 2
         continue-on-error: true
         env:
           RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
@@ -508,6 +509,8 @@ jobs:
         # the box log. This is the end of the job on a CI-owned bench;
         # there is no other holder to stomp.
         if: always()
+        timeout-minutes: 1
+        continue-on-error: true
         run: lager boxes unlock --box "$LAGER_BOX" --force 2>/dev/null || true
         shell: bash
 
@@ -519,6 +522,7 @@ jobs:
         # recovery itself failed — the relays stay latched on and the
         # instruments idle at AC (harmless); the bench needs a hand anyway.
         if: always()
+        timeout-minutes: 2
         continue-on-error: true
         env:
           RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
