@@ -174,12 +174,21 @@ jobs:
       # clean at this severity today, so adding them costs nothing and stops
       # the next one landing unlinted. The exclusion list above is driven
       # entirely by test/; tools/ passes with no exclusions at all.
+      #
+      # box/ and cli/deployment/ too, so this matches the `bash -n` step's
+      # scope exactly. They were the gap that mattered: setup_and_deploy_box.sh
+      # is 1600 lines that provision a box over ssh as root, and the firewall
+      # and start_box scripts run there as root as well -- the shell in this
+      # repo with the most to get wrong was the shell nothing linted, while
+      # `bash -n` had already been widened to cover it. Two scopes for two
+      # steps over the same files is how that gap opened; one scope closes it.
+      # All eleven added files pass with no new exclusions.
       - name: 'ShellCheck (severity: warning)'
         if: always()
         run: |
           shellcheck -S warning \
             -e SC2034,SC2320,SC2155,SC2164,SC2046 \
-            -f gcc $(find test tools -name '*.sh')
+            -f gcc $(find test tools box cli/deployment -name '*.sh')
         shell: bash
 
       # test/api/ is 81 standalone scripts, not pytest (see test/CONVENTIONS.md),

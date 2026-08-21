@@ -355,6 +355,7 @@ else
     LAGER_OWN_MASTER=true
 fi
 
+# --- BEGIN ssh stderr capture (extracted verbatim by test/unit/cli/test_docker_install_diagnosis.py) ---
 # Wrapper for ssh -t that includes multiplexing and suppresses
 # "Shared connection to X closed." noise from pseudo-terminal sessions.
 #
@@ -366,26 +367,62 @@ fi
 # printed its own failure message. Measured against a stub ssh that fails
 # immediately: 26 of 200 runs put the real error AFTER the caller's generic
 # "[ERROR] Failed to install Docker" line, and that is precisely the pairing
-# an operator has to read together. Capturing and filtering in order costs one
-# temp file per call and makes the sequence deterministic.
+# an operator has to read together. Capturing and filtering in order makes the
+# sequence deterministic.
 #
-# What this filter sees is ssh's LOCAL stderr, and only that. `-t` allocates a
-# pty, so the remote command's stdout and stderr are merged onto the session
-# and arrive on ssh's STDOUT; remote error text has never passed through here
-# and cannot be dropped by it. Deferring the local stream to end-of-session
-# therefore holds back ssh's own one-shot messages and nothing else -- the
-# remote command's output still streams live.
+# ONE capture file for the whole run, truncated per call -- not one mktemp per
+# call. Per-call allocation gave a path that runs a dozen times a new way to
+# fail: under `set -e` a failed mktemp aborts the deploy AT THE ASSIGNMENT,
+# before ssh runs, leaving mktemp's own message and nothing else -- the
+# unexplained abort this wrapper exists to prevent. It also leaked, because
+# `rm -f` sat after the ssh call with nothing guarding it, so a Ctrl-C during
+# any session left the file behind -- and this script runs for half an hour.
+# Creating it once, here, reports that failure where it can be explained, and
+# the EXIT trap below covers every ordinary exit including Ctrl-C (bash runs
+# EXIT traps on SIGINT). A SIGKILL cannot be trapped by anything -- `lager
+# install` kills this script at its 1800s timeout -- so that one path still
+# leaves a single file in TMPDIR.
+#
+# mktemp gives the file mode 0600. It holds ssh's own diagnostics and never a
+# credential: ssh prompts on /dev/tty and sudo prompts on the remote pty, so
+# neither ever reaches this stream.
+#
+# What this filter sees is ssh's LOCAL stderr. `-t` allocates a pty ONLY when
+# stdin is a terminal; when it does, the remote command's stdout and stderr are
+# merged onto the session and arrive on ssh's STDOUT, so remote error text
+# never passes through here. When stdin is NOT a terminal -- CI runs this way,
+# and ssh says so ("Pseudo-terminal will not be allocated") -- there is no pty
+# and the remote command's stderr does arrive here. The ordering above still
+# holds in that case, because the remote text and the STEP FAILED line are then
+# on the same deferred stream; what is lost is liveness. Deferring also holds
+# back ssh's own MID-session messages, notably the ServerAliveInterval timeout
+# that reports a stalled link. That is a known trade for deterministic
+# ordering, not an oversight.
+SSH_ERR_FILE=$(mktemp "${TMPDIR:-/tmp}/lager-ssh-stderr.XXXXXX") || {
+    print_error "Could not create a temporary file in ${TMPDIR:-/tmp}"
+    echo "  The deploy captures ssh's error output there. Check that the"
+    echo "  directory exists and is writable, or point TMPDIR at one that is."
+    exit 1
+}
+
+cleanup_run() {
+    rm -f "$SSH_ERR_FILE"
+}
+trap cleanup_run EXIT
+
 ssh_t() {
     local rc=0
-    local err_file
-    err_file=$(mktemp "${TMPDIR:-/tmp}/lager-ssh-stderr.XXXXXX")
-    ssh -t $SSH_OPTS "$@" 2>"$err_file" || rc=$?
+    : > "$SSH_ERR_FILE"
+    ssh -t $SSH_OPTS "$@" 2>"$SSH_ERR_FILE" || rc=$?
     # grep exits 1 when nothing matches, which is the ordinary case (an empty
-    # or fully-filtered stderr); that must not become ssh_t's status.
-    grep -v "onnection to .* closed\." "$err_file" >&2 || true
-    rm -f "$err_file"
+    # or fully-filtered stderr); that must not become ssh_t's status. -a
+    # because one NUL byte in the captured stream makes grep call the file
+    # binary and print "Binary file <path> matches" INSTEAD of the error --
+    # the line the operator needed, replaced by a path the trap then deletes.
+    grep -av "onnection to .* closed\." "$SSH_ERR_FILE" >&2 || true
     return $rc
 }
+# --- END ssh stderr capture ---
 
 # Pre-flight checks
 echo -e "${BOLD}Pre-flight checks...${NC}"
@@ -549,9 +586,13 @@ if [ "$LAGER_OWN_MASTER" = true ]; then
         print_warning "Could not establish multiplexed SSH — will use individual connections"
     fi
 
-    # Clean up master connection on exit (success or failure)
+    # Clean up master connection on exit (success or failure). This trap
+    # REPLACES the cleanup_run trap registered with SSH_ERR_FILE above -- bash
+    # keeps one handler per signal -- so it has to do that job too, or every
+    # run on a box needing its own ControlMaster leaks the capture file.
     cleanup_ssh() {
         ssh -O exit -o ControlPath="${CONTROL_PATH}" "${BOX_USER}@${BOX_IP}" 2>/dev/null || true
+        cleanup_run
     }
     trap cleanup_ssh EXIT
 else
@@ -822,8 +863,19 @@ else
         else
             print_error "Failed to install Docker"
             echo ""
-            echo "The failing command is named above as '[lager] STEP FAILED: <command>',"
-            echo "with that command's own error output on the lines before it."
+            # Conditional wording, because the line is not always there.
+            # ssh_t reports a non-zero status for the SESSION as well as for
+            # the chain -- a ConnectTimeout, a rejected host key, a broken
+            # pipe, a ControlMaster that died mid-install -- and two links of
+            # the chain (the buildx install and the first restart attempt) are
+            # deliberately unwrapped because a failure there is not fatal.
+            # Stating flatly that the command "is named above" sends the
+            # operator hunting for a line that was never printed, which is the
+            # same wasted ten minutes this step was fixed to stop causing.
+            echo "If the transcript above has a '[lager] STEP FAILED: <command>' line,"
+            echo "that names the command that failed, with its own error output on the"
+            echo "lines just before it. If there is no such line, the ssh session itself"
+            echo "failed rather than any install command, and the error above is ssh's."
             echo ""
             # Which half failed decides which follow-up is useful. If the
             # packages landed, apt is not the problem and the daemon's own
@@ -1635,7 +1687,7 @@ else
         HOST_CLI_VERSION=$(printf '%s\n' "$HOST_CLI_OUTPUT" | tail -n 1)
         HOST_CLI_STATUS="installed"
         print_success "Host CLI installed (version: ${HOST_CLI_VERSION}) -> ~/.local/bin/lager"
-        print_info "~/.local/bin may not be on PATH until the next login; the absolute path always works"
+        print_info "Note: \$HOME/.local/bin may not be on PATH until the next login; the absolute path always works"
     else
         case "$HOST_CLI_RC" in
             41) HOST_CLI_REASON="could not materialize ~/box/cli (git sparse-checkout add failed — git too old, or fetch blocked?)" ;;
@@ -1667,10 +1719,20 @@ print_step "Starting Docker Containers"
 # used to discard the result and print "Docker service enabled" either way,
 # which is the same defect as the install step: a claim the script never
 # checked. Report what is actually true and let the deploy continue.
+#
+# Three outcomes, not two. `systemctl is-enabled` answers 0 for enabled and 1
+# for disabled or masked; ssh answers 255 when it never reached the box at all.
+# Folding 255 in with 1 would state a fact about the unit from an exit code
+# that never got near it -- the same unchecked claim this step was fixed to
+# stop making, just inverted.
 print_info "Ensuring Docker service is enabled (for auto-start on boot)..."
 ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "sudo systemctl enable docker >/dev/null 2>&1" || true
-if ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "systemctl is-enabled --quiet docker"; then
+ENABLE_STATE_RC=0
+ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "systemctl is-enabled --quiet docker" || ENABLE_STATE_RC=$?
+if [ "$ENABLE_STATE_RC" -eq 0 ]; then
     print_success "Docker service enabled"
+elif [ "$ENABLE_STATE_RC" -eq 255 ]; then
+    print_warning "Could not reach the box to check whether Docker is enabled for auto-start"
 else
     print_warning "Docker is NOT enabled for auto-start - the box will come up without a docker daemon after a reboot"
     echo "  Enable it by hand: ssh ${BOX_USER}@${BOX_IP} 'sudo systemctl enable docker'"
