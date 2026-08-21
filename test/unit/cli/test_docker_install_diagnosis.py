@@ -46,7 +46,9 @@ Three separate things were wrong, and they are tested separately below.
 import os
 import re
 import shutil
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -65,19 +67,56 @@ def _uncommented(path):
     )
 
 
-def _extract_function(name):
-    """Lift one top-level shell function out of the deploy script.
+CAPTURE_BLOCK = "ssh stderr capture"
 
-    The script is ~1600 lines and runs a deployment when sourced, so it cannot
-    be sourced in a test. The function definitions are top-level and brace-
-    delimited in column 0, which is enough to slice one out and execute it for
-    real -- which is the point: a text assertion about `ssh_t` cannot tell an
-    ordered filter from an unordered one.
+
+def _extract(topic):
+    """Return the shell between the BEGIN/END sentinels naming `topic`.
+
+    Same convention and helper shape as test_deploy_box_image_ref.py. The
+    script is ~1600 lines and runs a deployment when sourced, so it cannot be
+    sourced in a test; the block is sentinel-delimited precisely so it can be
+    lifted out and executed for real. That is the point -- a text assertion
+    about `ssh_t` cannot tell an ordered filter from an unordered one, or a
+    capture file that is cleaned up from one that leaks.
+
+    The whole block comes across, not just the function. SSH_ERR_FILE and its
+    EXIT trap are what make `ssh_t` work and what make it clean up; a harness
+    that reconstructed them by hand would be testing the harness.
     """
-    lines = DEPLOY_SCRIPT.read_text().splitlines()
-    start = next(i for i, l in enumerate(lines) if l.startswith(f"{name}() {{"))
-    end = next(i for i, l in enumerate(lines[start + 1:], start + 1) if l == "}")
-    return "\n".join(lines[start:end + 1])
+    begin, end = f"# --- BEGIN {topic}", f"# --- END {topic}"
+    body, inside, seen = [], False, False
+    for line in DEPLOY_SCRIPT.read_text().splitlines():
+        if line.startswith(begin):
+            inside, seen = True, True
+            continue
+        if line.startswith(end):
+            inside = False
+            continue
+        if inside:
+            body.append(line)
+    assert seen, f"sentinel {begin!r} not found in {DEPLOY_SCRIPT}"
+    assert body, f"no shell extracted for {topic!r}"
+    return "\n".join(body)
+
+
+def _harness_prelude():
+    """What the deploy script provides the capture block, and nothing else."""
+    return (
+        "#!/bin/bash\n"
+        "set -e\n"
+        'SSH_OPTS=""\n'
+        'print_error() { echo "[ERROR] $1" >&2; }\n'
+    )
+
+
+def _wait_until(predicate, timeout=10):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
 
 
 def _write_stub(directory, name, body):
@@ -112,10 +151,8 @@ def ssh_t_harness(tmp_path):
 
     harness = tmp_path / "harness.sh"
     harness.write_text(
-        "#!/bin/bash\n"
-        "set -e\n"
-        'SSH_OPTS=""\n'
-        + _extract_function("ssh_t")
+        _harness_prelude()
+        + _extract(CAPTURE_BLOCK)
         + "\n"
         f'if ssh_t user@box "true"; then echo OK; else echo "{GENERIC}"; exit 1; fi\n'
     )
@@ -267,8 +304,264 @@ def test_the_filter_only_ever_sees_ssh_s_own_stderr():
     assert "OUT-LINE" in text and "ERR-LINE" in text, repr(text)
 
 
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
+def test_ssh_t_cleans_up_when_the_operator_interrupts(tmp_path):
+    """Ctrl-C is the case a cleanup line after the ssh call cannot cover.
+
+    This script runs for half an hour across a dozen ssh_t calls, and
+    operators do interrupt it. SIGINT to the process group -- exactly what the
+    terminal sends -- stops the shell where it stands, so an `rm -f` on the
+    next line never runs; a per-call capture file leaked one temp file per
+    interrupt, forever, in TMPDIR. The EXIT trap does run (bash runs EXIT
+    traps on SIGINT), which is why the file is created once at script scope
+    instead of once per call.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stub(bin_dir, "ssh", 'echo "connecting" >&2\nsleep 30')
+
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        _harness_prelude() + _extract(CAPTURE_BLOCK) + '\nssh_t user@box "true"\n'
+    )
+    harness.chmod(0o755)
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["TMPDIR"] = str(scratch)
+
+    proc = subprocess.Popen(
+        ["bash", str(harness)], env=env, start_new_session=True,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+    )
+    try:
+        assert _wait_until(lambda: any(scratch.iterdir())), "capture file never appeared"
+        os.killpg(proc.pid, signal.SIGINT)
+        proc.wait(timeout=30)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+
+    assert list(scratch.iterdir()) == [], sorted(p.name for p in scratch.iterdir())
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
+def test_a_capture_file_that_cannot_be_created_is_explained(tmp_path):
+    """The failure has to arrive as a sentence, not as an exit status.
+
+    Allocating the file per call put it inside `ssh_t`, where `set -e` aborts
+    the deploy AT THE ASSIGNMENT -- before ssh runs -- and the caller prints
+    "Deployment failed! Check the output above for details." above nothing but
+    mktemp's own message. That unexplained stop is the entire subject of this
+    file; it must not be reintroduced by the fix for it.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_stub(bin_dir, "ssh", "exit 0")
+
+    harness = tmp_path / "harness.sh"
+    harness.write_text(
+        _harness_prelude() + _extract(CAPTURE_BLOCK) + '\nssh_t user@box "true"\n'
+    )
+    harness.chmod(0o755)
+
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["TMPDIR"] = str(tmp_path / "no-such-directory")
+    result = subprocess.run(
+        ["bash", str(harness)], env=env, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True, timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
+    assert result.returncode != 0, result.stdout
+    assert "Could not create a temporary file" in result.stdout, result.stdout
+    assert "TMPDIR" in result.stdout, result.stdout
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="requires bash")
+def test_a_nul_byte_in_ssh_s_stderr_does_not_swallow_the_error(ssh_t_harness):
+    """grep calls a stream with a NUL byte binary and prints "Binary file ...
+    matches" INSTEAD of the lines -- destroying the one diagnostic the
+    operator needed and replacing it with a path to a file the trap has
+    already deleted. `-a` is the whole fix."""
+    harness, bin_dir = ssh_t_harness
+    binary = bin_dir / "ssh"
+    binary.write_text(
+        "#!/bin/bash\n"
+        f'printf "%s\\n" "{REAL_ERROR}" >&2\n'
+        'printf "\\000\\n" >&2\n'
+        f'echo "{NOISE}" >&2\n'
+        'exit 255\n'
+    )
+    binary.chmod(0o755)
+
+    _, output = _run_harness(harness, bin_dir)
+    assert REAL_ERROR in output, output
+    assert "Binary file" not in output, output
+    assert NOISE not in output, output
+
+
+def test_the_controlmaster_trap_also_removes_the_capture_file():
+    """bash keeps ONE handler per signal, so the `trap cleanup_ssh EXIT` that
+    STEP 1 registers REPLACES the capture file's own trap. If cleanup_ssh does
+    not call cleanup_run, every run on a box that needs its own ControlMaster
+    leaks the file -- and the leak stays invisible, because the other branch
+    (a ControlMaster already in the operator's ssh config) never registers a
+    second trap and so still cleans up."""
+    code = _uncommented(DEPLOY_SCRIPT)
+    body = code[code.index("cleanup_ssh() {"):]
+    body = body[:body.index("\n    }")]
+    assert "cleanup_run" in body, body
+
+
 # ---------------------------------------------------------------------------
-# The install chain -- too large to execute; pin the contract in text
+# The install chain -- built the way the script builds it, then executed
+# ---------------------------------------------------------------------------
+
+# The chain is built by bash from a double-quoted string full of `\$` and `\"`.
+# That escaping is the part a reader cannot check by eye, and every assertion
+# below the divider matches text in the SCRIPT SOURCE, so none of them can see
+# it: they would pass just as happily on a string the remote shell would
+# refuse. These run the real thing.
+
+REMOTE_SHELLS = ["bash", "sh"]
+
+CHAIN_LINKS = [
+    # (what to break, its exit status, the label run_step must print)
+    ("apt-get update", 100, "apt-get update"),
+    ("apt-get install", 100, "apt-get install -y docker.io docker-compose-v2"),
+    ("systemctl daemon-reload", 1, "systemctl daemon-reload"),
+    ("systemctl enable", 1, "systemctl enable docker"),
+    ("systemctl restart", 5, "systemctl restart docker"),
+    ("usermod", 6, "usermod -aG docker lagerdata"),
+]
+
+
+def _remote_install_command(tmp_path):
+    """The exact string bash hands the remote shell for the Docker step.
+
+    Not a copy of it. The call site is lifted from the script and run with
+    `ssh_t` replaced by a capture function, so bash itself resolves the
+    escaping, exactly as it does on a real deploy.
+    """
+    lines = DEPLOY_SCRIPT.read_text().splitlines()
+    start = next(
+        i for i, l in enumerate(lines)
+        if l.strip().startswith('if ssh_t "${BOX_USER}@${BOX_IP}" "')
+    )
+    end = next(i for i, l in enumerate(lines[start:], start) if l.strip() == '"; then')
+    call_site = "\n".join(lines[start:end + 1])
+
+    out = tmp_path / "remote_cmd"
+    builder = tmp_path / "build_remote_cmd.sh"
+    builder.write_text(
+        "#!/bin/bash\n"
+        'BOX_USER="lagerdata"\n'
+        'BOX_IP="10.0.0.5"\n'
+        'ssh_t() { printf "%s" "$2" > "$OUT"; return 0; }\n'
+        + call_site
+        + "\n    :\nfi\n"
+    )
+    builder.chmod(0o755)
+
+    env = dict(os.environ)
+    env["OUT"] = str(out)
+    result = subprocess.run(
+        ["bash", str(builder)], env=env, capture_output=True, text=True,
+        timeout=60, stdin=subprocess.DEVNULL,
+    )
+    assert result.returncode == 0, result.stderr
+    command = out.read_text()
+    assert "run_step()" in command, command
+    return command
+
+
+@pytest.fixture
+def box_stubs(tmp_path):
+    """A box's worth of stand-ins. Break one by name via FAIL_CMD/FAIL_RC."""
+    bin_dir = tmp_path / "box_bin"
+    bin_dir.mkdir()
+    # Real sudo drops the leading VAR=VAL arguments before exec'ing; so must
+    # this one, or `sudo DEBIAN_FRONTEND=... apt-get update` never reaches the
+    # apt-get stub and the chain passes for the wrong reason.
+    _write_stub(
+        bin_dir, "sudo",
+        'while [ $# -gt 0 ]; do case "$1" in *=*) shift ;; *) break ;; esac; done\n'
+        'exec "$@"',
+    )
+    for name, key in (("apt-get", '"apt-get $1"'), ("systemctl", '"systemctl $1"'),
+                      ("usermod", '"usermod"')):
+        _write_stub(
+            bin_dir, name,
+            f'if [ "${{FAIL_CMD:-}}" = {key} ]; then\n'
+            f'    echo "{name}: refusing to $*" >&2\n'
+            '    exit "${FAIL_RC:-1}"\n'
+            'fi\n'
+            'exit 0',
+        )
+    return bin_dir
+
+
+def _run_chain(command, bin_dir, shell, fail_cmd=None, fail_rc=None):
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    if fail_cmd is not None:
+        env["FAIL_CMD"] = fail_cmd
+        env["FAIL_RC"] = str(fail_rc)
+    else:
+        env.pop("FAIL_CMD", None)
+    result = subprocess.run(
+        [shell, "-c", command], env=env, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True, timeout=60,
+        stdin=subprocess.DEVNULL,
+    )
+    return result.returncode, result.stdout
+
+
+class TestTheChainActuallyRuns:
+    @pytest.mark.parametrize("shell", REMOTE_SHELLS)
+    def test_it_succeeds_when_every_command_does(self, tmp_path, box_stubs, shell):
+        """`run_step` sits inside an `&&` chain. A wrapper that got the success
+        path wrong -- a stray non-zero, a swallowed status -- would fail every
+        install on a healthy box."""
+        if shutil.which(shell) is None:
+            pytest.skip(f"requires {shell}")
+        command = _remote_install_command(tmp_path)
+        rc, output = _run_chain(command, box_stubs, shell)
+        assert rc == 0, output
+        assert "STEP FAILED" not in output, output
+
+    @pytest.mark.parametrize("shell", REMOTE_SHELLS)
+    @pytest.mark.parametrize("broken,status,label", CHAIN_LINKS)
+    def test_each_link_names_itself_and_keeps_its_status(
+        self, tmp_path, box_stubs, shell, broken, status, label
+    ):
+        """Both halves matter. The label is what the operator reads; the exit
+        status is what stops the chain -- a wrapper that named the step and
+        returned 0 would turn a failed install into a reported success, which
+        is worse than the silence it replaced.
+
+        `sh` as well as `bash`: the remote command runs under the box login
+        user's shell, which this script does not choose. `run_step` is written
+        in POSIX shell for that reason, and nothing here may quietly depend on
+        bash.
+        """
+        if shutil.which(shell) is None:
+            pytest.skip(f"requires {shell}")
+        command = _remote_install_command(tmp_path)
+        rc, output = _run_chain(command, box_stubs, shell,
+                                fail_cmd=broken, fail_rc=status)
+        assert f"[lager] STEP FAILED: {label} (exit {status})" in output, output
+        assert rc == status, output
+
+
+# ---------------------------------------------------------------------------
+# The install chain -- the rest of the contract, pinned in text
 # ---------------------------------------------------------------------------
 
 
@@ -323,6 +616,20 @@ class TestTheFailureMessageIsActionable:
             "the generic line must tell the operator where the specific one is"
         )
 
+    def test_the_pointer_to_the_named_step_is_conditional(self):
+        """`ssh_t` reports a non-zero status for the SESSION as well as for the
+        chain -- a ConnectTimeout, a rejected host key, a broken pipe, a
+        ControlMaster that died mid-install -- and two links are deliberately
+        unwrapped because a failure there is not fatal. Stating flatly that the
+        command "is named above" sends the operator hunting for a line that was
+        never printed, which is the same wasted ten minutes this step exists to
+        stop causing."""
+        code = _uncommented(DEPLOY_SCRIPT)
+        tail = code[code.index('print_error "Failed to install Docker"'):]
+        tail = tail[:tail.index("exit 1")]
+        assert "If the transcript above has" in tail, tail
+        assert "If there is no such line" in tail, tail
+
     def test_the_daemon_follow_ups_are_offered(self):
         """The issue asks for these by name, and only when the failure is in
         the daemon rather than the packages."""
@@ -372,3 +679,15 @@ class TestTheEnableGrantAndItsVerification:
         block = code[head:head + 900]
         assert "systemctl is-enabled --quiet docker" in block, block
         assert re.search(r"print_warning .*NOT enabled", block), block
+
+    def test_it_separates_a_box_it_could_not_reach_from_a_disabled_unit(self):
+        """`is-enabled` answers 0 for enabled and 1 for disabled or masked;
+        ssh answers 255 when it never reached the box at all. Folding 255 in
+        with 1 states a fact about the unit from an exit code that never got
+        near it -- the same unchecked claim the test above pins, inverted."""
+        code = _uncommented(DEPLOY_SCRIPT)
+        head = code.index("Ensuring Docker service is enabled")
+        block = code[head:head + 1200]
+        assert "ENABLE_STATE_RC" in block, block
+        assert "-eq 255" in block, block
+        assert re.search(r"print_warning .*[Cc]ould not reach the box", block), block

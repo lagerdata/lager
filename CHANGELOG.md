@@ -2,6 +2,48 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Fixed
+
+- **The deploy script's ssh wrapper no longer leaves a temp file behind on
+  Ctrl-C, and no longer fails a deploy over one it cannot create.** `ssh_t`
+  captures ssh's own stderr so it can filter it in order, and it allocated
+  that capture file per call -- which put two new ways to fail on a path that
+  runs a dozen times per deploy. The `rm -f` sat after the ssh call, so an
+  interrupt of a script that runs for half an hour skipped it and left the
+  file in `TMPDIR` for good. And a `TMPDIR` that could not be written aborted
+  the deploy at the assignment under `set -e`, before ssh ran, leaving
+  `mktemp`'s own message and nothing else. There is now one capture file per
+  run, created where the failure can be explained and removed by the exit
+  trap, which does cover Ctrl-C. The filter also reads it as text: a single
+  NUL byte in the stream made `grep` call the file binary and print
+  `Binary file ... matches` in place of the error line the operator needed.
+
+- **A failed Docker install no longer points at a line that may not be there.**
+  The step named the failing command unconditionally, but the ssh session can
+  fail on its own -- a connect timeout, a rejected host key, a dropped
+  multiplexed connection -- and two links of the chain are deliberately
+  unwrapped because a failure there is not fatal. In any of those cases no
+  `[lager] STEP FAILED` line is printed, and the operator was sent looking for
+  one. The wording is now conditional and says what it means if the line is
+  absent.
+
+- **The boot-enable check tells "could not reach the box" apart from "the unit
+  is disabled".** `systemctl is-enabled` answers 0 for enabled and 1 for
+  disabled or masked, while ssh answers 255 when it never reached the box at
+  all. Folding those together stated a fact about the unit from an exit code
+  that never got near it.
+
+### Changed
+
+- **ShellCheck now covers the same files as the `bash -n` syntax check.** The
+  two steps had drifted to different scopes, and the gap held the shell with
+  the most to get wrong: the 1600-line box provisioning script, the firewall
+  script and the box start scripts all run as root, and none of them were
+  linted. All eleven newly covered files pass at the existing severity with no
+  new exclusions.
+
 ## [0.40.0] - 2026-08-21
 
 ### Added
