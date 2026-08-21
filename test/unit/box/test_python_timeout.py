@@ -98,14 +98,32 @@ class TestArgv:
         assert any(str(requested) in m and str(MAX_TIMEOUT) in m
                    for m in messages), messages
 
-    def test_detached_is_not_wrapped(self):
+    def test_detached_without_a_timeout_is_not_wrapped(self):
+        # The default `-d` path keeps the exact process tree it always had.
+        # The attached path relies on an inert `timeout 0`; doing that here
+        # would insert a wrapper into every detached job that never asked for a
+        # deadline, changing its recorded pid and returncode for no benefit.
         cmd = ['python3', 's.py']
-        assert _wrap_with_timeout(list(cmd), 3, True) == cmd
+        assert _wrap_with_timeout(list(cmd), 0, True) == cmd
 
-    def test_detached_says_the_timeout_is_being_dropped(self, caplog):
+    def test_detached_with_a_timeout_is_wrapped(self):
+        argv = _wrap_with_timeout(['python3', 's.py'], 3, True)
+        assert argv[0] == '/usr/bin/timeout'
+        assert argv[argv.index('--kill-after') + 2] == '3'
+        assert argv[-2:] == ['python3', 's.py']
+
+    def test_detached_is_not_subject_to_the_ceiling(self):
+        # MAX_TIMEOUT exists because the CLI's streaming read timeout is 320s.
+        # Nobody streams a detached job, so capping one would cut short exactly
+        # the long run `-d` exists for.
+        requested = MAX_TIMEOUT + 3300
+        argv = _wrap_with_timeout(['python3', 's.py'], requested, True)
+        assert argv[argv.index('--kill-after') + 2] == str(requested)
+
+    def test_detached_ceiling_is_not_applied_silently_or_otherwise(self, caplog):
         with caplog.at_level(logging.WARNING, logger='lager.python.executor'):
-            _wrap_with_timeout(['python3', 's.py'], 3, True)
-        assert 'ignored' in caplog.text.lower(), caplog.text
+            _wrap_with_timeout(['python3', 's.py'], MAX_TIMEOUT + 3300, True)
+        assert 'ceiling' not in caplog.text.lower(), caplog.text
 
 
 @needs_real_timeout

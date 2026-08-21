@@ -26,95 +26,77 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
-- **The bench power-on step returned while an instrument was still
-  enumerating, and the resulting hotplug restarted the box's hardware service
-  mid-suite.** Both bench workflows waited only for the instruments their own
-  suites talk to -- `Bench: Integration Tests` for the Rigol DP821 and the
-  Keithley 2281S, `Bench: Box Lifecycle` for the Rigol alone. That is the
-  right list for "which instrument does this test need" and the wrong one for
-  "has enumeration finished": anything else sharing a relay outlet is still
-  coming up, and when it lands the box's hardware service restarts underneath
-  whatever is already running.
+- **`lager python --detach` now returns as soon as the box has accepted the
+  job, instead of after everything that makes a job slow to start.** Every step
+  before the process was spawned ran inside the HTTP request: unpacking the
+  module, `pip install -r requirements.txt` with no bound on it, the quiesce
+  gate that can wait 69 seconds for a previous job's teardown, and the
+  direct-USB handoff. A detached launch of a module carrying a
+  `requirements.txt` therefore blocked the CLI on its 320-second read timeout
+  before it could see the response saying the job had detached -- the one thing
+  `-d` exists to avoid.
 
-  Measured from a dark relay: the DP821 enumerates at 6s and the Keithley at
-  11s, but a scope on the same outlet takes 52-60s. The step was returning
-  roughly 35 seconds early, and a command issued in that window fails with
-  `Connection refused` on the hardware service port -- reproduced on the
-  bench rather than inferred. The symptom is an instrument suite failing for
-  no reason visible in its own output, which reads as a flake.
+  The box now answers the client first and does all of that on one background
+  thread. The job's registry entry -- `meta.json` and `output.log` -- is written
+  before the response, so a `--reattach` issued immediately opens a file that
+  exists rather than getting a 500, and `meta.json` gained a `starting` state to
+  say so.
 
-  Both workflows now wait for every relay-powered instrument, and name the
-  ones still missing if the wait times out.
+  **A failure to start is now reported through the job rather than to the
+  launch.** A broken `requirements.txt` used to come back as an HTTP 422 the
+  user saw at once, after the wait. It now happens after the response, so the
+  pip transcript is written into the job's own log as stderr followed by an exit
+  marker and `meta.json` reaches `failed` with return code 1 -- the same code
+  the attached path reports for the same failure. `lager python --reattach <id>`
+  shows the pip output and exits 1. That is a real loss of immediacy at launch
+  time, and it is inherent: any wait long enough to catch a pip failure is the
+  wait `-d` exists to avoid.
 
-- **`Bench: Box Lifecycle` could not complete on any branch, which made the
-  documented way to bench-test a change impossible to finish.** Two of its
-  `lager update` steps had no `--version` and so targeted the CLI's `main`
-  default, while the step before them deployed `github.sha`. Those are the
-  same commit only when `github.sha` is main's head -- true for the nightly,
-  false for every `workflow_dispatch` on a branch.
+  Also fixed here: a detached run whose request carried no `LAGER_PROCESS_ID`
+  registered itself under the literal directory `/tmp/lager_processes/None`. The
+  box now mints an id and injects it into the child's environment, without which
+  `--kill <id>` could never have found the job -- a job is located by reading
+  `LAGER_PROCESS_ID` out of `/proc/*/environ`, not by its directory name.
 
-  The "no-op update hits the fast path" step was the fatal one: on a branch it
-  asked the box to move from the commit under test back to main, which is a
-  real update and not a fast path, so its assertion found nothing and the job
-  died there -- before the uninstall, reinstall and hardware-smoke phases ever
-  ran. The forced-rebuild step had the same gap without being fatal: it
-  rebuilt main rather than the commit under test, spending a full rebuild on
-  the wrong ref, and the box left the commit under test until the install step
-  near the end of the job put it back.
+- **`--timeout` now applies to `--detach`, without the box ceiling.** A detached
+  job was never wrapped in `/usr/bin/timeout`, on the stated grounds that the
+  wrapper would become the group leader `_signal_targets` reasons about. That is
+  a true statement of fact but not a reason: `start_new_session` makes the
+  wrapper a process-group leader whose child inherits its group, which is
+  exactly the arrangement `_signal_targets` was written for and exactly what the
+  attached path already does. A detached job is now wrapped whenever a deadline
+  was actually asked for -- and only then, so the default `-d` path keeps the
+  process tree it always had.
 
-  Both are now pinned to `github.sha`, matching the step that was already
-  pinned for this exact reason. Verified against the bench: `--check` reports
-  `in sync` for the deployed commit and `will roll back (1 commit(s) ahead of
-  origin/main)` for `main`, so a SHA target reaches the fast path and the
-  nightly's behaviour is unchanged.
+  `MAX_TIMEOUT` is deliberately not applied to it. That ceiling exists because
+  the CLI's streaming read timeout is 320 seconds, and nothing streams a
+  detached job; capping `-d --timeout 3600` to 300 would cut short exactly the
+  long run `-d` exists for.
 
-- **`lager debug <net> erase` no longer reports "Erase complete!" when nothing
-  was erased.** With the probe enumerated but the target unreachable over SWD
-  -- unplugged, unpowered, or held in reset -- the command printed
-  `Erase complete!` in green and exited 0 over a part it had never touched.
-  The only hint anything was wrong was a yellow `Failed to reconnect after
-  erase` warning printed *after* success had already been reported.
+- **A detached run no longer holds the box lock forever.** The lock was acquired
+  with `ttl_seconds: null` because the CLI's heartbeat thread dies with the CLI,
+  and released by hand. That is workable while the job runs and a trap when it
+  does not: a detached job that failed to start left the box locked with nothing
+  running on it.
 
-  This is the defect fixed for `flash` in v0.34.0, on the command next to it.
-  `/debug/erase` answers 200 whether or not the probe ever attached -- the
-  box's `chip_erase()` is a generator that yields J-Link Commander's stdout and
-  carries no success channel, exactly like `flash_device()` -- and the CLI
-  printed its success line without ever reading that text. Short of an HTTP
-  error the command could not fail. The OpenOCD paths were already strict
-  (`Da1469xLoaderError` and `OpenOcdRpcError` both surface as 500), so this was
-  the J-Link backend only.
+  The box now holds that lock for exactly as long as the job it launched --
+  heartbeating while it runs, releasing when it ends however it ends. It can
+  only ever touch the holder the CLI handed over, and only a lock the CLI
+  freshly acquired is offered, so a `lager boxes lock` reservation the run
+  merely resumed is never handed over and never released. The CLI arms the
+  lapse TTL only once the box confirms it has taken over, so a newer CLI against
+  a box too old to know about the handoff keeps today's eternal hold instead of
+  letting the lock lapse under a running job.
 
-  Both halves now check. The box refuses to answer 200 for a session whose
-  output shows it never attached, and the CLI takes its own verdict from the
-  programmer's output, so a current CLI reports the failure correctly against a
-  box that has not been updated yet.
-
-  `flash` erases by default, and that pre-erase step discarded the box's reply
-  entirely and printed `Erase complete!` unconditionally. It now takes the same
-  verdict, and stops before programming a part that was never reached.
-
-  As with `flash`, output matching nothing keeps its existing meaning, so an
-  older box or a backend we have not characterised is never newly reported as
-  failing.
-
-  Confirmed against hardware: a J-Link Plus on an nRF5340, board unpowered,
-  probe still enumerated. The box answered HTTP 200 with
-  `status: erase_complete` for a session whose own output read
-  `Error occurred: Could not connect to the target device.` -- twice, because
-  `chip_erase()` runs `connect` then `erase` and both failed. Nothing was
-  erased. A successful erase on the same bench still reports success, and its
-  output carries a `CPUID register:` line one careless substring match away
-  from a failure signature, which is why matching is whole-line.
-
-  One deliberate asymmetry, because the two are easy to conflate: the predicate
-  that decides a *verdict* is stricter than the one that triggers the flash
-  path's *retry*. `Could not read CPUID register` drives the retry and does not
-  decide the verdict, because J-Link emits it per access port while scanning
-  and it does not on its own establish that the session never attached. As a
-  reason to try again that costs one attempt; as a reason to call an operation
-  failed it would report completed work as broken. Every captured failure
-  prints it alongside `Could not connect to target.`, which both predicates
-  match, so nothing is lost.
+- **The box's JSON responses now carry a `Content-Length`.** They were delimited
+  by the socket closing, which worked only because nothing in `box/` sets
+  `protocol_version` and `BaseHTTPRequestHandler` therefore defaults to
+  HTTP/1.0 -- an invariant nothing stated and nothing tested, while
+  `parse_multipart`'s own comment assumed the opposite. Streaming responses
+  cannot carry a length and now say `Connection: close` instead of relying on
+  that default. There is a test pinning `protocol_version`, because raising it
+  to HTTP/1.1 would leave every streamed run waiting for a body end that never
+  comes.
 
 - **Four output-state checks in the supply and battery suites could never have
   passed.** `supply.sh` tests 3.3 and 3.5 and `battery.sh` tests 4.2 and 4.4

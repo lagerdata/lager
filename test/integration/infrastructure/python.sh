@@ -723,9 +723,64 @@ fi
 echo ""
 sleep $TEST_DELAY
 
-echo "Test 8.2: Verify detached script continues running"
-echo -e "${YELLOW}[SKIP] Verification requires process inspection${NC}"
-track_test "pass"
+echo "Test 8.2: Detached launch returns promptly for a module with requirements"
+# The #309 regression. A module carrying a requirements.txt is what made `-d`
+# slow: the pip install ran inside the HTTP request, so the launch blocked on
+# the CLI's 320s read timeout before it could see that the job had detached.
+# Fifteen seconds, not five: the zip upload is still on the synchronous side
+# and the bar has to survive a slow link. Before the fix this fails by the
+# length of the pip install; it used to hit the 90s LAGER_CALL_TIMEOUT.
+mkdir -p "$TEST_DIR/detach_mod"
+cat > "$TEST_DIR/detach_mod/main.py" <<'EOF'
+import time
+for i in range(5):
+    print(f"Iteration {i}")
+    time.sleep(1)
+print("Done")
+EOF
+printf 'requests==2.32.3\n' > "$TEST_DIR/detach_mod/requirements.txt"
+
+detach_started=$SECONDS
+detach_out=$(lager python "$TEST_DIR/detach_mod" --box $BOX -d 2>&1)
+detach_elapsed=$((SECONDS - detach_started))
+if echo "$detach_out" | grep -qi "process id" && [ "$detach_elapsed" -lt 15 ]; then
+  echo -e "${GREEN}[OK] Detached launch returned in ${detach_elapsed}s${NC}"
+  track_test "pass"
+else
+  echo -e "${RED}[FAIL] Detached launch took ${detach_elapsed}s${NC}"
+  echo "$detach_out"
+  track_test "fail"
+fi
+echo ""
+sleep $TEST_DELAY
+
+echo "Test 8.3: Reattach surfaces a requirements install that failed"
+# The other half of the same change: because the launch now returns before the
+# setup runs, a job that cannot start reports that through the job rather than
+# at the prompt. If this reports 0, the failure is being swallowed.
+mkdir -p "$TEST_DIR/detach_bad"
+cp "$TEST_DIR/detach_mod/main.py" "$TEST_DIR/detach_bad/main.py"
+printf 'lager-no-such-package==9.9.9\n' > "$TEST_DIR/detach_bad/requirements.txt"
+
+bad_out=$(lager python "$TEST_DIR/detach_bad" --box $BOX -d 2>&1)
+bad_id=$(echo "$bad_out" | sed -n 's/.*Process ID: \([0-9a-f-]*\)).*/\1/p')
+if [ -z "$bad_id" ]; then
+  echo -e "${RED}[FAIL] No process ID in detached launch output${NC}"
+  echo "$bad_out"
+  track_test "fail"
+else
+  reattach_out=$(lager python --reattach "$bad_id" --box $BOX 2>&1)
+  reattach_rc=$?
+  if echo "$reattach_out" | grep -qiE "could not find a version|no matching distribution" \
+     && [ "$reattach_rc" -ne 0 ]; then
+    echo -e "${GREEN}[OK] Failed start reported on reattach (exit $reattach_rc)${NC}"
+    track_test "pass"
+  else
+    echo -e "${RED}[FAIL] Failed start not surfaced (exit $reattach_rc)${NC}"
+    echo "$reattach_out"
+    track_test "fail"
+  fi
+fi
 echo ""
 sleep $TEST_DELAY
 

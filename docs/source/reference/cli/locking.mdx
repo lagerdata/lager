@@ -84,20 +84,29 @@ after a CLI crash**. If your laptop loses network or the CI runner is
 hard-killed, the box reaps the lock once `last_heartbeat + ttl_seconds`
 falls in the past, so another caller waits at most one TTL.
 
-### `--detach` keeps the lock
+### `--detach` hands the lock to the box
 
-`lager python script.py --detach` acquires the lock with `ttl_seconds: null`
-(no auto-expiry) because the heartbeat thread dies with the CLI. The
-detached script keeps running on the box, but the lock must be released
-manually:
+`lager python script.py --detach` has no CLI left to hold its lock -- the
+client is answered and goes away, which is the point. So the box takes the
+lock's lifetime over: it heartbeats while the detached job runs and releases
+when the job ends, however it ends. Nothing has to be unlocked by hand.
 
 ```bash
 lager python long_test.py --box my-lager-box --detach
-# Box 'my-lager-box' locked for detached run; release with: lager boxes unlock --box my-lager-box
-
-# ... later, after the script finishes on the box:
-lager boxes unlock --box my-lager-box
+# Box 'my-lager-box' is held for the detached run and released when it ends;
+# to free it sooner: lager boxes unlock --box my-lager-box
 ```
+
+The box can only ever touch the lock the CLI handed it, and only a lock the
+run freshly acquired is handed over. A `lager boxes lock` reservation that a
+detached run merely resumed is never handed over and never released -- that
+reservation is the whole point of taking one.
+
+Against a box too old to know about the handoff, the CLI keeps the previous
+behaviour: an eternal hold, with the old "release with `lager boxes unlock`"
+message. It arms the lapse TTL only once the box has confirmed it is
+heartbeating, so a newer CLI can never leave a lock expiring underneath a job
+that is still running.
 
 ### Escape hatches
 
@@ -240,7 +249,7 @@ were unfixable in that design:
 |--------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | *"Supply commands never released the lock"*                  | Every auto-lock uses `auto_lock_acquire_for_command` which registers an `atexit` handler + heartbeat thread. The lock is released on normal exit, exception, SIGINT, or (worst case) reaped by the server TTL after SIGKILL. The v0.13 bug was a decorator that swallowed exceptions before release ran — the atexit safety net makes that impossible. |
 | *"Long-running commands blocked all other commands on the same box"* | Read-only / listing paths (`lager supply --box X` with no subcommand, `lager gpi --box X` with no netname, `lager boxes`, `lager hello`) use plain `resolve_box()` which only checks the lock passively. Only hardware-*interacting* subcommands acquire. For concurrent hardware use, dev gets fail-fast in &lt;1s and CI gets a queue (default 30min, configurable via `LAGER_LOCK_WAIT`). |
-| *"Detached processes left stale locks"*                      | All ephemeral locks have `ttl_seconds=1800` + heartbeat every 60s. If the CLI dies, the box reaps the lock within one TTL. `--detach` (on `lager python` only) is an opt-in eternal hold (`ttl_seconds: null`) that must be released manually — this is intentional and documented. |
+| *"Detached processes left stale locks"*                      | All ephemeral locks have `ttl_seconds=1800` + heartbeat every 60s. If the CLI dies, the box reaps the lock within one TTL. `--detach` (on `lager python` only) has no CLI left to heartbeat, so the box holds that lock for exactly as long as the job it launched and releases it when the job ends — including a job that fails to start, which used to leave the box locked with nothing running on it. |
 
 `--force-command` is **gone**. Collision policy is structured (fail-fast
 in dev, queue in CI) and the existing `lager boxes lock --force` is the
