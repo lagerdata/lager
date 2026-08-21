@@ -8,8 +8,9 @@
 #   dry run (--check) -> downgrade to the previous release tag -> common-path
 #   `lager update` (N-1 -> main, the path users hit most) -> no-op update
 #   (asserts the "already at version" fast path, incl. its container-liveness
-#   gate) -> forced clean rebuild -> hardware smoke -> uninstall -> install
-#   from scratch -> final hardware smoke.
+#   gate) -> forced clean rebuild -> hardware smoke -> uninstall -> install a
+#   release tag (the pre-built-image path) -> install from scratch on main ->
+#   final hardware smoke.
 #
 # Uninstall scope is deliberate and load-bearing:
 #   - NEVER `--all`: it removes this runner's key from the box's
@@ -274,6 +275,12 @@ jobs:
           PREV_TAG=$(printf '%s\n' "$PREV_TAG" v0.32.0 | sort -V | tail -1)
           echo "Previous release tag: $PREV_TAG"
           echo "PREV_TAG=$PREV_TAG" >> "$GITHUB_ENV"
+          # Newest tag: the release-tag install leg below needs a version that
+          # has a published box image, and only release tags publish one.
+          LATEST_TAG=$(git ls-remote --tags --refs origin 'v*' \
+            | awk -F/ '{print $NF}' | sort -V | tail -1)
+          echo "Latest release tag: $LATEST_TAG"
+          echo "LATEST_TAG=$LATEST_TAG" >> "$GITHUB_ENV"
         shell: bash
 
       - name: Update dry run (--check)
@@ -337,6 +344,59 @@ jobs:
 
       - name: Uninstall box software (scoped — see header)
         run: lager uninstall --box "$LAGER_BOX" --yes --keep-config
+        shell: bash
+
+      - name: Install a release tag (exercises the pre-built-image path)
+        # The ONLY leg that can exercise the GHCR pull. The install below
+        # targets `main`, and a branch has no published image by design, so
+        # without this step the resolve/pull/verify/retag path that every
+        # release-tag install now takes by default has no CI coverage at all.
+        #
+        # Ordering: this runs BEFORE the main install, so the box still ends
+        # the run on current main, as the header promises. Two installs
+        # back-to-back is safe now that a job is neither refused nor made to
+        # wait on its own box lock -- if this step ever hangs acquiring, that
+        # is a real finding about the lock scope, not flake here.
+        #
+        # By --ip for the same reason as the step below: uninstall removed the
+        # local box entry.
+        run: |
+          set -o pipefail
+          lager install \
+            --ip "${{ secrets.LAGER_BOX_IP }}" \
+            --user lagerdata \
+            --version "$LATEST_TAG" \
+            --yes 2>&1 | tee /tmp/tag-install.log
+        shell: bash
+
+      - name: Assert the release-tag install used the pre-built image
+        # Two layers, because the halves become testable at different times.
+        #
+        # The operator half -- resolving the tag to a digest and threading it
+        # to the box -- lives in the CLI, so it always runs from the commit
+        # under test and is asserted unconditionally.
+        #
+        # The box half runs start_box.sh from the DEPLOYED TAG's checkout, not
+        # from this commit, so it can only be verified once a release carrying
+        # that support exists. Until then this reports a notice rather than
+        # failing. What it must never do is pass quietly: if the log shows
+        # neither a pull nor a build, the markers have drifted and this check
+        # has stopped meaning anything, so that case is an error.
+        run: |
+          if ! grep -q 'Pre-built image resolved' /tmp/tag-install.log; then
+            echo "::error title=No pre-built image resolved for ${LATEST_TAG}::The install did not resolve a digest. Either the publish workflow has not produced an image for this tag, or the resolver is broken. Both need a person."
+            exit 1
+          fi
+          echo "Resolved a digest for ${LATEST_TAG} (operator half OK)"
+
+          if grep -q 'pulled from the registry' /tmp/tag-install.log; then
+            echo "Box used the pre-built image (full pull path verified)"
+          elif grep -q 'Building Lager Box container' /tmp/tag-install.log; then
+            echo "::notice title=${LATEST_TAG} predates on-box pull support::The digest was resolved and threaded, but this tag's start_box.sh builds instead of pulling. Expected until the first release containing the pull support; the box half is unverified in this run."
+          else
+            echo "::error title=Cannot tell how the box obtained its image::Neither the pull nor the build marker appeared in the install log. The markers have drifted and this assertion no longer proves anything."
+            exit 1
+          fi
         shell: bash
 
       - name: Install box software from scratch
