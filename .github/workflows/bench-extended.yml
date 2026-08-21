@@ -377,6 +377,7 @@ jobs:
         # config; re-register so this run's remaining steps -- and any human
         # using the runner before the next workflow -- see a sane state.
         if: always()
+        timeout-minutes: 1
         continue-on-error: true
         run: |
           lager boxes add \

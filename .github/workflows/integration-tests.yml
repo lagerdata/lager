@@ -665,7 +665,15 @@ jobs:
         # A debug step killed mid-session can leave JLinkGDBServer holding the
         # probe, which would fail the NEXT night's connect. Tear the session
         # down explicitly rather than relying on the process exiting.
+        #
+        # `|| true` guards the exit code, not the wall clock: this step ran for
+        # 20 minutes after the suite had already timed out (#322), holding the
+        # serialized `hardware-ci-*` group against every other bench workflow.
+        # Bound it, and keep the step best-effort under that bound so a slow
+        # disconnect cannot turn a green run red.
         if: always()
+        timeout-minutes: 1
+        continue-on-error: true
         env:
           DEBUG_NET: ${{ vars.DEBUG_NET || 'debug1' }}
         run: lager debug "$DEBUG_NET" disconnect --box "$LAGER_BOX" 2>/dev/null || true
@@ -677,6 +685,8 @@ jobs:
         # the server TTL. The same-holder check on the box prevents stomping
         # another holder's live lock.
         if: always()
+        timeout-minutes: 1
+        continue-on-error: true
         run: lager boxes unlock --box "$LAGER_BOX" 2>/dev/null || true
         shell: bash
 
@@ -686,6 +696,7 @@ jobs:
         # red, and the next run's power-on step re-asserts the state anyway.
         # No `id:`, so the fail gate above never sees this step.
         if: always()
+        timeout-minutes: 2
         continue-on-error: true
         env:
           RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
