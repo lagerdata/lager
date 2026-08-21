@@ -227,7 +227,17 @@ def test_the_filter_only_ever_sees_ssh_s_own_stderr():
     wrong stream.
     """
     import pty
+    import select
+    import time
 
+    # Read while the slave is still OPEN, and stop as soon as both markers
+    # arrive. Draining after `os.close(slave)` is the obvious shape and works
+    # on Linux, where the buffered data outlives the last writer -- but on
+    # macOS/BSD the master reports EOF the moment the slave closes and the
+    # data is gone, so the assertion below fired on an empty string. Nothing
+    # about the property under test is platform-specific; only the draining
+    # was. select() keeps the read from blocking now that the writer end is
+    # still open.
     master, slave = pty.openpty()
     try:
         proc = subprocess.Popen(
@@ -235,20 +245,22 @@ def test_the_filter_only_ever_sees_ssh_s_own_stderr():
             stdin=slave, stdout=slave, stderr=slave, close_fds=True,
         )
         proc.wait(timeout=30)
-        os.close(slave)
-        slave = None
         seen = b""
-        try:
-            while True:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if not select.select([master], [], [], 0.1)[0]:
+                continue
+            try:
                 chunk = os.read(master, 4096)
-                if not chunk:
-                    break
-                seen += chunk
-        except OSError:
-            pass
+            except OSError:
+                break
+            if not chunk:
+                break
+            seen += chunk
+            if b"OUT-LINE" in seen and b"ERR-LINE" in seen:
+                break
     finally:
-        if slave is not None:
-            os.close(slave)
+        os.close(slave)
         os.close(master)
 
     text = seen.decode()
