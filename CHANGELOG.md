@@ -2,6 +2,20 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Fixed
+
+- **`lager --box ""` no longer silently runs against your default box.** An
+  empty string is falsy, so an explicitly empty `--box` fell into the "no box
+  given" branch and resolved to whatever the default was -- the caller named
+  one box and got another, with nothing in the output saying so. It is now
+  refused, matching `lager boxes add --name ""`, which already rejected an
+  empty name. Both box resolvers are guarded: they duplicate the resolution
+  logic rather than one delegating to the other, so a guard in only one would
+  have left the other's callers still defaulting. Omitting `--box` is
+  unchanged and still uses the default box.
+
 ## [0.40.0] - 2026-08-21
 
 ### Added
