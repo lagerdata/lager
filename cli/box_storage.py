@@ -1604,6 +1604,28 @@ def auto_lock_acquire_for_command(
     return _release
 
 
+def empty_box_name_error():
+    """``--box ""`` is a user error, not a request for the default box.
+
+    An empty string is falsy, so without this check it lands in the "no box
+    given" branch and silently resolves to whatever the DEFAULT box is -- a
+    different box than the caller named, with no indication that happened.
+
+    ``lager boxes add --name ""`` already refuses (with "Box name cannot be
+    empty"), so an empty name was validated on one path and silently
+    reinterpreted on the other. This makes the two agree.
+    """
+    from .errors import LagerError
+
+    return LagerError(
+        'Box name cannot be empty.',
+        fixes=[
+            'Omit --box to use your default box.',
+            'Or pass a saved box name / an IP address with --box.',
+        ],
+    )
+
+
 def box_not_found_error(box_name):
     """Build an actionable LagerError for an unrecognized ``--box`` value.
 
@@ -1648,6 +1670,9 @@ def resolve_and_validate_box_with_name(ctx, box_name: Optional[str] = None, _ski
 
     Exits with error if box is invalid or not found.
     """
+    if box_name is not None and not box_name.strip():
+        raise empty_box_name_error()
+
     import click
     import ipaddress
     import os
@@ -1709,6 +1734,9 @@ def resolve_and_validate_box(ctx, box_name: Optional[str] = None, _skip_lock_che
 
     Exits with error if box is invalid or not found.
     """
+    if box_name is not None and not box_name.strip():
+        raise empty_box_name_error()
+
     import click
     import ipaddress
     from .context import get_default_box
