@@ -99,6 +99,7 @@ _AUTO_LOCK_STATE = {
     'holder': None,
     'box_label': None,      # human-readable name for messages
     'detach': False,        # if True we never release at CLI exit
+    'offer_to_box': False,  # if True, hand this lock's lifetime to the box
 }
 
 
@@ -126,6 +127,76 @@ def _auto_lock_release(reason=''):
 # covered by the explicit signal handler in sigint_handler and the box-side
 # TTL/heartbeat reap.
 atexit.register(_auto_lock_release, 'atexit')
+
+
+def _detach_lock_holder():
+    """The holder string to offer the box, or None.
+
+    Only a lock this invocation freshly acquired is ours to hand over. A
+    resumed `lager boxes lock` reservation carries the same holder string on a
+    dev machine (both fall back to ``get_lager_user()``), so offering that one
+    would let a detached run end a deliberate hold on the bench.
+    """
+    if not _AUTO_LOCK_STATE['offer_to_box']:
+        return None
+    return _AUTO_LOCK_STATE['holder']
+
+
+def _detach_lock_handoff(data, box_label):
+    """Report who holds the box lock after a detached launch, and arm the TTL.
+
+    The CLI acquires an eternal lock and only downgrades it to a TTL once the
+    box has said it is heartbeating that lock. Doing it the other way round --
+    acquiring with a TTL and trusting the box to refresh it -- silently breaks
+    against any box too old to know about the ``lock_holder`` field: the lock
+    would lapse after one TTL while the detached job was still driving the
+    bench. So an unconfirmed handoff keeps exactly today's behaviour, banner
+    included.
+
+    Args:
+        data: the parsed detach response, or None if it could not be read
+        box_label: box name or IP, for the message
+    """
+    holder = _detach_lock_holder()
+    if not holder:
+        return
+
+    if not (data or {}).get('lock_held_by_box'):
+        click.secho(
+            f"Box '{box_label}' locked for detached run; "
+            f"release with: lager boxes unlock --box {box_label}",
+            fg='yellow', err=True,
+        )
+        return
+
+    # Confirmed. Re-acquire with a TTL so the lock still lapses if the box's
+    # own service dies mid-job -- the one case an explicit release cannot
+    # cover. Same-holder re-acquire rewrites the TTL for ephemeral/ci holders
+    # and deliberately refuses to for reservations.
+    from ...box_storage import (
+        acquire_box_lock,
+        default_auto_holder_type,
+        default_lock_ttl_seconds,
+    )
+    try:
+        acquire_box_lock(
+            _AUTO_LOCK_STATE['box_ip'],
+            box_label,
+            holder,
+            holder_type=default_auto_holder_type(),
+            ttl_seconds=default_lock_ttl_seconds(),
+            wait_seconds=0,
+        )
+    except Exception:
+        # The job is running and the box is heartbeating its lock; failing to
+        # arm the backstop is not worth failing the launch over.
+        pass
+
+    click.secho(
+        f"Box '{box_label}' is held for the detached run and released when it "
+        f"ends; to free it sooner: lager boxes unlock --box {box_label}",
+        fg='yellow', err=True,
+    )
 
 
 # The heartbeat thread used to live here. It moved to
@@ -377,6 +448,12 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
         ('stdout_is_stderr', stdout_is_stderr()),
         ('detach', '1' if detach else '0'),
     ]
+    if detach:
+        # Ask the box to hold the lock for as long as this job runs. Sent only
+        # for a lock we just acquired -- see _detach_lock_holder.
+        detach_lock_holder = _detach_lock_holder()
+        if detach_lock_holder:
+            post_data.append(('lock_holder', detach_lock_holder))
     if org:
         post_data.append(('org', org))
 
@@ -548,15 +625,19 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
 
     # Handle detached mode: parse JSON response and return immediately
     if detach:
+        box_label = dut_name or box_ip
+        # The id we need is the one we minted and sent, so a response we cannot
+        # read costs us nothing but the confirmation.
+        data = None
         try:
             data = resp.json()
-            process_id = data.get('lager_process_id', lager_process_id)
-            box_label = dut_name or box_ip
-            click.echo(f'Process detached (Process ID: {process_id})')
-            click.echo(f'To reattach: lager python --reattach {process_id} --box {box_label}')
-            click.echo(f'To kill: lager python --kill {process_id} --box {box_label}')
         except Exception:
-            click.echo('Process detached.')
+            pass
+        process_id = (data or {}).get('lager_process_id') or lager_process_id
+        click.echo(f'Process detached (Process ID: {process_id})')
+        click.echo(f'To reattach: lager python --reattach {process_id} --box {box_label}')
+        click.echo(f'To kill: lager python --kill {process_id} --box {box_label}')
+        _detach_lock_handoff(data, box_label)
         return
 
     kill_python = functools.partial(session.kill_python, box_ip, lager_process_id)
@@ -820,7 +901,7 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
 @click.option('--download', type=click.Path(exists=False, dir_okay=False), multiple=True, help='File to download after completion')
 @click.option('--allow-overwrite', is_flag=True, default=False, help='Overwrite existing files when downloading')
 @click.option('--signal', 'signum', default='SIGTERM', type=_SIGNAL_CHOICES, help='Signal to use with --kill/--kill-all', show_default=True)
-@click.option('--timeout', type=click.IntRange(min=0), default=0, required=False, help='Max runtime in seconds (0=no timeout). The box applies a ceiling and logs when it does. Not applied with --detach.')
+@click.option('--timeout', type=click.IntRange(min=0), default=0, required=False, help='Max runtime in seconds (0=no timeout). The box applies a ceiling and logs when it does; with --detach that ceiling does not apply.')
 @click.option('--detach', '-d', is_flag=True, required=False, default=False, help='Detach')
 @click.option('--port', '-p', multiple=True, help='Port forwarding (SRC_PORT[:DST_PORT][/PROTOCOL])', type=PortForwardType())
 @click.option('--org', default=None, hidden=True)
@@ -918,9 +999,11 @@ def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_ove
 
     if auto_lock_enabled:
         holder = get_lock_holder()
-        # --detach acquires with ttl_seconds=None because the heartbeat thread
-        # dies with the CLI process; the detached test outlives us and must
-        # be unlocked manually via `lager boxes unlock`.
+        # --detach still acquires with ttl_seconds=None. The box takes the
+        # lock's lifetime over once it confirms it has (see
+        # _detach_lock_handoff), and only then does the CLI arm a TTL. Arming
+        # one up front would be a regression against any box too old to
+        # heartbeat it: the lock would lapse under a job that is still running.
         ttl = None if detach else default_lock_ttl_seconds()
         wait_seconds = default_lock_wait_seconds()
         # holder_type is 'ci' under CI and 'ephemeral' otherwise — same
@@ -942,15 +1025,16 @@ def python(ctx, runnable, box, env, passenv, kill, kill_all, download, allow_ove
                 'holder': holder,
                 'box_label': box_label,
                 'detach': bool(detach),
+                # Offer the lock to the box, for a detached run only. Set here
+                # and nowhere else: this is the ONLY branch in which the lock
+                # is one we just acquired. `already_ours` below is a resumed
+                # reservation carrying the same holder string, and handing that
+                # one over would let a detached run silently end someone's
+                # deliberate hold on the bench.
+                'offer_to_box': bool(detach),
             })
             should_release = not detach
-            if detach:
-                click.secho(
-                    f"Box '{box_label}' locked for detached run; "
-                    f"release with: lager boxes unlock --box {box_label}",
-                    fg='yellow', err=True,
-                )
-            elif ttl is not None:
+            if not detach and ttl is not None:
                 heartbeat = _HeartbeatThread(
                     box_ip, holder, default_heartbeat_interval(), ttl_seconds=ttl,
                 )

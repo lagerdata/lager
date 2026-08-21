@@ -29,15 +29,21 @@ from lager.exec.process import (
     CLEANUP_GRACE_S,
     CLEANUP_MAX_S,
     TERMINATE_GRACE_S,
+    STATUS_STARTING,
+    STATUS_RUNNING,
     make_output_channel,
     add_cleanup_fn,
     do_cleanup,
+    finalize_meta,
     stream_process_output,
     stream_process_output_to_file,
     set_pipe_size,
+    update_meta,
+    write_meta,
 )
 from lager.exec import quiesce
 from lager.exec.quiesce import pid_is_alive as _pid_is_alive
+from .job_lock import DetachedJobLock
 from .exceptions import (
     PipInstallError,
     MissingModuleFolderError,
@@ -49,6 +55,15 @@ logger = logging.getLogger(__name__)
 
 MAX_TIMEOUT = 300
 LAGER_PYTHON_IP_ADDR = '172.18.0.10'  # Docker-internal network default; overridden by LOCAL_ADDRESS env var
+
+# Where a detached job's reattach registry lives: one directory per job holding
+# meta.json and output.log (and, when a script pauses, breakpoint.json/resume).
+PROCESS_REGISTRY_DIR = '/tmp/lager_processes'
+
+# Exit code reported for a job that never started. 1 is deliberate: it is what
+# the attached path already reports for the same failures (the box answers 422,
+# the CLI prints the detail and exits 1), so the two agree.
+START_FAILURE_EXIT_CODE = 1
 
 # How long a starting job waits for the previous one to finish shutting down.
 #
@@ -117,22 +132,49 @@ def _wrap_with_timeout(command, timeout, detach):
             a silent ``min()``, so a job asking for 600s ran 300 and nothing
             said so, which reads as the timeout firing early rather than as a
             ceiling being applied.
-        detach: detached jobs are not wrapped. The wrapper would become the
-            group leader ``_signal_targets`` reasons about, and detached jobs
-            are torn down through a different path (``start_new_session``,
-            ``_kill_by_proc_id``). ``--timeout`` therefore does not apply to
-            ``-d``, which is worth saying rather than leaving to be discovered.
+        detach: a detached job is wrapped only when a deadline was actually
+            asked for, and is NOT subject to MAX_TIMEOUT. See below.
 
     Returns:
         The argv to execute.
+
+    **Detached jobs.** These used to be left unwrapped unconditionally, on the
+    grounds that the wrapper would become the group leader ``_signal_targets``
+    reasons about. That is a true statement of fact but it is not a reason, and
+    the walk-through says the opposite. ``start_new_session=True`` makes Popen's
+    direct child a session and process-group leader; when that child is the
+    wrapper, GNU timeout's own ``setpgid(0, 0)`` is a no-op and the script
+    inherits the wrapper's group. ``_signal_targets`` then sees
+    ``getpgid(script) == wrapper`` -- in the matched set and alive -- so the
+    script is *covered* and only the wrapper is signalled, which forwards. That
+    is exactly the arrangement ``_signal_targets`` was written and measured for,
+    and exactly what the attached path already does. The unwrapped detached job,
+    where the script is signalled directly, is the less-exercised shape.
+
+    Two deliberate asymmetries with the attached path:
+
+    * **No MAX_TIMEOUT ceiling.** That ceiling exists because the CLI's
+      streaming read timeout is 320s, so an attached job allowed past it would
+      have its stream time out client-side before the box could report the
+      deadline. Nobody streams a detached job -- ``run_python`` returns
+      immediately and ``attach_python`` uses no read timeout at all -- so the
+      320s bound has nothing to say about it. Capping ``-d --timeout 3600`` to
+      300 would kill the long run ``-d`` exists for.
+    * **Wrapped only when a timeout was requested.** The attached path wraps
+      unconditionally and relies on duration 0 being inert. Doing that here
+      would insert a process into the tree of every detached job that never
+      asked for a deadline, changing its recorded pid and returncode for no
+      benefit. The default ``-d`` path stays byte-identical to before.
     """
+    if not timeout:
+        # 0 means no limit. The attached path still gets an inert `timeout 0`
+        # wrapper (unchanged); the detached path gets no wrapper at all.
+        if detach:
+            return command
+        return _timeout_argv(0) + command
+
     if detach:
-        if timeout:
-            logger.warning(
-                'timeout=%ss ignored: detached jobs are not run under '
-                '/usr/bin/timeout', timeout,
-            )
-        return command
+        return _timeout_argv(timeout) + command
 
     effective = min(timeout, MAX_TIMEOUT)
     if timeout > MAX_TIMEOUT:
@@ -140,14 +182,95 @@ def _wrap_with_timeout(command, timeout, detach):
             'requested timeout %ss exceeds the box ceiling of %ss; using %ss',
             timeout, MAX_TIMEOUT, effective,
         )
-    # A duration of 0 disables the timeout (coreutils), so the wrapper is inert
-    # on the default path and --kill-after never comes into play. Verified
-    # against coreutils 9.1 rather than assumed.
-    return [
-        '/usr/bin/timeout',
-        '--kill-after', str(CLEANUP_GRACE_S),
-        str(effective),
-    ] + command
+    return _timeout_argv(effective) + command
+
+
+def resolve_lager_process_id(env_vars):
+    """
+    The job's id, minted if the client did not supply one.
+
+    Pure. Returns ``(process_id, env_vars)`` with ``LAGER_PROCESS_ID``
+    guaranteed present in the environment the child will inherit.
+
+    Minting one is not merely so the registry directory has a name. A job is
+    found by reading LAGER_PROCESS_ID out of ``/proc/*/environ``
+    (see ``_scan_lager_pids``), so an id the child does not carry is an id
+    ``lager python --kill <id>`` can never resolve. Previously a request with no
+    LAGER_PROCESS_ID left this as None: the registry became the literal path
+    ``/tmp/lager_processes/None``, the response reported ``null``, and the job
+    was unkillable by id.
+
+    Args:
+        env_vars: list of "KEY=value" strings, or None
+
+    Returns:
+        (str, list): the process id, and the env list carrying it
+    """
+    env_vars = list(env_vars or [])
+    for var in env_vars:
+        if var.startswith('LAGER_PROCESS_ID='):
+            value = var.split('=', 1)[1]
+            if value:
+                return value, env_vars
+
+    process_id = str(uuid.uuid4())
+    logger.info(f"Request carried no LAGER_PROCESS_ID; minted {process_id}")
+    env_vars.append(f'LAGER_PROCESS_ID={process_id}')
+    return process_id, env_vars
+
+
+def process_dir_for(lager_process_id):
+    """The registry directory for one job."""
+    return os.path.join(PROCESS_REGISTRY_DIR, lager_process_id)
+
+
+def register_detached_job(lager_process_id):
+    """
+    Create the reattach registry entry for a job that has not started yet.
+
+    Called on the REQUEST thread, before the response. The empty output.log is
+    the load-bearing part: ``stream_log_file`` opens it directly, so a
+    ``lager python --reattach`` racing the launch would otherwise hit
+    FileNotFoundError and be answered with a 500 for a job that is fine.
+
+    Deliberately allowed to raise. If the box cannot even record the job -- a
+    full or unwritable /tmp -- this is the last moment at which anything can be
+    reported to the client, and answering 200 would be a lie.
+
+    Args:
+        lager_process_id: the job's id
+
+    Returns:
+        (str, str): log_path, meta_path
+    """
+    process_dir = process_dir_for(lager_process_id)
+    os.makedirs(process_dir, exist_ok=True)
+    log_path = os.path.join(process_dir, 'output.log')
+    meta_path = os.path.join(process_dir, 'meta.json')
+
+    with open(log_path, 'wb'):
+        pass
+
+    write_meta(meta_path, {
+        'lager_process_id': lager_process_id,
+        'pid': None,
+        # When the job was REGISTERED, not when it started. With a pip install
+        # in front of Popen those can be minutes apart.
+        'started': time.time(),
+        'status': STATUS_STARTING,
+        'returncode': None,
+    })
+    return log_path, meta_path
+
+
+def _timeout_argv(seconds):
+    """The /usr/bin/timeout prefix for a given deadline.
+
+    A duration of 0 disables the timeout (coreutils), so the wrapper is inert
+    on the attached default path and --kill-after never comes into play.
+    Verified against coreutils 9.1 rather than assumed.
+    """
+    return ['/usr/bin/timeout', '--kill-after', str(CLEANUP_GRACE_S), str(seconds)]
 
 def _release_hardware_service_direct_usb_claims():
     """Best-effort handoff: drop hardware_service's direct-USB claims.
@@ -344,11 +467,11 @@ class PythonExecutor:
             args: List of command-line arguments (bytes)
             env_vars: List of environment variable strings ("KEY=value")
             detach: Run in detached mode (don't wait for completion)
-            timeout: Maximum execution time in seconds. 0 means no limit;
-                values above MAX_TIMEOUT are capped to it, with a warning.
-                Enforced by /usr/bin/timeout, which sends SIGTERM at the
-                deadline and SIGKILL CLEANUP_GRACE_S later. Not applied to
-                detached jobs.
+            timeout: Maximum execution time in seconds. 0 means no limit.
+                Attached jobs are capped at MAX_TIMEOUT, with a warning;
+                detached jobs are not (see _wrap_with_timeout). Enforced by
+                /usr/bin/timeout, which sends SIGTERM at the deadline and
+                SIGKILL CLEANUP_GRACE_S later.
             stdout_is_stderr: Redirect stderr to stdout
             client_ip: IP address of the client (for logging)
             muxes: Multiplexer configuration JSON
@@ -356,11 +479,96 @@ class PythonExecutor:
             dut_commands: DUT command configuration JSON
 
         Returns:
-            Generator yielding output chunks for streaming
+            Generator yielding output chunks for streaming, or -- when
+            ``detach`` is set -- the response dict from ``start_detached``.
 
         Raises:
             MissingModuleFolderError: If neither script nor module provided
-            PipInstallError: If pip install fails
+            PipInstallError: If pip install fails (attached jobs only; a
+                detached job reports it through its own log)
+        """
+        if detach:
+            return self.start_detached(
+                script_file=script_file,
+                module_zip=module_zip,
+                args=args,
+                env_vars=env_vars,
+                timeout=timeout,
+                stdout_is_stderr=stdout_is_stderr,
+                client_ip=client_ip,
+                muxes=muxes,
+                usb_mapping=usb_mapping,
+                dut_commands=dut_commands,
+            )
+
+        proc, output_channel = self._prepare_and_spawn(
+            script_file=script_file,
+            module_zip=module_zip,
+            args=args,
+            env_vars=env_vars,
+            detach=False,
+            timeout=timeout,
+            stdout_is_stderr=stdout_is_stderr,
+            client_ip=client_ip,
+            muxes=muxes,
+            usb_mapping=usb_mapping,
+            dut_commands=dut_commands,
+        )
+        return stream_process_output(proc, output_channel, self.cleanup_fns)
+
+    @staticmethod
+    def validate_request(script_file, module_zip):
+        """
+        Reject a request that has nothing to run.
+
+        The one check cheap enough to stay on the HTTP request thread for a
+        detached launch, so a client mistake is still answered with today's 422
+        rather than accepted as a job that could never have existed.
+
+        Truthiness, not ``is None``, to match the ``if module_zip:`` /
+        ``if script_file:`` branches in _prepare_and_spawn -- an empty
+        non-file ``script`` part arrives as b'' and must keep failing here.
+
+        Raises:
+            MissingModuleFolderError: if neither was supplied
+        """
+        if not script_file and not module_zip:
+            raise MissingModuleFolderError()
+
+    def _prepare_and_spawn(
+        self,
+        script_file=None,
+        module_zip=None,
+        args=None,
+        env_vars=None,
+        detach=False,
+        timeout=MAX_TIMEOUT,
+        stdout_is_stderr=True,
+        client_ip=None,
+        muxes=None,
+        usb_mapping=None,
+        dut_commands=None,
+    ):
+        """
+        Everything from upload to Popen. Returns ``(proc, output_channel)``.
+
+        Slow by nature, and that is the point of it being its own method: the
+        module unpack, ``pip install -r requirements.txt`` with no bound on it,
+        the QUIESCE_WAIT_S gate (69s worst case) and the direct-USB handoff all
+        live here. The attached path runs it inside the HTTP request because
+        the client is waiting for the stream either way. The detached path runs
+        it on its own thread, because a client that asked not to wait should
+        not be made to.
+
+        Args:
+            see execute()
+
+        Returns:
+            (subprocess.Popen, file): the spawned process and its output channel
+
+        Raises:
+            MissingModuleFolderError, PipInstallError, and anything Popen or
+            the unpack can raise. Cleanup runs before the exception leaves.
         """
         script = None
         module_folder = None
@@ -486,50 +694,141 @@ class PythonExecutor:
             if proc.stderr is not None:
                 set_pipe_size(proc.stderr.fileno())
 
-            # Handle detached mode — capture output to file, return immediately
-            if detach:
-                lager_process_id = None
-                for var in (env_vars or []):
-                    if var.startswith('LAGER_PROCESS_ID='):
-                        lager_process_id = var.split('=', 1)[1]
-                        break
-
-                # Set up process registry directory for reattach
-                process_dir = f'/tmp/lager_processes/{lager_process_id}'
-                os.makedirs(process_dir, exist_ok=True)
-                log_path = os.path.join(process_dir, 'output.log')
-                meta_path = os.path.join(process_dir, 'meta.json')
-
-                meta = {
-                    'pid': proc.pid,
-                    'lager_process_id': lager_process_id,
-                    'started': __import__('time').time(),
-                    'status': 'running',
-                    'returncode': None,
-                }
-                with open(meta_path, 'w') as f:
-                    json.dump(meta, f)
-
-                # Start daemon thread to capture output to log file
-                capture_thread = threading.Thread(
-                    target=stream_process_output_to_file,
-                    args=(proc, output_channel, self.cleanup_fns, log_path, meta_path),
-                    daemon=True,
-                )
-                capture_thread.start()
-
-                return {
-                    'status': 'detached',
-                    'pid': proc.pid,
-                    'lager_process_id': lager_process_id,
-                }
-
-            # Stream output
-            return stream_process_output(proc, output_channel, self.cleanup_fns)
+            return proc, output_channel
 
         except Exception:
             do_cleanup(self.cleanup_fns)
             raise
+
+    def start_detached(
+        self,
+        script_file=None,
+        module_zip=None,
+        args=None,
+        env_vars=None,
+        timeout=MAX_TIMEOUT,
+        stdout_is_stderr=True,
+        client_ip=None,
+        muxes=None,
+        usb_mapping=None,
+        dut_commands=None,
+        lock_holder=None,
+    ):
+        """
+        Register a detached job and hand it to a background thread.
+
+        Returns as soon as the job is recorded on disk, BEFORE any of the work
+        that makes a job slow to start. That ordering is the entire fix: this
+        all used to run inside the HTTP request, so a `-d` launch of a module
+        with a requirements.txt sat on the client's 320s read timeout waiting
+        for a pip install it had explicitly asked not to wait for.
+
+        Everything that can go wrong after this point is reported through the
+        job's own log and meta.json rather than to a caller that has already
+        been answered. See _supervise_detached.
+
+        Args:
+            see execute()
+            lock_holder: the box-lock holder string the CLI acquired with, when
+                it wants the box to own the lock for this job's lifetime.
+                Absent for a run that did not auto-lock.
+
+        Returns:
+            dict: the response body
+
+        Raises:
+            MissingModuleFolderError: nothing to run (422)
+            OSError: the registry could not be written (500) -- the last point
+                at which a failure can still reach the client
+        """
+        self.validate_request(script_file, module_zip)
+        lager_process_id, env_vars = resolve_lager_process_id(env_vars)
+        log_path, meta_path = register_detached_job(lager_process_id)
+
+        job = {
+            'script_file': script_file,
+            'module_zip': module_zip,
+            'args': args,
+            'env_vars': env_vars,
+            'detach': True,
+            'timeout': timeout,
+            'stdout_is_stderr': stdout_is_stderr,
+            'client_ip': client_ip,
+            'muxes': muxes,
+            'usb_mapping': usb_mapping,
+            'dut_commands': dut_commands,
+        }
+
+        threading.Thread(
+            target=self._supervise_detached,
+            args=(job, lager_process_id, log_path, meta_path, lock_holder),
+            name=f'lager-detached-{lager_process_id[:8]}',
+            daemon=True,
+        ).start()
+
+        return {
+            'status': 'detached',
+            # Null, not absent. No process exists yet -- that is the point --
+            # but dropping the key would turn any consumer's data['pid'] into a
+            # KeyError. The real pid lands in meta.json once there is one.
+            'pid': None,
+            'lager_process_id': lager_process_id,
+            # Tells the CLI the box has taken over the lock's lifetime. Its
+            # absence is what an older box looks like, and the CLI must keep
+            # its eternal hold in that case rather than arm a TTL nothing on
+            # the box will refresh.
+            'lock_held_by_box': bool(lock_holder),
+        }
+
+    def _supervise_detached(self, job, lager_process_id, log_path, meta_path,
+                            lock_holder=None):
+        """
+        Run one detached job to completion on this thread. Never raises.
+
+        One thread for the whole lifecycle -- setup, spawn, capture -- rather
+        than a supervisor that hands off to a capture thread. One try/finally
+        then owns every way the job can end, so there is no window in which a
+        job has been abandoned but nothing has recorded that.
+
+        Args:
+            job: kwargs for _prepare_and_spawn
+            lager_process_id: the job's id, for logging
+            log_path: the job's output.log
+            meta_path: the job's meta.json
+            lock_holder: box-lock holder to keep alive while the job runs
+        """
+        failure = None
+        job_lock = DetachedJobLock(lock_holder)
+        try:
+            proc, output_channel = self._prepare_and_spawn(**job)
+            update_meta(meta_path, pid=proc.pid, status=STATUS_RUNNING)
+            job_lock.start()
+            stream_process_output_to_file(
+                proc, output_channel, self.cleanup_fns, log_path, meta_path,
+            )
+        except Exception as exc:
+            logger.exception(
+                'detached job %s failed to start', lager_process_id, exc_info=exc,
+            )
+            failure = (
+                b'lager python: the detached job failed to start on the box.\n'
+                + f'{type(exc).__name__}: {exc}\n'.encode('utf-8', errors='replace')
+            )
+        finally:
+            job_lock.stop()
+            # Backstop. A no-op when the capture loop already wrote a real exit
+            # code; the guarantee is that nothing leaves a job at 'starting' or
+            # 'running' with nobody working on it, which would make a reattach
+            # tail an ended job forever.
+            finalize_meta(
+                meta_path, log_path,
+                message=failure if failure is not None else (
+                    b'lager python: the detached job ended without reporting an '
+                    b'exit code.\n'
+                ),
+                returncode=START_FAILURE_EXIT_CODE,
+            )
+            do_cleanup(self.cleanup_fns)
 
     def _install_requirements(self, module_folder):
         """
@@ -658,7 +957,7 @@ class PythonExecutor:
             _kill_by_proc_id(sig, lager_process_id.encode())
 
             # Clean up log directory
-            process_dir = f'/tmp/lager_processes/{lager_process_id}'
+            process_dir = process_dir_for(lager_process_id)
             if os.path.isdir(process_dir):
                 import shutil as _shutil
                 try:
@@ -671,7 +970,7 @@ class PythonExecutor:
             _kill_all_lager_processes(sig)
 
             # Clean up all log directories
-            process_base = '/tmp/lager_processes'
+            process_base = PROCESS_REGISTRY_DIR
             if os.path.isdir(process_base):
                 import shutil as _shutil
                 try:

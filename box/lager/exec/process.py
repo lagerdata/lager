@@ -79,6 +79,28 @@ CLEANUP_MAX_S = 60.0
 TERMINATE_GRACE_S = 2.0
 MAX_LOG_SIZE = 10 * 1024 * 1024  # 10MB cap for detached process output logs
 
+# meta.json status vocabulary for a detached job.
+#
+# 'starting' exists because the registry entry is now written BEFORE the job
+# starts: a detached launch answers its client first and does the slow work
+# (unpacking, pip, the quiesce gate) on a background thread, so there is a
+# window in which the job is registered and has no pid yet. A reattach arriving
+# in that window has to find a log file to open.
+#
+# 'failed' exists because a job can now die before it ever had a pid. Both it
+# and 'finished' are terminal, and stream_log_file has to stop for either --
+# without that, a job that never started would be tailed forever.
+STATUS_STARTING = 'starting'
+STATUS_RUNNING = 'running'
+STATUS_FINISHED = 'finished'
+STATUS_FAILED = 'failed'
+TERMINAL_STATUSES = frozenset({STATUS_FINISHED, STATUS_FAILED})
+
+# Ceiling on a failure message written into a job's log. A pip resolve that
+# backtracks can emit hundreds of KB, and emit() writes the whole thing as one
+# length-prefixed chunk.
+MAX_FAILURE_MESSAGE = 64 * 1024
+
 # Target pipe buffer size (1 MiB). Linux default is 64 KiB which can stall
 # tight-timing scripts (e.g. ROM-bootloader recovery on da14695) if the script
 # does any print() while the HTTP socket back to the client is slow to drain.
@@ -341,6 +363,137 @@ def emit(fileno, chunk):
     yield header
     if chunk:
         yield chunk
+
+
+def exit_marker(returncode):
+    """
+    The wire-format record that ends a job's output.
+
+    Fileno '-' rather than a number: the reader treats it as the exit record,
+    not as a stream. Kept as a function because a failed start has to write the
+    same marker the capture loop writes, and the two drifting apart would mean a
+    reattach that never terminates.
+
+    Args:
+        returncode: process return code
+
+    Returns:
+        bytes: the marker
+    """
+    text = str(returncode)
+    return f'- {len(text)} {text}'.encode()
+
+
+def write_meta(meta_path, meta):
+    """
+    Write a job's meta.json atomically.
+
+    Atomic because a reattach polls this file while the job's own thread
+    rewrites it. A plain truncate-and-write is readable mid-write, and
+    stream_log_file's decision to keep tailing is made from whatever it managed
+    to parse -- so a torn read is a wrong answer about whether a job is over.
+
+    Never raises: meta is a progress report, and failing to file one must not
+    take down the job it describes.
+
+    Args:
+        meta_path: path to meta.json
+        meta: dict to write
+    """
+    try:
+        tmp_path = f'{meta_path}.tmp'
+        with open(tmp_path, 'w') as f:
+            json.dump(meta, f)
+        os.replace(tmp_path, meta_path)
+    except Exception as exc:
+        logger.warning(f"Failed to write {meta_path}: {exc}")
+
+
+def update_meta(meta_path, **fields):
+    """
+    Merge ``fields`` into a job's meta.json.
+
+    Never raises, for the same reason write_meta does not.
+
+    Args:
+        meta_path: path to meta.json
+        **fields: keys to set
+
+    Returns:
+        dict: the merged meta, or {} if it could not be read
+    """
+    try:
+        with open(meta_path, 'r') as f:
+            meta = json.load(f)
+    except Exception:
+        meta = {}
+    meta.update(fields)
+    write_meta(meta_path, meta)
+    return meta
+
+
+def append_failure(log_path, message, returncode=1):
+    """
+    Record a failure in a job's log as though the job had run and failed.
+
+    Written as a stderr chunk followed by an exit marker, because that is
+    exactly what a reattach knows how to read. A detached job that dies before
+    it has a pid has no other way to reach the person who launched it: they were
+    answered the moment the box accepted the job, which is the point of -d.
+
+    Args:
+        log_path: path to the job's output.log
+        message: failure text (bytes or str)
+        returncode: exit code to report
+    """
+    if isinstance(message, str):
+        message = message.encode('utf-8', errors='replace')
+    if len(message) > MAX_FAILURE_MESSAGE:
+        message = message[:MAX_FAILURE_MESSAGE] + b'\n[truncated]\n'
+    try:
+        with open(log_path, 'ab') as f:
+            for part in emit(2, message):
+                f.write(part)
+            f.write(exit_marker(returncode))
+            f.flush()
+    except Exception as exc:
+        logger.warning(f"Failed to append failure to {log_path}: {exc}")
+
+
+def finalize_meta(meta_path, log_path, message=None, returncode=1):
+    """
+    Guarantee a job's meta.json reaches a terminal state.
+
+    A no-op when the status is already terminal, so the normal path -- the
+    capture loop writing 'finished' with the child's real code -- wins. This is
+    the backstop for every other way a job's thread can end: an exception during
+    setup, a Popen that never happened, or stream_process_output_to_file
+    returning after its own broad handler logged and swallowed something. Before
+    this existed the last case left meta at 'running' and a reattach tailed an
+    ended job indefinitely.
+
+    Args:
+        meta_path: path to meta.json
+        log_path: path to the job's output.log
+        message: failure text to append, if the job had not already reported
+        returncode: exit code to report
+
+    Returns:
+        bool: True if this call was the one that made the job terminal
+    """
+    try:
+        with open(meta_path, 'r') as f:
+            meta = json.load(f)
+    except Exception:
+        meta = {}
+
+    if meta.get('status') in TERMINAL_STATUSES:
+        return False
+
+    if message is not None:
+        append_failure(log_path, message, returncode)
+    update_meta(meta_path, status=STATUS_FAILED, returncode=returncode)
+    return True
 
 
 def _drain_pipe_to_queue(readable, fileno, q, stop_event):
@@ -613,20 +766,10 @@ def stream_process_output_to_file(proc, output_channel, cleanup_fns, log_path, m
                     log_file.write(part)
 
             # Always write the exit marker, even if cap was reached
-            exit_marker = f'- {len(returncode)} {returncode}'.encode()
-            log_file.write(exit_marker)
+            log_file.write(exit_marker(returncode))
             log_file.flush()
 
-        # Update meta.json with finished status
-        try:
-            with open(meta_path, 'r') as f:
-                meta = json.load(f)
-            meta['status'] = 'finished'
-            meta['returncode'] = int(returncode)
-            with open(meta_path, 'w') as f:
-                json.dump(meta, f)
-        except Exception as exc:
-            logger.exception('Failed to update meta.json', exc_info=exc)
+        update_meta(meta_path, status=STATUS_FINISHED, returncode=int(returncode))
 
     except Exception as exc:
         logger.exception('stream_process_output_to_file failed', exc_info=exc)
@@ -658,15 +801,18 @@ def stream_log_file(log_path, meta_path):
                 yield chunk
                 continue
 
-            # No more data right now — check if process is done
+            # No more data right now — check if process is done. An unreadable
+            # meta means keep tailing: it is not evidence the job ended, and
+            # 'starting' is a real state now (the job is registered but its
+            # setup, which can include a pip install, has not finished).
             try:
                 with open(meta_path, 'r') as mf:
                     meta = json.load(mf)
-                status = meta.get('status', 'running')
+                status = meta.get('status', STATUS_RUNNING)
             except Exception:
-                status = 'running'
+                status = STATUS_RUNNING
 
-            if status == 'finished':
+            if status in TERMINAL_STATUSES:
                 # Read any final bytes that arrived after last read
                 final = f.read()
                 if final:

@@ -53,7 +53,7 @@ from werkzeug.sansio.multipart import (
     MultipartDecoder,
 )
 
-from .executor import PythonExecutor
+from .executor import PythonExecutor, process_dir_for
 from ..binaries import store as binaries_store
 
 from .exceptions import (
@@ -161,15 +161,30 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         logger.info(format % args)
 
     def send_json_response(self, status_code, data):
-        """Send JSON response"""
+        """Send a JSON response, self-delimited by Content-Length.
+
+        The Content-Length is the load-bearing part. Without it the body ends
+        only when the socket closes, which is true today solely because nothing
+        in box/ sets ``protocol_version`` and BaseHTTPRequestHandler therefore
+        defaults to HTTP/1.0. That undeclared default is what lets the CLI's
+        ``resp.json()`` on a ``stream=True`` response terminate at all -- an
+        invariant nothing stated and nothing tested. ``Connection: close``
+        states what we already do rather than adding anything.
+
+        Length is taken from the ENCODED bytes: a non-ASCII payload -- a
+        filename, a pip error, a lock holder -- makes len(str) and len(bytes)
+        differ, and an over-long Content-Length hangs the client.
+        """
+        body = json.dumps(data, indent=2).encode('utf-8')
         self.send_response(status_code)
         self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Connection', 'close')
         # Note: Do NOT set Lager-Output-Version for JSON responses
         # That header indicates streaming format which JSON responses don't use
         self.end_headers()
 
-        response_json = json.dumps(data, indent=2)
-        self.wfile.write(response_json.encode('utf-8'))
+        self.wfile.write(body)
 
     def send_error_response(self, status_code, message):
         """Send error response"""
@@ -179,10 +194,20 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         })
 
     def send_streaming_response(self, generator):
-        """Send streaming response from generator"""
+        """Send streaming response from generator.
+
+        No Content-Length, and there cannot be one: the length is not known
+        until the script exits. So this body stays delimited by the connection
+        closing, and now says so instead of leaving it to the HTTP/1.0 default.
+        That is also why ``protocol_version`` must not be raised to HTTP/1.1
+        without adding chunked encoding here -- under 1.1 the connection would
+        be kept alive and every streamed run would wait for an end that never
+        comes. There is a test pinning it.
+        """
         self.send_response(200)
         self.send_header('Content-Type', 'text/plain')
         self.send_header('Lager-Output-Version', '1')
+        self.send_header('Connection', 'close')
         self.end_headers()
 
         try:
@@ -267,8 +292,11 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         logger.info(f"Parsing multipart request: type={content_type}, length={content_length}")
 
         # Read exactly Content-Length. NOT self.rfile.read() with no argument:
-        # this is a keep-alive connection, so reading to EOF would block until
-        # the client goes away.
+        # the client sends its body and then waits for the response, so a read
+        # to EOF would block until it gave up or the socket died -- a deadlock,
+        # not a slow path. That holds regardless of keep-alive. (The connection
+        # is in fact HTTP/1.0 and closes after one response; an earlier version
+        # of this comment claimed the opposite.)
         body = self.rfile.read(content_length) if content_length else b''
         if not body:
             # An empty body has no parts. Returning {} rather than falling
@@ -784,26 +812,53 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         elif isinstance(dut_commands, bytes):
             dut_commands = dut_commands.decode()
 
+        # The box-lock holder the CLI acquired with, sent only for a detached
+        # run whose lock the CLI freshly took. Its presence is what asks the box
+        # to own that lock for the job's lifetime; an older CLI omits it, and a
+        # resumed reservation must never send it (see DetachedJobLock).
+        lock_holder = get_field_value(fields.get('lock_holder'))
+        if isinstance(lock_holder, bytes):
+            lock_holder = lock_holder.decode()
+        lock_holder = lock_holder or None
+
         # Execute
         executor = PythonExecutor()
-        output_generator = executor.execute(
+
+        if detach:
+            # Answer first, work second. parse_multipart has already drained
+            # the request body, so nothing is cut off by replying now, and
+            # start_detached only validates and registers before handing the
+            # job to a thread. Everything slow -- unpacking, pip, the quiesce
+            # gate -- happens after the client has been told the job detached,
+            # which is what `-d` asked for.
+            self.send_json_response(200, executor.start_detached(
+                script_file=script_file,
+                module_zip=module_zip,
+                args=args,
+                env_vars=env_vars,
+                timeout=timeout,
+                stdout_is_stderr=stdout_is_stderr,
+                client_ip=self.client_address[0],
+                muxes=muxes,
+                usb_mapping=usb_mapping,
+                dut_commands=dut_commands,
+                lock_holder=lock_holder,
+            ))
+            return
+
+        self.send_streaming_response(executor.execute(
             script_file=script_file,
             module_zip=module_zip,
             args=args,
             env_vars=env_vars,
-            detach=detach,
+            detach=False,
             timeout=timeout,
             stdout_is_stderr=stdout_is_stderr,
             client_ip=self.client_address[0],
             muxes=muxes,
             usb_mapping=usb_mapping,
             dut_commands=dut_commands,
-        )
-
-        if detach:
-            self.send_json_response(200, output_generator or {'status': 'detached'})
-        else:
-            self.send_streaming_response(output_generator)
+        ))
 
     def _handle_python_kill(self):
         """Handle POST /python/kill - Kill Python process"""
@@ -838,7 +893,7 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         except ValueError:
             raise LagerPythonInvalidProcessIdError(lager_process_id)
 
-        process_dir = f'/tmp/lager_processes/{lager_process_id}'
+        process_dir = process_dir_for(lager_process_id)
         log_path = os.path.join(process_dir, 'output.log')
         meta_path = os.path.join(process_dir, 'meta.json')
 
@@ -873,7 +928,7 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         except ValueError:
             raise LagerPythonInvalidProcessIdError(lager_process_id)
 
-        process_dir = f'/tmp/lager_processes/{lager_process_id}'
+        process_dir = process_dir_for(lager_process_id)
         was_paused = os.path.exists(os.path.join(process_dir, 'breakpoint.json'))
         if was_paused:
             with open(os.path.join(process_dir, 'resume'), 'w') as f:
@@ -904,7 +959,8 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
         except ValueError:
             raise LagerPythonInvalidProcessIdError(lager_process_id)
 
-        state_path = f'/tmp/lager_processes/{lager_process_id}/breakpoint.json'
+        state_path = os.path.join(
+            process_dir_for(lager_process_id), 'breakpoint.json')
         try:
             with open(state_path, 'r') as f:
                 self.send_json_response(200, json.load(f))

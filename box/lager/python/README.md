@@ -45,6 +45,10 @@ Execute a Python script in the container.
 - `env`: Environment variables (list of "KEY=value" strings)
 - `timeout`: Maximum execution time in seconds (default: 300)
 - `detach`: Run in detached mode ("true"/"false")
+- `lock_holder`: box-lock holder string, detached runs only. Its presence asks
+  the box to hold that lock for the job's lifetime and release it when the job
+  ends. Optional: absent from an older CLI, and deliberately absent when the run
+  resumed a pre-existing lock rather than acquiring one.
 - `stdout_is_stderr`: Redirect stderr to stdout ("true"/"false", default: true)
 - `muxes`: Multiplexer configuration JSON (optional)
 - `usb_mapping`: USB device mapping JSON (optional)
@@ -60,6 +64,25 @@ Where fileno is:
 - 2: stderr
 - 3: output_channel (Lager internal)
 - Final line: `- <len> <returncode>`
+
+**Response when `detach` is set**: a JSON body, written before the job starts:
+```json
+{
+  "status": "detached",
+  "pid": null,
+  "lager_process_id": "<uuid>",
+  "lock_held_by_box": false
+}
+```
+`pid` is always null -- the response precedes the spawn, so no process exists
+yet; the real pid lands in the job's `meta.json`. `lager_process_id` is the id
+the client sent, or one the box minted when it sent none. `lock_held_by_box`
+reports whether the box accepted a `lock_holder` and is heartbeating that lock.
+
+Anything that goes wrong after this response -- a `requirements.txt` that will
+not install, a module zip that will not open -- is written into the job's own
+`output.log` as a stderr chunk plus an exit marker, and its `meta.json` reaches
+`failed`. `POST /python/attach` is how a client finds out.
 
 **Example**:
 ```bash
