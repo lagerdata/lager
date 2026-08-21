@@ -26,6 +26,15 @@ must carry `timeout-minutes` AND be best-effort under it, which is what
 `continue-on-error: true` means. A step that is worth running unconditionally
 but not worth failing the job over is exactly the shape being described.
 
+Bounding a step is only half of it for the steps that leave *physical* state
+behind. A step killed by `timeout-minutes` prints nothing, and
+`continue-on-error` then renders it as a green tick indistinguishable from a
+step that did its job -- so a bench left energized is discovered by the next
+person to walk up to it rather than by reading the run. The power-off steps are
+the ones where that gap is real (an unlock that never happens expires on the
+server TTL by itself; a relay that never opens stays closed), so they are
+required to annotate on the failure path.
+
 This is the same enforcement style as `test_no_global_os_path_patches.py` and
 `test_sudoers_contract.py`: scan the tree, allow nothing, and make an exception
 a visible edit to this file.
@@ -45,6 +54,11 @@ WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 #: pass on a GitHub-hosted runner, where a hang costs a hosted minute and
 #: nothing else's turn.
 BENCH_LABEL = "self-hosted"
+
+#: Substring identifying the cleanup steps that leave physical state behind.
+#: These are the ones whose silent failure leaves the instruments latched at AC
+#: with no trace in the run.
+POWER_OFF_STEP = "Power off bench instruments"
 
 #: Steps exempt from the rule, as `(workflow file, job id, step name)`.
 #: Empty on purpose: adding an entry should be an argument in a diff, not a
@@ -125,6 +139,28 @@ class TestBenchCleanupStepsAreBounded(unittest.TestCase):
             "these bench steps run on `always()` without "
             "`continue-on-error: true`, so the timeout that bounds them would "
             "turn an otherwise-green run red:\n  " + "\n  ".join(offenders),
+        )
+
+    def test_power_off_steps_say_so_when_they_fail(self):
+        """A green tick must not be the only account of a still-live bench."""
+        checked, offenders = 0, []
+        for path, job_id, step in _bench_always_steps():
+            if POWER_OFF_STEP not in (step.get("name") or ""):
+                continue
+            checked += 1
+            if "::warning" not in (step.get("run") or ""):
+                offenders.append(f"{path.name} :: {job_id} :: {_name(step)}")
+        self.assertGreater(
+            checked, 0,
+            f"no bench step named like {POWER_OFF_STEP!r} was found — either "
+            "the dark-bench policy was dropped or these steps were renamed, "
+            "and this check is now asserting nothing",
+        )
+        self.assertEqual(
+            offenders, [],
+            "these power-off steps are best-effort and bounded but emit no "
+            "annotation when they fail, so a bench left energized reaches the "
+            "run summary as a green tick:\n  " + "\n  ".join(offenders),
         )
 
     def test_the_bench_group_is_still_serialized(self):

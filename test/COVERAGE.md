@@ -41,8 +41,8 @@ are not.
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 177 |
-| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 131 (+1 skipped) |
-| | **Total gated** | **3905** |
+| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 132 (+1 skipped) |
+| | **Total gated** | **3906** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -443,7 +443,7 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 158 files)
+### Local Unit Tests (`test/unit/` -- 159 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 81 files)
 

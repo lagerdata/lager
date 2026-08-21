@@ -462,6 +462,12 @@ jobs:
         # which does not exist if the run died inside the uninstall->install
         # window — the post-recovery step below gets a second chance once
         # recovery has reinstalled it.
+        #
+        # Bounded in the shell so a relay left latched on is something the run
+        # says rather than something the next person at the bench finds: a step
+        # killed by `timeout-minutes` prints nothing and `continue-on-error`
+        # renders it green. Expected to warn when the box software is missing,
+        # which is exactly the case the post-recovery step exists to clean up.
         if: always()
         timeout-minutes: 2
         continue-on-error: true
@@ -469,8 +475,16 @@ jobs:
           RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
           KEITHLEY_POWER_NET: ${{ vars.KEITHLEY_POWER_NET || 'KEITHLEY_POWER' }}
         run: |
-          lager gpo "$RIGOL_POWER_NET" low --box "$LAGER_BOX" || true
-          lager gpo "$KEITHLEY_POWER_NET" low --box "$LAGER_BOX" || true
+          for net in "$RIGOL_POWER_NET" "$KEITHLEY_POWER_NET"; do
+            rc=0
+            timeout 50 lager gpo "$net" low --box "$LAGER_BOX" || rc=$?
+            if [ "$rc" -eq 124 ]; then
+              echo "::warning title=Bench may still be energized (pre-recovery)::'$net' did not go low within 50s on '$LAGER_BOX'. The post-recovery power-off gets a second chance; if it warns too, assume the relay is latched on."
+            elif [ "$rc" -ne 0 ]; then
+              echo "::warning title=Bench may still be energized (pre-recovery)::'$net' low failed (exit $rc) on '$LAGER_BOX'. The post-recovery power-off gets a second chance; if it warns too, assume the relay is latched on."
+            fi
+          done
+          exit 0
         shell: bash
 
       - name: Recovery — leave the bench usable on failure
@@ -521,6 +535,11 @@ jobs:
         # harmless re-drive of an already-low pin. If even this fails,
         # recovery itself failed — the relays stay latched on and the
         # instruments idle at AC (harmless); the bench needs a hand anyway.
+        # This is the last word on the bench's power state, so it is the one
+        # that has to be audible: bounded in the shell and annotated on both
+        # the timeout and the plain-failure path, because a step killed by
+        # `timeout-minutes` prints nothing and `continue-on-error` renders it
+        # as a green tick identical to a bench that actually went dark.
         if: always()
         timeout-minutes: 2
         continue-on-error: true
@@ -528,6 +547,14 @@ jobs:
           RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
           KEITHLEY_POWER_NET: ${{ vars.KEITHLEY_POWER_NET || 'KEITHLEY_POWER' }}
         run: |
-          lager gpo "$RIGOL_POWER_NET" low --box "$LAGER_BOX" || true
-          lager gpo "$KEITHLEY_POWER_NET" low --box "$LAGER_BOX" || true
+          for net in "$RIGOL_POWER_NET" "$KEITHLEY_POWER_NET"; do
+            rc=0
+            timeout 50 lager gpo "$net" low --box "$LAGER_BOX" || rc=$?
+            if [ "$rc" -eq 124 ]; then
+              echo "::warning title=Bench may still be energized::'$net' did not go low within 50s on '$LAGER_BOX' after recovery. Assume the relay is latched on and the instrument is idling at AC; the bench needs a hand."
+            elif [ "$rc" -ne 0 ]; then
+              echo "::warning title=Bench may still be energized::'$net' low failed (exit $rc) on '$LAGER_BOX' after recovery. Assume the relay is latched on and the instrument is idling at AC; the bench needs a hand."
+            fi
+          done
+          exit 0
         shell: bash

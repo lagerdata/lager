@@ -695,6 +695,15 @@ jobs:
         # runs. Best-effort — a power-off hiccup must not turn a green run
         # red, and the next run's power-on step re-asserts the state anyway.
         # No `id:`, so the fail gate above never sees this step.
+        #
+        # Bounded in the shell, not by `timeout-minutes` alone. If this step is
+        # killed by its step bound it prints nothing, and `continue-on-error`
+        # then renders it as a green tick that is indistinguishable from a bench
+        # that actually went dark -- while the relays stay latched on and the
+        # next thing to touch that bench is a person. Bounding each net here
+        # leaves the shell alive to say so, and means one wedged relay no longer
+        # eats the whole step budget before the other net is even tried.
+        # `timeout-minutes` stays as the backstop for a wedged shell.
         if: always()
         timeout-minutes: 2
         continue-on-error: true
@@ -702,6 +711,14 @@ jobs:
           RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
           KEITHLEY_POWER_NET: ${{ vars.KEITHLEY_POWER_NET || 'KEITHLEY_POWER' }}
         run: |
-          lager gpo "$RIGOL_POWER_NET" low --box "$LAGER_BOX" || true
-          lager gpo "$KEITHLEY_POWER_NET" low --box "$LAGER_BOX" || true
+          for net in "$RIGOL_POWER_NET" "$KEITHLEY_POWER_NET"; do
+            rc=0
+            timeout 50 lager gpo "$net" low --box "$LAGER_BOX" || rc=$?
+            if [ "$rc" -eq 124 ]; then
+              echo "::warning title=Bench may still be energized::'$net' did not go low within 50s on '$LAGER_BOX'. Assume the relay is latched on and the instrument is idling at AC."
+            elif [ "$rc" -ne 0 ]; then
+              echo "::warning title=Bench may still be energized::'$net' low failed (exit $rc) on '$LAGER_BOX'. Assume the relay is latched on and the instrument is idling at AC."
+            fi
+          done
+          exit 0
         shell: bash
