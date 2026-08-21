@@ -2,9 +2,15 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
-## [Unreleased]
+## [0.40.0] - 2026-08-21
 
 ### Added
+
+- **A Getting Started guide covering box setup end to end.** Nine new
+  pages under `docs/source/getting-started/`, including setting up a Lager
+  Box, adding a first box, instruments, nets, a first test, a glossary and
+  troubleshooting -- and the sudo-rs behaviour an operator hits on Ubuntu
+  25.10 and newer.
 
 - **`lager install` now uses the pre-built box image for a release tag, taking a
   fresh install from about 14 minutes to about 2.** Building the box image is by
@@ -99,24 +105,6 @@ All notable changes to the Lager platform are documented here. For detailed rele
   the unit is not enabled. `systemctl enable docker` is granted on both
   `/bin` and `/usr/bin` in the generated sudoers, matching `restart` and
   `reset-failed`.
-
-- **`lager update --pull` now pulls anonymously, so a box's own registry
-  credentials cannot disable it.** A box that ever authenticated to `ghcr.io`
-  for something unrelated sent those credentials on the pull; GHCR evaluated
-  them against the `lager-box` repository rather than falling back to
-  anonymous, and answered `denied: denied` for a package anyone can read. The
-  update recovered -- the denial is classified and falls back to a local build
-  -- but the pull silently stopped helping that box for a reason unrelated to
-  the image. The pull now runs through a throwaway empty docker config, so it
-  behaves identically on every box. Verified on a box by planting a
-  deliberately wrong `ghcr.io` credential and confirming the pull still
-  succeeded.
-
-- **A box that cannot build is now told it can still pull.** When Docker >= 23
-  has no buildx plugin, `lager update` fails the BuildKit preflight and tells
-  the operator to install the plugin. That is the slower fix and sometimes not
-  one they can apply, while a pull needs no buildx at all -- so the error now
-  also points at `--pull` for targets that have a published image.
 
 - **A deliberate `ctx.exit()` is no longer reported as a crash, and no longer
   has its exit code rewritten to 1.** `click.exceptions.Exit` subclasses
@@ -350,6 +338,24 @@ All notable changes to the Lager platform are documented here. For detailed rele
 ## [0.39.0] - 2026-08-19
 
 ### Added
+
+- **`lager update --pull` now pulls anonymously, so a box's own registry
+  credentials cannot disable it.** A box that ever authenticated to `ghcr.io`
+  for something unrelated sent those credentials on the pull; GHCR evaluated
+  them against the `lager-box` repository rather than falling back to
+  anonymous, and answered `denied: denied` for a package anyone can read. The
+  update recovered -- the denial is classified and falls back to a local build
+  -- but the pull silently stopped helping that box for a reason unrelated to
+  the image. The pull now runs through a throwaway empty docker config, so it
+  behaves identically on every box. Verified on a box by planting a
+  deliberately wrong `ghcr.io` credential and confirming the pull still
+  succeeded.
+
+- **A box that cannot build is now told it can still pull.** When Docker >= 23
+  has no buildx plugin, `lager update` fails the BuildKit preflight and tells
+  the operator to install the plugin. That is the slower fix and sometimes not
+  one they can apply, while a pull needs no buildx at all -- so the error now
+  also points at `--pull` for targets that have a published image.
 
 - **`lager usb <net> cycle` power-cycles a port** — off, wait, on — for every
   supported hub. `--off-time` sets how long the port stays unpowered (default

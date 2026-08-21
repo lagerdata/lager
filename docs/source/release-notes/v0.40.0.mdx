@@ -1,0 +1,71 @@
+---
+title: "Version 0.40.0"
+description: "August 21, 2026"
+---
+
+## <u>Features</u>
+
+- **`lager install` uses the pre-built box image for a release tag.** Installing a
+  published release now pulls the box image instead of building it on the box,
+  taking a fresh install from roughly fourteen minutes to about two. An install
+  always paid the full cold-build cost, because the deployment clears the builder
+  cache before it starts. On by default; pass `--no-pull` to build on the box
+  instead. Branch targets such as `main` have no published image and still build.
+- **A Rigol MSO5204's logic channel can now have a net.** `lager instruments`
+  accepts a logic net on the MSO5204, and the role tables are asserted to agree.
+- **`lager logic measure`, `trigger` and `cursor` work.** All sixteen subcommands
+  dispatch to the script that implements them, rather than to a path that did not
+  exist.
+
+## <u>Bug Fixes</u>
+
+- **`lager python --timeout` now stops the script.** The deadline reached the box
+  but sent only SIGTERM, so a script blocked in an uninterruptible call — a pyvisa,
+  libusb or serial read, which is the normal case on a box — or one with its own
+  handler ran on regardless. The deadline now escalates to SIGKILL after the
+  cleanup grace window.
+- **A script killed by its timeout reports 137 instead of 247.**
+- **`--timeout` above the box's ceiling says so** instead of quietly running a
+  shorter deadline, which read as the timeout firing early.
+- **A failed Docker install step names the command that failed.** The step ran
+  eight commands behind one generic error, four of which print nothing on success,
+  so a failure left a transcript that simply stopped. Each command now reports
+  itself and its exit status, and the printed recovery instructions match the
+  commands the step actually runs.
+- **`ssh_t` no longer prints ssh's own errors out of order**, so an error and the
+  message explaining it stay together in the transcript.
+- **A deliberate `ctx.exit()` is no longer reported as a crash**, and no longer has
+  its exit code rewritten to 1. The visible case was `lager update --check` against
+  a box whose SSH key is not set up.
+- **A CI job is no longer refused by its own box lock.**
+- **The host CLI installs to `~/.lager_venv`.**
+- **A command that dispatches to a missing helper script now says so**, instead of
+  failing later with something unrelated.
+
+## <u>Improvements</u>
+
+- **A Getting Started guide covering box setup end to end** — nine pages spanning
+  setting up a Lager Box, adding your first box, instruments, nets, a first test, a
+  glossary and troubleshooting, including the sudo behaviour operators hit on
+  Ubuntu 25.10 and newer.
+- **The box's MCP server is ported to MCP Python SDK v2**, and the `mcp` version
+  ceiling is lifted.
+- **`mcp` is a direct test requirement**, rather than arriving transitively.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.40.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.40.0/)
