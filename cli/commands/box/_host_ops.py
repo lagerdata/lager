@@ -249,8 +249,13 @@ def udev_sudoers_bootstrap(user: str = "lagerdata") -> str:
         "\n"
         "  sudo tee /etc/sudoers.d/lagerdata-udev >/dev/null <<'SUDOERS'\n"
         + banner
-        + f"  {user} ALL=(ALL) NOPASSWD: /bin/cp /tmp/*.rules /etc/udev/rules.d/\n"
-        f"  {user} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/udev/rules.d/*.rules\n"
+        # Granted by name, not by glob: sudo-rs rejects a wildcard in a
+        # command argument and refuses the whole file (#313), so pasting a
+        # globbed rule would leave the operator with an invalid sudoers file
+        # on exactly the newer Ubuntu where they are most likely to need this
+        # text. UDEV_RULES_FILENAME is the only file this grant has to cover.
+        + f"  {user} ALL=(ALL) NOPASSWD: /bin/cp {_UDEV_TMP_PATH} {UDEV_RULES_DIR}\n"
+        f"  {user} ALL=(ALL) NOPASSWD: /bin/chmod 644 {UDEV_RULES_PATH}\n"
         f"  {user} ALL=(ALL) NOPASSWD: /usr/bin/udevadm control --reload-rules\n"
         f"  {user} ALL=(ALL) NOPASSWD: /usr/bin/udevadm trigger\n"
         "  SUDOERS\n"

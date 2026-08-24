@@ -306,9 +306,16 @@ class BootstrapTexts(unittest.TestCase):
 
     def test_udev_bootstrap_names_user(self):
         text = ops.udev_sudoers_bootstrap("benchtest")
+        # Granted by filename, not by glob: sudo-rs rejects a wildcard in a
+        # command argument, and this text is a sudoers file an operator pastes
+        # as root (#313). test_sudoers_contract.py pins that it still grants
+        # exactly what udev_apply runs.
         self.assertIn(
-            "benchtest ALL=(ALL) NOPASSWD: /bin/cp /tmp/*.rules /etc/udev/rules.d/", text
+            f"benchtest ALL=(ALL) NOPASSWD: /bin/cp {ops._UDEV_TMP_PATH} "
+            f"{ops.UDEV_RULES_DIR}",
+            text,
         )
+        self.assertNotIn("*", text)
         # The sudoers *filename* is historical and stays lagerdata-udev
         # (matching what setup_and_deploy_box.sh writes); only the rule
         # lines must name the login user.

@@ -159,6 +159,55 @@ class TestDeployScriptRestartSequence:
             f"{code.count(RESET_FAILED)}"
         )
 
+    def test_no_remote_command_string_breaks_its_own_quoting(self):
+        """Same hazard, second location.
+
+        Every `ssh_t "${BOX_USER}@${BOX_IP}" "` opens a DOUBLE-QUOTED string
+        that bash expands on the operator's machine before sending it. A
+        backtick in there is a command substitution run locally at deploy
+        time -- it does not reach the box, it silently deletes the text it
+        was wrapping, and whatever it names actually executes. A prose
+        comment mentioning `sudo env` in backticks ran `sudo` on the
+        operator's own machine and broke the Docker install chain, which is
+        how this test came to exist.
+        """
+        lines = DEPLOY_SCRIPT.read_text().splitlines()
+        offenders = []
+        i = 0
+        while i < len(lines):
+            if lines[i].rstrip().endswith('"${BOX_USER}@${BOX_IP}" "'):
+                start = i
+                i += 1
+                while i < len(lines) and not lines[i].strip().startswith('"'):
+                    line = lines[i]
+                    if "`" in line:
+                        offenders.append(f"line {i + 1}: backtick: {line.strip()}")
+                    # An unescaped double quote CLOSES the string: everything
+                    # after it is re-parsed as outer-shell tokens and the rest
+                    # of the chain silently stops being a command. Escaped
+                    # quotes (\") are used deliberately by run_step and are
+                    # fine.
+                    if '"' in line.replace('\\"', ""):
+                        offenders.append(f"line {i + 1}: unescaped quote: {line.strip()}")
+                    i += 1
+                assert i < len(lines), (
+                    f"unterminated remote command string opened at line {start + 1}"
+                )
+            i += 1
+        assert offenders == [], (
+            "inside a double-quoted remote command string a backtick is a "
+            "command substitution evaluated on the OPERATOR'S machine, and an "
+            "unescaped double quote closes the string early -- both silently "
+            "change what the box is asked to run:\n"
+            + "\n".join(offenders)
+        )
+
+    def test_that_scan_finds_the_remote_command_strings(self):
+        # A scan that matches nothing passes forever.
+        lines = DEPLOY_SCRIPT.read_text().splitlines()
+        openers = [l for l in lines if l.rstrip().endswith('"${BOX_USER}@${BOX_IP}" "')]
+        assert len(openers) >= 2, f"expected several multi-line ssh_t calls, found {len(openers)}"
+
     def test_the_sudoers_heredoc_contains_no_backticks(self):
         """The sudoers heredoc's delimiter is UNQUOTED (`<< SCRIPT_EOF`), on
         purpose, so ${BOX_USER} expands client-side. That also means any
