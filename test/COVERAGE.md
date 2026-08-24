@@ -41,8 +41,8 @@ are not.
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 177 |
-| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 139 (+1 skipped) |
-| | **Total gated** | **3980** |
+| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 143 (+1 skipped) |
+| | **Total gated** | **3984** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
