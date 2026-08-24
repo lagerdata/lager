@@ -222,9 +222,17 @@ jobs:
         # between runs. Power both up front so they stay on for the whole
         # lifecycle. The driven level latches in LabJack hardware and the
         # LabJack keeps USB power through the uninstall/reinstall window, so
-        # the drive survives the whole job. Only the Rigol gates this step —
-        # it is what the per-phase smokes use; the Keithley is powered as a
-        # warm-up for the chained integration run, which verifies it itself.
+        # the drive survives the whole job.
+        #
+        # This step used to gate on the Rigol alone, on the grounds that it is
+        # what the per-phase smokes use and the Keithley is only a warm-up for
+        # the chained integration run. That reasoning was about which
+        # instrument a TEST needs. The gate is now about when enumeration is
+        # FINISHED, which is a different question: any device still coming up
+        # when this step returns will hotplug later, and the hotplug restarts
+        # the box's hardware service underneath whatever is running. So every
+        # relay-powered instrument is waited for, whether or not this job's
+        # smokes talk to it. See integration-tests.yml for the measurements.
         # `lager instruments` exits non-zero on transient connectivity
         # errors, hence `|| true` per attempt.
         env:
@@ -234,20 +242,26 @@ jobs:
         run: |
           lager gpo "$RIGOL_POWER_NET" high --box "$LAGER_BOX"
           lager gpo "$KEITHLEY_POWER_NET" high --box "$LAGER_BOX"
+          expected=(Rigol_DP821 Keithley_2281S Rigol_MS05204)
           enumerated=""
+          missing=""
           for _ in $(seq 1 36); do
             out=$(lager instruments --box "$LAGER_BOX" 2>/dev/null || true)
-            if printf '%s' "$out" | grep -q 'Rigol_DP821'; then
+            missing=""
+            for inst in "${expected[@]}"; do
+              printf '%s' "$out" | grep -q "$inst" || missing="$missing $inst"
+            done
+            if [ -z "$missing" ]; then
               enumerated=1
               break
             fi
             sleep 5
           done
           if [ -z "$enumerated" ]; then
-            echo "Rigol did not enumerate within 180s of relay power-on"
+            echo "Did not enumerate within 180s of relay power-on:$missing"
             exit 1
           fi
-          echo "Rigol enumerated."
+          echo "All relay-powered instruments enumerated."
           # Enumeration is not readiness: the USB hotplug from the relay
           # power-on restarts the box's hardware service and supply
           # connections are refused for a few seconds afterwards. Poll an
