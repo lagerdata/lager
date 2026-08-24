@@ -2,6 +2,30 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Fixed
+
+- **The bench power-on step returned while an instrument was still
+  enumerating, and the resulting hotplug restarted the box's hardware service
+  mid-suite.** Both bench workflows waited only for the instruments their own
+  suites talk to -- `Bench: Integration Tests` for the Rigol DP821 and the
+  Keithley 2281S, `Bench: Box Lifecycle` for the Rigol alone. That is the
+  right list for "which instrument does this test need" and the wrong one for
+  "has enumeration finished": anything else sharing a relay outlet is still
+  coming up, and when it lands the box's hardware service restarts underneath
+  whatever is already running.
+
+  Measured from a dark relay: the DP821 enumerates at 6s and the Keithley at
+  11s, but a scope on the same outlet takes 52-60s. The step was returning
+  roughly 35 seconds early, and a command issued in that window fails with
+  `Connection refused` on the hardware service port -- reproduced on the
+  bench rather than inferred. The symptom is an instrument suite failing for
+  no reason visible in its own output, which reads as a flake.
+
+  Both workflows now wait for every relay-powered instrument, and name the
+  ones still missing if the wait times out.
+
 ## [0.41.0] - 2026-08-24
 
 ### Added

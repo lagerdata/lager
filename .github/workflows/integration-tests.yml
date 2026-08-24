@@ -366,22 +366,44 @@ jobs:
         run: |
           lager gpo "$RIGOL_POWER_NET" high --box "$LAGER_BOX"
           lager gpo "$KEITHLEY_POWER_NET" high --box "$LAGER_BOX"
-          # The Keithley is the slow booter — measured ~90s to enumerate.
+          # EVERY instrument on the relays has to finish enumerating before any
+          # suite runs -- not just the ones a suite talks to. A device that is
+          # still coming up when this step returns hotplugs later, and the
+          # hotplug restarts the box's hardware service underneath whatever is
+          # already running.
+          #
+          # Measured from a dark relay: DP821 6s, Keithley 2281S 11s, Rigol
+          # MSO5204 52s and 60s across two runs. The MSO5204 shares the
+          # RIGOL_POWER outlet, so waiting only for the first two returned
+          # about 35s before it had finished, and a command issued in that
+          # window came back `Connection refused` on localhost:8080 --
+          # reproduced deliberately on the bench, not inferred.
+          #
+          # This list is the bench's actual relay-powered inventory, so adding
+          # an instrument to a relay means adding it here. An entry that is
+          # genuinely gone fails this step BY NAME after 180s, which is the
+          # outcome we want: the bench changed and the workflow should say so
+          # rather than quietly race whatever is left.
+          expected=(Rigol_DP821 Keithley_2281S Rigol_MS05204)
           enumerated=""
+          missing=""
           for _ in $(seq 1 36); do
             out=$(lager instruments --box "$LAGER_BOX" 2>/dev/null || true)
-            if printf '%s' "$out" | grep -q 'Rigol_DP821' \
-              && printf '%s' "$out" | grep -q 'Keithley_2281S'; then
+            missing=""
+            for inst in "${expected[@]}"; do
+              printf '%s' "$out" | grep -q "$inst" || missing="$missing $inst"
+            done
+            if [ -z "$missing" ]; then
               enumerated=1
               break
             fi
             sleep 5
           done
           if [ -z "$enumerated" ]; then
-            echo "Instruments did not enumerate within 180s of relay power-on"
+            echo "Did not enumerate within 180s of relay power-on:$missing"
             exit 1
           fi
-          echo "Both instruments enumerated."
+          echo "All relay-powered instruments enumerated."
           # Enumeration is not readiness: the USB hotplug from the relay
           # power-on restarts the box's hardware service, and supply
           # connections are refused for a few seconds after the instruments

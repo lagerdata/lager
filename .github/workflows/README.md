@@ -166,10 +166,15 @@ later answer meaningless, so it is cheapest to rule out first.
 
 The bench LabJack T7 drives two AC power relays (control high = outlet on):
 
-| LabJack pin | Box net | Instrument |
+| LabJack pin | Box net | Instrument(s) on that outlet |
 |---|---|---|
-| FIO0 | `RIGOL_POWER` | Rigol DP821 |
+| FIO0 | `RIGOL_POWER` | Rigol DP821, Rigol MSO5204 |
 | FIO1 | `KEITHLEY_POWER` | Keithley 2281S |
+
+One outlet can carry more than one instrument, and the power-on step waits for
+**all** of them — see "Enumeration is not readiness" below for why the slowest
+device on a shared outlet, not the one a suite happens to need, is what
+determines when that step may return.
 
 Each bench workflow powers the instruments on at the start of its job and off
 at the end (also on failure and cancellation), so the bench sits dark between
@@ -194,6 +199,16 @@ Notes and footguns:
   few seconds after the instruments appear on the USB scan. The power-on
   step polls a real supply read (`lager supply <net> state`) before any
   suite runs.
+- **Wait for every instrument on the relays, not just the ones under test.**
+  A device still coming up when the power-on step returns hotplugs later, and
+  that hotplug restarts the hardware service underneath whatever is already
+  running. Measured from a dark relay: DP821 6s, Keithley 2281S 11s, Rigol
+  MSO5204 52-60s. While the step waited only for the first two it returned
+  about 35s early, and a command issued in that gap came back `Connection
+  refused` on localhost:8080. The `expected=(...)` list in each power-on step
+  is the bench's relay-powered inventory: **add an instrument to a relay, add
+  it to that list**, or it becomes a source of intermittent mid-suite
+  failures that look like flakes.
 - A box reboot or LabJack power-cycle resets the pins to floating inputs,
   which opens the relays: the instruments go dark until the next run (or a
   manual `gpo ... high`) powers them back on.
