@@ -52,6 +52,67 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- **`lager install` now completes on a box running `sudo-rs`.** Ubuntu switched
+  the default `sudo` to `sudo-rs` in 25.10 and 26.04 LTS ships it as the
+  default, and `sudo-rs` rejects wildcards in command arguments by design.
+  Nineteen of the rules Lager wrote to `/etc/sudoers.d/lagerdata-udev` used
+  one, so `visudo -c` failed and the install aborted at step 2 of 9, before
+  anything was deployed -- on a configuration the documentation calls
+  supported.
+
+  Every rule now names its arguments exactly. The staged rule and modprobe
+  files are granted by filename rather than by `/tmp/*.rules`, which is also a
+  narrower grant: the glob matched any file an attacker could stage in a
+  world-writable directory. The mode and owner wildcards are replaced by the
+  values actually applied, which made the list *shorter* -- the `chown -R`
+  call sites pass three arguments and so never matched a two-argument
+  `chown * /etc/lager` rule in the first place, and `chown` on
+  `/etc/lager/version` has no call site at all. The login user's gid, the one
+  genuinely dynamic value, is resolved on the box. The firewall script's
+  trailing wildcard is replaced by the exact invocation, since its only
+  argument form (`--corporate-vpn <iface>`) is known when the file is written.
+
+  Two things found while fixing it. The file was installed *before*
+  `visudo -c` ran, so a validation failure left the box with a broken
+  `/etc/sudoers.d` -- worse than not having tried. It is now staged, validated
+  with `visudo -c -f`, and installed only on success. And the manual-fix text
+  `lager box config apply` prints on a box missing the grant taught the same
+  globbed rules, handing an operator a file their own `visudo` would reject on
+  exactly the release where they were most likely to need it.
+
+  A contract test pins every rule as wildcard-free, and pins that the literal
+  grants still match the commands the CLI actually runs -- byte-for-byte, since
+  sudo compares the command line verbatim and a trailing-slash difference is a
+  silent "a password is required". That test is the only thing that can catch
+  this class of bug: every box we can reach carries a blanket
+  `(ALL) NOPASSWD: ALL`, so the narrow grants are never exercised on hardware
+  and a broken one is invisible to a green bench run.
+
+- **`DEBIAN_FRONTEND` and `NEEDRESTART_SUSPEND` now reach `apt` during
+  install.** They were passed as `sudo VAR=value apt-get ...`, and sudo's
+  default `env_reset` discards assignments made on its own command line unless
+  the authorising sudoers rule carries `SETENV`. During install no Lager
+  sudoers file exists yet -- apt runs under the operator's own rights -- so
+  both variables were dropped without a word, and `needrestart` ran during
+  installation, which is precisely what setting them was meant to prevent. Its
+  service-restart scan appearing in the log is the proof they never arrived.
+
+  The nine install-path invocations now use `sudo env VAR=value apt-get ...`,
+  which runs `env` as root and lets it set the variables, so nothing depends on
+  sudoers policy.
+
+  Deliberately **not** applied to the two call sites that run on a provisioned
+  box (`lager update`'s venv prerequisite and `lager box config apply`'s
+  package install). Those rely on `NOPASSWD: SETENV: /usr/bin/apt-get`, which
+  authorises *apt-get*; under `sudo env` the command run as root is
+  `/usr/bin/env`, the rule stops matching, and `sudo -n` is refused. Keeping
+  `sudo VAR=` there is also the narrower grant, since permitting `/usr/bin/env`
+  would permit every binary. Both halves are pinned by tests, because applying
+  either shape uniformly silently breaks the other's call sites.
+
+
+### Fixed
+
 - **`lager --box ""` no longer silently runs against your default box.** An
   empty string is falsy, so an explicitly empty `--box` fell into the "no box
   given" branch and resolved to whatever the default was -- the caller named

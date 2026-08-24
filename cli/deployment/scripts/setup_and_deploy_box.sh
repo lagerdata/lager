@@ -648,6 +648,19 @@ print_step "Configuring Passwordless Sudo"
 print_info "Setting up passwordless sudo (you may be prompted for password once)..."
 echo ""
 
+# The firewall grant, resolved here rather than left as a wildcard.
+#
+# sudo-rs rejects `*` in command arguments outright (#313), so the trailing
+# wildcard this used to carry cannot stay. It does not need to: the ONLY
+# invocation is the one in STEP 7 below, and its arguments are known right
+# here -- either nothing, or `--corporate-vpn <iface>` from --corporate-vpn.
+# The no-argument form is granted unconditionally a few lines down; this adds
+# the exact argument form when, and only when, one was asked for.
+FIREWALL_SUDOERS_RULES=""
+if [ -n "$CORPORATE_VPN" ]; then
+    FIREWALL_SUDOERS_RULES="${BOX_USER} ALL=(ALL) NOPASSWD: /usr/local/lib/lager/secure_box_firewall.sh --corporate-vpn ${CORPORATE_VPN}"
+fi
+
 # Create a temporary script on the box to set up sudoers
 TEMP_SCRIPT=$(mktemp)
 cat > "$TEMP_SCRIPT" << SCRIPT_EOF
@@ -661,7 +674,15 @@ echo "Creating sudoers configuration for passwordless udev management..."
 # pins the two together. It is what tells an operator who opens this file that
 # Lager rewrites it wholesale -- a grant added here vanishes on the next
 # install, and the incident that motivated the banner was exactly that.
-sudo tee /etc/sudoers.d/lagerdata-udev > /dev/null << 'SUDOERS'
+# Staged to a temp file and validated BEFORE it is installed.
+#
+# This used to tee straight into /etc/sudoers.d/lagerdata-udev and run
+# visudo -c afterwards, so a file that failed validation had already been
+# installed -- the box was left with a BROKEN sudoers directory and the run
+# aborted, which is worse than not having tried (#313). Validate first,
+# install only on success.
+LAGER_SUDOERS_TMP="\$(mktemp)"
+cat > "\$LAGER_SUDOERS_TMP" << 'SUDOERS'
 # Managed by lager install; manual edits are overwritten.
 # Lager writes only the files it owns under /etc/sudoers.d/ and never touches
 # any other file in this directory, so keep operator or platform grants in a
@@ -670,33 +691,53 @@ sudo tee /etc/sudoers.d/lagerdata-udev > /dev/null << 'SUDOERS'
 #
 # Purpose: let the ${BOX_USER} user deploy instrument USB permissions and the
 # rest of the box provisioning below without a password prompt.
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/cp /tmp/*.rules /etc/udev/rules.d/
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/udev/rules.d/*.rules
+# Two staged rule files exist, both with fixed names: 99-instrument.rules
+# (shipped in box/udev_rules/) and 99-lager-user.rules (written by
+# lager box config apply -- see _host_ops.UDEV_RULES_FILENAME). Granting each
+# by name rather than by glob is what makes this file valid under sudo-rs, and
+# it is a narrower grant besides: /tmp/*.rules matched any attacker-staged
+# file in a world-writable directory.
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/cp /tmp/99-instrument.rules /etc/udev/rules.d/
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/cp /tmp/99-lager-user.rules /etc/udev/rules.d/
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/udev/rules.d/99-instrument.rules
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/udev/rules.d/99-lager-user.rules
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/udevadm control --reload-rules
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/udevadm trigger
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /tmp/*.rules
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /tmp/99-instrument.rules
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /tmp/99-lager-user.rules
 # The instrument rules grant device access via GROUP="lager"; the deploy
 # step below creates the group if missing (non-tty ssh, so it needs NOPASSWD).
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/sbin/groupadd lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /sbin/groupadd lager
 # Modprobe blacklist deployment (0.20.0+: usbtmc blacklist for USB-TMC drivers)
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/cp /tmp/*.conf /etc/modprobe.d/
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/modprobe.d/*.conf
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/cp /tmp/blacklist-usbtmc.conf /etc/modprobe.d/
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/modprobe.d/blacklist-usbtmc.conf
 ${BOX_USER} ALL=(ALL) NOPASSWD: /sbin/modprobe -r usbtmc
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /tmp/*.conf
-# Allow ${BOX_USER} user to manage /etc/lager directory permissions
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod * /etc/lager
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod * /etc/lager/saved_nets.json
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod * /etc/lager/version
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chown * /etc/lager
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chown * /etc/lager/saved_nets.json
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chown * /etc/lager/version
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod * /etc/lager
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod * /etc/lager/saved_nets.json
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod * /etc/lager/version
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chown * /etc/lager
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chown * /etc/lager/saved_nets.json
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chown * /etc/lager/version
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /tmp/blacklist-usbtmc.conf
+# Allow ${BOX_USER} user to manage /etc/lager directory permissions.
+#
+# Enumerated rather than wildcarded, because sudo-rs rejects a * in command
+# arguments (#313). The list below is every mode and owner the tree actually
+# applies through a grant, and it is SHORTER than the wildcard version was:
+# the chown -R call sites (this script's own /etc/lager setup, and
+# convert_to_sparse_checkout.sh) pass three arguments, which never matched a
+# two-argument "chown * /etc/lager" rule in the first place. Those grants were
+# already dead and are not resurrected here. chown on /etc/lager/version has
+# no call site at all and is likewise dropped.
+#
+# The one genuinely dynamic value -- the login user's gid, for
+# "chown 33:<gid> /etc/lager" in update.py -- is appended below, after this
+# heredoc, because it can only be resolved on the box.
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 2775 /etc/lager
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 755 /etc/lager
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/lager/saved_nets.json
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chown 33:33 /etc/lager/saved_nets.json
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 666 /etc/lager/version
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 2775 /etc/lager
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 755 /etc/lager
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 644 /etc/lager/saved_nets.json
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chown 33:33 /etc/lager/saved_nets.json
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 666 /etc/lager/version
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/mkdir -p /etc/lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/lager/saved_nets.json
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /etc/lager/version
@@ -754,17 +795,41 @@ ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl reset-failed docker.service d
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/install -D -m 0755 -o root -g root /tmp/secure_box_firewall.sh /usr/local/lib/lager/secure_box_firewall.sh
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/install -D -m 0755 -o root -g root /tmp/secure_box_firewall.sh /usr/local/lib/lager/secure_box_firewall.sh
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/local/lib/lager/secure_box_firewall.sh
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/local/lib/lager/secure_box_firewall.sh *
+${FIREWALL_SUDOERS_RULES}
 SUDOERS
 
-# Set correct permissions
-sudo chmod 440 /etc/sudoers.d/lagerdata-udev
+# The gid-dependent grants. id -g can only be answered on the box, and the
+# heredoc above is quoted so nothing in it expands here; this one is not.
+# update.py runs: sudo /bin/chown 33:"$(id -g)" /etc/lager -- in its
+# two-argument form, which is the shape a grant can actually match.
+BOX_GID="\$(id -g)"
+cat >> "\$LAGER_SUDOERS_TMP" << SUDOERS_DYNAMIC
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chown 33:\${BOX_GID} /etc/lager
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chown 33:\${BOX_GID} /etc/lager
+SUDOERS_DYNAMIC
 
-# Validate sudoers syntax
-if sudo visudo -c; then
+# Validate the STAGED file, then install it. -f checks one file rather than
+# the whole of /etc/sudoers.d, so a pre-existing unrelated problem cannot be
+# blamed on this one -- and nothing broken ever reaches /etc/sudoers.d.
+if sudo visudo -c -f "\$LAGER_SUDOERS_TMP"; then
+    sudo install -m 0440 -o root -g root "\$LAGER_SUDOERS_TMP" /etc/sudoers.d/lagerdata-udev
+    rm -f "\$LAGER_SUDOERS_TMP"
     echo "[OK] Sudoers configuration created successfully"
 else
-    echo "[ERROR] Invalid sudoers syntax"
+    echo "[ERROR] Invalid sudoers syntax -- /etc/sudoers.d/lagerdata-udev was NOT modified"
+    if sudo --version 2>/dev/null | grep -qi 'sudo-rs'; then
+        echo ""
+        echo "This box is running sudo-rs, which rejects some constructs that"
+        echo "classic sudo accepts (notably wildcards in command arguments)."
+        echo "Lager writes a wildcard-free sudoers file, so if validation still"
+        echo "failed here, please report the output above as a bug against"
+        echo "lagerdata/lager -- it is not something you can fix by editing."
+        echo ""
+        echo "To unblock the install now, switch this box back to classic sudo"
+        echo "(keep a second session with a working root shell open first):"
+        echo "  sudo update-alternatives --set sudo /usr/bin/sudo.ws"
+    fi
+    rm -f "\$LAGER_SUDOERS_TMP"
     exit 1
 fi
 SCRIPT_EOF
@@ -853,9 +918,33 @@ else
                 echo \"[lager] STEP FAILED: \${step_label} (exit \${step_rc})\" >&2
                 return \${step_rc}
             }
-            run_step 'apt-get update' sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update && \
-            run_step 'apt-get install -y docker.io docker-compose-v2' sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker.io docker-compose-v2 && \
-            { sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx || sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx-plugin || true; } && \
+            # NOTE: this comment lives INSIDE the double-quoted remote command
+            # string opened above. No backticks (a command substitution bash
+            # would run on the operator machine, not on the box) and no double
+            # quotes (they close the string early and the rest of the chain is
+            # then re-parsed as outer-shell tokens). Both mistakes were made
+            # here; the second one silently emptied the whole chain.
+            #
+            # sudo env VAR=value, not sudo VAR=value: sudo env_reset drops
+            # assignments made on its own command line unless the sudoers rule
+            # carries SETENV, and during install NO Lager sudoers file exists
+            # yet -- these run under the operator own sudo rights. The
+            # assignments were therefore silently discarded and needrestart ran
+            # anyway, which is what it is set here to prevent (#315). sudo env
+            # runs /usr/bin/env as root and lets IT set the variables, so it
+            # does not depend on sudoers policy at all.
+            #
+            # Do NOT apply this shape to the two call sites that rely on a
+            # NOPASSWD grant (_host_cli.HOST_VENV_APT_CMD and the apt install
+            # in _host_ops): their grant is NOPASSWD SETENV on /usr/bin/apt-get,
+            # which permits apt-get. Under sudo env the command run as root is
+            # /usr/bin/env, the rule stops matching, and sudo -n is refused.
+            # Those two keep the sudo VAR= form and the SETENV grant, which is
+            # the other correct answer -- and the narrower one, since granting
+            # /usr/bin/env would grant everything.
+            run_step 'apt-get update' sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update && \
+            run_step 'apt-get install -y docker.io docker-compose-v2' sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker.io docker-compose-v2 && \
+            { sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx || sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx-plugin || true; } && \
             run_step 'systemctl daemon-reload' sudo systemctl daemon-reload && \
             run_step 'systemctl enable docker' sudo systemctl enable docker && \
             { sudo systemctl reset-failed docker.service docker.socket 2>/dev/null || true; } && \
@@ -985,8 +1074,8 @@ else
     # Try distro packages first (docker-buildx on Ubuntu universe, then the
     # docker-buildx-plugin from Docker's own apt repo if that's configured).
     ssh_t "${BOX_USER}@${BOX_IP}" "
-        sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update && \
-        { sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx || sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx-plugin || true; }
+        sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update && \
+        { sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx || sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y docker-buildx-plugin || true; }
     "
     # The apt packages can be absent or install a plugin the docker CLI doesn't
     # pick up (seen in the field). If buildx still doesn't actually run, drop the
@@ -1671,7 +1760,7 @@ else
     # decides, and reports honestly if this didn't take.
     if ! ssh $SSH_OPTS "${BOX_USER}@${BOX_IP}" "python3 -Im ensurepip --version >/dev/null 2>&1"; then
         print_info "Installing python3-venv (needed to create the CLI venv)..."
-        ssh_t "${BOX_USER}@${BOX_IP}" "sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y --no-install-recommends python3-venv" || true
+        ssh_t "${BOX_USER}@${BOX_IP}" "sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get update -qq && sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y --no-install-recommends python3-venv" || true
     fi
 
     print_info "Installing lager CLI into ~/.lager_venv on the box host..."
