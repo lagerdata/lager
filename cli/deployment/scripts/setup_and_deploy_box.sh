@@ -717,7 +717,10 @@ ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /tmp/blacklist-usbtmc.conf
 # Allow ${BOX_USER} user to manage /etc/lager directory permissions.
 #
 # Enumerated rather than wildcarded, because sudo-rs rejects a * in command
-# arguments (#313). The list below is every mode and owner the tree actually
+# arguments (#313). Note the escaped colons: ':' separates Cmnd_Spec entries in
+# sudoers, so an unescaped one inside a command ARGUMENT is a syntax error and
+# visudo refuses the whole file. The wildcard rules these replace never carried
+# a colon, so nothing here needed escaping before. The list below is every mode and owner the tree actually
 # applies through a grant, and it is SHORTER than the wildcard version was:
 # the chown -R call sites (this script's own /etc/lager setup, and
 # convert_to_sparse_checkout.sh) pass three arguments, which never matched a
@@ -731,12 +734,12 @@ ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/rm -f /tmp/blacklist-usbtmc.conf
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 2775 /etc/lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 755 /etc/lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 644 /etc/lager/saved_nets.json
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chown 33:33 /etc/lager/saved_nets.json
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chown 33\:33 /etc/lager/saved_nets.json
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chmod 666 /etc/lager/version
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 2775 /etc/lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 755 /etc/lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 644 /etc/lager/saved_nets.json
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chown 33:33 /etc/lager/saved_nets.json
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chown 33\:33 /etc/lager/saved_nets.json
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod 666 /etc/lager/version
 ${BOX_USER} ALL=(ALL) NOPASSWD: /bin/mkdir -p /etc/lager
 ${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/lager/saved_nets.json
@@ -804,8 +807,8 @@ SUDOERS
 # two-argument form, which is the shape a grant can actually match.
 BOX_GID="\$(id -g)"
 cat >> "\$LAGER_SUDOERS_TMP" << SUDOERS_DYNAMIC
-${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chown 33:\${BOX_GID} /etc/lager
-${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chown 33:\${BOX_GID} /etc/lager
+${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chown 33\:\${BOX_GID} /etc/lager
+${BOX_USER} ALL=(ALL) NOPASSWD: /usr/bin/chown 33\:\${BOX_GID} /etc/lager
 SUDOERS_DYNAMIC
 
 # Validate the STAGED file, then install it. -f checks one file rather than
