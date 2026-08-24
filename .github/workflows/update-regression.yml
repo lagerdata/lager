@@ -299,10 +299,17 @@ jobs:
         run: lager hello --box "$LAGER_BOX"
         shell: bash
 
-      - name: Common-path update (previous release -> main)
+      - name: Common-path update (previous release -> the commit under test)
         # The update invocation users actually run. If a release breaks
         # upgrading from the previous release, THIS step goes red.
-        run: lager update --box "$LAGER_BOX" --yes --verbose
+        #
+        # Pinned to github.sha rather than left on the CLI's `main` default.
+        # The N-1 -> current upgrade is still exactly what is exercised, but
+        # the box now lands on the commit this run is testing, which is what
+        # integration-tests.yml's guard compares against. Leaving it on `main`
+        # made the two jobs disagree whenever anything merged between them
+        # (#326).
+        run: lager update --box "$LAGER_BOX" --version "${{ github.sha }}" --yes --verbose
         shell: bash
 
       - name: Verify box healthy on main
@@ -402,11 +409,19 @@ jobs:
       - name: Install box software from scratch
         # By --ip: uninstall --yes removes the local box entry as part of its
         # cleanup, so --box would no longer resolve here.
+        #
+        # Same pin as the update step above: the box must finish this run on the
+        # commit under test, because this is the last thing to touch it before
+        # the instrument suite runs against it.
+        #
+        # Note a commit has no pre-built image (only release tags are published),
+        # so this install builds on the box. That is the pre-existing behaviour
+        # for `--version main` too -- the pin does not make it slower.
         run: |
           lager install \
             --ip "${{ secrets.LAGER_BOX_IP }}" \
             --user lagerdata \
-            --version main \
+            --version "${{ github.sha }}" \
             --yes
         shell: bash
 
@@ -498,12 +513,16 @@ jobs:
         # cancellation — the one observed bench stranding happened exactly
         # this way. Prefer letting this workflow fail over cancelling it
         # once the uninstall step has started.
+        #
+        # Pinned to github.sha for the same reason as the steps above: recovery
+        # should leave the bench on a known commit, not on whatever `main`
+        # happens to be by the time a failing run reaches this step.
         if: failure() || cancelled()
         run: |
           lager install \
             --ip "${{ secrets.LAGER_BOX_IP }}" \
             --user lagerdata \
-            --version main \
+            --version "${{ github.sha }}" \
             --yes || true
           lager boxes add \
             --name "$LAGER_BOX" \

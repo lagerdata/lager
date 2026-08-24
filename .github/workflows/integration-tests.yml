@@ -38,8 +38,25 @@
 name: "Bench: Integration Tests"
 
 on:
-  push:
-    branches: [main]
+  # Deliberately NO `push:` trigger.
+  #
+  # Nothing in this workflow deploys to the box -- it only probes with
+  # `lager update --check`. The one job that deploys is update-regression.yml's
+  # lifecycle, which has no push trigger either, and only nightly-bench.yml
+  # chains lifecycle -> integration. So a push-triggered run could never be
+  # anything but a run against whatever the last nightly left on the box: the
+  # guard below caught it 1, 2, 3, 4 and 8 commits behind on a single afternoon
+  # (#326), and every one of those runs was correctly refused.
+  #
+  # Making push runs meaningful would mean deploying first, and the arithmetic
+  # does not work: this suite is ~48 minutes on a bench that serializes, against
+  # roughly nine pushes a day. That is ~7 h/day of a resource there is one of,
+  # with merges queueing behind each other. A nightly that actually tests a
+  # known commit is worth more than nine runs a day that cannot.
+  #
+  # Feedback latency is therefore up to one night. That is the honest cost of
+  # one bench, and it is bounded by dispatching this workflow by hand when a
+  # change warrants it -- see "Bench-testing a branch" in README.md.
   workflow_call:
     inputs:
       box_name:
@@ -173,9 +190,11 @@ jobs:
         # box-side change is exercised from the box's checkout, not the
         # runner's. Only update-regression.yml's lifecycle job updates the
         # box, and only nightly-bench.yml chains lifecycle -> integration. A
-        # push-triggered run therefore tests whatever the last nightly left,
-        # which can be arbitrarily old -- while producing output shaped
-        # exactly like a run that tested the commit.
+        # run whose box was not updated therefore tests whatever was left
+        # there, which can be arbitrarily old -- while producing output shaped
+        # exactly like a run that tested the commit. The push trigger that made
+        # that the normal case is gone (see `on:` above); a hand-dispatched run
+        # can still hit it, and this step is what says so.
         #
         # That cost three days of triage: a merged box-side fix was judged a
         # failure from a run whose own probe said the box was 3 commits
@@ -190,13 +209,36 @@ jobs:
         # `in sync` / `will update (...)` / `will roll back (...)` /
         # `will switch (...)`.
         #
-        # Compared against github.ref_name, NOT against `main` (the CLI's own
-        # default). The lifecycle job deploys `main` unconditionally -- it is
-        # an N-1 -> main upgrade regression, not a deploy-the-ref job -- so a
-        # dispatch on a branch leaves the box on main and this step is what
-        # says so. See "Bench-testing a branch" in README.md.
+        # Compared against github.sha -- the COMMIT this run checked out --
+        # not against github.ref_name and not against `main` (the CLI's own
+        # default).
+        #
+        # A branch name is re-resolved against origin/<branch> at the moment
+        # this step runs, so it is a moving target. The lifecycle job deployed
+        # the box minutes earlier; anything merging in between made this step
+        # report the box as behind when it was running exactly the commit under
+        # test. That cost six of eight bench runs in one afternoon (#326), each
+        # burning the full lifecycle job and producing no hardware result.
+        # github.sha is fixed for the life of the run, so the question asked is
+        # the one meant: "is the box on the commit this run is testing".
+        #
+        # This requires the lifecycle job to deploy that same commit, which it
+        # now does -- see the pinned --version in update-regression.yml. The two
+        # jobs must agree on one ref or the gate is meaningless in the other
+        # direction. In the nightly chain both jobs are in ONE run, so both read
+        # the same github.sha; there is no window for it to move between them.
+        #
+        # On a bare `workflow_dispatch` of this workflow nothing deploys, so the
+        # box must already be on this commit. That is stricter than comparing a
+        # branch name, and deliberately so: the error below names the exact
+        # command that fixes it.
+        #
+        # `lager update --version <40-hex sha>` resolves a bare commit as of
+        # v0.41.0; before that a SHA fell through to the branch arm and became
+        # origin/<sha>, which resolves to nothing. See resolve_version_ref().
+        # See "Bench-testing a branch" in README.md.
         env:
-          REF: ${{ github.ref_name }}
+          REF: ${{ github.sha }}
         run: |
           rc=0
           out=$(lager update --check --box "$LAGER_BOX" --version "$REF" 2>&1) || rc=$?
@@ -225,18 +267,19 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| Box | \`${LAGER_BOX}\` |"
-            echo "| Ref under test | \`${REF}\` |"
+            echo "| Commit under test | \`${REF}\` |"
+            echo "| Branch | \`${GITHUB_REF_NAME}\` |"
             echo "| Triggered by | \`${GITHUB_EVENT_NAME}\` |"
             echo "| Box code | ${code:-unknown} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ -z "$code" ]; then
-            echo "::error title=Box state unknown::lager update --check printed no 'Code:' line, so the box's code cannot be compared against '${REF}'. Refusing to report a bench result."
+            echo "::error title=Box state unknown::lager update --check printed no 'Code:' line, so the box's code cannot be compared against commit ${REF}. Refusing to report a bench result."
             exit 1
           fi
 
           if [ "$code" != "in sync" ]; then
-            echo "::error title=Box is not running the ref under test::Box code is '${code}' against '${REF}'. A bench run against a stale box is not evidence about this commit. Run Bench: Box Lifecycle (or lager update --box ${LAGER_BOX} --version ${REF}), then re-run."
+            echo "::error title=Box is not running the commit under test::Box code is '${code}' against commit ${REF}. A bench run against a stale box is not evidence about this commit. Run Bench: Box Lifecycle (or lager update --box ${LAGER_BOX} --version ${REF}), then re-run."
             exit 1
           fi
         shell: bash

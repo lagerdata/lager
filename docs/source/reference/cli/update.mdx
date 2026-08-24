@@ -17,7 +17,7 @@ lager update [OPTIONS]
 |--------|-------------|
 | `--box BOX` | Lagerbox name or IP address |
 | `--all` | Update all saved boxes that need updating |
-| `--version VERSION` | Release tag, semver pin, or branch to update to (default: main). See [Version pinning](#version-pinning). |
+| `--version VERSION` | Release tag, semver pin, branch, or full 40-character commit SHA to update to (default: main). See [Version pinning](#version-pinning). |
 | `--yes` | Skip confirmation prompt |
 | `--check` | Dry run: report what would change without modifying the box |
 | `--skip-restart` | Skip container restart after update |
@@ -42,6 +42,20 @@ lager update --box my-lager-box --version v0.26.0 --yes
 lager update --box my-lager-box --version 0.26.0 --yes
 lager update --box my-lager-box --version v0.27.0-rc1 --yes
 ```
+
+Since **lager 0.41.0**, a full 40-character commit SHA resolves to that exact
+commit:
+
+```bash
+lager update --box my-lager-box --version 5d84c68612384eed2854638c1e0941a4ff8b7893 --yes
+```
+
+Only the full 40 characters are accepted — a short hex prefix cannot be told
+apart from a branch name. Use this when you need a target that does not move:
+`--version main` is re-resolved against `origin/main` each time it runs, so it
+can mean a different commit minutes later. A commit has no pre-built image
+(only release tags publish one), so a SHA builds on the box just as a branch
+does, and the commit must be reachable from a branch or tag on the remote.
 
 Any other value (`main`, `staging`, or a feature branch name) resolves to
 `origin/<name>` as before.

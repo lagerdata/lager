@@ -212,6 +212,11 @@ fi
 # A semver pin (with or without a leading 'v', e.g. 0.18.5 or v0.18.5) resolves
 # to the release TAG vX.Y.Z; version branches are deprecated in favour of tags.
 # Named branches (main, staging, ...) use origin/<name>.
+# A full 40-character commit SHA resolves to itself, so CI can pin a run to the
+# commit it checked out rather than to a moving branch (#326). The SHA must be
+# reachable from some branch or tag on origin -- the clone/fetch below brings
+# every one of those, and a commit reachable from none of them could not be
+# deployed by any path here anyway.
 # This mirrors resolve_version_ref() in cli/commands/utility/update.py.
 #
 # The pre-built image ref is computed in the SAME arm of the SAME test, so
@@ -225,6 +230,11 @@ if [[ "$GIT_VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|preview)[0-9]*
     GIT_VERSION="v${GIT_VERSION#v}"
     GIT_REF="$GIT_VERSION"
     BOX_IMAGE_TAG_REF="${BOX_IMAGE_REGISTRY}:${GIT_VERSION}"
+elif [[ "$GIT_VERSION" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    # A commit is not a release, so no image ref: this arm deliberately leaves
+    # BOX_IMAGE_TAG_REF empty and the box builds locally, exactly as a branch does.
+    GIT_VERSION="$(printf '%s' "$GIT_VERSION" | tr 'A-F' 'a-f')"
+    GIT_REF="$GIT_VERSION"
 else
     GIT_REF="origin/$GIT_VERSION"
 fi

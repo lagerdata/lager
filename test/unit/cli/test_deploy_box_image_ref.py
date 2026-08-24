@@ -28,7 +28,10 @@ import subprocess
 
 import pytest
 
-from cli.commands.utility.update import _box_image_ref_for_version
+from cli.commands.utility.update import (
+    _box_image_ref_for_version,
+    resolve_version_ref,
+)
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 DEPLOY_SCRIPT = ROOT / "cli" / "deployment" / "scripts" / "setup_and_deploy_box.sh"
@@ -91,6 +94,13 @@ VERSIONS = [
     "v1.2.3-rc1", "1.2.3-rc", "v1.2.3-alpha2", "v1.2.3-beta", "v1.2.3-preview9",
     "main", "staging", "de/install-pull", "v1.2", "1.2.3.4", "v1.2.3-nightly",
     "release/v1.2.3", "vv1.2.3", "", "HEAD",
+    # Commit SHAs (#326): a third arm that resolves to itself and, like a
+    # branch, has no published image. The near-misses must stay branches.
+    "5d84c68612384eed2854638c1e0941a4ff8b7893",
+    "5D84C68612384EED2854638C1E0941A4FF8B7893",
+    "5d84c68",
+    "5d84c68612384eed2854638c1e0941a4ff8b7893a",
+    "z5d84c68612384eed2854638c1e0941a4ff8b789",
 ]
 
 
@@ -107,15 +117,47 @@ class TestRegexAgreement:
         )
 
     @pytest.mark.parametrize("version", VERSIONS)
+    def test_the_two_resolvers_agree_on_the_git_ref_too(self, version):
+        # Agreeing about images is not enough: the shell and the client must
+        # also agree about what to check the box out to. Before the SHA arm
+        # existed these could not disagree, because both had the same two
+        # branches; with three arms that is a property to assert, not assume.
+        git_ref, _ = _bash_resolve(version)
+        _, python_reset, _ = resolve_version_ref(version)
+        assert git_ref == python_reset, (
+            f"{version!r}: bash resolves to {git_ref!r}, "
+            f"resolve_version_ref resolves to {python_reset!r}"
+        )
+
+    @pytest.mark.parametrize("version", VERSIONS)
     def test_an_image_ref_is_set_exactly_when_the_ref_is_a_tag(self, version):
         # The stronger statement: the image ref is not merely equal to the
-        # client's, it is set in the same arm that resolves to a TAG rather
-        # than to origin/<branch>. A branch can never have a published image.
+        # client's, it is set in the same arm that resolves to a release TAG.
+        #
+        # Tag-ness is taken from the client's own answer (a tag is the arm that
+        # produces a refs/tags/ refspec) rather than inferred from the shape of
+        # git_ref. "does not start with origin/" USED to mean "is a tag", and
+        # the SHA arm broke that equivalence -- a SHA resolves to a bare object
+        # id and has no image, so the old inference would have demanded one.
         git_ref, image_ref = _bash_resolve(version)
-        is_tag = not git_ref.startswith("origin/")
+        _, _, python_fetch = resolve_version_ref(version)
+        is_tag = python_fetch.startswith("refs/tags/")
         assert bool(image_ref) == is_tag, (
-            f"{version!r}: git_ref={git_ref!r} image_ref={image_ref!r}"
+            f"{version!r}: git_ref={git_ref!r} image_ref={image_ref!r} "
+            f"is_tag={is_tag}"
         )
+
+    def test_a_commit_sha_resolves_to_itself_and_has_no_image(self):
+        # The #326 case stated on its own, so a regression names the reason.
+        sha = "5d84c68612384eed2854638c1e0941a4ff8b7893"
+        git_ref, image_ref = _bash_resolve(sha)
+        assert git_ref == sha, f"a SHA must not become origin/<sha>: {git_ref!r}"
+        assert image_ref == "", "a commit is not a release and has no image"
+
+    def test_an_uppercase_sha_is_normalised_like_the_client_does(self):
+        upper = "5D84C68612384EED2854638C1E0941A4FF8B7893"
+        git_ref, _ = _bash_resolve(upper)
+        assert git_ref == upper.lower()
 
     def test_the_image_ref_carries_the_normalised_v_prefix(self):
         # The publisher stamps org.opencontainers.image.version with the

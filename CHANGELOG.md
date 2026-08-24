@@ -4,6 +4,52 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ## [Unreleased]
 
+### Added
+
+- **`lager update --version` and `lager install --version` accept a commit
+  SHA.** A full 40-character SHA resolves to that exact commit; a release tag
+  and a branch behave as before. Only the full 40 is accepted, because a short
+  hex prefix cannot be told apart from a branch name.
+
+  This exists because a branch is not a stable target. `--version main` is
+  re-resolved against `origin/main` every time it is evaluated, so two
+  invocations minutes apart can mean two different commits -- which is fine for
+  "bring me up to date" and wrong for "is this box running the code I am
+  testing". CI now pins both halves of a bench run to one commit and asks the
+  second question properly.
+
+  A commit has no pre-built image (only release tags are published), so a SHA
+  target builds on the box, exactly as a branch does. The box must be able to
+  reach the commit: it has to be on some branch or tag on the remote, and a
+  commit that only ever existed in a pull-request ref, or that was force-pushed
+  away, is refused with that reason rather than "not a tag or branch".
+
+### Changed
+
+- **The bench no longer runs on every push to `main`.** `Bench: Integration
+  Tests` had a push trigger but no deploy step -- it only ever probed the box
+  with `lager update --check`, and the one job that deploys is reached through
+  the nightly chain or a dispatch. A push-triggered run could therefore only
+  test whatever the previous night left on the box; the guard that catches this
+  found it 1, 2, 3, 4 and 8 commits behind across a single afternoon, and
+  correctly refused every one.
+
+  Deploying on each push instead would cost roughly seven hours a day of a
+  bench there is one of: a 48-minute suite against about nine pushes, all
+  serialized, with merges queueing behind each other. So the bench runs
+  nightly and on demand, and the trigger that could only produce refusals is
+  gone. Bench-testing a specific commit is a `workflow_dispatch` after updating
+  the box to it -- see `.github/workflows/README.md`.
+
+- **Both bench jobs pin to the run's own commit instead of to `main`.** The
+  lifecycle job deployed `main` unconditionally while the guard compared
+  against `main` re-resolved at probe time, so any merge landing between the
+  two made the box read as stale when it was running exactly the commit under
+  test. Both now use `github.sha`, which is fixed for the life of a run, and in
+  the nightly chain they share one run so the value cannot move between them.
+  The N-1 -> current upgrade regression the lifecycle job exists for is
+  unchanged; only its target is now named exactly.
+
 ### Fixed
 
 - **`lager --box ""` no longer silently runs against your default box.** An
