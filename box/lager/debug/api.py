@@ -135,6 +135,30 @@ def _connect_failed(output_chunks):
     return bool(_CONNECT_FAILED_RE.search('\n'.join(output_chunks)))
 
 
+# The subset of the above that is safe to FAIL an operation on, rather than
+# merely to retry it.
+#
+# `could not read cpuid` is deliberately absent. J-Link emits it per access
+# port -- `AP[0]: Skipped. Could not read CPUID register` -- while scanning,
+# so on its own it does not establish that the session never attached. As a
+# retry trigger that costs one extra attempt; as a verdict it would report a
+# completed operation as failed. Nothing is lost by excluding it: in the
+# captured failures it always appears alongside `Could not connect to target.`
+# (see test/unit/box/test_jlink_script_attach_retry.py), which is matched here.
+_ATTACH_FAILED_RE = re.compile(
+    r'could not connect to (?:the )?target'
+    r'|cannot connect to target'
+    r'|failed to power up dap',
+    re.IGNORECASE,
+)
+
+
+def _attach_failed(output_chunks):
+    """True if Commander output shows it never attached, strictly enough to
+    fail the operation on rather than retry it."""
+    return bool(_ATTACH_FAILED_RE.search('\n'.join(output_chunks)))
+
+
 class DebugError(Exception):
     """Base class for debug errors"""
     pass

@@ -938,12 +938,32 @@ _FLASH_PROGRAMMED_SIGNATURES = (
     'wrote ',                    # OpenOCD flash write_image
 )
 
-_FLASH_FAILURE_SIGNATURES = (
+# Mirrors `_CONNECT_FAILED_RE` in box/lager/debug/api.py, which the box already
+# trusts to decide a J-Link session never attached. The two are deliberately
+# kept in step: the CLI and the box must not disagree about what happened on
+# the same wire.
+#
+# `Could not read CPUID register` is in the box's retry regex and NOT here, on
+# purpose. J-Link emits it per access port -- `AP[0]: Skipped. Could not read
+# CPUID register` -- while scanning, so on its own it does not establish that
+# the session never attached. As a retry trigger that costs one extra attempt;
+# here it would decide a command's exit code. Nothing is lost by excluding it:
+# in every captured failure it appears alongside `Could not connect to
+# target.`, which is matched below.
+_CONNECT_FAILURE_SIGNATURES = (
     'ERROR: Could not connect to target.',
     'Could not connect to target.',
     'Could not connect to the target device.',
     'Cannot connect to target.',
+    'Failed to power up DAP',
 )
+
+
+def _joined_output(output):
+    """Box output is a str, or a list of lines in verbose mode."""
+    if isinstance(output, list):
+        return '\n'.join(str(line) for line in output)
+    return output or ''
 
 
 def _line_matches(line, signatures):
@@ -963,7 +983,24 @@ def _flash_failure_line(output):
     if any(_line_matches(line, _FLASH_PROGRAMMED_SIGNATURES) for line in lines):
         return None
     for line in lines:
-        if _line_matches(line, _FLASH_FAILURE_SIGNATURES):
+        if _line_matches(line, _CONNECT_FAILURE_SIGNATURES):
+            return line.strip()
+    return None
+
+
+def _erase_failure_line(output):
+    """Return the programmer's failure line from erase output, else None.
+
+    `output` is the joined /debug/erase text. Unlike `_flash_failure_line`
+    there is no programmed-evidence short-circuit: chip_erase() runs `connect`
+    then `erase` and nothing after (box/lager/debug/jlink.py), so a connect
+    failure in this text is always THIS erase's, never a later reconnect's.
+
+    Output matching nothing keeps its existing meaning, so an older box or a
+    backend we have not characterised is never newly reported as failing.
+    """
+    for line in (output or '').splitlines():
+        if _line_matches(line, _CONNECT_FAILURE_SIGNATURES):
             return line.strip()
     return None
 
@@ -1044,8 +1081,19 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
     if not no_erase:
         try:
             click.echo("Erasing flash memory...", err=True)
-            client.erase(debug_net, speed='4000', transport='SWD')
+            erase_result = client.erase(debug_net, speed='4000', transport='SWD')
+            # /debug/erase answers 200 on the J-Link path whether or not the
+            # probe ever attached, so the returned text is the only evidence
+            # that anything was erased.
+            erase_failure = _erase_failure_line(
+                _joined_output(erase_result.get('output', '')))
+            if erase_failure:
+                click.secho(f"Flash erase failed: {erase_failure}", fg='red', err=True)
+                client.close()
+                ctx.exit(1)
             click.secho("Erase complete!", fg='green', err=True)
+        except click.exceptions.Exit:
+            raise
         except Exception as e:
             click.secho(f"Flash erase failed: {e}", fg='red', err=True)
             client.close()
@@ -1233,6 +1281,25 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
         ctx.exit(1)
     except Exception as e:
         click.secho(f"Erase failed: {e}", fg='red', err=True)
+        client.close()
+        ctx.exit(1)
+
+    # /debug/erase answers 200 on the J-Link path whether or not the probe ever
+    # attached -- the box's chip_erase() is a generator that yields JLinkExe's
+    # output and carries no success channel -- so the returned text is the only
+    # evidence that anything was erased. The OpenOCD path already raises.
+    erase_output = _joined_output(result.get('output', ''))
+    failure = _erase_failure_line(erase_output)
+    if failure:
+        if json_output:
+            click.echo(json.dumps(result, indent=2))
+        elif erase_output:
+            click.echo(erase_output)
+        click.secho(f"\nErase failed: {failure}", fg='red', err=True)
+        click.secho(
+            "The target was NOT erased. Check that it is connected and powered.",
+            fg='red', err=True,
+        )
         client.close()
         ctx.exit(1)
 
