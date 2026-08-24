@@ -149,7 +149,11 @@ lager battery $BATTERY_NET disable --box $BOX --yes >/dev/null 2>&1 && track_tes
 echo ""
 
 echo "Test 4.2: Check state after disable"
-lager battery $BATTERY_NET state --box $BOX 2>&1 | grep -iE "disabled|output.*off|enabled:.*off" >/dev/null && track_test "pass" || track_test "fail"
+# Same stale pattern as supply.sh had: the CLI prints `Channel <n>: OFF`
+# ("Channel 1: OFF, Mode: OFF, Model: LI_ION4_2, ..."). Anchor on the
+# channel field -- `Mode:` also carries ON/OFF and must not be what decides
+# this check.
+lager battery $BATTERY_NET state --box $BOX 2>&1 | grep -E "Channel [0-9]+: OFF" >/dev/null && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 4.3: Enable battery output (using --yes flag)"
@@ -157,7 +161,7 @@ lager battery $BATTERY_NET enable --box $BOX --yes >/dev/null 2>&1 && track_test
 echo ""
 
 echo "Test 4.4: Check state after enable"
-lager battery $BATTERY_NET state --box $BOX 2>&1 | grep -iE "enabled|output.*on|enabled:.*on" >/dev/null && track_test "pass" || track_test "fail"
+lager battery $BATTERY_NET state --box $BOX 2>&1 | grep -E "Channel [0-9]+: ON" >/dev/null && track_test "pass" || track_test "fail"
 echo ""
 
 # ============================================================

@@ -124,7 +124,11 @@ lager supply $SUPPLY_NET disable --box $BOX --yes >/dev/null && track_test "pass
 echo ""
 
 echo "Test 3.3: Verify disabled state"
-lager supply $SUPPLY_NET state --box $BOX | grep -iE "disabled|output.*off|enabled:.*off" >/dev/null && track_test "pass" || track_test "fail"
+# The CLI reports output state as `Channel <n>: OFF` (e.g. "[OK] Channel 1:
+# OFF, Set: 0.0V/1.0A, ..."). The previous pattern looked for "disabled",
+# "output ... off" or "enabled: ... off", none of which the shipped output
+# has ever contained, so this check could not pass on a working supply.
+lager supply $SUPPLY_NET state --box $BOX | grep -E "Channel [0-9]+: OFF" >/dev/null && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 3.4: Enable supply output"
@@ -133,7 +137,7 @@ echo ""
 
 echo "Test 3.5: Verify enabled state"
 STATE_OUTPUT=$(lager supply $SUPPLY_NET state --box $BOX 2>&1)
-echo "$STATE_OUTPUT" | grep -iE "enabled:.*on" >/dev/null && track_test "pass" || track_test "fail"
+echo "$STATE_OUTPUT" | grep -E "Channel [0-9]+: ON" >/dev/null && track_test "pass" || track_test "fail"
 echo ""
 
 echo "Test 3.6: Rapid enable/disable cycling (5 cycles)"

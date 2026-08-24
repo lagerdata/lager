@@ -4,6 +4,26 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ## [Unreleased]
 
+### Added
+
+- **The weekly bench run now exercises the `lager supply` and `lager battery`
+  CLI surfaces against real instruments.** `test/integration/power/supply.sh`
+  (59 checks) and `power/battery.sh` (86) predate the bench having CI at all
+  and had never run inside it, so a regression in either surface would have
+  shown up only when someone happened to run one by hand.
+
+  Serving them means `Bench: Extended` is no longer a dark-bench workflow: it
+  gains the relay-net self-heal and AC-relay power steps from `Bench:
+  Integration Tests`. The bench is energized for the two power suites only and
+  returns to dark before the infrastructure suites, so those still run under
+  the conditions their baselines were measured in.
+
+  The relay steps are `continue-on-error` here rather than the hard gate they
+  are in the nightly. There, failing fast is right because every suite needs an
+  instrument; here five suites need none and have been running green weekly, so
+  a dead relay must not take them with it. A relay failure still fails the job,
+  through the same aggregation gate that already covers every suite.
+
 ### Fixed
 
 - **The bench power-on step returned while an instrument was still
@@ -95,6 +115,20 @@ All notable changes to the Lager platform are documented here. For detailed rele
   failed it would report completed work as broken. Every captured failure
   prints it alongside `Could not connect to target.`, which both predicates
   match, so nothing is lost.
+
+- **Four output-state checks in the supply and battery suites could never have
+  passed.** `supply.sh` tests 3.3 and 3.5 and `battery.sh` tests 4.2 and 4.4
+  matched the output of `lager supply|battery <net> state` against
+  `disabled`, `output ... off` and `enabled: ... on`. The command reports
+  channel state as `Channel <n>: OFF` / `Channel <n>: ON` and carries none of
+  those words, so all four failed against a supply that was working correctly.
+  They now match the shipped format, anchored on the channel field --
+  `battery state` also prints a `Mode:` field carrying ON/OFF, and that must
+  not be what decides the check.
+
+  Found by running the suites for the first time. Fixed rather than
+  baselined: a baseline of 4 here would have recorded "matches a format the
+  CLI has never emitted" as the expected state.
 
 ## [0.41.0] - 2026-08-24
 
