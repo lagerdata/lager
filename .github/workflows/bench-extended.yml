@@ -8,19 +8,28 @@
 # box-level commands -- surfaced only when a human happened to run one against
 # a bench. This workflow starts working that debt down.
 #
-# WAVE 1 (this file): five of the seven test/integration/infrastructure/
-# suites -- deployment, devenv, nets, box_config and generic. They need a box
-# but NO instruments, so this workflow has none of integration-tests.yml's
-# relay power, relay-net self-heal, or firmware staging, and the bench stays
-# dark for the whole run.
+# WAVE 1: five of the seven test/integration/infrastructure/ suites --
+# deployment, devenv, nets, box_config and generic. They need a box but NO
+# instruments.
 #
 # The other two are deliberately excluded, each for its own reason recorded
 # beside the suite steps below: boxes_config.sh would print a network
 # inventory into a public log, and python.sh tests a CLI surface that no
-# longer exists. Wave 2 (test/api/ scripts the existing instruments support)
-# is follow-up work and will need the instrument steps when it lands.
+# longer exists.
+#
+# WAVE 2: the power suites -- supply.sh and battery.sh -- which DO need
+# instruments. This workflow therefore now carries integration-tests.yml's
+# relay-net self-heal and relay power steps, and the bench is energized for
+# the wave-2 block only. It powers back down before the wave-1 suites, so
+# their baselines still hold under the conditions they were measured in. See
+# the block comment above those steps for why the relay steps are
+# continue-on-error here and a hard gate over there.
 #
 # Ordering inside the run is load-bearing:
+#   - the wave-2 instrument suites run FIRST, while the box is healthiest:
+#     box_config.sh bounces the container and generic.sh mangles the runner's
+#     own box registry, so instrument work after either would be measuring a
+#     degraded bench.
 #   - generic.sh runs LAST: it exercises `lager boxes delete-all` against the
 #     runner's own lager config. It now snapshots and restores that config
 #     around the destructive tests (issue #273 -- before that fix it wiped the
@@ -193,6 +202,235 @@ jobs:
         # First authenticated contact after a fresh login can fail exactly
         # once while the gateway records the box<->auth-server link.
         run: lager hello --box "$LAGER_BOX" || lager hello --box "$LAGER_BOX"
+        shell: bash
+
+      # ---------------------------------------------------------------------
+      # WAVE 2: instrument suites. The header's "the bench stays dark for the
+      # whole run" describes wave 1 only; from here to the power-off below,
+      # the bench is energized.
+      #
+      # These run FIRST, and the bench goes back to dark before deployment.sh,
+      # so every wave-1 suite still runs under exactly the conditions its
+      # baseline was measured in. That ordering is not negotiable in the other
+      # direction either: box_config.sh bounces the container and generic.sh
+      # mangles the runner's own box registry, so instrument work after them
+      # would be testing a degraded bench.
+      #
+      # Unlike integration-tests.yml, the relay steps here are
+      # continue-on-error with an id rather than a hard gate. There it is
+      # right to fail fast -- every suite in that workflow needs an
+      # instrument. Here five suites need no instruments at all and have been
+      # running green weekly; a dead relay must not take them with it. The
+      # aggregation gate at the end still turns a relay failure into a red
+      # job, and the two suites below are skipped rather than run against a
+      # dark bench, where they would fail every check for the wrong reason.
+      # ---------------------------------------------------------------------
+
+      - name: Ensure relay nets exist (self-heal)
+        # Byte-identical to integration-tests.yml's step of the same name; see
+        # there for why each arm exists. Kept as a copy rather than a
+        # composite action because a bench workflow that cannot be read
+        # top-to-bottom is how the last class of bench bug survived.
+        id: relay-nets
+        continue-on-error: true
+        env:
+          RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
+          KEITHLEY_POWER_NET: ${{ vars.KEITHLEY_POWER_NET || 'KEITHLEY_POWER' }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess, sys
+
+          box = os.environ["LAGER_BOX"]
+
+          def lager(*args, parse=False):
+              res = subprocess.run(["lager", *args, "--box", box],
+                                   capture_output=True, text=True)
+              if res.returncode != 0:
+                  print(res.stdout + res.stderr)
+                  sys.exit(f"lager {' '.join(args)} failed (rc {res.returncode})")
+              return json.loads(res.stdout) if parse else res.stdout
+
+          nets = lager("nets", "state", "--json", parse=True)
+          names = {n.get("name") for n in nets}
+
+          def labjack_address():
+              for n in nets:
+                  if "0x0CD5" in str(n.get("address", "")):
+                      return n["address"]
+              out = lager("instruments")
+              m = re.search(r"USB0::0x0CD5::0x0007::[^:\s]*::INSTR", out)
+              if not m:
+                  sys.exit("cannot determine the LabJack VISA address")
+              return m.group(0)
+
+          for want, pin in ((os.environ["RIGOL_POWER_NET"], "FIO0"),
+                            (os.environ["KEITHLEY_POWER_NET"], "FIO1")):
+              if want in names:
+                  print(f"{want} present")
+                  continue
+              squatter = next((n["name"] for n in nets
+                               if n.get("role") == "gpio"
+                               and n.get("pin") == pin), None)
+              if squatter:
+                  lager("nets", "rename", squatter, want)
+                  print(f"renamed {squatter} -> {want} ({pin})")
+              else:
+                  lager("nets", "add", want, "gpio", pin, labjack_address())
+                  print(f"created {want} on {pin}")
+
+          for n in nets:
+              if n.get("role") == "spi" and re.search(r"\bFIO[01]\b", json.dumps(n)):
+                  lager("nets", "delete", n["name"], "spi", "--yes")
+                  print(f"deleted SPI net {n['name']} - overlaps the relay pins")
+          PY
+        shell: bash
+
+      - name: Power on bench instruments (AC relays)
+        # Byte-identical run block to integration-tests.yml's step of the same
+        # name, so a diff between the two files stays empty and any future
+        # drift is visible rather than quiet.
+        id: power-on
+        if: steps.relay-nets.outcome == 'success'
+        continue-on-error: true
+        env:
+          RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
+          KEITHLEY_POWER_NET: ${{ vars.KEITHLEY_POWER_NET || 'KEITHLEY_POWER' }}
+          PROBE_SUPPLY_NET: ${{ vars.RIGOL_CH1_NET || 'supply2' }}
+        run: |
+          lager gpo "$RIGOL_POWER_NET" high --box "$LAGER_BOX"
+          lager gpo "$KEITHLEY_POWER_NET" high --box "$LAGER_BOX"
+          # EVERY instrument on the relays has to finish enumerating before any
+          # suite runs -- not just the ones a suite talks to. A device that is
+          # still coming up when this step returns hotplugs later, and the
+          # hotplug restarts the box's hardware service underneath whatever is
+          # already running.
+          #
+          # Measured from a dark relay: DP821 6s, Keithley 2281S 11s, Rigol
+          # MSO5204 52s and 60s across two runs. The MSO5204 shares the
+          # RIGOL_POWER outlet, so waiting only for the first two returned
+          # about 35s before it had finished, and a command issued in that
+          # window came back `Connection refused` on localhost:8080 --
+          # reproduced deliberately on the bench, not inferred.
+          #
+          # This list is the bench's actual relay-powered inventory, so adding
+          # an instrument to a relay means adding it here. An entry that is
+          # genuinely gone fails this step BY NAME after 180s, which is the
+          # outcome we want: the bench changed and the workflow should say so
+          # rather than quietly race whatever is left.
+          expected=(Rigol_DP821 Keithley_2281S Rigol_MS05204)
+          enumerated=""
+          missing=""
+          for _ in $(seq 1 36); do
+            out=$(lager instruments --box "$LAGER_BOX" 2>/dev/null || true)
+            missing=""
+            for inst in "${expected[@]}"; do
+              printf '%s' "$out" | grep -q "$inst" || missing="$missing $inst"
+            done
+            if [ -z "$missing" ]; then
+              enumerated=1
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "$enumerated" ]; then
+            echo "Did not enumerate within 180s of relay power-on:$missing"
+            exit 1
+          fi
+          echo "All relay-powered instruments enumerated."
+          # Enumeration is not readiness: the USB hotplug from the relay
+          # power-on restarts the box's hardware service, and supply
+          # connections are refused for a few seconds after the instruments
+          # appear (observed live: two Rigol suites failed inside that window
+          # while everything after passed). Poll an actual supply read until
+          # the service answers before letting any suite run.
+          for _ in $(seq 1 24); do
+            if lager supply "$PROBE_SUPPLY_NET" state --box "$LAGER_BOX" >/dev/null 2>&1; then
+              echo "Hardware service is answering supply reads."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Hardware service did not answer supply reads within 120s of power-on"
+          exit 1
+        shell: bash
+
+      - name: Suite supply.sh (Keithley 2281S in supply mode)
+        # 59 checks against the `lager supply` CLI surface, measured at ~3m15s
+        # on this bench. The suite had never executed anywhere before this.
+        id: suite-supply
+        if: steps.power-on.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 15
+        env:
+          # The Keithley, NOT a DP821 channel. The suite sweeps voltage to 10V
+          # (test 4.5) and sets current to 2.0A (tests 5.3, 5.5, 6.2, 7.2), and
+          # neither DP821 channel does both: CH1 is 60V/1A and CH2 is 8V/10A.
+          # Measured on the bench -- against CH1 (supply2) the four 2.0A checks
+          # fail because the channel tops out at 1A, which is the instrument
+          # being correct, not the CLI being wrong. supply1 is 20V/6A and
+          # covers the whole range the suite asks for.
+          #
+          # Positional arg to the suite, not an env var it reads.
+          SUPPLY_NET: ${{ vars.KEITHLEY_SUPPLY_NET || 'supply1' }}
+          # Measured, not assumed. See the PR body for the run this came from.
+          SUPPLY_BASELINE: "0"
+        run: |
+          LOG="$RUNNER_TEMP/supply.log"
+          bash test/integration/power/supply.sh "$LAGER_BOX" "$SUPPLY_NET" 2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh harness supply.sh "$SUPPLY_BASELINE" "$LOG"
+        shell: bash
+
+      - name: Suite battery.sh (Keithley 2281S battery simulator)
+        # 86 checks against the `lager battery` CLI surface, measured at ~2m on
+        # this bench. Also never executed before this. Its
+        # `register_box_from_ip` helper only mutates the runner's registry when
+        # handed an IP; LAGER_BOX is a name, so it takes the no-op branch.
+        #
+        # Shares the Keithley with supply.sh above and runs second: supply.sh
+        # leaves the instrument in supply mode, and battery.sh selects battery
+        # mode itself.
+        id: suite-battery
+        if: steps.power-on.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 20
+        env:
+          BATTERY_NET: ${{ vars.KEITHLEY_BATTERY_NET || 'battery1' }}
+          # Measured, not assumed. See the PR body for the run this came from.
+          BATTERY_BASELINE: "0"
+        run: |
+          LOG="$RUNNER_TEMP/battery.log"
+          bash test/integration/power/battery.sh "$LAGER_BOX" "$BATTERY_NET" 2>&1 | tee "$LOG" || true
+          bash tools/bench_suite_gate.sh harness battery.sh "$BATTERY_BASELINE" "$LOG"
+        shell: bash
+
+      - name: Power off bench instruments (AC relays)
+        # Restores the dark bench the wave-1 suites were baselined against.
+        # `always()` so a failed instrument suite still hands the rest of the
+        # run the conditions it expects; the tail step of the same name is the
+        # backstop for a job that dies before reaching here. Two-stage
+        # bracketing, same as update-regression.yml around its recovery step.
+        #
+        # Bounded in the shell rather than by `timeout-minutes` alone: a step
+        # killed by its own bound prints nothing, and continue-on-error then
+        # renders it as a green tick indistinguishable from a bench that
+        # actually went dark, while the relays stay latched on.
+        if: always()
+        timeout-minutes: 2
+        continue-on-error: true
+        env:
+          RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
+          KEITHLEY_POWER_NET: ${{ vars.KEITHLEY_POWER_NET || 'KEITHLEY_POWER' }}
+        run: |
+          for net in "$RIGOL_POWER_NET" "$KEITHLEY_POWER_NET"; do
+            rc=0
+            timeout 50 lager gpo "$net" low --box "$LAGER_BOX" || rc=$?
+            if [ "$rc" -eq 124 ]; then
+              echo "::warning title=Bench may still be energized::'$net' did not go low within 50s on '$LAGER_BOX'. Assume the relay is latched on and the instrument is idling at AC."
+            elif [ "$rc" -ne 0 ]; then
+              echo "::warning title=Bench may still be energized::'$net' low failed (exit $rc) on '$LAGER_BOX'. Assume the relay is latched on and the instrument is idling at AC."
+            fi
+          done
+          exit 0
         shell: bash
 
       # Each suite is continue-on-error with an id so every suite runs and
@@ -387,6 +625,39 @@ jobs:
             --yes || true
         shell: bash
 
+      - name: Power off bench instruments (AC relays, backstop)
+        # Second half of the bracket. The mid-run power-off above already runs
+        # under always(), so this fires on the narrow case that it did not
+        # finish -- a wedged relay eating its 50s bound, or the box briefly
+        # unreachable while box_config.sh had the container down. Roughly 20
+        # minutes of suites separate the two, which is 20 minutes of a bench
+        # left at AC if the first attempt was the only one.
+        #
+        # Deliberately AFTER the registration restore: generic.sh runs
+        # `boxes delete-all` against the runner's own config, and `lager gpo`
+        # cannot address a box the runner no longer knows.
+        #
+        # Idempotent -- driving an already-low relay low is a no-op, and the
+        # latched level needs nothing alive to hold it.
+        if: always()
+        timeout-minutes: 2
+        continue-on-error: true
+        env:
+          RIGOL_POWER_NET: ${{ vars.RIGOL_POWER_NET || 'RIGOL_POWER' }}
+          KEITHLEY_POWER_NET: ${{ vars.KEITHLEY_POWER_NET || 'KEITHLEY_POWER' }}
+        run: |
+          for net in "$RIGOL_POWER_NET" "$KEITHLEY_POWER_NET"; do
+            rc=0
+            timeout 50 lager gpo "$net" low --box "$LAGER_BOX" || rc=$?
+            if [ "$rc" -eq 124 ]; then
+              echo "::warning title=Bench may still be energized::'$net' did not go low within 50s on '$LAGER_BOX'. Assume the relay is latched on and the instrument is idling at AC."
+            elif [ "$rc" -ne 0 ]; then
+              echo "::warning title=Bench may still be energized::'$net' low failed (exit $rc) on '$LAGER_BOX'. Assume the relay is latched on and the instrument is idling at AC."
+            fi
+          done
+          exit 0
+        shell: bash
+
       - name: Fail job if any suite failed
         # Reads the steps context rather than a hand-kept id list -- adding a
         # suite needs no edit here. `outcome` is the pre-continue-on-error
@@ -400,11 +671,11 @@ jobs:
           bad = sorted(k for k, v in steps.items()
                        if isinstance(v, dict) and v.get("outcome") == "failure")
           if bad:
-              print("One or more infrastructure suites failed:")
+              print("One or more suites failed:")
               for name in bad:
                   print(f"  {name}")
               sys.exit(1)
-          print("All infrastructure suites passed.")
+          print("All suites passed.")
           PY
         shell: bash
 
