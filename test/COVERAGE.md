@@ -36,13 +36,13 @@ are not.
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1661 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1698 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 1742 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 177 |
-| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 132 (+1 skipped) |
-| | **Total gated** | **3906** |
+| `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 139 (+1 skipped) |
+| | **Total gated** | **3950** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs

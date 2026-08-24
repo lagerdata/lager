@@ -15,7 +15,7 @@ deleted.)
 
 | File | Sidebar name | Triggers | Runner | Purpose |
 |---|---|---|---|---|
-| `integration-tests.yml` | Bench: Integration Tests | push to `main`, `workflow_call`, dispatch | self-hosted `lager-bench` | Drives every bench instrument through `lager python`, plus the J-Link CLI suite |
+| `integration-tests.yml` | Bench: Integration Tests | `workflow_call`, dispatch | self-hosted `lager-bench` | Drives every bench instrument through `lager python`, plus the J-Link CLI suite |
 | `update-regression.yml` | Bench: Box Lifecycle | `workflow_call`, dispatch | self-hosted `lager-bench` | Downgrade -> update -> no-op -> forced rebuild -> uninstall -> install, with a hardware smoke per phase |
 | `nightly-bench.yml` | Bench: Nightly | cron 10:17 UTC, dispatch | (calls the two above) | Nightly ordering wrapper: lifecycle first, instruments only if it succeeded; files/closes the `bench-alert` issue |
 | `bench-extended.yml` | Bench: Extended | cron Sat 14:17 UTC, dispatch | self-hosted `lager-bench` | Weekly run of five of the seven infrastructure integration suites (no instruments; bench stays dark); alerts on failure under its own `bench-alert-extended` label, and never closes it |
@@ -34,24 +34,44 @@ and `static-checks`. Those strings are **job** `name:` fields in
 dimension to the unit matrix) breaks the merge gate until the ruleset is
 updated. Workflow display names and file names are not part of the gate.
 
+## Bench-testing a branch
+
 The bench workflows have no `pull_request` trigger on purpose: this repo is
 public and the runner drives real hardware, so a fork PR must never execute
-code on the bench. To bench-test a branch, push it to this repo, **update the
-box to it**, then `workflow_dispatch` on that ref:
+code on the bench.
+
+They have no `push` trigger either, which is newer and worth knowing. Nothing
+in `integration-tests.yml` deploys — it only probes with `lager update
+--check` — and `update-regression.yml`, the one job that does deploy, is only
+reached through the nightly chain or a dispatch. A push-triggered run could
+therefore only ever test whatever the last nightly left on the box, and the
+guard caught exactly that: 1, 2, 3, 4 and 8 commits behind across one
+afternoon. Deploying on every push instead would cost about seven hours a day
+of a bench there is one of (a ~48-minute suite against roughly nine pushes),
+with merges queueing behind each other. So the bench runs nightly, and on
+demand.
+
+To bench-test a branch or a commit: push it to this repo, **update the box to
+it**, then `workflow_dispatch` `Bench: Integration Tests` on that ref.
 
 ```
-lager update --box <box> --version <branch>
+lager update --box <box> --version <branch-or-40-char-sha>
 ```
 
 That middle step is not optional and is easy to skip. `lager python` ships the
 script to the box and runs it THERE, so anything under `box/` is exercised
 from the box's checkout, not the runner's — a bench run only tests a box-side
-change if the box is carrying it. The `lifecycle` job does not do this for
-you: it deploys `main` unconditionally, because it is an N-1 -> main upgrade
-regression rather than a deploy-the-ref job. `integration-tests.yml` now fails
-outright when the box is not on the ref under test, so a skipped update shows
-up as a clear error rather than as twelve minutes of results about the wrong
-code.
+change if the box is carrying it. A bare dispatch of `integration-tests.yml`
+does not deploy for you; only `Bench: Box Lifecycle` (or the nightly, which
+chains it first) does. `integration-tests.yml` fails outright when the box is
+not on the commit under test, so a skipped update shows up as a clear error
+rather than as twelve minutes of results about the wrong code.
+
+The comparison is against `github.sha`, not a branch name. A branch is
+re-resolved against `origin/<branch>` at the moment the probe runs, so it moves
+under a run in flight; the commit does not. Both bench jobs pin to the same
+`github.sha`, and in the nightly chain they share one run, so there is no
+window for the two to disagree.
 
 ## Bench alerting (the alert issues)
 
@@ -126,13 +146,14 @@ later answer meaningless, so it is cheapest to rule out first.
 
 1. **Is the box running the code under test?** `integration-tests.yml` fails
    fast on this now and names it, but check it first on any older run or any
-   suite driven by hand. A push-triggered run tests whatever the last nightly
-   left on the box; only `lifecycle` updates it, and only the nightly chains
-   `lifecycle -> integration`. A box-side change under `box/` executes from
-   the box's checkout, so a run against a stale box is not evidence about the
-   commit either way. This is not hypothetical: three days of triage once
+   suite driven by hand. Only `lifecycle` updates the box, and only the
+   nightly chains `lifecycle -> integration`; a hand-dispatched integration run
+   tests whatever was left on the box. A box-side change under `box/` executes
+   from the box's checkout, so a run against a stale box is not evidence about
+   the commit either way. This is not hypothetical: three days of triage once
    concluded a merged fix had failed, from a run whose own probe reported the
-   box 3 commits behind.
+   box 3 commits behind. The push trigger that made stale runs routine has
+   since been removed — see "Bench-testing a branch".
 2. **Instrument power relays and USB enumeration.** See "Bench instrument
    power" below, including the self-heal and pin-conflict footguns. Cutting AC
    power to an instrument produces a sequence, not an event — enumeration is

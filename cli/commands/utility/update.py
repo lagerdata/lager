@@ -51,6 +51,14 @@ from ._host_cli import (
 from ...errors import LagerError
 
 
+#: A full git commit SHA. Only the full 40 is accepted: a short prefix cannot
+#: be told apart from a branch name, and the caller that needs this (CI pinning a
+#: bench run to its own commit) always has the full value. Case-insensitive on
+#: input and lowercased on output, because git accepts either while
+#: `github.sha` is lowercase.
+_COMMIT_SHA_RE = re.compile(r'^[0-9a-fA-F]{40}$')
+
+
 def resolve_version_ref(target_version):
     """Resolve a ``--version`` value to the git refs used to update a box.
 
@@ -58,9 +66,19 @@ def resolve_version_ref(target_version):
     ``v0.18.5``), including common pre-release suffixes (``-rc1``, ``-beta2``,
     ``-alpha``, ``-preview``) — resolves to the release **tag** ``vX.Y.Z``.
     Version branches (the bare ``X.Y.Z`` refs) are deprecated in favour of tags;
-    see RELEASE_PROCESS.md. Any other value (``main``, ``staging``, a feature
-    branch, or a custom suffix like ``-notes``) is treated as a branch and
-    resolves to ``origin/<name>``.
+    see RELEASE_PROCESS.md.
+
+    A full 40-character commit SHA resolves to itself. This is what lets CI pin a
+    run to the commit it checked out rather than to a moving branch: ``main`` is
+    re-resolved against ``origin/main`` on every probe, so a merge landing
+    mid-run makes the box read as stale when it is running exactly the commit
+    under test (#326). Only the full 40 is accepted -- a short prefix cannot be
+    told apart from a branch name, and every caller that needs this has the full
+    SHA (``github.sha``). A branch whose name is literally 40 hex characters
+    would be shadowed; that is the documented cost.
+
+    Any other value (``main``, ``staging``, a feature branch, or a custom suffix
+    like ``-notes``) is treated as a branch and resolves to ``origin/<name>``.
 
     Returns ``(checkout, reset, fetch)``:
     - ``checkout`` — ref for ``git checkout -f`` (and display): the tag, or the branch name.
@@ -70,11 +88,18 @@ def resolve_version_ref(target_version):
       ref; ``git fetch origin <tag>`` alone only sets FETCH_HEAD, leaving
       ``git rev-list``/``git checkout <tag>`` unable to resolve it. For branches it
       is just the branch name (``origin/<branch>`` is updated via the default refspec).
+      A SHA needs no refspec: fetching it puts the object in the local store, and
+      a raw object id resolves for ``rev-list``/``checkout`` with no local ref
+      pointing at it -- which is exactly what a tag NAME lacks, and why tags need
+      the explicit refspec above.
     """
     m = re.match(r'^v?(\d+\.\d+\.\d+(?:-(?:rc|alpha|beta|preview)\d*)?)$', target_version)
     if m:
         tag = f'v{m.group(1)}'
         return tag, tag, f'refs/tags/{tag}:refs/tags/{tag}'
+    if _COMMIT_SHA_RE.match(target_version):
+        sha = target_version.lower()
+        return sha, sha, sha
     return target_version, f'origin/{target_version}', target_version
 
 
@@ -1908,9 +1933,32 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             click.secho("  ssh lagerdata@[BOX_NAME] 'cd ~/box && git remote set-url origin https://github.com/lagerdata/lager.git'", err=True)
         elif "not found" in stderr.lower() or "couldn't find remote ref" in stderr.lower():
             log_error(f"Error: Version '{target_version}' not found on remote")
-            click.secho(f"'{target_version}' does not exist on GitHub as a tag or branch.", err=True)
-            click.secho("Release versions are tags (e.g. v0.21.3): https://github.com/lagerdata/lager/tags", err=True)
-            click.secho("Branches (main, staging, ...): https://github.com/lagerdata/lager/branches", err=True)
+            if _COMMIT_SHA_RE.match(target_version):
+                # A SHA fails here for a different reason than a mistyped branch:
+                # the ref exists or it does not, but a commit has to be REACHABLE
+                # from some branch or tag on origin. A commit that only ever lived
+                # in a pull-request ref, or was force-pushed away, is gone as far
+                # as the box is concerned -- and saying "not a tag or branch"
+                # would send the reader looking in the wrong place.
+                click.secho(
+                    f"'{target_version}' is a commit, and the box could not fetch it.",
+                    err=True,
+                )
+                click.secho(
+                    "The commit must be reachable from a branch or tag on "
+                    "lagerdata/lager. A commit that exists only in a pull-request "
+                    "ref, or that has been force-pushed away, cannot be deployed.",
+                    err=True,
+                )
+                click.secho(
+                    "Check it is on a branch: "
+                    f"https://github.com/lagerdata/lager/commit/{target_version}",
+                    err=True,
+                )
+            else:
+                click.secho(f"'{target_version}' does not exist on GitHub as a tag or branch.", err=True)
+                click.secho("Release versions are tags (e.g. v0.21.3): https://github.com/lagerdata/lager/tags", err=True)
+                click.secho("Branches (main, staging, ...): https://github.com/lagerdata/lager/branches", err=True)
         elif "Connection refused" in stderr:
             log_error('Error: Connection to GitHub refused')
             click.secho("GitHub is not accepting connections.", err=True)
@@ -3590,7 +3638,7 @@ def _update_options(fn):
     for opt in reversed([
         click.option('--box', required=False, help='Lagerbox name or IP'),
         click.option('--yes', is_flag=True, help='Skip confirmation prompt'),
-        click.option('--version', required=False, help='Version to update to: a release tag (e.g. v0.21.3) or a branch (main, staging)'),
+        click.option('--version', required=False, help='Version to update to: a release tag (e.g. v0.21.3), a branch (main, staging), or a full 40-character commit SHA'),
         click.option('--verbose', '-v', is_flag=True, help='Show detailed output (default shows progress bar only)'),
         click.option('--check', is_flag=True, help='Dry run: report what would change without modifying the box'),
         click.option('--force', is_flag=True, help='Update even if the box reports it is already up to date, and force a clean rebuild (wipes the cached image and cargo/npm volumes)'),
