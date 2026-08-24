@@ -34,7 +34,12 @@ from lager.debug import (
     get_jlink_status,
 )
 from lager.debug.gdb import get_controller, get_arch, reset as gdb_reset
-from lager.debug.api import JLinkNotRunning, clear_script_file, purge_legacy_script_file
+from lager.debug.api import (
+    JLinkNotRunning,
+    clear_script_file,
+    purge_legacy_script_file,
+    _attach_failed,
+)
 from lager.debug.jlink import JLink
 from lager.debug.gdbserver import (
     start_jlink_gdbserver,
@@ -1277,6 +1282,25 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             connection_id = f"{net.get('name', 'unknown')}:{device_type}"
             with connections_lock:
                 active_connections.pop(connection_id, None)
+
+            # J-Link Commander does not raise when it cannot attach -- it
+            # prints and carries on -- so an unvalidated 200 here reported a
+            # successful erase on a target that was never reached, and the CLI
+            # printed "Erase complete!" over a part it had not touched. The
+            # OpenOCD branches above already raise (Da1469xLoaderError /
+            # OpenOcdRpcError); this is the J-Link equivalent.
+            if _attach_failed(erase_output):
+                joined = '\n'.join(erase_output)
+                logger.error(
+                    '[ERASE] J-Link never attached to %s; nothing was erased',
+                    device_type,
+                )
+                self.send_error_response(
+                    500,
+                    'Erase failed: the probe never attached to the target, so '
+                    'nothing was erased.\n' + joined,
+                )
+                return
 
             self.send_json_response(200, {
                 'status': 'erase_complete',
