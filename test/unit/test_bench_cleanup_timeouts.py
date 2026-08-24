@@ -189,3 +189,46 @@ class TestBenchCleanupStepsAreBounded(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRecoverySaysWhenItLeavesTheBenchStranded(unittest.TestCase):
+    """`|| true` keeps recovery from reddening a red run. It also makes recovery
+    unable to report its own failure.
+
+    That combination stranded the bench once: a broken sudoers file made
+    `lager install` fail, recovery's install failed the same way, `|| true`
+    swallowed it, and the step reported SUCCESS with no box software on the
+    box. The next dispatch found it an hour later as "box did not become
+    reachable". Exit codes stay non-fatal; the outcome has to be audible."""
+
+    def _recovery_step(self):
+        text = (WORKFLOWS / "update-regression.yml").read_text(encoding="utf-8")
+        start = text.index("name: Recovery")
+        end = text.index("shell: bash", start)
+        return text[start:end]
+
+    def test_recovery_verifies_the_box_instead_of_trusting_install(self):
+        body = self._recovery_step()
+        assert "lager hello" in body, "recovery never checks whether the bench came back"
+        assert "if lager hello" in body, (
+            "`lager hello ... || true` cannot distinguish a recovered bench "
+            "from a stranded one; branch on it"
+        )
+
+    def test_a_stranded_bench_is_annotated(self):
+        body = self._recovery_step()
+        assert "::error title=Bench left without box software" in body, (
+            "a bench with no box software must be something the run says"
+        )
+
+    def test_a_failed_recovery_install_is_annotated(self):
+        body = self._recovery_step()
+        assert "::warning title=Recovery install failed" in body
+
+    def test_recovery_still_cannot_redden_the_run(self):
+        # The whole point of the original `|| true`: recovery runs only when the
+        # run has already failed, and must not add a second, confusing failure.
+        body = self._recovery_step()
+        assert "install_rc=$?" in body or "install_rc=0" in body, (
+            "install's status must be captured, not allowed to abort the step"
+        )

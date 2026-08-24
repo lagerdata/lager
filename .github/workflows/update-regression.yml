@@ -517,20 +517,44 @@ jobs:
         # Pinned to github.sha for the same reason as the steps above: recovery
         # should leave the bench on a known commit, not on whatever `main`
         # happens to be by the time a failing run reaches this step.
+        #
+        # `|| true` keeps recovery from reddening an already-red run, but on its
+        # own it also makes recovery incapable of reporting that it failed. That
+        # is not hypothetical: when a bad sudoers file broke `lager install`,
+        # this step ran, its install failed for the same reason the run had
+        # failed, `|| true` swallowed it, and the step reported SUCCESS while
+        # leaving the bench with no box software at all. The next dispatch
+        # discovered it, ~an hour later, as "box did not become reachable".
+        #
+        # So: keep the exit codes non-fatal, and say what happened. `lager
+        # hello` at the end is the authoritative check -- not whether install
+        # returned 0, but whether the bench is actually usable now.
         if: failure() || cancelled()
         run: |
+          install_rc=0
           lager install \
             --ip "${{ secrets.LAGER_BOX_IP }}" \
             --user lagerdata \
             --version "${{ github.sha }}" \
-            --yes || true
+            --yes || install_rc=$?
+          if [ "$install_rc" -ne 0 ]; then
+            echo "::warning title=Recovery install failed::lager install exited ${install_rc} during recovery. The bench may have no box software."
+          fi
+
           lager boxes add \
             --name "$LAGER_BOX" \
             --ip "${{ secrets.LAGER_BOX_IP }}" \
             --user lagerdata \
             --yes || true
           lager boxes unlock --box "$LAGER_BOX" --force 2>/dev/null || true
-          lager hello --box "$LAGER_BOX" || true
+
+          # The verdict that matters. A stranded bench must be something this
+          # run says, not something the next one trips over.
+          if lager hello --box "$LAGER_BOX"; then
+            echo "Recovery left the bench usable."
+          else
+            echo "::error title=Bench left without box software::Recovery ran and '$LAGER_BOX' is still not responding. Hardware CI will fail until someone reinstalls it: lager install --ip <box-ip> --user lagerdata --version <ref> --yes"
+          fi
         shell: bash
 
       - name: Best-effort lock cleanup
