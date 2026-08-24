@@ -21,6 +21,7 @@ and cannot import the constant.
 import importlib
 import pathlib
 import re
+import shutil
 import unittest
 
 ops = importlib.import_module("cli.commands.box._host_ops")
@@ -30,6 +31,11 @@ uninstall = importlib.import_module("cli.commands.utility.uninstall")
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 DEPLOY_SCRIPT = REPO_ROOT / "cli" / "deployment" / "scripts" / "setup_and_deploy_box.sh"
+
+# Real visudo, not a stand-in: see GeneratedSudoersActuallyParses below.
+_VISUDO = shutil.which("visudo") or (
+    "/usr/sbin/visudo" if pathlib.Path("/usr/sbin/visudo").exists() else None
+)
 
 # The complete set of files Lager may write, remove, or otherwise touch under
 # /etc/sudoers.d/. Adding an entry here is a deliberate act: it widens what
@@ -272,6 +278,20 @@ def _udev_dynamic_body():
     )
     assert body, "could not locate the dynamic lagerdata-udev block"
     return body.group(1)
+
+
+_SUDOERS_METACHARS = (":", ",", "=", "!")
+
+
+def _unescape(text):
+    """Drop sudoers backslash-escapes, leaving the command sudo will match.
+
+    ':' , ',' , '=' and '!' separate entries in sudoers, so a command argument
+    containing one is stored escaped. sudo unescapes before matching, so grant-
+    matches-command assertions must compare the unescaped form."""
+    for ch in _SUDOERS_METACHARS:
+        text = text.replace("\\" + ch, ch)
+    return text
 
 
 def _rule_lines(body):
@@ -520,7 +540,12 @@ class UdevSudoersGrantsWhatIsActuallyCalled(unittest.TestCase):
         )
 
     def test_the_modes_and_owners_the_tree_applies_are_granted(self):
-        rules = "\n".join(_rule_lines(_udev_heredoc_body()))
+        # Compared UNESCAPED. The backslashes in the file are sudoers file
+        # syntax; sudo strips them before matching, so the thing that has to
+        # equal the CLI's command line is the unescaped rule, not the stored
+        # bytes. Asserting the stored form would pin the escaping and stop
+        # checking the grant.
+        rules = _unescape("\n".join(_rule_lines(_udev_heredoc_body())))
         for needed in (
             "/bin/chmod 2775 /etc/lager",              # this script + update.py
             "/bin/chmod 755 /etc/lager",               # convert_to_sparse_checkout
@@ -537,7 +562,7 @@ class UdevSudoersGrantsWhatIsActuallyCalled(unittest.TestCase):
         # unquoted SCRIPT_EOF heredoc and reaches the box-side script intact;
         # the inner SUDOERS_DYNAMIC heredoc is unquoted, which is what finally
         # expands it against the box's own `id -g`.
-        dynamic = _udev_dynamic_body()
+        dynamic = _unescape(_udev_dynamic_body())
         self.assertIn(r"/bin/chown 33:\${BOX_GID} /etc/lager", dynamic)
         self.assertIn(r"/usr/bin/chown 33:\${BOX_GID} /etc/lager", dynamic)
 
@@ -609,3 +634,107 @@ class OperatorPasteTextIsWildcardFreeAndCorrect(unittest.TestCase):
 
     def test_the_scan_sees_rules(self):
         self.assertGreaterEqual(len(self._paste_rules()), 4)
+
+
+# --- The file has to PARSE, not merely avoid wildcards ---------------------
+#
+# #313 was fixed by replacing 19 wildcard rules with literal ones, and the
+# literals introduced a different syntax error: ':' separates Cmnd_Spec entries
+# in sudoers, so `chown 33:33 /path` ends the command spec mid-argument and
+# visudo refuses the whole file. Every install then died at step 2 -- a wider
+# break than the sudo-rs bug it was fixing, because it hit every box.
+#
+# Nothing caught it. The wildcard scan passed (there is no wildcard), the unit
+# suite passed, and the render harness "validated" the output against a visudo
+# STUB that returned 0 unconditionally. A check that cannot fail is not a check.
+#
+# So: run the real visudo. `visudo -c -f <file>` needs no privileges and exits
+# 1 on a syntax error, which is the entire contract this file depends on.
+
+def _assembled_sudoers(user="benchtest", gid="1000", vpn_iface=None):
+    """The file as it reaches the box, with the templated values resolved."""
+    static = _udev_heredoc_body().replace("${BOX_USER}", user)
+    firewall = (
+        f"{user} ALL=(ALL) NOPASSWD: /usr/local/lib/lager/secure_box_firewall.sh "
+        f"--corporate-vpn {vpn_iface}"
+        if vpn_iface else ""
+    )
+    static = static.replace("${FIREWALL_SUDOERS_RULES}", firewall)
+    dynamic = (
+        _udev_dynamic_body()
+        .replace("${BOX_USER}", user)
+        .replace(r"\${BOX_GID}", gid)
+    )
+    return static + "\n" + dynamic + "\n"
+
+
+class GeneratedSudoersActuallyParses(unittest.TestCase):
+    def _run_visudo(self, text):
+        import subprocess, tempfile, os
+        fd, path = tempfile.mkstemp(suffix=".sudoers")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                fh.write(text)
+            proc = subprocess.run(
+                [_VISUDO, "-c", "-f", path],
+                capture_output=True, text=True, timeout=30,
+            )
+            return proc.returncode, (proc.stdout + proc.stderr)
+        finally:
+            os.unlink(path)
+
+    @unittest.skipUnless(_VISUDO, "visudo not available on this machine")
+    def test_it_parses_with_no_corporate_vpn(self):
+        rc, out = self._run_visudo(_assembled_sudoers())
+        self.assertEqual(rc, 0, f"visudo rejected the generated sudoers:\n{out}")
+
+    @unittest.skipUnless(_VISUDO, "visudo not available on this machine")
+    def test_it_parses_with_a_corporate_vpn_interface(self):
+        rc, out = self._run_visudo(_assembled_sudoers(vpn_iface="tun0"))
+        self.assertEqual(rc, 0, f"visudo rejected the generated sudoers:\n{out}")
+
+    @unittest.skipUnless(_VISUDO, "visudo not available on this machine")
+    def test_visudo_actually_rejects_a_bad_file(self):
+        # The guard on the guard. If visudo were stubbed, aliased or otherwise
+        # toothless, the two tests above would pass on anything -- which is
+        # exactly how the unescaped colon reached a box.
+        bad = "benchtest ALL=(ALL) NOPASSWD: /bin/chown 33:33 /etc/lager/x\n"
+        rc, _ = self._run_visudo(bad)
+        self.assertEqual(rc, 1, "visudo accepted a known-invalid file")
+
+
+class CommandArgumentsEscapeSudoersMetacharacters(unittest.TestCase):
+    """Always-on companion: catches the same class without needing visudo."""
+
+    def _command_parts(self):
+        rules = _rule_lines(_udev_heredoc_body()) + _rule_lines(_udev_dynamic_body())
+        parts = []
+        for rule in rules:
+            if rule.strip() == "${FIREWALL_SUDOERS_RULES}":
+                continue
+            _, _, cmd = rule.partition("NOPASSWD: ")
+            if cmd:
+                parts.append((rule, cmd))
+        return parts
+
+    def test_no_unescaped_metacharacter_in_a_command_argument(self):
+        offenders = []
+        for rule, cmd in self._command_parts():
+            stripped = cmd.replace("\\:", "").replace("\\,", "")
+            stripped = stripped.replace("\\=", "").replace("\\!", "")
+            if any(ch in stripped for ch in _SUDOERS_METACHARS):
+                offenders.append(rule)
+        self.assertEqual(
+            offenders, [],
+            "these characters separate sudoers entries and must be backslash-"
+            "escaped inside a command argument, or visudo refuses the whole "
+            "file and every install dies at step 2:\n" + "\n".join(offenders),
+        )
+
+    def test_the_scan_sees_commands(self):
+        self.assertGreater(len(self._command_parts()), 20)
+
+    def test_an_unescaped_colon_would_be_caught(self):
+        bad = "${BOX_USER} ALL=(ALL) NOPASSWD: /bin/chown 33:33 /etc/lager"
+        _, _, cmd = bad.partition("NOPASSWD: ")
+        self.assertTrue(any(ch in cmd for ch in _SUDOERS_METACHARS))
