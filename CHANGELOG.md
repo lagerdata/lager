@@ -2,7 +2,7 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
-## [Unreleased]
+## [0.41.0] - 2026-08-24
 
 ### Added
 
@@ -49,6 +49,16 @@ All notable changes to the Lager platform are documented here. For detailed rele
   the nightly chain they share one run so the value cannot move between them.
   The N-1 -> current upgrade regression the lifecycle job exists for is
   unchanged; only its target is now named exactly.
+
+- **The bench lifecycle's recovery step says when it leaves the bench without
+  box software.** Recovery exists to turn a transient failure into "red run,
+  healthy bench", and its `|| true` guards keep it from adding a second failure
+  to an already-red run. But `|| true` alone also left it unable to report its
+  own failure: when a broken sudoers file made `lager install` fail, recovery's
+  reinstall failed the same way, the guard swallowed it, and the step reported
+  success while the box had no container at all. The exit codes stay non-fatal;
+  `lager hello` is now the verdict, and a bench that is still not answering
+  raises an error annotation naming the command that fixes it.
 
 ### Fixed
 
@@ -111,7 +121,6 @@ All notable changes to the Lager platform are documented here. For detailed rele
   either shape uniformly silently breaks the other's call sites.
 
 
-### Fixed
 
 - **`lager --box ""` no longer silently runs against your default box.** An
   empty string is falsy, so an explicitly empty `--box` fell into the "no box

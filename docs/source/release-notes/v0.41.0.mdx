@@ -1,0 +1,62 @@
+---
+title: "Version 0.41.0"
+description: "August 24, 2026"
+---
+
+## <u>Features</u>
+
+- **`--version` accepts a commit SHA.** `lager update` and `lager install` now
+  take a full 40-character commit SHA as well as a release tag or a branch, and
+  deploy that exact commit. A branch is re-resolved against the remote every
+  time it is evaluated, so `--version main` can mean a different commit minutes
+  apart -- fine for "bring me up to date", wrong for "is this box running the
+  code I am testing". Only the full 40 characters are accepted, because a short
+  hex prefix cannot be told apart from a branch name. A commit has no published
+  image, so a SHA target builds on the box just as a branch does.
+
+## <u>Bug Fixes</u>
+
+- **`lager install` completes on a box running `sudo-rs`.** Ubuntu made
+  `sudo-rs` the default sudo in 25.10, and 26.04 LTS ships it as the default.
+  It rejects wildcards in command arguments, and Lager wrote nineteen such
+  rules to `/etc/sudoers.d/`, so the install stopped at step 2 of 9 with
+  `wildcards are not allowed in command arguments` before deploying anything.
+  Every rule now names its arguments exactly. The sudoers file is also
+  validated before it is installed rather than after, so a rejected file no
+  longer replaces a working one.
+- **`needrestart` no longer runs during an install.** `DEBIAN_FRONTEND` and
+  `NEEDRESTART_SUSPEND` were passed as `sudo VAR=value`, which sudo discards
+  unless the sudoers rule grants `SETENV` -- and during an install no such rule
+  exists yet. Both variables now reach `apt`, so the service-restart scan they
+  are set to suppress stays suppressed.
+- **`lager --box ""` no longer runs against your default box.** An explicitly
+  empty `--box` fell into the "no box given" branch and resolved to the
+  default, so the caller named one box and got another with nothing in the
+  output saying so. It is now refused, matching `lager boxes add --name ""`.
+
+## <u>Improvements</u>
+
+- **Hardware CI reports what it actually tested.** The bench ran on every push
+  to `main` but had no deploy step, so those runs could only ever test whatever
+  the previous night left on the box -- and the guard correctly refused them.
+  The bench now runs nightly and on demand, both of its jobs pin to the commit
+  under test rather than to a moving branch, and its recovery step says when it
+  leaves the bench without box software instead of reporting success.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.41.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.41.0/)
