@@ -738,6 +738,32 @@ def _read_box_source_version(ssh_runner):
     return m.group(1) if m else ''
 
 
+def _read_box_head_sha(ssh_runner):
+    """Return the short commit SHA at the box's current HEAD, or empty.
+
+    `git reset --hard` already prints "HEAD is now at <hash> <subject>" during
+    a pull, and that line is parsed for the `--verbose` display. It is not
+    reused here on purpose: it exists only on the pulled path, and an update
+    that was already up to date never produces it. `/etc/lager/ref` has to be
+    correct in both cases -- an "already up to date" run against a box whose
+    ref file is missing or stale is exactly when someone is trying to find out
+    what the box is running. One round-trip is worth less than two code paths.
+
+    Tolerates banner/motd noise on stdout the way the probe parser does, by
+    picking the line that actually looks like a SHA rather than assuming the
+    output is clean.
+    """
+    import re
+    r = ssh_runner('git -C ~/box rev-parse --short HEAD 2>/dev/null')
+    if r.returncode != 0:
+        return ''
+    for line in (r.stdout or '').splitlines():
+        candidate = line.strip()
+        if re.fullmatch(r'[0-9a-f]{7,40}', candidate):
+            return candidate
+    return ''
+
+
 # --- Box-state probe -------------------------------------------------------
 #
 # A single SSH round-trip that gathers every read-only fact the update flow
@@ -1725,6 +1751,49 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             f'printf "%s\\n" "{value}" > "$tmp" && '
             'chmod 644 "$tmp" && '
             'mv -f "$tmp" /etc/lager/image-source'
+        )
+        try:
+            return run_ssh_command_with_output(
+                write_cmd, timeout_secs=30).returncode == 0
+        except (subprocess.SubprocessError, OSError):
+            return False
+
+    def store_deployed_ref(ref_value, sha_value):
+        """Record WHICH ref produced the code on the box, in /etc/lager/ref,
+        as ``<ref>@<sha>`` (``main@85c1b64``, ``v0.41.0@d209f02``).
+
+        /etc/lager/version cannot answer this. It holds only a version
+        *number*, and a branch whose `__version__` has not been bumped past
+        the last release serializes to a string identical to the release
+        tag's -- so v0.36.2 and main-thirteen-commits-later are the same
+        bytes. The idempotence guard in write_box_version_file then correctly
+        skips the write, and nothing on the box records that a branch was
+        deployed at all. `lager hello` reports the release version, and a
+        later session concludes the branch deploy never happened -- or worse,
+        runs a test believing the box is on the release and gets a green
+        result for unreleased code.
+
+        A sibling file rather than a third `|` field, because four readers
+        parse that file with `split('|', 1)` -- box_http_server's /status,
+        the python service's _read_box_version, mcp/config.py and
+        mcp/engine/bench_loader.py -- and a third field would land inside
+        `updater_version` on every one of them.
+
+        The SHA matters as much as the ref name: "main" alone is not
+        reproducible once main moves.
+
+        Best-effort, like store_image_source: nothing gates on this file, so
+        a failed write warns at most. Same tmp+`mv -f` technique, for the same
+        www-data-ownership reason.
+        """
+        if not ref_value:
+            return True
+        content = f'{ref_value}@{sha_value}' if sha_value else str(ref_value)
+        write_cmd = (
+            'tmp=$(mktemp /etc/lager/.ref.XXXXXX) && '
+            f'printf "%s\\n" "{content}" > "$tmp" && '
+            'chmod 644 "$tmp" && '
+            'mv -f "$tmp" /etc/lager/ref'
         )
         try:
             return run_ssh_command_with_output(
@@ -3244,6 +3313,17 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
     store_image_source(
         f'ghcr:{pulled.digest}' if pulled else f'local:{new_build_hash}'
     )
+
+    # Record WHICH ref produced this code. See store_deployed_ref: the version
+    # file records a number, and a branch that has not been bumped past the
+    # last release serializes to the same string as the release tag, so
+    # without this nothing on the box distinguishes the two.
+    if not store_deployed_ref(target_version, _read_box_head_sha(run_ssh_command_with_output)):
+        click.secho(
+            'Warning: could not record the deployed ref in /etc/lager/ref; '
+            '`lager hello` will not be able to say which ref this box is on.',
+            fg='yellow', err=True,
+        )
 
     # Write the version file BEFORE the container restart (SSH is stable here).
     # A version tag (v0.3.14 / 0.3.14) is used directly. For a branch target

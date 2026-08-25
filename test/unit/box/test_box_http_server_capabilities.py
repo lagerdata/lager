@@ -19,6 +19,7 @@ import os
 import sys
 import types
 import unittest
+import unittest.mock
 from unittest.mock import MagicMock
 
 
@@ -125,3 +126,64 @@ class StatusCapabilitiesTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class StatusDeployedRefTest(unittest.TestCase):
+    """`/status` reports WHICH ref produced the box's code (issue #266).
+
+    Version alone cannot: a branch not yet bumped past the last release
+    declares the same `__version__` as the release tag, so a box on `main`
+    and a box on the tag answered identically. The field must also be absent
+    (null) rather than an error on a box predating /etc/lager/ref -- older
+    boxes answer this endpoint too, and `lager hello` degrades to its previous
+    output rather than breaking.
+    """
+
+    def setUp(self):
+        self.client = box_http_server.app.test_client()
+
+    def _status_with_ref_file(self, contents):
+        """Run /status with /etc/lager/ref reading as `contents`, or absent
+        when `contents` is None. Only the ref file is redirected; every other
+        open() the handler makes keeps its real behaviour.
+        """
+        import builtins
+        real_open = builtins.open
+
+        def fake_open(path, *args, **kwargs):
+            if str(path) == '/etc/lager/ref':
+                if contents is None:
+                    raise FileNotFoundError(path)
+                import io
+                return io.StringIO(contents)
+            return real_open(path, *args, **kwargs)
+
+        with unittest.mock.patch('builtins.open', fake_open):
+            resp = self.client.get('/status')
+        self.assertEqual(resp.status_code, 200)
+        return resp.get_json()
+
+    def test_reports_the_ref_when_present(self):
+        self.assertEqual(self._status_with_ref_file('main@85c1b64\n')['ref'],
+                         'main@85c1b64')
+
+    def test_reports_a_release_tag_ref(self):
+        self.assertEqual(self._status_with_ref_file('v0.41.0@d209f02\n')['ref'],
+                         'v0.41.0@d209f02')
+
+    def test_absent_ref_file_yields_null_not_an_error(self):
+        # A box that has not been updated since /etc/lager/ref was introduced.
+        body = self._status_with_ref_file(None)
+        self.assertIsNone(body['ref'])
+        self.assertTrue(body['healthy'])
+
+    def test_empty_ref_file_yields_null(self):
+        # A failed best-effort write can leave an empty file; '' must not be
+        # reported as if it were a ref.
+        self.assertIsNone(self._status_with_ref_file('\n')['ref'])
+
+    def test_the_version_field_is_unaffected(self):
+        # The ref is a sibling file precisely so the version field's parsing
+        # is untouched.
+        body = self._status_with_ref_file('main@85c1b64\n')
+        self.assertIn('version', body)

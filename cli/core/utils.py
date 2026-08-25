@@ -9,6 +9,7 @@
     Migrated from cli/util.py for better code organization.
 """
 import sys
+import re
 import math
 import pathlib
 import enum
@@ -302,3 +303,28 @@ def zip_dir(root, extra_files, max_content_size=math.inf, include_dirs=None):
                         zip_archive.writestr(fileinfo, f.read(), ZIP_DEFLATED)
 
     return archive.getbuffer()
+
+
+#: A `--version` value that names a released tag, with or without the leading
+#: `v` and including the pre-release suffixes releases actually use. Must stay
+#: in agreement with `resolve_version_ref` in cli/commands/utility/update.py,
+#: which does the richer parse (it needs the captured version, not a verdict).
+#: test/unit/cli/test_deployed_ref.py pins the two together, so a change to one
+#: that the other does not follow fails CI rather than silently making a branch
+#: deploy read as a release.
+_RELEASE_TAG_RE = re.compile(
+    r'^v?\d+\.\d+\.\d+(?:-(?:rc|alpha|beta|preview)\d*)?$'
+)
+
+
+def looks_like_release_tag(ref):
+    """True when `ref` names a release tag rather than a branch or a SHA.
+
+    Used to flag a box running unreleased code. A box deployed from a branch
+    is indistinguishable from one on the release tag by version number alone,
+    because a branch not yet bumped past the last release declares the same
+    `__version__` -- which is the whole of issue #266.
+    """
+    if not ref:
+        return False
+    return bool(_RELEASE_TAG_RE.match(ref.strip()))
