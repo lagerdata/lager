@@ -31,6 +31,7 @@ from typing import List, Optional
 
 from .spi_base import SPIBase
 from lager.exceptions import SPIBackendError
+from lager.util import ftdi_url
 
 DEBUG = bool(os.environ.get("LAGER_SPI_DEBUG"))
 
@@ -63,13 +64,16 @@ class FT232HSPI(SPIBase):
         frequency_hz: int = 1_000_000,
         word_size: int = 8,
         cs_active: str = "low",
+        pid: Optional[str] = None,
+        interface=None,
+        url: Optional[str] = None,
     ):
         """
-        Initialize FT232H SPI driver.
+        Initialize FTDI SPI driver.
 
         Args:
             serial: USB serial number string (for multi-device setups).
-                    If None, uses the first available FT232H.
+                    If None, uses the first available matching device.
             cs_pin: Which AD pin to use for chip select (default 3 = AD3).
                     Valid range: 3-7 (AD3 through AD7).
             mode: SPI mode (0-3).
@@ -77,7 +81,14 @@ class FT232HSPI(SPIBase):
             frequency_hz: Clock frequency in Hz (default 1 MHz).
             word_size: Bits per word (8, 16, or 32).
             cs_active: "low" or "high".
+            pid: USB PID from the net's VISA address, selecting the part
+                (6014 FT232H / 6010 FT2232H / 6011 FT4232H). Defaults to the
+                FT232H, so a net that never carried one is unchanged.
+            interface: Which MPSSE channel to drive -- "A"-"D" or 0-3. None
+                means A, the only choice on a single-channel part.
+            url: A complete pyftdi URL, used verbatim.
         """
+        self._url = url
         self._serial = serial
         self._cs_pin = cs_pin
         self._mode = mode
@@ -88,8 +99,15 @@ class FT232HSPI(SPIBase):
 
         self._controller = None
         self._port = None
+        self._product = ftdi_url.product_for_pid(pid)
+        self._interface = ftdi_url.parse_interface(interface)
 
-        # Validate parameters
+        # Validate parameters. After the assignments above, deliberately:
+        # __del__ reaches into this object, so a raise part-way through
+        # construction would surface as an AttributeError swallowed during
+        # garbage collection instead of the error actually raised.
+        ftdi_url.validate_interface(
+            self._product, self._interface, require_mpsse=True)
         if self._mode not in (0, 1, 2, 3):
             raise SPIBackendError(f"Invalid SPI mode {mode}. Must be 0, 1, 2, or 3.")
         if self._bit_order not in ("msb", "lsb"):
@@ -117,9 +135,13 @@ class FT232HSPI(SPIBase):
 
     def _build_url(self) -> str:
         """Build the pyftdi device URL."""
-        if self._serial:
-            return f"ftdi://ftdi:232h:{self._serial}/1"
-        return "ftdi://ftdi:232h/1"
+        if self._url:
+            return self._url
+        return ftdi_url.build_ftdi_url(
+            serial=self._serial,
+            product=self._product,
+            interface=self._interface,
+        )
 
     def _ensure_open(self):
         """

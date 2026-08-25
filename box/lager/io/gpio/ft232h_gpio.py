@@ -27,6 +27,7 @@ from typing import Optional
 
 from .gpio_net import GPIOBase
 from lager.exceptions import GPIOBackendError
+from lager.util import ftdi_url
 
 DEBUG = bool(os.environ.get("LAGER_GPIO_DEBUG"))
 
@@ -68,23 +69,59 @@ class FT232HGPIO(GPIOBase):
         name: str,
         pin: int | str,
         serial: Optional[str] = None,
+        pid: Optional[str] = None,
+        interface=None,
+        url: Optional[str] = None,
     ) -> None:
         """
-        Initialize FT232H GPIO interface.
+        Initialize FTDI GPIO interface.
 
         Args:
             name: Human-readable name for this GPIO net
-            pin: Pin identifier (0-15, "AD0"-"AD7", "AC0"-"AC7")
+            pin: Pin identifier (0-15, "AD0"-"AD7", "AC0"-"AC7"). Bits 8-15
+                are ACBUS and exist on the FT232H/FT2232H only.
             serial: USB serial number string (for multi-device setups).
-                    If None, uses the first available FT232H.
+                    If None, uses the first available matching device.
+            pid: USB PID from the net's VISA address, selecting the part
+                (6014 FT232H / 6010 FT2232H / 6011 FT4232H). Defaults to the
+                FT232H, so a net that never carried one is unchanged.
+            interface: Which MPSSE channel to drive -- "A"-"D" or 0-3. None
+                means A, the only choice on a single-channel part.
+            url: A complete pyftdi URL, used verbatim. The escape hatch for
+                wiring we cannot describe from a net record.
         """
         super().__init__(name, pin)
+        # Every attribute first, validation second. __del__ calls _close(),
+        # which reads _controller -- so a raise before that assignment turns
+        # a clear "no such interface" into an AttributeError swallowed during
+        # garbage collection.
         self._serial = serial
+        self._url = url
         self._controller = None
+        self._product = ftdi_url.product_for_pid(pid)
+        self._interface = ftdi_url.parse_interface(interface)
+        ftdi_url.validate_interface(self._product, self._interface)
         self._pin_num = self._parse_pin(pin)
+        self._check_pin_width()
 
         _debug(f"FT232HGPIO initialized: name={name}, pin={pin} -> bit {self._pin_num}, "
-               f"serial={serial}")
+               f"serial={serial}, product={self._product}, "
+               f"interface={self._interface}")
+
+    def _check_pin_width(self) -> None:
+        """Refuse an ACBUS pin on a part whose channels are 8 bits wide.
+
+        The FT4232H has no ACBUS: bits 8-15 are not "unused there", they do
+        not exist. Configuring one would set a direction bit the device
+        silently drops, and the net would read back whatever floats.
+        """
+        width = ftdi_url.pin_width(self._product)
+        if self._pin_num >= width:
+            raise GPIOBackendError(
+                f"FTDI {self._product} channels are {width} bits wide; pin "
+                f"'{self._pin_num}' does not exist. ACBUS pins (8-15) are "
+                f"available on the FT232H and FT2232H only."
+            )
 
     @staticmethod
     def _parse_pin(pin: int | str) -> int:
@@ -152,9 +189,13 @@ class FT232HGPIO(GPIOBase):
 
     def _build_url(self) -> str:
         """Build the pyftdi device URL."""
-        if self._serial:
-            return f"ftdi://ftdi:232h:{self._serial}/1"
-        return "ftdi://ftdi:232h/1"
+        if self._url:
+            return self._url
+        return ftdi_url.build_ftdi_url(
+            serial=self._serial,
+            product=self._product,
+            interface=self._interface,
+        )
 
     def _ensure_open(self):
         """
@@ -282,9 +323,16 @@ class FT232HGPIO(GPIOBase):
     # ---------- file-based state cache ----------
 
     def _get_cache_key(self) -> str:
-        """Get cache key for this pin."""
+        """Get cache key for this pin.
+
+        Keyed by interface as well as device: AD0 on channel A and AD0 on
+        channel B of one FT4232H are different pins, and without the channel
+        in the key they would share a cached state and clobber each other
+        between CLI invocations.
+        """
         device_id = self._serial or "default_ft232h"
-        return f"{device_id}:{self._pin_num}"
+        iface = 'A' if self._interface is None else 'ABCD'[self._interface]
+        return f"{device_id}:{iface}:{self._pin_num}"
 
     def _load_cache(self) -> dict:
         """Load cache from file."""

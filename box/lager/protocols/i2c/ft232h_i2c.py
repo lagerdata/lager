@@ -26,6 +26,7 @@ from typing import List, Optional
 
 from .i2c_base import I2CBase
 from lager.exceptions import I2CBackendError
+from lager.util import ftdi_url
 
 DEBUG = bool(os.environ.get("LAGER_I2C_DEBUG"))
 
@@ -53,19 +54,36 @@ class FT232HI2C(I2CBase):
         self,
         serial: Optional[str] = None,
         frequency_hz: int = 100_000,
+        pid: Optional[str] = None,
+        interface=None,
+        url: Optional[str] = None,
     ):
         """
-        Initialize FT232H I2C driver.
+        Initialize FTDI I2C driver.
 
         Args:
             serial: USB serial number string (for multi-device setups).
-                    If None, uses the first available FT232H.
+                    If None, uses the first available matching device.
             frequency_hz: I2C clock frequency in Hz (default 100kHz).
+            pid: USB PID from the net's VISA address, selecting the part
+                (6014 FT232H / 6010 FT2232H / 6011 FT4232H). Defaults to the
+                FT232H, so a net that never carried one is unchanged.
+            interface: Which MPSSE channel to drive -- "A"-"D" or 0-3. None
+                means A, the only choice on a single-channel part.
+            url: A complete pyftdi URL, used verbatim.
         """
         self._serial = serial
         self._frequency_hz = frequency_hz
+        # Every attribute first, validation second: __del__ reaches into
+        # this object, so a raise before it is fully built turns a clear
+        # error into an AttributeError swallowed during collection.
+        self._url = url
         self._controller = None
         self._ports = {}  # Cache of I2cPort objects keyed by address
+        self._product = ftdi_url.product_for_pid(pid)
+        self._interface = ftdi_url.parse_interface(interface)
+        ftdi_url.validate_interface(
+            self._product, self._interface, require_mpsse=True)
 
         _debug(f"FT232HI2C initialized: serial={serial}, freq={frequency_hz}Hz")
 
@@ -83,9 +101,13 @@ class FT232HI2C(I2CBase):
 
     def _build_url(self) -> str:
         """Build the pyftdi device URL."""
-        if self._serial:
-            return f"ftdi://ftdi:232h:{self._serial}/1"
-        return "ftdi://ftdi:232h/1"
+        if self._url:
+            return self._url
+        return ftdi_url.build_ftdi_url(
+            serial=self._serial,
+            product=self._product,
+            interface=self._interface,
+        )
 
     def _ensure_open(self):
         """

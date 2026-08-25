@@ -176,15 +176,16 @@ def _make_driver(rec: Dict[str, Any], overrides: Dict[str, Any] = None):
     elif instrument in ("ft232h", "ftdi_ft232h", "ft232h_i2c"):
         from .ft232h_i2c import FT232HI2C
 
-        serial = None
-        address = rec.get("address", "")
-        parts = address.split("::")
-        if len(parts) > 3 and parts[3]:
-            serial = parts[3]
+        from lager.nets.net import _ftdi_address_parts
+
+        serial, pid, url = _ftdi_address_parts(rec.get("address", ""))
         try:
             return FT232HI2C(
                 serial=serial,
                 frequency_hz=i2c_params.get("frequency_hz", 100_000),
+                pid=pid,
+                interface=(rec.get("params") or {}).get("interface"),
+                url=url,
             )
         except Exception as exc:
             raise I2CBackendError(

@@ -53,6 +53,30 @@ from .debug_net import DebugNet, _NullDebug, make_debug, _debug_available
 from ..io.gpio.labjack_t7 import LabJackGPIO
 from ..io.gpio.usb202 import USB202GPIO
 from ..io.gpio.ft232h_gpio import FT232HGPIO
+
+def _ftdi_address_parts(address):
+    """Split an FTDI net address into ``(serial, pid, url)``.
+
+    The address is normally a VISA string, ``USB0::0x0403::0x6011::FT123::INSTR``.
+    Its PID was previously dropped on the floor, which is why every FTDI net
+    was opened as an FT232H regardless of what the chip actually was.
+
+    A raw ``ftdi://...`` address is handed back as *url* and used verbatim.
+    It used to be recognised as "not a serial" and then discarded, with the
+    hardcoded URL rebuilt over the top of it -- so a user who spelled out
+    exactly which device they wanted was silently ignored.
+    """
+    address = address or ''
+    if address.startswith('ftdi://'):
+        return None, None, address
+    if '::' in address:
+        parts = address.split('::')
+        pid = parts[2] if len(parts) >= 3 else None
+        serial = parts[3] if len(parts) >= 4 and parts[3] else None
+        return serial, pid, None
+    return (address or None), None, None
+
+
 from ..io.gpio.aardvark_gpio import AardvarkGPIO
 from ..io.adc.labjack_t7 import LabJackADC
 from ..io.adc.usb202 import USB202ADC
@@ -516,15 +540,12 @@ class Net:
                         unique_id = item.get('unique_id') or item.get('address')
                         return USB202GPIO(name, _norm_pin(item), unique_id=unique_id)
                     elif 'ft232h' in instrument or 'ftdi' in instrument:
-                        address = item.get('address') or ''
-                        serial = None
-                        if '::' in address:
-                            parts = address.split('::')
-                            if len(parts) >= 4:
-                                serial = parts[3]
-                        elif address and not address.startswith('ftdi://'):
-                            serial = address
-                        return FT232HGPIO(name, _norm_pin(item), serial=serial)
+                        serial, pid, url = _ftdi_address_parts(item.get('address'))
+                        return FT232HGPIO(
+                            name, _norm_pin(item), serial=serial, pid=pid,
+                            interface=(item.get('params') or {}).get('interface'),
+                            url=url,
+                        )
                     elif 'aardvark' in instrument or 'totalphase' in instrument:
                         params = item.get('params') or {}
                         port = int(params.get('port', 0))
@@ -706,15 +727,14 @@ class Net:
                                 unique_id = mapping.get('unique_id') or mapping.get('device_override')
                                 return USB202GPIO(name, norm_pin, unique_id=unique_id)
                             elif 'ft232h' in instrument or 'ftdi' in instrument:
-                                address = mapping.get('device_override') or ''
-                                serial = None
-                                if '::' in address:
-                                    parts = address.split('::')
-                                    if len(parts) >= 4:
-                                        serial = parts[3]
-                                elif address and not address.startswith('ftdi://'):
-                                    serial = address
-                                return FT232HGPIO(name, norm_pin, serial=serial)
+                                serial, pid, url = _ftdi_address_parts(
+                                    mapping.get('device_override'))
+                                return FT232HGPIO(
+                                    name, norm_pin, serial=serial, pid=pid,
+                                    interface=(mapping.get('params') or {}).get(
+                                        'interface'),
+                                    url=url,
+                                )
                             elif 'aardvark' in instrument or 'totalphase' in instrument:
                                 params = mapping.get('params') or {}
                                 port = int(params.get('port', 0))
