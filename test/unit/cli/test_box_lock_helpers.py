@@ -1155,21 +1155,77 @@ class TestLockSessionSuspended:
 
 
 class TestInstallLockTtl:
-    def test_it_outlasts_the_deploy_script_timeout(self):
-        # The script's own subprocess timeout is 1800s, and install spends
-        # most of that window unable to renew. A TTL at or under it would
-        # let the lock expire during a normal install.
+    def test_it_outlasts_the_default_deploy_timeout(self):
+        # Install spends most of the deploy window unable to renew. A TTL at
+        # or under the deploy timeout would let the lock expire during a
+        # normal install.
         assert box_storage.INSTALL_LOCK_TTL_SECONDS > 1800
+        assert box_storage.install_lock_ttl_seconds(1800) > 1800
 
-    def test_install_takes_that_ttl_and_suspends_the_deploy(self):
+    def test_it_tracks_a_raised_deploy_timeout(self):
+        # The whole point of deriving it: `--timeout 5400` must not leave the
+        # install holding a 3600s TTL it will outlive. This is the assertion
+        # a fixed constant could not make.
+        assert box_storage.install_lock_ttl_seconds(5400) > 5400
+        assert box_storage.install_lock_ttl_seconds(7200) > 7200
+
+    def test_it_never_drops_below_the_floor(self):
+        # A short --timeout must not shrink the TTL below what the pre/post
+        # steps around the deploy need.
+        assert box_storage.install_lock_ttl_seconds(60) == box_storage.INSTALL_LOCK_TTL_SECONDS
+
+    def test_no_timeout_means_no_ttl(self):
+        # `--timeout 0` is an unbounded deploy; no finite TTL can outlast it,
+        # so the lock lives on renewals and the explicit release instead.
+        assert box_storage.install_lock_ttl_seconds(0) is None
+
+    def test_it_defaults_to_the_configured_timeout(self, monkeypatch):
+        monkeypatch.setenv('LAGER_INSTALL_TIMEOUT', '5400')
+        assert box_storage.install_lock_ttl_seconds() > 5400
+
+    def test_install_derives_that_ttl_and_suspends_the_deploy(self):
         # `from cli.commands.utility import install` resolves to the click
         # Command, not the module, so go through importlib for the source.
         import importlib
         import inspect
         module = importlib.import_module('cli.commands.utility.install')
         src = inspect.getsource(module)
-        assert 'ttl_seconds=INSTALL_LOCK_TTL_SECONDS' in src
+        # Derived from the resolved timeout, never a bare constant -- passing
+        # INSTALL_LOCK_TTL_SECONDS directly is the bug this guards against.
+        assert 'ttl_seconds=install_lock_ttl_seconds(deploy_timeout)' in src
+        assert 'ttl_seconds=INSTALL_LOCK_TTL_SECONDS' not in src
         assert 'lock_session.suspended()' in src
+
+
+class TestInstallTimeoutResolution:
+    """`lager install`'s deploy budget was a literal 1800 in two places, and a
+    healthy build on slow hardware (an emulated guest, a throttled VM) exceeded
+    it and was killed mid-build with the old container already removed. See
+    issue #316.
+    """
+
+    def test_default_is_the_historical_thirty_minutes(self, monkeypatch):
+        monkeypatch.delenv('LAGER_INSTALL_TIMEOUT', raising=False)
+        assert box_storage.default_install_timeout_seconds() == 1800
+
+    def test_env_var_overrides_the_default(self, monkeypatch):
+        monkeypatch.setenv('LAGER_INSTALL_TIMEOUT', '5400')
+        assert box_storage.default_install_timeout_seconds() == 5400
+
+    def test_zero_means_no_timeout(self, monkeypatch):
+        monkeypatch.setenv('LAGER_INSTALL_TIMEOUT', '0')
+        assert box_storage.default_install_timeout_seconds() == 0
+
+    def test_garbage_falls_back_rather_than_failing_the_install(self, monkeypatch):
+        monkeypatch.setenv('LAGER_INSTALL_TIMEOUT', 'half an hour')
+        assert box_storage.default_install_timeout_seconds() == 1800
+
+    def test_negative_falls_back_instead_of_disabling_the_budget(self, monkeypatch):
+        # 0 means unbounded for this setting, so clamping a negative to 0 --
+        # what default_lock_wait_seconds does -- would turn a typo into an
+        # install with no deadline at all.
+        monkeypatch.setenv('LAGER_INSTALL_TIMEOUT', '-5')
+        assert box_storage.default_install_timeout_seconds() == 1800
 
 
 class TestImperativeAcquireSuspend:

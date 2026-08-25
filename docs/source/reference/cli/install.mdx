@@ -26,6 +26,7 @@ lager install [OPTIONS]
 | `--yes` | flag | | Skip confirmation prompts |
 | `--pull` | flag | on | Use the pre-built box image when the target is a release tag (the default) |
 | `--no-pull` | flag | | Always build the box image on the box |
+| `--timeout INTEGER` | int | `1800` | Max seconds for the deploy step, which includes the container build. `0` disables the budget. Overridden by `LAGER_INSTALL_TIMEOUT` |
 | `--help` | | | Show help message and exit |
 
 Either `--box` or `--ip` is required. If both are provided, the command exits with an error.
@@ -73,7 +74,10 @@ that shell.
 2. **Verify SSH** - Tests key-based authentication and settles which identity the rest of the command offers
 3. **Show summary** - Displays what will be installed and asks for confirmation
 4. **Deploy** - Runs the deployment script. About 2 minutes when the pre-built
-   image is used, or up to 30 minutes when the box builds it (see below)
+   image is used; a cold build on ordinary box hardware is roughly 14 minutes
+   (see below). The step is bounded by `--timeout`, 30 minutes by default --
+   raise it on slower hardware, where a healthy build can legitimately exceed
+   the default
 5. **Store version** - Writes the CLI version to `/etc/lager/version` on the box
 6. **Add to config** - Optionally adds the box to your local `.lager` config
 

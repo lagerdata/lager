@@ -19,7 +19,8 @@ from ...box_storage import (
     auto_lock_around_command,
     get_box_ip,
     get_box_user,
-    INSTALL_LOCK_TTL_SECONDS,
+    default_install_timeout_seconds,
+    install_lock_ttl_seconds,
 )
 from ...core.ssh_utils import host_in_known_hosts
 from ...errors import ssh_error, LagerError
@@ -125,6 +126,19 @@ def get_script_path(script_name: str, subdir: str = "scripts") -> Path:
     raise FileNotFoundError(f"Deployment script not found: {script_name}")
 
 
+def _format_duration(seconds):
+    """Render a timeout budget the way an operator would say it.
+
+    Whole minutes read as minutes; anything else keeps the seconds so the
+    message never rounds a 1750s budget to "29 minutes" and invites someone
+    to go looking for a 30-minute literal that is no longer there.
+    """
+    if seconds % 60 == 0:
+        minutes = seconds // 60
+        return f"{minutes} minute{'s' if minutes != 1 else ''}"
+    return f"{seconds} seconds"
+
+
 @click.command()
 @click.pass_context
 @click.option("--box", default=None, help="Box name (uses stored IP and username)")
@@ -138,12 +152,17 @@ def get_script_path(script_name: str, subdir: str = "scripts") -> Path:
 @click.option("--yes", is_flag=True, help="Skip confirmation prompts")
 @click.option("--pull", is_flag=True, help="Use the pre-built box image for a release tag instead of building it on the box (the default; falls back to a local build on any miss)")
 @click.option("--no-pull", "no_pull", is_flag=True, help="Never use a pre-built image; always build on the box")
-def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify, corporate_vpn, yes, pull, no_pull):
+@click.option("--timeout", type=click.IntRange(min=0), default=None, help="Max seconds for the deploy step, which includes the container build (0=no timeout). Defaults to LAGER_INSTALL_TIMEOUT, or 1800. Raise it on slow hardware -- an emulated guest or a throttled VM can exceed the default on a healthy build.")
+def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify, corporate_vpn, yes, pull, no_pull, timeout):
     """
     Install lager box code onto a new box
     """
     if pull and no_pull:
         raise click.UsageError('--pull and --no-pull are mutually exclusive')
+
+    # Flag wins over the env var, which wins over the default. `--timeout 0`
+    # is a real value (no timeout), so test for None rather than falsiness.
+    deploy_timeout = timeout if timeout is not None else default_install_timeout_seconds()
 
     # 1. Resolve box name to IP and username if --box is provided
     if box and ip:
@@ -388,9 +407,11 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     # ttl_seconds: the deploy script below tears down the container serving
     # the :9000 lock API and spends most of its run rebuilding it, so this
     # lock survives on its TTL rather than on renewals — it must outlast the
-    # script's own 1800s timeout. See INSTALL_LOCK_TTL_SECONDS.
+    # script's own timeout. Derived from that timeout rather than fixed, so
+    # raising --timeout cannot leave the install's own lock reaped mid-deploy.
+    # See install_lock_ttl_seconds.
     with auto_lock_around_command(
-        ip, box or ip, 'install', ttl_seconds=INSTALL_LOCK_TTL_SECONDS,
+        ip, box or ip, 'install', ttl_seconds=install_lock_ttl_seconds(deploy_timeout),
     ) as lock_session:
         try:
             # Run the deploy script, streaming output to the terminal.
@@ -405,7 +426,8 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                 result = subprocess.run(
                     deploy_args,
                     check=False,
-                    timeout=1800,  # 30 minute timeout
+                    # None = no timeout, which is what --timeout 0 asks for.
+                    timeout=deploy_timeout or None,
                 )
 
             if result.returncode != 0:
@@ -415,8 +437,31 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
                 ctx.exit(1)
 
         except subprocess.TimeoutExpired:
+            # Say what the budget actually was, not a literal that no longer
+            # has to be 30 minutes, and name the way out. The timeout fires
+            # during the build, after the old container is already gone, so
+            # the operator needs to know a re-run is both safe and cheaper.
             click.echo()
-            click.secho("Deployment timed out after 30 minutes.", fg='red', err=True)
+            click.secho(
+                f"Deployment timed out after {_format_duration(deploy_timeout)}.",
+                fg='red', err=True,
+            )
+            click.secho(
+                "The build may have been progressing normally -- this budget is not "
+                "a verdict on the box.",
+                fg='yellow', err=True,
+            )
+            click.secho(
+                f"  Raise it with:  lager install --timeout {deploy_timeout * 2} ...\n"
+                f"  or:             LAGER_INSTALL_TIMEOUT={deploy_timeout * 2} lager install ...\n"
+                "  (--timeout 0 disables the budget entirely.)",
+                fg='yellow', err=True,
+            )
+            click.secho(
+                "Re-running is safe, and reuses whatever layers the interrupted "
+                "build already cached.",
+                fg='yellow', err=True,
+            )
             ctx.exit(1)
         except (Exit, Abort):
             raise

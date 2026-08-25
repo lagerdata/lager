@@ -331,3 +331,34 @@ class TestInstallCommandSurface:
         # drift; install imports the client's.
         source = (ROOT / "cli" / "commands" / "utility" / "install.py").read_text()
         assert "from .update import _box_image_ref_for_version" in source
+
+    def test_timeout_option_exists(self):
+        from cli.commands.utility.install import install
+        names = {p.name for p in install.params}
+        assert "timeout" in names
+
+    def test_timeout_rejects_a_negative(self):
+        from click.testing import CliRunner
+        from cli.commands.utility.install import install
+
+        result = CliRunner().invoke(install, ["--ip", "10.0.0.1", "--timeout", "-5"])
+        assert result.exit_code != 0
+        assert "not in the range" in result.output
+
+    def test_the_deploy_budget_is_no_longer_a_literal(self):
+        # Issue #316: `timeout=1800` appeared twice -- the subprocess call and
+        # the message -- so there was no way to raise it without editing the
+        # source. Both are now derived from the resolved value.
+        source = (ROOT / "cli" / "commands" / "utility" / "install.py").read_text()
+        assert "timeout=1800" not in source
+        assert "timed out after 30 minutes" not in source
+        assert "timeout=deploy_timeout or None" in source
+
+    def test_the_timeout_message_names_the_way_out(self):
+        # The timeout fires during the build, after the old container is gone.
+        # An operator seeing only "timed out" has no way to know the build was
+        # healthy, that an override exists, or that a re-run is cheap.
+        source = (ROOT / "cli" / "commands" / "utility" / "install.py").read_text()
+        assert "--timeout" in source
+        assert "LAGER_INSTALL_TIMEOUT" in source
+        assert "Re-running is safe" in source
