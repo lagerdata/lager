@@ -26,6 +26,28 @@ All notable changes to the Lager platform are documented here. For detailed rele
   Both workflows now wait for every relay-powered instrument, and name the
   ones still missing if the wait times out.
 
+- **`Bench: Box Lifecycle` could not complete on any branch, which made the
+  documented way to bench-test a change impossible to finish.** Two of its
+  `lager update` steps had no `--version` and so targeted the CLI's `main`
+  default, while the step before them deployed `github.sha`. Those are the
+  same commit only when `github.sha` is main's head -- true for the nightly,
+  false for every `workflow_dispatch` on a branch.
+
+  The "no-op update hits the fast path" step was the fatal one: on a branch it
+  asked the box to move from the commit under test back to main, which is a
+  real update and not a fast path, so its assertion found nothing and the job
+  died there -- before the uninstall, reinstall and hardware-smoke phases ever
+  ran. The forced-rebuild step had the same gap without being fatal: it
+  rebuilt main rather than the commit under test, spending a full rebuild on
+  the wrong ref, and the box left the commit under test until the install step
+  near the end of the job put it back.
+
+  Both are now pinned to `github.sha`, matching the step that was already
+  pinned for this exact reason. Verified against the bench: `--check` reports
+  `in sync` for the deployed commit and `will roll back (1 commit(s) ahead of
+  origin/main)` for `main`, so a SHA target reaches the fast path and the
+  nightly's behaviour is unchanged.
+
 ## [0.41.0] - 2026-08-24
 
 ### Added

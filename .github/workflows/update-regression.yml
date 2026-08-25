@@ -334,14 +334,39 @@ jobs:
         # Re-running with the box already current must take the "already at
         # version" early-exit (which also verifies the container-liveness and
         # version-file reconciliation logic behind it).
+        #
+        # Pinned to github.sha for the same reason as the step above, and
+        # missed when that one was pinned. Bare `lager update` targets the
+        # CLI's `main` default, while the step above deployed github.sha.
+        # Those are the same commit only when github.sha IS main's head -- true
+        # for the nightly, false for every workflow_dispatch on a branch. On a
+        # branch this step therefore asked the box to move from the commit
+        # under test back to main, which is a real update and not a fast path,
+        # so the grep found nothing and the job died here.
+        #
+        # That made the documented "bench-test a branch" path
+        # (README.md, "Bench-testing a branch") impossible to complete: no
+        # branch dispatch of this workflow could reach the steps after it.
+        # Observed on the bench as `will roll back (1 commit(s) ahead of
+        # origin/main)` against `main`, and `in sync` against the same
+        # github.sha -- so a SHA target reaches the fast path correctly and the
+        # nightly's behaviour is unchanged.
         run: |
           set -o pipefail
-          lager update --box "$LAGER_BOX" --yes | tee "$RUNNER_TEMP/noop-update.log"
+          lager update --box "$LAGER_BOX" --version "${{ github.sha }}" --yes \
+            | tee "$RUNNER_TEMP/noop-update.log"
           grep -q "already at version" "$RUNNER_TEMP/noop-update.log"
         shell: bash
 
       - name: Forced clean rebuild (--force)
-        run: lager update --force --box "$LAGER_BOX" --yes --verbose
+        # Pinned for the same reason as the two steps above. Unpinned, a
+        # branch dispatch rebuilds main here rather than the commit under
+        # test -- so the one phase whose whole point is "rebuild from
+        # scratch" was exercising the wrong code, and the box silently left
+        # the commit under test until the install step near the end of the
+        # job put it back. Not fatal, which is why it went unnoticed; the
+        # cost was a full rebuild spent on the wrong ref.
+        run: lager update --force --box "$LAGER_BOX" --version "${{ github.sha }}" --yes --verbose
         shell: bash
 
       - name: Verify box healthy after rebuild
