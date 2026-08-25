@@ -2,7 +2,7 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
-## [Unreleased]
+## [0.42.0] - 2026-08-25
 
 ### Added
 
@@ -25,6 +25,54 @@ All notable changes to the Lager platform are documented here. For detailed rele
   through the same aggregation gate that already covers every suite.
 
 ### Fixed
+
+- **`lager debug <net> erase` no longer reports "Erase complete!" when nothing
+  was erased.** With the probe enumerated but the target unreachable over SWD
+  -- unplugged, unpowered, or held in reset -- the command printed
+  `Erase complete!` in green and exited 0 over a part it had never touched.
+  The only hint anything was wrong was a yellow `Failed to reconnect after
+  erase` warning printed *after* success had already been reported.
+
+  This is the defect fixed for `flash` in v0.34.0, on the command next to it.
+  `/debug/erase` answers 200 whether or not the probe ever attached -- the
+  box's `chip_erase()` is a generator that yields J-Link Commander's stdout and
+  carries no success channel, exactly like `flash_device()` -- and the CLI
+  printed its success line without ever reading that text. Short of an HTTP
+  error the command could not fail. The OpenOCD paths were already strict
+  (`Da1469xLoaderError` and `OpenOcdRpcError` both surface as 500), so this was
+  the J-Link backend only.
+
+  Both halves now check. The box refuses to answer 200 for a session whose
+  output shows it never attached, and the CLI takes its own verdict from the
+  programmer's output, so a current CLI reports the failure correctly against a
+  box that has not been updated yet.
+
+  `flash` erases by default, and that pre-erase step discarded the box's reply
+  entirely and printed `Erase complete!` unconditionally. It now takes the same
+  verdict, and stops before programming a part that was never reached.
+
+  As with `flash`, output matching nothing keeps its existing meaning, so an
+  older box or a backend we have not characterised is never newly reported as
+  failing.
+
+  Confirmed against hardware: a J-Link Plus on an nRF5340, board unpowered,
+  probe still enumerated. The box answered HTTP 200 with
+  `status: erase_complete` for a session whose own output read
+  `Error occurred: Could not connect to the target device.` -- twice, because
+  `chip_erase()` runs `connect` then `erase` and both failed. Nothing was
+  erased. A successful erase on the same bench still reports success, and its
+  output carries a `CPUID register:` line one careless substring match away
+  from a failure signature, which is why matching is whole-line.
+
+  One deliberate asymmetry, because the two are easy to conflate: the predicate
+  that decides a *verdict* is stricter than the one that triggers the flash
+  path's *retry*. `Could not read CPUID register` drives the retry and does not
+  decide the verdict, because J-Link emits it per access port while scanning
+  and it does not on its own establish that the session never attached. As a
+  reason to try again that costs one attempt; as a reason to call an operation
+  failed it would report completed work as broken. Every captured failure
+  prints it alongside `Could not connect to target.`, which both predicates
+  match, so nothing is lost.
 
 - **`lager install`'s deploy budget is now configurable, and the lock TTL
   follows it.** The deployment step was killed after a hardcoded 30 minutes,

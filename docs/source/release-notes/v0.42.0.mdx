@@ -1,0 +1,40 @@
+---
+title: "Version 0.42.0"
+description: "August 25, 2026"
+---
+
+## <u>Features</u>
+
+- **`lager install --timeout <seconds>`** sets how long the deploy step may take, with `LAGER_INSTALL_TIMEOUT` as an environment override and `0` to remove the limit entirely. The budget covers the container build, which is the longest part of a first install.
+- **`lager python --timeout` now applies to `--detach`.** A detached job is wrapped only when a deadline was actually requested, so the default detached process tree is unchanged. The box ceiling does not apply, because it tracks a streaming read timeout that nothing reads on a detached run.
+
+## <u>Bug Fixes</u>
+
+- **`lager debug <net> erase` no longer reports "Erase complete!" when nothing was erased.** With the probe enumerated but the target unreachable over SWD -- unplugged, unpowered, or held in reset -- the command printed success in green and exited 0 over a part it had never touched. Both the box and the CLI now take their verdict from the programmer's own output, so a current CLI reports the failure correctly even against a Lager Box that has not been updated yet. `flash` erases by default, and that pre-erase step now takes the same verdict and stops before programming a part that was never reached.
+- **`lager python --detach` returns as soon as the box has accepted the job.** Everything before the process was spawned ran inside the HTTP request -- unpacking the module, `pip install -r requirements.txt` with no bound on it, the quiesce gate that can wait 69 seconds for a previous job's teardown, and the direct-USB handoff. A detached launch of a module carrying a `requirements.txt` therefore blocked the CLI on its 320-second read timeout before it could see the response saying the job had detached, which is the one thing `--detach` exists to avoid. The box now answers first and does the rest on a background thread; a job that fails to start reports through `--reattach` and exits 1.
+- **A detached run no longer holds the Lager Box lock forever.** The lock was taken with no expiry, and nothing reaped it, so a detached job that failed to start left the box locked until someone ran `lager boxes unlock` by hand. The box now heartbeats the lock while the job is alive and releases it when the job ends, however it ends.
+- **`lager install` no longer kills a healthy build at 30 minutes.** The deploy timeout was hardcoded in two places with no override. On hardware slower than a typical Lager Box -- an emulated guest, a low-power mini PC, a throttled VM -- a legitimate build exceeded it and was terminated mid-build, after the previous container had already been removed, leaving the box with nothing running. The lock TTL is now derived from the configured timeout rather than a second fixed number, so raising one cannot leave an install's own lock expiring underneath it.
+- **The box's JSON responses now carry a `Content-Length`.** They were delimited only by the connection closing, which worked by accident of an undeclared HTTP/1.0 default.
+
+## <u>Improvements</u>
+
+- The timeout message from `lager install` now names the override, states that re-running is safe and reuses whatever layers the interrupted build cached, and says the budget is not a verdict on the box.
+- The documented expectation for a first install and the point at which the tool gives up are no longer the same number.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.42.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.42.0/)
