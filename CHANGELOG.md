@@ -25,6 +25,30 @@ All notable changes to the Lager platform are documented here. For detailed rele
   unambiguous per-backend forms of `script`, for a base64 blob that carries no
   filename to classify.
 
+- **FTDI GPIO, I2C and SPI nets can address a specific channel on a
+  multi-channel adapter.** A net may now carry `params.interface`, taking
+  `A`-`D` or `0`-`3` -- the same vocabulary debug nets already accept as the
+  `@A` suffix on their device field. Previously all three drivers hardcoded
+  `ftdi://ftdi:232h[:serial]/1`, so interface A was the only channel any of
+  them could ever open, and a board wiring comms to one channel and control
+  lines to another could not be driven at all.
+
+  Which channels are legal is not uniform, and is enforced per net rather than
+  per instrument. I2C and SPI are MPSSE protocols, and on an FT4232H only
+  channels A and B have an MPSSE engine; asking for C or D now fails at net
+  construction naming the channel, instead of somewhere inside pyftdi. GPIO
+  runs as asynchronous bitbang, needs no MPSSE, and works on all four -- which
+  is what makes an FT4232H's C and D usable for control lines.
+
+  Two things that only surface once a second channel is reachable are handled
+  with it: the GPIO state cache now keys on interface as well as device, so
+  AD0 on channel A and AD0 on channel B stop sharing an entry and clobbering
+  each other between CLI invocations; and ACBUS pins (8-15) are refused on the
+  FT4232H, whose channels are 8 bits wide with no ACBUS at all.
+
+  `FTDI_FT4232H` accordingly gains the `spi`, `i2c` and `gpio` roles its
+  siblings already advertised.
+
 ### Fixed
 
 - **A box deployed from a branch now says so.** After
@@ -83,6 +107,20 @@ All notable changes to the Lager platform are documented here. For detailed rele
   cfg that the net record and the HTTP debug service share, so one session's
   override cannot reach another net, and `disconnect` clears it -- the same
   scoping J-Link scripts received in v0.38.0.
+
+- **`gpio`, `i2c` and `spi` nets on an FT2232H could not be opened.** The
+  instrument has advertised all three roles for as long as the role table has
+  existed, so `lager nets add` accepted them; but the drivers addressed the
+  device as `ftdi://ftdi:232h:...`, and `232h` is the product selector for the
+  FT232H (PID 6014). It does not match an FT2232H (6010), so every such net
+  failed to find its device. The part is now selected from the PID already
+  present in the net's own address, which had been parsed and discarded.
+
+- **An FTDI net whose address was written as a full `ftdi://` URL had it
+  silently discarded.** The address was recognised as "not a serial number"
+  and then dropped, with the hardcoded URL rebuilt over the top -- so a user
+  who spelled out exactly which device and channel they wanted got interface A
+  of the first FT232H instead. Such an address is now used verbatim.
 
 ## [0.42.0] - 2026-08-25
 

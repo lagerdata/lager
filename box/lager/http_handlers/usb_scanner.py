@@ -168,7 +168,14 @@ SUPPORTED_USB: Dict[str, Dict] = {
     # so we advertise ``debug`` alongside ``uart``. C and D are UART-only.
     # The OpenOCD backend reads the FTDI channel index out of the debug net's
     # ``device`` field (``STM32F4x@A``) or its ``probe_channel`` field.
-    "FTDI_FT4232H":      {"vid": "0403", "pid": "6011", "net_type": ["uart", "debug"]},
+    #
+    # ``spi``/``i2c``/``gpio`` are advertised too, now that the drivers can
+    # address the part and the channel (``params.interface``). Which channel
+    # each is legal on is NOT uniform and is enforced per net at driver
+    # construction, not here: I2C and SPI need MPSSE and so are limited to A
+    # and B, while GPIO uses asynchronous bitbang and works on all four.
+    # See ``lager.util.ftdi_url.validate_interface``.
+    "FTDI_FT4232H":      {"vid": "0403", "pid": "6011", "net_type": ["uart", "debug", "spi", "i2c", "gpio"]},
     "ESP32_JTAG_Serial": {"vid": "303a", "pid": "1001", "net_type": ["uart"]},
 }
 
@@ -242,6 +249,17 @@ CHANNEL_MAPS: Dict[str, Dict[str, List[str]]] = {
         # ``/dev/ttyUSB*`` paths by the scanner; if enumeration fails the
         # role is dropped entirely rather than advertised as a bare index.
         "uart": [],
+        # MPSSE-only, so A and B just like ``debug``. Which channel a net
+        # lands on is ``params.interface``; the driver refuses C/D for these
+        # two roles (``ftdi_url.validate_interface(require_mpsse=True)``).
+        "spi": ["SPI0"],
+        "i2c": ["I2C0"],
+        # 0-7, not the FT2232H's 4-15, and the difference is real on both
+        # ends. The FT4232H has no ACBUS, so bits 8-15 do not exist. And its
+        # GPIO runs as asynchronous bitbang rather than MPSSE, so AD0-AD3 are
+        # not reserved for clock/data the way the sibling entry assumes —
+        # which is what makes C and D usable as GPIO despite having no MPSSE.
+        "gpio": ["0", "1", "2", "3", "4", "5", "6", "7"],
     },
     "J-Link":                 {"debug": ["DEVICE_TYPE"]},
     "J-Link_Plus":            {"debug": ["DEVICE_TYPE"]},

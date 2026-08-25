@@ -37,12 +37,12 @@ are not.
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1781 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 1854 |
+| `unit (box)` | `test/unit/box/` | 1900 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 177 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 143 (+1 skipped) |
-| | **Total gated** | **4149** |
+| | **Total gated** | **4195** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -443,9 +443,9 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 166 files)
+### Local Unit Tests (`test/unit/` -- 168 files)
 
-#### Box Unit Tests (`test/unit/box/` -- 86 files)
+#### Box Unit Tests (`test/unit/box/` -- 88 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
 imported, and stubs the two third-party modules that are neither guarded nor installed
@@ -479,6 +479,8 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_device_lock.py` | Cross-process advisory fcntl lock preventing USB-TMC pyvisa race |
 | `test_diagnose_jlink_parse.py` | Box-side J-Link diagnose parsers, pinned with captured JLinkExe text |
 | `test_dispatcher_channel_resolution.py` | `resolve_channel`: v0.32.0 regression where int()-only parsing broke named adc/dac channels |
+| `test_ftdi_driver_addressing.py` | The FTDI GPIO/I2C/SPI drivers addressed by part and channel: existing single-channel FT232H URLs are byte-identical, an FT2232H opens at all (it was advertised but unreachable), I2C/SPI refuse the FT4232H's non-MPSSE C/D while GPIO accepts them, ACBUS pins are refused on a part with no ACBUS, and the GPIO state cache keys on interface so two channels of one chip stop clobbering each other |
+| `test_ftdi_url.py` | `lager.util.ftdi_url`: PID to pyftdi product, interface letter/index parsing, and the base-0/base-1 split between OpenOCD's `ftdi channel` and pyftdi's URL — asserted against `probes.parse_device_field` so `@B` cannot come to mean different channels on the two paths |
 | `test_gdb_controller_leak.py` | GdbController close on failed attempts to prevent fd leak |
 | `test_gdbserver_zombie_status.py` | Defunct/zombie gdbserver detection that a bare `os.kill(pid, 0)` check passes |
 | `test_hardware_service_fail_fast.py` | `/invoke` fail-fast locking and hang recovery: per-device and per-address locks answer `device-busy` rather than queueing behind a wedged `open_resource`, and a hung driver call expires into `invoke-timeout` plus a supervised restart |

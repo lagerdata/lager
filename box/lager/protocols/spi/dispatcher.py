@@ -209,16 +209,17 @@ def _make_driver(rec: Dict[str, Any], overrides: Dict[str, Any] = None):
         # cs_mode is not supported by FT232H (uses hardware CS); remove before passing
         spi_params.pop("cs_mode", None)
 
-        serial = None
-        address = rec.get("address", "")
-        parts = address.split("::")
-        if len(parts) > 3 and parts[3]:
-            serial = parts[3]
+        from lager.nets.net import _ftdi_address_parts
+
+        serial, pid, url = _ftdi_address_parts(rec.get("address", ""))
         cs_pin = rec.get("params", {}).get("cs_pin", 3)
         try:
             return FT232HSPI(
                 serial=serial,
                 cs_pin=cs_pin,
+                pid=pid,
+                interface=(rec.get("params") or {}).get("interface"),
+                url=url,
                 **spi_params,
             )
         except Exception as exc:

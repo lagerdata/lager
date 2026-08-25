@@ -445,7 +445,11 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     # The OpenOCD backend reads the FTDI interface index off the net's
     # device field (``STM32F4x@A``); single-channel FTDIs default to A.
     "FTDI_FT2232H": ["spi", "i2c", "gpio", "debug", "uart"],
-    "FTDI_FT4232H": ["debug", "uart"],
+    # The FT4232H's MPSSE roles were absent because the GPIO/I2C/SPI drivers
+    # could only ever open interface A of an FT232H. They address the part
+    # and the channel now (params.interface, "A"-"D"), so the roles its
+    # siblings already advertised apply here too.
+    "FTDI_FT4232H": ["spi", "i2c", "gpio", "debug", "uart"],
 
     # debug — J-Link family
     "J-Link": ["debug"],
