@@ -26,6 +26,38 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- **`lager install`'s deploy budget is now configurable, and the lock TTL
+  follows it.** The deployment step was killed after a hardcoded 30 minutes,
+  a literal in both the `subprocess.run` call and the message that reported
+  it, with nothing reading an override. That budget covers the cold container
+  build, which is the longest step by far -- roughly 14 minutes on ordinary
+  box hardware, so the default was about a 2x margin. The margin disappears on
+  anything slower: an emulated x86-64 guest, a low-power mini PC, a throttled
+  VM, a cold apt cache. A healthy build then exceeded the limit and was cut off
+  mid-build, after the previous container had already been removed, leaving the
+  box with nothing running and the operator no way to retry with more time.
+
+  `--timeout <seconds>` and `LAGER_INSTALL_TIMEOUT` now set it, flag winning
+  over environment over the 1800-second default; `0` removes the bound
+  entirely. A negative environment value falls back to the default rather than
+  clamping to 0, because 0 means *unbounded* here -- clamping would turn a typo
+  into an install with no deadline at all.
+
+  The auto-lock TTL is derived from the resolved timeout rather than being a
+  second literal sized against the first. It was 3600 precisely because the
+  deploy timeout was 1800, and the comment said so; left fixed, a
+  `--timeout 5400` install would have had its own lock reaped mid-deploy. It
+  now tracks the budget and keeps 3600 as a floor. An unbounded deploy takes no
+  TTL, since no finite one can outlast it.
+
+  The timeout message now names the override, states that a re-run is safe and
+  reuses whatever layers the interrupted build cached, and says the budget is
+  not a verdict on the box -- the build may well have been progressing normally.
+
+  The published documentation told operators to expect "up to 30 minutes",
+  which was exactly the point at which the tool gave up. The documented
+  expectation and the hard failure threshold are no longer the same number.
+
 - **`lager python --detach` now returns as soon as the box has accepted the
   job, instead of after everything that makes a job slow to start.** Every step
   before the process was spawned ran inside the HTTP request: unpacking the

@@ -1248,15 +1248,67 @@ class LockSession:
             self._resume_fn()
 
 
-#: TTL for `lager install`'s auto-lock. Deliberately longer than every other
-#: admin command's: install spends most of its run with the lock server torn
-#: down (it is rebuilding the container that serves it), so the lock has to
-#: survive on TTL alone rather than on renewals. Sized against the deploy
-#: script's own 1800s timeout plus the pre/post steps around it. The cost of
-#: the larger number is that a hard-killed install (SIGKILL, power loss —
-#: anything that beats both the `finally` and the atexit release) leaves the
-#: box locked for up to an hour; `lager boxes unlock` is the way out.
+#: Default budget for the deploy subprocess `lager install` runs. A cold
+#: container build on ordinary box hardware is roughly 14 minutes, so this is
+#: about a 2x margin over a known-good case — a margin that disappears on an
+#: emulated guest, a throttled VM, a cold apt cache or a slow mirror. Override
+#: per-run with `--timeout` or `LAGER_INSTALL_TIMEOUT`.
+_DEFAULT_INSTALL_TIMEOUT_SECONDS = 1800
+
+
+def default_install_timeout_seconds():
+    """Default deploy-subprocess timeout for `lager install`, in seconds.
+
+    ``LAGER_INSTALL_TIMEOUT`` env var wins. ``0`` means no timeout, matching
+    `lager python --timeout`; anything unparseable falls back to the default
+    rather than failing the install for a typo in the environment.
+
+    A negative value is a typo, not a request, and falls back to the default.
+    Clamping it to 0 the way `default_lock_wait_seconds` does would be wrong
+    here: 0 means *unbounded* for this setting, so `LAGER_INSTALL_TIMEOUT=-5`
+    would silently remove the budget rather than restore it.
+    """
+    env = os.getenv('LAGER_INSTALL_TIMEOUT')
+    if env is None:
+        return _DEFAULT_INSTALL_TIMEOUT_SECONDS
+    try:
+        value = int(env)
+    except ValueError:
+        return _DEFAULT_INSTALL_TIMEOUT_SECONDS
+    if value < 0:
+        return _DEFAULT_INSTALL_TIMEOUT_SECONDS
+    return value
+
+
+#: Floor for `lager install`'s auto-lock TTL. Deliberately longer than every
+#: other admin command's: install spends most of its run with the lock server
+#: torn down (it is rebuilding the container that serves it), so the lock has
+#: to survive on TTL alone rather than on renewals. The cost of the larger
+#: number is that a hard-killed install (SIGKILL, power loss — anything that
+#: beats both the `finally` and the atexit release) leaves the box locked for
+#: up to an hour; `lager boxes unlock` is the way out.
 INSTALL_LOCK_TTL_SECONDS = 3600
+
+
+def install_lock_ttl_seconds(deploy_timeout=None):
+    """TTL for `lager install`'s auto-lock, derived from the deploy timeout.
+
+    The two must move together. The TTL has to outlast the deploy subprocess
+    it wraps, because the lock cannot be renewed while the container serving
+    the lock API is torn down. Hardcoding 3600 against a hardcoded 1800 was
+    fine while both were literals; once `--timeout` can raise the deploy
+    budget, a fixed TTL would let a legitimately-running install have its own
+    lock reaped mid-deploy.
+
+    ``deploy_timeout`` of 0 (no timeout) yields ``None`` — an unbounded deploy
+    cannot be outlasted by any finite TTL, so the lock lives on renewals and
+    the explicit release instead.
+    """
+    if deploy_timeout is None:
+        deploy_timeout = default_install_timeout_seconds()
+    if not deploy_timeout:
+        return None
+    return max(INSTALL_LOCK_TTL_SECONDS, deploy_timeout * 2)
 
 
 def auto_lock_around_command(

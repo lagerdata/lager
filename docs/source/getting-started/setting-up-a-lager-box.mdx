@@ -39,8 +39,12 @@ sudo --version     # see the sudo-rs note below
 ```
 
 <Note>
-A first install builds the Lager container on the box itself and can take up to 30 minutes.
-Plan for the box to be busy for that long.
+A first install builds the Lager container on the box itself. That is roughly 14 minutes
+on ordinary box hardware; plan for the box to be busy. `lager install` bounds the step at
+30 minutes by default. On slower hardware -- an emulated guest, a low-power mini PC, a
+throttled VM -- a healthy build can exceed that, so raise the budget with
+`--timeout <seconds>` (or `LAGER_INSTALL_TIMEOUT`) rather than letting it be cut off
+mid-build.
 </Note>
 
 <Note>
