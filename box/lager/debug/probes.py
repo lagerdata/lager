@@ -193,6 +193,69 @@ def resolve_backend(net):
     return BACKEND_JLINK
 
 
+# ----- Debug-script format detection ------------------------------------------
+#
+# Deliberately duplicated with ``_JLINK_EXTS`` / ``_OPENOCD_EXTS`` /
+# ``_sniff_script_backend`` in ``cli/commands/box/nets.py``. That copy exists so
+# ``lager nets set-script`` can classify a file against ANY box version,
+# including ones older than this function; this copy exists so the in-process
+# Net API (``DebugNet.connect(script=...)``) can classify one without a round
+# trip to the CLI. Same reasoning as ``_JLINK_VIDS`` / ``_OPENOCD_VIDS`` above,
+# which the CLI mirrors as ``_DEBUG_JLINK_VIDS`` / ``_DEBUG_OPENOCD_VIDS``.
+#
+# Keep the extension sets and marker tuples character-identical across both
+# sites; ``test/unit/box/test_script_backend_sniff.py`` asserts they agree.
+_JLINK_EXTS = {'.jlinkscript', '.jlinkscriptfile'}
+_OPENOCD_EXTS = {'.cfg', '.tcl', '.ocd'}
+
+_OPENOCD_MARKERS = (
+    'adapter driver', 'transport select', 'ftdi vid_pid',
+    'source [find', 'target create', 'swj_newdap', 'dap create',
+    'jtag newtap', 'flash bank',
+)
+_JLINK_MARKERS = (
+    'reset()', 'inittarget()', 'mem_writeu32', 'jlink_executecommand',
+    'beforetargetreset', 'aftertargetreset', 'aftertargetdownload',
+)
+
+
+def sniff_script_backend(filename, content):
+    """Return ``'jlink'``/``'openocd'``/``None`` from filename + content.
+
+    A ``.JLinkScript`` is interpreted by the J-Link DLL and an OpenOCD
+    ``.cfg`` is TCL read by the daemon; neither backend can execute the
+    other's file. So a per-connect script override has to be classified
+    before it can be routed, and a wrong guess is worse than no guess --
+    it runs the target under an attach sequence nobody asked for.
+
+    Extension is the dominant signal. The content sniff is only consulted
+    when the extension is unrecognised (an extensionless path, or a base64
+    blob that has no filename at all), and it **abstains** when both or
+    neither family of markers is present rather than picking a side.
+
+    Returns None when undetermined; callers must treat that as "say which
+    one explicitly", not as a default.
+    """
+    import os
+
+    _, ext = os.path.splitext((filename or '').lower())
+    if ext in _JLINK_EXTS:
+        return BACKEND_JLINK
+    if ext in _OPENOCD_EXTS:
+        return BACKEND_OPENOCD
+    try:
+        head = content[:4096].decode('utf-8', errors='replace').lower()
+    except Exception:  # noqa: BLE001 — undecodable is just "undetermined"
+        return None
+    has_openocd = any(m in head for m in _OPENOCD_MARKERS)
+    has_jlink = any(m in head for m in _JLINK_MARKERS)
+    if has_openocd and not has_jlink:
+        return BACKEND_OPENOCD
+    if has_jlink and not has_openocd:
+        return BACKEND_JLINK
+    return None
+
+
 def resolve_serial_from_net(net):
     """Return the probe USB serial for a net dict, or None.
 
