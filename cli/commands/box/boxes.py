@@ -13,6 +13,29 @@ from ...address_utils import validate_ip_or_hostname, VALID_FORMATS_CHEATSHEET
 from ...box_storage import add_box, delete_box, delete_all_boxes, list_boxes, load_boxes, save_boxes, get_lager_file_path, format_lock_user
 from ...core.group_usage import LagerGroup
 from ...sort_utils import natural_sort_key
+from ...core.utils import looks_like_release_tag
+
+
+def _annotate_version(box_version, box_ref):
+    """Version cell for the boxes table, naming the ref when it is not a
+    release tag.
+
+    A box deployed from a branch reports the same version number as one on the
+    release tag, because a branch not yet bumped past the last release declares
+    the same `__version__` (#266). Across a fleet that is how a box gets left on
+    a branch and someone else runs a test against it believing it is on the
+    release.
+
+    Release-tagged and ref-less boxes render exactly as before: the annotation
+    only appears where it changes the reading. The SHA is deliberately omitted
+    -- it would widen the column for every row; `lager hello` reports it.
+    """
+    if not box_ref:
+        return box_version
+    ref_name = str(box_ref).split('@', 1)[0]
+    if looks_like_release_tag(ref_name):
+        return box_version
+    return f'{box_version} ({ref_name})'
 
 
 def _list_boxes_live(port=9000, timeout=5):
@@ -105,19 +128,29 @@ def _list_boxes_live(port=9000, timeout=5):
                     box_version = data.get('version') or data.get('box_version')
                     if box_version == 'unknown':
                         box_version = None
+                    box_ref = data.get('ref')
 
                     if box_version:
+                        # Cache and compare the bare version -- the annotated
+                        # form below is for display only.
                         update_box_version(name, box_version)
 
                         version_cmp = compare_versions(box_version, cli_version)
 
+                        # A box deployed from a branch reports the same version
+                        # number as one on the release tag, so the version
+                        # column alone cannot tell them apart (#266). Name the
+                        # ref here; `lager hello` has the resolved SHA too,
+                        # which is too wide for a fleet listing.
+                        shown_version = _annotate_version(box_version, box_ref)
+
                         if version_cmp == 0:
-                            results.append((name, ip, user, box_version, 'current', locked_by, busy_info))
+                            results.append((name, ip, user, shown_version, 'current', locked_by, busy_info))
                         elif version_cmp < 0:
-                            results.append((name, ip, user, box_version, 'needs update', locked_by, busy_info))
+                            results.append((name, ip, user, shown_version, 'needs update', locked_by, busy_info))
                             needs_update_count += 1
                         else:
-                            results.append((name, ip, user, box_version, 'newer', locked_by, busy_info))
+                            results.append((name, ip, user, shown_version, 'newer', locked_by, busy_info))
                             newer_count += 1
                     else:
                         results.append((name, ip, user, '-', 'bad response', locked_by, busy_info))

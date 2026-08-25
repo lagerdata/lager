@@ -36,6 +36,9 @@ AVAILABLE_INSTRUMENTS_PATH = "/etc/lager/available_instruments.json"
 ORG_SECRETS_PATH = "/etc/lager/org_secrets.json"
 BOX_ID_PATH = "/etc/lager/box_id"
 VERSION_FILE_PATH = "/etc/lager/version"
+# Which ref produced the code on this box, as `<ref>@<sha>`. Written by
+# `lager update` / `lager install`; absent on a box that predates it.
+REF_FILE_PATH = "/etc/lager/ref"
 WEBCAM_STREAMS_PATH = "/etc/lager/webcam_streams.json"
 
 # Service port numbers

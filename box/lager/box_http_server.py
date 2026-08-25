@@ -275,12 +275,26 @@ def status():
     """Return box status for control plane probing."""
     import json as _json
     from lager.nets.constants import NetType
+    from lager.constants import REF_FILE_PATH
 
     version = 'unknown'
     try:
         with open('/etc/lager/version', 'r') as f:
             version_content = f.read().strip()
             version = version_content.split('|', 1)[0] if '|' in version_content else version_content
+    except (FileNotFoundError, IOError):
+        pass
+
+    # Which ref produced this code, as `<ref>@<sha>`. Absent (None) on a box
+    # that has not been updated since this file was introduced, and on any box
+    # where the best-effort write failed -- callers must treat it as optional
+    # rather than assuming a value. The version number alone cannot answer
+    # this: a branch not yet bumped past the last release serializes to the
+    # same string as the release tag.
+    ref = None
+    try:
+        with open(REF_FILE_PATH, 'r') as f:
+            ref = f.read().strip() or None
     except (FileNotFoundError, IOError):
         pass
 
@@ -301,6 +315,9 @@ def status():
     return jsonify({
         'healthy': True,
         'version': version,
+        # `<ref>@<sha>`, or null on a box predating /etc/lager/ref. Clients
+        # must tolerate null rather than assuming a value.
+        'ref': ref,
         'nets': nets,
         # Capabilities let the control plane route per box. `netCommand` means
         # this box serves POST /net/command, so the control plane can use the warm

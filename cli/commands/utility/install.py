@@ -139,6 +139,31 @@ def _format_duration(seconds):
     return f"{seconds} seconds"
 
 
+def _read_installed_head_sha(ssh_host, identity_args):
+    """Short commit SHA at the freshly-installed box's HEAD, or ''.
+
+    Best-effort and short-timeout: this only decorates /etc/lager/ref, so a
+    box whose layout puts the repo somewhere unexpected records the bare ref
+    name rather than failing an otherwise-successful install.
+    """
+    import re as _re
+    try:
+        result = subprocess.run(
+            ["ssh", *identity_args, ssh_host,
+             'git -C ~/box rev-parse --short HEAD 2>/dev/null'],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return ''
+    if result.returncode != 0:
+        return ''
+    for line in (result.stdout or '').splitlines():
+        candidate = line.strip()
+        if _re.fullmatch(r'[0-9a-f]{7,40}', candidate):
+            return candidate
+    return ''
+
+
 @click.command()
 @click.pass_context
 @click.option("--box", default=None, help="Box name (uses stored IP and username)")
@@ -524,6 +549,28 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
             ["ssh", "-t", *identity_args, ssh_host, write_version_cmd],
             timeout=120,  # Increased from 30 to match update.py timeout
             stderr=subprocess.DEVNULL,  # Suppress "Shared connection closed" noise
+        )
+
+        # Record WHICH ref produced this code, the same way `lager update`
+        # does. Without it a box installed from a branch is indistinguishable
+        # from one on the release tag, because the version file holds only a
+        # number and an unbumped branch declares the same one (#266). Written
+        # here rather than shared with update.py's store_deployed_ref because
+        # the two write paths differ: install has no /etc/lager yet owned by
+        # the box user, so it goes through sudo, where update's mktemp+mv in
+        # an already-group-writable dir does not.
+        deployed_sha = _read_installed_head_sha(ssh_host, identity_args)
+        ref_content = f'{version}@{deployed_sha}' if deployed_sha else str(version)
+        write_ref_cmd = (
+            f'echo "{ref_content}" > /tmp/lager_ref_tmp && '
+            'sudo rm -f /etc/lager/ref && '
+            'sudo mv /tmp/lager_ref_tmp /etc/lager/ref && '
+            'sudo chmod 644 /etc/lager/ref'
+        )
+        subprocess.run(
+            ["ssh", "-t", *identity_args, ssh_host, write_ref_cmd],
+            timeout=120,
+            stderr=subprocess.DEVNULL,
         )
 
         click.secho(f"Version {box_cli_version} stored on box", fg='green')

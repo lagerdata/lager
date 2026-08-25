@@ -10,6 +10,30 @@ import click
 import requests
 from ...box_storage import resolve_and_validate_box_with_name
 from ...core.net_group import BoxCommand
+from ...core.utils import looks_like_release_tag
+
+
+def _ref_suffix(box_ref):
+    """Render `/status`'s `ref` next to the version, flagged when it is not a
+    release tag.
+
+    Version alone cannot answer "what is this box running": a branch not yet
+    bumped past the last release declares the same `__version__` as the
+    release tag, so a box on `main` and a box on the tag print identically.
+    That is issue #266, and the failure mode it produced is someone running a
+    test against a box they believe is on the release and getting a green
+    result for unreleased code.
+
+    Returns '' for a box that reports no ref -- one that predates
+    /etc/lager/ref -- so an older box reads exactly as it did before rather
+    than gaining a scary-looking blank.
+    """
+    if not box_ref:
+        return ''
+    ref_name = str(box_ref).split('@', 1)[0]
+    if looks_like_release_tag(ref_name):
+        return f' ({box_ref})'
+    return ' ' + click.style(f'({box_ref} -- not a release build)', fg='yellow')
 
 
 @click.command(cls=BoxCommand)
@@ -41,14 +65,19 @@ def hello(ctx, box):
         version_response = _check_gateway(version_response, resolved_box)
 
         box_version = None
+        box_ref = None
         if version_response.status_code == 200:
             data = version_response.json()
             box_version = data.get('version') or data.get('box_version')
             if box_version == 'unknown':
                 box_version = None
+            # Absent on a box that predates /etc/lager/ref, so this stays
+            # None rather than displaying a placeholder that would read as
+            # "no ref recorded" on a box that simply cannot report one.
+            box_ref = data.get('ref')
 
         if box_version:
-            click.echo(f'Version: {box_version}')
+            click.echo(f'Version: {box_version}{_ref_suffix(box_ref)}')
         else:
             click.echo(f'Version: {click.style("Unknown", fg="yellow")}')
 

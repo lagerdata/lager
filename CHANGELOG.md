@@ -2,6 +2,46 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Fixed
+
+- **A box deployed from a branch now says so.** After
+  `lager update --version <branch>`, `/etc/lager/version` was left unchanged
+  and `lager hello` reported the same version string as before the deploy, so
+  a box running a branch was indistinguishable from one on the release tag by
+  any means the CLI offered. The only on-box trace was `/etc/lager/build-hash`,
+  which is opaque and surfaced nowhere.
+
+  The idempotence guard in `write_box_version_file` was not the bug. A branch
+  whose `__version__` has not been bumped past the last release serializes to
+  a string identical to the release tag's, so the guard correctly saw
+  unchanged content. The bug is that the file records a version *number*,
+  which carries no information about which ref produced it -- v0.36.2 and
+  main-thirteen-commits-later are the same bytes.
+
+  `lager update` and `lager install` now write `/etc/lager/ref` as
+  `<ref>@<sha>` (`main@85c1b64`), the box reports it from `/status`, and
+  `lager hello` prints it flagged when it is not a release tag:
+
+  ```
+  Version: 0.36.2 (main@85c1b64 -- not a release build)
+  ```
+
+  `lager boxes` names the ref in the version column for the same reason, since
+  across a fleet that is how a box gets left on a branch and someone else runs
+  a test against it believing it is on the release. The SHA matters as much as
+  the branch name: "main" alone is not reproducible once main moves.
+
+  A sibling file rather than a third field in `/etc/lager/version`, because
+  four readers parse that file with `split('|', 1)` -- box_http_server's
+  `/status`, the python service's `_read_box_version`, `mcp/config.py` and
+  `mcp/engine/bench_loader.py` -- and a third field would have landed inside
+  `updater_version` on every one of them.
+
+  Boxes that predate the file report no ref and read exactly as they did
+  before, rather than gaining an empty parenthetical they cannot fill.
+
 ## [0.42.0] - 2026-08-25
 
 ### Added
