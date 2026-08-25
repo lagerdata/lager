@@ -28,6 +28,25 @@ NETS_DIR = os.path.normpath(os.path.join(HERE, "..", "..", "..", "box", "lager",
 LAGER_DIR = os.path.dirname(NETS_DIR)  # box/lager
 DEBUG_NET_PATH = os.path.join(NETS_DIR, "debug_net.py")
 CONSTANTS_PATH = os.path.join(NETS_DIR, "constants.py")
+PROBES_PATH = os.path.join(LAGER_DIR, "debug", "probes.py")
+
+
+def _real_probes():
+    """Load the real ``box/lager/debug/probes.py`` by path, once.
+
+    Used for ``sniff_script_backend`` instead of a hand-rolled stub: the
+    routing in ``DebugNet.connect`` turns on its exact extension and marker
+    rules, and a stub here would let those drift without a test noticing.
+    Cheap to load — probes.py imports nothing but ``re`` at module level.
+    """
+    key = "_real_lager_debug_probes"
+    mod = sys.modules.get(key)
+    if mod is None:
+        spec = importlib.util.spec_from_file_location(key, PROBES_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[key] = mod
+        spec.loader.exec_module(mod)
+    return mod
 
 # debug_net lives at ``lager.nets.debug_net`` and does ``from ..debug import``,
 # so the stub must be two levels deep (PKG.nets.debug_net) for the relative
@@ -91,6 +110,7 @@ def _build_probes_stub():
     m.parse_device_field = lambda d: (d, None)
     m.parse_probe_serial = lambda addr: None
     m.compute_slot = lambda serial, all_serials: 0
+    m.sniff_script_backend = _real_probes().sniff_script_backend
     return m
 
 
@@ -288,6 +308,120 @@ class OpenOcdSelfHealTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             net._self_heal(op, retries=1, backoff=0.0)
         self.assertEqual(calls["connect"], 0, "DA1469x guard must hold for OpenOCD too")
+
+
+class HaltInPlaceTests(unittest.TestCase):
+    """``halt()`` stops the core where it is; ``reset(halt=True)`` does not.
+
+    The difference is the whole point of the method: OpenOCD ``reset halt``
+    pulses nRESET, so on a part running XIP out of QSPI it re-enters through
+    the bootloader instead of stopping on the image just programmed.
+    """
+
+    def _openocd_net(self, channel="NRF52840_XXAA"):
+        net = _make_net(channel=channel, backend="openocd")
+        debug_net.get_openocd_status = lambda **k: {"running": True, "pid": 9}
+        return net
+
+    def test_halt_issues_bare_halt_and_never_resets(self):
+        net = self._openocd_net()
+        seen = []
+
+        class _Rpc:
+            def halt(self):
+                seen.append("halt")
+                return "halted"
+
+            def reset(self, halt=False):
+                seen.append(f"reset(halt={halt})")
+                return "reset"
+
+        net._openocd_rpc = lambda **k: _Rpc()
+
+        self.assertEqual(net.halt(), "halted")
+        self.assertEqual(seen, ["halt"], "halt() must not pulse nRESET")
+
+    def test_reset_halt_is_a_different_operation(self):
+        """Guard against the two collapsing into one another."""
+        net = self._openocd_net()
+        seen = []
+
+        class _Rpc:
+            def halt(self):
+                seen.append("halt")
+                return "halted"
+
+            def reset(self, halt=False):
+                seen.append(f"reset(halt={halt})")
+                return "reset"
+
+        net._openocd_rpc = lambda **k: _Rpc()
+
+        net.reset(halt=True)
+        self.assertEqual(seen, ["reset(halt=True)"])
+
+    def test_halt_routes_through_self_heal(self):
+        """A halt fired in the settling window after flash() recovers."""
+        net = self._openocd_net()
+        calls = {"n": 0}
+
+        class _Rpc:
+            def halt(_self):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise RuntimeError("OpenOCD is not running")
+                return "halted"
+
+        net._openocd_rpc = lambda **k: _Rpc()
+        net.connect = lambda *a, **k: None
+
+        self.assertEqual(net._self_heal(lambda: net._openocd_rpc().halt(),
+                                        backoff=0.0), "halted")
+        self.assertEqual(calls["n"], 2)
+
+    def test_halt_empty_rpc_output_returns_empty_string(self):
+        """Mirrors reset()'s ``or ''`` -- callers get a str, never None."""
+        net = self._openocd_net()
+
+        class _Rpc:
+            def halt(self):
+                return None
+
+        net._openocd_rpc = lambda **k: _Rpc()
+        self.assertEqual(net.halt(), "")
+
+    def test_halt_on_jlink_raises_and_names_the_alternative(self):
+        """J-Link has no halt-in-place; the error has to say what to use."""
+        net = _make_net(backend="jlink")
+        with self.assertRaises(NotImplementedError) as ctx:
+            net.halt()
+        msg = str(ctx.exception)
+        self.assertIn("dbg", msg)
+        self.assertIn("connect(script=", msg)
+
+    def test_null_debug_exposes_halt(self):
+        """_NullDebug is a hand-maintained list; a gap reads as AttributeError."""
+        null = debug_net._NullDebug("dbg")
+        with self.assertRaises(RuntimeError):
+            null.halt()
+
+
+class ConnectHaltPassthroughTests(unittest.TestCase):
+    """``connect(halt=)`` reaches start_openocd_gdbserver instead of being pinned."""
+
+    def _connect(self, **kwargs):
+        net = _make_net(backend="openocd")
+        seen = {}
+        debug_net.get_openocd_status = lambda **k: {"running": False, "pid": None}
+        debug_net.start_openocd_gdbserver = lambda **k: seen.update(k) or {"pid": 1}
+        net.connect(**kwargs)
+        return seen
+
+    def test_halt_true_is_forwarded(self):
+        self.assertIs(self._connect(halt=True)["halt"], True)
+
+    def test_halt_defaults_to_false(self):
+        self.assertIs(self._connect()["halt"], False)
 
 
 class _RttTelnetServer:

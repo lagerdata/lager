@@ -42,6 +42,76 @@ from cli.commands.box.nets import nets as nets_group  # noqa: E402
 # Pure-helper tests                                                           #
 # --------------------------------------------------------------------------- #
 
+class TestSniffParityWithBox:
+    """The CLI sniffer and ``box/lager/debug/probes.py`` must agree, rule for rule.
+
+    The duplication is deliberate and documented at both sites: this copy has
+    to classify a file against ANY box version, so it cannot import the box
+    one. The cost is silent drift, and this class is what pays it. probes.py
+    imports nothing but ``re``, so it loads standalone from here.
+
+    If this fails, the two implementations have diverged: reconcile them, do
+    not relax the test.
+    """
+
+    @staticmethod
+    def _box_probes():
+        import importlib.util
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.dirname(os.path.abspath(__file__))))),
+            'box', 'lager', 'debug', 'probes.py')
+        spec = importlib.util.spec_from_file_location('_box_probes_parity', path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules['_box_probes_parity'] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    CASES = [
+        ('a.JLinkScript', b''),
+        ('a.jlinkscriptfile', b''),
+        ('a.cfg', b''),
+        ('a.tcl', b''),
+        ('a.ocd', b''),
+        ('A.JLINKSCRIPT', b'transport select swd\n'),
+        ('a.cfg', b'void InitTarget() {}\n'),
+        ('', b'transport select swd\n'),
+        ('', b'adapter driver ftdi\n'),
+        ('', b'source [find interface/ftdi/c232hm.cfg]\n'),
+        ('', b'jtag newtap chip tap\n'),
+        ('', b'flash bank x\n'),
+        ('', b'dap create x -chain-position y\n'),
+        ('', b'swj_newdap chip cpu\n'),
+        ('', b'target create x cortex_m\n'),
+        ('', b'void InitTarget() {}\n'),
+        ('', b'MEM_WriteU32(0, 0);\n'),
+        ('', b'void AfterTargetReset(void) {}\n'),
+        ('', b'void BeforeTargetReset(void) {}\n'),
+        ('', b'void AfterTargetDownload(void) {}\n'),
+        # Abstention cases -- both must decline, not merely agree on a guess.
+        ('', b'transport select swd\nvoid InitTarget() {}\n'),
+        ('', b'# nothing decisive\n'),
+        ('', b''),
+        (None, b''),
+        ('noext', b'\xff\xfe\x00\x01'),
+        # Known blind spots, pinned so a fix has to update BOTH copies.
+        ('', b'void InitTarget(void) {}\n'),
+        ('', b'JLINK_ExecCommand("x");\n'),
+    ]
+
+    def test_extension_sets_are_identical(self):
+        box = self._box_probes()
+        assert box._JLINK_EXTS == nets_mod._JLINK_EXTS
+        assert box._OPENOCD_EXTS == nets_mod._OPENOCD_EXTS
+
+    @pytest.mark.parametrize('filename,content', CASES)
+    def test_verdicts_match(self, filename, content):
+        box = self._box_probes()
+        assert (box.sniff_script_backend(filename, content)
+                == nets_mod._sniff_script_backend(filename, content)), (
+            'box and CLI sniffers disagree -- they have drifted')
+
+
 class TestProbeBackend:
     """``_probe_backend_for_net`` mirrors box-side ``resolve_backend`` but
     returns ``None`` instead of defaulting to J-Link when the VID is

@@ -4,6 +4,27 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ## [Unreleased]
 
+### Added
+
+- **`DebugNet.halt()` stops the target where it is, without a reset.** OpenOCD
+  only. `reset(halt=True)` runs OpenOCD's `reset halt`, which pulses nRESET and
+  re-enters through the reset vector; on a part executing in place out of QSPI
+  that re-runs the bootloader rather than stopping on the image just
+  programmed. `halt()` issues a bare `halt`, so XIP is left holding what was
+  written. It is the operation the self-heal path already assumed existed when
+  it documented why a DA1469x must not be auto-reattached unhalted.
+
+  J-Link has no standalone halt-in-place primitive -- `reset_device` and
+  `gdb_reset` both reset first -- so on that backend the call raises and names
+  the halt-first `.JLinkScript` as the supported route.
+
+- **`connect()` accepts `halt`, `openocd_config` and `jlink_script`.** `halt`
+  was pinned to `False` on the OpenOCD path even though the underlying
+  gdbserver call has always taken it; it is documented as reset-then-halt, with
+  a pointer to `halt()` for the other meaning. The two script kwargs are the
+  unambiguous per-backend forms of `script`, for a base64 blob that carries no
+  filename to classify.
+
 ### Fixed
 
 - **A box deployed from a branch now says so.** After
@@ -41,6 +62,27 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
   Boxes that predate the file report no ref and read exactly as they did
   before, rather than gaining an empty parenthetical they cannot fill.
+
+- **`DebugNet.connect(script=...)` was ignored under the OpenOCD backend.** No
+  error, no warning, no log line: the script was written to disk and then never
+  read, because only the J-Link path passes it downstream. A caller passing a
+  per-run attach script in-process -- the way a CI job avoids mutating shared
+  box state with `lager nets set-script` -- got a run that silently used
+  whatever attach sequence the net already had.
+
+  `script` now works on both backends. A `.JLinkScript` is executed by the
+  J-Link DLL and an OpenOCD `.cfg` is TCL read by the daemon, so the same file
+  cannot serve both; the override is classified by extension, then by content,
+  exactly as `lager nets set-script` already classifies one, and routed to
+  whichever backend it is for. A script handed to the wrong backend now raises
+  naming both formats, as does one that cannot be classified -- neither is
+  routed on a guess. Invalid input (a missing path that is not valid base64)
+  is still ignored, as before.
+
+  Per-connect overrides are written to a per-net path rather than the box-wide
+  cfg that the net record and the HTTP debug service share, so one session's
+  override cannot reach another net, and `disconnect` clears it -- the same
+  scoping J-Link scripts received in v0.38.0.
 
 ## [0.42.0] - 2026-08-25
 

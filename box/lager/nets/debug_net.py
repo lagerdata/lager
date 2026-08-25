@@ -19,7 +19,10 @@ from .constants import NetType
 # lockstep with ``OPENOCD_CONFIG_TEMP_PATH`` in ``box/lager/debug/service.py``.
 #
 # J-Link scripts are deliberately absent here: they are per net, resolved
-# through ``api.script_path_for_net`` (issue #195).
+# through ``api.script_path_for_net`` (issue #195). Per-connect OpenOCD cfg
+# overrides are per net for the same reason and resolve through
+# ``api.config_path_for_net`` -- see ``_connect_path_for``. Only the cfg
+# materialised from the net record lands on the shared path below.
 _OPENOCD_CONFIG_TEMP_PATH = '/tmp/lager_openocd_user.cfg'
 
 _SHARED_PATH_FOR_SUFFIX = {
@@ -37,6 +40,24 @@ def _target_path_for(suffix, net_name):
         from lager.debug.api import script_path_for_net
         return script_path_for_net(net_name)
     return _SHARED_PATH_FOR_SUFFIX.get(suffix)
+
+
+def _connect_path_for(suffix, net_name):
+    """Where a **per-connect** override for *suffix* belongs, or None.
+
+    Per net for both suffixes, deliberately. :func:`_target_path_for` is the
+    net-record equivalent and keeps OpenOCD cfgs on the shared path that
+    ``service.py`` also writes; a connect-time override must never touch that
+    file. It is scoped to one session on one net, and a shared path would put
+    it in front of every other net on the box -- issue #195 in its OpenOCD
+    form.
+    """
+    from lager.debug.api import config_path_for_net, script_path_for_net
+    if suffix == '.JLinkScript':
+        return script_path_for_net(net_name)
+    if suffix == '.cfg':
+        return config_path_for_net(net_name)
+    return None
 
 
 def materialise_user_script(net_info, *, explicit_key, b64_key, suffix):
@@ -59,9 +80,17 @@ def materialise_user_script(net_info, *, explicit_key, b64_key, suffix):
     half: a script written for one net was picked up by operations on *any*
     net, and outlived the session that wrote it. See issue #195.
 
-    OpenOCD cfgs stay on the shared path: the daemon reads its cfg once at
-    startup, so a per-net path would not change which cfg a running daemon is
-    using, and OpenOCD is one-daemon-per-probe rather than per-net.
+    OpenOCD cfgs from the **net record** stay on the shared path: the daemon
+    reads its cfg once at startup, so a per-net path would not change which
+    cfg a running daemon is using, OpenOCD is one-daemon-per-probe rather
+    than per-net, and ``service.py`` writes the same file on the HTTP path.
+
+    That reasoning covers this function only. A **per-connect** override
+    (``DebugNet.connect(script=...)`` / ``openocd_config=``) is a different
+    thing: it is scoped to one session on one net, ``connect`` is what
+    launches the daemon that reads it, and it goes to a per-net path via
+    :func:`_connect_path_for`. Putting those on the shared path would be
+    issue #195 in its OpenOCD form.
     """
     import base64
     import os
@@ -87,21 +116,24 @@ def materialise_user_script(net_info, *, explicit_key, b64_key, suffix):
         return None
 
 
-def _repoint_jlink_script(script, net_name=None):
-    """Copy a per-connect J-Link script override to the shared temp path.
+def _repoint_script(script, net_name=None, suffix='.JLinkScript'):
+    """Copy a per-connect script/cfg override to this net's path for *suffix*.
 
     Unlike :func:`materialise_user_script`, an existing path is *not* returned
-    as-is — its bytes are copied to **this net's** script path, so every later
+    as-is — its bytes are copied to **this net's** path, so every later
     operation on the net resolves the same file. It used to be copied to a path
     shared by all nets, which is issue #195.
 
     Args:
-        script: path to a ``.JLinkScript`` already on the box, OR a
-            base64-encoded script blob, OR None/empty.
+        script: path to a file already on the box, OR a base64-encoded blob,
+            OR None/empty.
+        net_name: the net the override is scoped to.
+        suffix: ``'.JLinkScript'`` or ``'.cfg'`` — which backend's per-net
+            path to write. Unknown suffixes are a no-op.
 
     Returns:
-        This net's script path when the override was materialised, else None —
-        the caller leaves the previously materialised script in place.
+        This net's path when the override was materialised, else None —
+        the caller leaves the previously materialised file in place.
 
     Never raises: empty, missing-path, or undecodable input is a no-op. The
     path-existence check runs first so a real path is never misread as
@@ -123,7 +155,7 @@ def _repoint_jlink_script(script, net_name=None):
             data = base64.b64decode(script, validate=True)
         if not data:
             return None
-        target = _target_path_for('.JLinkScript', net_name)
+        target = _connect_path_for(suffix, net_name)
         if not target:
             return None
         with open(target, 'wb') as f:
@@ -468,6 +500,7 @@ class _NullDebug:
     def connect(self, *a, **k): raise RuntimeError("Debug module not available")
     def disconnect(self, *a, **k): raise RuntimeError("Debug module not available")
     def reset(self, *a, **k): raise RuntimeError("Debug module not available")
+    def halt(self, *a, **k): raise RuntimeError("Debug module not available")
     def flash(self, *a, **k): raise RuntimeError("Debug module not available")
     def erase(self, *a, **k): raise RuntimeError("Debug module not available")
     def status(self, *a, **k): raise RuntimeError("Debug module not available")
@@ -507,6 +540,7 @@ try:
         parse_device_field,
         parse_probe_serial,
         compute_slot,
+        sniff_script_backend,
         BACKEND_JLINK,
         BACKEND_OPENOCD,
     )
@@ -794,10 +828,113 @@ try:
                     time.sleep(backoff * (attempt + 1))
             raise last_exc
 
+        def _classify_override(self, script):
+            """Which backend *script* is for, or this net's own when unreadable.
+
+            Returns this net's backend for input :func:`_repoint_script` will
+            no-op on anyway (a path that isn't on the box and isn't valid
+            base64) — that keeps ``connect``'s long-standing "invalid override
+            is ignored" contract instead of turning a typo into a raise.
+
+            Raises ``ValueError`` when the input IS readable but the sniff
+            can't classify it. That case is not a typo; it is a real script
+            about to be routed by a guess.
+            """
+            import base64
+            import os
+
+            filename, content = '', b''
+            if os.path.exists(script):
+                filename = script
+                try:
+                    with open(script, 'rb') as f:
+                        content = f.read(4096)
+                except OSError:
+                    return self.backend
+            else:
+                try:
+                    content = base64.b64decode(script, validate=True)[:4096]
+                except Exception:  # noqa: BLE001 — neither a path nor base64
+                    return self.backend
+                if not content:
+                    return self.backend
+
+            backend = sniff_script_backend(filename, content)
+            if backend is None:
+                raise ValueError(
+                    f"Could not tell whether the script passed to debug net "
+                    f"'{self.name}' is a J-Link .JLinkScript or an OpenOCD "
+                    f".cfg. Give it a recognised extension "
+                    f"(.JLinkScript / .cfg / .tcl), or pass it as "
+                    f"openocd_config= to say it is an OpenOCD config."
+                )
+            return backend
+
+        def _route_connect_overrides(self, script, openocd_config,
+                                     jlink_script=None):
+            """Materialise per-connect overrides; return the cfg to launch with.
+
+            ``script`` is polymorphic (see :meth:`connect`) and is routed to
+            whichever backend it turns out to be for. ``openocd_config`` and
+            ``jlink_script`` are the explicit per-backend forms and win over
+            it — they skip the sniff entirely, which is the way through when
+            a blob's format cannot be determined from its content.
+
+            Both land on per-net paths (:func:`_connect_path_for`), never the
+            box-wide cfg the net record and the HTTP debug service share, so
+            an in-process override cannot leak onto another net.
+            """
+            cfg_path = self._openocd_config_path
+
+            if script:
+                script_backend = self._classify_override(script)
+                if script_backend != self.backend:
+                    raise ValueError(
+                        f"debug net '{self.name}' uses the {self.backend} "
+                        f"backend, but the script passed to connect() is a "
+                        f"{script_backend} script. The two formats are not "
+                        f"interchangeable — {self.backend} cannot execute it."
+                    )
+                if script_backend == BACKEND_OPENOCD:
+                    new_cfg = _repoint_script(script, self.name, '.cfg')
+                    if new_cfg:
+                        cfg_path = new_cfg
+                else:
+                    new_script = _repoint_script(
+                        script, self.name, '.JLinkScript')
+                    if new_script:
+                        self._jlink_script_path = new_script
+
+            if openocd_config:
+                if self.backend != BACKEND_OPENOCD:
+                    raise ValueError(
+                        f"openocd_config is OpenOCD-only, and debug net "
+                        f"'{self.name}' uses the {self.backend} backend. "
+                        f"Pass a .JLinkScript as script= instead."
+                    )
+                new_cfg = _repoint_script(openocd_config, self.name, '.cfg')
+                if new_cfg:
+                    cfg_path = new_cfg
+
+            if jlink_script:
+                if self.backend == BACKEND_OPENOCD:
+                    raise ValueError(
+                        f"jlink_script is J-Link-only, and debug net "
+                        f"'{self.name}' uses the OpenOCD backend. Pass a "
+                        f".cfg as openocd_config= instead."
+                    )
+                new_script = _repoint_script(
+                    jlink_script, self.name, '.JLinkScript')
+                if new_script:
+                    self._jlink_script_path = new_script
+
+            return cfg_path
+
         # ---- Public API -----------------------------------------------------
 
         def connect(self, speed=None, transport=None, *,
-                    force=False, ignore_if_connected=False, script=None):
+                    force=False, ignore_if_connected=False, script=None,
+                    openocd_config=None, jlink_script=None, halt=False):
             """Start the gdbserver for this probe.
 
             Backend chosen automatically from the probe VID (or net's
@@ -820,24 +957,58 @@ try:
             ``connect_jlink``, which has the equivalent ladder baked into
             ``debug/api.py``.
 
-            ``script`` (J-Link only; the OpenOCD backend ignores it) is a
-            per-connect ``.JLinkScript`` override: a path on the box or a
-            base64 blob, copied to **this net's** script path so
-            ``flash``/``reset``/``read_memory`` all pick it up immediately
-            (they take it explicitly). An already-running gdbserver
-            only adopts the new script on a relaunch — pass ``force=True``;
-            ``ignore_if_connected=True`` returns early without relaunching,
-            though the file is still repointed for subsequent Commander ops.
-            Invalid input (missing path that isn't valid base64, empty
-            string) is silently ignored and the net's previously
-            materialised script stays in effect.
+            ``script`` is a per-connect debug-script override — a path on
+            the box or a base64 blob — copied to **this net's** path for the
+            format it turns out to be, so ``flash``/``reset``/``read_memory``
+            all pick it up immediately (they take it explicitly).
+
+            It works on **both** backends. The two formats are not
+            interchangeable (a ``.JLinkScript`` is executed by the J-Link
+            DLL; an OpenOCD ``.cfg`` is TCL read by the daemon), so the
+            override is classified by
+            :func:`~lager.debug.probes.sniff_script_backend` and routed to
+            whichever one it is — the same extension-then-content rule
+            ``lager nets set-script`` applies. Handing a net a script for the
+            *other* backend raises ``ValueError`` rather than running the
+            target under an attach sequence nobody asked for; so does a blob
+            the sniff cannot classify. Use ``openocd_config`` (or a
+            recognised file extension) to say which one explicitly.
+
+            ``openocd_config`` and ``jlink_script`` are the unambiguous
+            per-backend forms of the same thing, and win over ``script`` when
+            both are given. They exist because a base64 blob has no filename
+            to sniff, and the content markers do not catch everything --
+            notably ``void InitTarget(void)`` and ``JLINK_ExecCommand``, the
+            two commonest J-Link forms, are not among them (see
+            ``test/unit/box/test_script_backend_sniff.py``). A blob that
+            trips that gap raises rather than routing on a guess; pass it as
+            ``jlink_script`` and the sniff is skipped entirely.
+
+            Either override is scoped to this net and this session: it goes
+            to a per-net path, never the box-wide cfg the net record and the
+            HTTP debug service share, and ``disconnect`` clears it. An
+            already-running gdbserver only adopts a new override on a
+            relaunch — pass ``force=True``; ``ignore_if_connected=True``
+            returns early without relaunching, though the file is still
+            repointed for subsequent ops. Invalid input (a missing path that
+            isn't valid base64, an empty string) is ignored and the net's
+            previously materialised script stays in effect.
+
+            ``halt`` (OpenOCD only) runs ``reset halt`` once the daemon is
+            up. Note what that is: a **reset** followed by a halt -- OpenOCD
+            pulses nRESET, so anything the core was holding is gone. On a
+            part that executes in place out of QSPI this re-runs the
+            bootloader. When you want the core stopped *where it is* with
+            XIP untouched -- the usual want straight after ``flash()`` --
+            call :meth:`halt` instead. Ignored on J-Link, whose connect
+            ladder has no equivalent; use a halt-first ``.JLinkScript``
+            there.
             """
             speed = speed or self.speed
             transport = transport or self.transport
 
-            new_script = _repoint_jlink_script(script, self.name)
-            if new_script:
-                self._jlink_script_path = new_script
+            cfg_path = self._route_connect_overrides(
+                script, openocd_config, jlink_script)
 
             if self.backend == BACKEND_OPENOCD:
                 existing = get_openocd_status(serial=self.serial)
@@ -875,13 +1046,13 @@ try:
                             address=self._net_info.get('address'),
                             speed=attempt_speed,
                             transport=transport,
-                            halt=False,
+                            halt=halt,
                             gdb_port=self.gdb_port,
                             telnet_port=self.openocd_telnet_port,
                             tcl_port=self.openocd_tcl_port,
                             rtt_telnet_port=self.rtt_telnet_port,
                             serial=self.serial,
-                            openocd_config=self._openocd_config_path,
+                            openocd_config=cfg_path,
                             probe_channel=self.probe_channel,
                         )
                     except Exception as exc:  # noqa: BLE001 — surface last error
@@ -904,17 +1075,24 @@ try:
             )
 
         def disconnect(self):
-            """Stop the gdbserver for this probe, and drop this net's script.
+            """Stop the gdbserver for this probe, and drop this net's overrides.
 
-            The script belongs to the session, not to the box. Without the
-            clear it outlives the session that established it, so the next
-            operation on this net silently runs under it -- the same leak the
-            HTTP ``/debug/disconnect`` path fixes. OpenOCD cfgs stay on the
-            shared path and are not cleared here; see
-            :func:`materialise_user_script`.
+            A per-connect script or cfg belongs to the session, not to the
+            box. Without the clear it outlives the session that established
+            it, so the next operation on this net silently runs under it --
+            the same leak the HTTP ``/debug/disconnect`` path fixes.
+
+            Only the **per-net** files are cleared. The box-wide cfg written
+            from the net record (see :func:`materialise_user_script`) is
+            shared with the HTTP debug service and is not ours to remove.
             """
             if self.backend == BACKEND_OPENOCD:
-                return stop_openocd(serial=self.serial, tcl_port=self.openocd_tcl_port)
+                try:
+                    return stop_openocd(
+                        serial=self.serial, tcl_port=self.openocd_tcl_port)
+                finally:
+                    from lager.debug.api import clear_config_file
+                    clear_config_file(self.name)
             try:
                 result = disconnect(serial=self.serial, gdb_port=self.gdb_port)
             finally:
@@ -941,6 +1119,46 @@ try:
                                   script_file=self._jlink_script_path)
                 )
             return self._self_heal(_reset)
+
+        def halt(self):
+            """Halt the target where it is. OpenOCD only.
+
+            Not the same thing as ``reset(halt=True)``. That one runs
+            OpenOCD's ``reset halt``, which pulses nRESET and re-enters
+            through the reset vector; this issues a bare ``halt``, so the
+            core stops at whatever it was executing and nRESET is never
+            touched.
+
+            The distinction is load-bearing on parts that execute in place
+            out of QSPI. :meth:`_self_heal` already documents the DA1469x
+            case from the other side: its ``flash()`` deliberately leaves
+            the server down because an unhalted (re)attach "risks silent
+            QSPI-XIP garbage reads". Halting in place is how you attach
+            after a program without disturbing the image you just wrote.
+
+            Wrapped in :meth:`_self_heal` for the same reason :meth:`reset`
+            is -- fired in the settling window right after ``flash()`` it
+            should recover rather than throw. Returns the RPC output as a
+            string.
+
+            J-Link has no standalone halt-in-place primitive: both
+            ``reset_device`` and ``gdb_reset`` reset first. On that backend
+            the halt-first ``.JLinkScript`` handed to ``connect(script=...)``
+            is what does this job.
+            """
+            if self.backend != BACKEND_OPENOCD:
+                raise NotImplementedError(
+                    f"halt() is OpenOCD-only, and debug net '{self.name}' "
+                    f"uses the J-Link backend, which has no halt-in-place "
+                    f"primitive (reset_device/gdb_reset both reset first). "
+                    f"Attach a halt-first .JLinkScript via "
+                    f"connect(script=...) instead."
+                )
+
+            def _halt():
+                self._ensure_openocd_running()
+                return self._openocd_rpc().halt() or ''
+            return self._self_heal(_halt)
 
         def flash(self, firmware_path, flash_address=None):
             """Flash firmware to device. Returns combined output as a string.

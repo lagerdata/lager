@@ -44,6 +44,14 @@ JLINK_SCRIPT_TEMP_PATH = '/tmp/lager_jlink_script.JLinkScript'
 
 _SCRIPT_PATH_TEMPLATE = '/tmp/lager_jlink_script_{}.JLinkScript'
 
+# Per-connect OpenOCD cfg overrides. NOT the same file as
+# ``OPENOCD_CONFIG_TEMP_PATH`` in service.py: that one is the box-wide cfg
+# the HTTP debug service and the net record both write, and it stays shared.
+# This one is scoped to one net for one session, so an in-process override
+# cannot leak onto every other net on the box (issue #195, in its OpenOCD
+# form).
+_CONFIG_PATH_TEMPLATE = '/tmp/lager_openocd_cfg_{}.cfg'
+
 
 def _net_slug(net_name):
     """Filesystem-safe form of a net name, or None.
@@ -64,6 +72,37 @@ def script_path_for_net(net_name):
     """
     slug = _net_slug(net_name)
     return _SCRIPT_PATH_TEMPLATE.format(slug) if slug else None
+
+
+def config_path_for_net(net_name):
+    """Where this net's per-connect OpenOCD cfg lives, or None.
+
+    The OpenOCD counterpart of :func:`script_path_for_net`, and per net for
+    the same reason: a cfg describes how to attach to one target, not a
+    property of the box.
+    """
+    slug = _net_slug(net_name)
+    return _CONFIG_PATH_TEMPLATE.format(slug) if slug else None
+
+
+def clear_config_file(net_name):
+    """Remove this net's per-connect OpenOCD cfg. Called when its session ends.
+
+    The OpenOCD counterpart of :func:`clear_script_file`, and load-bearing for
+    the same reason: without it the override outlives the session that set it.
+    """
+    path = config_path_for_net(net_name)
+    if not path:
+        return False
+    try:
+        os.remove(path)
+        logger.info('Cleared OpenOCD cfg for net %s (%s)', net_name, path)
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as e:
+        logger.warning('Could not clear OpenOCD cfg %s: %s', path, e)
+        return False
 
 
 def _get_script_file(net_name=None):

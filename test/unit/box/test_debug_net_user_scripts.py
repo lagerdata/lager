@@ -30,6 +30,26 @@ NETS_DIR = os.path.normpath(
 )
 DEBUG_NET_PATH = os.path.join(NETS_DIR, 'debug_net.py')
 CONSTANTS_PATH = os.path.join(NETS_DIR, 'constants.py')
+PROBES_PATH = os.path.join(
+    os.path.dirname(NETS_DIR), 'debug', 'probes.py')
+
+
+def _real_probes():
+    """Load the real ``box/lager/debug/probes.py`` by path, once.
+
+    Used for ``sniff_script_backend`` instead of a hand-rolled stub: the
+    routing in ``DebugNet.connect`` turns on its exact extension and marker
+    rules, and a stub here would let those drift without a test noticing.
+    Cheap to load — probes.py imports nothing but ``re`` at module level.
+    """
+    key = "_real_lager_debug_probes"
+    mod = sys.modules.get(key)
+    if mod is None:
+        spec = importlib.util.spec_from_file_location(key, PROBES_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[key] = mod
+        spec.loader.exec_module(mod)
+    return mod
 
 
 _INSTALLED_STUB_KEYS = []
@@ -397,8 +417,8 @@ class OpenocdSpeedLadderTests(unittest.TestCase):
         self.assertEqual(debug_net.openocd_speed_ladder(None), [None])
 
 
-class RepointJlinkScriptTests(unittest.TestCase):
-    """``_repoint_jlink_script`` — per-connect override copied to the shared path."""
+class RepointScriptTests(unittest.TestCase):
+    """``_repoint_script`` — per-connect override copied to the shared path."""
 
     def setUp(self):
         # Same shared-path redirection as MaterialiseUserScriptTests.
@@ -440,7 +460,7 @@ class RepointJlinkScriptTests(unittest.TestCase):
     def test_existing_path_copies_bytes_to_per_net_path(self):
         blob = b'/* per-connect */\nvoid ResetTarget(void) {}\n'
         src = self._write_source(blob)
-        result = debug_net._repoint_jlink_script(src, 'debug1')
+        result = debug_net._repoint_script(src, 'debug1')
         # Copy-not-alias: the return is THIS NET's path, never the input path.
         self.assertEqual(result, self._shared('debug1'))
         self.assertNotEqual(result, src)
@@ -449,7 +469,7 @@ class RepointJlinkScriptTests(unittest.TestCase):
 
     def test_base64_blob_writes_per_net(self):
         blob = b'void InitTarget(void) {}\n'
-        result = debug_net._repoint_jlink_script(
+        result = debug_net._repoint_script(
             base64.b64encode(blob).decode('ascii'), 'debug1')
         self.assertEqual(result, self._shared('debug1'))
         with open(self._shared('debug1'), 'rb') as f:
@@ -462,7 +482,7 @@ class RepointJlinkScriptTests(unittest.TestCase):
         blob = (b'/* big script */\n' + b'void ResetTarget(void) {}\n' * 300)
         encoded = base64.b64encode(blob).decode('ascii')
         self.assertGreater(len(encoded), 4096)
-        result = debug_net._repoint_jlink_script(encoded, 'debug1')
+        result = debug_net._repoint_script(encoded, 'debug1')
         self.assertEqual(result, self._shared('debug1'))
         with open(self._shared('debug1'), 'rb') as f:
             self.assertEqual(f.read(), blob)
@@ -470,7 +490,7 @@ class RepointJlinkScriptTests(unittest.TestCase):
     def test_none_and_empty_are_noops(self):
         for bad in (None, '', '   ', 42):
             with self.subTest(value=bad):
-                self.assertIsNone(debug_net._repoint_jlink_script(bad, 'debug1'))
+                self.assertIsNone(debug_net._repoint_script(bad, 'debug1'))
                 self.assertFalse(os.path.exists(self._shared('debug1')))
 
     def test_nonexistent_path_preserves_prior_content(self):
@@ -478,12 +498,12 @@ class RepointJlinkScriptTests(unittest.TestCase):
             f.write(b'OLD')
         # The '.' is outside the base64 alphabet, so validate=True rejects it.
         self.assertIsNone(
-            debug_net._repoint_jlink_script('/does/not/exist.JLinkScript', 'debug1'))
+            debug_net._repoint_script('/does/not/exist.JLinkScript', 'debug1'))
         with open(self._shared('debug1'), 'rb') as f:
             self.assertEqual(f.read(), b'OLD')
 
     def test_garbage_not_base64_is_noop(self):
-        self.assertIsNone(debug_net._repoint_jlink_script('not base64 at all!!!', 'debug1'))
+        self.assertIsNone(debug_net._repoint_script('not base64 at all!!!', 'debug1'))
         self.assertFalse(os.path.exists(self._shared('debug1')))
 
     def test_existing_path_wins_over_base64_lookalike(self):
@@ -495,7 +515,7 @@ class RepointJlinkScriptTests(unittest.TestCase):
         cwd = os.getcwd()
         os.chdir(self._tmpdir)
         try:
-            self.assertEqual(debug_net._repoint_jlink_script('YWJj', 'debug1'), self._shared('debug1'))
+            self.assertEqual(debug_net._repoint_script('YWJj', 'debug1'), self._shared('debug1'))
         finally:
             os.chdir(cwd)
         with open(self._shared('debug1'), 'rb') as f:
@@ -545,6 +565,7 @@ def _load_debug_net_full():
     probes_mod.parse_device_field = lambda d: (d, None)
     probes_mod.parse_probe_serial = lambda a: None
     probes_mod.compute_slot = lambda s, all_s: 0
+    probes_mod.sniff_script_backend = _real_probes().sniff_script_backend
     probes_mod.BACKEND_JLINK = 'jlink'
     probes_mod.BACKEND_OPENOCD = 'openocd'
     _install('stub_box.debug.probes', probes_mod)
@@ -594,6 +615,11 @@ class DebugNetConnectScriptTests(unittest.TestCase):
         self._real_tmpl = _api._SCRIPT_PATH_TEMPLATE
         _api._SCRIPT_PATH_TEMPLATE = os.path.join(
             self._tmpdir, 'lager_jlink_script_{}.JLinkScript')
+        # Per-connect OpenOCD cfgs are per net too, and land on their own
+        # template — redirect it or the suite writes into the real /tmp.
+        self._real_cfg_tmpl = _api._CONFIG_PATH_TEMPLATE
+        _api._CONFIG_PATH_TEMPLATE = os.path.join(
+            self._tmpdir, 'lager_openocd_cfg_{}.cfg')
         self.debug_stub.connect_jlink.reset_mock()
 
     def tearDown(self):
@@ -601,6 +627,7 @@ class DebugNetConnectScriptTests(unittest.TestCase):
             self.full._SHARED_PATH_FOR_SUFFIX[suffix] = real
         from lager.debug import api as _api
         _api._SCRIPT_PATH_TEMPLATE = self._real_tmpl
+        _api._CONFIG_PATH_TEMPLATE = self._real_cfg_tmpl
 
     def _shared(self, net=None):
         """This net's script path (per net since issue #195)."""
@@ -635,6 +662,184 @@ class DebugNetConnectScriptTests(unittest.TestCase):
         kwargs = self.debug_stub.connect_jlink.call_args.kwargs
         self.assertEqual(kwargs['script_file'], '/some/prior.JLinkScript')
 
+    # ---- polymorphic ``script=`` routing ---------------------------------
+    #
+    # A .JLinkScript is executed by the J-Link DLL and an OpenOCD .cfg is TCL
+    # read by the daemon, so the same FILE can never serve both backends. The
+    # kwarg is routed by sniffing the format instead, exactly as
+    # ``lager nets set-script`` does; a real mismatch raises rather than
+    # running the target under an attach sequence nobody asked for.
+
+    JLINK_BODY = b'void InitTarget(void) { /* halt in place */ }\n'
+    OPENOCD_BODY = b'transport select swd\ntarget create x cortex_m\n'
+
+    def _openocd_net(self):
+        dbg = self.full.DebugNet('dbg', {'channel': 'DA14695'})
+        dbg.backend = self.full.BACKEND_OPENOCD
+        self.debug_stub.get_openocd_status.return_value = {'running': False}
+        self.addCleanup(self.debug_stub.get_openocd_status.reset_mock)
+        self.addCleanup(self.debug_stub.start_openocd_gdbserver.reset_mock)
+        return dbg
+
+    def _write(self, name, body):
+        path = os.path.join(self._tmpdir, name)
+        with open(path, 'wb') as f:
+            f.write(body)
+        return path
+
+    def _cfg(self, net):
+        from lager.debug import api as _api
+        return _api.config_path_for_net(net)
+
+    def _launched_cfg(self):
+        return self.debug_stub.start_openocd_gdbserver.call_args.kwargs[
+            'openocd_config']
+
+    def test_openocd_net_accepts_a_cfg_via_script(self):
+        """A per-run script passed in-process, on the backend that ignored it.
+
+        The point of routing rather than raising: a caller that does not want
+        to mutate shared box state with ``lager nets set-script`` gets one
+        call that works on either backend.
+        """
+        src = self._write('override.cfg', self.OPENOCD_BODY)
+        dbg = self._openocd_net()
+
+        dbg.connect(script=src)
+
+        self.assertEqual(self._launched_cfg(), self._cfg('dbg'))
+        with open(self._cfg('dbg'), 'rb') as f:
+            self.assertEqual(f.read(), self.OPENOCD_BODY)
+
+    def test_openocd_override_is_scoped_to_this_net(self):
+        """Issue #195 in its OpenOCD form: never the box-wide shared cfg."""
+        src = self._write('override.cfg', self.OPENOCD_BODY)
+        dbg = self._openocd_net()
+
+        dbg.connect(script=src)
+
+        shared = self.full._SHARED_PATH_FOR_SUFFIX['.cfg']
+        self.assertNotEqual(self._launched_cfg(), shared)
+        self.assertFalse(os.path.exists(shared))
+        self.assertNotEqual(self._cfg('dbg'), self._cfg('other'))
+
+    def test_openocd_net_rejects_a_jlink_script(self):
+        src = self._write('override.JLinkScript', self.JLINK_BODY)
+        dbg = self._openocd_net()
+        dbg._jlink_script_path = '/some/prior.JLinkScript'
+
+        with self.assertRaises(ValueError) as ctx:
+            dbg.connect(script=src)
+
+        msg = str(ctx.exception)
+        self.assertIn('openocd', msg)
+        self.assertIn('jlink', msg)
+        # Refused before anything was written, and nothing was mutated.
+        self.assertFalse(os.path.exists(self._shared('dbg')))
+        self.assertEqual(dbg._jlink_script_path, '/some/prior.JLinkScript')
+
+    def test_jlink_net_rejects_a_cfg(self):
+        src = self._write('override.cfg', self.OPENOCD_BODY)
+        dbg = self.full.DebugNet('dbg', {'channel': 'DA14695'})
+
+        with self.assertRaises(ValueError):
+            dbg.connect(script=src)
+
+    def test_unclassifiable_blob_raises_rather_than_guessing(self):
+        """A readable override we cannot place is not a typo -- say so."""
+        blob = base64.b64encode(b'# just a comment, no markers\n').decode()
+        dbg = self._openocd_net()
+
+        with self.assertRaises(ValueError) as ctx:
+            dbg.connect(script=blob)
+
+        self.assertIn('openocd_config', str(ctx.exception))
+
+    def test_classified_blob_routes_on_content(self):
+        """No filename to sniff, so the markers have to carry it."""
+        blob = base64.b64encode(self.OPENOCD_BODY).decode()
+        dbg = self._openocd_net()
+
+        dbg.connect(script=blob)
+
+        self.assertEqual(self._launched_cfg(), self._cfg('dbg'))
+
+    def test_explicit_openocd_config_wins_over_script(self):
+        cfg = self._write('explicit.cfg', b'# explicit\ntarget create y cortex_m\n')
+        other = self._write('other.cfg', self.OPENOCD_BODY)
+        dbg = self._openocd_net()
+
+        dbg.connect(script=other, openocd_config=cfg)
+
+        with open(self._cfg('dbg'), 'rb') as f:
+            self.assertIn(b'explicit', f.read())
+
+    def test_openocd_config_on_a_jlink_net_raises(self):
+        cfg = self._write('explicit.cfg', self.OPENOCD_BODY)
+        dbg = self.full.DebugNet('dbg', {'channel': 'DA14695'})
+
+        with self.assertRaises(ValueError) as ctx:
+            dbg.connect(openocd_config=cfg)
+
+        self.assertIn('OpenOCD-only', str(ctx.exception))
+
+    def test_no_override_falls_back_to_the_net_record_cfg(self):
+        dbg = self._openocd_net()
+        dbg._openocd_config_path = '/tmp/from_the_net_record.cfg'
+
+        dbg.connect()
+
+        self.assertEqual(self._launched_cfg(), '/tmp/from_the_net_record.cfg')
+
+    def test_jlink_script_kwarg_skips_the_sniff(self):
+        """The way through when content markers cannot classify a blob.
+
+        ``void InitTarget(void)`` -- the standard J-Link signature -- is not
+        one of the markers, so a blob carrying only that abstains and
+        ``script=`` raises. ``jlink_script=`` says which it is outright.
+        """
+        body = b'void InitTarget(void) { /* halt in place */ }\n'
+        blob = base64.b64encode(body).decode()
+        dbg = self.full.DebugNet('dbg', {'channel': 'DA14695'})
+
+        with self.assertRaises(ValueError):
+            dbg.connect(script=blob)
+
+        dbg.connect(jlink_script=blob)
+
+        kwargs = self.debug_stub.connect_jlink.call_args.kwargs
+        self.assertEqual(kwargs['script_file'], self._shared('dbg'))
+        with open(self._shared('dbg'), 'rb') as f:
+            self.assertEqual(f.read(), body)
+
+    def test_jlink_script_wins_over_script(self):
+        chosen = self._write('chosen.JLinkScript', b'void InitTarget() { /*A*/ }\n')
+        other = self._write('other.JLinkScript', b'void InitTarget() { /*B*/ }\n')
+        dbg = self.full.DebugNet('dbg', {'channel': 'DA14695'})
+
+        dbg.connect(script=other, jlink_script=chosen)
+
+        with open(self._shared('dbg'), 'rb') as f:
+            self.assertIn(b'/*A*/', f.read())
+
+    def test_jlink_script_on_an_openocd_net_raises(self):
+        src = self._write('override.JLinkScript', self.JLINK_BODY)
+        dbg = self._openocd_net()
+
+        with self.assertRaises(ValueError) as ctx:
+            dbg.connect(jlink_script=src)
+
+        self.assertIn('J-Link-only', str(ctx.exception))
+
+    def test_missing_path_is_still_silently_ignored(self):
+        """The long-standing contract: a typo'd override is not a raise."""
+        dbg = self._openocd_net()
+        dbg._openocd_config_path = '/tmp/from_the_net_record.cfg'
+
+        dbg.connect(script='/missing/override.cfg')
+
+        self.assertEqual(self._launched_cfg(), '/tmp/from_the_net_record.cfg')
+
 
 class DebugNetDisconnectClearsScriptTests(unittest.TestCase):
     """``DebugNet.disconnect()`` drops this net's script.
@@ -656,6 +861,9 @@ class DebugNetDisconnectClearsScriptTests(unittest.TestCase):
         self._real_tmpl = _api._SCRIPT_PATH_TEMPLATE
         _api._SCRIPT_PATH_TEMPLATE = os.path.join(
             self._tmpdir, 'lager_jlink_script_{}.JLinkScript')
+        self._real_cfg_tmpl = _api._CONFIG_PATH_TEMPLATE
+        _api._CONFIG_PATH_TEMPLATE = os.path.join(
+            self._tmpdir, 'lager_openocd_cfg_{}.cfg')
         self.debug_stub.disconnect.reset_mock()
         self.debug_stub.disconnect.side_effect = None
         self.debug_stub.disconnect.return_value = {'stopped': True}
@@ -663,6 +871,7 @@ class DebugNetDisconnectClearsScriptTests(unittest.TestCase):
     def tearDown(self):
         from lager.debug import api as _api
         _api._SCRIPT_PATH_TEMPLATE = self._real_tmpl
+        _api._CONFIG_PATH_TEMPLATE = self._real_cfg_tmpl
 
     def _write_script_for(self, net):
         from lager.debug import api as _api
@@ -701,6 +910,45 @@ class DebugNetDisconnectClearsScriptTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             dbg.disconnect()
         self.assertFalse(os.path.exists(path))
+
+    def _write_cfg_for(self, net):
+        from lager.debug import api as _api
+        path = _api.config_path_for_net(net)
+        with open(path, 'wb') as f:
+            f.write(b'transport select swd\n')
+        return path
+
+    def _openocd_net(self, name='dbg'):
+        dbg = self.full.DebugNet(name, {'channel': 'DA14695'})
+        dbg.backend = self.full.BACKEND_OPENOCD
+        self.addCleanup(self.debug_stub.stop_openocd.reset_mock)
+        return dbg
+
+    def test_disconnect_clears_this_nets_openocd_cfg(self):
+        """A per-connect cfg belongs to the session, same as the script."""
+        path = self._write_cfg_for('dbg')
+        self._openocd_net().disconnect()
+        self.assertFalse(os.path.exists(path))
+
+    def test_disconnect_leaves_another_nets_cfg_alone(self):
+        mine = self._write_cfg_for('dbg')
+        theirs = self._write_cfg_for('other')
+        self._openocd_net().disconnect()
+        self.assertFalse(os.path.exists(mine))
+        self.assertTrue(os.path.exists(theirs))
+
+    def test_openocd_cfg_is_cleared_even_when_the_stop_fails(self):
+        path = self._write_cfg_for('dbg')
+        self.debug_stub.stop_openocd.side_effect = RuntimeError('boom')
+        self.addCleanup(
+            lambda: setattr(self.debug_stub.stop_openocd, 'side_effect', None))
+        with self.assertRaises(RuntimeError):
+            self._openocd_net().disconnect()
+        self.assertFalse(os.path.exists(path))
+
+    def test_disconnect_returns_the_openocd_result(self):
+        self.debug_stub.stop_openocd.return_value = {'stopped': True}
+        self.assertEqual(self._openocd_net().disconnect(), {'stopped': True})
 
     def test_disconnect_is_safe_with_no_script_present(self):
         dbg = self.full.DebugNet('dbg', {'channel': 'DA14695'})
