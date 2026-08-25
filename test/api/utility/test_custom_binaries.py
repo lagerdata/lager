@@ -28,9 +28,10 @@ def main():
         _record("list_returns_list", isinstance(binaries, list),
                 f"type={type(binaries).__name__}")
         _record("list_count", True, f"found {len(binaries)} binaries")
-        if binaries:
-            for b in binaries:
-                print(f"    - {b}")
+        # Count, not names. This runs in public CI, and the names under
+        # CUSTOMER_BINARIES_PATH are whatever a customer uploaded via
+        # `lager binaries add` -- a name is not ours to publish. Anyone
+        # debugging a real box can still run `lager binaries list`.
     except Exception as e:
         _record("list_binaries", False, str(e))
 

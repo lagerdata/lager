@@ -448,6 +448,27 @@ jobs:
           echo "staged $(wc -c < firmware.hex) bytes of Intel HEX"
         shell: bash
 
+      # Zero-hardware API checks go first: they need no instrument and no
+      # relay, so they answer in seconds. If the box-side Python API is not
+      # answering at all, these say so before eight minutes of instrument
+      # timeouts do. Neither script reads an env var, so neither needs a
+      # --passenv — the rule below still applies to every step after these.
+      - name: Test net listing (Python API)
+        id: list-nets-test
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          lager python test/api/utility/test_list_nets.py --box "$LAGER_BOX"
+        shell: bash
+
+      - name: Test custom binaries (Python API)
+        id: custom-binaries-test
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          lager python test/api/utility/test_custom_binaries.py --box "$LAGER_BOX"
+        shell: bash
+
       # `lager python` runs the script ON THE BOX and forwards environment
       # only through explicit --env/--passenv — a step-level `env:` block
       # alone never reaches the box-side script, which then silently runs on
