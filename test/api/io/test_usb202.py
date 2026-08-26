@@ -131,6 +131,36 @@ def test_adc_basic():
 # ---------------------------------------------------------------------------
 # ADC supply accuracy: power supply drives known voltage into USB-202 ADC
 # ---------------------------------------------------------------------------
+_SETTLE_TIMEOUT = 5.0
+_SETTLE_INTERVAL = 0.1
+_SETTLE_FALLBACK = 1.5
+_SETPOINT_TOLERANCE = 0.02
+
+
+def _wait_for_setpoint(supply, setpoint_v):
+    """Block until the supply's output has finished ramping.
+
+    The output does not step to its setpoint. Measured on this fixture's
+    channel, 0.25 s after enable() reads 2.0 V against a 5 V setpoint and
+    0.5 s reads 4.5 V, still climbing -- so a fixed 0.3 s settle sampled the
+    ramp and the ADC comparison below failed on tolerance for a supply that
+    was working correctly.
+
+    Any failure falls back to a plain sleep; a settle helper must not be the
+    thing that takes a hardware suite down.
+    """
+    deadline = time.monotonic() + _SETTLE_TIMEOUT
+    try:
+        while time.monotonic() < deadline:
+            measured = float(supply.voltage())
+            if abs(measured - setpoint_v) / max(abs(setpoint_v), 0.001) < _SETPOINT_TOLERANCE:
+                return
+            time.sleep(_SETTLE_INTERVAL)
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        print(f"  (setpoint poll unavailable: {exc}; falling back to a fixed settle)")
+        time.sleep(_SETTLE_FALLBACK)
+
+
 def test_adc_supply_accuracy():
     print("\n" + "=" * 60)
     print("TEST: ADC Supply Accuracy")
@@ -167,7 +197,7 @@ def test_adc_supply_accuracy():
         supply.set_voltage(SUPPLY_VOLTAGE)
         supply.set_current(SUPPLY_CURRENT)
         supply.enable()
-        time.sleep(0.3)
+        _wait_for_setpoint(supply, SUPPLY_VOLTAGE)
 
         adc = Net.get(SUPPLY_ADC_NET, type=NetType.ADC)
         reading = adc.input()

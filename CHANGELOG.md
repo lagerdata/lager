@@ -51,6 +51,45 @@ All notable changes to the Lager platform are documented here. For detailed rele
 - **The `lager wifi` reference page is removed.** The command is `hidden=True`,
   so publishing a page advertised something the CLI conceals.
 
+- **The supply suites wait for the output to reach regulation instead of
+  sleeping a fixed interval.** A Rigol DP821 channel does not step to its
+  setpoint, and its current readback lags its voltage. Measured on a channel
+  wired to an ADC input: 0.25 s after `enable()` reads 2.0 V against a 5 V
+  setpoint, and 0.5 s reads 4.5 V, still climbing -- while the current register
+  still held a charge transient after the voltage had arrived, reporting
+  `V=5.0` and `I=0.24 A` together. The unloaded-current assertion sampled
+  exactly that window and failed intermittently on a channel that measures a
+  clean 0.0000 A once settled.
+
+  The settle now waits for the ramp to finish and then for the current readback
+  to stop changing. Deliberately not for it to fall below any threshold -- that
+  would assert the very thing the caller is about to test, so a genuine steady
+  load still fails. Waiting on voltage alone is insufficient (the current lags
+  it) and waiting on current alone is worse (before the ramp starts it reads
+  0.000 and looks settled immediately), so both conditions apply, in order. An
+  unsupported query falls back to a plain sleep rather than taking a hardware
+  suite down.
+
+  `MAX_UNLOADED_CURRENT` is unchanged at 0.1 A. It was never the problem: both
+  channels satisfy it comfortably once the output has settled, and a
+  range-relative per-channel bound is unnecessary -- a 1.5 s-settle sweep across
+  1/2/5/7 V read exactly 0.0000 A on both channels at every setpoint, 96
+  samples with zero spread.
+
+  The same fixed-settle exposure in the USB-202 supply-into-ADC check is fixed
+  the same way; it would otherwise have started failing on tolerance the first
+  time that check was enabled.
+
+### Changed
+
+- **Bench wiring fixtures are documented.** A permanent wire from DP821 CH2's
+  output to a USB-202 ADC input existed for a check whose repository variables
+  were never set, so it had never run and nothing recorded that the channel had
+  anything attached. The supply suite asserts that channel is unloaded, so the
+  wire presented as an intermittent per-channel instrument fault. The bench
+  README now carries a fixture table, on the principle that an undeclared wire
+  reads as a hardware failure.
+
 ## [0.43.0] - 2026-08-25
 
 ### Added

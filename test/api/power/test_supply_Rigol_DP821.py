@@ -50,6 +50,59 @@ def _close_enough(actual, expected, tol=TOLERANCE):
     return abs(actual - expected) / denom < tol
 
 
+# Two consecutive current reads this close together mean the readback has
+# stopped moving. Well under MAX_UNLOADED_CURRENT so a real steady load cannot
+# be mistaken for a settled one.
+_CURRENT_STABLE_DELTA = 0.005
+_SETTLE_TIMEOUT = 5.0
+_SETTLE_INTERVAL = 0.1
+_SETTLE_FALLBACK = 1.5
+
+
+def _wait_for_regulation(psu, setpoint_v):
+    """Block until the output has finished ramping AND its current readback
+    has stopped moving.
+
+    A fixed sleep was wrong in two separate ways. The output ramps: on a
+    channel wired to an ADC input, 0.25 s after enable() reads 2.0 V against a
+    5 V setpoint and 0.5 s reads 4.5 V, still climbing. And the current
+    readback lags the voltage, so a charge transient into whatever the channel
+    drives is still in the register after the voltage has arrived -- which is
+    how an "unloaded" assertion read 0.24 A on a channel that measures a clean
+    0.0000 A once settled.
+
+    Waiting on voltage alone is therefore not enough, and waiting on current
+    alone is worse: before the ramp starts, current reads 0.000 and would look
+    settled immediately. Both conditions, in that order.
+
+    Deliberately does NOT wait for the current to fall below any threshold --
+    that would assert the thing the caller is about to test. It waits for the
+    reading to stop changing, so a genuine steady load still fails the caller's
+    assertion.
+
+    Any failure falls back to a plain sleep. Some supply firmware does not
+    implement every query (see supply_net._safe), and a settle helper must not
+    be the thing that takes a hardware suite down.
+    """
+    deadline = time.monotonic() + _SETTLE_TIMEOUT
+    try:
+        while time.monotonic() < deadline:
+            if _close_enough(float(psu.voltage()), setpoint_v, TIGHT_TOLERANCE):
+                break
+            time.sleep(_SETTLE_INTERVAL)
+
+        prev = None
+        while time.monotonic() < deadline:
+            now = float(psu.current())
+            if prev is not None and abs(now - prev) < _CURRENT_STABLE_DELTA:
+                return
+            prev = now
+            time.sleep(_SETTLE_INTERVAL)
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        print(f"  (regulation poll unavailable: {exc}; falling back to a fixed settle)")
+        time.sleep(_SETTLE_FALLBACK)
+
+
 # ---------------------------------------------------------------------------
 # 1. Live Measurements
 # ---------------------------------------------------------------------------
@@ -67,7 +120,7 @@ def test_live_measurements():
         psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         psu.set_current(min(1.0, CHANNEL_MAX_CURRENT))
         psu.enable()
-        time.sleep(0.5)
+        _wait_for_regulation(psu, min(5.0, CHANNEL_MAX_VOLTAGE))
 
         try:
             mv = psu.voltage()
@@ -445,7 +498,7 @@ def test_current_limit_readback():
         psu = Net.get(SUPPLY_NET, type=NetType.PowerSupply)
         psu.set_voltage(min(5.0, CHANNEL_MAX_VOLTAGE))
         psu.enable()
-        time.sleep(0.3)
+        _wait_for_regulation(psu, min(5.0, CHANNEL_MAX_VOLTAGE))
 
         for limit_a in [0.5, 1.0]:
             psu.set_current(limit_a)
