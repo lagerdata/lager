@@ -100,7 +100,7 @@ class ValidateMounts(unittest.TestCase):
 
     def test_valid_mount(self):
         self.assertEqual(
-            cfg.validate(_v({"mounts": [{"host": "/Hyphen", "container": "/Hyphen"}]})),
+            cfg.validate(_v({"mounts": [{"host": "/appdata", "container": "/appdata"}]})),
             [],
         )
 
@@ -174,13 +174,13 @@ class ValidateReservedPaths(unittest.TestCase):
 
     def test_non_reserved_container_path_allowed(self):
         self.assertEqual(
-            cfg.validate(_v({"mounts": [{"host": "/h", "container": "/Hyphen"}]})),
+            cfg.validate(_v({"mounts": [{"host": "/h", "container": "/appdata"}]})),
             [],
         )
 
     def test_suggest_alternative_only_for_known_paths(self):
         self.assertEqual(cfg.suggest_alternative("/home/www-data/.ssh"), "/home/www-data/.ssh-git")
-        self.assertIsNone(cfg.suggest_alternative("/Hyphen"))
+        self.assertIsNone(cfg.suggest_alternative("/appdata"))
 
 
 class MigrateRaw(unittest.TestCase):

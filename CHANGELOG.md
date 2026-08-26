@@ -102,6 +102,45 @@ All notable changes to the Lager platform are documented here. For detailed rele
   guide, whose "Exposed" column described the published case as though it were
   the only one.
 
+- **`LAGER_DISABLE_UART_SERVICE` now actually frees port 9000.** The flag exists
+  so a box can leave 9000 to another service. `start-services.sh` honoured it and
+  declined to launch `box_http_server.py`, but `start_box.sh` published
+  `-p 9000:9000` unconditionally, and docker-proxy binds a published port whether
+  or not anything listens behind it. The port therefore stayed occupied and the
+  flag delivered none of what it exists for. `start_box.sh` now reads the same
+  value out of `BOX_CONFIG_ENV`, with the same `1|true|yes` rule
+  `start-services.sh` uses, and declines to publish the port; the startup banner
+  stops promising 9000 in that case.
+
+  The integration check could not have caught this -- it only `pgrep`s for the
+  process inside the container, which was already correct. It now also asserts
+  the host port is free.
+
+- **`lager box config apply` says what the container-side package steps did.**
+  `_bounce_container_rc` captures `start_box.sh`'s transcript and re-emits lines
+  only when the run exits 3, keeping only `[ERROR]`-prefixed ones, so a
+  successful apply printed nothing whatsoever about pip, cargo or npm. A step
+  that installed three crates and a step that found none to install were
+  indistinguishable from the CLI, which is how a suspected silent no-op survived
+  three rounds of triage.
+
+  Each step now reports what it did or why it did nothing, and apply relays those
+  lines on success, bounded and de-duplicated the way the error relay already is.
+  Worth naming the asymmetry this closes: apt and sysctl are applied host-side by
+  the CLI before the bounce and print their failures directly with a repair hint,
+  while pip, cargo and npm run inside `start_box.sh` and reached the operator only
+  as an exit code.
+
+- **The cargo integration check asserted a path that does not exist on the box.**
+  `CARGO_HOME` is `/opt/rust/cargo`, set in `box.Dockerfile` and backed by the
+  `lager-cargo` volume, so `cargo install` writes there and never to
+  `$HOME/.cargo`. `/home/www-data/.cargo` is absent entirely, so the assertion on
+  `/home/www-data/.cargo/bin/` could not pass for any crate, installed or not. It
+  now checks the real path, drops the login shell that `start_box.sh`'s own cargo
+  loop documents as dropping `/opt/rust/cargo/bin` from `PATH`, and prints the
+  directory listing on failure so a future run can tell "cargo did not install
+  it" from "we looked in the wrong place".
+
 ### Changed
 
 - **Bench wiring fixtures are documented.** A permanent wire from DP821 CH2's

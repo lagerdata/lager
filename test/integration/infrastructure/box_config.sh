@@ -280,7 +280,7 @@ start_section "LAGER_DISABLE_UART_SERVICE skips port-9000 service"
 
 # When the env var is truthy, start-services.sh must not launch
 # box_http_server.py. Customers need this to free port 9000 for their own
-# services (e.g. the Hyphen `core` broker that hardcodes port 9000).
+# services (e.g. a third-party message broker that binds port 9000).
 
 echo "Test 3.12: Apply config with LAGER_DISABLE_UART_SERVICE=1"
 ssh "$SSH_HOST" 'cat > /etc/lager/box_config.json' <<'EOF'
@@ -293,6 +293,18 @@ echo "Test 3.13: box_http_server.py is NOT running"
 sleep 5
 if ssh "$SSH_HOST" 'docker exec lager pgrep -f box_http_server.py' >/dev/null 2>&1; then
   echo "  box_http_server.py still running with disable env set"
+  track_test "fail"
+else
+  track_test "pass"
+fi
+
+# Not launching the service is only half of what the flag promises. A published
+# port is bound by docker-proxy whether or not anything listens behind it, so
+# `-p 9000:9000` alone kept the host port occupied and the port was never freed.
+echo "Test 3.13b: host port 9000 is free"
+if ssh "$SSH_HOST" 'docker ps --filter name=lager --format "{{.Ports}}"' 2>/dev/null | grep -q '9000'; then
+  echo "  container still publishes 9000 with disable env set:"
+  ssh "$SSH_HOST" 'docker ps --filter name=lager --format "{{.Ports}}"' 2>&1 | sed 's/^/    /'
   track_test "fail"
 else
   track_test "pass"
@@ -411,10 +423,22 @@ else
   track_test "fail"
 fi
 
+# CARGO_HOME is /opt/rust/cargo (box.Dockerfile, backed by the lager-cargo
+# volume), so `cargo install` writes there and never to $HOME/.cargo.
+# /home/www-data/.cargo does not exist on the box at all, so the old assertion
+# on that path could not pass for any crate, installed or not.
+#
+# `bash -c`, not `bash -lc`: start_box.sh's own cargo loop documents that a
+# login shell re-sources /etc/profile and drops /opt/rust/cargo/bin from PATH.
 echo "Test 6.14: cargo crate is installed in the container"
 sleep 3
-ssh "$SSH_HOST" "docker exec lager bash -lc 'ls /home/www-data/.cargo/bin/$CARGO_TEST_CRATE'" >/dev/null 2>&1 \
-  && track_test "pass" || track_test "fail"
+if ssh "$SSH_HOST" "docker exec lager bash -c 'test -x /opt/rust/cargo/bin/$CARGO_TEST_CRATE'" >/dev/null 2>&1; then
+  track_test "pass"
+else
+  echo "  $CARGO_TEST_CRATE not executable at /opt/rust/cargo/bin/; container holds:"
+  ssh "$SSH_HOST" "docker exec lager bash -c 'ls /opt/rust/cargo/bin/'" 2>&1 | sed 's/^/    /'
+  track_test "fail"
+fi
 
 echo "Test 6.15: Re-running apply with no changes is silent / unchanged"
 lager box config apply --box "$BOX" --yes 2>&1 | grep -qi "unchanged" \

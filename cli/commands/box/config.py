@@ -1709,10 +1709,51 @@ def _bounce_container_rc(ctx: click.Context, resolved_box: str) -> int:
             click.secho(f"  {line}", fg="red", err=True)
         return _BOUNCE_CONFIG_NOT_APPLIED
 
+    if rc == 0:
+        # Say what the container-side package steps did. Only [ERROR] lines were
+        # ever relayed, and only on rc 3, so a successful apply printed nothing
+        # about pip/cargo/npm at all -- which made "installed three crates" and
+        # "found no crates to install" look identical from here. That is what let
+        # a silent no-op sit behind a success message.
+        for line in _render_package_lines(stdout, stderr):
+            click.echo(f"  {line}")
+
     return _BOUNCE_OK if rc == 0 else _BOUNCE_FAILED
 
 
 _MAX_ERROR_CONTINUATION_LINES = 2
+
+# What the container-side pip/cargo/npm steps print when they run or decline to.
+# Matched by prefix rather than relayed wholesale: start_box.sh's transcript is
+# hundreds of lines of docker and build output, and only these summarise what
+# changed on the box.
+_PACKAGE_SUMMARY_PREFIXES = (
+    "Installing user ",
+    "Installed/verified ",
+    "No cargo crates to install",
+    "No npm packages to install",
+    "No pip packages to install",
+    "Not publishing port 9000",
+)
+_MAX_PACKAGE_LINES = 12
+
+
+def _render_package_lines(stdout: Optional[str], stderr: Optional[str]) -> list:
+    """The package-step summary lines from a successful start_box.sh run."""
+    lines = []
+    seen = set()
+    for stream in (stdout, stderr):
+        for raw in (stream or "").splitlines():
+            stripped = raw.strip()
+            if not stripped.startswith(_PACKAGE_SUMMARY_PREFIXES):
+                continue
+            if stripped in seen:
+                continue
+            seen.add(stripped)
+            lines.append(stripped)
+            if len(lines) >= _MAX_PACKAGE_LINES:
+                return lines
+    return lines
 
 
 def _render_error_lines(stdout: Optional[str], stderr: Optional[str]) -> list:
