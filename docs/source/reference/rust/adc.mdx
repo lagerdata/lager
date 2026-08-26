@@ -1,0 +1,102 @@
+---
+title: ADC
+description: Read analog voltages from an ADC net
+---
+
+Read a single-ended analog voltage from an ADC net on a LabJack, MCC or similar acquisition device.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let adc = lager.adc("adc1");
+```
+
+The handle is cheap and does no I/O until you call a method. The box resolves and
+validates the net name on every request, so a typo fails loudly rather than reading
+the wrong pin.
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `name()` | The net name this handle addresses |
+| `read()` | Read the input voltage in volts |
+
+## Method Reference
+
+### `name() -> &str`
+
+The net name this handle was created with. Does not touch the network.
+
+```rust
+assert_eq!(lager.adc("adc1").name(), "adc1");
+```
+
+### `read() -> Result<f64>`
+
+Read the voltage present on the ADC input, in volts.
+
+```rust
+let volts = adc.read()?;
+println!("{volts:.4} V");
+```
+
+**Returns:** `f64` — the measured voltage in volts. Signed: a negative reading is a
+real negative voltage, not an error.
+
+## Examples
+
+### Assert a rail came up
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let supply = lager.supply("supply1");
+let vbat = lager.adc("adc1");
+
+supply.set_voltage(3.3)?;
+supply.enable()?;
+std::thread::sleep(std::time::Duration::from_millis(200));
+
+let measured = vbat.read()?;
+assert!((measured - 3.3).abs() < 0.2, "rail is at {measured:.3} V, expected 3.3");
+supply.disable()?;
+```
+
+### Poll a decaying rail
+
+`read()` is a single cheap request, so polling in a loop is reasonable.
+
+```rust
+use std::time::{Duration, Instant};
+
+let start = Instant::now();
+while start.elapsed() < Duration::from_secs(5) {
+    let v = adc.read()?;
+    if v < 1.0 {
+        println!("rail collapsed after {:?}", start.elapsed());
+        break;
+    }
+    std::thread::sleep(Duration::from_millis(50));
+}
+```
+
+## Supported Hardware
+
+| Instrument | Channels | Notes |
+|---|---|---|
+| LabJack T7 | AIN0-AIN13 | 14 single-ended inputs |
+| MCC USB-202 | CH0-CH7 | 8 single-ended inputs |
+
+## Notes
+
+- Readings are **volts**, always. There is no unit selection on this net type.
+- An unconnected input floats; a reading near zero on a disconnected pin is the
+  instrument reporting noise, not a failure.
+- Each ADC net is one channel. A device with fourteen inputs is fourteen nets.
+- The box serializes access per physical instrument, so concurrent reads across
+  several ADC nets on one device queue rather than interleave.

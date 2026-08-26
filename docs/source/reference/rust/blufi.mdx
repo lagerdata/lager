@@ -1,0 +1,127 @@
+---
+title: BluFi
+description: Provision an ESP32's WiFi credentials over BLE
+---
+
+Provision an ESP32 onto a WiFi network over Bluetooth, using Espressif's BluFi
+protocol — the flow a phone app performs during onboarding, driven from a test.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let blufi = lager.blufi();
+```
+
+BluFi is a **box-level** capability, not a net, and it shares the box's single
+Bluetooth adapter with BLE.
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `scan()` | Scan for BluFi-capable BLE devices |
+| `connect()` | Connect by advertised BLE name |
+| `provision()` | Provision the target onto a WiFi network |
+| `wifi_scan()` | Ask the target to scan for networks it can see |
+| `status()` | The target's current WiFi state |
+| `version()` | The target's BluFi firmware version |
+
+## Types
+
+```rust
+pub struct BlufiStatus {
+    pub device_name: Option<String>,
+    pub op_mode: Option<i64>,          // 0 NULL, 1 STA, 2 SoftAP, 3 STA+SoftAP
+    pub op_mode_name: Option<String>,
+    pub sta_conn: Option<i64>,         // 0 connected, 1 failed, 2 connecting, 3 no IP
+    pub sta_conn_name: Option<String>,
+    pub soft_ap_conn: Option<i64>,
+}
+
+pub struct BlufiProvisionResult {
+    pub device_name: Option<String>,
+    pub ssid: String,
+    pub sta_conn: Option<i64>,         // 0 means connected
+    pub sta_conn_name: Option<String>,
+}
+
+pub struct BlufiNetwork {
+    pub ssid: String,
+    pub rssi: Option<i64>,   // dBm, as seen by the target
+}
+```
+
+## Method Reference
+
+### `scan(timeout: f64) -> Result<Vec<BleDevice>>`
+
+Scan for BluFi-capable devices advertising nearby.
+
+### `connect(device_name: &str) -> Result<BlufiDeviceInfo>`
+
+Connect by advertised BLE **name**, not address. Returns firmware version and WiFi
+state.
+
+### `provision(device_name: &str, ssid: &str, password: &str) -> Result<BlufiProvisionResult>`
+
+Provision the target onto a network. Fails as `Error::Box` when the target does not
+reach the connected state.
+
+```rust
+let r = blufi.provision("ESP-DUT", "bench-wifi", "hunter2")?;
+assert_eq!(r.sta_conn, Some(0), "not connected: {:?}", r.sta_conn_name);
+```
+
+### `wifi_scan(device_name: &str) -> Result<Vec<BlufiNetwork>>`
+
+Ask the target to scan for networks **it** can see. This is the target's radio
+reporting, not the box's — which is the point when testing antenna placement.
+
+### `status(device_name: &str) -> Result<BlufiStatus>` and `version(device_name: &str) -> Result<Option<String>>`
+
+The target's current WiFi state, and its BluFi firmware version.
+
+## Examples
+
+### Provision a fresh device and confirm it joined
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let blufi = lager.blufi();
+
+let devices = blufi.scan(10.0)?;
+let dut = devices.iter().find(|d| d.name.starts_with("ESP-"))
+    .expect("no BluFi device advertising");
+
+let info = blufi.connect(&dut.name)?;
+println!("BluFi firmware {:?}", info.version);
+
+let visible = blufi.wifi_scan(&dut.name)?;
+assert!(visible.iter().any(|n| n.ssid == "bench-wifi"),
+        "target cannot see the bench AP; check antenna placement");
+
+let result = blufi.provision(&dut.name, "bench-wifi", "hunter2")?;
+assert_eq!(result.sta_conn, Some(0), "provisioning failed: {:?}", result.sta_conn_name);
+
+let after = blufi.status(&dut.name)?;
+println!("op mode {:?}, station {:?}", after.op_mode_name, after.sta_conn_name);
+```
+
+## Notes
+
+- **`sta_conn == 0` means connected.** Zero is success here, not failure, and the
+  values run 0 connected, 1 failed, 2 connecting, 3 connected but no IP. A target at
+  3 has associated but has no DHCP lease, which is a different bug from a wrong
+  password.
+- Every action except `scan` connects over BLE and negotiates BluFi security first,
+  so the budgets are wide: the box-side connect timeout is 20 seconds, the client
+  allows that plus 40, `provision` gets 20 plus 60 because end-to-end provisioning
+  routinely takes over 30 seconds, and `wifi_scan` gets 20 plus 30 because the target
+  runs its own scan.
+- BluFi shares the box's one Bluetooth adapter with BLE, and the box serializes them.
+- Devices are addressed by advertised **name**, unlike BLE, which uses the address.

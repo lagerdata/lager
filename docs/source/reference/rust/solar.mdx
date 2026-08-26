@@ -1,0 +1,103 @@
+---
+title: Solar Simulation
+description: Present a photovoltaic source with programmable irradiance
+---
+
+Drive an EA PSB supply in photovoltaic mode so a DUT sees a real solar panel's
+current-voltage curve rather than a stiff supply.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let panel = lager.solar("solar1");
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `name()` | The net name this handle addresses |
+| `set()` | Initialize the instrument and start PV simulation |
+| `stop()` | Stop PV simulation and release the instrument's remote lock |
+| `irradiance()` | Read the configured irradiance |
+| `set_irradiance()` | Set irradiance in W/m2 |
+| `mpp_current()` | Maximum-power-point current |
+| `mpp_voltage()` | Maximum-power-point voltage |
+| `resistance()` | Read dynamic panel resistance |
+| `set_resistance()` | Set dynamic panel resistance |
+| `temperature()` | Cell temperature |
+| `voc()` | Open-circuit voltage |
+
+## Method Reference
+
+### `set() -> Result<()>`
+
+Initialize the instrument and enter photovoltaic mode. Call this before anything else.
+
+### `stop() -> Result<()>`
+
+Leave PV mode and release the instrument's remote lock, handing the front panel back.
+
+### `set_irradiance(watts_per_m2: f64) -> Result<f64>`
+
+Set irradiance, in W/m2, over the range 0 to 1500.
+
+```rust
+panel.set_irradiance(800.0)?;
+```
+
+**Returns:** `f64` — the value the instrument actually applied, which may be clamped.
+
+### `set_resistance(ohms: f64) -> Result<f64>`
+
+Set the dynamic panel resistance, the ratio that shapes the knee of the curve.
+
+**Returns:** the applied value.
+
+### `irradiance()`, `mpp_current()`, `mpp_voltage()`, `resistance()`, `temperature()`, `voc()`
+
+Reads, returning `f64` in W/m2, amps, volts, ohms, degrees Celsius and volts
+respectively.
+
+## Examples
+
+### Sweep irradiance across a day and check the charger tracks it
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let panel = lager.solar("solar1");
+
+panel.set()?;
+for irradiance in [200.0_f64, 500.0, 800.0, 1000.0, 400.0] {
+    let applied = panel.set_irradiance(irradiance)?;
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    let (v, i) = (panel.mpp_voltage()?, panel.mpp_current()?);
+    println!("{applied:>6.0} W/m2 -> MPP {v:.2} V, {i:.3} A, {:.2} W", v * i);
+}
+panel.stop()?;
+```
+
+## Supported Hardware
+
+| Instrument | Notes |
+|---|---|
+| EA PSB 10080-60 | Photovoltaic mode |
+| EA PSB 10060-60 | Photovoltaic mode |
+
+## Notes
+
+- **Every solar action re-asserts PV mode on the instrument before doing its work**,
+  including the reads. That makes even `voc()` slow, and it is why this net type has
+  the widest timeout budgets in the crate: 120 seconds for `set()` and `stop()`, and
+  90 seconds for everything else.
+- A solar net drives the same physical instrument a power-supply net can point at.
+  The box serializes both under one per-address lock, so their SCPI traffic cannot
+  interleave, but they are the same hardware.
+- `stop()` releases the instrument's remote lock. Skipping it leaves the front panel
+  locked out for whoever walks up to the bench next.

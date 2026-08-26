@@ -1,0 +1,196 @@
+---
+title: RTT
+description: Stream firmware log output, and drive an RTT console from a test
+---
+
+Read what your firmware prints over SEGGER RTT, and — with the `rtt` feature — write
+back into its down-channel so a cargo test can drive an interactive console.
+
+There are two paths, and they behave differently.
+
+| Path | Feature | Direction | Transport |
+|---|---|---|---|
+| `debug.rtt()` | none | Read only | HTTP stream |
+| `debug.rtt_interactive()` | `rtt` | Read and write | Socket.IO, box 0.35.0+ |
+
+<Note>
+  Prefer the interactive session. The one-way stream yields raw HTTP chunked-transfer
+  framing rather than clean payload — see the warning below.
+</Note>
+
+## Interactive sessions
+
+### Enabling the feature
+
+```toml
+[dev-dependencies]
+lager = { package = "lager-net", version = "0.4", features = ["rtt"] }
+```
+
+The `rtt` feature implies `blocking`. There is no async equivalent.
+
+### Opening a session
+
+```rust
+use lager::{LagerBox, RttOptions};
+use std::time::Duration;
+
+let lager = LagerBox::from_env()?;
+let dbg = lager.debug("debug1");
+
+dbg.connect()?;                    // required first, see below
+let mut rtt = dbg.rtt_interactive()?;
+```
+
+<Warning>
+  **The gdbserver must already be running.** Calling `rtt_interactive()` without
+  connecting first fails with `Error::Stream` and the message
+  `No debugger connection found for net 'debug1'. Start one first`.
+</Warning>
+
+### `RttOptions`
+
+```rust
+pub struct RttOptions {
+    pub channel: u32,               // default 0
+    pub search_addr: Option<u64>,   // RAM start for the control-block search
+    pub search_size: Option<u64>,   // size of the RAM region to search
+    pub chunk_size: Option<u64>,    // box-side read chunk, J-Link only
+}
+```
+
+`channel` selects the channel in **both** directions. `chunk_size` applies only to
+interactive sessions; the one-way HTTP stream ignores it.
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `netname()` | The debug net this session streams |
+| `channel()` | The RTT channel, both directions |
+| `backend()` | The debug backend, `"jlink"` or `"openocd"` |
+| `read()` | Bytes arriving within a timeout; may be empty |
+| `try_read()` | Bytes already buffered, without waiting |
+| `wait_for()` | Accumulate until a needle appears |
+| `write()` | Write raw bytes to the target's down-channel |
+| `write_str()` | Write a string to the down-channel |
+| `stop()` | Stop cleanly, releasing the box's RTT telnet port |
+
+## Method Reference
+
+### `read(timeout: Duration) -> Result<Vec<u8>>`
+
+Whatever up-channel bytes arrive within `timeout`.
+
+```rust
+let chunk = rtt.read(Duration::from_secs(3))?;
+print!("{}", String::from_utf8_lossy(&chunk));
+```
+
+<Note>
+  `read()` waits out the **full** timeout when the target is idle. In a poll loop use
+  `try_read()` instead, or every iteration costs the whole timeout.
+</Note>
+
+### `try_read() -> Result<Vec<u8>>`
+
+Bytes already received, without waiting. Returns an empty vector when nothing is
+buffered.
+
+### `wait_for(needle: &[u8], timeout: Duration) -> Result<Vec<u8>>`
+
+Accumulate output until `needle` appears.
+
+**Returns:** everything up to **and including** the needle. Bytes after it stay
+buffered for the next read. An empty needle returns immediately; a miss is
+`Error::Timeout`.
+
+```rust
+let banner = rtt.wait_for(b"boot complete", Duration::from_secs(10))?;
+```
+
+### `write(data: &[u8]) -> Result<()>` and `write_str(s: &str) -> Result<()>`
+
+Write into the target's RTT **down**-channel.
+
+<Warning>
+  Writing needs a firmware-declared down buffer on that channel. `defmt-rtt` alone
+  provides only the up buffer, and without a down buffer the target **silently
+  discards** what you write — the call still returns `Ok(())`. That is a target-side
+  fact, not a transport failure, so there is nothing the crate can report.
+</Warning>
+
+### `stop() -> Result<()>`
+
+Stop cleanly. Consumes the session. Dropping it also stops the session, but `stop()`
+surfaces errors rather than swallowing them.
+
+## The one-way stream
+
+`debug.rtt()` and `debug.rtt_with(&RttOptions)` return an `RttStream`, which
+implements `std::io::Read`. It needs no cargo feature and no Socket.IO.
+
+<Warning>
+  **`RttStream` yields raw HTTP chunked-transfer framing, not clean payload.** A read
+  returns bytes like `384\r\nblink 46823 period=500ms\n...`, where `384` is a hex
+  chunk length. Wrapping it in a `BufReader` and iterating lines produces `"64"`,
+  `"384"` and empty strings interleaved with real firmware output — and a hex chunk
+  length is indistinguishable from a line your firmware printed.
+
+  This is tracked as
+  [lager-rs#5](https://github.com/lagerdata/lager-rs/issues/5). Until it is fixed,
+  use `rtt_interactive()` where you need parseable output. The interactive path is
+  clean.
+</Warning>
+
+## Examples
+
+### Drive a firmware console and assert on the reply
+
+```rust
+use lager::LagerBox;
+use std::time::Duration;
+
+let lager = LagerBox::from_env()?;
+let dbg = lager.debug("debug1");
+
+dbg.connect()?;
+let mut rtt = dbg.rtt_interactive()?;
+
+rtt.wait_for(b"ready", Duration::from_secs(10))?;
+rtt.write_str("version\n")?;
+let reply = rtt.wait_for(b"\n", Duration::from_secs(2))?;
+assert!(String::from_utf8_lossy(&reply).contains("v1."));
+
+rtt.stop()?;
+dbg.disconnect(false)?;
+```
+
+### Collect boot output without blocking on an idle target
+
+```rust
+use std::time::{Duration, Instant};
+
+let mut log = Vec::new();
+let deadline = Instant::now() + Duration::from_secs(5);
+while Instant::now() < deadline {
+    log.extend_from_slice(&rtt.try_read()?);
+    std::thread::sleep(Duration::from_millis(50));
+}
+println!("{}", String::from_utf8_lossy(&log));
+```
+
+## Notes
+
+- **The box's RTT telnet port takes a single client.** A second session on the same
+  probe and channel is refused with `Error::Stream` and
+  `RTT port 9090 is already in use by another session`. Two different channels on one
+  probe are separate ports and can run at once.
+- Bytes are **raw**. `defmt` output is compressed binary and must be piped through
+  `defmt-print -e <elf>`; `wait_for` only helps against a plain-text console.
+- The connect confirmation timeout is 30 seconds, wider than UART's 15, because the
+  box may search RAM for the RTT control block and retry the telnet attach while the
+  gdbserver settles.
+- Sessions carry the gateway bearer token on the Socket.IO handshake, so a gated box
+  works with no extra setup.
+- Requires box software 0.35.0 or newer. An older box gives `Error::UnsupportedByBox`.

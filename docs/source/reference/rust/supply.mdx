@@ -1,0 +1,169 @@
+---
+title: Power Supply
+description: Drive a programmable power supply and read its full state
+---
+
+Set voltage and current, arm protection trips, and read a supply's complete state in
+one instrument transaction.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let supply = lager.supply("supply1");
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `name()` | The net name this handle addresses |
+| `set_voltage()` | Set the output voltage setpoint |
+| `set_current()` | Set the output current limit |
+| `enable()` | Turn the output on |
+| `disable()` | Turn the output off |
+| `set_ovp()` | Set and enable over-voltage protection |
+| `set_ocp()` | Set and enable over-current protection |
+| `clear_ovp()` | Clear an over-voltage trip |
+| `clear_ocp()` | Clear an over-current trip |
+| `state()` | Full structured state in a single transaction |
+
+## Types
+
+### `SupplyState`
+
+Every field is `Option` because the box returns a full-shaped record even when an
+individual read fails, and because not every supply reports every quantity.
+
+```rust
+pub struct SupplyState {
+    pub netname: Option<String>,
+    pub channel: Option<i64>,
+    pub error: Option<String>,        // set when the whole gather failed
+    pub voltage: Option<f64>,         // measured, V
+    pub current: Option<f64>,         // measured, A
+    pub power: Option<f64>,           // measured, W
+    pub enabled: Option<bool>,
+    pub mode: Option<String>,         // "CV" or "CC"
+    pub voltage_set: Option<f64>,     // setpoint, V
+    pub current_set: Option<f64>,     // setpoint, A
+    pub voltage_max: Option<f64>,     // instrument hardware limit, V
+    pub current_max: Option<f64>,     // instrument hardware limit, A
+    pub ocp_limit: Option<f64>,
+    pub ocp_tripped: Option<bool>,
+    pub ovp_limit: Option<f64>,
+    pub ovp_tripped: Option<bool>,
+}
+```
+
+## Method Reference
+
+### `set_voltage(volts: f64) -> Result<()>`
+
+Set the output voltage setpoint.
+
+```rust
+supply.set_voltage(3.3)?;
+```
+
+A value above the instrument's hardware limit is refused by the box before it
+reaches the instrument, as `Error::Box` with a message naming the limit —
+`Voltage 999.0V exceeds hardware limit 60.0V`.
+
+### `set_current(amps: f64) -> Result<()>`
+
+Set the current limit. Reaching it is what moves a supply from CV into CC mode.
+
+### `enable() -> Result<()>` and `disable() -> Result<()>`
+
+Turn the output on or off.
+
+<Warning>
+  Call `disable()` in teardown. A supply left enabled stays enabled after your test
+  process exits, and the next test starts with the DUT already powered.
+</Warning>
+
+### `set_ovp(volts: f64) -> Result<()>` and `set_ocp(amps: f64) -> Result<()>`
+
+Set **and enable** the protection trip. These are not just threshold writes.
+
+### `clear_ovp() -> Result<()>` and `clear_ocp() -> Result<()>`
+
+Clear a trip that has fired. Until cleared, the output stays down.
+
+### `state() -> Result<SupplyState>`
+
+Read everything in one instrument transaction.
+
+```rust
+let s = supply.state()?;
+println!("{:?} V at {:?} A, mode {:?}", s.voltage, s.current, s.mode);
+```
+
+There are no individual getters. `state()` is the read path, and gathering
+everything at once means the fields describe one moment rather than several.
+
+## Examples
+
+### Power up, verify, tear down
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let supply = lager.supply("supply1");
+
+supply.set_voltage(3.3)?;
+supply.set_current(0.5)?;
+supply.enable()?;
+std::thread::sleep(std::time::Duration::from_millis(200));
+
+let s = supply.state()?;
+assert_eq!(s.enabled, Some(true));
+let v = s.voltage.expect("output is on, so a measurement exists");
+assert!((v - 3.3).abs() < 0.05, "rail at {v:.4} V");
+
+supply.disable()?;
+```
+
+### Assert the DUT stays inside its current budget
+
+```rust
+supply.set_voltage(3.3)?;
+supply.set_ocp(0.25)?;   // trip rather than let it draw more
+supply.enable()?;
+
+std::thread::sleep(std::time::Duration::from_secs(5));
+
+let s = supply.state()?;
+assert_eq!(s.ocp_tripped, Some(false), "DUT tripped the 250 mA budget");
+supply.disable()?;
+```
+
+## Supported Hardware
+
+| Instrument | Channels | Hardware limits |
+|---|---|---|
+| Rigol DP821 | 2 | Channel 1 60 V / 1 A, channel 2 8 V / 10 A |
+| Rigol DP800 series | 2-3 | Per model |
+| Keithley 2281S | 1 | 20 V / 6 A; also serves a battery net |
+| Keysight E36000 series | 1-3 | Per model |
+
+## Notes
+
+- **A measurement can be `None` while the output is off.** A Keithley 2281S reports
+  `voltage`, `current` and `power` as `None` with the output disabled and real
+  numbers once enabled; a Rigol DP821 reports zeros in both states. This is why the
+  fields are `Option` — treat `None` as "not measured", not as zero.
+- `state()` returning `Ok` does not mean the instrument answered. When the box
+  cannot reach the hardware service, you get a fully-shaped `SupplyState` with every
+  measurement `None` and `error` set to a string explaining why. Check `error` before
+  trusting a field.
+- **Safety limits cap setpoints, not trips.** With a `max_voltage` ceiling configured
+  on the net, `set_voltage()` above it is refused, but `set_ovp()` above it is
+  accepted and applied. See [Client and Box](/source/reference/rust/client).
+- Supply and battery nets can point at the same physical instrument. The box
+  serializes them under one per-instrument lock, so they cannot interleave, but they
+  do share the instrument's mode.

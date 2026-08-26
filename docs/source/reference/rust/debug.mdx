@@ -1,0 +1,223 @@
+---
+title: Debug Probes
+description: Flash, erase, reset and read memory through a J-Link or OpenOCD probe
+---
+
+Drive a debug probe from a cargo test: connect, flash firmware, reset the target and
+read its memory.
+
+Debug nets are the one net type that does not talk to the box's API on port 9000.
+They reach the box's **debug service on port 8765** instead.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let dbg = lager.debug("debug1");
+```
+
+The net's saved record is fetched once on first use and cached on the handle. The
+cache is dropped whenever an operation fails, so a re-saved net is picked up on the
+next attempt rather than needing a new handle.
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `name()` | The net name this handle addresses |
+| `connect()` | Connect with defaults, starting a GDB server |
+| `connect_with()` | Connect with explicit options |
+| `disconnect()` | Disconnect, optionally leaving the gdbserver running |
+| `reset()` | Reset the target, optionally halting it |
+| `erase()` | Mass-erase the target's flash |
+| `flash()` | Flash a file, inferring its type from the extension |
+| `flash_bin()` | Flash a raw binary at an explicit base address |
+| `flash_bytes()` | Flash bytes already in memory |
+| `read_memory()` | Read target memory |
+| `info()` | Device, architecture, probe, serial, backend |
+| `status()` | Whether a gdbserver is running for this probe |
+
+RTT streaming lives on the same handle and is covered in
+[RTT](/source/reference/rust/rtt).
+
+## Types
+
+### `ConnectOptions`
+
+```rust
+pub struct ConnectOptions {
+    pub speed: Option<String>,  // "4000" (kHz) or "adaptive"
+    pub force: bool,            // start a fresh backend even if one is running
+    pub halt: bool,             // halt the target immediately after connecting
+    pub gdb: bool,              // start a GDB server
+}
+```
+
+`Default` sets `gdb: true` and everything else off, so `connect()` starts a GDB
+server. This is the one field where the default is not `false`.
+
+### `FirmwareKind`
+
+```rust
+pub enum FirmwareKind { Hex, Elf, Bin }
+```
+
+## Method Reference
+
+### `connect() -> Result<DebugConnection>`
+
+Connect using `ConnectOptions::default()`.
+
+```rust
+let conn = dbg.connect()?;
+if let Some(gdb) = &conn.gdb_server {
+    println!("gdb on {:?}, RTT telnet on {:?}", gdb.gdb_port, gdb.rtt_telnet_port);
+}
+```
+
+**Returns:** `DebugConnection`, carrying the device, probe, serial, backend, and a
+`GdbServer` with the ports that were opened. On a J-Link these come back as gdb 2331,
+SWO 2332, telnet 2333 and RTT telnet 9090; `tcl_port` is OpenOCD-only and is `None`
+on a J-Link, just as `swo_port` is J-Link-only.
+
+### `connect_with(opts: &ConnectOptions) -> Result<DebugConnection>`
+
+Connect with explicit options.
+
+```rust
+use lager::ConnectOptions;
+
+dbg.connect_with(&ConnectOptions {
+    speed: Some("4000".into()),
+    halt: true,
+    ..Default::default()
+})?;
+```
+
+### `disconnect(keep_running: bool) -> Result<()>`
+
+Disconnect. Pass `true` to leave the gdbserver up for an external GDB client to
+attach to; pass `false` to tear it down.
+
+### `reset(halt: bool) -> Result<()>`
+
+Reset the target. `halt: true` leaves it stopped at the reset vector.
+
+### `erase() -> Result<()>`
+
+Mass-erase the target's flash.
+
+<Warning>
+  **`erase()` drops the debugger connection.** The next `read_memory()` fails with
+  `Error::Box` and `No debugger connection found`. `flash` re-establishes on its own,
+  so an erase-then-flash sequence works, but an erase-then-read does not — call
+  `connect()` again first.
+</Warning>
+
+### `flash(firmware_path) -> Result<()>`
+
+Flash a file, inferring the type from its extension: `.hex`, `.elf` or `.bin`. An
+unrecognised extension is `Error::Config`.
+
+<Warning>
+  **A `.bin` is flashed at `0x08000000`**, the STM32 application base. On any other
+  family that address is wrong, and the call still returns `Ok(())` — verified on an
+  nRF5340, where `flash()` of a `.bin` succeeded while flash at `0x0` stayed erased.
+  This is a silent wrong result, not an error. Off STM32, use `flash_bin()` with the
+  correct base address.
+</Warning>
+
+### `flash_bin(firmware_path, address: u32) -> Result<()>`
+
+Flash a raw binary at an explicit base address. This is the correct call for any
+target whose application does not start at `0x08000000`.
+
+```rust
+dbg.flash_bin("target/app.bin", 0x0000_0000)?;   // nRF5340 application core
+```
+
+### `flash_bytes(contents: &[u8], kind: FirmwareKind, address: Option<u32>) -> Result<()>`
+
+Flash bytes you already hold, without writing them to a file first. `address` is used
+only for `FirmwareKind::Bin` and defaults to `0x08000000`.
+
+### `read_memory(address: u64, length: usize) -> Result<Vec<u8>>`
+
+Read `length` bytes from the target starting at `address`.
+
+```rust
+let vectors = dbg.read_memory(0x0000_0000, 8)?;
+let initial_sp = u32::from_le_bytes(vectors[0..4].try_into().unwrap());
+```
+
+Requires a live connection: without one it fails with `Error::Box` and
+`No debugger connection found`.
+
+### `info() -> Result<DebugInfo>` and `status() -> Result<DebugStatus>`
+
+`info()` reports the device, architecture, probe, serial and backend, plus whether a
+connection is live. `status()` reports just the gdbserver: whether one is running, its
+pid, and the probe serial. Both work without connecting first.
+
+```rust
+let i = dbg.info()?;
+println!("{:?} ({:?}) via {:?}", i.device, i.arch, i.backend);
+// nRF5340_xxAA_APP (armv8-m.main) via jlink
+```
+
+## Examples
+
+### Flash and verify
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let dbg = lager.debug("debug1");
+
+dbg.connect()?;
+dbg.erase()?;
+dbg.flash_bin("target/app.bin", 0x0)?;
+
+// erase() dropped the connection; flash() brought it back, but be explicit.
+dbg.connect()?;
+let image = std::fs::read("target/app.bin").expect("firmware image");
+let readback = dbg.read_memory(0x0, image.len().min(1024))?;
+assert_eq!(&readback[..], &image[..readback.len()], "flash verify failed");
+
+dbg.reset(false)?;
+dbg.disconnect(false)?;
+```
+
+### Leave a gdbserver up for an interactive session
+
+```rust
+dbg.connect()?;
+let conn = dbg.info()?;
+println!("attach with: target remote localhost:2331  ({:?})", conn.device);
+dbg.disconnect(true)?;   // keep_running: the server survives
+```
+
+## Supported Hardware
+
+| Probe | Backend | Notes |
+|---|---|---|
+| SEGGER J-Link and Flasher | jlink | SWO port available; no TCL port |
+| ST-LINK v2 / v2-1 / v3 | openocd | TCL port available; no SWO port |
+| RP2040 Picoprobe | openocd | |
+| Atmel EDBG, DAPLink | openocd | |
+
+## Notes
+
+- Timeout budgets are per operation and match the CLI: connect 30 s, flash 180 s,
+  erase 120 s, memory read 30 s, and 10 s for `info`, `status` and `disconnect`.
+- Net resolution requires the `debug` role. A net that exists but is something else
+  gives `net 'adc1' exists but is not a debug net`; a name that does not exist gives
+  `debug net 'nosuch' not found on this box`.
+- The debug service does not use the same success envelope as the port-9000 API. A
+  200 is success; anything else is `Error::Box` carrying the service's message.
+- Async note: `AsyncDebugNet` provides everything here, but no RTT.
+- A net configured with `allow_destructive: false` refuses `erase()` and `flash()`
+  with `Error::Box` and HTTP 403. See [Client and Box](/source/reference/rust/client).

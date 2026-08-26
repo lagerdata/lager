@@ -1,0 +1,102 @@
+---
+title: Webcam
+description: Start an MJPEG stream from a camera on the box
+---
+
+Start and stop an MJPEG video stream from a USB camera attached to the box, so a
+person or a vision tool can watch the DUT while a test runs.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let cam = lager.webcam("cam1");
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `name()` | The net name this handle addresses |
+| `start()` | Start the stream and return its URL |
+| `stop()` | Stop the stream |
+| `status()` | Whether a stream is running, and where |
+| `url()` | The stream URL, or `None` when nothing is running |
+
+## Types
+
+```rust
+pub struct WebcamStream {
+    pub url: String,
+    pub port: Option<i64>,
+    pub already_running: bool,   // true when an existing stream was reused
+}
+
+pub struct WebcamStatus {
+    pub running: bool,
+    pub url: Option<String>,
+    pub port: Option<i64>,
+    pub video_device: Option<String>,   // e.g. "/dev/video0"
+}
+```
+
+## Method Reference
+
+### `start() -> Result<WebcamStream>`
+
+Start the MJPEG stream. **Idempotent**: called while a stream is already up, it
+reports the existing one with `already_running: true` rather than starting a second.
+
+```rust
+let s = cam.start()?;
+println!("watch at {} (reused: {})", s.url, s.already_running);
+```
+
+This call gets a 30-second budget, because starting the stream subprocess takes a few
+seconds.
+
+### `stop() -> Result<bool>`
+
+Stop the stream.
+
+**Returns:** `false` if no stream was running.
+
+### `status() -> Result<WebcamStatus>` and `url() -> Result<Option<String>>`
+
+Whether a stream is running and where, or just the URL.
+
+## Examples
+
+### Record the bench while a long test runs
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let cam = lager.webcam("cam1");
+
+let stream = cam.start()?;
+println!("::notice::watch the DUT at {}", stream.url);
+
+let result = run_the_long_test(&lager);
+
+cam.stop()?;
+result?;
+```
+
+## Supported Hardware
+
+| Camera | Notes |
+|---|---|
+| Logitech BRIO, C920, C922, C925e, C930e, C270, C615, StreamCam | Any UVC camera the box enumerates |
+
+## Notes
+
+- **The stream URL points at the box as the client reached it.** A URL captured on
+  one network may not resolve from another, so do not persist it across environments.
+- This is a video stream, not a frame grab. There is no assert-on-image here — point
+  an MJPEG consumer (a browser, VLC, OpenCV) at the URL.
+- Always `stop()` in teardown. A running stream holds the camera open and the next
+  test cannot start one.

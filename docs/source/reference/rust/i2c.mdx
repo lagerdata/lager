@@ -1,0 +1,144 @@
+---
+title: I2C
+description: Scan an I2C bus and transfer bytes to devices on it
+---
+
+Drive an I2C bus from the box: discover devices, read and write registers, and run
+write-then-read transactions with a repeated start.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let bus = lager.i2c("i2c1");
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `name()` | The net name this handle addresses |
+| `configure()` | Apply bus overrides and return the effective config |
+| `scan()` | Scan the default address range for devices that ACK |
+| `scan_range()` | Scan an explicit inclusive address range |
+| `read()` | Read bytes from a device |
+| `write()` | Write bytes to a device |
+| `write_read()` | Write then read in one transaction, with a repeated start |
+
+## Types
+
+### `I2cEffectiveConfig`
+
+```rust
+pub struct I2cEffectiveConfig {
+    pub frequency_hz: Option<i64>,
+    pub pull_ups: Option<bool>,
+}
+```
+
+## Method Reference
+
+### `configure(frequency_hz: Option<u32>, pull_ups: Option<bool>) -> Result<I2cEffectiveConfig>`
+
+Apply bus settings and read back what actually took effect. A `None` argument keeps
+the net's saved value; anything you pass is applied live **and persisted on the box**.
+
+```rust
+let cfg = bus.configure(Some(400_000), Some(true))?;
+println!("{:?} Hz, pull-ups {:?}", cfg.frequency_hz, cfg.pull_ups);
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `frequency_hz` | `Option<u32>` | Bus clock in Hz, e.g. `100_000` or `400_000` |
+| `pull_ups` | `Option<bool>` | Enable the controller's internal pull-ups |
+
+### `scan() -> Result<Vec<u16>>`
+
+Scan the default address range.
+
+```rust
+for addr in bus.scan()? {
+    println!("device at 0x{addr:02x}");
+}
+```
+
+**Returns:** `Vec<u16>` of **7-bit** addresses that acknowledged, in ascending order.
+
+### `scan_range(start_addr: u16, end_addr: u16) -> Result<Vec<u16>>`
+
+Scan an explicit inclusive range.
+
+```rust
+let found = bus.scan_range(0x40, 0x50)?;
+```
+
+### `read(address: u16, num_bytes: u32) -> Result<Vec<u8>>`
+
+Read `num_bytes` from the device at `address`.
+
+```rust
+let bytes = bus.read(0x48, 2)?;
+```
+
+### `write(address: u16, data: &[u8]) -> Result<()>`
+
+Write `data` to the device at `address`.
+
+```rust
+bus.write(0x48, &[0x01, 0x60])?;
+```
+
+### `write_read(address: u16, data: &[u8], num_bytes: u32) -> Result<Vec<u8>>`
+
+Write, then read, in a single transaction using a repeated start rather than a stop
+and a fresh start. This is what a register read on most parts requires.
+
+```rust
+// Point at register 0x00, then read two bytes from it.
+let temp = bus.write_read(0x48, &[0x00], 2)?;
+```
+
+## Examples
+
+### Discover what is on the bus, then read a sensor register
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let bus = lager.i2c("i2c1");
+
+bus.configure(Some(100_000), Some(true))?;
+
+let addrs = bus.scan()?;
+assert!(addrs.contains(&0x48), "temperature sensor missing; bus has {addrs:02x?}");
+
+let raw = bus.write_read(0x48, &[0x00], 2)?;
+let celsius = i16::from_be_bytes([raw[0], raw[1]]) as f64 / 256.0;
+println!("{celsius:.2} C");
+```
+
+## Supported Hardware
+
+| Instrument | Pins | Notes |
+|---|---|---|
+| LabJack T7 | Any two FIO/EIO pins | Configured as an SDA/SCL pair when the net is created |
+| FTDI FT232H / FT2232H / FT4232H | MPSSE channels A and B | I2C is an MPSSE protocol, so channels C and D cannot serve it |
+| Total Phase Aardvark | Dedicated | |
+
+## Notes
+
+- Addresses are **7-bit**. Pass `0x48`, not the 8-bit read/write-shifted forms.
+- **A scan hit is not a promise.** A scan reports which addresses acknowledged an
+  address byte; a subsequent `read()` can still fail with
+  `No ACK from device at 0x48`. This is common on a bus with the controller's
+  internal pull-ups disabled, where the line can float convincingly enough to look
+  like an ACK. Treat `scan()` as discovery, not verification.
+- Bus transactions run on the box under the physical device's lock, so a
+  write-then-read cannot be interleaved by another request on the same device.
+- `configure()` persists. A frequency you set in one test is still set in the next.

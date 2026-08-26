@@ -1,0 +1,186 @@
+---
+title: GPIO
+description: Read, drive and wait on digital pins
+---
+
+Drive digital signals into your DUT and read signals back out, including a
+hardware-timed wait that blocks on the box rather than polling over the network.
+
+## Handle
+
+```rust
+use lager::{LagerBox, Level};
+
+let lager = LagerBox::from_env()?;
+let pin = lager.gpio("gpio1");
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `name()` | The net name this handle addresses |
+| `input()` | Read the current input level |
+| `output()` | Drive the output to a given level |
+| `output_high()` | Drive the output high |
+| `output_low()` | Drive the output low |
+| `toggle()` | Invert the output and return the new level |
+| `wait_for_level()` | Block until the input reaches a level; returns elapsed seconds |
+| `wait_for_level_with()` | As above, with full control including an unbounded wait |
+
+## Types
+
+### `Level`
+
+```rust
+pub enum Level { High, Low }
+```
+
+`Level::as_str()` gives `"high"` or `"low"`; `Level::is_high()` gives a `bool`.
+
+### `WaitForLevelOptions`
+
+```rust
+pub struct WaitForLevelOptions {
+    pub timeout: Option<f64>,        // None waits forever
+    pub scan_rate: Option<u32>,      // LabJack streaming sample rate, Hz
+    pub scans_per_read: Option<u32>, // LabJack scans per read batch
+    pub poll_interval: Option<f64>,  // poll interval for non-streaming drivers
+}
+```
+
+Every field defaults to `None`, meaning "use the box's default". Unset fields are
+omitted from the request entirely rather than sent as null.
+
+## Method Reference
+
+### `input() -> Result<Level>`
+
+Read the current level on the pin.
+
+```rust
+if pin.input()?.is_high() {
+    println!("asserted");
+}
+```
+
+**Returns:** `Level::High` or `Level::Low`.
+
+### `output(level: Level) -> Result<()>`
+
+Drive the output to `level`.
+
+```rust
+pin.output(Level::High)?;
+```
+
+### `output_high() -> Result<()>` and `output_low() -> Result<()>`
+
+Convenience wrappers over `output()`.
+
+### `toggle() -> Result<Level>`
+
+Invert the output.
+
+**Returns:** the level the pin is at **after** toggling, not before.
+
+```rust
+pin.output_high()?;
+let now = pin.toggle()?;
+assert_eq!(now, Level::Low);
+```
+
+### `wait_for_level(level: Level, timeout_s: f64) -> Result<f64>`
+
+Block until the input reaches `level`, or `timeout_s` elapses.
+
+```rust
+let elapsed = boot_ok.wait_for_level(Level::High, 5.0)?;
+println!("asserted after {elapsed:.3}s");
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `level` | `Level` | The level to wait for |
+| `timeout_s` | `f64` | Seconds to wait before the box gives up |
+
+**Returns:** `f64` — seconds elapsed before the level was reached. A pin already at
+the requested level returns almost immediately (order of a millisecond).
+
+The wait happens **on the box**, so the timing is not distorted by network latency
+and a short pulse is not missed between polls. The client widens its own HTTP budget
+to `timeout_s + 20s` so the device, not the transport, decides when to give up.
+
+<Note>
+  A wait that times out comes back as `Error::Box`, not `Error::Timeout` — the box
+  completed the request and reported that the level was never reached. The message
+  reads `GPIO 'gpio24' did not reach level 1 within 2.0s`. `Error::Timeout` means the
+  HTTP request itself expired, which is a different problem.
+</Note>
+
+### `wait_for_level_with(level: Level, opts: &WaitForLevelOptions) -> Result<f64>`
+
+Full control over the wait, including waiting forever.
+
+```rust
+use lager::WaitForLevelOptions;
+
+// No timeout at all: the client drops its HTTP deadline too.
+let elapsed = pin.wait_for_level_with(
+    Level::High,
+    &WaitForLevelOptions { timeout: None, ..Default::default() },
+)?;
+```
+
+## Examples
+
+### Simulate a button press and check the DUT reacts
+
+```rust
+use lager::{LagerBox, Level};
+
+let lager = LagerBox::from_env()?;
+let button = lager.gpio("button1");
+let led = lager.gpio("led1");
+
+button.output(Level::High)?;
+std::thread::sleep(std::time::Duration::from_millis(100));
+assert_eq!(led.input()?, Level::High, "LED did not follow the button");
+button.output(Level::Low)?;
+```
+
+### Measure boot time
+
+```rust
+let supply = lager.supply("supply1");
+let boot_ok = lager.gpio("boot_ok");
+
+supply.disable()?;
+std::thread::sleep(std::time::Duration::from_millis(500));
+supply.enable()?;
+
+let boot_ms = boot_ok.wait_for_level(Level::High, 10.0)? * 1000.0;
+assert!(boot_ms < 800.0, "boot took {boot_ms:.0} ms");
+```
+
+## Supported Hardware
+
+| Instrument | Pins |
+|---|---|
+| LabJack T7 | FIO0-FIO7, EIO0-EIO7, CIO0-CIO3, MIO0-MIO2 |
+| MCC USB-202 | DIO0-DIO7 |
+| FTDI FT232H / FT2232H / FT4232H | Async bitbang on all channels |
+
+## Notes
+
+- One net is one pin. Driving `gpio1` says nothing about `gpio2`.
+- A pin is an input or an output depending on what you last asked of it. Calling
+  `input()` on a pin you have been driving reads back your own output.
+- GPIO nets are **box-side** pins: they drive signals into the DUT or read signals
+  out of it. They are not DUT pins.
+- On FTDI parts, gpio is async bitbang and works on all four channels, unlike the
+  MPSSE protocols (debug, spi, i2c) which are limited to channels A and B.
+- Bench pins sometimes gate instrument power rather than DUT signals. Read a pin's
+  net name before driving it.

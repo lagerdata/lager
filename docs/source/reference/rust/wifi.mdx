@@ -1,0 +1,119 @@
+---
+title: WiFi
+description: Manage the box's own wireless interface
+---
+
+Scan for access points and join networks using the box's own wireless interface —
+useful when the DUT hosts an access point, or when the box needs to move between
+networks during a test.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let wifi = lager.wifi();
+```
+
+WiFi is a **box-level** capability, not a net. There is no net name and no `name()`.
+
+<Note>
+  This is the box's own interface. It is not the `NetType.Wifi` net available in the
+  Python API, which gates one DUT's internet access through a router's parental
+  controls, and it is not a router net.
+</Note>
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `status()` | Status of every wireless interface on the box |
+| `scan()` | Scan for access points on an interface |
+| `connect()` | Join a network |
+| `delete()` | Delete a saved connection profile |
+
+## Types
+
+```rust
+pub struct WifiInterface {
+    pub interface: String,   // e.g. "wlan0"
+    pub ssid: String,        // or a placeholder like "Not Connected"
+    pub state: String,       // "Connected" / "Disconnected"
+}
+
+pub struct WifiAccessPoint {
+    pub ssid: Option<String>,      // "Hidden" for hidden networks
+    pub address: Option<String>,   // BSSID
+    pub strength: Option<i64>,     // approximate percent, 0-100
+    pub security: Option<String>,  // "Open" / "Secured"
+}
+
+pub struct WifiConnection {
+    pub ssid: String,
+    pub connected: bool,
+    pub interface: Option<String>,
+    pub method: Option<String>,    // "nmcli" / "wpa_supplicant"
+}
+```
+
+## Method Reference
+
+### `status() -> Result<Vec<WifiInterface>>`
+
+Status of every wireless interface on the box.
+
+### `scan(interface: &str) -> Result<Vec<WifiAccessPoint>>`
+
+Scan for access points, strongest first.
+
+```rust
+for ap in wifi.scan("wlan0")? {
+    println!("{:?} {:?}% {:?}", ap.ssid, ap.strength, ap.security);
+}
+```
+
+### `connect(ssid: &str, password: &str) -> Result<WifiConnection>`
+
+Join a network. Pass an empty password for an open network.
+
+### `delete(ssid: &str) -> Result<()>`
+
+Delete a saved connection profile by SSID.
+
+## Examples
+
+### Assert the DUT brought up its access point
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let wifi = lager.wifi();
+let supply = lager.supply("supply1");
+
+supply.set_voltage(3.3)?;
+supply.enable()?;
+std::thread::sleep(std::time::Duration::from_secs(15));
+
+let aps = wifi.scan("wlan0")?;
+let dut_ap = aps.iter()
+    .find(|ap| ap.ssid.as_deref() == Some("DUT-SETUP"))
+    .expect("DUT did not bring up its setup AP");
+println!("AP up at {:?}% signal", dut_ap.strength);
+
+supply.disable()?;
+```
+
+## Notes
+
+- `capabilities.wifi_command` being `true` means the box **serves the route**, not
+  that it can do the work. A box whose container has no `nmcli` installed answers
+  `scan()` with `Error::Box` and HTTP 502 carrying
+  `[Errno 2] No such file or directory: 'nmcli'`, while `status()` returns an
+  interface reporting `Interface detection failed` rather than erroring at all.
+- Every action gets a flat 90-second budget: nmcli and iwlist calls block for seconds,
+  a connect can retry through wpa_supplicant, and they queue on the box's wifi lock.
+- `strength` is an approximate percentage, not dBm.
+- Moving the box between networks can move the address you reach it at. Be careful
+  connecting the box to a DUT-hosted AP if that is also the path your test is using.

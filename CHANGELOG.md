@@ -65,6 +65,42 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Added
 
+- **The Rust API reference now mirrors the Python one, page for page.** The Rust tab
+  was five pages against Python's twenty-seven, and a single 76-line `net-types.mdx`
+  table row was the whole counterpart to Python's twenty-four per-instrument pages.
+  A reader got one line where the Python reader got a method reference.
+
+  The tab is now 31 pages in the same six-group taxonomy the Python and CLI tabs
+  already use: a page per net type (supply, battery, solar, eload, watt, energy,
+  scope, adc, thermocouple, gpio, dac, i2c, spi, usb, uart, ble, wifi, blufi, router,
+  arm, webcam), the debug surface split into debug, rtt and dfu, and new client,
+  errors and async pages. `debug-and-uart.mdx` is retired into `debug`, `rtt` and
+  `uart` with a redirect.
+
+  Every page documents the timeout budget, box-version floor and gotchas for its net
+  type, none of which were published anywhere before. **All 149 Rust examples across
+  the 31 pages are compiled against `lager-net` 0.4.0**, and the API was exercised
+  against real hardware on a box running 0.43.0 first, so the return shapes and error
+  strings are observed rather than transcribed. Two examples were wrong and were
+  caught by that compile pass: `tokio::try_join!` over inline handle constructors does
+  not borrow-check, and `std::fs::read(..)?` cannot convert into `lager::Error`.
+
+  Behaviour worth calling out, all verified on hardware and previously undocumented:
+  `flash()` on a `.bin` infers the STM32 base `0x08000000` and **returns `Ok(())`
+  while writing nothing useful** on any other family, so `flash_bin()` is mandatory
+  there; `erase()` drops the debugger connection, so a following `read_memory()` fails
+  until you reconnect; a per-net safety ceiling caps `set_voltage`/`set_current` but
+  **not** `set_ovp`/`set_ocp`; a `bleCommand`/`wifiCommand` capability flag means the
+  route is registered, not that the box has BlueZ or `nmcli`; and `state()` returning
+  `Ok` does not mean the instrument answered -- check the `error` field.
+
+  `RttStream` is documented as yielding raw HTTP chunked-transfer framing rather than
+  clean payload, with interactive RTT recommended instead. Tracked upstream as
+  lagerdata/lager-rs#5.
+
+  The Python overview now links across to the Rust SDK, which nothing in the Python
+  tab did before.
+
 - **A Python API page for `NetType.Router`.** A router net drives a MikroTik
   access point over its REST API, and its methods include the bench's only
   network fault-injection tooling -- `block_internet`, `block_dns`,

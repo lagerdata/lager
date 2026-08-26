@@ -1,0 +1,120 @@
+---
+title: Energy Analyzer
+description: Integrate energy and charge, or gather statistics, over a window
+---
+
+Measure how much energy and charge a DUT consumed over a window, or gather
+current/voltage/power statistics across it.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let energy = lager.energy_analyzer("energy1");
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `name()` | The net name this handle addresses |
+| `read_energy()` | Integrate energy (joules) and charge (coulombs) over a window |
+| `read_stats()` | Current, voltage and power statistics over a window |
+
+## Types
+
+### `EnergyReading`
+
+```rust
+pub struct EnergyReading {
+    pub energy_j: Option<f64>,    // joules
+    pub charge_c: Option<f64>,    // coulombs
+    pub duration_s: Option<f64>,  // the window actually used
+}
+```
+
+### `EnergyStats` and `StatSummary`
+
+```rust
+pub struct EnergyStats {
+    pub current: Option<StatSummary>,  // amps
+    pub voltage: Option<StatSummary>,  // volts
+    pub power: Option<StatSummary>,    // watts
+}
+
+pub struct StatSummary {
+    pub mean: Option<f64>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub std: Option<f64>,
+}
+```
+
+## Method Reference
+
+### `read_energy(duration: f64) -> Result<EnergyReading>`
+
+Integrate energy and charge over `duration` seconds.
+
+```rust
+let r = energy.read_energy(10.0)?;
+println!("{:?} J, {:?} C", r.energy_j, r.charge_c);
+```
+
+### `read_stats(duration: f64) -> Result<EnergyStats>`
+
+Statistics over the window, rather than an integral.
+
+```rust
+let s = energy.read_stats(5.0)?;
+if let Some(c) = s.current {
+    println!("mean {:?} A, peak {:?} A", c.mean, c.max);
+}
+```
+
+## Examples
+
+### Budget a duty cycle
+
+```rust
+let energy = lager.energy_analyzer("energy1");
+
+// One full wake/transmit/sleep cycle.
+let cycle = energy.read_energy(30.0)?;
+let joules = cycle.energy_j.expect("analyzer reports energy");
+
+// 2000 mAh at 3.7 V, in joules.
+let battery_j = 2.0 * 3.7 * 3600.0;
+let days = (battery_j / joules) * 30.0 / 86_400.0;
+println!("projected battery life: {days:.1} days");
+assert!(days > 180.0, "only {days:.1} days of battery life");
+```
+
+### Catch a current spike a mean would hide
+
+```rust
+let s = energy.read_stats(10.0)?;
+let c = s.current.expect("analyzer reports current");
+let (mean, peak) = (c.mean.unwrap_or(0.0), c.max.unwrap_or(0.0));
+assert!(peak < mean * 20.0, "peak {peak:.4} A is {:.0}x the mean", peak / mean);
+```
+
+## Supported Hardware
+
+| Instrument | Notes |
+|---|---|
+| Joulescope JS220 | Wide dynamic range; suits sleep-to-transmit ratios |
+| Nordic PPK2 | Source-meter and ampere-meter modes |
+
+## Notes
+
+- **The box clamps the window to 0.1-120 seconds.** A request outside that range is
+  refused rather than silently adjusted.
+- The client widens its HTTP budget to `max(30, duration + 30)` seconds.
+- `duration_s` on the reply is the window the instrument actually used, which can
+  differ slightly from what you asked for. Divide by it, not by your request, when
+  converting an integral to an average.
+- Energy is joules and charge is coulombs. Convert to mWh or mAh in your test if
+  that is the unit your budget is written in.

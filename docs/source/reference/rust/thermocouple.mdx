@@ -1,0 +1,77 @@
+---
+title: Thermocouple
+description: Read temperature from a thermocouple net
+---
+
+Read a temperature in degrees Celsius from a thermocouple net.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let tc = lager.thermocouple("tc1");
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `name()` | The net name this handle addresses |
+| `read()` | Read the temperature in degrees Celsius |
+
+## Method Reference
+
+### `name() -> &str`
+
+The net name this handle was created with.
+
+### `read() -> Result<f64>`
+
+Read the junction temperature in degrees Celsius.
+
+```rust
+let celsius = tc.read()?;
+println!("{celsius:.1} C");
+```
+
+**Returns:** `f64` — degrees Celsius. There is no Fahrenheit or Kelvin variant;
+convert in your test if you need one.
+
+## Examples
+
+### Assert a part stays inside its thermal envelope under load
+
+```rust
+use lager::{EloadMode, LagerBox};
+use std::time::{Duration, Instant};
+
+let lager = LagerBox::from_env()?;
+let load = lager.eload("eload1");
+let tc = lager.thermocouple("tc1");
+
+let ambient = tc.read()?;
+load.set(EloadMode::Cc, 1.5)?;
+
+let deadline = Instant::now() + Duration::from_secs(60);
+let mut peak = ambient;
+while Instant::now() < deadline {
+    peak = peak.max(tc.read()?);
+    std::thread::sleep(Duration::from_secs(1));
+}
+
+assert!(peak - ambient < 40.0, "rose {:.1} C above ambient", peak - ambient);
+```
+
+## Supported Hardware
+
+Any thermocouple front-end the box exposes as a `thermocouple` role net. The
+amplifier and junction type are fixed when the net is created, not chosen per call.
+
+## Notes
+
+- Thermocouples settle slowly. A reading taken immediately after a thermal step is
+  the sensor's history, not the part's temperature — sample over time.
+- Cold-junction compensation happens on the instrument. The value returned is the
+  compensated temperature.

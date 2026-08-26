@@ -1,0 +1,217 @@
+---
+title: Client and Box
+description: Constructing LagerBox, discovering nets, locking the box, and safety limits
+---
+
+`LagerBox` is the entry point. It is cheap to construct and does no network traffic
+until you call something, so building one in a test helper costs nothing.
+
+## Constructing
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;               // reads LAGER_BOX_HOST
+let lager = LagerBox::connect("192.168.1.42")?;  // or an explicit host
+```
+
+`connect()` accepts a host name, an IP, a `host:port`, or a full URL. The scheme
+defaults to `http` and the port to 9000.
+
+### The builder
+
+```rust
+use lager::LagerBox;
+use std::time::Duration;
+
+let lager = LagerBox::builder("192.168.1.42")
+    .timeout(Duration::from_secs(30))
+    .debug_service_url("http://127.0.0.1:8765")
+    .bearer_token("...")
+    .build()?;
+```
+
+| Method | Description |
+|--------|-------------|
+| `timeout()` | Default HTTP budget for quick commands; 10 s unless changed |
+| `debug_service_url()` | Override the debug service base; defaults to the box on port 8765 |
+| `bearer_token()` | Pin a gateway token instead of resolving one |
+| `build()` | Construct the client |
+
+`timeout()` sets the budget for **quick** commands only. Long-running actions compute
+their own wider budgets regardless — a `wait_for_level` of 60 seconds is not cut short
+by a 10-second default.
+
+### Environment variables
+
+| Variable | Meaning |
+|---|---|
+| `LAGER_BOX_HOST` | The box `from_env()` connects to |
+| `LAGER_DEBUG_SERVICE_URL` | Override the debug service base URL, e.g. when tunneling |
+| `LAGER_GATEWAY_TOKEN` | Pin a bearer token for a gated box |
+| `LAGER_GATEWAY_AUTH_FILE` | Override the CLI token store path; defaults to `~/.lager_gateway_auth` |
+
+## Discovery
+
+| Method | Description |
+|--------|-------------|
+| `base_url()` | The normalized base URL, e.g. `http://192.168.1.42:9000` |
+| `health()` | Box health |
+| `status()` | Version, configured nets, and endpoint capabilities |
+| `nets()` | Every saved net record |
+| `usb_devices()` | Every USB device on the box's bus |
+| `usb_devices_matching()` | The same, filtered box-side by vid, pid or serial |
+
+```rust
+let status = lager.status()?;
+println!("box {} with {} nets", status.version, status.nets.len());
+
+for net in lager.nets()? {
+    println!("{} ({}) {:?}", net.name, net.role, net.instrument);
+}
+```
+
+### `BoxCapabilities`
+
+`status().capabilities` says which endpoints the box serves.
+
+| Field | Wire key | Meaning |
+|---|---|---|
+| `net_command` | `netCommand` | The box serves `POST /net/command` |
+| `net_command_roles` | `netCommandRoles` | Which roles it serves; empty on images predating role advertising |
+| `ble_command` | `bleCommand` | BLE route registered |
+| `wifi_command` | `wifiCommand` | WiFi route registered |
+| `blufi_command` | `blufiCommand` | BluFi route registered |
+| `custom_devices` | `customDevices` | Not used by this crate |
+| `binaries` | `binaries` | Not used by this crate |
+| `safety_limits` | `safetyLimits` | `PUT /nets/<name>/safety-limits`, box 0.35.0+ |
+
+<Warning>
+  **A capability flag mirrors route registration, not the box's ability to do the
+  work.** `ble_command: true` on a box whose container has no BlueZ still fails every
+  BLE call with `Error::Box` and HTTP 502; `wifi_command: true` without `nmcli`
+  installed does the same. Use these flags to decide whether an endpoint exists, not
+  whether it will succeed.
+</Warning>
+
+### `usb_devices()`
+
+Enumerates the box's USB bus from sysfs. It takes a few milliseconds, needs no
+exclusive access to anything, and is therefore safe to poll while waiting for a DUT
+to re-enumerate.
+
+```rust
+use lager::UsbDeviceFilter;
+
+let stm = lager.usb_devices_matching(&UsbDeviceFilter {
+    vid: Some("0483".into()),
+    ..Default::default()
+})?;
+```
+
+Requires box 0.33.0 or newer.
+
+<Note>
+  `devnum` changes every time a device re-enumerates. Match on `serial`, or on
+  vid/pid, when checking that a device came back after a power cycle.
+</Note>
+
+## Locking the box
+
+A shared bench needs a reservation, or two CI jobs will drive the same instruments at
+once.
+
+| Method | Description |
+|--------|-------------|
+| `lock_status()` | Who holds the box, if anyone |
+| `lock()` | Take an eternal lock as a user |
+| `lock_with()` | Take a lock with an explicit holder type and TTL |
+| `lock_heartbeat()` | Refresh a TTL lock |
+| `unlock()` | Release your lock |
+| `unlock_force()` | Release someone else's |
+| `lock_guard()` | RAII claim that releases on drop |
+
+```rust
+{
+    let _guard = lager.lock_guard("ci-job-4711")?;
+    // the box is yours for this scope
+    run_the_suite(&lager)?;
+}   // released here, even on an early return or a panic unwind
+```
+
+Contention is loud. Locking a box someone else holds is `Error::Box` with HTTP 409
+and `Box is locked by <holder>`; unlocking as a non-holder is HTTP 403 with the same
+message. Unlocking a box that is already free succeeds.
+
+<Note>
+  `lock_guard()` is blocking-only. The async client has every other lock method, but
+  no RAII guard.
+</Note>
+
+## Safety limits
+
+Per-net ceilings, enforced by the box's hardware service rather than by your test —
+so they hold even when the test misbehaves. Requires box 0.35.0 or newer.
+
+```rust
+use lager::SafetyLimits;
+
+lager.set_safety_limits("supply1", &SafetyLimits {
+    max_voltage: Some(3.6),
+    max_current: Some(0.5),
+    allow_destructive: Some(false),
+})?;
+```
+
+| Field | Meaning |
+|---|---|
+| `max_voltage` | Volts. Must be positive. |
+| `max_current` | Amps. Must be positive. |
+| `allow_destructive` | `Some(false)` makes the box refuse erase and flash on this net |
+
+| Method | Description |
+|--------|-------------|
+| `set_safety_limits()` | Write the limits record; returns what the box applied |
+| `safety_limits()` | Read the current limits; `Ok(None)` means unrestricted |
+| `clear_safety_limits()` | Remove all limits |
+
+A refused setpoint arrives as `Error::Box`:
+
+```text
+Refused voltage(5.0) on net 'supply2': exceeds max_voltage of 3.6 configured for this net.
+```
+
+and a refused erase as HTTP 403:
+
+```text
+Refused erase on net 'debug1': this net is configured with allow_destructive: false.
+```
+
+<Warning>
+  **A PUT replaces the whole record.** Fields you leave as `None` are removed, not
+  preserved. Setting only `max_voltage` on a net that already had a `max_current`
+  ceiling drops the current ceiling. Read the current limits first and modify what
+  you read.
+</Warning>
+
+<Warning>
+  **Ceilings cap setpoints, not protection trips.** With a 3.6 V ceiling,
+  `set_voltage(5.0)` is refused — but `set_ovp(12.0)` is accepted and applied. A
+  refused `set_ocp` on such a net is being refused by the instrument's own hardware
+  limit, not by the ceiling. Do not rely on a safety limit to bound an OVP or OCP
+  setting.
+</Warning>
+
+There is deliberately no `max_power`: one setter call establishes either a voltage or
+a current, never both, so the box cannot evaluate a power ceiling honestly and refuses
+the key outright.
+
+## Notes
+
+- Handles borrow the client, so keep the `LagerBox` alive as long as any handle
+  derived from it.
+- The box serializes access per physical instrument, so parallel tests cannot
+  interleave I/O on one instrument. Tests sharing a *net* still see each other's state
+  changes.
+- `nets()` falls back to the older `{"nets": [...]}` response shape automatically, so
+  it works against boxes that predate the bare-array form.

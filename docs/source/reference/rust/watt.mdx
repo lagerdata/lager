@@ -1,0 +1,108 @@
+---
+title: Watt Meter
+description: Measure mean power, current and voltage over a window
+---
+
+Integrate power, current and voltage over a caller-supplied window. Every reading is
+an average over time, not an instant sample.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let meter = lager.watt_meter("watt1");
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `name()` | The net name this handle addresses |
+| `power()` | Mean power in watts over a window |
+| `current()` | Mean current in amps over a window |
+| `voltage()` | Mean voltage in volts over a window |
+| `all()` | Current, voltage and power together in one transaction |
+
+## Types
+
+### `WattReading`
+
+```rust
+pub struct WattReading {
+    pub current: Option<f64>,     // amps, mean
+    pub voltage: Option<f64>,     // volts, mean
+    pub power: Option<f64>,       // watts, mean
+    pub duration_s: Option<f64>,  // the window actually used
+}
+```
+
+## Method Reference
+
+### `power(duration: f64) -> Result<f64>`
+
+Mean power over `duration` seconds.
+
+```rust
+let watts = meter.power(0.5)?;
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `duration` | `f64` | Integration window in seconds |
+
+**Returns:** `f64` — mean power in watts.
+
+### `current(duration: f64) -> Result<f64>` and `voltage(duration: f64) -> Result<f64>`
+
+Mean current in amps and mean voltage in volts over the same kind of window. Both
+need a meter that actually reports that quantity — a Joulescope or PPK2 does, a
+power-only meter does not.
+
+### `all(duration: f64) -> Result<WattReading>`
+
+Current, voltage and power gathered in a single instrument transaction. Prefer this
+over three separate calls: it is one window rather than three, so the numbers
+describe the same moment.
+
+```rust
+let r = meter.all(1.0)?;
+println!("{:?} A, {:?} V, {:?} W", r.current, r.voltage, r.power);
+```
+
+## Examples
+
+### Compare sleep current against a budget
+
+```rust
+let meter = lager.watt_meter("watt1");
+let dut = lager.gpio("sleep_req");
+
+dut.output_high()?;
+std::thread::sleep(std::time::Duration::from_secs(2)); // let it settle
+
+let sleeping = meter.all(5.0)?;
+let amps = sleeping.current.expect("meter reports current");
+assert!(amps < 50e-6, "sleep current {:.1} uA over budget", amps * 1e6);
+```
+
+## Supported Hardware
+
+| Instrument | Current | Voltage | Power |
+|---|---|---|---|
+| Joulescope JS220 | Supported | Supported | Supported |
+| Nordic PPK2 | Supported | Supported | Supported |
+| Yoctopuce watt meter | Varies by model | Varies by model | Supported |
+
+## Notes
+
+- **There is no default window.** The Rust API requires an explicit `duration`, unlike
+  the CLI, which defaults to `0.1`.
+- The client widens its HTTP budget to `max(30, duration + 20)` seconds, so a long
+  window does not trip the ordinary 10-second timeout.
+- A window is a real wait. `power(5.0)` blocks your test for five seconds.
+- Fields on `WattReading` are `Option` because a meter may not report all three; a
+  `None` is "this instrument does not measure that", not a failure.
