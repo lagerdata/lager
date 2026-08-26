@@ -96,8 +96,10 @@ CONCEPT_PAGES = {'overview', 'lager-file', 'locking'}
 # of the check, so add to this set only with a reason, never to quiet a miss.
 NOTES_EXEMPT = {'0.13.1'}
 
-# Page stem -> command name, where they differ.
-PAGE_TO_COMMAND = {'tc': 'thermocouple'}
+# Page stem -> command name, where they differ. Empty since the thermocouple page
+# was renamed off its old `tc` stem; kept because a page whose filename does not
+# match its command is a thing that recurs, and this is where it is declared.
+PAGE_TO_COMMAND: dict[str, str] = {}
 
 # Commands documented inside another command's page rather than their own.
 DOCUMENTED_WITHIN = {

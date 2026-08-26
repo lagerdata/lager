@@ -246,6 +246,26 @@ jobs:
         run: python tools/check_docs.py
         shell: bash
 
+      # The docs check above compares docs to the CLI; this catches the other
+      # half -- links that point nowhere. Three cross-references shipped missing
+      # the `/source` prefix that every published URL carries, each found by
+      # hand. Anchor checking is on because a heading-slug link is the variant
+      # nobody verifies by eye.
+      #
+      # Scoped to source/ deliberately: docs/reference/*.md are working notes
+      # that are not in docs.json, are therefore never published, and carry ~40
+      # stale relative paths. Gating on them would fail for links no reader can
+      # follow.
+      # Pinned, for the same reason shellcheck and actionlint above are: an
+      # unpinned tool in a required gate can turn red with no repo change. Node
+      # comes from the runner image; only the checker is pinned.
+      - name: Docs have no broken links
+        if: always()
+        run: |
+          cd docs
+          npx --yes mint@4.2.827 broken-links --files 'source/**/*.mdx' --check-anchors
+        shell: bash
+
       # Errors only: undefined names, syntax errors, f-string and assert
       # mistakes. Not style. The full default ruleset reports ~6300 findings on
       # this tree, which would be noise, not a gate. Vendored trees are

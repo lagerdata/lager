@@ -18,6 +18,18 @@ All notable changes to the Lager platform are documented here. For detailed rele
   release with no notes, a command with no page (or a page for a hidden
   command), and an options table naming a flag no click param declares.
 
+- **A guide for running Lager from CI.** Covers non-interactive sign-in,
+  registering the box, and the two checks worth failing a pipeline on: that the
+  box is reachable, and that it is running the commit under test. `lager python`
+  runs the script on the box against the box's own checkout, so a bench result
+  from a stale box is not evidence about the commit that triggered it.
+
+- **`mint broken-links` runs in the static-checks gate**, with anchor checking
+  on. Three cross-references had shipped missing the `/source` prefix that every
+  published URL carries, each found by hand. Scoped to `docs/source/` -- the
+  working notes under `docs/reference/` are not published and carry stale
+  relative paths a reader can never follow.
+
 ### Fixed
 
 - **`lager arm`'s reference page was un-runnable as written.** `--x/--y/--z` and
@@ -168,6 +180,12 @@ All notable changes to the Lager platform are documented here. For detailed rele
   Note the Rigol mapper needed no work: every measurement and trigger method
   already branches on the net's type and maps a logic net to `D0`-`D15`. Only
   the lookup was wrong.
+
+- **The thermocouple page published at `/reference/cli/tc`** while the command
+  is `lager thermocouple`. Renamed, with a redirect from the old path.
+
+- **The Release Notes navigation was a single flat list of 158 entries.**
+  Grouped into five version ranges.
 
 ### Changed
 

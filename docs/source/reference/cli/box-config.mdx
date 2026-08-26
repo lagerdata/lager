@@ -95,6 +95,29 @@ lager box-config apply --box my-lager-box
 
 On `apply`, the rules are installed to `/etc/udev/rules.d/99-lager-user.rules` on the box host and udev is reloaded, so existing devices pick up the new permissions.
 
+### `init`
+
+Create `/etc/lager/box_config.json` with defaults, seeding the default
+`box-tools` volume. Does nothing if the file already exists unless you pass
+`--force`.
+
+```bash
+lager box-config init --box <BOX>
+
+# Replace an existing config with the defaults
+lager box-config init --box <BOX> --force
+```
+
+| Option | Description |
+|--------|-------------|
+| `--box TEXT` | Lagerbox name or IP |
+| `--force` | Overwrite the config if it already exists |
+
+<Warning>
+`--force` discards the current config. Take a copy with
+`lager box-config export ./box.json` first if the box has any customisation you care about.
+</Warning>
+
 ### `reset`
 
 Erase the config to a truly empty state. Unlike `init` (which re-seeds the default `box-tools` volume), `reset` clears everything — a clean slate.
