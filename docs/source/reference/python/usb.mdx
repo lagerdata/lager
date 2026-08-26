@@ -330,6 +330,24 @@ for i in range(5):
 | YKUSH USB Hub | Per-port power switching |
 | Plugable RTS5411 dock | Per-port power switching on the four external Type-A sockets |
 
+### Backend classes
+
+`Net.get(name, type=NetType.Usb)` returns a wrapper that dispatches to the backend
+for whichever hub the net names, which is what most scripts should use. The
+per-backend classes are also importable directly, for code that needs to name one:
+
+```python
+from lager.automation import AcronameUSBNet, YKUSHUSBNet, PlugableUSBNet
+```
+
+They are exported from `lager.automation` and from `lager.automation.usb_hub`.
+
+<Note>
+Prefer `Net.get`. Constructing a backend class directly ties the script to one
+model of hub, so moving the test to a bench with a different hub means editing
+code rather than the net record.
+</Note>
+
 ## Notes
 
 - USB nets must be configured on the Lager Box with hub serial number and port mapping

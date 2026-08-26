@@ -17,9 +17,10 @@ The Net-based API provides methods for embedded debugging operations.
 
 | Method | Description |
 |--------|-------------|
-| `connect(speed, transport, *, script, force, ignore_if_connected)` | Connect to target device (optional per-connect J-Link script override) |
+| `connect(speed, transport, *, force, ignore_if_connected, script, openocd_config, jlink_script, halt)` | Connect to target device (optional per-connect debug-script override) |
 | `disconnect()` | Disconnect from target |
 | `reset(halt)` | Reset the device |
+| `halt()` | Halt the target where it is, without a reset (OpenOCD only) |
 | `flash(firmware_path)` | Flash firmware to device |
 | `erase()` | Perform full chip erase |
 | `read_memory(address, length)` | Read memory from device |
@@ -51,7 +52,7 @@ dbg = Net.get('DUT', type=NetType.Debug)
 
 **Note:** The debug net must be configured with the target device name stored in the `channel` field (e.g., 'NRF52840_XXAA', 'R7FA0E107').
 
-### `connect(speed=None, transport=None, *, script=None, force=False, ignore_if_connected=False)`
+### `connect(speed=None, transport=None, *, force=False, ignore_if_connected=False, script=None, openocd_config=None, jlink_script=None, halt=False)`
 
 Connect to the target device (start the gdbserver for this probe). The backend
 (J-Link or OpenOCD) is chosen automatically from the probe.
@@ -76,22 +77,37 @@ dbg.connect(script='/home/lagerdata/probes/my_target.JLinkScript')
 |-----------|------|---------|-------------|
 | `speed` | `str` | `'4000'` | Interface speed in kHz (e.g., '4000') or 'adaptive' |
 | `transport` | `str` | `'SWD'` | Transport protocol ('SWD' or 'JTAG') |
-| `script` | `str` | `None` | **J-Link only** — a per-connect `.JLinkScript` override: a path on the box **or** a base64-encoded script blob. It is copied to the shared script temp path so subsequent `flash()` / `reset()` / `read_memory()` calls pick it up immediately. The OpenOCD backend ignores this. |
+| `script` | `str` | `None` | A per-connect debug-script override, on **either** backend: a path on the box **or** a base64-encoded blob. Copied to this net's path for whichever format it turns out to be, so subsequent `flash()` / `reset()` / `read_memory()` calls pick it up immediately. The format is classified by extension then content; a script for the *other* backend, or a blob that cannot be classified, raises `ValueError` rather than running the target under an attach sequence nobody asked for. |
 | `force` | `bool` | `False` | Stop any gdbserver already running for this probe and start fresh. |
 | `ignore_if_connected` | `bool` | `False` | If a gdbserver is already running for this probe, return its status without touching it. |
+| `openocd_config` | `str` | `None` | The unambiguous OpenOCD form of `script`, skipping format detection. Wins over `script` when both are given. Must be a **complete** cfg, not a fragment — see the warning below. |
+| `jlink_script` | `str` | `None` | The unambiguous J-Link form of `script`, skipping format detection. Wins over `script` when both are given. Use this for a base64 blob: a blob has no filename to classify, and the two commonest J-Link forms (`void InitTarget(void)` and `JLINK_ExecCommand`) are not among the content markers, so such a blob raises rather than routing on a guess. |
+| `halt` | `bool` | `False` | **OpenOCD only.** Run `reset halt` once the daemon is up. Note this is a *reset* followed by a halt — see [`halt()`](#halt) for stopping the core where it is. |
 
 **Returns:** `dict` - Status dictionary with connection information
 
 <Note>
-A `script` override is only adopted by a *relaunch* of the gdbserver. If a server
+A script override is only adopted by a *relaunch* of the gdbserver. If a server
 is already running, pass `force=True` to restart it with the new script;
-`ignore_if_connected=True` returns early without relaunching (though the script
-file is still repointed for subsequent Commander operations). Invalid input — a
-missing path that isn't valid base64, or an empty string — is silently ignored and
-the net's previously materialised script stays in effect. **Concurrency caveat:**
-two debug nets connecting with different scripts share one temp path and can clobber
-each other.
+`ignore_if_connected=True` returns early without relaunching (though the file is
+still repointed for subsequent operations). Invalid input — a missing path that
+isn't valid base64, or an empty string — is silently ignored and the net's
+previously materialised script stays in effect.
+
+The override is scoped to **this net and this session**: it is written to a
+per-net path rather than the box-wide config that the net record and the HTTP
+debug service share, and `disconnect()` clears it. Two debug nets connecting with
+different scripts therefore no longer clobber one another.
 </Note>
+
+<Warning>
+An `openocd_config` override must be a **complete** cfg, not a fragment. It is
+applied after the interface and target configs, but the launch line still carries
+lager's own `-c 'ftdi channel N'` whenever the net has a probe channel, and that
+command is not recognised unless a cfg has selected the ftdi adapter driver. A cfg
+holding only, say, `adapter speed 1000` dies at startup with
+`invalid command name "ftdi"`.
+</Warning>
 
 ### `disconnect()`
 
@@ -128,6 +144,35 @@ print(output)
 **Self-heal (both backends):** Right after a `flash()` there is a short window where the debug server isn't reachable yet — for J-Link the restarted GDB server's PID isn't observable, for OpenOCD a transient daemon/RPC fault — and a bare call would raise. `reset()` now retries with bounded backoff on both the J-Link and OpenOCD backends, and only (re)starts a server when one is genuinely down. It never tears down a server that is already running, so an attached RTT session is left intact, and callers no longer need their own retry wrappers.
 
 **DA1469x exception:** On DA1469x, `flash()` deliberately leaves the server down (it ends in a software reset rather than a server restart) and the documented flow is an explicit, halt-aware reconnect. So on DA1469x the self-heal retries but never auto-starts a server — a genuinely-down server still surfaces the original error, exactly as before, instead of silently coming up unhalted (which can yield garbage QSPI-XIP reads).
+
+### `halt()`
+
+Halt the target where it is, without a reset. **OpenOCD only.**
+
+```python
+# Program, then stop the core on the image just written
+dbg.flash('build/firmware.elf')
+dbg.connect(force=True)
+dbg.halt()
+```
+
+**Returns:** `str` - Combined output from the halt operation
+
+This is **not** the same as `reset(halt=True)`. That runs OpenOCD's `reset halt`,
+which pulses nRESET and re-enters through the reset vector; `halt()` issues a bare
+`halt`, so the core stops at whatever it was executing and nRESET is never touched.
+
+The distinction matters on parts that execute in place out of QSPI. After
+programming such a part, `reset(halt=True)` re-runs the bootloader rather than
+stopping on the image you just wrote, and an unhalted re-attach risks garbage
+XIP reads. Halting in place is how you attach after a program without disturbing
+the image.
+
+<Note>
+J-Link has no standalone halt-in-place primitive — `reset_device` and `gdb_reset`
+both reset first — so on that backend `halt()` raises and names the halt-first
+`.JLinkScript` as the supported route.
+</Note>
 
 ### `flash(firmware_path)`
 

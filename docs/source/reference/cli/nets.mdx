@@ -198,7 +198,7 @@ Standalone debugger boxes — one probe drives one target MCU.
 
 #### 4. Multi-channel FTDI debug adapters
 
-`FT2232H` (2 channels: A, B) and `FT4232H` (4 channels: A, B, C, D) physically expose multiple USB interfaces. Channels A and B are MPSSE-capable (JTAG/SWD via OpenOCD); channels C and D on the FT4232H are UART-only. The user picks an interface per net via an `@` suffix on the device type.
+`FT2232H` (2 channels: A, B) and `FT4232H` (4 channels: A, B, C, D) physically expose multiple USB interfaces. Channels A and B have an MPSSE engine; on the FT4232H, C and D do not. That matters per *net type*, not per chip: `debug`, `spi` and `i2c` are MPSSE protocols and are limited to A and B, while `gpio` runs as asynchronous bitbang, needs no MPSSE, and works on all four. The user picks an interface per net.
 
 **Debug nets** encode the channel in the device field:
 
@@ -212,15 +212,21 @@ lager nets add debug_b debug NRF52840_XXAA@B USB0::0x0403::0x6010::ABCDEF::INSTR
 
 Equivalent forms: `@A`/`@0`, `@B`/`@1`, `@C`/`@2`, `@D`/`@3`. Devices without an `@` suffix default to the interface OpenOCD's interface config picks (typically channel A).
 
+**GPIO, I2C and SPI nets** take the channel as `params.interface` on the net record, accepting the same vocabulary as the `@` suffix: `A`-`D` or `0`-`3`. A net with no `interface` uses channel A, the only choice on a single-channel FT232H.
+
+Which channels are legal is enforced per net, not per instrument: asking for C or D on an `i2c` or `spi` net fails at net construction naming the channel, rather than somewhere inside pyftdi. A `gpio` net may use any channel the part has.
+
+Before v0.43.0 all three drivers hardcoded interface A, so a board wiring comms to one channel and control lines to another could not be driven at all.
+
 **UART nets** distinguish channels by their tty path. The USB scanner enumerates every `/dev/ttyUSB<N>` bound to the chip's USB serial; each shows up as a separate add-list entry, so on an FT4232H you'll see up to four UART options.
 
 **Rule:** a debug net is unique per `(instrument, address, channel-suffix)`. So a single FT2232H can host:
 - one `debug` net on `@A`
 - one `debug` net on `@B`
 - one `uart` net on a `/dev/ttyUSB<N>` belonging to whichever channels you didn't claim for MPSSE
-- one each of `spi` / `i2c` / `gpio` (which all bind to channel A in the OpenOCD interface config — incompatible with `debug@A`)
+- one each of `spi` / `i2c` / `gpio`, each on a channel you name — see below
 
-The user is responsible for not double-booking channel A (e.g. picking `debug@A` *and* `spi`); the box doesn't validate that today.
+The user is responsible for not double-booking a channel (e.g. `debug@A` *and* a `spi` net on interface A); the box doesn't validate that today.
 
 #### Quick decision table
 
