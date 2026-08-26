@@ -2,6 +2,55 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
+## [Unreleased]
+
+### Added
+
+- **A Python API page for `NetType.Router`.** A router net drives a MikroTik
+  access point over its REST API, and its methods include the bench's only
+  network fault-injection tooling -- `block_internet`, `block_dns`,
+  `block_port`, bandwidth limits and DHCP control -- which is how a test asserts
+  what firmware does when the network degrades rather than disappears. None of
+  it was documented, and `NetType.Router` appeared nowhere in the docs.
+
+- **`tools/check_docs.py` gates docs against the shipping CLI**, wired into
+  `static-checks.yml`. It fails on a dangling nav entry, an unpublished page, a
+  release with no notes, a command with no page (or a page for a hidden
+  command), and an options table naming a flag no click param declares.
+
+### Fixed
+
+- **`lager arm`'s reference page was un-runnable as written.** `--x/--y/--z` and
+  `--dx/--dy/--dz` were documented as positional arguments, so every motion
+  example on the page failed. Same for `set-acceleration`.
+
+- **`lager update` documented three options that do not exist.** `--all` and
+  `--skip-restart` were removed in v0.18.2 and `--check-jlink` never shipped,
+  but the page carried them for eighteen releases along with a walkthrough and
+  sample output for a multi-box mode that no longer exists.
+
+- **The MCP page understated the tool surface.** It stated the tools are
+  read-only, which holds only while both opt-in gates are off.
+  `LAGER_MCP_ALLOW_CONTROL` adds `power_cycle_hub`, which drives hardware;
+  `LAGER_MCP_ALLOW_EXEC` adds `box_exec`, `read_file`, `write_file` and
+  `list_dir`, exposing arbitrary command execution and file writes to any agent
+  that can reach the MCP port. Neither variable was named anywhere in the docs.
+
+- **The Rust pages pinned `lager-net` to a version two breaking releases old.**
+  Four sites pinned `"0.2"`; the published crate is 0.4.0, and cargo does not
+  resolve `"0.2"` to 0.4.x.
+
+- **Options that shipped but appeared on no page** are now documented: `--json`
+  on `adc`, `dac`, `gpi`, `gpo`, `thermocouple` and the `eload`/`energy`
+  subcommands; `--volume` on `exec`; `--email`/`--password` on `login`.
+
+- **Reference pages that failed a strict MDX build or linked nowhere.** An
+  unclosed callout in the supported-instruments page, and three cross-references
+  missing the `/source` path prefix.
+
+- **The `lager wifi` reference page is removed.** The command is `hidden=True`,
+  so publishing a page advertised something the CLI conceals.
+
 ## [0.43.0] - 2026-08-25
 
 ### Added
