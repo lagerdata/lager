@@ -235,6 +235,17 @@ jobs:
         run: python tools/check_control_flow_handlers.py cli/commands
         shell: bash
 
+      # Imports the CLI and compares it against docs/: dangling nav entries,
+      # unpublished pages, releases with no notes, commands with no page (or a
+      # page for a hidden command), and options tables naming flags that no
+      # click param declares. `lager update` documented --all for eighteen
+      # releases after it was deleted, because nothing checked. A docs bug
+      # fails silently -- the reader just runs a command that does not work.
+      - name: Docs match the shipping CLI
+        if: always()
+        run: python tools/check_docs.py
+        shell: bash
+
       # Errors only: undefined names, syntax errors, f-string and assert
       # mistakes. Not style. The full default ruleset reports ~6300 findings on
       # this tree, which would be noise, not a gate. Vendored trees are
