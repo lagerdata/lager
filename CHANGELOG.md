@@ -80,6 +80,28 @@ All notable changes to the Lager platform are documented here. For detailed rele
   the same way; it would otherwise have started failing on tolerance the first
   time that check was enabled.
 
+- **The box no longer advertises host URLs it does not publish.** `start_box.sh`
+  printed its entire `Services running:` summary unconditionally, including the
+  MCP line's `http://<box-ip>:8100/mcp`, on a box started with `--no-publish`.
+  That mode publishes none of the container's service ports: the container joins
+  `lagernet` either way, but `PORT_PUBLISH_ARGS` is empty, so a reverse proxy on
+  that network owns the host ports and nothing is listening on the host at 8100.
+  Every `<box-ip>:<port>` in that banner was therefore wrong for precisely the
+  deployment it was describing. The summary now states which mode the box is in,
+  and the MCP line points at the lagernet address rather than the box IP.
+
+  The MCP server itself was never at fault and needed no change -- it binds
+  `0.0.0.0:8100` inside the container in both modes and answers normally on
+  lagernet. This was only ever a question of reachability, and of six
+  documentation sites asserting a reachability that a proxied box does not have:
+  the module docstring in `box/lager/mcp/server.py`, the agent-facing run guide
+  in `box/lager/mcp/resources/guide.py` (which told agents to identify the box by
+  the IP they connected on, illustrated with the published form), the box service
+  table in `box/README.md`, the MCP section of the top-level `README.md`, the
+  connection example in the MCP reference, and the port table in the architecture
+  guide, whose "Exposed" column described the published case as though it were
+  the only one.
+
 ### Changed
 
 - **Bench wiring fixtures are documented.** A permanent wire from DP821 CH2's

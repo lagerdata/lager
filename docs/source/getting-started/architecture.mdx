@@ -137,6 +137,13 @@ LAGERBOX HOST (x86-64, Ubuntu 22.04+)
 | 8086+ | HTTP | Yes (if webcams present) | Webcam MJPEG streaming (one port per camera) |
 | 22 | SSH | Yes | Direct SSH access for deployment and debugging |
 
+The "Exposed" column describes a box that publishes its ports, which is the default. A box
+started with `start_box.sh --no-publish` (or `LAGER_NO_PUBLISH=1`) publishes none of them:
+every service still listens inside the container and is reachable on the `lagernet` Docker
+network, where a reverse proxy owns the host ports, but no `Yes` row is reachable at
+`<box-ip>:<port>`. Port 22 is the exception -- SSH is the host's own daemon, not a published
+container port, so it is unaffected.
+
 ---
 
 ## Optional Control Plane Integration
