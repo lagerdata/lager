@@ -2,7 +2,62 @@
 
 All notable changes to the Lager platform are documented here. For detailed release notes, see [docs.lagerdata.com](https://docs.lagerdata.com).
 
-## [Unreleased]
+## [0.43.0] - 2026-08-25
+
+### Added
+
+- **`DebugNet.halt()` stops the target where it is, without a reset.** OpenOCD
+  only. `reset(halt=True)` runs OpenOCD's `reset halt`, which pulses nRESET and
+  re-enters through the reset vector; on a part executing in place out of QSPI
+  that re-runs the bootloader rather than stopping on the image just
+  programmed. `halt()` issues a bare `halt`, so XIP is left holding what was
+  written. It is the operation the self-heal path already assumed existed when
+  it documented why a DA1469x must not be auto-reattached unhalted.
+
+  J-Link has no standalone halt-in-place primitive -- `reset_device` and
+  `gdb_reset` both reset first -- so on that backend the call raises and names
+  the halt-first `.JLinkScript` as the supported route.
+
+- **`connect()` accepts `halt`, `openocd_config` and `jlink_script`.** `halt`
+  was pinned to `False` on the OpenOCD path even though the underlying
+  gdbserver call has always taken it; it is documented as reset-then-halt, with
+  a pointer to `halt()` for the other meaning. The two script kwargs are the
+  unambiguous per-backend forms of `script`, for a base64 blob that carries no
+  filename to classify.
+
+- **FTDI GPIO, I2C and SPI nets can address a specific channel on a
+  multi-channel adapter.** A net may now carry `params.interface`, taking
+  `A`-`D` or `0`-`3` -- the same vocabulary debug nets already accept as the
+  `@A` suffix on their device field. Previously all three drivers hardcoded
+  `ftdi://ftdi:232h[:serial]/1`, so interface A was the only channel any of
+  them could ever open, and a board wiring comms to one channel and control
+  lines to another could not be driven at all.
+
+  Which channels are legal is not uniform, and is enforced per net rather than
+  per instrument. I2C and SPI are MPSSE protocols, and on an FT4232H only
+  channels A and B have an MPSSE engine; asking for C or D now fails at net
+  construction naming the channel, instead of somewhere inside pyftdi. GPIO
+  runs as asynchronous bitbang, needs no MPSSE, and works on all four -- which
+  is what makes an FT4232H's C and D usable for control lines.
+
+  Two things that only surface once a second channel is reachable are handled
+  with it: the GPIO state cache now keys on interface as well as device, so
+  AD0 on channel A and AD0 on channel B stop sharing an entry and clobbering
+  each other between CLI invocations; and ACBUS pins (8-15) are refused on the
+  FT4232H, whose channels are 8 bits wide with no ACBUS at all.
+
+  `FTDI_FT4232H` accordingly gains the `spi`, `i2c` and `gpio` roles its
+  siblings already advertised.
+
+### Changed
+
+- **`DebugNet.connect(script=...)` documents that an OpenOCD override must be
+  a complete cfg.** The launch line still carries lager's own
+  `ftdi channel <N>` for a net with a probe channel, and that command is not
+  recognised unless a cfg has selected the ftdi adapter driver -- so a
+  fragment holding only, say, `adapter speed 1000` dies at startup with
+  `invalid command name "ftdi"`. The docstring implied a small standalone cfg
+  would do.
 
 ### Fixed
 
@@ -57,63 +112,6 @@ All notable changes to the Lager platform are documented here. For detailed rele
   differ in what can be claimed, not in whether a usable key exists, so both
   now take the setup path -- and when the box could not be reached, the
   output says that rather than asserting the key is absent.
-
-### Changed
-
-- **`DebugNet.connect(script=...)` documents that an OpenOCD override must be
-  a complete cfg.** The launch line still carries lager's own
-  `ftdi channel <N>` for a net with a probe channel, and that command is not
-  recognised unless a cfg has selected the ftdi adapter driver -- so a
-  fragment holding only, say, `adapter speed 1000` dies at startup with
-  `invalid command name "ftdi"`. The docstring implied a small standalone cfg
-  would do.
-
-### Added
-
-- **`DebugNet.halt()` stops the target where it is, without a reset.** OpenOCD
-  only. `reset(halt=True)` runs OpenOCD's `reset halt`, which pulses nRESET and
-  re-enters through the reset vector; on a part executing in place out of QSPI
-  that re-runs the bootloader rather than stopping on the image just
-  programmed. `halt()` issues a bare `halt`, so XIP is left holding what was
-  written. It is the operation the self-heal path already assumed existed when
-  it documented why a DA1469x must not be auto-reattached unhalted.
-
-  J-Link has no standalone halt-in-place primitive -- `reset_device` and
-  `gdb_reset` both reset first -- so on that backend the call raises and names
-  the halt-first `.JLinkScript` as the supported route.
-
-- **`connect()` accepts `halt`, `openocd_config` and `jlink_script`.** `halt`
-  was pinned to `False` on the OpenOCD path even though the underlying
-  gdbserver call has always taken it; it is documented as reset-then-halt, with
-  a pointer to `halt()` for the other meaning. The two script kwargs are the
-  unambiguous per-backend forms of `script`, for a base64 blob that carries no
-  filename to classify.
-
-- **FTDI GPIO, I2C and SPI nets can address a specific channel on a
-  multi-channel adapter.** A net may now carry `params.interface`, taking
-  `A`-`D` or `0`-`3` -- the same vocabulary debug nets already accept as the
-  `@A` suffix on their device field. Previously all three drivers hardcoded
-  `ftdi://ftdi:232h[:serial]/1`, so interface A was the only channel any of
-  them could ever open, and a board wiring comms to one channel and control
-  lines to another could not be driven at all.
-
-  Which channels are legal is not uniform, and is enforced per net rather than
-  per instrument. I2C and SPI are MPSSE protocols, and on an FT4232H only
-  channels A and B have an MPSSE engine; asking for C or D now fails at net
-  construction naming the channel, instead of somewhere inside pyftdi. GPIO
-  runs as asynchronous bitbang, needs no MPSSE, and works on all four -- which
-  is what makes an FT4232H's C and D usable for control lines.
-
-  Two things that only surface once a second channel is reachable are handled
-  with it: the GPIO state cache now keys on interface as well as device, so
-  AD0 on channel A and AD0 on channel B stop sharing an entry and clobbering
-  each other between CLI invocations; and ACBUS pins (8-15) are refused on the
-  FT4232H, whose channels are 8 bits wide with no ACBUS at all.
-
-  `FTDI_FT4232H` accordingly gains the `spi`, `i2c` and `gpio` roles its
-  siblings already advertised.
-
-### Fixed
 
 - **A box deployed from a branch now says so.** After
   `lager update --version <branch>`, `/etc/lager/version` was left unchanged

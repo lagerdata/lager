@@ -1,0 +1,52 @@
+---
+title: "Version 0.43.0"
+description: "August 25, 2026"
+---
+
+## <u>Upgrade Notes</u>
+
+Two behaviour changes in this release affect code that already works. Neither is caught at install time.
+
+- **`DebugNet.connect(script=...)` now raises on an OpenOCD debug net when handed a J-Link script.** It used to accept the argument and silently ignore it, so a script written for one backend ran the target under whatever attach sequence the net already had. The argument now works on both backends -- it is classified by file format and routed -- but a `.JLinkScript` given to an OpenOCD net is a `ValueError` rather than a silent no-op. If an automated run passes a `.JLinkScript` in-process to a net whose probe uses OpenOCD, pass a `.cfg` instead, or name the format explicitly with `openocd_config=` / `jlink_script=`. The `lager debug` CLI is unaffected; it has always routed by file extension.
+- **Persisted FTDI GPIO output state resets once on upgrade.** The state a Lager Box remembers between separate CLI invocations is now keyed by interface as well as device, so that two channels of one multi-channel adapter stop sharing an entry. Existing entries do not carry an interface and are not read back. The first read of a pin after upgrading reports no remembered state; setting it once restores normal behaviour.
+
+## <u>Features</u>
+
+- **`DebugNet.halt()` stops the target where it is, without a reset.** OpenOCD only. `reset(halt=True)` runs OpenOCD's `reset halt`, which pulses nRESET and re-enters through the reset vector; on a part that executes in place out of external QSPI that re-runs the bootloader rather than stopping on the image just programmed. `halt()` issues a bare halt, so execute-in-place memory still holds what was written. J-Link has no standalone halt-in-place primitive, so on that backend the call raises and names the halt-first `.JLinkScript` as the supported route.
+- **`connect()` accepts `halt`, `openocd_config` and `jlink_script`.** `halt` runs `reset halt` once the daemon is up, and is documented as the reset-then-halt operation it is. The two script arguments are the unambiguous per-backend forms of `script`, for a base64 blob that carries no filename to classify.
+- **FTDI GPIO, I2C and SPI nets can address a specific channel on a multi-channel adapter.** A net may now carry `params.interface`, taking `A`-`D` or `0`-`3` -- the same vocabulary debug nets already accept as the `@A` suffix on their device field. Which channels are legal is enforced per net: I2C and SPI are MPSSE protocols and on an FT4232H only channels A and B have an MPSSE engine, while GPIO runs as asynchronous bitbang and works on all four. `FTDI_FT4232H` accordingly gains the `spi`, `i2c` and `gpio` roles its siblings already advertised.
+
+## <u>Bug Fixes</u>
+
+- **`DebugNet.connect(script=...)` was ignored under the OpenOCD backend.** No error, no warning, no log line: the script was written to disk and then never read, because only the J-Link path passed it downstream. A caller supplying a per-run attach script in-process -- the way an automated run avoids mutating shared Lager Box state -- got a run that silently used whatever attach sequence the net already had. The argument is now classified by extension, then by content, and routed to whichever backend it is for. Per-connect overrides are written to a per-net path rather than the box-wide config file, and `disconnect` clears them, so one session's override cannot reach another net.
+- **`gpio`, `i2c` and `spi` nets on an FT2232H could not be opened.** The instrument has advertised all three roles for as long as the role table has existed, so `lager nets add` accepted them; but the drivers addressed the device by a product selector that matches only the FT232H, so every such net failed to find its hardware. The part is now selected from the USB product ID already present in the net's own address.
+- **An FTDI net whose address was written as a full `ftdi://` URL had it silently discarded.** The address was recognised as "not a serial number" and then dropped, with a default URL rebuilt over the top, so a user who spelled out exactly which device and channel they wanted got the first channel of the first FT232H instead. Such an address is now used verbatim.
+- **A box deployed from a branch now says so.** After `lager update --version <branch>`, nothing on the box recorded which ref produced the code: the version file holds a version number, and a branch not yet bumped past the last release serialises to the same string as the release tag. `lager hello` reported the release version and a box running a branch was indistinguishable from one on the release tag. The deployed ref is now recorded and `lager hello` prints it, flagged when it is not a release build.
+- **`/etc/lager/ref` was never written when the box was already up to date.** The write sat on the path taken by an update that actually pulled; a run that found the box already at the target version exited before reaching it. That is the case the file matters most in, and because the way to confirm a branch deploy took is that `lager hello` names a ref, its absence reported failure for a deploy that had succeeded.
+- **"SSH key not configured for this box" on a box where the key was installed and working.** The check that asks a box whether it has the key did not offer that key to the connection carrying the question, so on a machine whose default credentials the box does not accept it could not authenticate to ask, and reported the key missing on a box it was perfectly able to answer for. It now offers the key explicitly, which widens the credentials tried rather than narrowing them.
+
+## <u>Improvements</u>
+
+- `DebugNet.connect(script=...)` now documents that an OpenOCD override must be a complete config rather than a fragment: the launch line still carries lager's own channel-selection command, which is not recognised unless a config has selected the FTDI adapter driver.
+
+## <u>Known Limitations</u>
+
+- **OpenOCD debug operations return an empty string where J-Link returns programmer output.** A test harness that decides pass or fail by scanning the output of `erase()` or `flash()` for failure markers finds none in an empty string and reads that as success. Against an OpenOCD net, check the target's state directly rather than parsing the return value.
+
+## <u>Installation</u>
+
+To install this version:
+
+```bash
+pip install lager-cli==0.43.0
+```
+
+To upgrade from a previous version:
+
+```bash
+pip install --upgrade lager-cli
+```
+
+## Resources
+
+[View Release on PyPI](https://pypi.org/project/lager-cli/0.43.0/)
