@@ -16,8 +16,10 @@ so a driver rename can never silently mislead an agent.
 
 The hand-written ``methods`` lists below are kept as a fallback for the
 case where a driver class fails to import (e.g. development environments
-without the C extensions installed) and as the source of truth for
-``Debug``, which has no Net subclass.
+without the C extensions installed) and as the source of truth for the
+types with no driver class to read: ``Debug`` (procedural functions, no
+Net subclass) and ``Analog``/``Logic`` (a bare ``Net`` proxying to the
+instrument over RPC).
 
 ``gotchas`` and ``example_snippet`` cannot be introspected and are always
 hand-curated.
@@ -422,6 +424,166 @@ API_REFERENCE: dict[str, dict] = {
             'print(f"Average power: {stats}")\n'
         ),
     },
+    "Router": {
+        "net_type_enum": "NetType.Router",
+        "get_pattern": 'router = Net.get("router1", type=NetType.Router)',
+        "methods": [
+            {"name": "connect", "sig": "connect() -> dict", "desc": "Verify connectivity by fetching system identity"},
+            {"name": "block_internet", "sig": "block_internet()", "desc": "Block all internet access by dropping forwarded traffic"},
+            {"name": "block_dns", "sig": "block_dns()", "desc": "Block DNS resolution by dropping port 53 traffic"},
+            {"name": "remove_firewall_rules", "sig": "remove_firewall_rules()", "desc": "Remove all test-tagged firewall filter rules"},
+        ],
+        "gotchas": [
+            "This is the bench's network fault-injection tool. It degrades the network the DUT is on -- it does not touch the DUT.",
+            "block_internet, block_dns, block_port and add_bandwidth_limit all add TEST-TAGGED rules. Always undo them in a finally block with remove_firewall_rules() / remove_bandwidth_limits(), or the next test runs on a broken network.",
+            "reset_to_defaults() restores a known baseline and is the safest teardown when a test changed SSIDs or security profiles.",
+            "reboot() returns as soon as the router accepts the command. Follow it with wait_for_ready(), which polls until the REST API answers again.",
+            "A router net may be saved with role 'router' or the legacy 'mikrotik'. Both resolve to this driver.",
+            "Blocking the internet does NOT disconnect the DUT from wifi -- that is the point. Use disable_interface() when you want the AP to vanish instead.",
+        ],
+        "example_snippet": (
+            'from lager import Net, NetType\n'
+            '\n'
+            'router = Net.get("router1", type=NetType.Router)\n'
+            'dut = Net.get("debug1", type=NetType.Debug)\n'
+            'try:\n'
+            '    # Firmware should survive losing the internet without losing the AP.\n'
+            '    router.block_internet()\n'
+            '    import time; time.sleep(30)\n'
+            '    assert router.is_client_connected(), "DUT dropped off the AP"\n'
+            'finally:\n'
+            '    router.remove_firewall_rules()\n'
+        ),
+    },
+    "Arm": {
+        "net_type_enum": "NetType.Arm",
+        "get_pattern": 'arm = Net.get("arm1", type=NetType.Arm)',
+        "methods": [
+            {"name": "position", "sig": "position() -> tuple", "desc": "Return the current (x, y, z) in mm"},
+            {"name": "move_to", "sig": "move_to(x: float, y: float, z: float, *, timeout: float = 15.0)", "desc": "Absolute move, blocking until the arm arrives"},
+            {"name": "go_home", "sig": "go_home()", "desc": "Move to the home position (X0 Y300 Z0)"},
+        ],
+        "gotchas": [
+            "All coordinates are MILLIMETRES, and the arm enforces its own workspace bounds -- an out-of-range target is refused, not clamped.",
+            "Moves BLOCK on the box until the arm arrives, so a move is not a place to poll from. The box-side default timeout is 15s.",
+            "disable_motor() releases the steppers: the arm becomes back-driveable and will sag under its own weight. Do not leave it disabled over a workpiece.",
+            "The arm is physical. Clear its workspace before a test runs unattended -- there is no collision detection.",
+            "dealy_ms / dealy_s are the original misspelled names, kept for compatibility. Prefer delay_ms / delay_s.",
+        ],
+        "example_snippet": (
+            'from lager import Net, NetType\n'
+            '\n'
+            'arm = Net.get("arm1", type=NetType.Arm)\n'
+            'try:\n'
+            '    arm.enable_motor()\n'
+            '    arm.go_home()\n'
+            '    arm.move_to(50.0, 250.0, -20.0)   # press the DUT button\n'
+            '    x, y, z = arm.position()\n'
+            '    print(f"arm at ({x:.1f}, {y:.1f}, {z:.1f}) mm")\n'
+            'finally:\n'
+            '    arm.go_home()\n'
+        ),
+    },
+    "Webcam": {
+        "net_type_enum": "NetType.Webcam",
+        "get_pattern": 'cam = Net.get("cam1", type=NetType.Webcam)',
+        "methods": [
+            {"name": "start", "sig": "start(box_ip: str) -> dict", "desc": "Start the MJPEG stream and return its URL"},
+            {"name": "stop", "sig": "stop() -> bool", "desc": "Stop the stream; False if none was running"},
+            {"name": "is_active", "sig": "is_active() -> bool", "desc": "Whether a stream is currently running"},
+        ],
+        "gotchas": [
+            "start() is idempotent -- calling it while a stream is up reports the existing one rather than starting a second.",
+            "The stream URL points at the box as the CLIENT reached it, so a URL captured on one network may not resolve from another.",
+            "This is a video stream, not a frame grab. There is no assert-on-image here; point an MJPEG consumer at the URL.",
+            "Always stop() in teardown: the stream holds the camera open and the next test cannot start one.",
+        ],
+        "example_snippet": (
+            'from lager import Net, NetType\n'
+            '\n'
+            'cam = Net.get("cam1", type=NetType.Webcam)\n'
+            'try:\n'
+            '    info = cam.start("192.168.1.42")\n'
+            '    print(f"watch the DUT at {info}")\n'
+            '    import time; time.sleep(10)\n'
+            'finally:\n'
+            '    cam.stop()\n'
+        ),
+    },
+    "Wifi": {
+        "net_type_enum": "NetType.Wifi",
+        "get_pattern": 'wifi = Net.get("wifi1", type=NetType.Wifi)',
+        "methods": [
+            {"name": "enable", "sig": "enable()", "desc": "Restore the DUT's internet access via the router's parental controls"},
+            {"name": "disable", "sig": "disable()", "desc": "Cut the DUT's internet access, leaving it associated to the AP"},
+        ],
+        "gotchas": [
+            "This net type drives an ASUS router's parental-control API to allow or deny ONE DUT by MAC address. It is not the box's own wifi interface and it is not a MikroTik router net.",
+            "disable() leaves the DUT associated to the access point -- it loses routing, not the link. That is the distinction being tested.",
+            "The MAC, hostname and router credentials come from the saved net's location record, so the net can only gate the device it was configured for.",
+            "Always re-enable in a finally block, or the DUT stays cut off for every later test.",
+        ],
+        "example_snippet": (
+            'from lager import Net, NetType\n'
+            '\n'
+            'wifi = Net.get("wifi1", type=NetType.Wifi)\n'
+            'try:\n'
+            '    wifi.disable()          # DUT stays on the AP, loses the internet\n'
+            '    import time; time.sleep(60)\n'
+            '    # assert the firmware retried rather than rebooting\n'
+            'finally:\n'
+            '    wifi.enable()\n'
+        ),
+    },
+    "Analog": {
+        "net_type_enum": "NetType.Analog",
+        "get_pattern": 'scope = Net.get("scope1", type=NetType.Analog)',
+        "methods": [
+            {"name": "enable", "sig": "enable()", "desc": "Enable this scope channel"},
+            {"name": "disable", "sig": "disable()", "desc": "Disable this scope channel"},
+            {"name": "measure", "sig": "measure(item: str) -> float", "desc": "Scalar measurement on the channel (e.g. 'vpp', 'frequency')"},
+            {"name": "trigger", "sig": "trigger(...)", "desc": "Configure the trigger for this channel"},
+        ],
+        "gotchas": [
+            "A scope net is ONE CHANNEL. Four channels means four nets, and enabling one does not enable the others.",
+            "Methods reach the instrument through an RPC proxy rather than a local driver class, so this list is hand-maintained -- consult `lager scope --help` on the box for the authoritative surface.",
+            "The scope is the slowest instrument on most benches. Prefer a scalar measure() over pulling a full trace when an assertion only needs a number.",
+            "Not reachable from the Rust crate: the box has no HTTP endpoint for scope capture yet.",
+        ],
+        "example_snippet": (
+            'from lager import Net, NetType\n'
+            '\n'
+            'scope = Net.get("scope1", type=NetType.Analog)\n'
+            'scope.enable()\n'
+            'vpp = scope.measure("vpp")\n'
+            'print(f"peak-to-peak: {vpp:.3f} V")\n'
+            'assert vpp > 3.0, f"signal too small: {vpp}"\n'
+        ),
+    },
+    "Logic": {
+        "net_type_enum": "NetType.Logic",
+        "get_pattern": 'logic = Net.get("logic1", type=NetType.Logic)',
+        "methods": [
+            {"name": "enable", "sig": "enable()", "desc": "Enable this logic-analyzer channel"},
+            {"name": "disable", "sig": "disable()", "desc": "Disable this logic-analyzer channel"},
+            {"name": "set_signal_threshold", "sig": "set_signal_threshold(voltage: float)", "desc": "Set the logic threshold voltage for the pod"},
+            {"name": "start_single_capture", "sig": "start_single_capture()", "desc": "Arm a single-shot capture"},
+        ],
+        "gotchas": [
+            "A logic net is ONE DIGITAL CHANNEL on a mixed-signal scope, and shares the physical instrument with every scope net on the same address.",
+            "set_signal_threshold applies to the whole digital pod, not to one channel -- setting it for one net moves it for its neighbours.",
+            "Methods reach the instrument through an RPC proxy rather than a local driver class, so this list is hand-maintained.",
+            "Not reachable from the Rust crate: the box has no HTTP endpoint for logic capture yet.",
+        ],
+        "example_snippet": (
+            'from lager import Net, NetType\n'
+            '\n'
+            'logic = Net.get("logic1", type=NetType.Logic)\n'
+            'logic.set_signal_threshold(1.65)   # 3V3 logic\n'
+            'logic.enable()\n'
+            'logic.start_single_capture()\n'
+        ),
+    },
 }
 
 
@@ -453,6 +615,17 @@ _DRIVER_CLASSES: dict[str, str] = {
     # ABC whose methods take ``(net_name, port)``, so introspecting it hands
     # agents a calling convention the wrapper rejects.
     "Usb":            "lager.automation.usb_hub.usb_net_wrapper.USBNetWrapper",
+    "Router":         "lager.protocols.mikrotik.router.MikroTikRouter",
+    "Arm":            "lager.automation.arm.rotrics.Dexarm",
+    "Webcam":         "lager.automation.webcam.webcam_net_wrapper.WebcamNetWrapper",
+    # The Wifi NET TYPE, which gates one DUT's internet access through an Asus
+    # router's parental controls. Not the box's own wifi interface.
+    "Wifi":           "lager.protocols.wifi.router.Wifi",
+    # ``Analog`` and ``Logic`` are deliberately absent, for the same reason as
+    # ``Debug``: Net.get() hands back a bare ``Net`` whose ``__getattr__``
+    # forwards to the instrument over RPC, so there is no driver class to read.
+    # Introspecting the mapper instead would REPLACE the curated list above with
+    # the nine undocumented helpers that happen to be defined locally.
 }
 
 # Methods we never want to expose to agents (private, dunder, base-class
@@ -549,6 +722,17 @@ def get_reference_for_type(net_type: str) -> dict | None:
         "watt-meter": "WattMeter",
         "usb": "Usb",
         "energy-analyzer": "EnergyAnalyzer",
+        # Raw saved-net roles for the types added in #372. bench_loader sets
+        # net_type=role, so plan_firmware_test looks these up by role string;
+        # without them the entries are reachable only via lager://reference/.
+        "router": "Router",
+        "mikrotik": "Router",
+        "arm": "Arm",
+        "webcam": "Webcam",
+        "wifi": "Wifi",
+        "scope": "Analog",
+        "analog": "Analog",
+        "logic": "Logic",
     }
     key = _ALIAS_MAP.get(net_type.lower(), net_type)
     return API_REFERENCE.get(key)
