@@ -677,6 +677,10 @@ BOX_CONFIG_FILE="/etc/lager/box_config.json"
 BOX_CONFIG_ARGS_FILE="/etc/lager/box_config.docker.sh"
 PIP_REQS_FILE="/etc/lager/user_requirements.txt"
 CARGO_PKGS_FILE="/etc/lager/cargo_packages.txt"
+# CARGO_HOME inside the container, set by box.Dockerfile and backed by the
+# lager-cargo volume. `cargo install` writes here, NOT to $HOME/.cargo --
+# /home/www-data/.cargo does not exist on the box.
+CARGO_HOME_IN_CONTAINER="/opt/rust/cargo"
 NPM_PKGS_FILE="/etc/lager/npm_packages.txt"
 BOX_CONFIG_MOUNTS=()
 BOX_CONFIG_ENV=()
@@ -855,6 +859,25 @@ else
     echo "              sudo groupadd lager && sudo udevadm trigger"
 fi
 
+# LAGER_DISABLE_UART_SERVICE reaches the container through BOX_CONFIG_ENV
+# (sourced above), and start-services.sh already declines to launch
+# box_http_server.py when it is truthy. That alone does not free port 9000:
+# docker-proxy binds a published port whether or not anything listens behind
+# it, so the host port stayed occupied and the flag did not deliver the one
+# thing it exists for. Read the same value here, with the same truthiness rule
+# as start-services.sh, and decline to publish the port too.
+UART_SERVICE_DISABLED=0
+for _env_arg in "${BOX_CONFIG_ENV[@]}"; do
+    case "$_env_arg" in
+        LAGER_DISABLE_UART_SERVICE=*)
+            case "$(echo "${_env_arg#LAGER_DISABLE_UART_SERVICE=}" | tr '[:upper:]' '[:lower:]')" in
+                1|true|yes) UART_SERVICE_DISABLED=1 ;;
+            esac
+            ;;
+    esac
+done
+unset _env_arg
+
 # Host port publishing. Empty under --no-publish: lagernet-only, a reverse
 # proxy on the same network owns the host ports.
 PORT_PUBLISH_ARGS=()
@@ -866,12 +889,16 @@ if [ -z "$NO_PUBLISH" ]; then
         -p 8081-8090:8081-8090
         -p 8100:8100
         -p 8765:8765
-        -p 9000:9000
         -p 2331-2342:2331-2342
         -p 4444-4447:4444-4447
         -p 6666-6669:6666-6669
         -p 9090-9097:9090-9097
     )
+    if [ "$UART_SERVICE_DISABLED" = "1" ]; then
+        echo "Not publishing port 9000 (LAGER_DISABLE_UART_SERVICE set; port left free on the host)"
+    else
+        PORT_PUBLISH_ARGS+=(-p 9000:9000)
+    fi
 else
     echo "Port publishing disabled (--no-publish): container reachable via lagernet only"
 fi
@@ -950,7 +977,14 @@ if [ -s "$PIP_REQS_FILE" ] && grep -qvE '^[[:space:]]*(#|$)' "$PIP_REQS_FILE"; t
         # back a healthy container, and must not stamp the applied-hash.
         exit 3
     fi
+    echo "Installed/verified user pip package(s) into the container."
     echo ""
+else
+    if [ ! -f "$PIP_REQS_FILE" ]; then
+        echo "No pip packages to install ($PIP_REQS_FILE absent)."
+    else
+        echo "No pip packages to install ($PIP_REQS_FILE lists none)."
+    fi
 fi
 
 # Install user-requested cargo crates from box_config.json into the running
@@ -1005,7 +1039,18 @@ if [ -s "$CARGO_PKGS_FILE" ] && grep -qvE '^[[:space:]]*(#|$)' "$CARGO_PKGS_FILE
         # back a healthy container, and must not stamp the applied-hash.
         exit 3
     fi
+    echo "Installed/verified cargo crate(s) into $CARGO_HOME_IN_CONTAINER/bin."
     echo ""
+else
+    # Say so. A skip here is indistinguishable from a success at the apply
+    # layer, because `lager box config apply` discards this transcript unless
+    # the run exits 3 -- so a config that never rendered a crate and a config
+    # whose crates all installed both print nothing at all.
+    if [ ! -f "$CARGO_PKGS_FILE" ]; then
+        echo "No cargo crates to install ($CARGO_PKGS_FILE absent)."
+    else
+        echo "No cargo crates to install ($CARGO_PKGS_FILE lists none)."
+    fi
 fi
 
 # Install user-requested npm packages globally inside the container. `npm
@@ -1044,7 +1089,14 @@ if [ -s "$NPM_PKGS_FILE" ] && grep -qvE '^[[:space:]]*(#|$)' "$NPM_PKGS_FILE"; t
         # back a healthy container, and must not stamp the applied-hash.
         exit 3
     fi
+    echo "Installed/verified user npm package(s) into the container."
     echo ""
+else
+    if [ ! -f "$NPM_PKGS_FILE" ]; then
+        echo "No npm packages to install ($NPM_PKGS_FILE absent)."
+    else
+        echo "No npm packages to install ($NPM_PKGS_FILE lists none)."
+    fi
 fi
 
 echo "========================================"
@@ -1068,7 +1120,11 @@ else
     echo "  - MCP Server (AI): port 8100 (MCP clients: http://<box-ip>:8100/mcp)"
 fi
 echo "  - Debug Service: port 8765"
-echo "  - UART HTTP+WebSocket: port 9000"
+if [ "$UART_SERVICE_DISABLED" = "1" ]; then
+    echo "  - UART HTTP+WebSocket: DISABLED (LAGER_DISABLE_UART_SERVICE set; port 9000 free on the host)"
+else
+    echo "  - UART HTTP+WebSocket: port 9000"
+fi
 echo "  - Remote PDB: ports 8081-8090"
 echo "  - Debug GDB / SWO / Telnet (J-Link or OpenOCD): ports 2331-2342 (3 per slot × 4 slots)"
 echo "  - OpenOCD interactive telnet: ports 4444-4447 (one per slot)"

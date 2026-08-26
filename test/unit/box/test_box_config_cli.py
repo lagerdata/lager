@@ -68,7 +68,7 @@ class MountAddPrepThenPersist(unittest.TestCase):
         return PrepResult(
             ok=ok,
             action=action,
-            host_path="/Hyphen",
+            host_path="/appdata",
             message=message,
             manual_fix=manual_fix,
         )
@@ -81,12 +81,12 @@ class MountAddPrepThenPersist(unittest.TestCase):
                    return_value=self._make_prep(
                        ok=False,
                        action="refused_populated",
-                       message="/Hyphen is owned by 1000:1000 and contains files.",
-                       manual_fix="sudo chown -R 33:33 /Hyphen",
+                       message="/appdata is owned by 1000:1000 and contains files.",
+                       manual_fix="sudo chown -R 33:33 /appdata",
                    )):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["mount", "add", "/Hyphen", "/Hyphen", "--box", "test-box"],
+                ["mount", "add", "/appdata", "/appdata", "--box", "test-box"],
             )
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("Mount NOT added", result.output)
@@ -101,21 +101,21 @@ class MountAddPrepThenPersist(unittest.TestCase):
                    return_value=self._make_prep(
                        ok=True,
                        action="created",
-                       message="Created /Hyphen and chowned to 33:33.",
+                       message="Created /appdata and chowned to 33:33.",
                    )):
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["mount", "add", "/Hyphen", "/Hyphen", "--box", "test-box"],
+                ["mount", "add", "/appdata", "/appdata", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
-        self.assertIn("Added mount /Hyphen -> /Hyphen", result.output)
+        self.assertIn("Added mount /appdata -> /appdata", result.output)
         self.assertIn("mount-add", [c[0] for c in backend.calls])
 
     def test_mount_add_rerun_exits_zero_both_times(self):
         # run.sh is re-run after partial failures; the second identical
         # mount add must succeed (box-side upserts by container path).
         backend = FakeBoxBackend({"mount-add": [{"ok": True}, {"ok": True}]})
-        args = ["mount", "add", "/Hyphen", "/Hyphen", "--readonly", "--box", "test-box"]
+        args = ["mount", "add", "/appdata", "/appdata", "--readonly", "--box", "test-box"]
         with _patch_resolve(), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
              patch("cli.commands.box.config.ensure_host_path_owned",
@@ -133,7 +133,7 @@ class MountAddPrepThenPersist(unittest.TestCase):
              patch("cli.commands.box.config.ensure_host_path_owned") as prep_call:
             result = self.runner.invoke(
                 box_config_cli.box_config,
-                ["mount", "add", "/Hyphen", "/Hyphen", "--no-auto-prep", "--box", "test-box"],
+                ["mount", "add", "/appdata", "/appdata", "--no-auto-prep", "--box", "test-box"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
         prep_call.assert_not_called()
@@ -322,6 +322,53 @@ class BounceExitCodeClassification(unittest.TestCase):
         self.assertEqual(len(repair), 1, f"repair line repeated: {lines}")
         # But each distinct file still gets named.
         self.assertEqual(len([ln for ln in lines if "cannot write" in ln]), 4)
+
+
+    def test_package_lines_are_relayed_on_a_successful_apply(self):
+        """A successful apply relayed nothing about pip/cargo/npm, so
+        "installed the crate" and "found no crate to install" looked
+        identical from the CLI. That is what hid a silent no-op behind
+        "Applied box config"."""
+        stdout = (
+            "Lager Box container started\n"
+            "Installing user cargo crates into container (per-crate timeout: 180s)...\n"
+            "Installed/verified cargo crate(s) into /opt/rust/cargo/bin.\n"
+            "No npm packages to install (/etc/lager/npm_packages.txt lists none).\n"
+            "Box started successfully!\n"
+        )
+        lines = box_config_cli._render_package_lines(stdout, "")
+        self.assertEqual(len(lines), 3)
+        self.assertTrue(any("/opt/rust/cargo/bin" in ln for ln in lines))
+        self.assertTrue(any("No npm packages" in ln for ln in lines))
+        self.assertNotIn("Box started successfully!", lines)
+        self.assertNotIn("Lager Box container started", lines)
+
+    def test_package_relay_is_bounded_and_deduplicated(self):
+        # start_box.sh's transcript is hundreds of lines of docker and build
+        # output; the relay must not become a second copy of it.
+        stdout = "".join(
+            "Installing user pip packages into container (timeout: 300s)...\n"
+            for _ in range(50)
+        )
+        lines = box_config_cli._render_package_lines(stdout, "")
+        self.assertEqual(len(lines), 1, f"duplicates leaked: {lines}")
+
+        stdout = "".join(
+            f"Installing user thing-{i} into container...\n" for i in range(50)
+        )
+        lines = box_config_cli._render_package_lines(stdout, "")
+        self.assertLessEqual(len(lines), box_config_cli._MAX_PACKAGE_LINES)
+
+    def test_package_relay_reports_the_declined_port(self):
+        # LAGER_DISABLE_UART_SERVICE is applied box-side; the operator who set
+        # it in box_config.json has no other signal that it took effect.
+        stdout = (
+            "Not publishing port 9000 (LAGER_DISABLE_UART_SERVICE set; "
+            "port left free on the host)\n"
+        )
+        lines = box_config_cli._render_package_lines(stdout, "")
+        self.assertEqual(len(lines), 1)
+        self.assertIn("9000", lines[0])
 
 
 class ApplyRollback(unittest.TestCase):
@@ -2217,7 +2264,7 @@ class ApplyFlagEdges(unittest.TestCase):
             "version": 1,
             "apt_packages": [],
             "sysctl": {},
-            "mounts": [{"host": "/Hyphen", "container": "/Hyphen", "readonly": False}],
+            "mounts": [{"host": "/appdata", "container": "/appdata", "readonly": False}],
         }
         return FakeBoxBackend({
             "validate": [{"ok": True, "errors": [], "exists": True}],
@@ -2233,7 +2280,7 @@ class ApplyFlagEdges(unittest.TestCase):
 
         def fake_prep(*args, **kwargs):
             order.append("preflight")
-            return _prep(True, "ok", message="/Hyphen already owned by 33:33.")
+            return _prep(True, "ok", message="/appdata already owned by 33:33.")
 
         def fake_bounce(*args, **kwargs):
             order.append("bounce")
@@ -2293,7 +2340,7 @@ class ApplyMultiBoxFanout(unittest.TestCase):
             "version": 1,
             "apt_packages": [],
             "sysctl": {},
-            "mounts": [{"host": "/Hyphen", "container": "/Hyphen", "readonly": True}],
+            "mounts": [{"host": "/appdata", "container": "/appdata", "readonly": True}],
         }
         return FakeBoxBackend({
             "validate": [{"ok": True, "errors": [], "exists": True}],
@@ -2306,7 +2353,7 @@ class ApplyMultiBoxFanout(unittest.TestCase):
 
     def test_ssh_warn_on_one_box_does_not_fail_fanout(self):
         backend = self._backend()
-        preps = iter([_SSH_FAILED_PREP, _prep(True, "ok_readonly", message="/Hyphen exists.")])
+        preps = iter([_SSH_FAILED_PREP, _prep(True, "ok_readonly", message="/appdata exists.")])
         with patch.object(box_config_cli, "_resolve_boxes", return_value=["1.1.1.1", "2.2.2.2"]), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \
              patch.object(box_config_cli, "_bounce_container_rc", return_value=0), \
@@ -2326,9 +2373,9 @@ class ApplyMultiBoxFanout(unittest.TestCase):
         backend = self._backend()
         preps = iter([
             _prep(False, "refused_populated",
-                  message="/Hyphen is owned by 1000:1000 and contains files.",
-                  manual_fix="sudo chown -R 33:33 /Hyphen"),
-            _prep(True, "ok_readonly", message="/Hyphen exists."),
+                  message="/appdata is owned by 1000:1000 and contains files.",
+                  manual_fix="sudo chown -R 33:33 /appdata"),
+            _prep(True, "ok_readonly", message="/appdata exists."),
         ])
         with patch.object(box_config_cli, "_resolve_boxes", return_value=["1.1.1.1", "2.2.2.2"]), \
              patch.object(box_config_cli, "_run_box_config_py", side_effect=backend), \

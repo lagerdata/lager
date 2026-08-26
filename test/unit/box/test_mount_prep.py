@@ -53,7 +53,7 @@ class HostPathMissing(unittest.TestCase):
             _stat_missing(),
             _ok(),  # mkdir + chown chained
         ])
-        r = mp.ensure_host_path_owned("1.2.3.4", "/Hyphen", ssh_runner=ssh)
+        r = mp.ensure_host_path_owned("1.2.3.4", "/appdata", ssh_runner=ssh)
         self.assertTrue(r.ok)
         self.assertEqual(r.action, "created")
         self.assertEqual(r.current_owner, "33:33")
@@ -77,7 +77,7 @@ class HostPathMissing(unittest.TestCase):
 class HostPathExists(unittest.TestCase):
     def test_already_correct_owner_no_writes(self):
         ssh = FakeSsh([_stat_owner("33:33")])
-        r = mp.ensure_host_path_owned("1.2.3.4", "/Hyphen", ssh_runner=ssh)
+        r = mp.ensure_host_path_owned("1.2.3.4", "/appdata", ssh_runner=ssh)
         self.assertTrue(r.ok)
         self.assertEqual(r.action, "ok")
         self.assertEqual(len(ssh.calls), 1)
@@ -100,7 +100,7 @@ class HostPathWrongOwner(unittest.TestCase):
             (0, "", ""),  # find returns no entries -> empty
             _ok(),  # chown (no -R)
         ])
-        r = mp.ensure_host_path_owned("1.2.3.4", "/Hyphen", ssh_runner=ssh)
+        r = mp.ensure_host_path_owned("1.2.3.4", "/appdata", ssh_runner=ssh)
         self.assertTrue(r.ok)
         self.assertEqual(r.action, "chowned")
         self.assertFalse(r.is_populated)
@@ -111,9 +111,9 @@ class HostPathWrongOwner(unittest.TestCase):
     def test_populated_without_recursive_refuses(self):
         ssh = FakeSsh([
             _stat_owner("1000:1000"),
-            (0, "/Hyphen/sub\n", ""),  # find found something
+            (0, "/appdata/sub\n", ""),  # find found something
         ])
-        r = mp.ensure_host_path_owned("1.2.3.4", "/Hyphen", ssh_runner=ssh)
+        r = mp.ensure_host_path_owned("1.2.3.4", "/appdata", ssh_runner=ssh)
         self.assertFalse(r.ok)
         self.assertEqual(r.action, "refused_populated")
         self.assertTrue(r.is_populated)
@@ -125,11 +125,11 @@ class HostPathWrongOwner(unittest.TestCase):
     def test_populated_with_recursive_chowns(self):
         ssh = FakeSsh([
             _stat_owner("1000:1000"),
-            (0, "/Hyphen/sub\n", ""),
+            (0, "/appdata/sub\n", ""),
             _ok(),  # chown -R
         ])
         r = mp.ensure_host_path_owned(
-            "1.2.3.4", "/Hyphen", recursive=True, ssh_runner=ssh,
+            "1.2.3.4", "/appdata", recursive=True, ssh_runner=ssh,
         )
         self.assertTrue(r.ok)
         self.assertEqual(r.action, "recursive_chowned")
@@ -140,7 +140,7 @@ class HostPathWrongOwner(unittest.TestCase):
 class SudoFailures(unittest.TestCase):
     def test_mkdir_sudo_failure(self):
         ssh = FakeSsh([_stat_missing(), _sudo_failed()])
-        r = mp.ensure_host_path_owned("1.2.3.4", "/Hyphen", ssh_runner=ssh)
+        r = mp.ensure_host_path_owned("1.2.3.4", "/appdata", ssh_runner=ssh)
         self.assertFalse(r.ok)
         self.assertEqual(r.action, "sudo_failed")
         self.assertIsNotNone(r.manual_fix)
@@ -153,7 +153,7 @@ class SudoFailures(unittest.TestCase):
             (0, "", ""),  # empty dir
             _sudo_failed(),
         ])
-        r = mp.ensure_host_path_owned("1.2.3.4", "/Hyphen", ssh_runner=ssh)
+        r = mp.ensure_host_path_owned("1.2.3.4", "/appdata", ssh_runner=ssh)
         self.assertFalse(r.ok)
         self.assertEqual(r.action, "sudo_failed")
         self.assertEqual(r.current_owner, "1000:1000")
@@ -163,7 +163,7 @@ class SudoFailures(unittest.TestCase):
         # passwordless sudo should get a copy-pasteable sudoers snippet so
         # the user can fix it once and not be asked again.
         ssh = FakeSsh([_stat_missing(), _sudo_failed()])
-        r = mp.ensure_host_path_owned("1.2.3.4", "/Hyphen", ssh_runner=ssh)
+        r = mp.ensure_host_path_owned("1.2.3.4", "/appdata", ssh_runner=ssh)
         self.assertFalse(r.ok)
         self.assertIn("sudoers.d/lager-box-config", r.message)
         self.assertIn("NOPASSWD: /bin/mkdir, /bin/chown", r.message)
@@ -176,7 +176,7 @@ class SudoFailures(unittest.TestCase):
             _stat_missing(),
             (1, "", "mkdir: cannot create directory: Read-only file system\n"),
         ])
-        r = mp.ensure_host_path_owned("1.2.3.4", "/Hyphen", ssh_runner=ssh)
+        r = mp.ensure_host_path_owned("1.2.3.4", "/appdata", ssh_runner=ssh)
         self.assertFalse(r.ok)
         self.assertNotIn("sudoers.d/lager-box-config", r.message)
         self.assertIn("Read-only file system", r.message)
@@ -210,7 +210,7 @@ class SshTransportFailure(unittest.TestCase):
         # Transport dies BETWEEN stat and mkdir (flaky link, dropping VPN):
         # must classify as ssh_failed, not sudo_failed with raw ssh stderr.
         ssh = FakeSsh([_stat_missing(), _ssh_dead()])
-        r = mp.ensure_host_path_owned("192.0.2.7", "/Hyphen", ssh_runner=ssh)
+        r = mp.ensure_host_path_owned("192.0.2.7", "/appdata", ssh_runner=ssh)
         self.assertFalse(r.ok)
         self.assertEqual(r.action, "ssh_failed")
         self.assertIsNone(r.manual_fix)
@@ -218,7 +218,7 @@ class SshTransportFailure(unittest.TestCase):
 
     def test_ssh_failure_on_find_call(self):
         ssh = FakeSsh([_stat_owner("1000:1000"), _ssh_dead()])
-        r = mp.ensure_host_path_owned("192.0.2.7", "/Hyphen", ssh_runner=ssh)
+        r = mp.ensure_host_path_owned("192.0.2.7", "/appdata", ssh_runner=ssh)
         self.assertFalse(r.ok)
         self.assertEqual(r.action, "ssh_failed")
         self.assertIsNone(r.manual_fix)
@@ -229,14 +229,14 @@ class SshTransportFailure(unittest.TestCase):
             (0, "", ""),  # find: empty dir
             _ssh_dead(),
         ])
-        r = mp.ensure_host_path_owned("192.0.2.7", "/Hyphen", ssh_runner=ssh)
+        r = mp.ensure_host_path_owned("192.0.2.7", "/appdata", ssh_runner=ssh)
         self.assertFalse(r.ok)
         self.assertEqual(r.action, "ssh_failed")
         self.assertIsNone(r.manual_fix)
 
     def test_empty_stderr_renders_generic_detail(self):
         ssh = FakeSsh([(255, "", "")])
-        r = mp.ensure_host_path_owned("1.2.3.4", "/Hyphen", ssh_runner=ssh)
+        r = mp.ensure_host_path_owned("1.2.3.4", "/appdata", ssh_runner=ssh)
         self.assertEqual(r.action, "ssh_failed")
         self.assertIn("ssh exited 255", r.message)
 
@@ -244,7 +244,7 @@ class SshTransportFailure(unittest.TestCase):
         # Login banners precede the actual error on stderr; the message
         # should show the denial, not the banner.
         ssh = FakeSsh([(255, "", "Authorized use only.\nPermission denied (publickey).\n")])
-        r = mp.ensure_host_path_owned("1.2.3.4", "/Hyphen", ssh_runner=ssh)
+        r = mp.ensure_host_path_owned("1.2.3.4", "/appdata", ssh_runner=ssh)
         self.assertIn("Permission denied (publickey)", r.message)
         self.assertNotIn("Authorized use only", r.message)
 
@@ -258,7 +258,7 @@ class SshTransportFailure(unittest.TestCase):
         # Regression guard: a remote stat failing with rc 1 (path absent)
         # must keep taking the create branch, not be mistaken for ssh death.
         ssh = FakeSsh([_stat_missing(), _ok()])
-        r = mp.ensure_host_path_owned("1.2.3.4", "/Hyphen", ssh_runner=ssh)
+        r = mp.ensure_host_path_owned("1.2.3.4", "/appdata", ssh_runner=ssh)
         self.assertTrue(r.ok)
         self.assertEqual(r.action, "created")
 
@@ -267,7 +267,7 @@ class SudoersBootstrapUser(unittest.TestCase):
     def test_bootstrap_uses_resolved_user(self):
         ssh = FakeSsh([_stat_missing(), _sudo_failed()])
         r = mp.ensure_host_path_owned(
-            "192.0.2.7", "/Hyphen", ssh_runner=ssh, box_user="boxuser",
+            "192.0.2.7", "/appdata", ssh_runner=ssh, box_user="boxuser",
         )
         self.assertFalse(r.ok)
         self.assertIn("boxuser ALL=(root)", r.message)
@@ -275,7 +275,7 @@ class SudoersBootstrapUser(unittest.TestCase):
 
     def test_bootstrap_defaults_to_lagerdata(self):
         ssh = FakeSsh([_stat_missing(), _sudo_failed()])
-        r = mp.ensure_host_path_owned("1.2.3.4", "/Hyphen", ssh_runner=ssh)
+        r = mp.ensure_host_path_owned("1.2.3.4", "/appdata", ssh_runner=ssh)
         self.assertIn("lagerdata ALL=(root)", r.message)
 
 
@@ -287,7 +287,7 @@ class ManualFixCommand(unittest.TestCase):
         self.assertNotIn(" -R ", cmd)
 
     def test_recursive_emits_dash_R(self):
-        cmd = mp.manual_fix_command("/Hyphen", recursive=True)
+        cmd = mp.manual_fix_command("/appdata", recursive=True)
         self.assertIn("chown -R 33:33", cmd)
 
 
