@@ -12,11 +12,9 @@ import requests
 from texttable import Texttable
 from ...box_storage import resolve_and_validate_box
 from ...core.net_group import BoxCommand
-from collections import defaultdict
 from ...sort_utils import natural_sort_key
+from ._device_identity import ambiguous_addresses, describe_ambiguity
 
-_MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port",
-               "Plugable_USB_Hub"}
 
 @click.command(cls=BoxCommand)
 @click.option("--box", required=False, help="Lagerbox name or IP")
@@ -66,13 +64,15 @@ def instruments(ctx, box: str | None) -> None:
         click.echo("No instruments detected.")
         return
 
-    inst_counts: dict[str, int] = defaultdict(int)
-    for dev in instruments_data:
-        inst_counts[dev.get("name")] += 1
-
-    duplicated: set[str] = {
-        name for name, cnt in inst_counts.items()
-        if name in _MULTI_HUBS and cnt > 1
+    # Hide only what cannot be addressed: two devices reporting ONE address.
+    # Two devices of a model with distinct serials are listed normally -- they
+    # are separately drivable, and hiding them meant you could not read the
+    # addresses needed to create their nets.
+    ambiguous: set[str] = ambiguous_addresses(instruments_data)
+    duplicated: set[tuple[str, str]] = {
+        (dev.get("name"), dev.get("address"))
+        for dev in instruments_data
+        if dev.get("address") in ambiguous
     }
 
     table = Texttable()
@@ -84,7 +84,7 @@ def instruments(ctx, box: str | None) -> None:
     table.add_row(["Name", "Channels", "VISA Address"])
 
     for dev in instruments_data:
-        if dev.get("name") in duplicated:
+        if dev.get("address") in ambiguous:
             continue
 
         chan_map = dev.get("channels", {})
@@ -116,8 +116,5 @@ def instruments(ctx, box: str | None) -> None:
         rendered.insert(1, "=" * separator_width)
     click.echo("\n".join(rendered))
 
-    for name in sorted(duplicated, key=natural_sort_key):
-        click.secho(
-            f"Multiple {name} devices detected – unplug extras before adding nets.",
-            fg="yellow",
-        )
+    for name, addr in sorted(duplicated, key=lambda x: natural_sort_key(x[0])):
+        click.secho(describe_ambiguity(name, addr), fg="yellow")

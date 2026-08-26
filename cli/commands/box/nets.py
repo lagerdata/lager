@@ -23,6 +23,7 @@ from ...core.net_group import NetGroupHelpMixin
 from ...core.net_helpers import NET_HTTP_PORT, echo_box_request_failure
 from ...errors import LagerError
 from ...sort_utils import natural_sort_key as _natural_sort_key
+from ._device_identity import ambiguous_addresses, describe_ambiguity
 from .net_tui import launch_tui, uart_channel_paths
 
 
@@ -370,8 +371,6 @@ def _serial_from_visa_address(address) -> str:
     return m.group(1).strip() if m else ""
 
 
-_MULTI_HUBS = {"LabJack_T7", "Acroname_8Port", "Acroname_4Port",
-               "Plugable_USB_Hub"}
 _SINGLE_CHANNEL_INST = {
     "Keithley_2281S": ("battery", "power-supply"),
     "EA_PSB_10060_60": ("solar", "power-supply"),
@@ -1181,16 +1180,18 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
             ctx.exit(1)
         instrument = "Unknown_UART_Device"
 
-    # ─────────── multiple hubs restriction ──────
+    # ─────────── address must be unambiguous ────
     if not is_uart_device_path:
-        if instrument in _MULTI_HUBS:
-            hub_count = sum(1 for d in devs if d.get("name") == instrument)
-            if hub_count > 1:
-                click.secho(
-                    f"Multiple {instrument} devices detected – unplug extras before adding nets.",
-                    fg="red",
-                )
-                ctx.exit(1)
+        # The user already named a specific address. Refuse only when that
+        # address cannot identify one device -- i.e. two present devices
+        # report it. A second Acroname carries its own serial and is fine;
+        # a second LabJack T7 is not, because its address has no serial in it.
+        if address in ambiguous_addresses(devs):
+            click.secho(
+                f"Error: {describe_ambiguity(instrument, address)}",
+                fg="red", err=True,
+            )
+            ctx.exit(1)
 
         # ─────────── tuple must exist ───────────────
         dev_match = next((d for d in devs if d.get("address") == address), None)
@@ -1642,14 +1643,31 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
     # Apply filtering logic similar to TUI's _get_addable_nets
     warnings = []
 
-    # Check for multiple hubs of same type
-    chan_seen: dict[str, set[str]] = defaultdict(set)
+    # Addresses that more than one present device reports. Nets against these
+    # are refused because the address cannot say which device it means. This
+    # replaces a model-name check that skipped the whole family whenever two
+    # of a model were present -- including families whose addresses are
+    # perfectly distinct, and including LabJack, whose nets carry the bench's
+    # AC relay control.
+    #
+    # chan_seen is keyed per DEVICE, not per model. Keyed per model, device B's
+    # channel "0" collided with device A's and marked the family duplicate.
+    ambiguous: set[str] = ambiguous_addresses(inst_list)
+    chan_seen: dict[tuple[str, str], set[str]] = defaultdict(set)
     duplicate_hubs: set[str] = set()
     for net in all_possible_nets:
-        if net["instrument"] in _MULTI_HUBS:
-            if net["chan"] in chan_seen[net["instrument"]]:
-                duplicate_hubs.add(net["instrument"])
-            chan_seen[net["instrument"]].add(net["chan"])
+        # Ambiguous addresses are handled below, with a message that explains
+        # the cause. Two devices sharing an address necessarily share a
+        # device_key too, so letting them fall through here would re-report
+        # the same condition as a channel clash.
+        if net["addr"] in ambiguous:
+            continue
+        device_key = (net["instrument"], net["addr"])
+        if net["chan"] in chan_seen[device_key]:
+            # The same channel offered twice for ONE uniquely-addressed
+            # device is a real duplicate from the scanner.
+            duplicate_hubs.add(net["instrument"])
+        chan_seen[device_key].add(net["chan"])
 
     # Mode-exclusive chips (FT232H): if a chip+addr has no saved net yet AND
     # the scanner produced candidates for more than one role, ``add-all``
@@ -1674,13 +1692,19 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
                 f"this chip only runs one mode at a time."
             )
 
-    # Filter out blocked instrument families
+    # Filter out nets that cannot or should not be created
     filtered_nets = []
     dup_single: set[tuple[str, str]] = set()
+    ambiguous_seen: set[tuple[str, str]] = set()
 
     for net in all_possible_nets:
         # Skip if instrument family is blocked due to duplicates
         if net["instrument"] in duplicate_hubs:
+            continue
+
+        # Skip nets whose address cannot identify one physical device.
+        if net["addr"] in ambiguous:
+            ambiguous_seen.add((net["instrument"], net["addr"]))
             continue
 
         # Skip if single-channel instrument already has a net at this address
@@ -1801,9 +1825,14 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
 
     # Generate warnings
     for inst in sorted(duplicate_hubs, key=_natural_sort_key):
-        warnings.append(f"Multiple {inst} devices detected – unplug extras before adding nets.")
+        warnings.append(
+            f"{inst}: the box offered the same channel twice for one device; "
+            f"skipping that instrument. Re-run `lager instruments` to check it."
+        )
     for inst, addr in sorted(dup_single, key=lambda x: _natural_sort_key(x[0])):
         warnings.append(f"{inst} at {addr} already has a net.")
+    for inst, addr in sorted(ambiguous_seen, key=lambda x: _natural_sort_key(x[0])):
+        warnings.append(describe_ambiguity(inst, addr))
 
     # Display warnings
     for warning in warnings:

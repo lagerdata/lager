@@ -32,6 +32,32 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- **A second device of the same model no longer disables that whole instrument
+  family.** Four call sites -- `nets add`, `nets add-all`, the net TUI and
+  `lager instruments` -- each carried their own copy of a hardcoded model list
+  and each did something different with it. `nets add` refused with an error,
+  `add-all` skipped the family in silence, the TUI computed per-device keys and
+  then discarded them, and `lager instruments` hid the devices from its own
+  table, so the addresses needed to create their nets could not even be read.
+
+  Whether two devices can coexist is a property of the address, not the model.
+  Most instruments carry a unique serial, so two of them get two addresses and
+  both stay drivable; a hub that reports no serial is already topology-addressed
+  by the scanner for exactly this reason. The check is now "do two present
+  devices report the same address", which is right for a model nobody has
+  considered yet and stops being wrong for a model the moment the scanner learns
+  to address it.
+
+  Two Acronames now yield sixteen usb nets instead of none. A second LabJack T7
+  is still refused, because it reports no serial and is not topology-addressed,
+  so two of them enumerate as the same string and a net could not say which one
+  it meant -- but the message now says that, rather than "unplug extras".
+
+  The silent-skip path was the dangerous one: `delete-all` + `add-all` is the
+  documented recovery procedure, and on a bench whose instrument AC power is
+  switched by LabJack GPIO nets, skipping the LabJack family takes the bench's
+  power control with it and says nothing.
+
 - **`lager arm`'s reference page was un-runnable as written.** `--x/--y/--z` and
   `--dx/--dy/--dz` were documented as positional arguments, so every motion
   example on the page failed. Same for `set-acceleration`.

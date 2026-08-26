@@ -36,13 +36,13 @@ are not.
 
 | Job (status context) | Path | Tests |
 |---|---|---:|
-| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1794 (+2 xfailed) |
+| `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1811 (+2 xfailed) |
 | `unit (box)` | `test/unit/box/` | 1910 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 177 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 143 (+1 skipped) |
-| | **Total gated** | **4218** |
+| | **Total gated** | **4235** |
 
 Each suite gets its own job because they need incompatible `sys.modules` states for the name
 `lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
@@ -443,7 +443,7 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
                           #           plus 1 standalone report script
 ```
 
-### Local Unit Tests (`test/unit/` -- 168 files)
+### Local Unit Tests (`test/unit/` -- 169 files)
 
 #### Box Unit Tests (`test/unit/box/` -- 88 files)
 
@@ -542,7 +542,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_ykush_driver.py` | YKUSH USB hub driver: device-contention regression from an indefinitely cached handle |
 | `test_automation_exports.py` | Static parse of `automation/__init__.py`'s lazy export table: no name guarded twice, every returned driver reachable under its own name, everything in `__all__` resolvable -- the copy-paste class of defect that made one driver answer to another's name |
 
-#### CLI Unit Tests (`test/unit/cli/` -- 66 files)
+#### CLI Unit Tests (`test/unit/cli/` -- 67 files)
 
 | File | What it tests |
 |------|---------------|
@@ -578,6 +578,7 @@ imported, and stubs the two third-party modules that are neither guarded nor ins
 | `test_nets_assign.py` | `lager nets assign` flow with custom-device backend and net creation |
 | `test_nets_channel_display.py` | `lager nets` Channel column rule for uart nets carrying a durable `live_path` |
 | `test_nets_debug_scripts.py` | Smart `lager nets set-script` auto-detection and probe/file reconciliation |
+| `test_nets_multi_device.py` | Two devices of one model: address ambiguity, not model name, decides whether nets can be created |
 | `test_nets_state_display.py` | `lager nets state` State column rendering, including the dash shown for a net whose state is unknown |
 | `test_nets_tui_startup.py` | Nets TUI startup regressions: mixed net types, empty state, unsaved placeholders |
 | `test_performance_improvements.py` | Config caching, connection pooling |
