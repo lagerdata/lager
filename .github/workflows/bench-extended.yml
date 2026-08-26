@@ -317,7 +317,7 @@ jobs:
           # genuinely gone fails this step BY NAME after 180s, which is the
           # outcome we want: the bench changed and the workflow should say so
           # rather than quietly race whatever is left.
-          expected=(Rigol_DP821 Keithley_2281S Rigol_MS05204)
+          expected=(Rigol_DP821 Keithley_2281S Rigol_MSO5204)
           enumerated=""
           missing=""
           for _ in $(seq 1 36); do

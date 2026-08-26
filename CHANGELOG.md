@@ -15,6 +15,21 @@ All notable changes to the Lager platform are documented here. For detailed rele
   each pinned to the same mint version `static-checks.yml` pins, so a local run
   and CI cannot disagree. Closes #374.
 
+- **The scope's `SUPPORTED_USB` key was spelled `Rigol_MS05204`, with a zero where
+  the letter O belongs.** The instrument is the MSO5204, as
+  `rigol_mso5000_defines.py` and the docs both have it, and the misspelling was
+  user-visible in `lager instruments` and `lager nets list`. The key is renamed in
+  all three tables that carry it (`SUPPORTED_USB`, `CHANNEL_MAPS`,
+  `INSTRUMENT_NET_MAP`).
+
+  The instrument name is persisted verbatim in every saved net record, so boxes
+  provisioned before this change still hold the old string. `canonical_instrument()`
+  maps it to the new spelling at each of the exact-key lookups that consume a saved
+  value, so those records keep working with no migration of `saved_nets.json`. The
+  distinction matters: a saved net whose instrument no longer matches a table key
+  does not fail loudly, it silently loses whatever restriction that key carried.
+  Closes #373.
+
 ### Added
 
 - **A Python API page for `NetType.Router`.** A router net drives a MikroTik

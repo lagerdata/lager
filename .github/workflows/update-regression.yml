@@ -242,7 +242,7 @@ jobs:
         run: |
           lager gpo "$RIGOL_POWER_NET" high --box "$LAGER_BOX"
           lager gpo "$KEITHLEY_POWER_NET" high --box "$LAGER_BOX"
-          expected=(Rigol_DP821 Keithley_2281S Rigol_MS05204)
+          expected=(Rigol_DP821 Keithley_2281S Rigol_MSO5204)
           enumerated=""
           missing=""
           for _ in $(seq 1 36); do
