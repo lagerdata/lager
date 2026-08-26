@@ -24,7 +24,8 @@
               "source/getting-started/adding-first-lager-box",
               "source/getting-started/setting-up-instruments",
               "source/getting-started/interacting-with-nets",
-              "source/getting-started/first-test"
+              "source/getting-started/first-test",
+              "source/getting-started/using-lager-in-ci"
             ]
           },
           {
@@ -87,7 +88,7 @@
               "source/reference/cli/scope",
               "source/reference/cli/logic",
               "source/reference/cli/adc",
-              "source/reference/cli/tc"
+              "source/reference/cli/thermocouple"
             ]
           },
           {
@@ -233,12 +234,17 @@
         "tab": "Release Notes",
         "groups": [
           {
-            "group": "Version History",
+            "group": "0.40 and later",
             "pages": [
               "source/release-notes/v0.43.0",
               "source/release-notes/v0.42.0",
               "source/release-notes/v0.41.0",
-              "source/release-notes/v0.40.0",
+              "source/release-notes/v0.40.0"
+            ]
+          },
+          {
+            "group": "0.30 – 0.39",
+            "pages": [
               "source/release-notes/v0.39.1",
               "source/release-notes/v0.39.0",
               "source/release-notes/v0.38.0",
@@ -280,7 +286,12 @@
               "source/release-notes/v0.31.2",
               "source/release-notes/v0.31.1",
               "source/release-notes/v0.31.0",
-              "source/release-notes/v0.30.0",
+              "source/release-notes/v0.30.0"
+            ]
+          },
+          {
+            "group": "0.20 – 0.29",
+            "pages": [
               "source/release-notes/v0.29.0",
               "source/release-notes/v0.28.5",
               "source/release-notes/v0.28.4",
@@ -302,7 +313,12 @@
               "source/release-notes/v0.21.1",
               "source/release-notes/v0.21.0",
               "source/release-notes/v0.20.1",
-              "source/release-notes/v0.20.0",
+              "source/release-notes/v0.20.0"
+            ]
+          },
+          {
+            "group": "0.10 – 0.19",
+            "pages": [
               "source/release-notes/v0.19.2",
               "source/release-notes/v0.19.1",
               "source/release-notes/v0.19.0",
@@ -338,7 +354,12 @@
               "source/release-notes/v0.13.0",
               "source/release-notes/v0.12.0",
               "source/release-notes/v0.11.0",
-              "source/release-notes/v0.10.0",
+              "source/release-notes/v0.10.0"
+            ]
+          },
+          {
+            "group": "0.2 – 0.9",
+            "pages": [
               "source/release-notes/v0.9.0",
               "source/release-notes/v0.8.0",
               "source/release-notes/v0.7.0",
@@ -428,5 +449,11 @@
     "socials": {
       "github": "https://github.com/lagerdata"
     }
-  }
+  },
+  "redirects": [
+    {
+      "source": "/source/reference/cli/tc",
+      "destination": "/source/reference/cli/thermocouple"
+    }
+  ]
 }
