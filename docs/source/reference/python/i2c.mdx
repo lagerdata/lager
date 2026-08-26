@@ -243,6 +243,24 @@ data = i2c.read(address=0x50, num_bytes=256,
 |---------|-------------|
 | LabJack T7 | Uses GPIO pins (FIO/EIO) for SDA and SCL |
 | Aardvark I2C/SPI | Dedicated USB I2C adapter with pull-up support |
+| FTDI FT232H / FT2232H / FT4232H | MPSSE-based I2C; channel selected per net |
+
+### Multi-channel FTDI adapters
+
+An FTDI net takes its channel from `params.interface` on the net record, accepting
+`A`-`D` or `0`-`3`. A net with no `interface` uses channel A — the only choice on a
+single-channel FT232H.
+
+| Part | Channels | Usable for I2C |
+|---|---|---|
+| FT232H | 1 (A) | A |
+| FT2232H | 2 (A, B) | A, B |
+| FT4232H | 4 (A-D) | A, B |
+
+I2C runs over the FTDI part's MPSSE engine, and on an FT4232H only channels A and B have one. Asking for C or D fails at net construction naming the channel, rather than somewhere inside pyftdi.
+
+See [Nets](/source/reference/cli/nets) for how channels are assigned across net
+types on one chip.
 
 ## Notes
 

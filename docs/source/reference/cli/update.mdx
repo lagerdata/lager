@@ -20,11 +20,34 @@ lager update [OPTIONS]
 | `--yes` | Skip confirmation prompt |
 | `--check` | Dry run: report what would change without modifying the box |
 | `--force` | Update even if the box reports it is already up to date, and force a clean rebuild (wipes the cached image and the cargo/npm volumes) |
+| `--pull` | Pull the pre-built box image from GHCR for a release tag instead of building on the box (falls back to a local build on any miss) |
+| `--no-pull` | Never pull a pre-built image; always build on the box |
 | `--verbose` / `-v` | Show detailed output (default shows progress bar) |
 
 <Note>
 `lager update` targets one box per invocation. To update several, loop over them
 in your shell — the `--all` flag and its multi-box loop were removed in v0.18.2.
+</Note>
+
+## Pre-built box images
+
+Release tags publish a box container image to the GitHub Container Registry. When
+a pull is enabled, the client resolves the tag to an immutable digest, pulls that
+digest pinned to the box's own architecture, and verifies the image reports the
+version that was asked for before using it. Any miss at any step — a branch target
+rather than a release tag, an unpublished tag, an unreachable registry, a
+mismatched image — falls back to the local build that has always run.
+
+<Note>
+For `lager update`, pulling is **off by default**. It changes how the most
+load-bearing command in the fleet obtains the code it runs, so it is soaking on
+Lager's own boxes first. Pass `--pull` to opt a single run in, or set
+`LAGER_BOX_IMAGE_PULL=1` to opt in a whole shell.
+
+This differs from [`lager install`](/source/reference/cli/install), which already
+uses a pre-built image for a release tag by default. `--no-pull` works the same
+way on both, and is the switch that routes a fleet around a bad published image
+without waiting for a CLI release.
 </Note>
 
 ## Version pinning

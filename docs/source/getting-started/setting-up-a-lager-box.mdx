@@ -47,6 +47,12 @@ throttled VM -- a healthy build can exceed that, so raise the budget with
 mid-build.
 </Note>
 
+<Warning>
+**Keep your own machine awake for the whole install.** The build runs on the box, but it is
+driven over SSH from the machine you launched `lager install` from. If that machine sleeps and
+the connection drops, the build goes with it. On macOS, run the install under `caffeinate -i`.
+</Warning>
+
 <Note>
 **Ubuntu 25.10 and later, including 26.04 LTS, install without any change.** Those releases
 default to `sudo-rs`, which rejects wildcards in command arguments. Lager used to write
@@ -264,6 +270,30 @@ pinned to. A whole controller keeps working across those events.
 
 A VM with no hardware attached is still useful for trying Lager out, and needs no passthrough
 at all.
+
+### Emulated guests
+
+An **emulated** x86-64 guest — an x86 VM on an ARM host, for example — works, but the first
+install is far slower than the figures above, and can take several hours.
+
+The reason is the container build. The box image compiles a USB DAQ library from source as a
+single-threaded C++ build: a few minutes natively, and very slow under emulation. Expect that
+step alone to run for hours.
+
+Pull the pre-built image instead of building it. Deploy a release tag rather than `main`, so
+that a published image exists to pull:
+
+```bash
+lager install --ip <box-ip> --user <box-user> --version <release-tag>
+lager update --box <box-name> --version <release-tag> --pull
+```
+
+Any published release tag works — `lager update --version` accepts a tag, a semver
+pin, a branch, or a commit SHA, but only release tags have a published image to pull.
+
+`--pull` falls back to building on the box if no image matches, so watch the output: if it
+starts compiling, the pull missed and you are back on the slow path. See
+[pre-built box images](/source/reference/cli/update#pre-built-box-images).
 
 ---
 
