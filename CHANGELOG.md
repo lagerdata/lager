@@ -4,6 +4,70 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/etc/lager/ref` was never written when the box was already up to date.**
+  `lager update` records which ref produced the box's code so `lager hello`
+  can distinguish a branch deploy from the release tag it shares a version
+  number with. That write sat on the pulled path only: a run that found the
+  box already at the target version exited several hundred lines earlier, so
+  it never happened.
+
+  That is the case the file matters most in -- a re-run against a box whose
+  ref file is missing or stale is exactly when someone is trying to find out
+  what the box is running. And because the documented way to confirm a branch
+  deploy took is that `lager hello` names a ref, its absence reported failure
+  for a deploy that had succeeded. `/etc/lager/version` had the identical bug
+  on the identical branch and was fixed once already; the two writes are now
+  pinned together by a test so a third such file cannot repeat it.
+
+  Note the file is written by the CLI doing the deploying, not by the box, so
+  a box deployed by a CLI predating this feature has no ref file however many
+  times it is updated. Put the host CLI on the newer version first.
+
+- **"SSH key not configured for this box" on a box where the key was
+  installed and working.** Two independent defects, both in reading a probe
+  that deliberately has three outcomes -- installed, not installed, and
+  couldn't tell.
+
+  The probe greps the box's `authorized_keys` rather than inferring
+  installation from a successful login, but it did not offer the lager key to
+  the SSH that carries the query. On a machine whose default identities the
+  box does not accept, and where the key is not loaded in the agent, nothing
+  usable was offered, so the probe could not connect and honestly answered
+  "couldn't tell" about a box it was perfectly able to answer for. It now
+  passes the key with `-i`, which widens the identities tried rather than
+  narrowing them -- any other working credential is still accepted.
+
+  That is the whole of the original defect, and fixing the probe fixes it:
+  a box that has the key now answers "installed" rather than "couldn't
+  tell". The pre-flight gate in `lager update` accordingly requires a
+  confirmed key -- `is True`, explicitly, rather than the bare truthiness it
+  used before, which silently meant the same thing while reading as though
+  no decision had been made.
+
+  Reading "couldn't tell" as good enough was tried and is worse than the bug.
+  A box with no key cannot authenticate at all, so on a real fleet absence
+  arrives as "couldn't tell" far more often than as a definite no -- a
+  definite no needs some other identity to log in and the key search to then
+  miss. Waving it through reported "SSH key works" about a box that never
+  authenticated, dropped `--check` from exit 2 to 1, replaced the actionable
+  message with a bare permission-denied several steps later, and removed the
+  only path that offers to install a key. "Couldn't tell" and "not installed"
+  differ in what can be claimed, not in whether a usable key exists, so both
+  now take the setup path -- and when the box could not be reached, the
+  output says that rather than asserting the key is absent.
+
+### Changed
+
+- **`DebugNet.connect(script=...)` documents that an OpenOCD override must be
+  a complete cfg.** The launch line still carries lager's own
+  `ftdi channel <N>` for a net with a probe channel, and that command is not
+  recognised unless a cfg has selected the ftdi adapter driver -- so a
+  fragment holding only, say, `adapter speed 1000` dies at startup with
+  `invalid command name "ftdi"`. The docstring implied a small standalone cfg
+  would do.
+
 ### Added
 
 - **`DebugNet.halt()` stops the target where it is, without a reset.** OpenOCD

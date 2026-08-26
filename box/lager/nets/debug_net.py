@@ -984,6 +984,14 @@ try:
             trips that gap raises rather than routing on a guess; pass it as
             ``jlink_script`` and the sniff is skipped entirely.
 
+            An OpenOCD override must be a **complete** cfg, not a fragment.
+            It is applied after the interface and target configs but the
+            launch line still carries lager's own ``-c 'ftdi channel N'``
+            whenever the net has a probe channel, and that command is not
+            recognised unless a cfg has selected the ftdi adapter driver. A
+            cfg holding only, say, ``adapter speed 1000`` therefore dies at
+            startup with ``invalid command name "ftdi"``.
+
             Either override is scoped to this net and this session: it goes
             to a per-net path, never the box-wide cfg the net record and the
             HTTP debug service share, and ``disconnect`` clears it. An

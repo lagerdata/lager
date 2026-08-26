@@ -142,6 +142,63 @@ class TestHeadShaReaders:
         assert 'HEAD is now at' not in src.replace('"HEAD is now at <hash> <subject>"', '')
 
 
+class TestRefIsWrittenOnTheAlreadyUpToDatePath:
+    """`/etc/lager/ref` must be written when the box was ALREADY up to date.
+
+    This is the path it matters most on. `_read_box_head_sha` says so itself:
+    "an 'already up to date' run against a box whose ref file is missing or
+    stale is exactly when someone is trying to find out what the box is
+    running." That helper was written to serve both paths and then only ever
+    called on one -- the sole `store_deployed_ref` call sat several hundred
+    lines past this branch's `ctx.exit(0)`, so the file was never produced.
+
+    Found on hardware: with CLI and box both on a branch, a re-run printed
+    "already at version", wrote no ref file, and `lager hello` reported a bare
+    version number. The documented way to confirm a branch deploy took is that
+    `lager hello` names a ref -- so this reported FAILURE for a deploy that had
+    in fact succeeded.
+
+    /etc/lager/version had the identical bug on this identical branch and was
+    fixed once already (see the comment above its reconciliation call). The
+    two writes are pinned together here so a future ref-like file cannot be
+    added to one path and forgotten on the other.
+    """
+
+    @staticmethod
+    def _early_exit_block():
+        """Source between the version-file write and this branch's exit."""
+        src = (ROOT / 'cli' / 'commands' / 'utility' / 'update.py').read_text()
+        start = src.index('if not write_box_version_file(_box_v):')
+        end = src.index('ctx.exit(0)', start)
+        return src[start:end]
+
+    def test_the_ref_is_written_before_the_early_exit(self):
+        assert 'store_deployed_ref' in self._early_exit_block(), (
+            "store_deployed_ref is not called on the already-up-to-date path, "
+            "so /etc/lager/ref is never written there"
+        )
+
+    def test_it_is_paired_with_the_version_file_write(self):
+        block = self._early_exit_block()
+        assert 'write_box_version_file' in block
+        assert block.index('write_box_version_file') < block.index(
+            'store_deployed_ref'), (
+            "reconcile the version file first, then record the ref -- the "
+            "order the successful path uses"
+        )
+
+    def test_a_failed_write_warns_rather_than_exiting(self):
+        """Best-effort, like every other store_deployed_ref call site.
+
+        Nothing gates on this file; failing the whole update over it would
+        turn a cosmetic gap into an outage.
+        """
+        block = self._early_exit_block()
+        after = block[block.index('store_deployed_ref'):]
+        assert 'ctx.exit(1)' not in after
+        assert 'Warning' in after or 'warning' in after
+
+
 class TestRefIsASiblingFileNotAThirdVersionField:
     """The obvious fix -- a third `|` field in /etc/lager/version -- silently
     corrupts every reader. Four of them do `split('|', 1)` and would land the

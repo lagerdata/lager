@@ -20,6 +20,9 @@ No real ssh, no network: subprocess.run is faked throughout.
 """
 
 import importlib
+import os
+import pathlib
+import subprocess
 import unittest
 from unittest import mock
 
@@ -270,17 +273,18 @@ class KeyInstalledOnBox(unittest.TestCase):
 
     PUB = "ssh-ed25519 AAAATESTBLOB lager-box-access"
 
-    def _check(self, rc, *, pub=PUB):
+    def _check(self, rc, *, pub=PUB, key_path=None):
         calls = []
 
         def fake_run(cmd, **_kw):
             calls.append(list(cmd))
             return _proc(rc)
 
+        kwargs = {"key_path": key_path} if key_path is not None else {}
         with mock.patch("builtins.open", mock.mock_open(read_data=pub)), \
                 mock.patch.object(_ssh.shutil, "which", lambda _n: "/usr/bin/ssh"), \
                 mock.patch.object(_ssh.subprocess, "run", fake_run):
-            return _ssh.key_installed_on_box("lagerdata@10.0.0.1"), calls
+            return _ssh.key_installed_on_box("lagerdata@10.0.0.1", **kwargs), calls
 
     def test_greps_authorized_keys_for_the_blob_not_the_comment(self):
         # Comments drift -- the same key is `lager-box-access` locally and
@@ -316,6 +320,183 @@ class KeyInstalledOnBox(unittest.TestCase):
         _result, calls = self._check(0)
         self.assertNotIn("IdentitiesOnly=yes", calls[0])
         self.assertIn("BatchMode=yes", calls[0])
+
+    def test_offers_the_key_so_the_query_can_authenticate_at_all(self):
+        """Any identity is fine -- but one has to WORK for the probe to run.
+
+        Found on hardware: on a machine whose default identities the box did
+        not accept, and with lager_box not in the agent, ssh offered nothing
+        usable. The probe got rc 255 and honestly returned None -- for a box
+        it could have answered for, whose key was in fact installed. The
+        operator's workaround was `ssh-add ~/.ssh/lager_box`, which should
+        not be a prerequisite for asking a question about the box.
+
+        `-i` WIDENS the identities tried, so this does not contradict the
+        test above: IdentitiesOnly is still not set, and any other working
+        credential is still accepted.
+        """
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix="_key") as key:
+            _result, calls = self._check(0, key_path=key.name)
+            self.assertIn("-i", calls[0])
+            self.assertEqual(calls[0][calls[0].index("-i") + 1], key.name)
+            self.assertNotIn("IdentitiesOnly=yes", calls[0])
+
+    def test_a_missing_private_key_is_not_offered(self):
+        """`-i` at a path that does not exist makes ssh noisier, not better."""
+        _result, calls = self._check(0, key_path="/nonexistent/lager_box")
+        self.assertNotIn("-i", calls[0])
+
+
+def _unreachable_ssh(*_a, **_kw):
+    """Stand in for every outbound ssh in this test.
+
+    The "couldn't tell" path deliberately goes on to TRY the key, which means
+    a real connection attempt. Without this stub the test waits out a connect
+    timeout against an unroutable address -- a slow, network-dependent unit
+    test.
+
+    Returns a FAILED process rather than raising: rc 255 with ssh's own
+    wording is what the code under test is written to handle, and raising
+    OSError instead just escapes the command as an unhandled exception,
+    which tests nothing about the branch we care about.
+    """
+    return subprocess.CompletedProcess(
+        args=_a[0] if _a else [], returncode=255,
+        stdout='', stderr='ssh: connect to host port 22: Network is unreachable')
+
+
+class CallersHonourTheThreeOutcomeContract(unittest.TestCase):
+    """None means "couldn't tell" and must not be read as "not installed".
+
+    The probe's docstring is explicit about this, and it matters because the
+    two readings have opposite repairs: "not installed" triggers a reinstall,
+    "couldn't tell" should just try the key.
+
+    Reported from a bench: `lager update --check` exited 2 with "SSH key not
+    configured for this box" IMMEDIATELY after `lager ssh-setup` reported
+    success -- on a box where the key really was installed (present twice in
+    authorized_keys and registered under /etc/lager/authorized_keys.d). The
+    probe had returned None because it could not authenticate to ask; the
+    caller's bare truthiness test collapsed that into False.
+    """
+
+    def _check_run(self, probe_result, *, key_file_exists=True):
+        """Drive `lager update --check` with the probe forced to *probe_result*.
+
+        Whether the local key file exists is set up as a REAL file under a
+        temporary HOME, not by patching os.path -- that is process-global and
+        on 3.14+ rewrites every pathlib.Path.exists()
+        (test_no_global_os_path_patches.py enforces this).
+
+        It has to be controlled at all because the gate is
+        ``os.path.exists(key_file) and <probe>``: on a host without
+        ~/.ssh/lager_box it short-circuits and the probe is never consulted.
+        Inheriting that from the machine made these tests pass on a laptop
+        that happened to have the key and fail in CI -- testing nothing in
+        either case.
+        """
+        import importlib
+        import tempfile
+        from click.testing import CliRunner
+        update_mod = importlib.import_module('cli.commands.utility.update')
+
+        with tempfile.TemporaryDirectory() as home:
+            if key_file_exists:
+                ssh_dir = os.path.join(home, '.ssh')
+                os.makedirs(ssh_dir, exist_ok=True)
+                with open(os.path.join(ssh_dir, 'lager_box'), 'w') as fh:
+                    fh.write('PRIVATE KEY PLACEHOLDER\n')
+            with mock.patch.dict(os.environ,
+                                 {'HOME': home, 'USERPROFILE': home}), \
+                 mock.patch.object(update_mod, 'resolve_and_validate_box',
+                                   return_value='192.0.2.10'), \
+                 mock.patch.object(update_mod, 'get_box_user',
+                                   return_value='lagerdata'), \
+                 mock.patch.object(update_mod, 'key_installed_on_box',
+                                   return_value=probe_result), \
+                 mock.patch.object(update_mod.subprocess, 'run',
+                                   side_effect=_unreachable_ssh), \
+                 mock.patch.object(
+                     update_mod.subprocess, 'check_output',
+                     side_effect=subprocess.CalledProcessError(255, 'ssh')):
+                return CliRunner().invoke(
+                    update_mod.update, ['--box', 'testbox', '--check'],
+                    catch_exceptions=False)
+
+    def test_a_definite_no_still_reports_the_key_is_not_configured(self):
+        """False is a real answer and must keep its existing behaviour."""
+        result = self._check_run(False)
+        self.assertEqual(result.exit_code, 2)
+        self.assertIn('SSH key', result.output)
+
+    def test_couldnt_tell_still_takes_the_key_setup_path(self):
+        """None must NOT be waved through as "the key works".
+
+        Measured on a fleet: a box with no key cannot authenticate at all, so
+        absence arrives as None far more often than as False -- False needs
+        some OTHER identity to log in and grep to then miss. Treating None as
+        "proceed" therefore swallows the ordinary "this box has no key yet"
+        case. It was observed reporting "SSH key works" about a box that never
+        authenticated, dropping --check from exit 2 to 1, replacing the
+        actionable message with a bare Permission denied several steps later,
+        and removing the only path that offers to install a key.
+
+        The original defect -- a WORKING key reported missing -- is fixed in
+        the probe itself, which now offers the key to its own SSH. With that,
+        a box that has the key answers True.
+        """
+        result = self._check_run(None)
+        self.assertEqual(result.exit_code, 2, f'output:\n{result.output}')
+        self.assertIn('SSH key not configured', result.output)
+
+    def test_couldnt_tell_does_not_claim_the_key_works(self):
+        """The claim that was the opposite of the truth."""
+        result = self._check_run(None)
+        self.assertNotIn('SSH key works', result.output)
+
+    def test_couldnt_tell_says_it_could_not_reach_the_box(self):
+        """False and None take the same path but are not the same claim."""
+        result = self._check_run(None)
+        self.assertIn('could not reach the box', result.output)
+
+    def test_a_definite_no_does_not_get_the_unreachable_note(self):
+        result = self._check_run(False)
+        self.assertNotIn('could not reach the box', result.output)
+
+    def test_a_confirmed_key_proceeds_past_the_setup_path(self):
+        """True is the only value that may skip key setup."""
+        result = self._check_run(True)
+        self.assertNotIn('SSH key not configured', result.output)
+
+    def test_no_local_key_file_takes_the_setup_path_without_probing(self):
+        """Nothing to offer means nothing to confirm; do not ask the box."""
+        result = self._check_run(True, key_file_exists=False)
+        self.assertEqual(result.exit_code, 2)
+        self.assertIn('SSH key not configured', result.output)
+        self.assertNotIn('could not reach the box', result.output)
+
+    def test_no_call_site_reads_the_probe_with_bare_truthiness(self):
+        """Which comparison is right depends on the site; truthiness never is.
+
+        The pre-flight gate wants `is True` -- only a confirmed key may skip
+        setup. The post-copy check a few lines above wants `is not False`,
+        because ssh-copy-id already succeeded there and an unverifiable probe
+        should not undo it. Both are explicit; bare truthiness silently means
+        `is True` and reads as if no decision was made.
+        """
+        src = (pathlib.Path(_ssh.__file__).resolve().parents[3]
+               / 'cli' / 'commands' / 'utility' / 'update.py').read_text()
+        for line in src.splitlines():
+            stripped = line.strip()
+            if 'key_installed_on_box(' not in line or stripped.startswith('#'):
+                continue
+            if 'import' in line or stripped.startswith('key_installed_on_box'):
+                continue
+            self.assertTrue(
+                ('is True' in line or 'is not False' in line
+                 or stripped.endswith('=  (') or '=' in stripped.split('(')[0]),
+                f'call site reads the three-outcome result loosely: {stripped}')
 
 
 class DeployScriptKeyCheck(unittest.TestCase):
