@@ -106,7 +106,7 @@ def _validate_scope_net(ctx, box_ip: str, netname: str) -> dict | None:
 
 def _run_backend(ctx, dut, action: str, **params):
     """Run backend command for scope operations"""
-    return run_backend(ctx, dut, "scope.py", action, **params)
+    return run_backend(ctx, dut, "scope.py", action, role=SCOPE_ROLE, **params)
 
 
 # ---------- CLI ----------
