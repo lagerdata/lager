@@ -23,31 +23,39 @@ Source files live in `source/` as `.mdx` (Markdown + JSX). Page paths in
 ## Development
 
 The CLI is published as [`mint`](https://www.npmjs.com/package/mint) (it was renamed
-from `mintlify`). You do not need to install it globally — `npx` fetches it:
+from `mintlify`). You do not need to install it globally — `npx` fetches it, and
+`package.json` pins the version so a local run matches CI:
 
 ```bash
 cd docs
-npx mint@latest dev
+npm run dev
 ```
 
-Before opening a pull request, run the two checks CI should agree with:
+Before opening a pull request, run the two checks CI runs:
 
 ```bash
-npx mint@latest validate       # strict build; fails on MDX parse errors
-npx mint@latest broken-links   # fails on dangling internal links
+npm run validate        # strict build; fails on MDX parse errors
+npm run broken-links    # dangling links and anchors, scoped to source/
 ```
+
+`broken-links` is the one CI gates (`static-checks.yml`). `validate` is not gated,
+so an MDX parse error only shows up if you run it — please do.
+
+There is no local build step. docs.lagerdata.com is built and served by Mintlify's
+own hosted platform, which deploys straight from `main` via the Mintlify GitHub app;
+nothing in this repository produces the published site.
 
 ## Adding a Page
 
 1. Create the `.mdx` file under the appropriate `source/` subdirectory.
 2. Add its path (including the `source/` prefix) to the right group in
    `docs.json` — a page not listed in the navigation will not be published.
-3. Preview with `mintlify dev` before opening a pull request.
+3. Preview with `npm run dev` before opening a pull request.
 
 ## Troubleshooting
 
 - **A page loads as a 404** - make sure you are running from the `docs/` folder
   (where `docs.json` is), and that the page is listed in `docs.json`.
-- **`Unknown command: build`** - the CLI no longer has a `build` subcommand. Use
-  `npx mint@latest validate` to check a build, or `npx mint@latest export` to
-  produce a static site.
+- **Looking for a `build` script?** There isn't one, by design - see above. `mint`
+  has no `build` subcommand; `mint export` writes an `export.zip`, which is not
+  what a static host expects and is not part of publishing here.

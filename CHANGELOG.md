@@ -4,6 +4,17 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ## [Unreleased]
 
+### Fixed
+
+- **`docs/package.json` ran `mint build`, a subcommand the Mintlify CLI no longer
+  has.** `docs/vercel.json` pointed its `buildCommand` at that script and expected
+  the output in `.mintlify`. Nothing consumed either file: docs.lagerdata.com is
+  built and served by Mintlify's own hosted platform, which deploys from `main`
+  through the Mintlify GitHub app. `vercel.json` is deleted, and the scripts are
+  now the commands that actually work -- `dev`, `validate` and `broken-links` --
+  each pinned to the same mint version `static-checks.yml` pins, so a local run
+  and CI cannot disagree. Closes #374.
+
 ### Added
 
 - **A Python API page for `NetType.Router`.** A router net drives a MikroTik

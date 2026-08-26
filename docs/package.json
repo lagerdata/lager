@@ -1,9 +1,11 @@
 {
   "name": "mintlify-lager-docs",
 
+  "//": "Pinned to the same mint version static-checks.yml pins, so a local run and CI cannot disagree. Bump both together.",
   "scripts": {
-    "build": "npx --yes mint@latest build -o .mintlify",
-    "dev":   "npx --yes mint@latest dev"
+    "dev": "npx --yes mint@4.2.827 dev",
+    "validate": "npx --yes mint@4.2.827 validate",
+    "broken-links": "npx --yes mint@4.2.827 broken-links --files 'source/**/*.mdx' --check-anchors"
   },
   "dependencies": {},
   "engines": {
