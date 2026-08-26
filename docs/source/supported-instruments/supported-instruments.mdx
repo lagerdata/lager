@@ -290,8 +290,9 @@ So: after any bench rework, re-derive the map before running anything scripted.
 For automation that must survive reseating, locate the device by VID:PID under
 the hub and drive whichever port it is actually on, rather than hard-coding a
 net name.
-</Warning> Verified by
-writing a volatile setting to a device on a user port, cycling power, and
+</Warning>
+
+Verified by writing a volatile setting to a device on a user port, cycling power, and
 reading the power-on default back — a real cold boot, not a logical disconnect.
 The upstream tier's behaviour is inferred from re-power timing (a device there
 reasserts CONNECT within a millisecond, so it never lost power) rather than from
