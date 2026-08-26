@@ -314,15 +314,27 @@ def key_installed_on_box(
     blind spot: the key is there or it is not.
 
     Any working identity is fine for the query itself — this is a question
-    about the box's state, not about which credential asked.
+    about the box's state, not about which credential asked. But the query
+    still has to authenticate to get asked at all, and ssh only offers the
+    identities it knows about: on a machine whose DEFAULT identities the box
+    does not accept, and where lager_box has not been added to the agent, no
+    identity is offered that works and the probe cannot reach the box. It then
+    returns None for a box it is perfectly able to answer for.
+
+    So *key_path* is offered explicitly with ``-i``. That widens the set of
+    identities tried rather than narrowing it, which is why it does not
+    contradict the paragraph above — and it is what ``default_ssh_runner``
+    just below has always done.
     """
     blob = lager_box_pubkey_blob(key_path)
     if blob is None or shutil.which("ssh") is None:
         return None
+    identity = ["-i", key_path] if os.path.exists(key_path) else []
     try:
         proc = subprocess.run(
             [
                 "ssh",
+                *identity,
                 "-o", "BatchMode=yes",
                 "-o", "StrictHostKeyChecking=accept-new",
                 "-o", "ConnectTimeout=15",

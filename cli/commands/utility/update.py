@@ -1489,7 +1489,33 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         # `Host *` IdentityFile from ssh_config — so it answered yes on
         # boxes this key had been purged from, and update then skipped the
         # setup that would have put it back.
-        if os.path.exists(key_file) and key_installed_on_box(ssh_host, key_path=key_file):
+        # `is True`, not truthiness and NOT `is not False`. Only a confirmed
+        # key may take this branch, because it does three things at once:
+        # marks the key usable for every later SSH, reports OK, and registers
+        # the key on the box.
+        #
+        # The original defect here was that a WORKING key could be reported
+        # missing -- but the cause was the probe not offering the key to its
+        # own SSH, which is fixed in key_installed_on_box. With that in place
+        # a box that has the key answers True, so None no longer means "we
+        # could not ask a box that has it". It means no identity authenticated
+        # at all, which on a real fleet is overwhelmingly "this box has no key
+        # yet": without the key you cannot log in to discover the key is
+        # missing, so absence arrives as None far more often than as False.
+        #
+        # Letting None through here was measured to be worse than the bug it
+        # was meant to fix. It reported "SSH key works" about a box that never
+        # authenticated, ran register_key_or_warn() against it, replaced the
+        # actionable "SSH key not configured" message with a bare Permission
+        # denied several steps later, changed --check's exit from 2 to 1, and
+        # left no path by which `lager update` could offer to install a key at
+        # all. False and None differ in what we can claim, not in whether a
+        # usable key exists -- so both must reach the setup path below.
+        key_probe = (
+            key_installed_on_box(ssh_host, key_path=key_file)
+            if os.path.exists(key_file) else False
+        )
+        if key_probe is True:
             use_explicit_key = True
             log_status('OK', 'green')
             # Repairs a box whose key predates registration.
@@ -1501,6 +1527,16 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
                 progress.finish(success=False)
             click.echo()  # New line after progress bar
             click.secho('SSH key not configured for this box', fg='yellow')
+            if key_probe is None:
+                # The probe could not authenticate, so it cannot distinguish
+                # "no key" from "box unreachable". Say so instead of asserting
+                # the key is absent -- but still take this path, because
+                # neither case has a usable key. The headline above is left
+                # exactly as it was: it is what the exit-2 contract and any
+                # script watching this output already key on.
+                click.secho(
+                    '  (could not reach the box to confirm; it may be down '
+                    'rather than missing the key)', fg='yellow')
             click.echo()
 
             if check:
@@ -2804,6 +2840,27 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
             click.echo('The local cache shows the box is up to date, but writing the version file on the box failed.', err=True)
             click.echo(f'Manually fix with: ssh {ssh_host} "echo \\"{_box_v}|{cli_version}\\" > /etc/lager/version"', err=True)
             ctx.exit(1)
+
+        # Same for /etc/lager/ref. The reconciliation above was added because
+        # this branch left /etc/lager/version stale; /etc/lager/ref arrived
+        # later and did not get the same treatment, so the only call to
+        # store_deployed_ref sat past this exit and an already-up-to-date run
+        # never wrote the file at all.
+        #
+        # That is the case it is most needed in. _read_box_head_sha says so
+        # itself: "an 'already up to date' run against a box whose ref file is
+        # missing or stale is exactly when someone is trying to find out what
+        # the box is running." Worse than merely absent -- the documented way
+        # to check a deploy took is that `lager hello` names a ref, so a
+        # missing file here reports failure for a deploy that succeeded.
+        if not store_deployed_ref(
+            target_version, _read_box_head_sha(run_ssh_command_with_output)
+        ):
+            click.secho(
+                'Warning: could not record the deployed ref in /etc/lager/ref; '
+                '`lager hello` will not be able to say which ref this box is on.',
+                fg='yellow', err=True,
+            )
 
         if progress:
             progress.finish(success=True)
