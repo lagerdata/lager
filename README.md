@@ -148,6 +148,11 @@ The box runs an [MCP](https://modelcontextprotocol.io) server on port 8100, so a
 MCP-compatible agent can operate the bench directly. Operations execute on-box —
 no CLI subprocesses, no round trip per step.
 
+The URL below assumes a box that publishes its ports, which is the default. A box
+started with `--no-publish` keeps 8100 on the internal `lagernet` network only, so
+`<box-ip>:8100` will not reach it — see [Reaching MCP on a proxied
+box](#reaching-mcp-on-a-proxied-box).
+
 ```json
 {
   "mcpServers": {
@@ -162,6 +167,24 @@ Tools cover discovery (`discover_bench`, `assess_suitability`), multi-step
 scenarios in one round trip (`run_scenario`), and fine-grained operations across
 power, debug, measurement, and the communication buses. See the
 [MCP reference](https://docs.lagerdata.com/source/reference/mcp/overview).
+
+### Reaching MCP on a proxied box
+
+`box/start_box.sh --no-publish` (or `LAGER_NO_PUBLISH=1`) runs the container
+without publishing any of its service ports on the host, for deployments where a
+reverse proxy on the same Docker network owns those ports. Port 8100 is published
+as part of that same all-or-nothing set, so on such a box:
+
+- the MCP server is running and healthy, and still binds `0.0.0.0:8100`
+  **inside** the container;
+- it is reachable from anything on the `lagernet` Docker network, including the
+  reverse proxy;
+- `http://<box-ip>:8100/mcp` does **not** connect, because nothing is listening
+  on the host at 8100.
+
+Point the client at the container's lagernet address, or at whatever route the
+proxy exposes. `start_box.sh` reports which mode a box is in at the end of its
+run, and the mode persists across restarts via `/etc/lager/no_publish`.
 
 ## Documentation
 

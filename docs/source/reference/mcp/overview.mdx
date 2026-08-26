@@ -53,6 +53,16 @@ actually connected on as `box_address` and hands back a ready-to-run
 `lager python … --box <that-address>` command.
 </Note>
 
+<Note>
+The URL above assumes a box that publishes its ports, which is the default. A box
+started with `start_box.sh --no-publish` (or `LAGER_NO_PUBLISH=1`) does not publish
+port 8100 on the host: the MCP server still runs and binds `0.0.0.0:8100` inside
+the container, but it is reachable only on the internal `lagernet` Docker network,
+where a reverse proxy owns the host ports. On such a box, point the client at the
+container's lagernet address or at the route the proxy exposes -- `<box-ip>:8100`
+will not connect.
+</Note>
+
 ## What the agent sees
 
 The server exposes two kinds of things: **resources** (read-only context the

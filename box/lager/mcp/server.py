@@ -21,8 +21,9 @@ This server is read-only: it tells the agent what hardware exists and what
 the DUT is, but it never drives hardware itself. All I/O happens in the test
 script the agent writes and runs via ``lager python``.
 
-The server runs as a service on the Lager box and is reachable from any
-MCP-compatible client via the box's local IP address.
+The server runs as a service on the Lager box. On a box that publishes its
+ports (the default) it is reachable from any MCP-compatible client at the
+box's local IP address:
 
 MCP client configuration:
     {
@@ -32,6 +33,13 @@ MCP client configuration:
             }
         }
     }
+
+On a box started with ``--no-publish`` (see ``box/start_box.sh``), port 8100 is
+NOT published on the host: the container is reachable only on the ``lagernet``
+Docker network, where a reverse proxy owns the host ports. ``<box-ip>:8100``
+will not connect there. Use the container's lagernet address, or whatever route
+the proxy exposes -- the server itself binds ``0.0.0.0:8100`` either way, so
+this is purely a question of reachability, not of the service being up.
 
 Primary workflow:
     1. Agent calls discover_bench() to see available hardware (and the box id

@@ -795,7 +795,9 @@ if docker ps -a --format '{{.Names}}' | grep -q '^lager$'; then
     docker rm lager 2>/dev/null || true
 fi
 
-# Start the Lager container with ALL necessary ports exposed
+# Start the Lager container. The ports below are what the container listens
+# on; whether they are published on the host is decided by PORT_PUBLISH_ARGS
+# further down, which is empty under --no-publish.
 # Port 5000: Python Execution Service (replaces controller)
 # Port 8100: MCP Server (AI agent integration)
 # Port 8765: Debug Service
@@ -1049,9 +1051,22 @@ echo "========================================"
 echo "Box started successfully!"
 echo "========================================"
 echo ""
-echo "Services running:"
+# Under --no-publish these are container ports on lagernet, not host ports, so
+# every "<box-ip>:<port>" instruction below is wrong for that box. Say which it
+# is rather than printing the published form unconditionally.
+if [ -n "$NO_PUBLISH" ]; then
+    echo "Services running (lagernet only -- ports are NOT published on the host):"
+    echo "  Reach them at the container's lagernet address, or through the reverse"
+    echo "  proxy that owns the host ports. <box-ip>:<port> will not connect."
+else
+    echo "Services running:"
+fi
 echo "  - Python Execution Service: port 5000 (and 8301 for backwards compatibility)"
-echo "  - MCP Server (AI): port 8100 (MCP clients: http://<box-ip>:8100/mcp)"
+if [ -n "$NO_PUBLISH" ]; then
+    echo "  - MCP Server (AI): port 8100 (MCP clients: lagernet address, not <box-ip>)"
+else
+    echo "  - MCP Server (AI): port 8100 (MCP clients: http://<box-ip>:8100/mcp)"
+fi
 echo "  - Debug Service: port 8765"
 echo "  - UART HTTP+WebSocket: port 9000"
 echo "  - Remote PDB: ports 8081-8090"
