@@ -1,0 +1,155 @@
+---
+title: SPI
+description: Configure a SPI bus and run full-duplex transfers
+---
+
+Clock data in and out of a SPI peripheral from the box, with full control over mode,
+bit order, word size and chip select.
+
+## Handle
+
+```rust
+use lager::LagerBox;
+
+let lager = LagerBox::from_env()?;
+let spi = lager.spi("spi1");
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `name()` | The net name this handle addresses |
+| `configure()` | Apply bus overrides and return the effective config |
+| `read()` | Clock in a number of words, clocking out the fill word |
+| `write()` | Clock out words; the words clocked in come back |
+| `read_write()` | Full-duplex transfer of exactly the words given |
+| `transfer()` | Transfer a word count, padding or truncating the data |
+
+## Types
+
+### `SpiConfig`
+
+```rust
+pub struct SpiConfig {
+    pub mode: Option<u8>,            // 0-3 (CPOL/CPHA)
+    pub bit_order: Option<BitOrder>,
+    pub frequency_hz: Option<u32>,
+    pub word_size: Option<u8>,       // 8, 16 or 32
+    pub cs_active: Option<CsActive>,
+    pub cs_mode: Option<CsMode>,
+}
+```
+
+A `None` field keeps the net's saved value. Anything set is applied live **and
+persisted on the box**.
+
+```rust
+pub enum BitOrder { Msb, Lsb }
+pub enum CsActive { Low, High }   // Low is typical
+pub enum CsMode   { Auto, Manual }
+```
+
+### `SpiOptions`
+
+```rust
+pub struct SpiOptions {
+    pub fill: u32,      // word clocked out while reading; default 0xFF
+    pub keep_cs: bool,  // keep CS asserted after the transaction; default false
+}
+```
+
+### `SpiTransfer`
+
+```rust
+pub struct SpiTransfer {
+    pub words: Vec<u32>,  // one entry per word, whatever the word size
+    pub word_size: u32,   // bits the transaction actually ran at
+}
+```
+
+## Method Reference
+
+### `configure(config: &SpiConfig) -> Result<SpiEffectiveConfig>`
+
+Apply settings and read back what took effect.
+
+```rust
+use lager::{BitOrder, SpiConfig};
+
+let cfg = spi.configure(&SpiConfig {
+    mode: Some(0),
+    frequency_hz: Some(1_000_000),
+    word_size: Some(8),
+    bit_order: Some(BitOrder::Msb),
+    ..Default::default()
+})?;
+```
+
+### `read(n_words: u32, opts: &SpiOptions) -> Result<SpiTransfer>`
+
+Clock in `n_words`, clocking out `opts.fill` for each.
+
+### `write(data: &[u32], opts: &SpiOptions) -> Result<SpiTransfer>`
+
+Clock out exactly `data`. SPI is full duplex, so the words clocked in during the same
+transaction come back in the result — a write is also a read.
+
+### `read_write(data: &[u32], opts: &SpiOptions) -> Result<SpiTransfer>`
+
+Full-duplex transfer of exactly `data`.
+
+### `transfer(data: &[u32], n_words: u32, opts: &SpiOptions) -> Result<SpiTransfer>`
+
+Transfer exactly `n_words`, padding `data` with the fill word or truncating it.
+
+## Examples
+
+### Read a flash chip's JEDEC ID
+
+```rust
+use lager::{LagerBox, SpiConfig, SpiOptions};
+
+let lager = LagerBox::from_env()?;
+let spi = lager.spi("spi1");
+
+spi.configure(&SpiConfig {
+    mode: Some(0),
+    frequency_hz: Some(1_000_000),
+    word_size: Some(8),
+    ..Default::default()
+})?;
+
+// 0x9F then three bytes of ID, in one CS assertion.
+let t = spi.transfer(&[0x9F], 4, &SpiOptions::default())?;
+let (manufacturer, memtype, capacity) = (t.words[1], t.words[2], t.words[3]);
+println!("JEDEC {manufacturer:02x} {memtype:02x} {capacity:02x}");
+assert_ne!(manufacturer, 0xFF, "no device responded");
+```
+
+### Hold CS across two transactions
+
+```rust
+let held = SpiOptions { keep_cs: true, ..Default::default() };
+spi.write(&[0x03, 0x00, 0x00, 0x00], &held)?;   // read command + address
+let data = spi.read(256, &SpiOptions::default())?; // releases CS at the end
+```
+
+## Supported Hardware
+
+| Instrument | Channels | Notes |
+|---|---|---|
+| FTDI FT232H | MPSSE, single channel | Mode-exclusive with UART on this part |
+| FTDI FT2232H / FT4232H | MPSSE channels A and B | SPI is MPSSE, so channels C and D cannot serve it |
+| LabJack T7 | Configured pins | |
+| Total Phase Aardvark | Dedicated | |
+
+## Notes
+
+- `opts.fill` is only sent for `read()` and `transfer()`. `write()` and `read_write()`
+  clock out exactly the data given, so a fill word would be meaningless.
+- `word_size` comes back on every transfer because a bus configured for 16-bit words
+  returns half as many entries as you might expect from a byte count.
+- Transactions run on the box under the device's lock, so a multi-word transfer
+  cannot be interleaved by another request on the same device.
+- `configure()` persists across tests. Set what you depend on rather than assuming.

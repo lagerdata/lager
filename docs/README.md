@@ -11,7 +11,8 @@ The documentation is organized into tabs, defined in `docs.json`:
 2. **CLI Reference** - All `lager` CLI commands (box management, configuration,
    power, measurement, I/O and communication, development, utilities)
 3. **Python API** - On-box Python API reference (`from lager import Net, NetType`)
-4. **Rust API** - On-box Rust API reference (net types, testing, debug and UART, auth)
+4. **Rust API** - Rust client reference (`lager-net` on crates.io): a page per net
+   type, plus the client, errors, async, testing, and authentication
 5. **AI Agents (MCP)** - Model Context Protocol server and DUT context
 6. **Supported Instruments** - The authoritative hardware compatibility list
 7. **Release Notes** - Version history

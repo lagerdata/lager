@@ -194,15 +194,66 @@
             "group": "Getting Started",
             "pages": [
               "source/reference/rust/overview",
-              "source/reference/rust/net-types"
+              "source/reference/rust/client",
+              "source/reference/rust/net-types",
+              "source/reference/rust/errors"
+            ]
+          },
+          {
+            "group": "Development",
+            "pages": [
+              "source/reference/rust/debug",
+              "source/reference/rust/rtt",
+              "source/reference/rust/dfu"
+            ]
+          },
+          {
+            "group": "Power & Simulation",
+            "pages": [
+              "source/reference/rust/supply",
+              "source/reference/rust/battery",
+              "source/reference/rust/solar",
+              "source/reference/rust/eload",
+              "source/reference/rust/watt",
+              "source/reference/rust/energy"
+            ]
+          },
+          {
+            "group": "Measurement",
+            "pages": [
+              "source/reference/rust/scope",
+              "source/reference/rust/adc",
+              "source/reference/rust/thermocouple"
+            ]
+          },
+          {
+            "group": "I/O & Communication",
+            "pages": [
+              "source/reference/rust/gpio",
+              "source/reference/rust/dac",
+              "source/reference/rust/i2c",
+              "source/reference/rust/spi",
+              "source/reference/rust/usb",
+              "source/reference/rust/uart",
+              "source/reference/rust/ble",
+              "source/reference/rust/wifi",
+              "source/reference/rust/blufi",
+              "source/reference/rust/router"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "source/reference/rust/arm",
+              "source/reference/rust/webcam"
             ]
           },
           {
             "group": "Guides",
             "pages": [
               "source/reference/rust/testing",
-              "source/reference/rust/debug-and-uart",
-              "source/reference/rust/auth"
+              "source/reference/rust/auth",
+              "source/reference/rust/async"
             ]
           }
         ]
@@ -243,7 +294,7 @@
             ]
           },
           {
-            "group": "0.30 – 0.39",
+            "group": "0.30 \u2013 0.39",
             "pages": [
               "source/release-notes/v0.39.1",
               "source/release-notes/v0.39.0",
@@ -290,7 +341,7 @@
             ]
           },
           {
-            "group": "0.20 – 0.29",
+            "group": "0.20 \u2013 0.29",
             "pages": [
               "source/release-notes/v0.29.0",
               "source/release-notes/v0.28.5",
@@ -317,7 +368,7 @@
             ]
           },
           {
-            "group": "0.10 – 0.19",
+            "group": "0.10 \u2013 0.19",
             "pages": [
               "source/release-notes/v0.19.2",
               "source/release-notes/v0.19.1",
@@ -358,7 +409,7 @@
             ]
           },
           {
-            "group": "0.2 – 0.9",
+            "group": "0.2 \u2013 0.9",
             "pages": [
               "source/release-notes/v0.9.0",
               "source/release-notes/v0.8.0",
@@ -454,6 +505,10 @@
     {
       "source": "/source/reference/cli/tc",
       "destination": "/source/reference/cli/thermocouple"
+    },
+    {
+      "source": "/source/reference/rust/debug-and-uart",
+      "destination": "/source/reference/rust/debug"
     }
   ]
 }

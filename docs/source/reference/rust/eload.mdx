@@ -1,0 +1,125 @@
+---
+title: Electronic Load
+description: Draw a controlled current, voltage, resistance or power from your DUT
+---
+
+Present a programmable load to a DUT's output: draw a fixed current, hold a fixed
+voltage, or emulate a resistance or a constant power draw.
+
+## Handle
+
+```rust
+use lager::{EloadMode, LagerBox};
+
+let lager = LagerBox::from_env()?;
+let load = lager.eload("eload1");
+```
+
+## Methods
+
+| Method | Description |
+|--------|-------------|
+| `name()` | The net name this handle addresses |
+| `state()` | Mode, input enable and measurements in one transaction |
+| `set()` | Switch mode and apply its setpoint atomically |
+| `setpoint()` | Read the stored setpoint for a mode |
+
+## Types
+
+### `EloadMode`
+
+```rust
+pub enum EloadMode { Cc, Cv, Cr, Cp }
+```
+
+| Variant | Meaning | Setpoint unit |
+|---|---|---|
+| `Cc` | Constant current | amps |
+| `Cv` | Constant voltage | volts |
+| `Cr` | Constant resistance | ohms |
+| `Cp` | Constant power | watts |
+
+### `EloadState`
+
+```rust
+pub struct EloadState {
+    pub mode: Option<String>,              // "cc" / "cv" / "cr" / "cp"
+    pub input_enabled: Option<bool>,
+    pub measured_voltage: Option<f64>,     // V
+    pub measured_current: Option<f64>,     // A
+    pub measured_power: Option<f64>,       // W
+}
+```
+
+## Method Reference
+
+### `set(mode: EloadMode, value: f64) -> Result<()>`
+
+Switch to `mode` and apply `value` as its setpoint, **atomically**. The box performs
+both as one composite operation under the instrument lock, so the load never spends
+a moment in the new mode carrying the old mode's setpoint.
+
+```rust
+load.set(EloadMode::Cc, 0.5)?;   // draw 500 mA
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `mode` | `EloadMode` | The regulation mode to switch to |
+| `value` | `f64` | The setpoint, in that mode's unit |
+
+### `setpoint(mode: EloadMode) -> Result<f64>`
+
+Read the stored setpoint for a mode. Each mode keeps its own, so reading `Cv` after
+setting `Cc` gives you the constant-voltage setpoint, not the current you just set.
+
+### `state() -> Result<EloadState>`
+
+Current mode, whether the input is enabled, and the measurements.
+
+## Examples
+
+### Step the load and watch the rail hold up
+
+```rust
+use lager::{EloadMode, LagerBox};
+
+let lager = LagerBox::from_env()?;
+let supply = lager.supply("supply1");
+let load = lager.eload("eload1");
+
+supply.set_voltage(5.0)?;
+supply.set_current(2.0)?;
+supply.enable()?;
+
+for amps in [0.1_f64, 0.5, 1.0, 1.5] {
+    load.set(EloadMode::Cc, amps)?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let s = load.state()?;
+    let v = s.measured_voltage.unwrap_or(0.0);
+    assert!(v > 4.75, "rail sagged to {v:.3} V at {amps} A");
+    println!("{amps:>4.1} A -> {v:.3} V");
+}
+
+load.set(EloadMode::Cc, 0.0)?;
+supply.disable()?;
+```
+
+## Supported Hardware
+
+| Instrument | Modes |
+|---|---|
+| Rigol DL3000 series | CC, CV, CR, CP |
+
+## Notes
+
+- Prefer `set()` over changing mode and setpoint separately — that is the whole
+  reason it takes both.
+- Return the load to zero in teardown. A load left drawing current keeps drawing it
+  after your test exits.
+- `measured_voltage` is the voltage at the load's terminals, which includes any drop
+  in the wiring between it and the DUT. For a rail measurement at the DUT, use an ADC
+  net wired there.

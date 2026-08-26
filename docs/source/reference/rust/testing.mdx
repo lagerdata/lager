@@ -107,3 +107,111 @@ jobs:
 For gateway-fronted boxes, see
 **[Authentication](/source/reference/rust/auth)** for how the token is
 attached and refreshed.
+
+## A harness that runs against any box
+
+The crate's own hardware suite uses a pattern worth copying: every test is `#[ignore]`d
+so `cargo test` stays hermetic, and each one reads its net name from an environment
+variable, skipping with a note when it is unset. The same suite then runs against
+whatever a given bench happens to have configured.
+
+```rust
+#![cfg(feature = "blocking")]
+
+use lager::{LagerBox, Level};
+
+fn lager() -> LagerBox {
+    LagerBox::from_env().expect("set LAGER_BOX_HOST to a reachable box")
+}
+
+/// The net name in `var`, or None with a printed skip note.
+fn net_from_env(var: &str) -> Option<String> {
+    match std::env::var(var) {
+        Ok(name) if !name.is_empty() => Some(name),
+        _ => {
+            eprintln!("skipping: set {var} to a configured net name to run this test");
+            None
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires a live box + LAGER_TEST_GPIO_NET"]
+fn gpio_toggles() {
+    let Some(name) = net_from_env("LAGER_TEST_GPIO_NET") else { return };
+    let lager = lager();
+    let pin = lager.gpio(&name);
+
+    pin.output(Level::High).unwrap();
+    assert_eq!(pin.input().unwrap(), Level::High);
+    pin.output(Level::Low).unwrap();
+}
+```
+
+Run it by opting in:
+
+```bash
+LAGER_BOX_HOST=192.168.1.42 \
+LAGER_TEST_GPIO_NET=gpio1 \
+LAGER_TEST_SUPPLY_NET=supply1 \
+  cargo test --test hardware -- --ignored --nocapture
+```
+
+The environment variables are a convention, not a crate feature — name them whatever
+suits your bench. What matters is that a test which cannot run says so and passes,
+rather than failing on a bench that simply lacks that instrument.
+
+## Skipping on an older box
+
+A box too old for an endpoint answers with `Error::UnsupportedByBox`, which is a
+better signal than a panic when a fleet is mid-upgrade.
+
+```rust
+match lager.usb_devices() {
+    Ok(devices) => assert!(!devices.is_empty()),
+    Err(lager::Error::UnsupportedByBox { message }) => {
+        eprintln!("skipping: {message}");
+    }
+    Err(e) => panic!("{e}"),
+}
+```
+
+## Teardown that actually runs
+
+A test that panics mid-way skips everything after the panic, which on a bench means
+leaving a supply enabled or a firewall rule in place. Put the restore on a path that
+survives a failure.
+
+```rust
+fn with_power<T>(lager: &lager::LagerBox, body: impl FnOnce() -> T) -> lager::Result<T> {
+    let supply = lager.supply("supply1");
+    supply.set_voltage(3.3)?;
+    supply.enable()?;
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+
+    supply.disable()?;             // runs even if `body` panicked
+    Ok(result.unwrap_or_else(|e| std::panic::resume_unwind(e)))
+}
+```
+
+Reserve the whole box for the duration when a suite must not be interleaved with
+another job:
+
+```rust
+let _guard = lager.lock_guard("ci-job-4711")?;
+```
+
+`BoxLockGuard` releases on drop, including during a panic unwind.
+
+## Verifying against real hardware
+
+Some behaviours only show up on a bench, and are worth knowing before you write an
+assertion around them:
+
+- A supply's measurements can be `None` while its output is disabled, depending on the
+  instrument. Assert on `enabled` and setpoints when the output is off.
+- `state()` returning `Ok` does not mean the instrument answered — check the `error`
+  field.
+- An `i2c.scan()` hit does not guarantee a subsequent read will ACK.
+- `erase()` drops the debugger connection; reconnect before reading memory.
