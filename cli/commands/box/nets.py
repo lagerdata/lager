@@ -396,6 +396,32 @@ _ROLE_ALIASES = {
 def _canonical_role(role: str) -> str:
     """Map a user-typed role token to the canonical saved-role string."""
     return _ROLE_ALIASES.get(role, role)
+
+
+# Instrument names are persisted verbatim in every saved net record, so a
+# corrected spelling in the scanner tables leaves the OLD string on disk on
+# every box provisioned before the fix. The lookups below are exact-key
+# (INSTRUMENT_NET_MAP, _SINGLE_CHANNEL_INST, _MODE_EXCLUSIVE_INST), and a
+# saved net whose instrument no longer matches a table key silently loses the
+# restriction that key carried -- it does not fail loudly. Normalizing on the
+# way in keeps a fleet's existing records working without a migration.
+#
+# Keep in sync with SUPPORTED_USB / CHANNEL_MAPS in the box's usb_scanner.py:
+# renaming a key there means adding the old spelling here.
+_INSTRUMENT_ALIASES = {
+    # Spelled with a zero where the letter O belongs. The instrument is the
+    # MSO5204, as rigol_mso5000_defines.py and the docs both have it.
+    "Rigol_MS05204": "Rigol_MSO5204",
+}
+
+
+def canonical_instrument(instrument):
+    """Map a legacy instrument spelling to the canonical scanner-table key."""
+    if not instrument:
+        return instrument
+    return _INSTRUMENT_ALIASES.get(instrument, instrument)
+
+
 # Chips that can run in exactly one mode at a time, across ALL roles. The
 # canonical case is the FT232H: one physical channel, hardware-multiplexed
 # between MPSSE (spi/i2c/gpio/debug) and async-serial (uart). Once the user
@@ -433,7 +459,7 @@ INSTRUMENT_NET_MAP: dict[str, list[str]] = {
     "Yocto_Watt": ["watt-meter"],
 
     # scope
-    "Rigol_MS05204": ["scope", "logic"],
+    "Rigol_MSO5204": ["scope", "logic"],
     "Picoscope_2000": ["scope"],
 
     # adc / gpio / dac / spi
@@ -1299,15 +1325,16 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
 
     # ─────────── single-channel restriction ──────────────────────────
     if instrument in _SINGLE_CHANNEL_INST:
-        if any(n["instrument"] == instrument and n["address"] == address for n in saved_nets):
+        if any(canonical_instrument(n["instrument"]) == instrument and n["address"] == address
+               for n in saved_nets):
             click.secho(
                 f"Only one net may reference {instrument} at {address}.",
                 fg="red",
             )
             ctx.exit(1)
 
-    if role not in INSTRUMENT_NET_MAP.get(instrument, []) and not is_uart_device_path:
-        supported_types = INSTRUMENT_NET_MAP.get(instrument, [])
+    if role not in INSTRUMENT_NET_MAP.get(canonical_instrument(instrument), []) and not is_uart_device_path:
+        supported_types = INSTRUMENT_NET_MAP.get(canonical_instrument(instrument), [])
         click.secho(
             f"Error: Instrument '{instrument}' does not support net type '{role}'",
             fg="red",
@@ -1675,7 +1702,7 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
     # ``lager nets add`` or the TUI to choose a single role explicitly.
     mode_excl_roles: dict[tuple[str, str], set[str]] = defaultdict(set)
     for net in all_possible_nets:
-        if net["instrument"] in _MODE_EXCLUSIVE_INST:
+        if canonical_instrument(net["instrument"]) in _MODE_EXCLUSIVE_INST:
             mode_excl_roles[(net["instrument"], net["addr"])].add(net["type"])
     ambiguous_mode_excl: set[tuple[str, str]] = set()
     for key, roles in mode_excl_roles.items():
@@ -1708,7 +1735,7 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
             continue
 
         # Skip if single-channel instrument already has a net at this address
-        if net["instrument"] in _SINGLE_CHANNEL_INST:
+        if canonical_instrument(net["instrument"]) in _SINGLE_CHANNEL_INST:
             if any(s.get("instrument") == net["instrument"] and s.get("address") == net["addr"] for s in saved_nets):
                 dup_single.add((net["instrument"], net["addr"]))
                 continue
@@ -1718,7 +1745,7 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
         # underlying hardware can only run one mode at a time. Also skip
         # chips flagged ambiguous in the pre-pass above (multiple candidate
         # roles, no saved net yet — user must pick interactively).
-        if net["instrument"] in _MODE_EXCLUSIVE_INST:
+        if canonical_instrument(net["instrument"]) in _MODE_EXCLUSIVE_INST:
             key = (net["instrument"], net["addr"])
             if key in ambiguous_mode_excl:
                 continue
