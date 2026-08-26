@@ -40,6 +40,16 @@ from lager.mcp.data.api_reference import (
 # driver a script calls addresses a single already-resolved net/port.
 _PLUMBING_PARAMS = {"net_name", "port"}
 
+# Methods where one of those names is a DOMAIN parameter rather than backend
+# plumbing. Keep this list short and justified: each entry is a hole in the
+# check above, so it must name the exact method, never a whole class.
+_PLUMBING_PARAM_ALLOWED = {
+    # MikroTikRouter.block_port(port, protocol) blocks a TCP/UDP PORT NUMBER on
+    # the router's firewall. Nothing to do with a USB hub port, and the caller
+    # supplies it -- which is the whole point of the method.
+    ("Router", "block_port"),
+}
+
 
 def _public_methods(cls):
     """(name, signature) for each method api_reference would introspect."""
@@ -63,6 +73,7 @@ class TestDriverSurface:
                 f"{name}{sig}"
                 for name, sig in _public_methods(cls)
                 if _PLUMBING_PARAMS & (set(sig.parameters) - {"self"})
+                and (net_type, name) not in _PLUMBING_PARAM_ALLOWED
             ]
             if leaky:
                 offenders[net_type] = leaky
@@ -155,3 +166,90 @@ class TestDriverClassMatchesDispatch:
         _netmod, dispatch = _role_dispatch()
         assert "USBNetWrapper" in dispatch.get("Usb", set())
         assert _import_class(_DRIVER_CLASSES["Usb"]) is USBNetWrapper
+
+
+# Types with no API_REFERENCE entry, each for a stated reason. A NetType that is
+# merely undocumented does NOT belong here -- add an entry instead.
+_NO_REFERENCE_EXPECTED = {
+    # Provisioning/fixture motion controls, not test-time net access. No driver
+    # surface an agent would script against.
+    "Rotation",
+    "Actuate",
+    # A four-quadrant supply is driven through the PowerSupply entry; the alias
+    # map already routes "power-supply-2q" there.
+    "PowerSupply2Q",
+    # No driver and no CLI surface ships for it yet.
+    "Waveform",
+}
+
+
+class TestEveryNetTypeIsCovered:
+    """The map was only ever checked in one direction.
+
+    ``_apply_introspection`` warns when a _DRIVER_CLASSES key is missing from
+    API_REFERENCE, but nothing checked that a NetType has an entry at all. A
+    type that is absent is never introspected and ``lager://reference/<Type>``
+    answers with an error payload -- silently, which is how Router shipped with
+    37 undocumented methods including the bench's only fault-injection tooling.
+    """
+
+    def test_every_nettype_has_a_reference_or_a_stated_reason(self):
+        from lager.mcp.data.api_reference import get_reference_for_type
+        from lager.nets.constants import NetType
+
+        missing = [
+            member.name
+            for member in NetType
+            if get_reference_for_type(member.name) is None
+            and member.name not in _NO_REFERENCE_EXPECTED
+        ]
+        assert not missing, (
+            "NetType members with no API_REFERENCE entry and no stated reason: "
+            f"{missing}. Add a curated entry, or add the name to "
+            "_NO_REFERENCE_EXPECTED with a comment saying why."
+        )
+
+    def test_the_exclusion_list_has_no_stale_entries(self):
+        """An excluded type that later gained an entry should leave this list."""
+        from lager.mcp.data.api_reference import get_reference_for_type
+        from lager.nets.constants import NetType
+
+        known = {member.name for member in NetType}
+        assert _NO_REFERENCE_EXPECTED <= known, (
+            f"stale names: {_NO_REFERENCE_EXPECTED - known}"
+        )
+        covered = [
+            name for name in _NO_REFERENCE_EXPECTED
+            if get_reference_for_type(name) is not None
+        ]
+        assert not covered, (
+            f"{covered} now have entries; remove them from _NO_REFERENCE_EXPECTED"
+        )
+
+
+class TestCuratedEntriesAreWellFormed:
+    def test_every_entry_has_the_required_keys(self):
+        from lager.mcp.data.api_reference import API_REFERENCE
+
+        # guide.py reads all four unconditionally and raises KeyError otherwise.
+        for name, ref in API_REFERENCE.items():
+            for key in ("net_type_enum", "get_pattern", "methods", "gotchas",
+                        "example_snippet"):
+                assert key in ref, f"{name} is missing {key!r}"
+            assert ref["methods"], f"{name} has an empty methods list"
+
+    def test_no_method_description_is_empty(self):
+        """Introspection overwrites the curated list with docstring first lines.
+
+        A driver method with no docstring yields desc="", which reaches an agent
+        as a named method with no explanation.
+        """
+        from lager.mcp.data.api_reference import API_REFERENCE
+
+        blank = [
+            f"{name}.{m['name']}"
+            for name, ref in API_REFERENCE.items()
+            for m in ref["methods"]
+            if not m["desc"].strip()
+        ]
+        assert not blank, f"methods introspected with no description: {blank}"

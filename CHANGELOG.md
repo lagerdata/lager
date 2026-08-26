@@ -30,6 +30,39 @@ All notable changes to the Lager platform are documented here. For detailed rele
   does not fail loudly, it silently loses whatever restriction that key carried.
   Closes #373.
 
+- **`lager://reference/Router` returned zero methods, and so did `Logic`, `Arm`,
+  `Webcam` and `Wifi`.** `api_reference.py` introspects a driver class per
+  NetType so the agent-facing reference stays in lock-step with the real
+  drivers, but a NetType absent from the map is never introspected at all --
+  and nothing checked the map in that direction, so ten of `NetType`'s
+  twenty-four members had no entry.
+
+  `Router` was the expensive one: `MikroTikRouter` has 37 public methods
+  including the bench's only network fault-injection tooling
+  (`block_internet`, `block_dns`, `block_port`, bandwidth limits, DHCP
+  control), which is how a test asserts what firmware does when the network
+  degrades rather than disappears. None of it was visible to an agent.
+
+  Curated entries are added for `Router`, `Arm`, `Webcam`, `Wifi`, `Analog` and
+  `Logic`. `Analog` and `Logic` are hand-written for the same reason `Debug`
+  is: `Net.get()` returns a bare `Net` proxying to the instrument over RPC, so
+  introspecting the mapper would replace the curated list with nine
+  undocumented local helpers. The raw saved-net roles are added to the alias
+  map too -- `plan_firmware_test` looks entries up by role, so without them the
+  new entries would have been reachable only through the resource URI.
+
+  A guard test now asserts every `NetType` either has an entry or appears in an
+  explicit exclusion list with a stated reason, which is the check that was
+  missing. Verified against MCP Python SDK 2.1.1: `lager://reference/Router`
+  returns 37 methods, and `lager://guide/api-quick-reference` renders all six
+  new types. Closes #372.
+
+### Changed
+
+- **21 `Dexarm` methods and both `Wifi` methods gained docstrings.**
+  Introspection uses a docstring's first line as a method's description, so an
+  undocumented driver method reaches an agent as a name with no explanation.
+
 ### Added
 
 - **A Python API page for `NetType.Router`.** A router net drives a MikroTik
