@@ -141,6 +141,34 @@ All notable changes to the Lager platform are documented here. For detailed rele
   directory listing on failure so a future run can tell "cargo did not install
   it" from "we looked in the wrong place".
 
+- **`lager logic measure` / `trigger` / `cursor` can resolve a logic net again.**
+  All sixteen actions failed with `Error: Invalid Net: <net>` against a real
+  logic net. `cli/impl/measurement/scope.py` is the consolidated worker for both
+  the scope and logic families -- its dispatch tables already register every
+  action either sends -- but its two net-resolution helpers were hardcoded to
+  `NetType.Analog`, and `Net.get` matches on type equality, so a net whose role
+  is `logic` could never resolve there however it was addressed.
+
+  The role is known unambiguously at the CLI layer, which validates the net
+  against it before dispatching, so it is now passed down in the command
+  envelope and the worker resolves under the type that role maps to. A CLI that
+  predates the key keeps working: the worker defaults to `scope`, which is the
+  behaviour it had previously.
+
+  A second, independent path to the same dead end is fixed with it:
+  `get_net_info` filtered saved nets on `role == "scope"`, so it returned `None`
+  for a logic net, which made `is_rigol()` and `is_picoscope()` both false and
+  the basic-op dispatchers report `not found or not a scope net`.
+
+  This is the same defect as the one `cli/impl/power/enable_disable.py` was
+  fixed for, one layer over. `lager logic` had been dispatching to two workers
+  holding two contradictory type constants; they now agree, and
+  `test/unit/box/test_logic_net_type.py` pins both.
+
+  Note the Rigol mapper needed no work: every measurement and trigger method
+  already branches on the net's type and maps a logic net to `D0`-`D15`. Only
+  the lookup was wrong.
+
 ### Changed
 
 - **Bench wiring fixtures are documented.** A permanent wire from DP821 CH2's

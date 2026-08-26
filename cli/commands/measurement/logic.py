@@ -161,19 +161,25 @@ def measure():
 # `main()`. These three helpers were never repointed, so all sixteen actions
 # below dispatched to filenames that had stopped existing (#261). The actions
 # themselves never moved.
+# scope.py serves both families and resolves the net itself, so it has to be
+# told which role it is acting for. Without it every net resolved as
+# NetType.Analog and Net.get -- which matches on type equality -- could never
+# find a logic net, so all sixteen actions below failed with "Invalid Net"
+# (#328). The three basic subcommands do not go through here; they dispatch to
+# enable_disable.py, which hardcodes NetType.Logic. Keep the two in agreement.
 def _run_measurement_backend(ctx, dut, action: str, **params):
     """Run backend command for measurement operations"""
-    return run_backend(ctx, dut, "scope.py", action, **params)
+    return run_backend(ctx, dut, "scope.py", action, role=LOGIC_ROLE, **params)
 
 
 def _run_trigger_backend(ctx, dut, action: str, **params):
     """Run backend command for trigger operations"""
-    return run_backend(ctx, dut, "scope.py", action, **params)
+    return run_backend(ctx, dut, "scope.py", action, role=LOGIC_ROLE, **params)
 
 
 def _run_cursor_backend(ctx, dut, action: str, **params):
     """Run backend command for cursor operations"""
-    return run_backend(ctx, dut, "scope.py", action, **params)
+    return run_backend(ctx, dut, "scope.py", action, role=LOGIC_ROLE, **params)
 
 
 @measure.command()
