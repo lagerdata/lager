@@ -33,26 +33,26 @@ Either `--box` or `--ip` is required. If both are provided, the command exits wi
 
 ## The Box Image
 
-The slowest part of an install is obtaining the box's Docker image. Building it
-on the box takes roughly 14 minutes -- an install always pays the full cost,
-because the deployment prunes the builder cache before it starts, so there is
-never a warm layer cache to reuse.
+The slowest part of an install is the box's Docker image. A build on the box
+takes roughly 14 minutes, and an install always pays the full cost. The
+deployment prunes the builder cache before it starts, so there is never a warm
+layer cache to reuse.
 
 Every release tag publishes a pre-built image, and `lager install` uses it by
 default: about 2 minutes instead of 14.
 
 This only applies when `--version` names a **release tag**. Branches such as
-`main` and `staging` have no published image and always build on the box, so
-pinning a release tag is the difference between a two-minute install and a
+`main` and `staging` have no published image, so they always build on the box.
+Pinning a release tag is the difference between a two-minute install and a
 fourteen-minute one.
 
-The image is verified before it is used. It is fetched by immutable digest
-rather than by tag, and it must carry a label naming the exact version that was
-requested; an image that is unlabelled or claims a different version is
-discarded. If anything at all goes wrong -- the tag has no published image, the
-box cannot reach the registry, the image fails verification -- the install
-falls back to building on the box, exactly as it always did. A slow install
-that works beats a fast one that does not.
+The image is verified before it is used. Lager fetches it by immutable digest
+rather than by tag, and the image must carry a label naming the exact version
+you requested. Lager discards an image that is unlabeled or that claims a
+different version. Three things can go wrong: the tag has no published image,
+the box cannot reach the registry, or the image fails verification. In each
+case the install falls back to a build on the box, exactly as it always did.
+A slow install that works beats a fast one that does not.
 
 Pass `--no-pull` to skip the pre-built image and always build. Setting
 `LAGER_BOX_IMAGE_PULL=0` in the environment does the same for every command in
@@ -112,8 +112,8 @@ lager install --ip 192.168.1.100 --yes
 ## Passwordless sudo
 
 Installation configures passwordless `sudo` for the box login user. The CLI drives
-the box over non-interactive SSH, where `sudo` has no terminal to prompt against,
-so the grants have to be in place before provisioning can run.
+the box over non-interactive SSH, where `sudo` has no terminal to prompt
+against. The grants must be in place before provisioning runs.
 
 Lager writes these files, and only these files, under `/etc/sudoers.d/`:
 
@@ -125,11 +125,11 @@ Lager writes these files, and only these files, under `/etc/sudoers.d/`:
 
 <Warning>
 **The box login user is root-equivalent by design.** Provisioning a box requires
-root — deploying udev rules runs commands as root by construction, and `apt-get`
-executes arbitrary commands as root through its own configuration. The grants
-above are written as specific commands to keep the blast radius small and the
-file readable, but they are **not a privilege boundary**: anyone who can log in
-as the box user can obtain root on that box.
+root. Deploying udev rules runs commands as root by construction, and `apt-get`
+executes arbitrary commands as root through its own configuration. Lager writes
+the grants above as specific commands, to keep the blast radius small and the
+file readable. They are **not a privilege boundary**. Anyone who can log in as
+the box user can obtain root on that box.
 
 Treat the box login account as equivalent to root when deciding who holds its
 SSH key, and prefer a dedicated user on a dedicated machine.
@@ -141,8 +141,8 @@ lost the next time it is written, so each file opens with a header saying so.
 
 Lager never reads, edits, or removes any other file in `/etc/sudoers.d/`. If you
 or a box-management platform need additional grants, put them in a separate file
-there — for example `/etc/sudoers.d/zz-local`, which sorts after Lager's files so
-its rules win — and Lager will leave it alone, including during `lager uninstall`.
+there. For example, `/etc/sudoers.d/zz-local` sorts after Lager's files, so its
+rules win. Lager will leave that file alone, including during `lager uninstall`.
 
 ## SSH Authentication
 
@@ -166,17 +166,18 @@ later step of the install runs unattended. `--yes` accepts it without asking.
 Declining stops the install and points you at `lager ssh-setup --box
 <name-or-ip>`, which does the same thing as a separate step.
 
-Install does not offer a password fallback for the deployment itself: a box
-configured with `PasswordAuthentication no` never receives the password, so the
-resulting "password failed" message described something that had not happened.
+Install does not offer a password fallback for the deployment itself. A box
+configured with `PasswordAuthentication no` never receives the password. The
+resulting "password failed" message therefore described something that never
+happened.
 
-For new hosts, the SSH host key is accepted automatically. If the host key has
+For new hosts, the SSH host key is accepted automatically. If the host key
 changed since a previous connection, the command asks you to verify the change
-manually before proceeding.
+manually first.
 
 Install does not write to `~/.ssh/config`. Earlier versions added a per-IP
-`Host` block naming the key; that block was deleted whenever the file was
-regenerated by another tool, and it disabled host-key verification for the box.
+`Host` block naming the key. Another tool that regenerated the file deleted
+that block, and the block also disabled host-key verification for the box.
 The identity is passed per command instead.
 
 ## Notes

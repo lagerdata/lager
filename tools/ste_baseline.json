@@ -100,61 +100,6 @@
     "length": 2,
     "tense": 1
   },
-  "docs/source/reference/cli/battery.mdx": {
-    "length": 2
-  },
-  "docs/source/reference/cli/ble.mdx": {
-    "modals": 1
-  },
-  "docs/source/reference/cli/blufi.mdx": {
-    "length": 1
-  },
-  "docs/source/reference/cli/box-config.mdx": {
-    "length": 2,
-    "modals": 1
-  },
-  "docs/source/reference/cli/boxes.mdx": {
-    "length": 1
-  },
-  "docs/source/reference/cli/debug.mdx": {
-    "length": 4,
-    "tense": 1
-  },
-  "docs/source/reference/cli/devenv.mdx": {
-    "length": 4,
-    "modals": 3
-  },
-  "docs/source/reference/cli/diagnose.mdx": {
-    "length": 4,
-    "modals": 2,
-    "tense": 1
-  },
-  "docs/source/reference/cli/dut.mdx": {
-    "length": 1
-  },
-  "docs/source/reference/cli/gpi.mdx": {
-    "modals": 1
-  },
-  "docs/source/reference/cli/gpo.mdx": {
-    "modals": 2
-  },
-  "docs/source/reference/cli/hello.mdx": {
-    "tense": 1
-  },
-  "docs/source/reference/cli/i2c.mdx": {
-    "modals": 1
-  },
-  "docs/source/reference/cli/install-wheel.mdx": {
-    "length": 1
-  },
-  "docs/source/reference/cli/install.mdx": {
-    "length": 10,
-    "tense": 3
-  },
-  "docs/source/reference/cli/lager-file.mdx": {
-    "length": 6,
-    "modals": 3
-  },
   "docs/source/reference/cli/locking.mdx": {
     "length": 9,
     "modals": 1,

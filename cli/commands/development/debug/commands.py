@@ -395,7 +395,7 @@ def _auto_connect_if_needed(client, debug_net, ctx, quiet=False,
         # and is what let a flash report success against an absent part.
         if not quiet:
             click.secho(
-                "Debug session is up but the target is not responding; reconnecting...",
+                "Debug session is up but the target does not respond; reconnecting...",
                 fg='yellow', err=True,
             )
         try:
@@ -407,7 +407,7 @@ def _auto_connect_if_needed(client, debug_net, ctx, quiet=False,
                 click.secho("Reconnected!", fg='cyan', dim=True)
             return True
         except Exception as exc:
-            click.secho(f"Error: could not reconnect to the target: {exc}", fg='red', err=True)
+            click.secho(f"Error: reconnect to the target failed: {exc}", fg='red', err=True)
             return False
 
     # Not connected, auto-connect

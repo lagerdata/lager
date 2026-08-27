@@ -123,6 +123,21 @@ All notable changes to the Lager platform are documented here. For detailed rele
   CI step stays `continue-on-error` until the last one, because a required
   context that nothing can turn red is worse than no context at all.
 
+- **Sixteen `reference/cli/` pages are converted to Simplified Technical English.**
+  `battery` through `lager-file` go from 62 violations to zero on all seven gated
+  rules: 38 sentences over the 25-word cap, 16 modals outside `can`/`will`/`must`,
+  and 8 perfect or progressive forms. Long sentences are split at the clause break
+  rather than trimmed, so the articles and `that` clauses STE keeps are still
+  there. `tools/ste_baseline.json` ratchets from 103 files to 87 and from 496
+  budgeted violations to 440, because all sixteen pages leave the budget entirely.
+
+  Two message strings in `cli/commands/development/debug/commands.py` are
+  rewritten with them. The baseline predated the reconnect path
+  `_auto_connect_if_needed` gained, so the recorded budget for that file sat one
+  modal and one tense below what the file actually carried. Rewriting the two
+  strings holds that budget where it was rather than raising it, which the
+  ratchet does not allow.
+
 - **Six CLI messages told the user to run `lager box update`, which does not
   exist.** The `lager box` group carries only `config` and `dut`; the `update`
   spelling was removed in favor of top-level `lager update`, and two comments in
