@@ -138,7 +138,7 @@ def _classify(usb_info: dict, visa_info: dict, disp_info: dict) -> tuple[str, st
     Order matters — most specific actionable diagnosis wins."""
     if usb_info.get('usbtmc_loaded'):
         return ('red',
-                'HOST-SIDE: usbtmc kernel module loaded — `lager box update` to install the blacklist.')
+                'HOST-SIDE: usbtmc kernel module loaded — `lager update` to install the blacklist.')
 
     visa_err_class = visa_info.get('error_class')
     if visa_err_class == 'busy':

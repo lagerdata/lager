@@ -25,11 +25,14 @@ have been caught by any check that existed.
 
 WHAT IS CHECKED
 
-  terms     a Lager noun spelled a way STYLE.md does not sanction
-  spelling  British spelling where the house style is American
-  modals    should / would / may / might / could in normative text
-  length    a sentence over the word cap for its register
-  passive   REPORT ONLY, never gated -- see below
+  terms       a Lager noun spelled a way STYLE.md does not sanction
+  spelling    British spelling where the house style is American
+  modals      should / would / may / might / could in normative text
+  length      a sentence over the word cap for its register
+  tense       a perfect or progressive form where STE allows only simple tenses
+  conjunction `and/or`, which STE forbids
+  paragraph   a paragraph over the sentence cap for its register
+  passive     REPORT ONLY, never gated -- see below
 
 WHAT IS NOT CHECKED, AND WHY
 
@@ -130,8 +133,9 @@ EXEMPT_DIRS = {'release-notes'}
 #
 # The exclusions on `lager box` are load-bearing. Without `(?!-)` the pattern
 # matches `lager box-config`, a command name, in 52 places. Without the
-# subcommand lookahead it matches `run: lager box update` inside two CLI
-# warnings, where the words are a command line rather than the product's name.
+# subcommand lookahead it matches `lager box config` and `lager box dut` -- the
+# deprecated aliases, which still ship -- where the words are a command line
+# rather than the product's name.
 #
 # The distinguishing signal is what follows: prose never puts a command verb
 # after the product name. Keep this list short and add to it only when a real
@@ -172,6 +176,27 @@ BANNED_MODALS = ['should', 'would', 'may', 'might', 'could']
 CAP_PROCEDURAL = 20
 CAP_DESCRIPTIVE = 25
 PROCEDURAL_DIRS = {'getting-started'}
+
+# STE allows only the simple tenses: simple past, simple present, simple future.
+# A perfect or progressive form hides when the thing happens, which is the whole
+# objection -- "the box is not starting" and "the box does not start" describe
+# different situations to a reader who has to act on one of them.
+_TENSE = re.compile(
+    r'\b(?:has|have|had)\s+(?:not\s+|never\s+|already\s+)?(?:been|\w+ed)\b'
+    r'|\b(?:is|are|was|were)\s+(?:not\s+)?\w+ing\b'
+    r'|\bwill\s+have\b', re.I)
+
+# STE forbids the solidus as a conjunction. Only `and/or` is checked. A general
+# rule is unenforceable here and would be 197 findings of pure noise: `I/O`,
+# `HIGH/LOW`, `Input/Output`, `Receiver/Transmitter` and `ADC/DAC/GPIO` are
+# Technical Names, which STE permits, and no regex separates them from a real
+# conjunction.
+_CONJUNCTION = re.compile(r'\band/or\b', re.I)
+
+# Paragraph limits (STE). Procedural writing is executed a step at a time, so it
+# gets the tighter bound.
+PARA_PROCEDURAL = 6
+PARA_DESCRIPTIVE = 10
 
 _PASSIVE = re.compile(
     r'\b(?:is|are|was|were|be|been|being)\s+(?:not\s+|never\s+|already\s+)?'
@@ -387,6 +412,14 @@ def check_word_rules(rel, lineno, text, cap=None):
             found.append(Violation(rel, lineno, 'length',
                                    f'{words} words (cap {cap}): {excerpt}'))
 
+    for match in _TENSE.finditer(text):
+        found.append(Violation(rel, lineno, 'tense',
+                               f'"{match.group(0)}" -- use a simple tense'))
+
+    for match in _CONJUNCTION.finditer(text):
+        found.append(Violation(rel, lineno, 'conjunction',
+                               f'"{match.group(0)}" -- write the two cases out'))
+
     for match in _PASSIVE.finditer(text):
         found.append(Violation(rel, lineno, 'passive', f'"{match.group(0)}"'))
 
@@ -428,12 +461,18 @@ def scan():
     for rel, path in markdown_targets():
         cap = (CAP_PROCEDURAL
                if set(path.parts) & PROCEDURAL_DIRS else CAP_DESCRIPTIVE)
+        procedural = bool(set(path.parts) & PROCEDURAL_DIRS)
+        para_cap = PARA_PROCEDURAL if procedural else PARA_DESCRIPTIVE
         found = []
-        for _, paragraph, line_map in prose_paragraphs(path.read_text(),
-                                                       path.suffix == '.mdx'):
-            for offset, sentence in split_sentences(paragraph):
+        for first, paragraph, line_map in prose_paragraphs(path.read_text(),
+                                                           path.suffix == '.mdx'):
+            sentences = list(split_sentences(paragraph))
+            for offset, sentence in sentences:
                 lineno = offset_to_line(line_map, offset)
                 found.extend(check_word_rules(rel, lineno, sentence, cap))
+            if len(sentences) > para_cap:
+                found.append(Violation(rel, first, 'paragraph',
+                                       f'{len(sentences)} sentences (cap {para_cap})'))
         if found:
             by_file[rel] = found
 
@@ -463,7 +502,7 @@ def counts(by_file):
 # Rules with no budget: a violation is a defect on day one, in every file. They
 # are cheap, they have no false positives, and allowing a budget would only
 # record how many times we chose not to fix a two-character mistake.
-ZERO_TOLERANCE = {'terms', 'spelling'}
+ZERO_TOLERANCE = {'terms', 'spelling', 'conjunction'}
 
 # Report-only. See the module docstring: gating a heuristic teaches people to
 # write around the regex rather than to write actively.
@@ -474,7 +513,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description='Assert that user-facing prose still follows docs/STYLE.md.')
     parser.add_argument('--only', choices=['terms', 'spelling', 'modals',
-                                           'length', 'passive'],
+                                           'length', 'tense', 'conjunction',
+                                           'paragraph', 'passive'],
                         help='run a single rule')
     parser.add_argument('--report', action='store_true',
                         help='print every violation, ignoring the baseline')
@@ -522,7 +562,8 @@ def main() -> int:
     for tally in current.values():
         for rule, n in tally.items():
             totals[rule] = totals.get(rule, 0) + n
-    for rule in ['terms', 'spelling', 'modals', 'length', 'passive']:
+    for rule in ['terms', 'spelling', 'modals', 'length', 'tense',
+                 'conjunction', 'paragraph', 'passive']:
         if args.only and rule != args.only:
             continue
         note = ''

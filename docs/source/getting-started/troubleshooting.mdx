@@ -23,19 +23,19 @@ This page covers the most common problems in Lager, grouped by category. Each se
 
 <Accordion title="lager hello fails with 'Connection refused'">
 
-**Cause:** The network path to the box works, but the Lager service on the box is not running.
+**Cause:** The network path to the box works, but the Lager service on the box stopped.
 
 **Fix:**
 1. If the Docker container on the box stopped, ask your administrator to restart it.
 2. Run `lager hello --box <box>` to check the box's service status.
 3. If you have SSH access, connect to the box and check Docker: `docker ps | grep lager`.
-4. If the machine has never been set up as a Lager Box, see [Setting Up a Lager Box](/source/getting-started/setting-up-a-lager-box).
+4. If nobody set the machine up as a Lager Box, see [Setting Up a Lager Box](/source/getting-started/setting-up-a-lager-box).
 
 </Accordion>
 
 <Accordion title="lager hello fails with 'Connection timed out'">
 
-**Cause:** The network request is being sent but not reaching the box, often due to a firewall or incorrect IP.
+**Cause:** The network request leaves your computer but does not reach the box. A firewall or an incorrect IP usually causes this.
 
 **Fix:**
 1. Double-check the IP address with `lager boxes`.
@@ -67,7 +67,7 @@ This page covers the most common problems in Lager, grouped by category. Each se
 **Fix:**
 1. Verify instruments are physically connected via USB to the Lager Box (not to your laptop).
 2. Check that USB cables are properly seated -- try a different cable or port.
-3. Ensure the Docker container is running with USB passthrough. Run `lager hello --box <box>`.
+3. Confirm that the Docker container runs with USB passthrough. Run `lager hello --box <box>`.
 4. Run `lager update --box <box>` to install the latest udev rules and drivers.
 
 </Accordion>
@@ -159,7 +159,7 @@ This page covers the most common problems in Lager, grouped by category. Each se
 
 <Accordion title="ImportError: No module named 'lager'">
 
-**Cause:** You are running the script directly with `python` instead of using `lager python`.
+**Cause:** You run the script directly with `python` instead of `lager python`.
 
 **Fix:** The `lager` Python library is only available inside the Lager Box environment. Always run scripts with:
 ```bash
@@ -186,7 +186,7 @@ Do **not** run `python my_script.py` directly on your laptop.
 **Cause:** The script fails silently, or the script does not flush its output.
 
 **Fix:**
-1. Add `print()` statements to confirm the script is executing.
+1. Add `print()` statements to confirm that the script executes.
 2. Wrap your code in try/except to catch errors:
    ```python
    try:

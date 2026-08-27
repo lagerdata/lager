@@ -9,7 +9,7 @@ provision starts it several times inside that window -- the package postinst,
 the installer's pre-flight restart, then the daemon.json restart -- and the
 installer used to add a fourth by restarting `docker.socket` immediately before
 `docker` (the service declares `Requires=docker.socket`, so the socket restart
-bounces the service too). On box JUL-26 that produced four starts in eleven
+bounces the service too). On one box that produced four starts in eleven
 seconds: systemd refused the fourth and latched the unit into
 `failed (start-limit-hit)`, where every further restart -- including the
 installer's own retry -- fails instantly without attempting a start.
