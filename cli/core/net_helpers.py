@@ -255,8 +255,8 @@ def echo_box_request_failure(box_ip: str, exc, timeout=None) -> None:
         after = f" within {timeout:g}s" if timeout else ""
         click.secho(
             f"Error: the box at {box_ip}:{NET_HTTP_PORT} accepted the request "
-            f"but did not answer{after}. The operation may just be slow and "
-            f"may still complete on the box; try again in a moment.",
+            f"but did not answer{after}. The operation can be slow and can still "
+            f"complete on the box; try again in a moment.",
             fg="red", err=True,
         )
     else:
@@ -320,8 +320,8 @@ def fetch_nets_checked(box_ip: str) -> tuple[list[dict], bool]:
     if connect_failures == 2 and box_ip not in _fetch_nets_unreachable_warned:
         _fetch_nets_unreachable_warned.add(box_ip)
         click.secho(
-            f"Warning: could not reach box at {box_ip}:{NET_HTTP_PORT} to list "
-            f"nets — treating as no nets. Check network/Tailscale and that the "
+            f"Warning: the box at {box_ip}:{NET_HTTP_PORT} did not answer the "
+            f"net list — treating as no nets. Check network/Tailscale and that the "
             f"box is online and updated.",
             fg="yellow", err=True,
         )
@@ -990,7 +990,7 @@ def validate_net_exists(
         if not reachable:
             click.secho(
                 f"Error: cannot reach box at {box}:{NET_HTTP_PORT}, so net "
-                f"'{netname}' could not be verified. Check network/Tailscale "
+                f"'{netname}' is unverified. Check network/Tailscale "
                 f"and that the box is online and updated.",
                 fg='red', err=True,
             )

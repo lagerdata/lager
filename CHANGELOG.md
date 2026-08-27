@@ -6,6 +6,11 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- **A `lager python` connection error printed the literal `{box_ip}`.** The hint
+  that follows `Connection refused by box` was a plain string rather than an
+  f-string, so it told the reader to run `ssh lagerdata@{box_ip} "docker ps"`
+  with the braces intact. It interpolates now.
+
 - **A debug command no longer proceeds against a target that is not there.**
   `/debug/status` reported a single `connected` boolean that meant "the
   gdbserver process is alive", and `_auto_connect_if_needed` returned on it
@@ -112,6 +117,42 @@ All notable changes to the Lager platform are documented here. For detailed rele
   One defect no check could see: `debug.mdx` read `materialised`. The
   American-spelling rule carries no budget, but that stem is absent from the
   checker's word list, so only reading the page finds it.
+
+- **CLI failure messages now say what happened, not what could not happen.**
+  `Could not connect to the box` names an outcome that did not occur, and leaves
+  the reader to guess which of a dozen causes applied. STYLE.md rule 6 asks for
+  the event instead. Every budgeted `modals` and `tense` violation under `cli/`
+  is gone -- 108 modals (59 `could`, 41 `may`, 7 `would`, 1 `should`) and 33
+  progressive or perfect verb forms, across 130 message and `help=` strings in
+  25 files. `tools/ste_baseline.json` drops those 25 entries.
+
+  Each rewrite was read out of its own branch rather than swapped for a synonym.
+  The handler already dispatched on `Connection refused`, on a `ReadTimeout`, on
+  an `OSError`, so the sentence now carries that. `Could not connect to
+  {ssh_host} within 15 seconds` became `The box at {ssh_host} did not answer
+  within 15 seconds`, and `Could not determine update state` became `The update
+  state is unknown`.
+
+  Two sentences changed more than their wording, because reading the branch
+  showed the old one was false. `lager boxes` summarized its failures as `N
+  boxes could not be reached`, but that counter also counts a box with no stored
+  IP, a bad response, invalid JSON, an old box, and any HTTP error -- boxes that
+  answered. It now reads `N boxes did not report a version`, which is true of
+  every branch that increments it, and the Status column already names the
+  specific reason per box. `lager debug memrd` warned that a start address `may
+  be invalid for 32-bit system` on a guard that also fires when only
+  `start + length` overflows; it now describes the range.
+
+  Two bodies of text are deliberately untouched. `_CONNECT_FAILURE_SIGNATURES`
+  holds three `Could not ...` entries that are match targets for the
+  programmer's own output, kept in step with the box, where a reword changes an
+  exit code rather than a sentence. `cli/errors.py` carries the same kind of
+  text through `LagerError`, which is not in the checker's emitter set and so
+  carries no budget; it needs its own pass.
+
+  The `--check`, `--dry-run` and `--user` rows in `docs/source/reference/` move
+  with the `help=` strings they mirror, so the published option tables cannot
+  drift from `--help`.
 
 - **User-facing prose now follows ASD-STE100, enforced in CI.**
   `docs/STYLE.md` adopts Simplified Technical English: fourteen rules covering

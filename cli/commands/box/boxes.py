@@ -250,7 +250,7 @@ def _list_boxes_live(port=9000, timeout=5):
         click.secho(f'{newer_count} {box_word} newer than your CLI', fg='cyan')
     if failed_count > 0:
         box_word = 'box' if failed_count == 1 else 'boxes'
-        click.secho(f'{failed_count} {box_word} could not be reached', fg='red')
+        click.secho(f'{failed_count} {box_word} did not report a version', fg='red')
     if auth_failed_count > 0:
         from ...gateway_auth import auth_server_for_box
         box_word = 'box needs' if auth_failed_count == 1 else 'boxes need'

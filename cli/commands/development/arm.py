@@ -186,7 +186,7 @@ def move(ctx, timeout, x, y, z, yes, box):
         out_of_bounds.append(f"  - Z={z} is outside range [{ARM_MIN_Z}, {ARM_MAX_Z}]")
 
     if out_of_bounds:
-        click.secho("Coordinates may be out of bounds:", fg='red', err=True)
+        click.secho("These coordinates are out of bounds:", fg='red', err=True)
         for msg in out_of_bounds:
             click.secho(msg, fg='red', err=True)
         click.secho(

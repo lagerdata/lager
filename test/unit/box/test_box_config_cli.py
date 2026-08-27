@@ -1319,7 +1319,7 @@ class ApplyDryRun(unittest.TestCase):
                 ["apply", "--box", "test-box", "--yes", "--dry-run"],
             )
         self.assertEqual(result.exit_code, 0, msg=result.output)
-        self.assertIn("would be a no-op", result.output)
+        self.assertIn("apply changes nothing", result.output)
         bounce_mock.assert_not_called()
 
 

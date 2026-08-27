@@ -230,7 +230,7 @@ class KeyRegistration(unittest.TestCase):
             register=(False, "Permission denied"),
         )
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("could not be registered", _text(result))
+        self.assertIn("did not register", _text(result))
         self.assertIn("Permission denied", _text(result))
         self.assertIn("Success", _text(result))
 

@@ -567,22 +567,22 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
         resp = session.run_python(box_ip, files=post_data)
     except requests.exceptions.Timeout:
         click.secho(f'Error: Connection to box timed out ({box_ip})', fg='red', err=True)
-        click.secho('The box may be overloaded or unreachable.', err=True)
+        click.secho('Check that the box is online and not overloaded.', err=True)
         ctx.exit(1)
     except requests.exceptions.ConnectionError as e:
         error_str = str(e).lower()
         if 'connection refused' in error_str:
             click.secho(f'Error: Connection refused by box ({box_ip})', fg='red', err=True)
-            click.secho('The box service may not be running.', err=True)
-            click.secho('Check that the Docker container is running: ssh lagerdata@{box_ip} "docker ps"', err=True)
+            click.secho('The box service can be down.', err=True)
+            click.secho(f'Check that the Docker container runs: ssh lagerdata@{box_ip} "docker ps"', err=True)
         elif 'no route to host' in error_str or 'network is unreachable' in error_str:
             click.secho(f'Error: No route to host ({box_ip})', fg='red', err=True)
             click.secho('Check your network connection and that Tailscale/VPN is connected.', err=True)
         elif 'name or service not known' in error_str or 'nodename nor servname' in error_str:
-            click.secho(f'Error: Could not resolve hostname ({box_ip})', fg='red', err=True)
+            click.secho(f'Error: The hostname did not resolve ({box_ip})', fg='red', err=True)
             click.secho('Check the box name or IP address is correct.', err=True)
         else:
-            click.secho(f'Error: Could not connect to box ({box_ip})', fg='red', err=True)
+            click.secho(f'Error: The box did not answer ({box_ip})', fg='red', err=True)
             click.secho(f'Details: {e}', err=True)
         ctx.exit(1)
     except requests.exceptions.RequestException as e:
@@ -596,16 +596,16 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
             click.secho('Check box connectivity with: lager hello', err=True)
         elif resp.status_code == 403:
             click.secho('Error: Access forbidden (HTTP 403)', fg='red', err=True)
-            click.secho('You may not have permission to access this box.', err=True)
+            click.secho('You do not have permission to access this box.', err=True)
         elif resp.status_code == 404:
             click.secho('Error: Resource not found (HTTP 404)', fg='red', err=True)
-            click.secho('The box endpoint may not be available. Check that the box is properly set up.', err=True)
+            click.secho('The box endpoint does not exist. Check that the box is set up correctly.', err=True)
         elif resp.status_code == 500:
             click.secho('Error: Internal server error on box (HTTP 500)', fg='red', err=True)
             click.secho('Check box logs with: lager logs --box [BOX_NAME]', err=True)
         elif resp.status_code == 502:
             click.secho('Error: Bad gateway (HTTP 502)', fg='red', err=True)
-            click.secho('The box service may be restarting. Try again in a few seconds.', err=True)
+            click.secho('The box service can be restarting. Try again in a few seconds.', err=True)
         elif resp.status_code == 503:
             click.secho('Error: Service unavailable (HTTP 503)', fg='red', err=True)
             click.secho('The box service is temporarily unavailable. Try again later.', err=True)
@@ -735,7 +735,7 @@ def _handle_continue(ctx, box_ip, process_id, session, dut_name):
     try:
         resp = session.continue_python(box_ip, process_id)
     except requests.exceptions.ConnectionError:
-        click.secho(f'Could not connect to box at {box_ip}', fg='red', err=True)
+        click.secho(f'The box at {box_ip} did not answer', fg='red', err=True)
         ctx.exit(1)
     if resp.status_code >= 400:
         click.secho(f'Error: Box returned HTTP {resp.status_code}', fg='red', err=True)
@@ -752,7 +752,7 @@ def _handle_console(ctx, box_ip, process_id, session):
     try:
         resp = session.breakpoint_status(box_ip, process_id)
     except requests.exceptions.ConnectionError:
-        click.secho(f'Could not connect to box at {box_ip}', fg='red', err=True)
+        click.secho(f'The box at {box_ip} did not answer', fg='red', err=True)
         ctx.exit(1)
     if resp.status_code >= 400:
         click.secho(f'Error: Box returned HTTP {resp.status_code}', fg='red', err=True)
@@ -776,7 +776,7 @@ def _proxy_console(ctx, host, port):
     try:
         sock = socket.create_connection((host, port), timeout=10)
     except OSError as exc:
-        click.secho(f'Could not connect to console at {host}:{port} ({exc})', fg='red', err=True)
+        click.secho(f'The console at {host}:{port} did not answer ({exc})', fg='red', err=True)
         ctx.exit(1)
 
     click.echo('Connected to interactive console (Ctrl+D to disconnect)')
@@ -813,7 +813,7 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
     try:
         resp = session.attach_python(box_ip, process_id)
     except requests.exceptions.ConnectionError:
-        click.secho(f'Could not connect to box at {box_ip}', fg='red', err=True)
+        click.secho(f'The box at {box_ip} did not answer', fg='red', err=True)
         ctx.exit(1)
     except requests.exceptions.Timeout:
         click.secho(f'Connection to box at {box_ip} timed out', fg='red', err=True)

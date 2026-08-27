@@ -82,7 +82,7 @@ def clean(ctx, box, older_than, yes):
                 size = result.stdout.strip().split()[0] if result.stdout.strip() else "0"
                 click.echo(f'Current logs size: {size}')
         except subprocess.TimeoutExpired:
-            click.secho('Warning: Could not retrieve current logs size', fg='yellow', err=True)
+            click.secho('Warning: the box did not return the current logs size', fg='yellow', err=True)
     else:
         click.secho(' FAILED', fg='red', err=True)
         from ...errors import ssh_error
@@ -169,7 +169,7 @@ def size(ctx, box, verbose):
                         click.echo('  Individual files:')
                         click.echo(result.stdout.strip())
                 except subprocess.TimeoutExpired:
-                    click.secho('  Warning: Could not retrieve individual file list (timed out)', fg='yellow', err=True)
+                    click.secho('  Warning: the box did not return the file list (timed out)', fg='yellow', err=True)
         else:
             # In a per-box loop: show the actionable message but keep going
             # to the next box rather than exiting. Indent to fit the listing.

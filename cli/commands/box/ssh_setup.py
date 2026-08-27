@@ -72,7 +72,7 @@ def register_or_warn(dest: str) -> bool:
         return True
     box_user = dest.rsplit("@", 1)[0] or "<box-user>"
     click.secho(
-        f"Warning: the key works, but could not be registered in {BOX_KEYS_DIR} "
+        f"Warning: the key works, but it did not register in {BOX_KEYS_DIR} "
         f"on the box ({detail}). It will keep working until something rebuilds "
         "the box's authorized_keys, and will not survive that.\n"
         "  Both the direct write and the sudo fallback failed, so this box's "

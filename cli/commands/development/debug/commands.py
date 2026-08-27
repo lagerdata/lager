@@ -56,7 +56,7 @@ def _get_jlink_script_content(ctx, net_name, debug_net):
                 with open(script_path, 'rb') as f:
                     return base64.b64encode(f.read()).decode('ascii')
             except Exception as e:
-                click.secho(f"Warning: Could not read J-Link script from config: {e}", fg='yellow', err=True)
+                click.secho(f"Warning: the CLI did not read the J-Link script from config: {e}", fg='yellow', err=True)
 
     if debug_net:
         embedded = debug_net.get('jlink_script')
@@ -89,7 +89,7 @@ def _get_openocd_config_content(ctx, net_name, debug_net):
                     return base64.b64encode(f.read()).decode('ascii')
             except Exception as e:
                 click.secho(
-                    f"Warning: Could not read OpenOCD config from .lager: {e}",
+                    f"Warning: the CLI did not read the OpenOCD config from .lager: {e}",
                     fg='yellow', err=True,
                 )
 
@@ -247,8 +247,8 @@ def _get_service_client(box):
     except ConnectionRefusedError:
         click.secho(f"Error: Connection refused to debug service on {box}:8765", fg='red', err=True)
         click.secho("Possible causes:", err=True)
-        click.secho("  - Debug service is not running on the box", err=True)
-        click.secho("  - Docker container 'lager' is not running", err=True)
+        click.secho("  - The debug service does not run on the box", err=True)
+        click.secho("  - The Docker container 'lager' is not up", err=True)
         click.secho(f"Check with: ssh lagerdata@{box} 'docker ps | grep lager'", err=True)
         return None
     except TimeoutError:
@@ -262,12 +262,12 @@ def _get_service_client(box):
         error_str = str(e).lower()
         if "connection refused" in error_str:
             click.secho(f"Error: Connection refused to debug service on {box}:8765", fg='red', err=True)
-            click.secho("The debug service may not be running. Check Docker status on the box.", err=True)
+            click.secho("Check the Docker status on the box. The debug service can be down.", err=True)
         elif "timeout" in error_str or "timed out" in error_str:
             click.secho(f"Error: Connection timed out to debug service on {box}:8765", fg='red', err=True)
-            click.secho("The box may be offline or unreachable.", err=True)
+            click.secho("Check that the box is online and reachable.", err=True)
         elif "name or service not known" in error_str or "nodename nor servname" in error_str:
-            click.secho(f"Error: Could not resolve hostname '{box}'", fg='red', err=True)
+            click.secho(f"Error: The hostname '{box}' did not resolve", fg='red', err=True)
             click.secho("Check that the box name or IP address is correct.", err=True)
         else:
             click.secho(f"Error: Failed to create debug service client: {e}", fg='red', err=True)
@@ -395,7 +395,7 @@ def _auto_connect_if_needed(client, debug_net, ctx, quiet=False,
         # and is what let a flash report success against an absent part.
         if not quiet:
             click.secho(
-                "Debug session is up but the target does not respond; reconnecting...",
+                "The debug session is up, but the target does not answer; reconnecting...",
                 fg='yellow', err=True,
             )
         try:
@@ -407,7 +407,7 @@ def _auto_connect_if_needed(client, debug_net, ctx, quiet=False,
                 click.secho("Reconnected!", fg='cyan', dim=True)
             return True
         except Exception as exc:
-            click.secho(f"Error: reconnect to the target failed: {exc}", fg='red', err=True)
+            click.secho(f"Error: the CLI did not reconnect to the target: {exc}", fg='red', err=True)
             return False
 
     # Not connected, auto-connect
@@ -424,15 +424,15 @@ def _auto_connect_if_needed(client, debug_net, ctx, quiet=False,
         return True
     except requests.exceptions.Timeout:
         click.secho("Error: Connection timed out while auto-connecting to debugger", fg='red', err=True)
-        click.secho("The debug service may be unresponsive. Try again or check the box.", err=True)
+        click.secho("The debug service can be unresponsive. Try again, or check the box.", err=True)
         return False
     except requests.exceptions.ConnectionError as e:
         click.secho("Error: Connection failed while auto-connecting to debugger", fg='red', err=True)
         error_str = str(e).lower()
         if "connection refused" in error_str:
-            click.secho("The debug service may not be running.", err=True)
+            click.secho("The debug service can be down.", err=True)
         elif "name or service not known" in error_str:
-            click.secho("Could not resolve the box hostname.", err=True)
+            click.secho("The box hostname did not resolve.", err=True)
         else:
             click.secho(f"Details: {e}", err=True)
         return False
@@ -662,7 +662,7 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
             click.secho(f"Error: GDB port must be between 1 and 65535, got {gdb_port}", fg='red', err=True)
             ctx.exit(1)
         if gdb_port < 1024:
-            click.secho(f"Warning: Port {gdb_port} is a privileged port (< 1024). May require root privileges.", fg='yellow', err=True)
+            click.secho(f"Warning: Port {gdb_port} is a privileged port (< 1024). Binding it requires root privileges.", fg='yellow', err=True)
 
     target_box = box
 
@@ -860,7 +860,7 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
                     click.secho("  • No physical target device connected", fg='yellow', err=True)
                     click.secho("  • Target device is not powered", fg='yellow', err=True)
                     click.secho("\nTry:", fg='cyan', err=True)
-                    click.secho("  • Running the command again (may be a timing issue)", fg='cyan', err=True)
+                    click.secho("  • Run the command again — the failure can be a timing issue", fg='cyan', err=True)
                     click.secho("  • Using --rtt instead of --rtt-reset if device is already running", fg='cyan', err=True)
                     click.secho("  • Verifying target is connected and powered", fg='cyan', err=True)
 
@@ -1543,7 +1543,7 @@ def memrd(ctx, start_addr, length, box, json_output, halt, no_halt, no_reset):
                 jlink_script=jlink_script, openocd_config=openocd_config,
             )
         except Exception as e:
-            click.secho(f"Warning: could not re-connect halted for memrd: {e}", fg='yellow', err=True)
+            click.secho(f"Warning: the CLI did not re-connect halted for memrd: {e}", fg='yellow', err=True)
 
     # Auto-connect if the target is not answering. A live gdbserver is not an
     # attached part; see _auto_connect_if_needed for why this tests `is True`
@@ -1577,7 +1577,7 @@ def memrd(ctx, start_addr, length, box, json_output, halt, no_halt, no_reset):
     # Validate memory address range (32-bit systems)
     max_address = 0xFFFFFFFF
     if start_addr > max_address or (start_addr + length) > max_address + 1:
-        click.secho(f"Warning: Memory address 0x{start_addr:x} may be invalid for 32-bit system", fg='yellow', err=True)
+        click.secho(f"Warning: the read range from 0x{start_addr:x} passes the 32-bit maximum", fg='yellow', err=True)
         click.secho(f"Maximum valid address is 0x{max_address:x}", fg='yellow', err=True)
         if not click.confirm("Continue anyway?", default=False):
             client.close()

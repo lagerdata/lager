@@ -372,12 +372,12 @@ def run_job_output(connection_params, test_runner, interactive, line_ending, mes
             click.secho('Internal server error. If this persists, report at https://github.com/lagerdata/lager/issues',
                         fg='red', err=True)
         else:
-            click.secho('Could not connect to box websocket', fg='red', err=True)
+            click.secho('The box websocket did not accept the connection', fg='red', err=True)
         if debug:
             raise
         click.get_current_context().exit(1)
     except trio_websocket.HandshakeError as exc:
-        click.secho('Could not connect to box websocket', fg='red', err=True)
+        click.secho('The box websocket did not accept the connection', fg='red', err=True)
         if debug:
             raise
         click.get_current_context().exit(1)
