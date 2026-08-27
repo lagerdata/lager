@@ -43,7 +43,7 @@ validation.
 manual assignment with
 [`lager nets assign`](/source/reference/cli/nets#assign). The DP711 also
 requires a **null-modem (crossover) cable** between the supply and the
-RS232-to-USB adapter — both ends are wired as DTE, so a straight-through
+RS232-to-USB adapter. Both ends are wired as DTE, so a straight-through
 connection will not communicate. See
 [RS-232 Instruments](/source/getting-started/setting-up-instruments#rs-232-instruments-manual-assignment).
 
@@ -207,21 +207,20 @@ scripts and CI pipelines.
 **Notes:**
 - OpenOCD-backed probes auto-select an interface configuration from
   the USB VID/PID for the chips listed above. The FT4232H is supported
-  but has no safe default — there are too many wiring variants on
-  quad-MPSSE boards — so you must pass an `openocd_config` pointing at
-  the right interface cfg for your board. The same escape hatch covers
+  but has no safe default, because quad-MPSSE boards have too many wiring
+  variants. You must pass an `openocd_config` that points at the right
+  interface cfg for your board. The same escape hatch covers
   non-standard FT232H/FT2232H wiring and any probe not in the table
   (e.g. Black Magic Probe, Glasgow Interface Explorer).
 - Multi-channel FTDIs (FT2232H, FT4232H) expose each MPSSE channel as
-  a separate debug net via an `@A`/`@B`/`@C`/`@D` suffix on the device
-  field, so a single chip can drive multiple targets independently;
-  channels C and D on the FT4232H are UART-only. See the
+  a separate debug net. The channel is an `@A`/`@B`/`@C`/`@D` suffix on
+  the device field, so a single chip can drive multiple targets
+  independently. Channels C and D on the FT4232H are UART-only. See the
   [nets reference](../reference/cli/nets) for the channel-suffix
   syntax.
-- Target chip configuration is auto-selected from the device name for
-  STM32, nRF5x, RP2040/RP2350, ATSAM, LPC, i.MX RT, and ESP32
-  families; anything else can be driven via a custom OpenOCD target
-  config.
+- Lager selects the target chip configuration from the device name for
+  the STM32, nRF5x, RP2040/RP2350, ATSAM, LPC, i.MX RT, and ESP32
+  families. A custom OpenOCD target config drives anything else.
 
 ---
 
@@ -257,52 +256,53 @@ tell them apart. Only the topology can:
 | Downstream (user) | the dock's four external Type-A sockets | Yes — verified |
 | Upstream (internal) | DP-AltMode billboard, audio codec, the dock's own ethernet, the link to the user tier | No |
 
-Lager exposes only the user tier, so the four lager ports are the four external
-Type-A sockets (on the validated model: three on the rear, one on the front) and
-the dock's own network adapter can never be switched off by accident.
+Lager exposes only the user tier. The four lager ports are therefore the four
+external Type-A sockets. On the validated model, three are on the rear and one is
+on the front. The dock's own network adapter can never be switched off by accident.
 
-**Which lager port number is which physical socket is not defined** — nothing
-ties USB hub port order to the order of connectors on a case, and it may differ
-between models. Determine it once, empirically, by moving a device that
-enumerates (any USB stick, or a debug probe) through each socket in turn and
-reading back which port it lands on:
+**Which lager port number is which physical socket is not defined.** Nothing ties
+USB hub port order to the order of connectors on a case, and the order can differ
+between models. Determine it once, empirically. Move a device that enumerates
+through each socket in turn. Any USB stick or debug probe will do. Read back which
+port it lands on:
 
 ```bash
 lager ssh --box <BOX> -- ls -l /sys/bus/usb/devices/<hub-path>
 ```
 
-A **charge-only cable cannot be used for this** — it presents no device to the
-hub, so it is indistinguishable from an empty socket (see the warning above).
+A **charge-only cable cannot do this**. It presents no device to the hub, so it
+is indistinguishable from an empty socket (see the warning above).
 
 <Warning>
 **Moving a cable between sockets silently repoints the net.** A `usb` net names a
-hub *port*, not the device plugged into it, so after someone reseats a cable the
-same command switches something else — with no error, because from the hub's
+hub *port*, not the device plugged into it. After someone reseats a cable, the
+same command switches something else. There is no error, because from the hub's
 point of view nothing is wrong.
 
 This cuts the opposite way to every other instrument on the box. A debug probe,
-a USB-UART bridge, and a power supply are addressed by **serial number**, so
-their nets follow the device wherever it is plugged in. A hub port net is
+a USB-UART bridge, and a power supply carry a **serial number** address. Their
+nets follow the device wherever it is plugged in. A hub port net is
 addressed by **topology**, so it stays with the socket. Both are correct, and
 they behave oppositely under exactly the same physical change.
 
 So: after any bench rework, re-derive the map before running anything scripted.
 For automation that must survive reseating, locate the device by VID:PID under
-the hub and drive whichever port it is actually on, rather than hard-coding a
+the hub. Then drive whichever port it is actually on, rather than a hard-coded
 net name.
 </Warning>
 
-Verified by writing a volatile setting to a device on a user port, cycling power, and
-reading the power-on default back — a real cold boot, not a logical disconnect.
-The upstream tier's behavior is inferred from re-power timing (a device there
-reasserts CONNECT within a millisecond, so it never lost power) rather than from
-a register, so treat it as strong evidence rather than proof.
+The verification wrote a volatile setting to a device on a user port, cycled
+power, and read the power-on default back. That is a real cold boot, not a
+logical disconnect. The upstream tier's behavior comes from re-power timing
+rather than from a register. A device there reasserts CONNECT within a
+millisecond, so it never lost power. Treat that as strong evidence rather than
+proof.
 
 <Warning>
 **A powered-off port still shows up everywhere.** While a port is unpowered the
 hub raises no change bit, so Linux never polls it and never processes the
 disconnect. The device keeps its entry in `lsusb`, its `/sys` node, and any
-`/dev/ttyUSB*` it owns, for as long as the port stays off — the kernel logs
+`/dev/ttyUSB*` it owns, for as long as the port stays off. The kernel logs
 `USB disconnect` only when power comes *back*. An off port stays off
 indefinitely; nothing re-powers it on its own.
 
@@ -315,8 +315,8 @@ after power returns.
 <Note>
 **SuperSpeed docks are untested.** A dock linked over USB 3 enumerates as two
 virtual hubs, and VBUS drops only when power is cleared on both halves. Lager
-implements that pairing, but no SuperSpeed-linked dock has been available to
-validate it; a topology it cannot pair unambiguously is refused rather than
+implements that pairing, but no SuperSpeed-linked dock was available to
+validate it. A topology that it cannot pair unambiguously is refused rather than
 half-switched. The validated configuration is a USB 2.0 link.
 </Note>
 

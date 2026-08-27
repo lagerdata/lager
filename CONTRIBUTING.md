@@ -75,21 +75,21 @@ lager python test/api/power/test_supply_comprehensive.py --box <box-name>
    `fix/supply-trip-message` or `feat/rtt-streaming`.
 2. **Keep the change focused.** Unrelated fixes belong in their own PR.
 3. **Add or update tests.** New behavior without a test will be asked for one.
-4. **Update `CHANGELOG.md`** for any user-facing change, under an `Unreleased`
-   heading if no release is pending.
+4. **Update `CHANGELOG.md`** for any user-facing change. If no release is in
+   progress, file the entry under an `Unreleased` heading.
 5. **Update the docs** in `docs/source/` if you changed a command, an API, or
    supported hardware.
 6. **Fill in the PR template**, including how you tested.
 
 Note that this is a **public repository**. Pull request titles, bodies, commit
-messages, and code comments are world-readable and permanent — a squash merge
-copies the PR body into git history, and editing a PR body leaves the original
-visible in its revision history. Do not include customer names, private
+messages, and code comments are world-readable and permanent. A squash merge
+copies the PR body into git history. An edit to a PR body leaves the original
+text visible in its revision history. Do not include customer names, private
 deployment details, or internal discussion in anything you push.
 
 ### Code Style
 
-- **Python** — follow PEP 8. Match the conventions of the file you are editing.
+- **Python** — follow PEP 8. Match the conventions of the file you edit.
 - **Bash** — must pass ShellCheck.
 - **Rust** — `cargo fmt` and no new `clippy` warnings.
 - **Commits** — write a clear imperative subject line explaining the change.
@@ -100,7 +100,7 @@ deployment details, or internal discussion in anything you push.
 ## Reporting Issues
 
 Use [GitHub Issues](https://github.com/lagerdata/lager/issues) and the bug report
-template. Search first — the issue may already be filed. A good report includes
+template. Search first — the issue can already exist. A good report includes
 the exact command, its full output, `lager --version`, and the box version from
 `lager hello --box <name>`.
 

@@ -1,14 +1,19 @@
 # Test Coverage
 
-This document tracks what test coverage exists across all Lager features and the four test
-suites: local unit tests, Python API tests, bash integration tests, and MCP tests.
+This document tracks what test coverage exists across all Lager features. It covers the four
+test suites: local unit tests, Python API tests, bash integration tests, and MCP tests.
 
 **Counts here are checked against disk**, by `tools/check_coverage_counts.py` in the required
-`static-checks` job — the gated run-counts below, the per-section file counts in every
-`(-- N files)` header, and the per-file inventory tables themselves: every test file must have a
-row in its section's table, and a row naming a deleted file fails the check. If you add or remove
-a test file, update the counts and the table in the same change. `--fix` rewrites counts and
-drops rows for deleted files; a new file's row you write yourself, with a real description.
+`static-checks` job. It checks three things:
+
+- the gated run-counts below;
+- the per-section file counts in every `(-- N files)` header;
+- the per-file inventory tables themselves.
+
+Every test file must have a row in its section's table, and a row naming a deleted file fails
+the check. If you add or remove a test file, update the counts and the table in the same change.
+`--fix` rewrites counts and drops rows for deleted files; a new file's row you write yourself,
+with a real description.
 
 ## What runs in CI
 
@@ -24,9 +29,8 @@ schedule-, or dispatch-triggered and need the bench.
 | `update-regression.yml` (Bench: Box Lifecycle) | `workflow_call`, dispatch | self-hosted `lager-bench` | No |
 | `nightly-bench.yml` | nightly schedule, dispatch | orchestrator | No |
 
-`nightly-bench.yml` is the only workflow with a schedule; it reaches the other two bench
-workflows through `workflow_call`, which is why neither of those carries a `schedule` trigger of
-its own.
+`nightly-bench.yml` is the only workflow with a schedule. It reaches the other two bench
+workflows through `workflow_call`, so neither of those carries a `schedule` trigger of its own.
 
 A job only *blocks* a merge once its status context is listed in branch ruleset 14535039. Seven
 contexts are: the six `unit (...)` jobs and `static-checks`. The `compat` and `coverage` contexts
@@ -44,10 +48,10 @@ are not.
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 143 (+1 skipped) |
 | | **Total gated** | **4280** |
 
-Each suite gets its own job because they need incompatible `sys.modules` states for the name
-`lager`: `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never runs
-(to skip the heavy box deps), while `test/unit/box/conftest.py` imports the real package. They
-cannot share a process.
+Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
+name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
+runs, which skips the heavy box deps. `test/unit/box/conftest.py` imports the real package
+instead. The two cannot share a process.
 
 `unit-tests.yml` also runs a **`compat (pyX.Y)`** job covering the other versions `cli/setup.py`
 advertises. It runs all six suites sequentially, one process per version.
@@ -63,8 +67,8 @@ advertises. It runs all six suites sequentially, one process per version.
 | 3.14 | `compat (py3.14)` |
 
 **Every advertised version is now covered.** 3.13 and 3.14 were previously absent because
-`box/lager/python/service.py` imported `cgi`, which PEP 594 removed in 3.13 -- the box suite could
-not even be collected there, and the box's python service would not have started on 3.13 at all.
+`box/lager/python/service.py` imported `cgi`, which PEP 594 removed in 3.13. Pytest failed to
+collect the box suite there, and the box's python service did not start on 3.13 at all.
 That file now parses multipart with `werkzeug.sansio.multipart` and `cgi` no longer appears
 anywhere in the tree.
 
@@ -82,13 +86,13 @@ anywhere in the tree.
 ### Rust: `rust-checks.yml`
 
 `box/oscilloscope-daemon` is Rust, and until this workflow **no job in this repo referenced
-cargo**. That crate is not a side project: `docker/start-services.sh` launches it on box boot
-whenever the binary is present, and `daemon/src/main.rs` opens QUIC/WebTransport listeners on
-8082-8084 -- network-reachable runtime code on customer hardware.
+cargo**. That crate is not a side project. `docker/start-services.sh` launches it on box boot
+whenever the binary is present. `daemon/src/main.rs` opens QUIC/WebTransport listeners on
+8082-8084, which is network-reachable runtime code on customer hardware.
 
 The gap was not theoretical. Dependabot PR #172 bumped 20 crates across 22 breaking-version
-boundaries, showed a **green tick from twelve checks**, and failed to compile in 74 places --
-because all twelve checks were Python. It broke two ways independently:
+boundaries and showed a **green tick from twelve checks**. It then failed to compile in 74
+places, because all twelve checks were Python. It broke two ways independently:
 
 - `bindgen` 0.69 -> 0.72 made the generated PicoScope FFI bindings unparseable (70 errors)
 - `tungstenite` 0.20 -> 0.30 changed `Message::Text` to take `Utf8Bytes` instead of `String`
@@ -107,8 +111,8 @@ because all twelve checks were Python. It broke two ways independently:
 what catches API breaks without resolving every link-time symbol.
 
 It still needs the **PicoScope SDK** on the runner. `daemon/build.rs` runs bindgen against
-`/opt/picoscope/include/libps2000/ps2000.h` unconditionally -- no feature flag skips it -- so
-without the headers the build script panics and nothing downstream is checked. The first run of
+`/opt/picoscope/include/libps2000/ps2000.h` unconditionally, and no feature flag skips it.
+Without the headers the build script panics, and nothing downstream is checked. The first run of
 this workflow failed exactly there (`wrapper.h:2:10: fatal error: 'ps2000.h' file not found`).
 The job installs `libps2000` from PicoTech's Debian repo, the same one `build_daemon.sh`
 documents for setting up a box, and asserts the header exists before continuing.
@@ -118,8 +122,8 @@ job so the SDK-free crates (`cli`, `protocol`, `wtransport_test`) keep gating wh
 check degrades to advisory.
 
 The toolchain is pinned to 1.95.0, for the same reason `shellcheck` is pinned in
-`static-checks.yml` -- the clippy and audit baselines were measured against a known version, and
-`stable` moving would turn this red with no change in the repo.
+`static-checks.yml`. The clippy and audit baselines were measured against a known version. A
+move of `stable` will turn this red with no change in the repo.
 
 **`cargo audit` is not redundant with Dependabot.** Dependabot reads the GitHub Advisory
 Database; RustSec advisories reach it only once imported. Adding this check surfaced
@@ -127,19 +131,21 @@ Database; RustSec advisories reach it only once imported. Adding this check surf
 Dependabot reported **zero** open alerts. It is fixed in the same change that added the workflow,
 so the step starts clean.
 
-Three advisory *warnings* remain and do not fail the build, because neither has a fixed version
-to move to: `rustls-pemfile` unmaintained (`RUSTSEC-2025-0134`, two versions in the graph) and
-`anyhow` unsound `Error::downcast_mut` (`RUSTSEC-2026-0190`). Add `--deny warnings` once they
-clear.
+Three advisory *warnings* remain and do not fail the build, because none of them has a fixed
+version to move to. They are `rustls-pemfile` unmaintained (`RUSTSEC-2025-0134`, two versions in
+the graph) and `anyhow` unsound `Error::downcast_mut` (`RUSTSEC-2026-0190`). Add
+`--deny warnings` once they clear.
 
-The `pull_request` trigger is **not path-filtered**: the job detects rust changes itself
-(merge-base diff of `box/oscilloscope-daemon/` and the workflow file) and succeeds via skip
-when nothing rust-side changed, so it always reports and CAN become a required context. A
-Python-only PR pays ~20 seconds of checkout+detect. The job also runs `cargo test
---workspace` -- trivially green until the workspace gains its first test, at which point the
-gate exists with no workflow change -- and, on push to main, a release-profile compile smoke
-whose binary is uploaded as an artifact (NOT a ship artifact; the deployed daemon is still
-hand-built by `build_daemon.sh` against the box's own OS).
+The `pull_request` trigger is **not path-filtered**. The job detects rust changes itself,
+through a merge-base diff of `box/oscilloscope-daemon/` and the workflow file. It succeeds
+through a skip when nothing rust-side changed, so it always reports and CAN become a required
+context. A Python-only PR pays ~20 seconds of checkout+detect.
+
+The job also runs `cargo test --workspace`. That is trivially green until the workspace gains
+its first test, at which point the gate exists with no workflow change. On push to main the job
+also runs a release-profile compile smoke, and uploads the binary as an artifact. That is NOT a
+ship artifact: `build_daemon.sh` still hand-builds the deployed daemon against the box's own
+OS.
 
 ### What CI does NOT run
 
@@ -154,15 +160,15 @@ hand-built by `build_daemon.sh` against the box's own OS).
 Known gaps in the gate itself, in rough priority order:
 
 - **Operating systems.** CI is `ubuntu-latest` only, and six `cli/` modules branch on platform.
-  The `termios`/`tty` case is now fixed and guarded (`websocket_client.py` matches the pattern
-  `cli/status.py` already used, and `test/unit/cli/test_import_surface.py` simulates the missing
-  module with a `meta_path` finder so the guard is exercised on Linux). The remaining platform
-  branches are still unexercised -- a real fix needs a `windows-latest` job.
+  The `termios`/`tty` case is now fixed and guarded. `websocket_client.py` matches the pattern
+  that `cli/status.py` already used, and `test/unit/cli/test_import_surface.py` simulates the
+  missing module with a `meta_path` finder, so the guard is exercised on Linux. The remaining
+  platform branches are still unexercised -- a real fix needs a `windows-latest` job.
 - **No type checking, and no dependency scanning for Python.** There is no
   mypy/pyright/bandit/pip-audit config, so nothing in a PR run inspects Python dependencies.
   Dependabot covers the *alerting* half (`.github/dependabot.yml`), but it runs on GitHub's
-  schedule rather than in the gate -- a PR that introduces a vulnerable Python dependency still
-  goes green and is caught afterwards, if at all. **Rust is now covered in-gate** by
+  schedule rather than in the gate. A PR that introduces a vulnerable Python dependency still
+  goes green, and someone catches it afterwards, if at all. **Rust is now covered in-gate** by
   `rust-checks.yml`; the Python equivalent is the remaining half.
 - **A merged cargo bump does not patch a deployed box.** No workflow builds
   `box/oscilloscope-daemon`, and `box.Dockerfile` does not copy the binary: it is built by hand
@@ -185,14 +191,14 @@ findings `-S warning` reported, 91 are fixed:
 | `SC2034` | 33 | `for i in ...` loops whose body never reads the counter, renamed to `for _`. |
 
 **A raw finding count is not a backlog size.** Shellcheck reports `SC2034` once per variable name
-per scope, so a file with five unread `i` loops reports one finding until you fix it and the next
-surfaces. Fixing 33 loop counters moved the reported count only 45 -> 30, over five passes. The
-original "181" was an undercount.
+per scope. A file with five unread `i` loops therefore reports one finding, until you fix it and
+the next one surfaces. Fixing 33 loop counters moved the reported count only 45 -> 30, over five
+passes. The original "181" was an undercount.
 
 The remaining 90 are excluded by name in `static-checks.yml`. They are excluded there rather than
-with inline `# shellcheck disable` comments because a disable directive **cannot be scoped to a
-single variable** -- it silences that code for the rest of the file. Ninety inline suppressions
-would blind 20 files to everything after them.
+with inline `# shellcheck disable` comments, because a disable directive **cannot be scoped to a
+single variable**. It silences that code for the rest of the file, so ninety inline suppressions
+will blind 20 files to everything after them.
 
 | Code | Count | Why still open |
 |---|---:|---|
@@ -203,13 +209,14 @@ would blind 20 files to everything after them.
 | `SC2046` | 1 | Unquoted command substitution. |
 
 **The captured-then-ignored values are fixed.** Each was a bench test that computed something and
-never checked it; each now asserts (or was deleted where the capture was setup for logic that was
-never written):
+never checked it. Each one now asserts. Where the capture was setup for logic that was never
+written, the change deletes it instead:
 
-- `jlink_script.sh` Test 1.3 asserts `SCRIPT_EXISTS` -- previously **both branches of its `if`
-  called `track_test "pass"`**, so the test could not fail.
-- `debug.sh` gates Tests 14.3/14.4's lenient no-RTT arms on `RTT_SUPPORTED`: a refused RTT
-  connection is a real failure when the firmware probe showed RTT working, a warning otherwise.
+- `jlink_script.sh` Test 1.3 asserts `SCRIPT_EXISTS`. Previously **both branches of its `if`
+  called `track_test "pass"`**, so the test had no way to report a failure.
+- `debug.sh` gates Tests 14.3/14.4's lenient no-RTT arms on `RTT_SUPPORTED`. A refused RTT
+  connection is a real failure when the firmware probe showed RTT working, and a warning
+  otherwise.
 - `sensors/thermocouple.sh` 11.1 asserts the `OUTPUT_ORIG` baseline read before drawing any
   case-sensitivity conclusion; `infrastructure/generic.sh` 12.5 uses `DEFAULTS_START` as a
   stale-state guard.
@@ -218,7 +225,7 @@ never written):
 - `BACKUP_LAGER_FILE`, `TEST_NET_NAME2`, `BACKUP_FILE` were setup for backup/second-net logic
   that was never written: deleted.
 
-The newly honest checks can legitimately fail on the bench where the old ones could not -- that
+The newly honest checks can legitimately fail on the bench where the old ones cannot, and that
 is the point. `SC2034` stays excluded for the intentional constants; retiring it entirely means
 per-file disables for those, tracked as a ratchet follow-up.
 
@@ -328,15 +335,15 @@ Ranked by risk. These are `cli/` modules that no test in the PR gate exercises a
 | `cli/terminal/**` | ~800 | The whole interactive REPL. |
 
 Sixteen of roughly forty-nine top-level command groups registered in `cli/main.py` have no gated
-test: `debug`, `defaults`, `webcam`, `scope`, `logic`, `hello`, `boxes`, `box`, `box-config`,
-`dut`, `instruments`, `ssh`, `ssh-setup`, `authorize`, `logs`, `terminal`.
+test. They are `debug`, `defaults`, `webcam`, `scope`, `logic`, `hello`, `boxes`, `box`,
+`box-config`, `dut`, `instruments`, `ssh`, `ssh-setup`, `authorize`, `logs`, and `terminal`.
 `login`, `logout` and `whoami` are now covered by `test/unit/cli/test_login_commands.py`.
 
 ### Defects found by writing the Phase-F tests
 
-Writing coverage for previously-untested modules surfaced five defects. None are fixed in the
-test-only change that found them; each is pinned by a test so it cannot regress further or be
-"fixed" without the test noticing.
+Writing coverage for previously-untested modules surfaced five defects. The test-only change
+that found them fixes none of them. A test pins each one, so it cannot regress further, and
+nobody can "fix" it without the test noticing.
 
 | Where | Defect | How it is pinned |
 |---|---|---|
@@ -346,9 +353,9 @@ test-only change that found them; each is pinned by a test so it cannot regress 
 | `cli/core/matchers.py` `EndsWithMatcher.feed` | When a chunk ends on `\n`, `split()` leaves a trailing `b''` that is still emitted with its own newline -- so every chunk landing on a line boundary appends a blank line to the user's output. | test pins the exact write sequence |
 | `cli/core/matchers.py` `iter_streams` | Line 87 is `elif V1ParseStates.Content:` -- missing `parse_state ==`, so it evaluates an always-truthy enum member. Correct today only because the branches above it are exhaustive; a sixth state would route here silently. | test asserts the source line, and fails once it is fixed |
 
-The three `param_types` defects are all in **export-only** code: the CAN types and
-`ADCChannelType` are re-exported by `cli/core/__init__.py` but no command uses them, and no
-`canbus` group is registered in `cli/main.py`. They are latent, not user-facing. The two
+The three `param_types` defects are all in **export-only** code. `cli/core/__init__.py`
+re-exports the CAN types and `ADCChannelType`, but no command uses them, and `cli/main.py`
+registers no `canbus` group. They are latent, not user-facing. The two
 `matchers` defects are on the live `lager python` output path; the blank-line one is cosmetic and
 the `iter_streams` one is currently benign.
 
@@ -383,12 +390,12 @@ Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `H
 
 ## Coverage Strengths
 
-- **Box-side logic**: 74 files / 1554 tests covering the box HTTP handlers, debug and J-Link
-  paths, locking, net persistence, and device drivers -- all hardware-free and gated on every PR.
+- **Box-side logic**: 74 files / 1554 tests. They cover the box HTTP handlers, debug and J-Link
+  paths, locking, net persistence, and device drivers. All are hardware-free and gated on every PR.
 - **Communication protocols**: I2C and SPI have 18+ Python API files across three hardware
   backends (Aardvark, LabJack, FT232H) with full 3-suite coverage.
-- **Power management**: Supply, Battery, Solar, and ELoad all have full 3-suite coverage with
-  tolerance checks, boundary tests, and safety teardown, including device-specific suites for the
+- **Power management**: Supply, Battery, Solar, and ELoad all have full 3-suite coverage, with
+  tolerance checks, boundary tests, and safety teardown. Device-specific suites cover the
   Rigol DP821 and the Keithley 2281S.
 - **I/O domain**: 17 Python API tests covering ADC, DAC, GPIO, and PWM with real value assertions.
   `test_LabJack_T7.py` is an 11-group suite with env-var configuration, preflight, DAC boundary
@@ -397,8 +404,8 @@ Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `H
   hardware.
 - **Regression discipline**: a large share of the box and CLI unit tests are named for the defect
   they pin (`test_uart_bridge_reconnect.py`, `test_dispatcher_channel_resolution.py`,
-  `test_gdbserver_zombie_status.py`, `test_jlink_error_masking.py`), each documenting the failure
-  in its module docstring.
+  `test_gdbserver_zombie_status.py`, `test_jlink_error_masking.py`). Each one documents the
+  failure in its module docstring.
 
 ## Test File Inventory
 
@@ -448,7 +455,7 @@ cli/tests/                #  7 files: 6 pytest suites (GATED via `unit (cli)`),
 #### Box Unit Tests (`test/unit/box/` -- 90 files)
 
 `conftest.py` in this directory imports the real `lager` package once, before any test module is
-imported, and stubs the two third-party modules that are neither guarded nor installed
+imported. It also stubs the two third-party modules that are neither guarded nor installed
 (`flask_socketio`, `pygdbmi`). Without it the suite depends on alphabetical collection order.
 
 | File | What it tests |
@@ -710,22 +717,26 @@ and runs on a box via `lager python`. None of them run in the PR gate.
 
 #### Communication (30 files)
 
-I2C across three backends (`test_i2c_aardvark.py`, `test_i2c_aardvark_api.py`,
-`test_i2c_labjack.py`, `test_i2c_labjack_api.py`, `test_i2c_ft232h.py`); SPI across three backends
-and both CS modes (13 files, including `test_spi_dead_zone_clamp.py` and
-`test_spi_write_readback.py`); UART (`test_uart_comprehensive.py`); BLE (4 files); BluFi
-(`test_blufi_comprehensive.py`); WiFi (`test_wifi_comprehensive.py`, `test_wifi_new_methods.py`);
-J-Link (`test_debug_comprehensive.py`); and `test_wait_for_level.py` (GPI level wait, 15
-sub-tests).
+- I2C, across three backends: `test_i2c_aardvark.py`, `test_i2c_aardvark_api.py`,
+  `test_i2c_labjack.py`, `test_i2c_labjack_api.py`, `test_i2c_ft232h.py`.
+- SPI, across three backends and both CS modes: 13 files, including
+  `test_spi_dead_zone_clamp.py` and `test_spi_write_readback.py`.
+- UART: `test_uart_comprehensive.py`.
+- BLE: 4 files.
+- BluFi: `test_blufi_comprehensive.py`.
+- WiFi: `test_wifi_comprehensive.py`, `test_wifi_new_methods.py`.
+- J-Link: `test_debug_comprehensive.py`.
+- GPI level wait: `test_wait_for_level.py`, 15 sub-tests.
 
 #### I/O (17 files)
 
-ADC (`test_adc_multiple.py`, `test_adc_continuous.py`), DAC (`test_dac_output.py`,
-`test_dac_ramp.py`, `test_dac_adc_loopback.py`), GPIO (`test_gpio_output.py`,
-`test_gpio_input.py`, `test_gpio_multiple.py`, `test_gpio_pulse.py`, `test_gpio_ft232h.py`,
-`test_gpio_ft232h_api.py`, `test_gpio_aardvark_api.py`), plus `test_io_comprehensive.py`,
-`test_pin_conflict.py`, `test_pwm_measurement.py`, `test_LabJack_T7.py` (11-group suite), and
-`test_usb202.py` (MCC USB-202 DAQ).
+- ADC: `test_adc_multiple.py`, `test_adc_continuous.py`.
+- DAC: `test_dac_output.py`, `test_dac_ramp.py`, `test_dac_adc_loopback.py`.
+- GPIO: `test_gpio_output.py`, `test_gpio_input.py`, `test_gpio_multiple.py`,
+  `test_gpio_pulse.py`, `test_gpio_ft232h.py`, `test_gpio_ft232h_api.py`,
+  `test_gpio_aardvark_api.py`.
+- Also `test_io_comprehensive.py`, `test_pin_conflict.py`, `test_pwm_measurement.py`,
+  `test_LabJack_T7.py` (11-group suite), and `test_usb202.py` (MCC USB-202 DAQ).
 
 #### Sensors (9 files)
 
@@ -775,8 +786,8 @@ Run from the host against a real box; nothing in CI validates them, not even syn
 ### Unit tests (no hardware)
 
 Run each suite as its own pytest invocation, exactly as CI does. `PYTHONPATH` must include the
-repo root and `box/`; `--import-mode=importlib` keeps same-named modules in different suites from
-colliding; `-c /dev/null` stops `test/mcp` from shadowing the `mcp` PyPI package.
+repo root and `box/`. `--import-mode=importlib` keeps same-named modules in different suites from
+a collision, and `-c /dev/null` stops `test/mcp` from shadowing the `mcp` PyPI package.
 
 ```bash
 export PYTHONPATH="$PWD:$PWD/box"
@@ -798,9 +809,10 @@ Dependencies: `pip install -e cli/` plus `pip install -r test/requirements-unit.
 
 That file's ten entries carry major-version caps so an upstream major cannot turn a required
 context red with no change in this repo. The **floors stay deliberately low**, because the same
-file feeds the compat matrix and pip resolves differently per interpreter -- `numpy` lands on
-2.2.6 for 3.10 but 2.4.6 for 3.11 and 2.5.1 for 3.12, so a floor pinned to whatever 3.11 resolved
-would break `compat (py3.10)`. Verify any floor change against the oldest version in the matrix:
+file feeds the compat matrix and pip resolves differently per interpreter. `numpy` lands on
+2.2.6 for 3.10, but on 2.4.6 for 3.11 and 2.5.1 for 3.12. A floor pinned to whatever 3.11
+resolved will break `compat (py3.10)`. Verify any floor change against the oldest version in the
+matrix:
 
 ```bash
 pip install --dry-run --ignore-installed --only-binary=:all: \

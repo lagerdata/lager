@@ -32,9 +32,9 @@ Select a net, open its details, and fill in:
   `flash`, `boot-critical`.
 
 <Note>
-`purpose` and `notes` are prose for the agent to read; `tags` are keywords the
-planning tools score against (a tag matching a test goal is the strongest
-relevance signal). You can also set these without the TUI:
+`purpose` and `notes` are prose for the agent to read. `tags` are keywords that
+the planning tools score against, and a tag matching a test goal is the strongest
+relevance signal. You can also set these without the TUI:
 
 ```bash
 lager nets describe uart1 \
@@ -97,7 +97,7 @@ learn which subsystem it belongs to and which schematic sheet covers it.
 ## Attaching schematics and datasheets
 
 The Lager Box is **not** a document store. It records *pointers* to your
-documents; the agent fetches and analyses them with its own (vision-capable)
+documents; the agent fetches and analyzes them with its own (vision-capable)
 tools. This keeps the box lean and lets the agent use the best tool for reading
 a PDF or board image.
 
@@ -140,9 +140,12 @@ returns the JS app, not the content:
 https://docs.google.com/document/d/<DOC_ID>/export?format=pdf
 ```
 
-Either share it "anyone with the link," give your agent a Google Drive
-connector/MCP server that holds the credentials, or export it into your repo and
-use `--repo-path`.
+For a document that needs authentication, you have three options:
+
+- Share it with "anyone with the link."
+- Give your agent a Google Drive connector or MCP server that holds the
+  credentials.
+- Export it into your repo and use `--repo-path`.
 </Tip>
 
 ## How the agent uses it
@@ -177,6 +180,6 @@ So after `lager dut edit`, `lager dut add-doc`, or `lager nets describe`,
 agents see the new context on their next `discover_dut()`, `discover_bench()`, or
 `lager://dut/overview.md` request — no manual step required.
 
-If you want to force a reload immediately (e.g. to confirm a change took), a
-connected agent can still call the `box_manage` tool with `action="reload"`, or
-you can restart the box service.
+You can also force a reload immediately, to confirm that a change took effect. A
+connected agent can call the `box_manage` tool with `action="reload"`, or you can
+restart the box service.

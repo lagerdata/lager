@@ -67,9 +67,9 @@ lager python test/api/sensors/test_joulescope.py --box <YOUR-BOX> -- watt1
 
 ### Unit tests (no hardware)
 
-These are what CI runs on every pull request. Always use these flags, and run each suite as its
-own pytest process -- `test/unit/box/` and `test/unit/measurement/` need incompatible `lager`
-packages in `sys.modules` and cannot share one. See `COVERAGE.md` for the details.
+These are what CI runs on every pull request. Always use these flags. Run each suite as its
+own pytest process: `test/unit/box/` and `test/unit/measurement/` need incompatible `lager`
+packages in `sys.modules`, so they cannot share one. See `COVERAGE.md` for the details.
 
 ```bash
 export PYTHONPATH="$PWD:$PWD/box"

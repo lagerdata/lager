@@ -1,18 +1,4 @@
 {
-  "CONTRIBUTING.md": {
-    "length": 1,
-    "modals": 1,
-    "tense": 2
-  },
-  "README.md": {
-    "length": 2,
-    "tense": 2
-  },
-  "RELEASE_PROCESS.md": {
-    "length": 6,
-    "modals": 1,
-    "tense": 2
-  },
   "cli/box_storage.py": {
     "modals": 2,
     "tense": 1
@@ -95,31 +81,5 @@
   },
   "cli/status.py": {
     "modals": 2
-  },
-  "docs/README.md": {
-    "length": 2,
-    "tense": 1
-  },
-  "docs/source/reference/mcp/dut-context.mdx": {
-    "length": 3
-  },
-  "docs/source/reference/mcp/overview.mdx": {
-    "length": 4
-  },
-  "docs/source/supported-instruments/supported-instruments.mdx": {
-    "length": 14,
-    "modals": 1,
-    "tense": 1
-  },
-  "test/CONVENTIONS.md": {
-    "modals": 1
-  },
-  "test/COVERAGE.md": {
-    "length": 29,
-    "modals": 7,
-    "tense": 1
-  },
-  "test/README.md": {
-    "length": 1
   }
 }
