@@ -291,9 +291,9 @@ instrument. If the slot already holds a model, the command refuses unless
 `--force` is given.
 
 <Warning>
-Saving overwrites the slot's previous model, and the instrument has no way
-to delete a model from a slot — a slot, once written, can only be
-overwritten with a different model.
+`model-create` overwrites the slot's previous model. The instrument has no way
+to delete a model from a slot. Once a slot holds a model, you can only
+overwrite it with a different one.
 </Warning>
 
 After a successful create, `model SLOT` loads the model and `models` lists it.
@@ -315,9 +315,9 @@ lager battery NETNAME model-export SLOT --csv FILE [OPTIONS]
 - `--box TEXT` - Lager Box name or IP
 
 Writes the slot's 101 `voc,resistance` points in the format `model-create`
-accepts, so a saved model can be exported, edited, and written back to a
-slot (`model-export` → edit → `model-create`). Read-only: exporting does not
-recall or change the active model. Exporting an empty slot is an error —
+accepts. You can therefore export a saved model, edit it, and write it back to
+a slot (`model-export` → edit → `model-create`). Read-only: exporting does
+not recall or change the active model. Exporting an empty slot is an error —
 use `models` to see which slots hold a saved model.
 
 ### `state`

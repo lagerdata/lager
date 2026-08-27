@@ -325,7 +325,7 @@ lager i2c MY_I2C read 6 --address 0x76
 
 ### Bus Errors
 
-- LabJack T7: The first transaction after connection may return a bus error; this is normal and handled automatically
+- LabJack T7: The first transaction after connection can return a bus error. This is normal, and the driver handles it automatically
 - Try reducing frequency with `--frequency 100k`
 - Check for bus contention (multiple masters)
 

@@ -3,7 +3,7 @@ title: The .lager Configuration File
 description: Complete reference for the .lager JSON configuration file
 ---
 
-The `.lager` file is a JSON configuration file that stores settings for the Lager CLI. There are **two distinct versions** of this file that serve different purposes: a **global** file shared across all projects, and a **project-local** file specific to a single project directory.
+The `.lager` file is a JSON configuration file that stores settings for the Lager CLI. There are **two distinct versions** of this file, and they serve different purposes. A **global** file is shared across all projects, and a **project-local** file is specific to a single project directory.
 
 ## Two Files, Two Purposes
 
@@ -17,7 +17,7 @@ The `.lager` file is a JSON configuration file that stores settings for the Lage
 
 The CLI always knows which file to use. Commands like `lager boxes` and `lager defaults` read and write the global file. Commands like `lager devenv` and `lager exec` search upward from your current directory for a project-local file. The two files never conflict -- they contain entirely different sections.
 
-When `lager devenv terminal` or `lager exec` starts a Docker container, the global `~/.lager` file is automatically mounted inside the container at `/lager/.lager` (with `LAGER_CONFIG_FILE_DIR=/lager`), so that box and net definitions are available inside the container.
+When `lager devenv terminal` or `lager exec` starts a Docker container, it mounts the global `~/.lager` file inside the container at `/lager/.lager`, with `LAGER_CONFIG_FILE_DIR=/lager`. Box and net definitions are therefore available inside the container.
 
 ---
 
@@ -134,7 +134,7 @@ lager boxes import --file boxes.json  # Import boxes from JSON
 
 ### NETS
 
-Stores hardware net configurations organized by box name. Each net maps a human-readable name to a physical hardware connection (channel on an instrument). Nets are stored in the global file but the actual net data lives on the box -- this section serves as a local cache managed by `lager nets`.
+Stores hardware net configurations organized by box name. Each net maps a human-readable name to a physical hardware connection (channel on an instrument). Nets are stored in the global file, but the actual net data lives on the box. This section is a local cache that `lager nets` manages.
 
 **Structure:** A dictionary keyed by box name, where each value is an array of net objects.
 
@@ -210,7 +210,7 @@ This file is completely separate from the global `~/.lager` -- it contains diffe
 
 ### How the local file is found
 
-When you run `lager devenv terminal`, `lager exec`, or `lager debug`, the CLI starts in your current directory and walks up the directory tree until it finds a `.lager` file (that is not the global `~/.lager`). The first one found is used.
+When you run `lager devenv terminal`, `lager exec`, or `lager debug`, the CLI starts in your current directory. It then walks up the directory tree until it finds a `.lager` file that is not the global `~/.lager`. The CLI uses the first one it finds.
 
 ```
 /home/user/projects/my-firmware/.lager    <-- found first (used)
@@ -222,7 +222,7 @@ When you run `lager devenv terminal`, `lager exec`, or `lager debug`, the CLI st
 
 Configures a Docker-based development environment for your project. Managed with `lager devenv`.
 
-When you run `lager devenv terminal`, the CLI reads this section to determine which Docker image to launch, where to mount your source code, and how to configure the container. When you run `lager exec <name>`, it reads the saved commands from this section.
+When you run `lager devenv terminal`, the CLI reads this section. The section names which Docker image to launch, where to mount your source code, and how to configure the container. When you run `lager exec <name>`, it reads the saved commands from this section.
 
 **Fields:**
 
@@ -243,7 +243,7 @@ When you run `lager devenv terminal`, the CLI reads this section to determine wh
 | `ports` | No | List of port mappings (`"HOST:CONTAINER"`). Applied to both commands; combined with any `-p` flags on `terminal`. |
 | `entrypoint` | No | Container entrypoint (e.g. `"/bin/bash"`). Use when the image's default entrypoint isn't an interactive shell; `--entrypoint` overrides it on `terminal`. |
 
-Paths in `volumes` may use `~`, environment variables, and `${PROJECT_ROOT}` (the directory containing `.lager`) so a committed `.lager` stays portable across machines — e.g. `"${PROJECT_ROOT}:/workspace"`. CLI flags (`--user`, `--group`, `--network`, `--platform`, `--entrypoint`) take precedence over the config value when both are present.
+Paths in `volumes` can use `~`, environment variables, and `${PROJECT_ROOT}` (the directory containing `.lager`) so a committed `.lager` stays portable across machines — e.g. `"${PROJECT_ROOT}:/workspace"`. CLI flags (`--user`, `--group`, `--network`, `--platform`, `--entrypoint`) take precedence over the config value when both are present.
 
 Any scalar key above can be set with `lager devenv set <key> <value>`, removed with `lager devenv unset <key>`, and the whole section printed with `lager devenv show`.
 | `cmd.<name>` | No | Custom named commands that can be executed with `lager exec <name>` |
@@ -328,7 +328,7 @@ This is separate from the `jlink_script` field on net objects in the `NETS` sect
 
 ### includes
 
-Maps destination names to source directories that should be uploaded alongside Python scripts run with `lager python`. This lets your test scripts import from external directories outside the project.
+Maps destination names to source directories that the CLI uploads alongside Python scripts run with `lager python`. This lets your test scripts import from external directories outside the project.
 
 Paths are resolved relative to the `.lager` file location.
 
@@ -343,7 +343,7 @@ Paths are resolved relative to the `.lager` file location.
 }
 ```
 
-When you run `lager python test_script.py`, the CLI checks the local `.lager` for an `includes` section and uploads the referenced directories to the box so they are available as imports.
+When you run `lager python test_script.py`, the CLI checks the local `.lager` for an `includes` section. It then uploads the referenced directories to the box, so they are available as imports.
 
 ---
 
@@ -369,7 +369,7 @@ export LAGER_BOX=staging-box
 
 ## Legacy Format Migration
 
-Older `.lager` files may use lowercase section names. The CLI automatically upgrades these when writing:
+Older `.lager` files can use lowercase section names. The CLI automatically upgrades these when it writes them:
 
 | Legacy Key | Current Key |
 |------------|-------------|

@@ -93,7 +93,7 @@ appended to the list matching `--kind` (`schematic` → `schematic_refs`,
 
 ## After editing
 
-The MCP server reads the bench config at startup. So agents see your changes,
-either have a connected agent call the `box_manage` tool with `action="reload"`
-(re-reads `/etc/lager/bench.json` and rebuilds the capability graph), or restart
-the box service.
+The MCP server reads the bench config at startup. To make agents see your
+changes, take one of two actions. Have a connected agent call the `box_manage`
+tool with `action="reload"`, which re-reads `/etc/lager/bench.json` and rebuilds
+the capability graph. Or restart the box service.

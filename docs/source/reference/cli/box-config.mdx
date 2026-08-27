@@ -3,7 +3,7 @@ title: Box Config
 description: Declaratively provision a Lager Box's container — USB device permissions, packages, mounts, environment, and more
 ---
 
-`lager box-config` manages a declarative configuration for a Lager Box's container. You describe what the box should have — USB device permissions (udev rules), apt packages, bind mounts, environment variables, pip/cargo/npm packages, sysctl values — and then `apply` puts it into effect. The configuration persists across container restarts and box updates.
+`lager box-config` manages a declarative configuration for a Lager Box's container. You describe what the box must have: USB device permissions (udev rules), apt packages, bind mounts, environment variables, pip/cargo/npm packages, and sysctl values. Then `apply` puts that description into effect. The configuration persists across container restarts and box updates.
 
 ## Syntax
 
@@ -68,7 +68,7 @@ lager box-config apply --box my-lager-box                # 2. apply
 
 ### `udev`
 
-Grant a USB device read/write access from inside the container, by USB vendor/product id. Use this when a freshly-plugged device is owned by `root` and a tool inside the container can't open it (for example `dfu-util` failing with *"No DFU capable USB device available"*).
+Grant a USB device read/write access from inside the container, by USB vendor/product id. Use this when a freshly-plugged device is owned by `root` and a tool inside the container cannot open it. For example, `dfu-util` fails with *"No DFU capable USB device available"*.
 
 ```bash
 lager box-config udev add VID:PID [VID:PID ...] [--mode 0666] [--usbtmc]

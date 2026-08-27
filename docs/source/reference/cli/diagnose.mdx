@@ -5,9 +5,9 @@ description: Single-shot diagnosis for a misbehaving instrument net
 
 `lager diagnose <net> --box <box> [--type <role>]` is a single-shot diagnosis for
 a misbehaving instrument net. It collapses the manual debug workflow (`lsof`,
-`dmesg`, bare `pyvisa` probes, hardware-service introspection) into one CLI call
-that returns an actionable classification — host-side, instrument-wedged, or
-healthy.
+`dmesg`, bare `pyvisa` probes, hardware-service introspection) into one CLI
+call. That call returns an actionable classification: host-side,
+instrument-wedged, or healthy.
 
 <Note>Introduced in **lager 0.20.0** for USB-TMC (pyvisa) instruments. Extended in
 **0.28.3** to diagnose `debug` nets (SEGGER J-Link, and a basic OpenOCD/ST-Link
@@ -62,9 +62,9 @@ From `GET /diagnose/usb` on box port 9000. Reports:
 ### VISA (instrument-side)
 
 From `GET /diagnose/visa` on box port 9000. Opens a *fresh* `pyvisa` session and
-queries `*IDN?` with a short timeout. Skips the open (with a clear note) if the
-hardware service already holds a shared session for this address — collisions
-would either hang or return garbage. Reports:
+queries `*IDN?` with a short timeout. If the hardware service already holds a
+shared session for this address, it skips the open and says so. A collision
+will either hang or return garbage. Reports:
 
 - `idn` — the IDN string if the instrument answered.
 - `elapsed` — wall-clock ms.
@@ -143,10 +143,10 @@ misleading `UNCLEAR`.
 
 A `debug` net isn't USB-TMC, so the pyvisa `*IDN?` probe above can't reach it.
 When the net's role is `debug` (auto-detected, or forced with `--type debug`),
-`lager diagnose` takes a J-Link-aware path instead: it fetches the same
-host-side **USB** section plus a dedicated `/diagnose/jlink` endpoint and walks
-the debug stack outside-in — software → USB → probe-visible → gdbserver →
-target connect — so the most specific actionable fault wins.
+`lager diagnose` takes a J-Link-aware path instead. It fetches the same
+host-side **USB** section plus a dedicated `/diagnose/jlink` endpoint. Then it
+walks the debug stack outside-in: software → USB → probe-visible → gdbserver →
+target connect. That order means the most specific actionable fault wins.
 
 ```bash
 lager diagnose swd1 --box lab-lager-box            # auto-detects the debug role
@@ -165,7 +165,7 @@ In addition to the **USB (host-side)** section, a debug net prints a
   emulator product/serial list)?
 - `holders` — `command(pid)` of any process holding the probe (usually a stale
   gdbserver).
-- `gdbserver` — whether a J-Link gdbserver is running, its PID, and whether its
+- `gdbserver` — whether a J-Link gdbserver is alive, its PID, and whether its
   logfile looks healthy.
 - `connect` — the result of a target-connect probe: `connect_ok`, an error
   class, `VTref` (target reference voltage), and the detected `core`. The raw
@@ -228,10 +228,10 @@ or the vendor unlock flow).
 
 ## Backwards compatibility
 
-Against a pre-0.20 box, each endpoint returns 404 and the CLI notes that the
-section is unavailable (the box may be on a lager < 0.20 image). The remaining
-sections still run — `lager diagnose` is useful against an older box, just less
-informative.
+Against a pre-0.20 box, each endpoint returns 404. The CLI then notes that the
+section is unavailable, because the box can be on a lager < 0.20 image. The
+remaining sections still run — `lager diagnose` is useful against an older box,
+just less informative.
 
 ---
 
