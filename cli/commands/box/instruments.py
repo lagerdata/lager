@@ -17,7 +17,7 @@ from ._device_identity import ambiguous_addresses, describe_ambiguity
 
 
 @click.command(cls=BoxCommand)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def instruments(ctx, box: str | None) -> None:
     """List attached instruments"""

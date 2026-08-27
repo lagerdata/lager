@@ -167,7 +167,7 @@ def _list_field(
 
 
 @click.group(name="box-config", cls=LagerGroup, invoke_without_command=True, help="Manage declarative box provisioning")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def box_config(ctx: click.Context, box: Optional[str]) -> None:
     if ctx.invoked_subcommand is None:
@@ -175,7 +175,7 @@ def box_config(ctx: click.Context, box: Optional[str]) -> None:
 
 
 @box_config.command("show", help="Print the current box_config.json.")
-@click.option("--box", help="Lagerbox name or IP (comma-separated for fanout)")
+@click.option("--box", help="Lager Box name or IP (comma-separated for fanout)")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
 def show_cmd(
@@ -476,7 +476,7 @@ def _format_tree_entries(key: str, items, fmt) -> list:
 
 
 @box_config.command("init", help="Create /etc/lager/box_config.json with defaults.")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--force", is_flag=True, help="Overwrite if file already exists")
 @click.pass_context
 def init_cmd(ctx: click.Context, box: Optional[str], force: bool) -> None:
@@ -511,7 +511,7 @@ def init_cmd(ctx: click.Context, box: Optional[str], force: bool) -> None:
 
 
 @box_config.command("validate", help="Validate the current box_config.json.")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def validate_cmd(ctx: click.Context, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
@@ -567,7 +567,7 @@ def _entry_timestamp(entry: dict):
     "audit",
     help="Show recent box_config mutations recorded on the box.",
 )
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option(
     "--tail", "tail_n", type=int, default=20,
     help="Number of most-recent entries to fetch from the box (default 20; 0 for all).",
@@ -623,7 +623,7 @@ def audit_cmd(
     "diff",
     help="Show pending changes vs. the last applied config.",
 )
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
 def diff_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
@@ -647,7 +647,7 @@ def diff_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
 
 
 @box_config.command("status", help="One-line summary of box config state.")
-@click.option("--box", help="Lagerbox name or IP (comma-separated for fanout)")
+@click.option("--box", help="Lager Box name or IP (comma-separated for fanout)")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
 def status_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
@@ -711,7 +711,7 @@ def _print_status_human(s: dict) -> None:
 
 @box_config.command("export", help="Write the box's config to a local JSON file.")
 @click.argument("path", type=click.Path(dir_okay=False, writable=True))
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def export_cmd(ctx: click.Context, path: str, box: Optional[str]) -> None:
     """Save box_config.json from the box to a local file. Pair with
@@ -730,7 +730,7 @@ def export_cmd(ctx: click.Context, path: str, box: Optional[str]) -> None:
 
 @box_config.command("import", help="Replace the box's config with a local JSON file.")
 @click.argument("path", type=click.Path(exists=True, dir_okay=False, readable=True))
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt")
 @click.pass_context
 def import_cmd(ctx: click.Context, path: str, box: Optional[str], yes: bool) -> None:
@@ -762,7 +762,7 @@ def import_cmd(ctx: click.Context, path: str, box: Optional[str], yes: bool) -> 
 
 
 @box_config.command("edit", help="Open the box's config in $EDITOR for live editing.")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def edit_cmd(ctx: click.Context, box: Optional[str]) -> None:
     """Round-trip the config through $EDITOR. On save, the shim validates;
@@ -890,7 +890,7 @@ def copy_cmd(ctx: click.Context, src: str, dst: str, yes: bool) -> None:
     "repair",
     help="Restore box_config.json from the last applied snapshot and bounce.",
 )
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt")
 @click.pass_context
 def repair_cmd(ctx: click.Context, box: Optional[str], yes: bool) -> None:
@@ -984,7 +984,7 @@ def repair_cmd(ctx: click.Context, box: Optional[str], yes: bool) -> None:
     "apply",
     help="Validate, then bounce the container so the new config takes effect.",
 )
-@click.option("--box", help="Lagerbox name or IP (comma-separated for fanout)")
+@click.option("--box", help="Lager Box name or IP (comma-separated for fanout)")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt")
 @click.option("--force", is_flag=True, help="Restart even if config hash is unchanged")
 @click.option(
@@ -1058,7 +1058,7 @@ def apply_cmd(
         "restart the container so you get a fresh one in one command."
     ),
 )
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt")
 @click.option("--apply", "do_apply", is_flag=True, help="Restart the container after erasing (fresh container).")
 @click.pass_context
@@ -1094,7 +1094,7 @@ def reset_cmd(ctx: click.Context, box: Optional[str], yes: bool, do_apply: bool)
         "container with the same config (useful for per-test isolation)."
     ),
 )
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt")
 @click.pass_context
 def restart_cmd(ctx: click.Context, box: Optional[str], yes: bool) -> None:
@@ -1816,7 +1816,7 @@ def mount_group() -> None:
 
 
 @mount_group.command("list", help="List configured mounts.")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
 def mount_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
@@ -1830,7 +1830,7 @@ def mount_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> Non
 @click.argument("host")
 @click.argument("container")
 @click.option("--readonly", is_flag=True, help="Mount as read-only")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option(
     "--no-auto-prep",
     is_flag=True,
@@ -1923,7 +1923,7 @@ def mount_add_cmd(
 @click.argument("host")
 @click.argument("container")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def mount_remove_cmd(
     ctx: click.Context,
@@ -1951,7 +1951,7 @@ def volume_group() -> None:
 
 
 @volume_group.command("list", help="List configured volumes.")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
 def volume_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
@@ -1964,7 +1964,7 @@ def volume_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> No
 @volume_group.command("add", help="Add a named docker volume.")
 @click.argument("name")
 @click.argument("container")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def volume_add_cmd(
     ctx: click.Context,
@@ -1987,7 +1987,7 @@ def volume_add_cmd(
 @volume_group.command("remove", help="Remove a named docker volume by name.")
 @click.argument("name")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def volume_remove_cmd(
     ctx: click.Context,
@@ -2014,7 +2014,7 @@ def pip_group() -> None:
 
 
 @pip_group.command("list", help="List user-installed pip packages.")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
 def pip_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
@@ -2026,7 +2026,7 @@ def pip_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
 
 @pip_group.command("add", help="Add one or more pip packages to the box config.")
 @click.argument("packages", nargs=-1, required=True)
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--no-validate-pypi", is_flag=True, help="Skip PyPI existence check")
 @click.pass_context
 def pip_add_cmd(
@@ -2075,7 +2075,7 @@ def pip_add_cmd(
 
 @pip_group.command("remove", help="Remove one or more pip packages from the box config.")
 @click.argument("packages", nargs=-1, required=True)
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def pip_remove_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
@@ -2097,7 +2097,7 @@ def pip_remove_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> N
     "import-legacy",
     help="Import packages from /etc/lager/user_requirements.txt into pip_packages.",
 )
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def pip_import_legacy_cmd(ctx: click.Context, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
@@ -2132,7 +2132,7 @@ def apt_group() -> None:
 
 
 @apt_group.command("list", help="List configured apt packages.")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
 def apt_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
@@ -2144,7 +2144,7 @@ def apt_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
 
 @apt_group.command("add", help="Add one or more apt packages to the box config.")
 @click.argument("packages", nargs=-1, required=True)
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def apt_add_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
@@ -2162,7 +2162,7 @@ def apt_add_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None
 
 @apt_group.command("remove", help="Remove one or more apt packages from the box config.")
 @click.argument("packages", nargs=-1, required=True)
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def apt_remove_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
@@ -2208,7 +2208,7 @@ def _parse_vid_pid(ctx: click.Context, token: str) -> tuple:
 
 
 @udev_group.command("list", help="List configured udev rules.")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
 def udev_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
@@ -2228,7 +2228,7 @@ def udev_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None
 @click.argument("devices", nargs=-1, required=True)
 @click.option("--mode", default="0660", show_default=True, help="Octal device-node permission mode.")
 @click.option("--usbtmc", is_flag=True, help="Also emit the usbtmc driver-unbind rule (for PyVISA/SCPI).")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def udev_add_cmd(
     ctx: click.Context, devices: tuple, mode: str, usbtmc: bool, box: Optional[str]
@@ -2252,7 +2252,7 @@ def udev_add_cmd(
 
 @udev_group.command("remove", help="Remove udev rules by VID:PID.")
 @click.argument("devices", nargs=-1, required=True)
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def udev_remove_cmd(ctx: click.Context, devices: tuple, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
@@ -2281,7 +2281,7 @@ def sysctl_group() -> None:
 
 
 @sysctl_group.command("list", help="List configured sysctl values.")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
 def sysctl_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
@@ -2296,7 +2296,7 @@ def sysctl_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> No
     help="Set one or more sysctl key=value pairs. Upsert; safe to re-run.",
 )
 @click.argument("entries", nargs=-1, required=True)
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def sysctl_set_cmd(ctx: click.Context, entries: tuple, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
@@ -2334,7 +2334,7 @@ def sysctl_set_cmd(ctx: click.Context, entries: tuple, box: Optional[str]) -> No
 
 @sysctl_group.command("unset", help="Remove one or more sysctl keys from the box config.")
 @click.argument("keys", nargs=-1, required=True)
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def sysctl_unset_cmd(ctx: click.Context, keys: tuple, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
@@ -2362,7 +2362,7 @@ def env_group() -> None:
 
 
 @env_group.command("list", help="List configured env vars.")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
 def env_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
@@ -2377,7 +2377,7 @@ def env_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
     help="Set one or more env KEY=VALUE pairs. Upsert; safe to re-run.",
 )
 @click.argument("entries", nargs=-1, required=True)
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def env_set_cmd(ctx: click.Context, entries: tuple, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
@@ -2415,7 +2415,7 @@ def env_set_cmd(ctx: click.Context, entries: tuple, box: Optional[str]) -> None:
 
 @env_group.command("unset", help="Remove one or more env vars from the box config.")
 @click.argument("keys", nargs=-1, required=True)
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def env_unset_cmd(ctx: click.Context, keys: tuple, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
@@ -2443,7 +2443,7 @@ def cargo_group() -> None:
 
 
 @cargo_group.command("list", help="List configured cargo crates.")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
 def cargo_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
@@ -2455,7 +2455,7 @@ def cargo_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> Non
 
 @cargo_group.command("add", help="Add one or more cargo crates to the box config.")
 @click.argument("packages", nargs=-1, required=True)
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def cargo_add_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
@@ -2473,7 +2473,7 @@ def cargo_add_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> No
 
 @cargo_group.command("remove", help="Remove one or more cargo crates from the box config.")
 @click.argument("packages", nargs=-1, required=True)
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def cargo_remove_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
@@ -2504,7 +2504,7 @@ def npm_group() -> None:
 
 
 @npm_group.command("list", help="List configured npm packages.")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 @click.pass_context
 def npm_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
@@ -2516,7 +2516,7 @@ def npm_list_cmd(ctx: click.Context, box: Optional[str], as_json: bool) -> None:
 
 @npm_group.command("add", help="Add one or more npm packages to the box config.")
 @click.argument("packages", nargs=-1, required=True)
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def npm_add_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
@@ -2534,7 +2534,7 @@ def npm_add_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None
 
 @npm_group.command("remove", help="Remove one or more npm packages from the box config.")
 @click.argument("packages", nargs=-1, required=True)
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def npm_remove_cmd(ctx: click.Context, packages: tuple, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)

@@ -15,7 +15,7 @@ lager debug [OPTIONS] [NET_NAME] COMMAND [ARGS]...
 
 | Option | Description |
 |--------|-------------|
-| `--box TEXT` | Lagerbox name or IP address |
+| `--box TEXT` | Lager Box name or IP address |
 | `--help` | Show help message and exit |
 
 ## Commands
@@ -42,7 +42,7 @@ lager debug [NET_NAME] gdbserver [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--force / --no-force` - Force new connection (default: reuse existing)
 - `--halt / --no-halt` - Halt device when connecting (default: no-halt)
 - `--speed KHZ` - SWD/JTAG speed in kHz (e.g., 100, 4000) or "adaptive"
@@ -96,7 +96,7 @@ lager debug [NET_NAME] disconnect [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--keep-server` - Keep JLinkGDBServer running for external connections
 
 **Examples:**
@@ -118,7 +118,7 @@ lager debug [NET_NAME] flash [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--hex FILE` - Path to Intel HEX file
 - `--elf FILE` - Path to ELF executable
 - `--bin ADDRESS FILE` - Path to binary file with load address
@@ -163,7 +163,7 @@ lager debug [NET_NAME] reset [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--halt / --no-halt` - Halt after reset (default: no-halt)
 - `--force-reconnect` - Force clean reconnect before reset
 
@@ -189,7 +189,7 @@ lager debug [NET_NAME] erase [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--speed KHZ` - SWD/JTAG speed in kHz (default: 4000)
 - `--yes` - Skip confirmation prompt
 - `--quiet` - Suppress warning messages
@@ -222,7 +222,7 @@ lager debug [NET_NAME] memrd START_ADDR LENGTH [OPTIONS]
 - `LENGTH` - Number of bytes to read
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--json` - Output results in JSON format
 - `--halt / --no-halt` - Halt device during read (default: no-halt). `--no-halt` overrides the auto-halt for DA1469x QSPI XIP
 - `--no-reset` - **DA1469x only.** Skip the reset+halt the box performs before the read. A running DA1469x has SWD disabled, so without the reset the read fails — use this only on a blank/awake part to avoid rebooting it
@@ -259,7 +259,7 @@ lager debug [NET_NAME] status [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 **Examples:**
 
@@ -300,7 +300,7 @@ lager debug [NET_NAME] health [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--verbose` - Show detailed health information
 
 **Examples:**

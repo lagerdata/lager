@@ -246,6 +246,27 @@ jobs:
         run: python tools/check_docs.py
         shell: bash
 
+      # The two checks above ask whether the docs are CORRECT. This asks whether
+      # they are CONSISTENT: one spelling per term, American spelling, approved
+      # modals, and a sentence-length cap. The rules are docs/STYLE.md, derived
+      # from ASD-STE100.
+      #
+      # The corpus had two spellings of the product's own name -- `Lager Box`
+      # 329 times and `Lagerbox` 119 -- on the same pages. A reader cannot tell
+      # whether those are one thing, and neither can a translator or an agent.
+      # No review catches that across 118 pages and 2,600 CLI strings.
+      #
+      # ADVISORY FOR NOW (continue-on-error). The budget in
+      # tools/ste_baseline.json ratchets down as each conversion batch lands;
+      # this becomes a required context in the last batch, not before. A green
+      # tick here means nothing until then -- that is the point of the flag,
+      # and it is why the flag has to come off deliberately.
+      - name: Prose follows docs/STYLE.md
+        if: always()
+        continue-on-error: true
+        run: python tools/check_ste.py
+        shell: bash
+
       # The docs check above compares docs to the CLI; this catches the other
       # half -- links that point nowhere. Three cross-references shipped missing
       # the `/source` prefix that every published URL carries, each found by

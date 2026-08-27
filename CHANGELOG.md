@@ -96,6 +96,29 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Changed
 
+- **User-facing prose now follows one written style, enforced in CI.**
+  `docs/STYLE.md` adapts ASD-STE100 (Simplified Technical English) to this
+  project: a sentence-length cap, active voice, one instruction per sentence,
+  the approved modals `can`/`will`/`must`, American spelling, and one spelling
+  per term. `tools/check_ste.py` enforces the measurable rules against the
+  published pages, the root prose files, and every `help=` string and message
+  the CLI prints.
+
+  The corpus carried two spellings of the product's own name -- `Lager Box` 329
+  times and `Lagerbox` 119, on the same pages -- plus a British/American split
+  on `behaviour` and `recognised`. Both are now single-valued across `cli/` and
+  `docs/`, and both rules carry no budget, so neither can come back. The
+  `Lagerbox` spelling was mostly in CLI help and message strings rather than in
+  the docs, which is why the sweep spans both trees: the docs quote CLI output
+  in sample blocks, so changing one without the other would leave the samples
+  wrong.
+
+  The ten `getting-started/` pages are converted, taking that section from 106
+  violations to zero. The remaining sections carry a per-file budget in
+  `tools/ste_baseline.json` that ratchets down as each later batch lands; the
+  CI step stays `continue-on-error` until the last one, because a required
+  context that nothing can turn red is worse than no context at all.
+
 - **21 `Dexarm` methods and both `Wifi` methods gained docstrings.**
   Introspection uses a docstring's first line as a method's description, so an
   undocumented driver method reaches an agent as a name with no explanation.
@@ -122,7 +145,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
   caught by that compile pass: `tokio::try_join!` over inline handle constructors does
   not borrow-check, and `std::fs::read(..)?` cannot convert into `lager::Error`.
 
-  Behaviour worth calling out, all verified on hardware and previously undocumented:
+  Behavior worth calling out, all verified on hardware and previously undocumented:
   `flash()` on a `.bin` infers the STM32 base `0x08000000` and **returns `Ok(())`
   while writing nothing useful** on any other family, so `flash_bin()` is mandatory
   there; `erase()` drops the debugger connection, so a following `read_memory()` fails
@@ -352,7 +375,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
   against it before dispatching, so it is now passed down in the command
   envelope and the worker resolves under the type that role maps to. A CLI that
   predates the key keeps working: the worker defaults to `scope`, which is the
-  behaviour it had previously.
+  behavior it had previously.
 
   A second, independent path to the same dead end is fixed with it:
   `get_net_info` filtered saved nets on `role == "scope"`, so it returned `None`
@@ -436,7 +459,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
 - **`DebugNet.connect(script=...)` documents that an OpenOCD override must be
   a complete cfg.** The launch line still carries lager's own
   `ftdi channel <N>` for a net with a probe channel, and that command is not
-  recognised unless a cfg has selected the ftdi adapter driver -- so a
+  recognized unless a cfg has selected the ftdi adapter driver -- so a
   fragment holding only, say, `adapter speed 1000` dies at startup with
   `invalid command name "ftdi"`. The docstring implied a small standalone cfg
   would do.
@@ -561,7 +584,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
   present in the net's own address, which had been parsed and discarded.
 
 - **An FTDI net whose address was written as a full `ftdi://` URL had it
-  silently discarded.** The address was recognised as "not a serial number"
+  silently discarded.** The address was recognized as "not a serial number"
   and then dropped, with the hardcoded URL rebuilt over the top -- so a user
   who spelled out exactly which device and channel they wanted got interface A
   of the first FT232H instead. Such an address is now used verbatim.
@@ -893,7 +916,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
 - **A Getting Started guide covering box setup end to end.** Nine new
   pages under `docs/source/getting-started/`, including setting up a Lager
   Box, adding a first box, instruments, nets, a first test, a glossary and
-  troubleshooting -- and the sudo-rs behaviour an operator hits on Ubuntu
+  troubleshooting -- and the sudo-rs behavior an operator hits on Ubuntu
   25.10 and newer.
 
 - **`lager install` now uses the pre-built box image for a release tag, taking a
@@ -947,7 +970,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
   since the server can no longer import under 1.x. Boxes pick this up on the
   next `lager update`.
 
-  Two behaviours worth knowing about, neither visible in the tool surface:
+  Two behaviors worth knowing about, neither visible in the tool surface:
 
   - SDK 2.0 removed the ambient `mcp.get_context()`, so the per-request
     context is now injected as a tool parameter and handed down explicitly.
@@ -1398,7 +1421,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
   subcommand, `lager boxes list`, and the bare net listings still resolve
   without locking, so inspecting a bench never blocks anyone.
 
-  This is the behaviour reverted in v0.13.4, brought back on the infrastructure
+  This is the behavior reverted in v0.13.4, brought back on the infrastructure
   that made it safe. The three failures that forced that revert each have an
   answer now: locks are released by an `atexit` hook on any exit path and
   reaped by TTL on SIGKILL, so a supply command cannot strand one; only
@@ -1639,7 +1662,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
   renders it under. Three outcomes, not two: installed, absent, or "could not
   ask", so an unreachable box no longer reads as an uninstalled key. The old
   `key_auth_works` helper is gone rather than left in place, because a
-  function whose name says it tests one key and whose behaviour accepts any
+  function whose name says it tests one key and whose behavior accepts any
   is a trap for the next caller.
 
   `ssh-copy-id` is now invoked with `-f`. Its own "already installed?" filter
@@ -2312,7 +2335,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
   installed `brainstem` unpinned in a build-cached layer, so which SDK a box
   ran depended on when that layer was last invalidated -- two boxes built
   weeks apart could differ, which made cross-box comparison unreliable when
-  diagnosing hub behaviour (the hub driver already degrades differently for
+  diagnosing hub behavior (the hub driver already degrades differently for
   SDKs without `discover.findAllModules`). The SDK is now pinned to 2.12.5,
   the version validated against real hubs, with the bump-deliberately
   rationale recorded next to the pin. `/diagnose/usbhub` additionally
@@ -2427,7 +2450,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
   is not one.
 
   Plain `--rtt` is untouched and still uses the HTTP stream, so nothing that
-  reads RTT today changes behaviour.
+  reads RTT today changes behavior.
 
 - **`rtt_defmt()` can now write, so a `lager python` script can drive
   interactive firmware and assert on its decoded reply.** Raw `dbg.rtt()` has
@@ -2560,7 +2583,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
   claim, so later requests get a fast "busy" until the service is respawned.
   Success responses and the existing stale-VISA-session retry are unchanged.
 
-  One behaviour change to be aware of: a request that arrives while the same
+  One behavior change to be aware of: a request that arrives while the same
   physical device is more than 8s into another operation now reports
   `device-busy` instead of queueing. Callers already gave up at their own HTTP
   timeout in that situation (`Device.DEFAULT_TIMEOUT` is 10s); what changes is
@@ -2731,7 +2754,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
   A CLI newer than its box simply sees no `reason` and renders as before.
 
-  This is diagnosis, not a behaviour change: the shared request budget and the
+  This is diagnosis, not a behavior change: the shared request budget and the
   hub discovery path that loses the race are unchanged. `reason: "deadline"` is
   the evidence needed to size that work.
 
@@ -2748,7 +2771,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
   `connect` now exhausts its speed ladder **with** the script and, only then,
   retries once without it. Dropping the script is the more surprising change of
-  behaviour, so it happens last and is reported rather than silently succeeding:
+  behavior, so it happens last and is reported rather than silently succeeding:
   the response carries `script_skipped` and the box logs that the target is not
   running the configured init. A target that is unreachable either way still
   fails, so the retry cannot turn a dead board into a pass.

@@ -70,7 +70,7 @@ def _run_backend(ctx: click.Context, box: str | None, action: str, **params) -> 
 
 @click.group(cls=NetGroup, invoke_without_command=True, help="Control solar simulator settings and output")
 @click.argument("netname", required=False, metavar="[NET_NAME]")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def solar(ctx, netname, box):
     """
@@ -105,7 +105,7 @@ solar.net_examples = [
 
 
 @solar.command("set", help="Initialize and start solar simulation mode")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def set_mode(ctx: click.Context, box: str | None) -> None:
     """Initialize and start the solar simulation mode."""
@@ -113,7 +113,7 @@ def set_mode(ctx: click.Context, box: str | None) -> None:
 
 
 @solar.command("stop", help="Stop solar simulation mode")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def stop_mode(ctx: click.Context, box: str | None) -> None:
     """Stop the solar simulation mode."""
@@ -134,7 +134,7 @@ def _irradiance_range_callback(ctx, param, value):
 
 @solar.command("irradiance", help="Set (or read) irradiance in watts per square meter (W/m²)")
 @click.argument("value", required=False, type=float, callback=_irradiance_range_callback)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def irradiance(ctx: click.Context, value: float | None, box: str | None) -> None:
     """Get or set the irradiance in W/m²."""
@@ -145,7 +145,7 @@ def irradiance(ctx: click.Context, value: float | None, box: str | None) -> None
 
 
 @solar.command("mpp-current", help="Read maximum power point current in amps (A)")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def mpp_current(ctx: click.Context, box: str | None) -> None:
     """Return the MPP current (A)."""
@@ -153,7 +153,7 @@ def mpp_current(ctx: click.Context, box: str | None) -> None:
 
 
 @solar.command("mpp-voltage", help="Read maximum power point voltage in volts (V)")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def mpp_voltage(ctx: click.Context, box: str | None) -> None:
     """Return the MPP voltage (V)."""
@@ -174,7 +174,7 @@ def _resistance_range_callback(ctx, param, value):
 
 @solar.command("resistance", help="Set (or read) dynamic panel resistance in ohms")
 @click.argument("value", required=False, type=float, callback=_resistance_range_callback)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def resistance(ctx: click.Context, value: float | None, box: str | None) -> None:
     """Get or set the dynamic panel resistance (ohms)."""
@@ -185,7 +185,7 @@ def resistance(ctx: click.Context, value: float | None, box: str | None) -> None
 
 
 @solar.command("temperature", help="Read cell temperature in degrees Celsius")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def temperature(ctx: click.Context, box: str | None) -> None:
     """Return the cell temperature (degrees C)."""
@@ -193,7 +193,7 @@ def temperature(ctx: click.Context, box: str | None) -> None:
 
 
 @solar.command("voc", help="Read open-circuit voltage in volts (V)")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def voc(ctx: click.Context, box: str | None) -> None:
     """Return the open-circuit voltage (Voc)."""

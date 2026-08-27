@@ -34,7 +34,7 @@ def _level_label(value: int) -> str:
 
 @click.command(name="gpi", cls=NetCommand, help="Read GPIO input state (0 or 1)")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option(
     "--wait-for",
     "wait_for",

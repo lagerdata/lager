@@ -3,15 +3,15 @@ title: Interacting With Nets
 description: Control your instruments through the Lager Client using CLI or Lager Python
 ---
 
-Nets act as named interfaces to your instruments. Once your Nets are configured, you can begin controlling those instruments using the Lager Client — via the CLI or Python SDK.
+Nets act as named interfaces to your instruments. After you configure your Nets, the Lager Client controls those instruments. Use either the CLI or the Python SDK.
 
-The examples below demonstrate how to issue commands to common instrument types such as power supplies, battery simulators, debuggers, and communication buses.
+The examples below show how to command the common instrument types. These include power supplies, battery simulators, debuggers, and communication buses.
 
 ---
 
 ## Setting Defaults
 
-Before diving into examples, you can set default values for `--box` and common nets to avoid repeating them on every command:
+First, set default values for `--box` and for common nets. Defaults keep you from repeating them on every command:
 
 ```bash
 # Set a default box so you don't need --box on every command
@@ -68,7 +68,7 @@ lager battery BATT soc 50 --box my-lager-box
 ```
 
 <Note>
-**SOC** (State of Charge) represents the battery's charge level as a percentage (0-100%). Setting SOC to 50 simulates a half-charged battery, which is useful for testing how your device behaves at different battery levels.
+**SOC** (State of Charge) is the battery's charge level as a percentage, from 0 to 100. An SOC of 50 simulates a half-charged battery. Use it to test how your device behaves at each battery level.
 </Note>
 
 Set max charge and discharge current:
@@ -112,7 +112,7 @@ lager spi SPI_0 transfer --data 0x9f 4 --box my-lager-box
 
 ## Programmatic Control with Python
 
-For more complex automation or integration into test frameworks, you can use the Lager Python SDK to perform the same operations programmatically.
+The Lager Python SDK performs the same operations in code. Use it for more complex automation, or to integrate with a test framework.
 
 The following example shows how to write a Python script using the Net API:
 
@@ -131,7 +131,7 @@ The following example shows how to write a Python script using the Net API:
     print("Firmware flashing complete.")
     ```
 
-2.  **Execute the script with Lager.** Use the `lager python` command to run the script in the Lager Box environment, ensuring it has access to the connected hardware.
+2.  **Execute the script with Lager.** Use the `lager python` command. It runs the script in the Lager Box environment, where the script can reach the connected hardware.
 
     ```bash
     lager python flash.py --box my-lager-box

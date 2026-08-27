@@ -29,7 +29,7 @@ DUT_POWER     power-supply   Keysight_E36312A  1     USB0::0x2A8D::0x1602::...
 
 | Option | Description |
 |--------|-------------|
-| `--box TEXT` | Lagerbox name or IP address |
+| `--box TEXT` | Lager Box name or IP address |
 | `--help` | Show help message and exit |
 
 ## Commands
@@ -79,7 +79,7 @@ lager supply NET_NAME voltage [VALUE] [OPTIONS]
 | `--ovp FLOAT` | Volts | Over-voltage protection threshold (must be >= voltage) |
 | `--ocp FLOAT` | Amps | Over-current protection threshold |
 | `--yes` | Flag | Apply without confirmation prompt |
-| `--box TEXT` | String | Lagerbox name or IP |
+| `--box TEXT` | String | Lager Box name or IP |
 
 When VALUE is provided, the CLI prompts for confirmation unless `--yes` is passed:
 
@@ -121,7 +121,7 @@ lager supply NET_NAME current [VALUE] [OPTIONS]
 | `--ovp FLOAT` | Volts | Over-voltage protection threshold |
 | `--ocp FLOAT` | Amps | Over-current protection threshold (must be >= current) |
 | `--yes` | Flag | Apply without confirmation prompt |
-| `--box TEXT` | String | Lagerbox name or IP |
+| `--box TEXT` | String | Lager Box name or IP |
 
 When VALUE is provided, the CLI prompts for confirmation unless `--yes` is passed:
 
@@ -155,7 +155,7 @@ lager supply NET_NAME enable [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--yes` | Enable without confirmation prompt |
-| `--box TEXT` | Lagerbox name or IP |
+| `--box TEXT` | Lager Box name or IP |
 
 ```
 Enable Net? [y/N]:
@@ -174,7 +174,7 @@ lager supply NET_NAME disable [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--yes` | Disable without confirmation prompt |
-| `--box TEXT` | Lagerbox name or IP |
+| `--box TEXT` | Lager Box name or IP |
 
 ```
 Disable Net? [y/N]:

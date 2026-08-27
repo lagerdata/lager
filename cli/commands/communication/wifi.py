@@ -112,7 +112,7 @@ def _wifi():
 
 @_wifi.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def status(ctx, box):
     """
         Get the current WiFi Status of the box
@@ -136,7 +136,7 @@ def status(ctx, box):
 
 @_wifi.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--interface', required=False, help='Wireless interface to use', default='wlan0')
 def access_points(ctx, box, interface='wlan0'):
     """
@@ -160,7 +160,7 @@ def access_points(ctx, box, interface='wlan0'):
 
 @_wifi.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--ssid', required=True, help='SSID of the network to connect to')
 @click.option('--interface', help='Wireless interface to use', default='wlan0', show_default=True)
 @click.option('--password', required=False, help='Password of the network to connect to', default='')
@@ -186,7 +186,7 @@ def connect(ctx, box, ssid, interface, password=''):
 
 @_wifi.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--yes', is_flag=True, help='Confirm the action without prompting')
 @click.argument('SSID', required=True)
 def delete_connection(ctx, box, yes, ssid):

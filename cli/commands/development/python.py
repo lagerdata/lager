@@ -150,7 +150,7 @@ def _detach_lock_handoff(data, box_label):
     acquiring with a TTL and trusting the box to refresh it -- silently breaks
     against any box too old to know about the ``lock_holder`` field: the lock
     would lapse after one TTL while the detached job was still driving the
-    bench. So an unconfirmed handoff keeps exactly today's behaviour, banner
+    bench. So an unconfirmed handoff keeps exactly today's behavior, banner
     included.
 
     Args:
@@ -889,7 +889,7 @@ def _handle_reattach(ctx, box_ip, process_id, session, dut_name):
 @click.command()
 @click.pass_context
 @click.argument('runnable', required=False, type=click.Path(exists=True))
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option(
     '--env',
     multiple=True, type=EnvVarType(), help='Environment variable (FOO=BAR)')

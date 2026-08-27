@@ -31,7 +31,7 @@ class DebugServiceClient:
         Initialize debug service client.
 
         Args:
-            box_host: Lagerbox IP address. MUST be the resolved IP, not a
+            box_host: Lager Box IP address. MUST be the resolved IP, not a
                 saved box name: the gateway auth store is keyed by IP, so a
                 name here would silently resolve no token. Every CLI caller
                 arrives via ``_get_service_client`` after

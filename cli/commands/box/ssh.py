@@ -47,7 +47,7 @@ def _get_ssh_install_hint() -> str:
 
 @click.command(context_settings=dict(ignore_unknown_options=True))
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.argument("command", nargs=-1, type=click.UNPROCESSED)
 def ssh(ctx, box, command):
     """SSH into a box, or run a command on it.

@@ -3,7 +3,7 @@ title: Troubleshooting
 description: Solutions for common Lager issues
 ---
 
-This page covers the most common issues you may encounter when using Lager, organized by category. Each section includes the error or symptom, the likely cause, and the fix.
+This page covers the most common problems in Lager, grouped by category. Each section gives the error or symptom, the likely cause, and the fix.
 
 ---
 
@@ -26,7 +26,7 @@ This page covers the most common issues you may encounter when using Lager, orga
 **Cause:** The network path to the box works, but the Lager service on the box is not running.
 
 **Fix:**
-1. The Docker container on the box may have stopped. Contact your administrator to restart it.
+1. If the Docker container on the box stopped, ask your administrator to restart it.
 2. Run `lager hello --box <box>` to check the box's service status.
 3. If you have SSH access, connect to the box and check Docker: `docker ps | grep lager`.
 4. If the machine has never been set up as a Lager Box, see [Setting Up a Lager Box](/source/getting-started/setting-up-a-lager-box).
@@ -39,14 +39,14 @@ This page covers the most common issues you may encounter when using Lager, orga
 
 **Fix:**
 1. Double-check the IP address with `lager boxes`.
-2. If the box was recently moved or reprovisioned, its IP may have changed. Check your Tailscale admin panel or router DHCP table.
+2. A box that moved or changed provisioning can have a new IP address. Check your Tailscale admin panel or your router DHCP table.
 3. Try pinging the box: `ping <box-ip>`.
 
 </Accordion>
 
 <Accordion title="Box was working but is now unreachable">
 
-**Cause:** The box may have lost power, network connectivity, or had its IP address change.
+**Cause:** The box lost power, lost network connectivity, or changed its IP address.
 
 **Fix:**
 1. Verify the box is powered on.
@@ -74,7 +74,7 @@ This page covers the most common issues you may encounter when using Lager, orga
 
 <Accordion title="A specific instrument is missing from the list">
 
-**Cause:** The instrument may not be recognized, may be using a different USB port, or may need updated drivers.
+**Cause:** The box does not recognize the instrument, or the instrument uses a different USB port. The drivers can also need an update.
 
 **Fix:**
 1. Unplug and replug the instrument's USB cable.
@@ -90,8 +90,8 @@ This page covers the most common issues you may encounter when using Lager, orga
 
 **Fix:**
 1. Close any running TUI sessions (press `q` to exit).
-2. Wait a moment and retry -- the previous command may still be completing.
-3. If the issue persists, the instrument handle may be stuck. Run `lager update --box <box>` to restart the service.
+2. Wait a moment, then retry. The previous command can still be running.
+3. If the problem continues, the instrument handle is stuck. Run `lager update --box <box>` to restart the service.
 
 </Accordion>
 
@@ -101,7 +101,7 @@ This page covers the most common issues you may encounter when using Lager, orga
 
 <Accordion title="OVP or OCP tripped (output disabled unexpectedly)">
 
-**Cause:** The output voltage or current exceeded the protection threshold you set, so the supply shut off to protect your device.
+**Cause:** The output voltage or current went past the protection threshold you set. The supply shut off to protect your device.
 
 **Fix:**
 1. Check the current state: `lager supply <NET> state --box <box>`.
@@ -113,7 +113,7 @@ This page covers the most common issues you may encounter when using Lager, orga
 
 <Accordion title="Voltage reads 0V when the supply is enabled">
 
-**Cause:** The supply output may not actually be enabled, or the load may be pulling the voltage down.
+**Cause:** The supply output is not enabled, or the load pulls the voltage down.
 
 **Fix:**
 1. Verify the output is enabled: `lager supply <NET> state --box <box>` -- check that "Enabled" shows ON.
@@ -144,7 +144,7 @@ This page covers the most common issues you may encounter when using Lager, orga
 
 <Accordion title="'GDB server failed to start'">
 
-**Cause:** The J-Link or pyOCD process may be stuck from a previous session.
+**Cause:** A J-Link or pyOCD process from an earlier session is stuck.
 
 **Fix:**
 1. Disconnect any existing session: `lager debug <NET> disconnect --box <box>`.
@@ -183,7 +183,7 @@ Do **not** run `python my_script.py` directly on your laptop.
 
 <Accordion title="Script runs but produces no output">
 
-**Cause:** The script may be failing silently, or output may not be flushed.
+**Cause:** The script fails silently, or the script does not flush its output.
 
 **Fix:**
 1. Add `print()` statements to confirm the script is executing.

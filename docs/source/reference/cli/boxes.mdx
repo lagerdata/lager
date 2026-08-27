@@ -1,9 +1,9 @@
 ---
 title: Boxes
-description: Manage Lagerbox configurations
+description: Manage Lager Box configurations
 ---
 
-Manage Lagerbox names, IP addresses, and configurations for local development.
+Manage Lager Box names, IP addresses, and configurations for local development.
 
 ## Syntax
 
@@ -32,7 +32,7 @@ lager boxes COMMAND [OPTIONS]
 
 ### `add`
 
-Add a new Lagerbox configuration.
+Add a new Lager Box configuration.
 
 ```bash
 lager boxes add --name NAME --ip IP --user USER [OPTIONS]
@@ -63,7 +63,7 @@ lager boxes add --name staging-lager-box --ip <BOX_IP> --user lager --version st
 
 ### `add-all`
 
-Automatically add all Lagerboxes found on your Tailscale network.
+Automatically add all Lager Boxes found on your Tailscale network.
 
 ```bash
 lager boxes add-all [--yes]
@@ -72,7 +72,7 @@ lager boxes add-all [--yes]
 **Options:**
 - `--yes` - Confirm without prompting
 
-This command scans your Tailscale network for devices with names 5-8 characters long (typical Lagerbox naming convention) and automatically adds them as boxes with uppercase names.
+This command scans your Tailscale network for devices with names 5-8 characters long (typical Lager Box naming convention) and automatically adds them as boxes with uppercase names.
 
 **How it works:**
 1. Runs `tailscale status` to discover devices

@@ -74,7 +74,7 @@ lager python test/api/power/test_supply_comprehensive.py --box <box-name>
 1. **Fork** and branch from `main`. Use a short prefixed branch name, e.g.
    `fix/supply-trip-message` or `feat/rtt-streaming`.
 2. **Keep the change focused.** Unrelated fixes belong in their own PR.
-3. **Add or update tests.** New behaviour without a test will be asked for one.
+3. **Add or update tests.** New behavior without a test will be asked for one.
 4. **Update `CHANGELOG.md`** for any user-facing change, under an `Unreleased`
    heading if no release is pending.
 5. **Update the docs** in `docs/source/` if you changed a command, an API, or

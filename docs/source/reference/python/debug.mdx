@@ -104,7 +104,7 @@ different scripts therefore no longer clobber one another.
 An `openocd_config` override must be a **complete** cfg, not a fragment. It is
 applied after the interface and target configs, but the launch line still carries
 lager's own `-c 'ftdi channel N'` whenever the net has a probe channel, and that
-command is not recognised unless a cfg has selected the ftdi adapter driver. A cfg
+command is not recognized unless a cfg has selected the ftdi adapter driver. A cfg
 holding only, say, `adapter speed 1000` dies at startup with
 `invalid command name "ftdi"`.
 </Warning>

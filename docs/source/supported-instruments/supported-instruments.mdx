@@ -294,7 +294,7 @@ net name.
 
 Verified by writing a volatile setting to a device on a user port, cycling power, and
 reading the power-on default back — a real cold boot, not a logical disconnect.
-The upstream tier's behaviour is inferred from re-power timing (a device there
+The upstream tier's behavior is inferred from re-power timing (a device there
 reasserts CONNECT within a millisecond, so it never lost power) rather than from
 a register, so treat it as strong evidence rather than proof.
 

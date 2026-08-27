@@ -222,7 +222,7 @@ def box_dut() -> None:
 
 
 @box_dut.command("show", help="Print the current DUT context as JSON.")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def show_cmd(ctx: click.Context, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
@@ -235,7 +235,7 @@ def show_cmd(ctx: click.Context, box: Optional[str]) -> None:
     "edit",
     help="Open the DUT context in $EDITOR. On save, writes back to /etc/lager/bench.json.",
 )
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def edit_cmd(ctx: click.Context, box: Optional[str]) -> None:
     resolved = _resolve_box(ctx, box)
@@ -317,7 +317,7 @@ _DOC_LIST_KEYS = {
         "own file tools."
     ),
 )
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--kind", type=click.Choice(_DOC_KIND_CHOICES), default="schematic", show_default=True)
 @click.option("--title", required=True, help="Human label for the document.")
 @click.option("--url", help="External URL (https://...).")

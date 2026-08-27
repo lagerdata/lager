@@ -103,7 +103,7 @@ detached run merely resumed is never handed over and never released -- that
 reservation is the whole point of taking one.
 
 Against a box too old to know about the handoff, the CLI keeps the previous
-behaviour: an eternal hold, with the old "release with `lager boxes unlock`"
+behavior: an eternal hold, with the old "release with `lager boxes unlock`"
 message. It arms the lapse TTL only once the box has confirmed it is
 heartbeating, so a newer CLI can never leave a lock expiring underneath a job
 that is still running.

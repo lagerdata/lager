@@ -15,7 +15,7 @@ lager battery [OPTIONS] [NETNAME] COMMAND [ARGS]...
 
 | Option | Description |
 |--------|-------------|
-| `--box TEXT` | Lagerbox name or IP address |
+| `--box TEXT` | Lager Box name or IP address |
 | `--help` | Show help message and exit |
 
 ## Commands
@@ -67,7 +67,7 @@ lager battery NETNAME mode [static|dynamic] [OPTIONS]
 - `[static|dynamic]` - Mode type (omit to read current mode)
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 **Examples:**
 ```bash
@@ -87,7 +87,7 @@ lager battery NETNAME set [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 ### `soc`
 
@@ -102,7 +102,7 @@ lager battery NETNAME soc [VALUE] [OPTIONS]
 - `VALUE` - State of charge percentage (0-100), omit to read
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 **Examples:**
 ```bash
@@ -126,7 +126,7 @@ lager battery NETNAME voc [VALUE] [OPTIONS]
 - `VALUE` - Open-circuit voltage (volts), omit to read
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 ### `batt-full`
 
@@ -141,7 +141,7 @@ lager battery NETNAME batt-full [VALUE] [OPTIONS]
 - `VALUE` - Voltage at 100% SOC (volts), omit to read
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 ### `batt-empty`
 
@@ -156,7 +156,7 @@ lager battery NETNAME batt-empty [VALUE] [OPTIONS]
 - `VALUE` - Voltage at 0% SOC (volts), omit to read
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 ### `capacity`
 
@@ -171,7 +171,7 @@ lager battery NETNAME capacity [VALUE] [OPTIONS]
 - `VALUE` - Battery capacity (Ah), omit to read
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 ### `current-limit`
 
@@ -186,7 +186,7 @@ lager battery NETNAME current-limit [VALUE] [OPTIONS]
 - `VALUE` - Maximum current limit (amps), omit to read. Must be between 0 and 6.0 A (Keithley 2281S limit); values outside this range are rejected.
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 ### `ovp`
 
@@ -201,7 +201,7 @@ lager battery NETNAME ovp [VALUE] [OPTIONS]
 - `VALUE` - OVP limit (volts), omit to read
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 ### `ocp`
 
@@ -216,7 +216,7 @@ lager battery NETNAME ocp [VALUE] [OPTIONS]
 - `VALUE` - OCP limit (amps), omit to read
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 ### `model`
 
@@ -231,7 +231,7 @@ lager battery NETNAME model [PARTNUMBER] [OPTIONS]
 - `PARTNUMBER` - Battery model (e.g., 18650, nimh, lead-acid), omit to read
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 **Supported Models:**
 - `18650` - Standard lithium-ion cell
@@ -252,7 +252,7 @@ lager battery NETNAME models [OPTIONS]
 - `NETNAME` - Name of the battery Net
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 The printed slots and names are valid inputs to the `model` command.
 
@@ -271,7 +271,7 @@ lager battery NETNAME model-create SLOT --csv FILE [--force] [OPTIONS]
 **Options:**
 - `--csv FILE` - CSV curve file (required)
 - `--force` - Overwrite the slot if it already holds a model
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 **CSV format:**
 Two columns, `voc,resistance` (header row optional), ordered from empty
@@ -312,7 +312,7 @@ lager battery NETNAME model-export SLOT --csv FILE [OPTIONS]
 
 **Options:**
 - `--csv FILE` - Output CSV file to write (required)
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 Writes the slot's 101 `voc,resistance` points in the format `model-create`
 accepts, so a saved model can be exported, edited, and written back to a
@@ -329,7 +329,7 @@ lager battery NETNAME state [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 **Example Output:**
 ```
@@ -354,7 +354,7 @@ lager battery NETNAME enable [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--yes` - Skip confirmation prompt
 
 ### `disable`
@@ -366,7 +366,7 @@ lager battery NETNAME disable [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--yes` - Skip confirmation prompt
 
 ### `clear`
@@ -378,7 +378,7 @@ lager battery NETNAME clear [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 ### `clear-ovp`
 
@@ -389,7 +389,7 @@ lager battery NETNAME clear-ovp [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 ### `clear-ocp`
 
@@ -400,7 +400,7 @@ lager battery NETNAME clear-ocp [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 ### `tui`
 
@@ -411,7 +411,7 @@ lager battery NETNAME tui [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 **TUI Features:**
 - Real-time voltage/current display

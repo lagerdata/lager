@@ -3,7 +3,7 @@ title: I2C
 description: Perform I2C data transfers
 ---
 
-Perform I2C (Inter-Integrated Circuit) data transfers with devices connected to a Lagerbox. I2C is a synchronous serial protocol using two lines: SDA (data) and SCL (clock).
+Perform I2C (Inter-Integrated Circuit) data transfers with devices connected to a Lager Box. I2C is a synchronous serial protocol using two lines: SDA (data) and SCL (clock).
 
 ## Syntax
 
@@ -21,7 +21,7 @@ lager i2c [NETNAME] [OPTIONS] [SUBCOMMAND]
 
 | Option | Description |
 |--------|-------------|
-| `--box BOX` | Lagerbox name or IP address |
+| `--box BOX` | Lager Box name or IP address |
 
 When invoked without a subcommand, lists I2C nets on the box (or shows configuration for the specified net).
 
@@ -39,7 +39,7 @@ lager i2c NETNAME config [OPTIONS]
 
 | Option | Description |
 |--------|-------------|
-| `--box BOX` | Lagerbox name or IP address |
+| `--box BOX` | Lager Box name or IP address |
 | `--frequency FREQ` | Clock frequency (e.g., `100k`, `400k`, `1M`) |
 | `--pull-ups on\|off` | Enable/disable internal pull-ups (Aardvark only) |
 
@@ -65,7 +65,7 @@ lager i2c NETNAME scan [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--box BOX` | Lagerbox name or IP address | |
+| `--box BOX` | Lager Box name or IP address | |
 | `--start ADDR` | Start address in hex | `0x08` |
 | `--end ADDR` | End address in hex | `0x77` |
 
@@ -97,7 +97,7 @@ lager i2c NETNAME read NUM_BYTES [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--box BOX` | Lagerbox name or IP address | |
+| `--box BOX` | Lager Box name or IP address | |
 | `--address ADDR` | Device address in hex (e.g., `0x48`) | **Required** |
 | `--frequency FREQ` | Clock frequency override (e.g., `100k`, `400k`) | |
 | `--format FORMAT` | Output format: `hex`, `bytes`, `json` | `hex` |
@@ -131,7 +131,7 @@ lager i2c NETNAME write DATA [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--box BOX` | Lagerbox name or IP address | |
+| `--box BOX` | Lager Box name or IP address | |
 | `--address ADDR` | Device address in hex (e.g., `0x48`) | **Required** |
 | `--data-file PATH` | File containing binary data to write | |
 | `--frequency FREQ` | Clock frequency override | |
@@ -168,7 +168,7 @@ lager i2c NETNAME transfer NUM_BYTES [OPTIONS]
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--box BOX` | Lagerbox name or IP address | |
+| `--box BOX` | Lager Box name or IP address | |
 | `--address ADDR` | Device address in hex (e.g., `0x48`) | **Required** |
 | `--data DATA` | Hex data to write before reading (e.g., register address) | |
 | `--data-file PATH` | File containing data to write before reading | |

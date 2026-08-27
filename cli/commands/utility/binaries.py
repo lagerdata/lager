@@ -43,7 +43,7 @@ def binaries(ctx):
 
 @binaries.command('add')
 @click.argument('binary_path', type=click.Path(exists=True))
-@click.option('--box', required=False, help='Lagerbox name or IP')
+@click.option('--box', required=False, help='Lager Box name or IP')
 @click.option('--name', required=False, help='Name for the binary on the box (defaults to filename)')
 @click.option('--yes', is_flag=True, help='Skip confirmation prompt')
 @click.pass_context
@@ -157,7 +157,7 @@ def add(ctx, binary_path, box, name, yes):
 
 
 @binaries.command('list')
-@click.option('--box', required=False, help='Lagerbox name or IP')
+@click.option('--box', required=False, help='Lager Box name or IP')
 @click.pass_context
 def list_binaries(ctx, box):
     """
@@ -234,7 +234,7 @@ def list_binaries(ctx, box):
 
 @binaries.command('remove')
 @click.argument('binary_name')
-@click.option('--box', required=False, help='Lagerbox name or IP')
+@click.option('--box', required=False, help='Lager Box name or IP')
 @click.option('--yes', is_flag=True, help='Skip confirmation prompt')
 @click.pass_context
 def remove(ctx, binary_name, box, yes):

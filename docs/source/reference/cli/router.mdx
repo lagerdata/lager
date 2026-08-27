@@ -16,7 +16,7 @@ router to a clean baseline — useful for connectivity and network-resilience te
 lager router COMMAND [ARGS] [OPTIONS]
 ```
 
-Every subcommand accepts `--box BOX` (Lagerbox name or IP; uses the default box if
+Every subcommand accepts `--box BOX` (Lager Box name or IP; uses the default box if
 omitted). Most operate on a `NETNAME` — the name of a router net previously
 registered with `add-net`.
 
@@ -57,7 +57,7 @@ lager router add-net NAME --address IP [OPTIONS]
 | `--password` | (empty) | Router password |
 | `--instrument` | `MikroTik_hAP` | Router instrument type |
 | `--use-ssl` | off | Use HTTPS instead of HTTP |
-| `--box` | | Lagerbox name or IP |
+| `--box` | | Lager Box name or IP |
 
 ```bash
 lager router add-net router1 --address 192.168.88.1 --username admin --password secret --box my-lager-box

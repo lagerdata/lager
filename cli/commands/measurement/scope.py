@@ -114,7 +114,7 @@ def _run_backend(ctx, dut, action: str, **params):
 @click.group(cls=NetGroup, invoke_without_command=True)
 @click.argument("NETNAME", required=False, metavar="[NET_NAME]")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def scope(ctx, box, netname):
     """Control oscilloscope settings"""
     # Use provided netname, or fall back to default if not provided
@@ -140,7 +140,7 @@ scope.net_examples = [
 
 @scope.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mcu", required=False)
 def disable(ctx, box, mcu):
     """Disable scope channel"""
@@ -155,7 +155,7 @@ def disable(ctx, box, mcu):
 
 @scope.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mcu", required=False)
 def enable(ctx, box, mcu):
     """Enable scope channel"""
@@ -170,7 +170,7 @@ def enable(ctx, box, mcu):
 
 @scope.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mcu", required=False)
 @click.option("--single", is_flag=True, help="Capture single waveform then stop")
 def start(ctx, box, mcu, single):
@@ -187,7 +187,7 @@ def start(ctx, box, mcu, single):
 
 @scope.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mcu", required=False)
 def stop(ctx, box, mcu):
     """Stop waveform capture"""
@@ -202,7 +202,7 @@ def stop(ctx, box, mcu):
 
 @scope.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mcu", required=False)
 def force(ctx, box, mcu):
     """Force trigger manually (bypass trigger condition)"""
@@ -218,7 +218,7 @@ def force(ctx, box, mcu):
 @scope.command()
 @click.argument("volts_per_div", type=float)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mcu", required=False)
 def scale(ctx, volts_per_div, box, mcu):
     """
@@ -243,7 +243,7 @@ CHANNEL_COUPLING_CHOICES = click.Choice(("dc", "ac", "gnd"))
 @scope.command()
 @click.argument("mode", type=CHANNEL_COUPLING_CHOICES)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mcu", required=False)
 def coupling(ctx, mode, box, mcu):
     """
@@ -264,7 +264,7 @@ PROBE_CHOICES = click.Choice(("1", "10", "100", "1000"))
 @scope.command()
 @click.argument("ratio", type=PROBE_CHOICES)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mcu", required=False)
 def probe(ctx, ratio, box, mcu):
     """
@@ -282,7 +282,7 @@ def probe(ctx, ratio, box, mcu):
 @scope.command()
 @click.argument("seconds_per_div", type=float)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mcu", required=False)
 def timebase(ctx, seconds_per_div, box, mcu):
     """
@@ -303,7 +303,7 @@ def timebase(ctx, seconds_per_div, box, mcu):
 
 @scope.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mcu", required=False)
 def autoscale(ctx, box, mcu):
     """
@@ -328,7 +328,7 @@ def measure():
 @measure.command()
 @click.pass_context
 @click.option("--mcu", required=False)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--display", is_flag=True, help="Display measurement on screen")
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def period(ctx, mcu, box, display, cursor):
@@ -370,7 +370,7 @@ def period(ctx, mcu, box, display, cursor):
 @measure.command()
 @click.pass_context
 @click.option("--mcu", required=False)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--display", is_flag=True, help="Display measurement on screen")
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def freq(ctx, mcu, box, display, cursor):
@@ -412,7 +412,7 @@ def freq(ctx, mcu, box, display, cursor):
 @measure.command()
 @click.pass_context
 @click.option("--mcu", required=False)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--display", is_flag=True, help="Display measurement on screen")
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def vpp(ctx, mcu, box, display, cursor):
@@ -454,7 +454,7 @@ def vpp(ctx, mcu, box, display, cursor):
 @measure.command()
 @click.pass_context
 @click.option("--mcu", required=False)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--display", is_flag=True, help="Display measurement on screen")
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def vmax(ctx, mcu, box, display, cursor):
@@ -496,7 +496,7 @@ def vmax(ctx, mcu, box, display, cursor):
 @measure.command()
 @click.pass_context
 @click.option("--mcu", required=False)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--display", is_flag=True, help="Display measurement on screen")
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def vmin(ctx, mcu, box, display, cursor):
@@ -538,7 +538,7 @@ def vmin(ctx, mcu, box, display, cursor):
 @measure.command()
 @click.pass_context
 @click.option("--mcu", required=False)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--display", is_flag=True, help="Display measurement on screen")
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def vrms(ctx, mcu, box, display, cursor):
@@ -580,7 +580,7 @@ def vrms(ctx, mcu, box, display, cursor):
 @measure.command()
 @click.pass_context
 @click.option("--mcu", required=False)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--display", is_flag=True, help="Display measurement on screen")
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def vavg(ctx, mcu, box, display, cursor):
@@ -622,7 +622,7 @@ def vavg(ctx, mcu, box, display, cursor):
 @measure.command("pulse-width-pos")
 @click.pass_context
 @click.option("--mcu", required=False)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--display", is_flag=True, help="Display measurement on screen")
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def pulse_width_pos(ctx, mcu, box, display, cursor):
@@ -664,7 +664,7 @@ def pulse_width_pos(ctx, mcu, box, display, cursor):
 @measure.command("pulse-width-neg")
 @click.pass_context
 @click.option("--mcu", required=False)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--display", is_flag=True, help="Display measurement on screen")
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def pulse_width_neg(ctx, mcu, box, display, cursor):
@@ -706,7 +706,7 @@ def pulse_width_neg(ctx, mcu, box, display, cursor):
 @measure.command("duty-cycle-pos")
 @click.pass_context
 @click.option("--mcu", required=False)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--display", is_flag=True, help="Display measurement on screen")
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def duty_cycle_pos(ctx, mcu, box, display, cursor):
@@ -748,7 +748,7 @@ def duty_cycle_pos(ctx, mcu, box, display, cursor):
 @measure.command("duty-cycle-neg")
 @click.pass_context
 @click.option("--mcu", required=False)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--display", is_flag=True, help="Display measurement on screen")
 @click.option("--cursor", is_flag=True, help="Enable measurement cursor")
 def duty_cycle_neg(ctx, mcu, box, display, cursor):
@@ -800,7 +800,7 @@ COUPLING_CHOICES = click.Choice(("dc", "ac", "low_freq_rej", "high_freq_rej"))
 @trigger.command()
 @click.pass_context
 @click.option("--mcu", required=False)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mode", default="normal", type=MODE_CHOICES, help="Trigger mode", show_default=True)
 @click.option("--coupling", default="dc", type=COUPLING_CHOICES, help="Coupling mode", show_default=True)
 @click.option("--source", required=False, help="Trigger source", metavar="NET")
@@ -848,7 +848,7 @@ def edge(ctx, mcu, box, mode, coupling, source, slope, level):
 @trigger.command()
 @click.pass_context
 @click.option("--mcu", required=False)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mode", default="normal", type=MODE_CHOICES, help="Trigger mode", show_default=True)
 @click.option("--coupling", default="dc", type=COUPLING_CHOICES, help="Coupling mode", show_default=True)
 @click.option("--source", required=False, help="Trigger source", metavar="NET")
@@ -875,7 +875,7 @@ def uart(ctx, mcu, box, mode, coupling, source, level, baud, parity, stop_bits, 
 @trigger.command()
 @click.pass_context
 @click.option("--mcu", required=False)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mode", default="normal", type=MODE_CHOICES, help="Trigger mode", show_default=True)
 @click.option("--coupling", default="dc", type=COUPLING_CHOICES, help="Coupling mode", show_default=True)
 @click.option("--source-scl", required=False, help="SCL source net", metavar="NET")
@@ -907,7 +907,7 @@ def i2c(ctx, mcu, box, mode, coupling, source_scl, source_sda, level_scl, level_
 @trigger.command()
 @click.pass_context
 @click.option("--mcu", required=False)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mode", default="normal", type=MODE_CHOICES, help="Trigger mode", show_default=True)
 @click.option("--coupling", default="dc", type=COUPLING_CHOICES, help="Coupling mode", show_default=True)
 @click.option("--source-mosi-miso", required=False, help="MOSI/MISO source net", metavar="NET")
@@ -941,7 +941,7 @@ def spi(ctx, mcu, box, mode, coupling, source_mosi_miso, source_sck, source_cs,
 @trigger.command()
 @click.pass_context
 @click.option("--mcu", required=False)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mode", default="normal", type=MODE_CHOICES, help="Trigger mode", show_default=True)
 @click.option("--coupling", default="dc", type=COUPLING_CHOICES, help="Coupling mode", show_default=True)
 @click.option("--source", required=False, help="Trigger source", metavar="NET")
@@ -970,7 +970,7 @@ def cursor():
 
 @cursor.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mcu", required=False)
 @click.option("--x", required=False, type=click.FLOAT, help="Cursor A x coordinate")
 @click.option("--y", required=False, type=click.FLOAT, help="Cursor A y coordinate")
@@ -1012,7 +1012,7 @@ def set_a(ctx, box, mcu, x, y):
 
 @cursor.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mcu", required=False)
 @click.option("--x", required=False, type=click.FLOAT, help="Cursor B x coordinate")
 @click.option("--y", required=False, type=click.FLOAT, help="Cursor B y coordinate")
@@ -1054,7 +1054,7 @@ def set_b(ctx, box, mcu, x, y):
 
 @cursor.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mcu", required=False)
 @click.option("--x", required=False, type=click.FLOAT, help="Relative x movement (delta)")
 @click.option("--y", required=False, type=click.FLOAT, help="Relative y movement (delta)")
@@ -1096,7 +1096,7 @@ def move_a(ctx, box, mcu, x, y):
 
 @cursor.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mcu", required=False)
 @click.option("--x", required=False, type=click.FLOAT, help="Relative x movement (delta)")
 @click.option("--y", required=False, type=click.FLOAT, help="Relative y movement (delta)")
@@ -1138,7 +1138,7 @@ def move_b(ctx, box, mcu, x, y):
 
 @cursor.command()
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--mcu", required=False)
 def hide(ctx, box, mcu):
     """Hide cursor"""
@@ -1190,7 +1190,7 @@ CHANNEL_CHOICES = click.Choice(("A", "B", "1", "2"))
 
 @stream.command("start")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--channel", "-c", type=CHANNEL_CHOICES, default="A", help="Channel to enable (A, B, 1, or 2)")
 @click.option("--volts-per-div", "-v", type=float, default=1.0, help="Vertical scale in volts per division (default: 1.0V/div)")
 @click.option("--time-per-div", "-t", type=float, default=0.001, help="Horizontal scale in seconds per division (default: 1ms/div)")
@@ -1262,7 +1262,7 @@ def stream_start(ctx, box, channel, volts_per_div, time_per_div, trigger_level, 
 
 @stream.command("stop")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def stream_stop(ctx, box):
     """Stop oscilloscope streaming acquisition"""
     box_ip = _resolve_box(ctx, box)
@@ -1298,7 +1298,7 @@ def stream_stop(ctx, box):
 
 @stream.command("status")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def stream_status(ctx, box):
     """Check oscilloscope streaming daemon status"""
     box_ip = _resolve_box(ctx, box)
@@ -1328,7 +1328,7 @@ def stream_status(ctx, box):
 
 @stream.command("web")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--port", type=int, default=8080, help="HTTP server port for oscilloscope UI")
 def stream_web(ctx, box, port):
     """Open web browser for oscilloscope visualization"""
@@ -1352,7 +1352,7 @@ def stream_web(ctx, box, port):
 
 @stream.command("capture")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--output", "-o", type=click.Path(), default="scope_data.csv", help="CSV output file path (default: scope_data.csv)")
 @click.option("--duration", "-d", type=float, default=1.0, help="Capture duration in seconds (default: 1.0)")
 @click.option("--samples", "-n", type=int, default=None, help="Maximum number of samples to capture (optional)")
@@ -1412,7 +1412,7 @@ def stream_capture(ctx, box, output, duration, samples, quiet, json_output, verb
 
 @stream.command("config")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--channel", "-c", type=CHANNEL_CHOICES, help="Channel to configure")
 @click.option("--volts-per-div", "-v", type=float, help="Volts per division")
 @click.option("--time-per-div", "-t", type=float, help="Time per division (seconds)")
