@@ -6,6 +6,43 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- **A debug command no longer proceeds against a target that is not there.**
+  `/debug/status` reported a single `connected` boolean that meant "the
+  gdbserver process is alive", and `_auto_connect_if_needed` returned on it
+  without touching the target. On a box where the server outlives the part,
+  `flash`, `reset`, `erase`, `memrd` and the RTT paths all ran believing they
+  were connected. #344 fixed the erase verdict at one call site by reading the
+  programmer's output; this is the cause underneath it.
+
+  The endpoint now reports `gdbserver_running` and `target_attached`
+  separately, and `lager debug <net> status` prints both. `connected` stays,
+  pinned to its old meaning -- a live server -- so an older CLI against a newer
+  box behaves exactly as it did rather than silently changing what the field
+  means.
+
+  `target_attached` is a tri-state, and the third value carries weight. A box
+  older than this change, a probe refused because a debugger already holds the
+  session, or a probe that timed out all yield "could not establish", which is
+  not the same as "absent" -- reading it as absent would tear down sessions
+  that were working. The CLI falls back to server liveness there, and `status`
+  prints `Unknown`.
+
+  Reading the target costs a GDB round trip, and `/debug/status` is called by
+  every debug subcommand, so the wire read is opt-in per request. The free
+  check -- the server's own logfile, using the same predicate #344 established
+  -- always runs.
+
+- **`connect()`'s target verification checked the wrong thing and was never
+  read.** It issued `monitor version` and accepted any console reply as proof,
+  but that is the gdbserver answering about itself, which it does with no part
+  attached. The value was also discarded: nothing read `target_verified`, and
+  `/debug/connect` does not route through the function that sets it. It now
+  uses the same predicate `/debug/status` reports, so "attached" has one
+  definition instead of two.
+
+- **The Python API reference documented a key `status()` does not return.** It
+  showed `status.get('connected')`; the method returns `running`.
+
 - **`docs/package.json` ran `mint build`, a subcommand the Mintlify CLI no longer
   has.** `docs/vercel.json` pointed its `buildCommand` at that script and expected
   the output in `.mintlify`. Nothing consumed either file: docs.lagerdata.com is

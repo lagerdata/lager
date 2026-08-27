@@ -273,13 +273,17 @@ class DebugServiceClient:
         hex_data = result['data']
         return bytes.fromhex(hex_data)
 
-    def get_info(self, net: Dict[str, Any]) -> Dict[str, Any]:
-        """Get debug net information."""
-        data = {'net': net}
+    def get_info(self, net: Dict[str, Any], probe: bool = False) -> Dict[str, Any]:
+        """Get debug net information.
 
-        return self._request('POST', '/debug/info', json=data, timeout=5).json()
+        `probe` carries the same meaning and cost as in `get_debug_status`.
+        """
+        data = {'net': net, 'probe': bool(probe)}
 
-    def get_debug_status(self, net: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        timeout = 20 if probe else 5
+        return self._request('POST', '/debug/info', json=data, timeout=timeout).json()
+
+    def get_debug_status(self, net: Optional[Dict[str, Any]] = None, probe: bool = False) -> Dict[str, Any]:
         """Get debugger status for `net`'s probe.
 
         `net` is what makes the answer trustworthy, and omitting it is not a
@@ -289,8 +293,16 @@ class DebugServiceClient:
         writes. The status then comes back `connected: False` while a
         gdbserver is very much running -- and callers act on that by tearing
         down the session and reconnecting, which is what wedged the probe.
+
+        `probe` asks the box to read the target rather than only its own
+        pidfile and logfile. That costs a GDB round trip, so it is opt-in: the
+        callers that gate an operation on attachment ask for it, and the ones
+        that only want to know whether a server is up do not. The timeout
+        widens with it, because the cheap path must not inherit the cost.
         """
-        return self._request('POST', '/debug/status', json={'net': net or {}}, timeout=5).json()
+        payload = {'net': net or {}, 'probe': bool(probe)}
+        timeout = 20 if probe else 5
+        return self._request('POST', '/debug/status', json=payload, timeout=timeout).json()
 
     def get_service_health(self, detailed: bool = False) -> Dict[str, Any]:
         """Get service health information."""

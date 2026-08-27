@@ -40,6 +40,7 @@ from lager.debug.api import (
     purge_legacy_script_file,
     _attach_failed,
 )
+from lager.debug.target_probe import target_attached
 from lager.debug.jlink import JLink
 from lager.debug.gdbserver import (
     start_jlink_gdbserver,
@@ -1428,6 +1429,18 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             else:
                 running = get_jlink_gdbserver_status(serial=serial)['running']
 
+            if not running:
+                attached = False
+            else:
+                attached = target_attached(
+                    backend,
+                    serial,
+                    gdb_port=_gdb_port,
+                    tcl_port=openocd_tcl_port_for_slot(_slot),
+                    device=device_type,
+                    probe=bool(data.get('probe', False)),
+                )
+
             self.send_json_response(200, {
                 'net_name': net.get('name', 'unknown'),
                 'device': device_type,
@@ -1435,6 +1448,9 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
                 'probe': net.get('instrument', ''),
                 'serial': serial,
                 'backend': backend,
+                'gdbserver_running': running,
+                'target_attached': attached,
+                # Deprecated alias; see handle_debug_status.
                 'connected': running,
             })
 
@@ -1454,9 +1470,31 @@ class DebugServiceHandler(BaseHTTPRequestHandler):
             else:
                 status = get_jlink_gdbserver_status(serial=serial)
 
+            running = status['running']
+            if not running:
+                # No session at all, so nothing is attached through one. This
+                # is the only cheap case that is definitively False.
+                attached = False
+            else:
+                attached = target_attached(
+                    backend,
+                    serial,
+                    gdb_port=_gdb_port,
+                    tcl_port=openocd_tcl_port_for_slot(_slot),
+                    device=_resolve_device_type(net),
+                    probe=bool(data.get('probe', False)),
+                )
+
             self.send_json_response(200, {
-                'connected': status['running'],
-                'pid': status.get('pid') if status['running'] else None,
+                'gdbserver_running': running,
+                'target_attached': attached,
+                # Deprecated alias, pinned to its historical meaning: a live
+                # server process. Kept so an older CLI against a newer box
+                # behaves exactly as it does today rather than silently
+                # changing what the field means. New callers read the two
+                # fields above.
+                'connected': running,
+                'pid': status.get('pid') if running else None,
                 'serial': serial,
                 'backend': backend,
             })
