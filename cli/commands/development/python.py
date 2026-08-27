@@ -321,7 +321,7 @@ def _do_exit(exit_code, box, session, downloads):
                         else:
                             click.secho(
                                 f'Failed to download {filename}: this box image has no '
-                                f'download-file endpoint on :9000 — run: lager box update',
+                                f'download-file endpoint on :9000 — run: lager update',
                                 fg='red', err=True,
                             )
                     else:

@@ -745,7 +745,7 @@ def main():
         print("  - Check the power supply is powered on and USB cable is connected")
         print("  - If 'nodev': run  lager power supply1 state --box <box>  to reset the session")
         print("  - If 'busy': check lsof output in 'lager diagnose' for competing processes")
-        print("  - If 'usbtmc kmod LOADED': run  lager box update")
+        print("  - If 'usbtmc kmod LOADED': run  lager update")
         sys.exit(1)
 
     tests = [

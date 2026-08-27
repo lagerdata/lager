@@ -49,7 +49,7 @@ class VersionSkewTests(unittest.TestCase):
         out = self.stderr_buf.getvalue()
         self.assertIn('Box test-box is on lager 0.18.5', out)
         self.assertIn('CLI is on 0.20.0', out)
-        self.assertIn('lager box update --box test-box', out)
+        self.assertIn('lager update --box test-box', out)
 
     def test_no_warning_when_versions_match(self):
         with patch('cli.core.version_skew.requests.get', side_effect=self._mock_box('0.20.0')), \
@@ -109,7 +109,7 @@ class VersionSkewTests(unittest.TestCase):
             version_skew.check_and_warn('10.0.0.10', 'old-box')
         out = self.stderr_buf.getvalue()
         self.assertIn('old-box', out)
-        self.assertIn('lager box update --box old-box', out)
+        self.assertIn('lager update --box old-box', out)
 
     def test_silent_on_other_http_errors(self):
         """A 500 (box present but unhealthy) still fails open silently."""

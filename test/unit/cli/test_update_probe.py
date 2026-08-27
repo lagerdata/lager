@@ -2,7 +2,7 @@
 # Copyright 2024-2026 Lager Data
 # SPDX-License-Identifier: Apache-2.0
 """
-Unit tests for `lager box update`'s box-state probe — specifically the
+Unit tests for `lager update`'s box-state probe — specifically the
 0.20.0 additions that detect the modprobe.d/blacklist-usbtmc.conf state
 and the usbtmc kernel module load state.
 

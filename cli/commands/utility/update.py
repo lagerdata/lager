@@ -3348,7 +3348,7 @@ def _update_logic(ctx, *, box, yes, version, verbose, check, force=False,
         click.echo(f'  ssh {ssh_host}', err=True)
         click.echo('  sudo mkdir -p /etc/lager && sudo chown 33:"$(id -g)" /etc/lager '
                    '&& sudo chmod 2775 /etc/lager', err=True)
-        click.echo('Then run `lager box update` again.', err=True)
+        click.echo('Then run `lager update` again.', err=True)
         ctx.exit(1)
     log_status('OK', 'green')
 

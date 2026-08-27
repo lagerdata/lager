@@ -96,13 +96,17 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Changed
 
-- **User-facing prose now follows one written style, enforced in CI.**
-  `docs/STYLE.md` adapts ASD-STE100 (Simplified Technical English) to this
-  project: a sentence-length cap, active voice, one instruction per sentence,
-  the approved modals `can`/`will`/`must`, American spelling, and one spelling
-  per term. `tools/check_ste.py` enforces the measurable rules against the
-  published pages, the root prose files, and every `help=` string and message
-  the CLI prints.
+- **User-facing prose now follows ASD-STE100, enforced in CI.**
+  `docs/STYLE.md` adopts Simplified Technical English: fourteen rules covering
+  sentence and paragraph length, active voice, simple tenses only, one
+  instruction per sentence with the condition first, the approved modals
+  `can`/`will`/`must`, American spelling, one term with one meaning, noun-cluster
+  limits, and the shape of a safety warning. STE's Writing Rules are adopted in
+  full; its Dictionary is not reproduced, because the approved-word list is a
+  licensed ASD specification that a public repository cannot carry. A project
+  Technical Names table stands in its place, which is what STE itself expects.
+  `tools/check_ste.py` enforces the measurable rules against the published pages,
+  the root prose files, and every `help=` string and message the CLI prints.
 
   The corpus carried two spellings of the product's own name -- `Lager Box` 329
   times and `Lagerbox` 119, on the same pages -- plus a British/American split
@@ -114,10 +118,19 @@ All notable changes to the Lager platform are documented here. For detailed rele
   wrong.
 
   The ten `getting-started/` pages are converted, taking that section from 106
-  violations to zero. The remaining sections carry a per-file budget in
+  violations to zero on all eight checked rules. The remaining sections carry a per-file budget in
   `tools/ste_baseline.json` that ratchets down as each later batch lands; the
   CI step stays `continue-on-error` until the last one, because a required
   context that nothing can turn red is worse than no context at all.
+
+- **Six CLI messages told the user to run `lager box update`, which does not
+  exist.** The `lager box` group carries only `config` and `dut`; the `update`
+  spelling was removed in favor of top-level `lager update`, and two comments in
+  the source say so. The messages were never updated, so a version-skew warning,
+  a lock-support warning, a `diagnose` verdict, a download-file error and an
+  `/etc/lager` permission error each handed the reader a command that errors out.
+  Three unit tests asserted on the dead spelling and pinned it in place. All six
+  messages and all three assertions now name `lager update`.
 
 - **21 `Dexarm` methods and both `Wifi` methods gained docstrings.**
   Introspection uses a docstring's first line as a method's description, so an

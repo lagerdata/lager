@@ -537,7 +537,7 @@ def _check_box_lock(ip, box_name):
                 click.secho(
                     f"Warning: Box '{display}' is running an old image without "
                     f"lock support on its :9000 API — lock checks are skipped. "
-                    f"Run: lager box update --box {display}",
+                    f"Run: lager update --box {display}",
                     fg='yellow', err=True,
                 )
         elif resp.status_code == 200:

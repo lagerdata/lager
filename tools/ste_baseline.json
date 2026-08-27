@@ -1,23 +1,28 @@
 {
   "CONTRIBUTING.md": {
     "length": 1,
-    "modals": 1
+    "modals": 1,
+    "tense": 2
   },
   "README.md": {
-    "length": 2
+    "length": 2,
+    "tense": 2
   },
   "RELEASE_PROCESS.md": {
     "length": 6,
-    "modals": 1
+    "modals": 1,
+    "tense": 2
   },
   "cli/box_storage.py": {
-    "modals": 2
+    "modals": 2,
+    "tense": 1
   },
   "cli/commands/box/boxes.py": {
     "modals": 1
   },
   "cli/commands/box/config.py": {
-    "modals": 10
+    "modals": 10,
+    "tense": 4
   },
   "cli/commands/box/instruments.py": {
     "modals": 1
@@ -38,16 +43,19 @@
     "modals": 1
   },
   "cli/commands/communication/uart.py": {
-    "modals": 2
+    "modals": 2,
+    "tense": 2
   },
   "cli/commands/development/arm.py": {
     "modals": 1
   },
   "cli/commands/development/debug/commands.py": {
-    "modals": 12
+    "modals": 12,
+    "tense": 2
   },
   "cli/commands/development/python.py": {
-    "modals": 11
+    "modals": 11,
+    "tense": 1
   },
   "cli/commands/measurement/scope.py": {
     "modals": 2
@@ -62,25 +70,35 @@
     "modals": 5
   },
   "cli/commands/utility/install.py": {
-    "modals": 5
+    "modals": 5,
+    "tense": 2
   },
   "cli/commands/utility/logs.py": {
     "modals": 2
   },
   "cli/commands/utility/uninstall.py": {
-    "modals": 8
+    "modals": 8,
+    "tense": 7
   },
   "cli/commands/utility/update.py": {
-    "modals": 27
+    "modals": 27,
+    "tense": 11
+  },
+  "cli/commands/utility/webcam.py": {
+    "tense": 1
   },
   "cli/core/net_helpers.py": {
     "modals": 4
+  },
+  "cli/main.py": {
+    "tense": 1
   },
   "cli/status.py": {
     "modals": 2
   },
   "docs/README.md": {
-    "length": 2
+    "length": 2,
+    "tense": 1
   },
   "docs/source/reference/cli/battery.mdx": {
     "length": 2
@@ -99,7 +117,8 @@
     "length": 1
   },
   "docs/source/reference/cli/debug.mdx": {
-    "length": 4
+    "length": 4,
+    "tense": 1
   },
   "docs/source/reference/cli/devenv.mdx": {
     "length": 4,
@@ -107,7 +126,8 @@
   },
   "docs/source/reference/cli/diagnose.mdx": {
     "length": 4,
-    "modals": 2
+    "modals": 2,
+    "tense": 1
   },
   "docs/source/reference/cli/dut.mdx": {
     "length": 1
@@ -118,6 +138,9 @@
   "docs/source/reference/cli/gpo.mdx": {
     "modals": 2
   },
+  "docs/source/reference/cli/hello.mdx": {
+    "tense": 1
+  },
   "docs/source/reference/cli/i2c.mdx": {
     "modals": 1
   },
@@ -125,7 +148,8 @@
     "length": 1
   },
   "docs/source/reference/cli/install.mdx": {
-    "length": 10
+    "length": 10,
+    "tense": 3
   },
   "docs/source/reference/cli/lager-file.mdx": {
     "length": 6,
@@ -133,21 +157,25 @@
   },
   "docs/source/reference/cli/locking.mdx": {
     "length": 9,
-    "modals": 1
+    "modals": 1,
+    "tense": 3
   },
   "docs/source/reference/cli/login.mdx": {
     "length": 3,
-    "modals": 1
+    "modals": 1,
+    "tense": 1
   },
   "docs/source/reference/cli/nets.mdx": {
     "length": 12,
     "modals": 2
   },
   "docs/source/reference/cli/python.mdx": {
-    "length": 3
+    "length": 3,
+    "tense": 1
   },
   "docs/source/reference/cli/router.mdx": {
-    "length": 1
+    "length": 1,
+    "tense": 1
   },
   "docs/source/reference/cli/scope.mdx": {
     "modals": 1
@@ -161,18 +189,21 @@
   },
   "docs/source/reference/cli/supply.mdx": {
     "length": 2,
-    "modals": 1
+    "modals": 1,
+    "tense": 3
   },
   "docs/source/reference/cli/uninstall.mdx": {
     "length": 1
   },
   "docs/source/reference/cli/update.mdx": {
     "length": 6,
-    "modals": 1
+    "modals": 1,
+    "tense": 2
   },
   "docs/source/reference/cli/usb.mdx": {
     "length": 5,
-    "modals": 1
+    "modals": 1,
+    "tense": 1
   },
   "docs/source/reference/cli/watt.mdx": {
     "length": 5,
@@ -192,7 +223,11 @@
   },
   "docs/source/reference/python/battery.mdx": {
     "length": 4,
-    "modals": 1
+    "modals": 1,
+    "tense": 1
+  },
+  "docs/source/reference/python/binaries.mdx": {
+    "tense": 1
   },
   "docs/source/reference/python/ble.mdx": {
     "modals": 1
@@ -202,7 +237,8 @@
   },
   "docs/source/reference/python/debug.mdx": {
     "length": 21,
-    "modals": 1
+    "modals": 1,
+    "tense": 3
   },
   "docs/source/reference/python/eload.mdx": {
     "modals": 2
@@ -213,36 +249,48 @@
   "docs/source/reference/python/router.mdx": {
     "length": 4
   },
+  "docs/source/reference/python/solar.mdx": {
+    "tense": 1
+  },
   "docs/source/reference/python/uart.mdx": {
     "modals": 1
   },
   "docs/source/reference/python/usb.mdx": {
     "length": 6,
-    "modals": 2
+    "modals": 2,
+    "tense": 1
   },
   "docs/source/reference/python/watt.mdx": {
     "length": 1
   },
+  "docs/source/reference/python/webcam.mdx": {
+    "tense": 1
+  },
   "docs/source/reference/rust/arm.mdx": {
-    "modals": 1
+    "modals": 1,
+    "tense": 1
   },
   "docs/source/reference/rust/async.mdx": {
     "length": 2
   },
   "docs/source/reference/rust/auth.mdx": {
-    "length": 2
+    "length": 2,
+    "tense": 2
   },
   "docs/source/reference/rust/ble.mdx": {
     "length": 1
   },
   "docs/source/reference/rust/blufi.mdx": {
-    "length": 2
+    "length": 2,
+    "tense": 1
   },
   "docs/source/reference/rust/client.mdx": {
-    "length": 2
+    "length": 2,
+    "tense": 2
   },
   "docs/source/reference/rust/debug.mdx": {
-    "length": 3
+    "length": 3,
+    "tense": 2
   },
   "docs/source/reference/rust/eload.mdx": {
     "length": 1
@@ -251,10 +299,12 @@
     "modals": 2
   },
   "docs/source/reference/rust/gpio.mdx": {
-    "length": 2
+    "length": 2,
+    "tense": 1
   },
   "docs/source/reference/rust/net-types.mdx": {
-    "length": 3
+    "length": 3,
+    "tense": 2
   },
   "docs/source/reference/rust/overview.mdx": {
     "length": 3
@@ -265,7 +315,8 @@
   },
   "docs/source/reference/rust/rtt.mdx": {
     "length": 3,
-    "modals": 1
+    "modals": 1,
+    "tense": 1
   },
   "docs/source/reference/rust/scope.mdx": {
     "length": 4
@@ -279,11 +330,13 @@
     "modals": 2
   },
   "docs/source/reference/rust/supply.mdx": {
-    "length": 2
+    "length": 2,
+    "tense": 1
   },
   "docs/source/reference/rust/testing.mdx": {
     "length": 6,
-    "modals": 1
+    "modals": 1,
+    "tense": 1
   },
   "docs/source/reference/rust/uart.mdx": {
     "length": 1,
@@ -298,21 +351,25 @@
   },
   "docs/source/reference/rust/webcam.mdx": {
     "length": 1,
-    "modals": 1
+    "modals": 1,
+    "tense": 2
   },
   "docs/source/reference/rust/wifi.mdx": {
-    "length": 4
+    "length": 4,
+    "tense": 1
   },
   "docs/source/supported-instruments/supported-instruments.mdx": {
     "length": 14,
-    "modals": 1
+    "modals": 1,
+    "tense": 1
   },
   "test/CONVENTIONS.md": {
     "modals": 1
   },
   "test/COVERAGE.md": {
     "length": 29,
-    "modals": 7
+    "modals": 7,
+    "tense": 1
   },
   "test/README.md": {
     "length": 1

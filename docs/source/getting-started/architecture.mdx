@@ -141,8 +141,10 @@ The "Exposed" column describes a box that publishes its ports, which is the defa
 started with `start_box.sh --no-publish` (or `LAGER_NO_PUBLISH=1`) publishes none of them.
 Every service still listens inside the container. The `lagernet` Docker network still
 reaches it, and a reverse proxy owns the host ports. No `Yes` row answers at
-`<box-ip>:<port>`. Port 22 is the exception. SSH is the host's own daemon rather than a
-published container port, so `--no-publish` does not affect it.
+`<box-ip>:<port>`.
+
+Port 22 is the exception. SSH is the host's own daemon rather than a published container
+port, so `--no-publish` does not affect it.
 
 ---
 
@@ -154,7 +156,11 @@ A Lager Box publishes SSH keys from a key directory, `/etc/lager/authorized_keys
 
 - **Deleting a `.pub` revokes the key.** Nothing else does; editing `authorized_keys` by hand inside the marked region is undone on the next pass.
 - **Keys installed by other means stay untouched.** `ssh-copy-id` and cloud-init append outside the marked region, and `start_box.sh` preserves those lines verbatim. Any other system that manages this file must claim its own distinct marker pair. Two managers that share one pair each rebuild the other's region on every pass.
-- **Preserved is not the same as durable.** `start_box.sh` preserves a loose line against *its own* rebuild. It cannot preserve that line against someone else's. A second key manager rebuilds `authorized_keys` from its own source. It keeps only its own marked region, so it drops every loose line. `start_box.sh` then re-creates its region from the key directory alone. A key that never reached that directory does not come back. For this reason `lager ssh-setup`, `lager update`, and `lager install` do both. They append the public key, and they write it into the key directory as `lager-box-<user>-<host>.pub`. Any tool that installs a key it expects to survive must do the same.
+- **Preserved is not the same as durable.** `start_box.sh` preserves a loose line against *its own* rebuild. It cannot preserve that line against someone else's.
+
+  A second key manager rebuilds `authorized_keys` from its own source. It keeps only its own marked region, so it drops every loose line. `start_box.sh` then re-creates its region from the key directory alone. A key that never reached that directory does not come back.
+
+  For this reason `lager ssh-setup`, `lager update`, and `lager install` do both. They append the public key, and they write it into the key directory as `lager-box-<user>-<host>.pub`. Any tool that installs a key it expects to survive must do the same.
 
 Lager itself does not require or run a control plane -- this is a hook, not a dependency. Leaving the key directory absent or empty simply means no keys are published from it.
 

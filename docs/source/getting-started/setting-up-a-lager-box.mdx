@@ -41,9 +41,11 @@ sudo --version     # see the sudo-rs note below
 <Note>
 A first install builds the Lager container on the box itself. That takes roughly 14 minutes
 on ordinary box hardware. Plan for the box to be busy. `lager install` bounds the step at
-30 minutes by default. Slower hardware runs longer. An emulated guest, a low-power mini PC,
-or a throttled VM can exceed 30 minutes on a healthy build. Raise the budget with
-`--timeout <seconds>` or `LAGER_INSTALL_TIMEOUT`, so the build does not stop midway.
+30 minutes by default.
+
+Slower hardware runs longer. An emulated guest, a low-power mini PC, or a throttled VM can
+exceed 30 minutes on a healthy build. Raise the budget with `--timeout <seconds>` or
+`LAGER_INSTALL_TIMEOUT`, so the build does not stop midway.
 </Note>
 
 <Warning>
@@ -183,7 +185,7 @@ firewall cannot lock you out of the machine.
 
 How you point it at your network depends on what you use:
 
-**Tailscale.** Nothing to do. If Tailscale is running on the box, the installer detects the
+**Tailscale.** Nothing to do. If Tailscale runs on the box, the installer detects the
 `tailscale0` interface and allows the Lager ports on it.
 
 **A corporate VPN.** Name the interface explicitly. Find it on the box:
@@ -248,7 +250,7 @@ Then see what hardware it can find:
 lager instruments --box bench-1
 ```
 
-An empty list is the correct answer if you have not connected any instruments yet.
+An empty list is the correct answer before you connect any instruments.
 
 ---
 
@@ -341,7 +343,7 @@ after 30 minutes.
 
 <Accordion title="wildcards are not allowed in command arguments">
 
-The box is running `sudo-rs`, the default `sudo` on Ubuntu 25.10 and later, and the CLI is
+The box runs `sudo-rs`, the default `sudo` on Ubuntu 25.10 and later, and the CLI is
 older than 0.41.0. Installation stops at the passwordless-sudo step with
 `visudo: invalid sudoers file` before anything is deployed.
 
@@ -372,7 +374,7 @@ sudo systemctl restart docker
 sudo usermod -aG docker <box-user>
 ```
 
-If `restart` is the step that fails, Docker itself is not starting and installing it again will
+If `restart` is the step that fails, Docker itself does not start. A second install does
 not help. Ask it why:
 
 ```bash
@@ -388,8 +390,8 @@ Once Docker runs, log out and back in so the group membership takes effect, then
 <Accordion title="The machine is not x86-64">
 
 x86-64 is the only supported box architecture. Check with `uname -m` on the machine. It must
-report `x86_64`. On any other architecture, an install can appear to succeed while hardware
-support is missing.
+report `x86_64`. On any other architecture, an install can appear to succeed while the box has no
+hardware support.
 
 </Accordion>
 
@@ -400,7 +402,7 @@ For problems that appear after the box is up and running, see
 
 ## Next Steps
 
-Your box is running. Now connect to it and give it something to do:
+Your box is ready. Now connect to it and give it something to do:
 
 - **[Adding your First Lager Box](/source/getting-started/adding-first-lager-box)** -- Add the box on any other machine that needs to reach it
 - **[Setting Up Your Instruments](/source/getting-started/setting-up-instruments)** -- Discover the hardware connected to your box and define nets
