@@ -362,7 +362,7 @@ except Exception as e:
 
 - Always use the context manager (`with` statement) to ensure proper cleanup
 - The arm must be homed before accurate movements
-- Movement timeout errors may indicate obstructions or out-of-bounds coordinates
+- A movement timeout error indicates an obstruction or an out-of-bounds coordinate
 - Joint angles (a, b, c) are in the arm's internal coordinate system
 - Default tolerance for position verification is 0.5mm
 - The arm auto-detects via USB VID/PID (0x0483:0x5740)
