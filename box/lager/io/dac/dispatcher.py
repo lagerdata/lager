@@ -24,6 +24,7 @@ Uses BaseDispatcher pattern for consistent net resolution and driver management.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from typing import Any, Dict, Optional, Tuple, Type
 
@@ -72,8 +73,19 @@ class DACDispatcher(BaseDispatcher):
         
         if "usb-202" in inst_lower or "usb202" in inst_lower or "mcc" in inst_lower:
             return USB202DAC
-        elif "labjack" in inst_lower or "t7" in inst_lower or not instrument_name:
-            # Default to LabJack T7 for backward compatibility
+        elif (re.search(r"labjack[_\-\s]*t7", inst_lower)
+                or "t7" in inst_lower
+                or not instrument_name):
+            # Default to LabJack T7 for backward compatibility.
+            #
+            # Deliberately NOT a bare ``"labjack" in inst_lower``. LabJackDAC
+            # reaches the device through the LJM handle manager, which opens
+            # with device_type="T7", and LJM does not speak to the U3/U6 at
+            # all. Matching any "labjack" here is worse than an error: on a
+            # box with both a T7 and a U3, a U3 net would write DAC0 on the
+            # *T7* and report success. The ADC and GPIO dispatchers already
+            # require "t7" (adc/dispatcher.py, gpio/dispatcher.py); this makes
+            # all three agree.
             return LabJackDAC
         else:
             raise self._make_error(f"Unsupported DAC instrument: {instrument_name}")

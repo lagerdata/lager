@@ -138,9 +138,20 @@ def _brief_usb_batch(netnames, causes=None, codes=None, deadline=None):
     return out
 
 
-def _is_labjack(rec):
-    """True if this net's instrument is a LabJack device."""
-    return "labjack" in (rec.get("instrument") or "").lower()
+_LABJACK_T7_RE = re.compile(r"labjack[_\-\s]*t7", re.IGNORECASE)
+
+
+def _is_labjack_t7(rec):
+    """True if this net's instrument is a LabJack the batch endpoint can read.
+
+    Deliberately narrower than "is a LabJack". ``/labjack/batch_read`` speaks
+    LJM Modbus register names (``DIO_STATE``, ``AIN0``, ``DAC0``), and only the
+    T-series answers those. A U3/U6 is every bit a LabJack but talks Exodriver,
+    so a bare ``"labjack" in instrument`` test would route it into the T7 read
+    path and report values that came from the wrong device -- or from no device
+    at all. Non-T7 LabJacks fall through to the per-role probe instead.
+    """
+    return bool(_LABJACK_T7_RE.search(rec.get("instrument") or ""))
 
 
 _LABJACK_BATCH_ROLES = {"gpio", "adc", "dac"}
@@ -501,7 +512,7 @@ def _group_key(net_rec):
     role = net_rec.get("role", "")
     instrument = net_rec.get("instrument", "") or ""
     address = net_rec.get("address", "") or ""
-    if _is_labjack(net_rec) and role in _LABJACK_BATCH_ROLES:
+    if _is_labjack_t7(net_rec) and role in _LABJACK_BATCH_ROLES:
         return ("_labjack_", instrument, address)
     return (role, instrument, address)
 
@@ -529,7 +540,7 @@ def _probe_group(recs, deadline=None):
         return []
 
     # Path 1: cross-role LabJack batch
-    if recs[0].get("role", "") in _LABJACK_BATCH_ROLES and _is_labjack(recs[0]):
+    if recs[0].get("role", "") in _LABJACK_BATCH_ROLES and _is_labjack_t7(recs[0]):
         try:
             states = _brief_labjack_batch(recs)
         except Exception as e:
