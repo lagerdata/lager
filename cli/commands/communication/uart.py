@@ -280,7 +280,7 @@ def _connect_uart_http(ctx, box_ip, netname, overrides, interactive):
                 metavar="serial-port", type=click.Choice(["serial-port"]))
 @click.pass_context
 # Target options
-@click.option('--box', required=False, help="Lagerbox name or IP")
+@click.option('--box', required=False, help="Lager Box name or IP")
 # Serial parameter overrides
 @click.option('--baudrate', type=int, help='Baudrate in baud (e.g., 9600, 115200)')
 @click.option('--bytesize', type=click.Choice(['5', '6', '7', '8']), help='Number of data bits')

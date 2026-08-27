@@ -248,7 +248,7 @@ def _sniff_script_backend(filename: str, content: bytes) -> Optional[str]:
     """Return ``'jlink'``/``'openocd'``/``None`` from filename + content.
 
     Extension is the dominant signal. Content sniff is only consulted when
-    the extension is unrecognised (e.g. stdin or extensionless paths) and
+    the extension is unrecognized (e.g. stdin or extensionless paths) and
     abstains when both/neither family of markers is present so we don't
     guess silently.
     """
@@ -301,7 +301,7 @@ def _choose_script_backend(
     signals = [(k, v) for k, v in (('probe', probe), ('file', file)) if v]
     if not signals:
         return None, (
-            "no backend signal — pass --backend, or use a recognised "
+            "no backend signal — pass --backend, or use a recognized "
             "file extension (.JLinkScript / .cfg / .tcl)"
         ), False
     values = {v for _k, v in signals}
@@ -1022,7 +1022,7 @@ class _NetsGroup(NetGroupHelpMixin, click.Group):
     invoke_without_command=True,
     help="List and manage saved nets",
 )
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def nets(ctx: click.Context, box: str | None) -> None:  # noqa: D401
     """
@@ -1039,7 +1039,7 @@ def nets(ctx: click.Context, box: str | None) -> None:  # noqa: D401
 @nets.command("delete", help="Delete one saved net by name and type")
 @click.argument("name")
 @click.argument("net_type")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt")
 @click.pass_context
 def delete_cmd(
@@ -1072,7 +1072,7 @@ def delete_cmd(
 
 
 @nets.command("delete-all", help="Dangerous – delete every saved net")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt")
 @click.pass_context
 def delete_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
@@ -1089,7 +1089,7 @@ def delete_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
 
 
 @nets.command("tui", help="Launch the interactive Net-Manager TUI")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def tui_cmd(ctx: click.Context, box: str | None) -> None:
     launch_tui(ctx, _resolve_box(ctx, box))
@@ -1098,7 +1098,7 @@ def tui_cmd(ctx: click.Context, box: str | None) -> None:
 @nets.command("rename", help="Rename a saved net")
 @click.argument("name")
 @click.argument("new_name")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def rename_cmd(
     ctx: click.Context,
@@ -1140,7 +1140,7 @@ def rename_cmd(
 @click.argument("role")
 @click.argument("channel")
 @click.argument("address")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--jlink-script", type=click.Path(exists=True),
               help="J-Link script file for debug nets (stored on box)")
 @click.option("--openocd-config", type=click.Path(exists=True),
@@ -1444,7 +1444,7 @@ def _print_assign_listing(data: dict) -> None:
 @click.option("--as-net", "as_net", is_flag=False, flag_value="",
               help="Also create a net for the instrument (optionally pass a net name; "
                    "defaults to the device name)")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net, box):
     """Assign a USB-serial cable to a known instrument (e.g. a Rigol DP711).
@@ -1606,7 +1606,7 @@ def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net,
 
 
 @nets.command("add-all", help="Add all possible nets that can be created on the box")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--yes", is_flag=True, help="Skip confirmation prompt")
 @click.pass_context
 def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
@@ -1914,7 +1914,7 @@ def create_all_cmd(ctx: click.Context, box: str | None, yes: bool) -> None:
 
 @nets.command("add-batch", help="Add multiple nets from a JSON file")
 @click.argument("json_file", type=click.File("r"))
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def create_batch_cmd(ctx: click.Context, json_file, box: str | None) -> None:
     """
@@ -2242,7 +2242,7 @@ _BACKEND_CLICK_CHOICE = click.Choice([_BACKEND_JLINK, _BACKEND_OPENOCD])
     help="Force a specific backend instead of auto-detecting. Required when "
     "the detected probe and file backends disagree.",
 )
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def set_script_cmd(
     ctx: click.Context, name: str, script_path: str,
@@ -2272,7 +2272,7 @@ def set_script_cmd(
     "--backend", "backend", type=_BACKEND_CLICK_CHOICE, default=None,
     help="Only remove the named backend's script (default: remove whichever is set).",
 )
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def remove_script_cmd(
     ctx: click.Context, name: str, backend: Optional[str], box: Optional[str],
@@ -2290,7 +2290,7 @@ def remove_script_cmd(
     "--backend", "backend", type=_BACKEND_CLICK_CHOICE, default=None,
     help="Only show the named backend's script (default: show whichever is set).",
 )
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def show_script_cmd(
     ctx: click.Context, name: str, backend: Optional[str], box: Optional[str],
@@ -2311,7 +2311,7 @@ def show_script_cmd(
 @click.option("--notes", "-n", default=None, help="Optional notes (gotchas, jumper positions, scope probe points)")
 @click.option("--tag", "-t", "tags", multiple=True, help="Tag for categorisation/matching (repeatable)")
 @click.option("--clear-tags", is_flag=True, help="Remove all existing tags before adding new ones")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def describe_cmd(
     ctx: click.Context,
@@ -2353,7 +2353,7 @@ def describe_cmd(
 
 
 @nets.command("state", help="Show live hardware state for all saved nets")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--json", "as_json", is_flag=True, help="Output as raw JSON")
 @click.pass_context
 def state_cmd(ctx: click.Context, box: str | None, as_json: bool) -> None:
@@ -2413,7 +2413,7 @@ def state_cmd(ctx: click.Context, box: str | None, as_json: bool) -> None:
 
 @nets.command("show", help="Show full details of a saved net, including metadata")
 @click.argument("name")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.option("--json", "as_json", is_flag=True, help="Output as raw JSON")
 @click.pass_context
 def show_cmd(

@@ -100,7 +100,7 @@ def is_service_available(box_ip: str, username: str = 'lagerdata') -> bool:
     Check if debug service is available on box.
 
     Args:
-        box_ip: Lagerbox IP address
+        box_ip: Lager Box IP address
         username: SSH username (defaults to 'lagerdata')
 
     Returns:
@@ -133,7 +133,7 @@ def ensure_service_tunnel(box_ip: str, username: str = 'lagerdata') -> Optional[
     Uses a global cache to reuse tunnels across command invocations.
 
     Args:
-        box_ip: Lagerbox IP address
+        box_ip: Lager Box IP address
         username: SSH username (defaults to 'lagerdata')
 
     Returns:

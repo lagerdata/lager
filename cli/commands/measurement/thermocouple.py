@@ -24,7 +24,7 @@ THERMOCOUPLE_ROLE = "thermocouple"
 
 @click.command(name="thermocouple", cls=NetCommand, help="Read thermocouple temperature in degrees Celsius")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit a machine-readable JSON object instead of formatted text")
 @click.argument("netname", required=False, metavar="[NET_NAME]")

@@ -179,7 +179,7 @@ def provision_lager_box_key(dest: str) -> bool:
     help="Set up passwordless SSH to a box (enter the box password "
          "once; lager commands work passwordless after).",
 )
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def ssh_setup(ctx: click.Context, box: Optional[str]) -> None:
     ip = resolve_and_validate_box(ctx, box)
@@ -195,7 +195,7 @@ def ssh_setup(ctx: click.Context, box: Optional[str]) -> None:
 
 @click.command(name="authorize", cls=BoxCommand, hidden=True,
                help="Deprecated alias for `lager ssh-setup`.")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def authorize(ctx: click.Context, box: Optional[str]) -> None:
     click.secho(

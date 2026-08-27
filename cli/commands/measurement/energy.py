@@ -119,7 +119,7 @@ energy.net_examples = [
     name="read",
     help="Read energy/charge over a duration",
 )
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option(
     "--duration",
     type=float,
@@ -139,7 +139,7 @@ def read_energy(ctx, box, duration, as_json):
     name="stats",
     help="Read current/voltage/power statistics over a duration",
 )
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option(
     "--duration",
     type=float,

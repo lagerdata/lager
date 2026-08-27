@@ -149,7 +149,7 @@ def _run_eload(ctx, box_ip, netname, mode, value, as_json=False):
 
 @click.group(cls=NetGroup, invoke_without_command=True)
 @click.argument('netname', required=False, metavar="[NET_NAME]")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def eload(ctx, netname, box):
     """Control electronic load settings and modes"""
@@ -178,7 +178,7 @@ eload.net_examples = [
 def _mode_options(func):
     func = click.option("--json", "as_json", is_flag=True, default=False,
                         help="Emit a machine-readable JSON object instead of formatted text")(func)
-    func = click.option("--box", required=False, help="Lagerbox name or IP")(func)
+    func = click.option("--box", required=False, help="Lager Box name or IP")(func)
     return func
 
 
@@ -233,7 +233,7 @@ def cp(ctx, value, box, as_json):
 @eload.command()
 @click.option("--json", "as_json", is_flag=True, default=False,
               help="Emit a machine-readable JSON object instead of formatted text")
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def state(ctx, box, as_json):
     """Display electronic load state"""

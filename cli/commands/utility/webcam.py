@@ -215,7 +215,7 @@ class WebcamGroup(NetGroupHelpMixin, click.Group):
 
 
 @click.group(name="webcam", cls=WebcamGroup, invoke_without_command=True)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def webcam(ctx, box):
     """Manage webcam streams"""
@@ -239,7 +239,7 @@ webcam.net_examples = [
 
 
 @click.command(name="start")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def webcam_start(ctx, box):
     """
@@ -282,7 +282,7 @@ def webcam_start(ctx, box):
 
 
 @click.command(name="url")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def webcam_url(ctx, box):
     """
@@ -309,7 +309,7 @@ def webcam_url(ctx, box):
 
 
 @click.command(name="stop")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def webcam_stop(ctx, box):
     """
@@ -338,7 +338,7 @@ def webcam_stop(ctx, box):
 
 
 @click.command(name="start-all")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def webcam_start_all(ctx, box):
     """
@@ -376,7 +376,7 @@ def webcam_start_all(ctx, box):
 
 
 @click.command(name="stop-all")
-@click.option("--box", help="Lagerbox name or IP")
+@click.option("--box", help="Lager Box name or IP")
 @click.pass_context
 def webcam_stop_all(ctx, box):
     """

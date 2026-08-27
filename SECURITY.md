@@ -55,7 +55,7 @@ This policy applies to:
 
 ## Security Model
 
-A Lager box has direct physical control over instruments and targets, and by
+A Lager Box has direct physical control over instruments and targets, and by
 design exposes that control over the network. Treat a box as trusted
 infrastructure on a trusted network:
 

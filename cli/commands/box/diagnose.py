@@ -575,7 +575,7 @@ def _print_section(title: str, data: dict, fmt_lines):
 
 @click.command()
 @click.argument('net')
-@click.option('--box', required=False, help='Lagerbox name or IP')
+@click.option('--box', required=False, help='Lager Box name or IP')
 @click.option('--type', 'net_type', type=click.Choice(NET_ROLE_CHOICES), default='auto',
               help='Net role; auto-detected from saved nets if omitted')
 @click.pass_context

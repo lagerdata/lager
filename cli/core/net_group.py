@@ -12,7 +12,7 @@ where:
   * ``[TYPE]``     is the group itself (``debug``, ``supply``, ...).
   * ``[NET_NAME]`` is optional and falls back to the configured default net.
   * ``[COMMAND]``  is the subcommand (``reset``, ``voltage``, ...).
-  * ``--box``      names the target Lagerbox and goes **after** the command;
+  * ``--box``      names the target Lager Box and goes **after** the command;
     ``BOX_NAME`` falls back to the configured default box.
 
 Click's stock usage line for a group is ``[OPTIONS] COMMAND [ARGS]...``. That

@@ -15,7 +15,7 @@ lager usb [OPTIONS] [NET_NAME] [COMMAND]
 
 | Option | Description |
 |--------|-------------|
-| `--box TEXT` | Lagerbox name or IP address |
+| `--box TEXT` | Lager Box name or IP address |
 | `--help` | Show help message and exit |
 
 ## Arguments
@@ -119,7 +119,7 @@ ready.
 That is **not** the same as "the port is unused". A hub only sees a device that
 pulls up its data lines, so a **charge-only cable** — powering a DUT with no data
 connection — looks exactly like an empty socket. The port was still cut and
-restored. Confirm the DUT by its own behaviour: its UART, or a current
+restored. Confirm the DUT by its own behavior: its UART, or a current
 measurement.
 
 Prefer it over a scripted `disable`/`sleep`/`enable`. It holds the hub for the

@@ -92,7 +92,7 @@ def _print_services(services: list[dict]) -> None:
 
 @ble.command('scan')
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--timeout', required=False, help='Total time box will spend scanning for devices', default=5.0, type=click.FLOAT, show_default=True)
 @click.option('--name-contains', required=False, help='Filter devices to those whose name contains this string')
 @click.option('--name-exact', required=False, help='Filter devices to those whose name matches this string')
@@ -185,7 +185,7 @@ def _info_or_connect(ctx, box, address, connect_style: bool):
 
 @ble.command('info')
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.argument('address', required=True)
 def info(ctx, box, address):
     """
@@ -196,7 +196,7 @@ def info(ctx, box, address):
 
 @ble.command('connect')
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.argument('address', required=True)
 def connect(ctx, box, address):
     """
@@ -207,7 +207,7 @@ def connect(ctx, box, address):
 
 @ble.command('disconnect')
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.argument('address', required=True)
 def disconnect(ctx, box, address):
     """

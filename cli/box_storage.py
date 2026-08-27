@@ -740,7 +740,7 @@ def _check_gateway(resp, ip, *, timeout: Optional[float] = 30,
 
     ``timeout``/``stream``/``session`` are forwarded to the retry and must
     mirror the original call; see :func:`_resend_with_auth`. Existing callers
-    pass none of them and keep the previous behaviour.
+    pass none of them and keep the previous behavior.
     """
     from .gateway_auth import handle_gateway_denial
     resp, denied = _resolve_gateway(resp, ip, timeout=timeout,

@@ -891,7 +891,7 @@ def uninstall(ctx, box, ip, user, keep_config, keep_docker_images, remove_all, y
     else:
         click.secho("Uninstall complete!", fg='green', bold=True)
     click.echo()
-    click.echo(f"The lager box code has been removed from {ip}.")
+    click.echo(f"The Lager Box software has been removed from {ip}.")
 
     if keep_config:
         click.echo()

@@ -57,7 +57,7 @@ def load_saved_nets():
 # net could never resolve however it was addressed (#328).
 #
 # Defaults to "scope" so a CLI that predates the role key keeps working: that
-# is the behaviour this script had for its whole life.
+# is the behavior this script had for its whole life.
 #
 # cli/impl/power/enable_disable.py hardcodes NetType.Logic for `lager logic`'s
 # five basic subcommands. The two must agree; test_logic_net_type.py pins them.

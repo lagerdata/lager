@@ -119,7 +119,7 @@ Mass-erase the target's flash.
 ### `flash(firmware_path) -> Result<()>`
 
 Flash a file, inferring the type from its extension: `.hex`, `.elf` or `.bin`. An
-unrecognised extension is `Error::Config`.
+unrecognized extension is `Error::Config`.
 
 <Warning>
   **A `.bin` is flashed at `0x08000000`**, the STM32 application base. On any other

@@ -38,7 +38,7 @@ def _print_json(value: dict) -> None:
 
 @blufi.command('scan')
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--timeout', required=False, help='Total time box will spend scanning for BluFi devices', default=10.0, type=click.FLOAT, show_default=True)
 @click.option('--name-contains', required=False, help='Filter devices to those whose name contains this string')
 def scan(ctx, box, timeout, name_contains):
@@ -74,7 +74,7 @@ def scan(ctx, box, timeout, name_contains):
 
 @blufi.command('connect')
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--timeout', required=False, help='BLE connection timeout in seconds', default=20.0, type=click.FLOAT, show_default=True)
 @click.argument('device_name', required=True)
 def connect(ctx, box, timeout, device_name):
@@ -101,7 +101,7 @@ def connect(ctx, box, timeout, device_name):
 
 @blufi.command('provision')
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--timeout', required=False, help='BLE connection timeout in seconds', default=20.0, type=click.FLOAT, show_default=True)
 @click.option('--ssid', required=True, help='WiFi network SSID to provision')
 @click.option('--password', required=True, help='WiFi network password')
@@ -129,7 +129,7 @@ def provision(ctx, box, timeout, ssid, password, device_name):
 
 @blufi.command('wifi-scan')
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--timeout', required=False, help='BLE connection timeout in seconds', default=20.0, type=click.FLOAT, show_default=True)
 @click.option('--scan-timeout', required=False, help='WiFi scan duration on device in seconds', default=15.0, type=click.FLOAT, show_default=True)
 @click.argument('device_name', required=True)
@@ -164,7 +164,7 @@ def wifi_scan(ctx, box, timeout, scan_timeout, device_name):
 
 @blufi.command('status')
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--timeout', required=False, help='BLE connection timeout in seconds', default=20.0, type=click.FLOAT, show_default=True)
 @click.argument('device_name', required=True)
 def status(ctx, box, timeout, device_name):
@@ -188,7 +188,7 @@ def status(ctx, box, timeout, device_name):
 
 @blufi.command('version')
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--timeout', required=False, help='BLE connection timeout in seconds', default=20.0, type=click.FLOAT, show_default=True)
 @click.argument('device_name', required=True)
 def version(ctx, box, timeout, device_name):

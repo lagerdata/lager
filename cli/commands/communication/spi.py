@@ -396,7 +396,7 @@ def _run_spi_backend(ctx, box_ip, action: str, netname: str,
 @click.group(name="spi", cls=SPIGroup, invoke_without_command=True)
 @click.argument("NETNAME", required=False, metavar="[NET_NAME]")
 @click.pass_context
-@click.option('--box', required=False, help="Lagerbox name or IP")
+@click.option('--box', required=False, help="Lager Box name or IP")
 def spi(ctx, netname, box):
     """Perform SPI data transfers"""
     # Store netname and box on context object (LagerContext)
@@ -432,7 +432,7 @@ spi.net_examples = [
 @spi.command()
 @click.argument("NUM_WORDS", type=int)
 @click.pass_context
-@click.option('--box', required=False, help="Lagerbox name or IP")
+@click.option('--box', required=False, help="Lager Box name or IP")
 @click.option('--mode', type=click.Choice(["0", "1", "2", "3"]), default=None,
               help='SPI mode (0-3)')
 @click.option('--bit-order', type=click.Choice(["msb", "lsb"]), default=None,
@@ -525,7 +525,7 @@ def transfer(ctx, num_words, box, mode, bit_order, frequency, cs_active, keep_cs
 @spi.command()
 @click.argument("NUM_WORDS", type=int)
 @click.pass_context
-@click.option('--box', required=False, help="Lagerbox name or IP")
+@click.option('--box', required=False, help="Lager Box name or IP")
 @click.option('--mode', type=click.Choice(["0", "1", "2", "3"]), default=None,
               help='SPI mode (0-3)')
 @click.option('--bit-order', type=click.Choice(["msb", "lsb"]), default=None,
@@ -586,7 +586,7 @@ def read(ctx, num_words, box, mode, bit_order, frequency, cs_active, keep_cs,
 
 @spi.command()
 @click.pass_context
-@click.option('--box', required=False, help="Lagerbox name or IP")
+@click.option('--box', required=False, help="Lager Box name or IP")
 @click.option('--mode', type=click.Choice(["0", "1", "2", "3"]), default=None,
               help='SPI mode (0-3)')
 @click.option('--bit-order', type=click.Choice(["msb", "lsb"]), default=None,
@@ -641,7 +641,7 @@ def config(ctx, box, mode, bit_order, frequency, cs_active, word_size, cs_mode):
 @spi.command()
 @click.argument("DATA", required=True)
 @click.pass_context
-@click.option('--box', required=False, help="Lagerbox name or IP")
+@click.option('--box', required=False, help="Lager Box name or IP")
 @click.option('--mode', type=click.Choice(["0", "1", "2", "3"]), default=None,
               help='SPI mode (0-3)')
 @click.option('--bit-order', type=click.Choice(["msb", "lsb"]), default=None,

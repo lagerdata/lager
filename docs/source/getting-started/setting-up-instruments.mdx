@@ -3,7 +3,7 @@ title: Setting Up Your Instruments
 description: Configure and manage instruments connected to a Lager Box
 ---
 
-Before you can use instruments with the Lager Client (CLI or Python Library), you may need to perform a minimal setup to identify and organize connected devices.
+Before you use instruments with the Lager Client, you must identify and organize the connected devices. This applies to both the CLI and the Python library.
 
 ---
 
@@ -67,18 +67,18 @@ WEBCAM    webcam        Logitech_BRIO_HD  /dev/video0   USB0::0x046D::0x085E::20
 
 ## Automatic Net Creation
 
-When an instrument is plugged into a Lager Box, Lager automatically creates a default Net for each function the instrument supports.
+When you plug an instrument into a Lager Box, Lager creates a default Net for each supported function.
 - A simple, single-function device like a power supply will create one `Supply` Net.
-- A multi-function device like a LabJack T7 DAQ will create several Nets: one for `GPIO`, one for `ADC`, one for `DAC`, and (if configured) one each for `I2C` and `SPI`.
-- An I2C/SPI adapter like a Total Phase Aardvark will create both an `I2C` Net and an `SPI` Net, since the adapter supports both protocols.
+- A multi-function device such as a LabJack T7 DAQ creates several Nets. It creates one each for `GPIO`, `ADC` and `DAC`, plus `I2C` and `SPI` when you configure them.
+- An I2C/SPI adapter supports both protocols. A Total Phase Aardvark, for example, creates an `I2C` Net and an `SPI` Net.
 
-For instruments that support multiple channels of the same type (e.g., a 4-channel oscilloscope), you can assign and configure Nets for each channel individually.
+Some instruments carry several channels of the same type, such as a 4-channel oscilloscope. You can assign and configure a Net for each channel.
 
 ---
 
 ## Modify or Assign Nets Using the TUI
 
-For instruments that support multiple channels (e.g. LabJack, PicoScope), you can assign new Nets using the interactive TUI (text user interface). You can also re-name existing Nets.
+The interactive TUI (text user interface) assigns new Nets on a multi-channel instrument such as a LabJack or a PicoScope. It also renames an existing Net.
 
 To launch the Net TUI, run:
 
@@ -96,10 +96,10 @@ lager nets tui --box my-lager-box
 
 ## RS-232 Instruments (Manual Assignment)
 
-Some instruments have no USB control port and connect through a USB-serial
-adapter — for example, a Rigol DP711 power supply on its RS-232 port. The
-Lager Box sees only the adapter cable, so it can't tell what instrument is
-behind it, and nothing appears automatically.
+Some instruments have no USB control port. They connect through a USB-serial
+adapter instead, such as a Rigol DP711 power supply on its RS-232 port. The
+Lager Box sees only the adapter cable. It cannot tell which instrument is
+behind that cable, so nothing appears automatically.
 
 > **Rigol DP711 — crossover cable required.** The DP711's RS-232 port is
 > wired as DTE, the same as the RS232-to-USB adapter Rigol ships with it.
@@ -119,13 +119,13 @@ lager nets assign --list --box my-lager-box
 lager nets assign Rigol_DP711 --serial 00000006 --as-net main_supply --box my-lager-box
 ```
 
-The same flow is available in the Net TUI (`lager nets tui`) via the
-**Assign Device** button: pick the cable, pick the instrument, and name the
-net in the same flow — done.
+The Net TUI (`lager nets tui`) offers the same flow under the
+**Assign Device** button. Pick the cable, pick the instrument, and name the
+net.
 
-After assignment, the instrument shows up in `lager instruments` and in the
-TUI like any auto-detected device, and nets can be added for it normally. The
-assignment is stored on the box and survives reboots and replugs.
+After you assign it, the instrument appears in `lager instruments` and in the
+TUI like any auto-detected device. You add nets for it in the usual way. The
+box stores the assignment, which survives a reboot and a replug.
 
 See the [`nets assign` reference](/source/reference/cli/nets#assign) for
 port-pinned assignments, baud-rate overrides, and removal.

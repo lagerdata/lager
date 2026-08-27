@@ -532,7 +532,7 @@ def _flatten_shell_cmd():
       `box/` a no-op instead of an error.
     - **Removing before the move is what makes deletions propagate**, and it
       also stops `mv` from nesting `box/lager` *inside* an existing `lager/`
-      (the classic `mv a b` behaviour when `b` is a directory).
+      (the classic `mv a b` behavior when `b` is a directory).
     - **Only the names `box/` provides are touched.** A blanket wipe of `~/box`
       would take out `.git` and the root-level tracked files — root and `box/`
       both carry a `README.md` (see `_pull_shell_script`). `box/` ships no
@@ -3773,7 +3773,7 @@ def _update_options(fn):
     """Shared option decorators for `lager update`. Kept in one place so the
     command signature and the decorator list can't drift apart."""
     for opt in reversed([
-        click.option('--box', required=False, help='Lagerbox name or IP'),
+        click.option('--box', required=False, help='Lager Box name or IP'),
         click.option('--yes', is_flag=True, help='Skip confirmation prompt'),
         click.option('--version', required=False, help='Version to update to: a release tag (e.g. v0.21.3), a branch (main, staging), or a full 40-character commit SHA'),
         click.option('--verbose', '-v', is_flag=True, help='Show detailed output (default shows progress bar only)'),

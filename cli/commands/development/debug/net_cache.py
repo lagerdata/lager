@@ -55,7 +55,7 @@ class DebugNetCache:
         Get cached debug net configuration.
 
         Args:
-            box: Lagerbox name or IP
+            box: Lager Box name or IP
             net_name: Debug net name (or None for default)
 
         Returns:
@@ -81,7 +81,7 @@ class DebugNetCache:
         Store debug net configuration in cache.
 
         Args:
-            box: Lagerbox name or IP
+            box: Lager Box name or IP
             net_name: Debug net name (or None for default)
             net_config: Net configuration dict to cache
         """

@@ -15,7 +15,7 @@ lager nets [OPTIONS] [COMMAND]
 
 | Option | Description |
 |--------|-------------|
-| `--box TEXT` | Lagerbox name or IP address |
+| `--box TEXT` | Lager Box name or IP address |
 | `--help` | Show help message and exit |
 
 ## Commands
@@ -90,7 +90,7 @@ lager nets add NAME ROLE CHANNEL ADDRESS [OPTIONS]
 - `ADDRESS` - VISA address or device path (e.g., `TCPIP::192.168.1.100::INSTR`)
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--jlink-script FILE` - J-Link script file for debug nets (stored on box)
 - `--sda PIN` / `--scl PIN` - Custom LabJack pins for `i2c` nets
 - `--cs PIN` / `--sck PIN` / `--mosi PIN` / `--miso PIN` - Custom LabJack pins for `spi` nets (`--cs` is optional; omit it for 3-pin SPI with manual chip select)
@@ -249,7 +249,7 @@ lager nets add-all [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--yes` - Skip confirmation prompt
 
 **Example:**
@@ -289,7 +289,7 @@ lager nets add-batch JSON_FILE [OPTIONS]
 - `JSON_FILE` - Path to JSON file containing net definitions
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 **JSON Format:**
 
@@ -353,7 +353,7 @@ lager nets assign --remove --serial|--port [OPTIONS]     # unassign
 | `--baud INTEGER` | Baud-rate override; must match the instrument's front-panel setting (DP711 factory default: 9600) |
 | `--remove` | Remove the assignment matching `--serial`/`--port` |
 | `--as-net [NAME]` | Also create a net for the instrument right away (name defaults to the device name) |
-| `--box TEXT` | Lagerbox name or IP |
+| `--box TEXT` | Lager Box name or IP |
 
 **End-to-end example (Rigol DP711):**
 
@@ -423,7 +423,7 @@ lager nets delete NAME NET_TYPE [OPTIONS]
 - `NET_TYPE` - Type of the net (supply, debug, adc, i2c, spi, etc.)
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--yes` - Skip confirmation prompt
 
 **Example:**
@@ -448,7 +448,7 @@ lager nets delete-all [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 - `--yes` - Skip confirmation prompt
 
 **Example:**
@@ -474,7 +474,7 @@ lager nets rename NAME NEW_NAME [OPTIONS]
 - `NEW_NAME` - New name for the net (must be unique)
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 **Example:**
 
@@ -491,7 +491,7 @@ lager nets tui [OPTIONS]
 ```
 
 **Options:**
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 **Example:**
 
@@ -536,7 +536,7 @@ lager nets set-script NAME SCRIPT_PATH [OPTIONS]
 
 **Options:**
 - `--backend [jlink|openocd]` - Force a specific backend instead of auto-detecting (required if the probe and file disagree)
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 **Example:**
 
@@ -567,7 +567,7 @@ lager nets remove-script NAME [OPTIONS]
 
 **Options:**
 - `--backend [jlink|openocd]` - Only remove the named backend's script (default: remove whichever is set)
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 **Example:**
 
@@ -592,7 +592,7 @@ lager nets show-script NAME [OPTIONS]
 
 **Options:**
 - `--backend [jlink|openocd]` - Only show the named backend's script (default: show whichever is set)
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 **Example:**
 
@@ -618,7 +618,7 @@ lager nets show NAME [OPTIONS]
 
 **Options:**
 - `--json` - Output as raw JSON
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 **Example:**
 
@@ -646,7 +646,7 @@ lager nets describe NAME [OPTIONS]
 - `-n`, `--notes TEXT` - Optional notes (gotchas, jumper positions, scope probe points)
 - `-t`, `--tag TEXT` - Tag for categorisation/matching (repeatable)
 - `--clear-tags` - Remove all existing tags before adding new ones
-- `--box TEXT` - Lagerbox name or IP
+- `--box TEXT` - Lager Box name or IP
 
 **Example:**
 

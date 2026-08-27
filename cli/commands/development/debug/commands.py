@@ -341,7 +341,7 @@ def _resolve_debug_scripts(ctx, net_name, debug_net):
         if configured:
             click.secho(
                 f"Warning: ignoring debug script {configured!r} for net "
-                f"{net_name!r}: extension not recognised. Use "
+                f"{net_name!r}: extension not recognized. Use "
                 f"`.JLinkScript` for J-Link probes or `.cfg`/`.tcl` for "
                 f"OpenOCD probes.",
                 fg='yellow', err=True,
@@ -601,7 +601,7 @@ class NetDebugGroup(NetGroupHelpMixin, click.MultiCommand):
 
 
 @click.command(name='debug', cls=NetDebugGroup, invoke_without_command=True)
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.pass_context
 def _debug(ctx, box):
     """
@@ -614,7 +614,7 @@ def _debug(ctx, box):
 
 @click.command(cls=NetSubCommand)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--force/--no-force', is_flag=True, default=False,
               help='Force new connection (default: reuse existing)', show_default=True)
 @click.option('--halt/--no-halt', is_flag=True, default=False,
@@ -939,7 +939,7 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
 
 @click.command(cls=NetSubCommand)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--keep-server', is_flag=True, default=False,
               help="Keep JLinkGDBServer running for external GDB client connections")
 def disconnect(ctx, box, keep_server):
@@ -1067,7 +1067,7 @@ def _erase_failure_line(output):
 
 @click.command(cls=NetSubCommand)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--hex', type=click.Path(exists=True))
 @click.option('--elf', type=click.Path(exists=True))
 @click.option('--bin', multiple=True, type=BinfileType(exists=True))
@@ -1270,7 +1270,7 @@ def flash(ctx, box, hex, elf, bin, verbose, force_reconnect, no_erase, erase, ha
 
 @click.command(cls=NetSubCommand)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--speed', type=str, default='4000', callback=validate_speed_param,
               help='SWD/JTAG speed in kHz (default: 4000)')
 @click.option('--yes', is_flag=True, default=False,
@@ -1400,7 +1400,7 @@ def erase(ctx, box, speed, yes, quiet, json_output, halt):
 
 @click.command(cls=NetSubCommand)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--halt/--no-halt', is_flag=True, default=False,
               help='Halt the device after reset (keeps debugger connected)', show_default=True)
 @click.option('--force-reconnect', is_flag=True, default=False,
@@ -1472,7 +1472,7 @@ def reset(ctx, box, halt, force_reconnect):
 @click.pass_context
 @click.argument('start_addr', type=MemoryAddressType())
 @click.argument('length', type=MemoryAddressType())
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--json', 'json_output', is_flag=True, default=False,
               help='Output results in JSON format')
 @click.option('--halt', is_flag=True, default=False,
@@ -1636,7 +1636,7 @@ def memrd(ctx, start_addr, length, box, json_output, halt, no_halt, no_reset):
 
 @click.command(cls=NetSubCommand)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def status(ctx, box):
     """Show debug net status and information"""
     target_box = box
@@ -1680,7 +1680,7 @@ def status(ctx, box):
 
 @click.command(cls=NetSubCommand)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.option('--verbose', is_flag=True, default=False,
               help='Show detailed health information')
 def health(ctx, box, verbose):

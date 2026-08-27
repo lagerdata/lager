@@ -109,7 +109,7 @@ def _resolve_box_for_command(ctx, target_box):
     help="Control robot arm position and movement (units: mm)",
 )
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 @click.argument("netname", required=False, metavar="[NET_NAME]")
 def arm(ctx, box, netname):
     """
@@ -153,7 +153,7 @@ arm.net_examples = [
 
 @arm.command(name="position", help="Print current arm position (mm)")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def position(ctx, box):
     net = _require_netname(ctx)
     resolved = _resolve_box_for_command(ctx, box)
@@ -169,7 +169,7 @@ def position(ctx, box):
 @click.option("--z", "z", type=float, required=True, help="Z coordinate (mm)")
 @click.option("--yes", is_flag=True, help="Confirm the action without prompting")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def move(ctx, timeout, x, y, z, yes, box):
     # Validate coordinate bounds (Rotrics Dexarm workspace)
     # X: left/right from center, Y: forward from base, Z: up/down from table
@@ -213,7 +213,7 @@ def move(ctx, timeout, x, y, z, yes, box):
 @click.option("--dz", "dz", type=float, default=0.0, help="Delta Z (mm)")
 @click.option("--yes", is_flag=True, help="Confirm the action without prompting")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def delta(ctx, timeout, dx, dy, dz, yes, box):
     net = _require_netname(ctx)
     resolved = _resolve_box_for_command(ctx, box)
@@ -228,7 +228,7 @@ def delta(ctx, timeout, dx, dy, dz, yes, box):
 @arm.command(name="go-home", help="Move arm to the home position (X0 Y300 Z0)")
 @click.option("--yes", is_flag=True, help="Confirm the action without prompting")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def go_home(ctx, yes, box):
     net = _require_netname(ctx)
     resolved = _resolve_box_for_command(ctx, box)
@@ -242,7 +242,7 @@ def go_home(ctx, yes, box):
 
 @arm.command(name="enable-motor", help="Enable arm motors")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def enable_motor(ctx, box):
     net = _require_netname(ctx)
     resolved = _resolve_box_for_command(ctx, box)
@@ -253,7 +253,7 @@ def enable_motor(ctx, box):
 
 @arm.command(name="disable-motor", help="Disable arm motors")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def disable_motor(ctx, box):
     net = _require_netname(ctx)
     resolved = _resolve_box_for_command(ctx, box)
@@ -264,7 +264,7 @@ def disable_motor(ctx, box):
 
 @arm.command(name="read-and-save-position", help="Save current position as calibration reference")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def read_and_save_position(ctx, box):
     net = _require_netname(ctx)
     resolved = _resolve_box_for_command(ctx, box)
@@ -278,7 +278,7 @@ def read_and_save_position(ctx, box):
 @click.option("--travel", "travel", type=click.IntRange(min=1), required=True, help="Travel acceleration")
 @click.option("--retract", "retract", type=click.IntRange(min=1), default=60, show_default=True, help="Retract acceleration")
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def set_acceleration(ctx, acceleration, travel, retract, box):
     net = _require_netname(ctx)
     resolved = _resolve_box_for_command(ctx, box)

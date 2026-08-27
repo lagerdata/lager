@@ -38,7 +38,7 @@ def _ref_suffix(box_ref):
 
 @click.command(cls=BoxCommand)
 @click.pass_context
-@click.option("--box", required=False, help="Lagerbox name or IP")
+@click.option("--box", required=False, help="Lager Box name or IP")
 def hello(ctx, box):
     """Test box connectivity and show version"""
     # Resolve and validate the box
