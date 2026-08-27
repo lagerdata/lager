@@ -3,7 +3,7 @@ title: GPIO
 description: Read, drive and wait on digital pins
 ---
 
-Drive digital signals into your DUT and read signals back out, including a
+Drive digital signals into your DUT and read signals back out. This includes a
 hardware-timed wait that blocks on the box rather than polling over the network.
 
 ## Handle
@@ -177,10 +177,10 @@ assert!(boot_ms < 800.0, "boot took {boot_ms:.0} ms");
 
 - One net is one pin. Driving `gpio1` says nothing about `gpio2`.
 - A pin is an input or an output depending on what you last asked of it. Calling
-  `input()` on a pin you have been driving reads back your own output.
+  `input()` on a pin that you drive reads back your own output.
 - GPIO nets are **box-side** pins: they drive signals into the DUT or read signals
   out of it. They are not DUT pins.
-- On FTDI parts, gpio is async bitbang and works on all four channels, unlike the
-  MPSSE protocols (debug, spi, i2c) which are limited to channels A and B.
+- On FTDI parts, gpio is async bitbang and works on all four channels. By contrast, the
+  MPSSE protocols (debug, spi, i2c) are limited to channels A and B.
 - Bench pins sometimes gate instrument power rather than DUT signals. Read a pin's
   net name before driving it.

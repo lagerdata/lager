@@ -3,8 +3,8 @@ title: Webcam
 description: Start an MJPEG stream from a camera on the box
 ---
 
-Start and stop an MJPEG video stream from a USB camera attached to the box, so a
-person or a vision tool can watch the DUT while a test runs.
+Start and stop an MJPEG video stream from a USB camera attached to the box. A
+person or a vision tool can then watch the DUT while a test runs.
 
 ## Handle
 
@@ -61,11 +61,11 @@ seconds.
 
 Stop the stream.
 
-**Returns:** `false` if no stream was running.
+**Returns:** `false` if no stream was active.
 
 ### `status() -> Result<WebcamStatus>` and `url() -> Result<Option<String>>`
 
-Whether a stream is running and where, or just the URL.
+Whether a stream is active and where, or just the URL.
 
 ## Examples
 
@@ -95,7 +95,8 @@ result?;
 ## Notes
 
 - **The stream URL points at the box as the client reached it.** A URL captured on
-  one network may not resolve from another, so do not persist it across environments.
+  one network does not always resolve from another, so do not persist it across
+  environments.
 - This is a video stream, not a frame grab. There is no assert-on-image here — point
   an MJPEG consumer (a browser, VLC, OpenCV) at the URL.
 - Always `stop()` in teardown. A running stream holds the camera open and the next

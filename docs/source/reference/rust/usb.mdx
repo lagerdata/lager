@@ -3,8 +3,8 @@ title: USB Hub Ports
 description: Power-cycle a programmable USB hub port
 ---
 
-Cut and restore power to one port of a programmable USB hub, which is how a test
-forces a DUT to re-enumerate or simulates a cable pull.
+Cut and restore power to one port of a programmable USB hub. A test uses this to force
+a DUT to re-enumerate, or to simulate a cable pull.
 
 ## Handle
 
@@ -57,8 +57,8 @@ assert!(port.state()?, "port should be up");
 <Note>
   `state()` needs box software 0.29.0 or newer. Older boxes reject the action, and
   the crate turns that specific rejection into `Error::UnsupportedByBox` with the
-  message `the 'state' action on /usb/command requires box software >= 0.29.0;
-  update the box or use toggle/enable/disable`.
+  message
+  `the 'state' action on /usb/command requires box software >= 0.29.0; update the box or use toggle/enable/disable`.
 </Note>
 
 ## Examples
@@ -102,5 +102,5 @@ loop {
 - One net is one port. Cycling `usb1` leaves the hub's other ports alone.
 - The port's `devnum` on the bus changes across a re-enumeration. Match a device by
   serial or vid/pid, never by `devnum`, when checking that it came back.
-- Powering a port down removes the device the box may be using for another net. A
+- Powering a port down can remove a device that the box uses for another net. A
   debug probe or serial adapter behind that port will disappear mid-test.

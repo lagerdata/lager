@@ -79,7 +79,7 @@ if let Some(gdb) = &conn.gdb_server {
 
 **Returns:** `DebugConnection`, carrying the device, probe, serial, backend, and a
 `GdbServer` with the ports that were opened. On a J-Link these come back as gdb 2331,
-SWO 2332, telnet 2333 and RTT telnet 9090; `tcl_port` is OpenOCD-only and is `None`
+SWO 2332, telnet 2333 and RTT telnet 9090. `tcl_port` is OpenOCD-only and is `None`
 on a J-Link, just as `swo_port` is J-Link-only.
 
 ### `connect_with(opts: &ConnectOptions) -> Result<DebugConnection>`
@@ -123,8 +123,9 @@ unrecognized extension is `Error::Config`.
 
 <Warning>
   **A `.bin` is flashed at `0x08000000`**, the STM32 application base. On any other
-  family that address is wrong, and the call still returns `Ok(())` — verified on an
-  nRF5340, where `flash()` of a `.bin` succeeded while flash at `0x0` stayed erased.
+  family that address is wrong, and the call still returns `Ok(())`. This was
+  verified on an nRF5340: `flash()` of a `.bin` succeeded while flash at `0x0` stayed
+  erased.
   This is a silent wrong result, not an error. Off STM32, use `flash_bin()` with the
   correct base address.
 </Warning>
@@ -158,7 +159,7 @@ Requires a live connection: without one it fails with `Error::Box` and
 ### `info() -> Result<DebugInfo>` and `status() -> Result<DebugStatus>`
 
 `info()` reports the device, architecture, probe, serial and backend, plus whether a
-connection is live. `status()` reports just the gdbserver: whether one is running, its
+connection is live. `status()` reports just the gdbserver: whether one is active, its
 pid, and the probe serial. Both work without connecting first.
 
 ```rust
@@ -211,10 +212,14 @@ dbg.disconnect(true)?;   // keep_running: the server survives
 
 ## Notes
 
-- Timeout budgets are per operation and match the CLI: connect 30 s, flash 180 s,
-  erase 120 s, memory read 30 s, and 10 s for `info`, `status` and `disconnect`.
-- Net resolution requires the `debug` role. A net that exists but is something else
-  gives `net 'adc1' exists but is not a debug net`; a name that does not exist gives
+- Timeout budgets are per operation and match the CLI:
+  - connect 30 s
+  - flash 180 s
+  - erase 120 s
+  - memory read 30 s
+  - 10 s for `info`, `status` and `disconnect`
+- Net resolution requires the `debug` role. A net that exists with another role
+  gives `net 'adc1' exists but is not a debug net`. A name that does not exist gives
   `debug net 'nosuch' not found on this box`.
 - The debug service does not use the same success envelope as the port-9000 API. A
   200 is success; anything else is `Error::Box` carrying the service's message.

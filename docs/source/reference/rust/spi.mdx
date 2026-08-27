@@ -147,9 +147,9 @@ let data = spi.read(256, &SpiOptions::default())?; // releases CS at the end
 ## Notes
 
 - `opts.fill` is only sent for `read()` and `transfer()`. `write()` and `read_write()`
-  clock out exactly the data given, so a fill word would be meaningless.
-- `word_size` comes back on every transfer because a bus configured for 16-bit words
-  returns half as many entries as you might expect from a byte count.
+  clock out exactly the data given, so a fill word is meaningless.
+- `word_size` comes back on every transfer, because a bus configured for 16-bit words
+  returns one entry per word rather than one entry per byte.
 - Transactions run on the box under the device's lock, so a multi-word transfer
   cannot be interleaved by another request on the same device.
 - `configure()` persists across tests. Set what you depend on rather than assuming.

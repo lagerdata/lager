@@ -68,8 +68,8 @@ Set the output voltage setpoint.
 supply.set_voltage(3.3)?;
 ```
 
-A value above the instrument's hardware limit is refused by the box before it
-reaches the instrument, as `Error::Box` with a message naming the limit —
+The box refuses a value above the instrument's hardware limit before it reaches the
+instrument, as `Error::Box` with a message naming the limit. The message reads
 `Voltage 999.0V exceeds hardware limit 60.0V`.
 
 ### `set_current(amps: f64) -> Result<()>`
@@ -91,7 +91,7 @@ Set **and enable** the protection trip. These are not just threshold writes.
 
 ### `clear_ovp() -> Result<()>` and `clear_ocp() -> Result<()>`
 
-Clear a trip that has fired. Until cleared, the output stays down.
+Clear a trip that fired. Until you clear it, the output stays down.
 
 ### `state() -> Result<SupplyState>`
 
@@ -154,8 +154,8 @@ supply.disable()?;
 ## Notes
 
 - **A measurement can be `None` while the output is off.** A Keithley 2281S reports
-  `voltage`, `current` and `power` as `None` with the output disabled and real
-  numbers once enabled; a Rigol DP821 reports zeros in both states. This is why the
+  `voltage`, `current` and `power` as `None` with the output disabled, and real
+  numbers once enabled. A Rigol DP821 reports zeros in both states. This is why the
   fields are `Option` — treat `None` as "not measured", not as zero.
 - `state()` returning `Ok` does not mean the instrument answered. When the box
   cannot reach the hardware service, you get a fully-shaped `SupplyState` with every

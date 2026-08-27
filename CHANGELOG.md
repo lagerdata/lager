@@ -175,6 +175,39 @@ All notable changes to the Lager platform are documented here. For detailed rele
   declarations. The `nets` caveat that made its line too long moved into the
   paragraph below it, which already describes how pins behave.
 
+- **The Rust API reference is converted to Simplified Technical English.** All 31 pages
+  under `docs/source/reference/rust/` now report zero on `terms`, `spelling`, `modals`,
+  `length`, `tense`, `conjunction` and `paragraph`, down from 80 violations across 24 of
+  them (49 length, 17 tense, 14 modals). These are reference pages rather than
+  procedure, so the sentence cap is STE's 25-word descriptive limit and not the 20-word
+  procedural one.
+
+  Rust type, trait and method names are Technical Names under rule 7 and are always
+  approved, so `DebugNet`, `RttStream`, `NetType` and every method signature read as
+  they did. The `lager-net` version pins are untouched. Four sentences that were really
+  lists -- the net-type catalogue, the `NetRecord` fields, and the BluFi and debug
+  timeout budgets -- became bullet lists under rule 14 rather than tables, so every item
+  is still measured by the checker.
+
+  Four modals took no substitute, because `can`, `will` and `must` would each have
+  stated something false. A URL captured on one network *sometimes* resolves from
+  another, and a recommendation to mark hardware-only tests `#[ignore]` is not an API
+  requirement that anything enforces. Rule 6's own worked example replaces such a modal
+  with what actually happens, and that is what these do.
+
+  Two defects here were invisible to `tools/check_ste.py` rather than reported by it.
+  Its tense pattern allows only `not` between the auxiliary and the participle, so
+  `is currently outputting` in `dac.mdx` and `is actually presenting` in `battery.mdx`
+  sat in pages that reported clean; both are now simple present. Its `clean_inline()`
+  runs per source line, so an inline code span hard-wrapped across a newline is never
+  collapsed and its literal words count as prose -- which was the whole of a 33-word
+  violation in `usb.mdx`. Reflowing that span onto one line clears it with no change to
+  the prose, and the error message the crate emits stays character-for-character
+  identical. The same latent wrap in `dfu.mdx` is reflowed as well.
+
+  `passive` stays report-only per rule 4, and the CI step stays `continue-on-error`
+  until the last batch lands.
+
 - **Six CLI messages told the user to run `lager box update`, which does not
   exist.** The `lager box` group carries only `config` and `dut`; the `update`
   spelling was removed in favor of top-level `lager update`, and two comments in

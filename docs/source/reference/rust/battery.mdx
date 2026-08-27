@@ -159,7 +159,7 @@ battery.disable()?;
 - **`set_voc()` is a request, not an assignment.** The instrument derives terminal
   voltage from the loaded model and the state of charge. On a Keithley 2281S with the
   `LI_ION4_2` model, setting SOC to 50 moved `voc` to about 4.007 V regardless of an
-  earlier `set_voc(3.7)`. Read `state()` to learn what the pack is actually presenting.
+  earlier `set_voc(3.7)`. Read `state()` to learn what the pack actually presents.
 - A battery net and a power-supply net can share one physical instrument. Switching
   to battery mode changes what that instrument is for both, and the box serializes
   them under a single per-instrument lock.

@@ -49,7 +49,8 @@ Set irradiance, in W/m2, over the range 0 to 1500.
 panel.set_irradiance(800.0)?;
 ```
 
-**Returns:** `f64` — the value the instrument actually applied, which may be clamped.
+**Returns:** `f64` — the value that the instrument actually applied. The instrument can
+clamp the requested value.
 
 ### `set_resistance(ohms: f64) -> Result<f64>`
 
@@ -93,7 +94,7 @@ panel.stop()?;
 ## Notes
 
 - **Every solar action re-asserts PV mode on the instrument before doing its work**,
-  including the reads. That makes even `voc()` slow, and it is why this net type has
+  including the reads. That makes even `voc()` slow. This net type therefore has
   the widest timeout budgets in the crate: 120 seconds for `set()` and `stop()`, and
   90 seconds for everything else.
 - A solar net drives the same physical instrument a power-supply net can point at.

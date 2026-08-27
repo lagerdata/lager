@@ -104,5 +104,5 @@ assert!(amps < 50e-6, "sleep current {:.1} uA over budget", amps * 1e6);
 - The client widens its HTTP budget to `max(30, duration + 20)` seconds, so a long
   window does not trip the ordinary 10-second timeout.
 - A window is a real wait. `power(5.0)` blocks your test for five seconds.
-- Fields on `WattReading` are `Option` because a meter may not report all three; a
+- Fields on `WattReading` are `Option` because some meters cannot report all three; a
   `None` is "this instrument does not measure that", not a failure.

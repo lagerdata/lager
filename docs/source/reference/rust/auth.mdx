@@ -5,9 +5,9 @@ description: Using the Rust crate with boxes behind an authenticating gateway
 
 Plain (ungated) boxes need none of this: no header is sent and none of
 this code runs. This page applies to deployments that place an
-authenticating reverse proxy (a *gateway*) in front of a box, which
-rejects unauthenticated traffic with 401 + an `X-Gateway-Auth-Url` header
-— the same contract the Lager CLI speaks.
+authenticating reverse proxy (a *gateway*) in front of a box. The gateway
+rejects unauthenticated traffic with 401 and an `X-Gateway-Auth-Url` header.
+This is the same contract that the Lager CLI speaks.
 
 The crate handles gated boxes transparently, in two modes.
 
@@ -91,7 +91,7 @@ refresh.
 
 ## The token store
 
-The crate reads the same file `lager login` writes, so a developer who has signed in
+The crate reads the same file that `lager login` writes, so a developer who signed in
 needs no additional setup.
 
 | Path | Source |
@@ -119,14 +119,15 @@ A gated box answers unauthenticated traffic with a denial status and an
 1. On first contact, the crate learns the box-to-auth-server mapping from that header
    and records it under `boxes`.
 2. It resolves a credential, retries the request **once**, and thereafter attaches the
-   token proactively — a box already known to be gated gets its header on the very
+   token proactively. A box already known to be gated gets its header on the very
    first request of the next run.
 3. An expired access token is refreshed against `POST <auth_url>/api/auth/refresh`,
    replaying the stored cookies. Rotated cookies from the response are merged back in.
 
 Expiry is read from the JWT's `exp` claim, decoded but **not** verified, with a
-60-second refresh margin. An opaque non-JWT token reads as already expired, so a
-refresh is attempted; when there is nothing to refresh with, it is sent as-is anyway.
+60-second refresh margin. An opaque non-JWT token reads as already expired, so the
+crate attempts a refresh. When the crate has no refresh token, it sends the original
+token as-is anyway.
 
 <Note>
   A plain 401 with **no** `X-Gateway-Auth-Url` header is not treated as a gateway

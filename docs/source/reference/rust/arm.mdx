@@ -124,9 +124,9 @@ arm.go_home()?;
 
 - **Coordinates are millimetres**, and the arm enforces its own workspace bounds. An
   out-of-range target is refused, not clamped.
-- **Moves block on the box** until the arm arrives, so a move is not something to poll
-  around. The box-side default move timeout is 15 seconds.
+- **Moves block on the box** until the arm arrives, so do not poll around a
+  move. The box-side default move timeout is 15 seconds.
 - Non-move actions get a flat 45-second client budget, because they still touch the
-  serial port and may queue behind a move on the device lock.
+  serial port and can queue behind a move on the device lock.
 - The arm is physical and has no collision detection. Clear its workspace before
   letting a test run unattended.

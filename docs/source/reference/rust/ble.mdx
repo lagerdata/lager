@@ -117,8 +117,9 @@ supply.disable()?;
 - `capabilities.ble_command` being `true` means the box **serves the route**, not that
   it can do the work. A box whose container has no BlueZ running answers with
   `Error::Box` and HTTP 502 carrying
-  `The name org.bluez was not provided by any .service files` — even with a Bluetooth
-  controller present on the USB bus. Check the error, not just the capability flag.
+  `The name org.bluez was not provided by any .service files`. This happens even with a
+  Bluetooth controller present on the USB bus. Check the error, not just the
+  capability flag.
 - The box-side connect timeout for `info`, `connect` and `disconnect` is 10 seconds;
   the client allows that plus 30.
 - `rssi` is a snapshot from the advertisement that happened to be received. Treat it

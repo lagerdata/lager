@@ -89,8 +89,8 @@ for net in lager.nets()? {
 <Warning>
   **A capability flag mirrors route registration, not the box's ability to do the
   work.** `ble_command: true` on a box whose container has no BlueZ still fails every
-  BLE call with `Error::Box` and HTTP 502; `wifi_command: true` without `nmcli`
-  installed does the same. Use these flags to decide whether an endpoint exists, not
+  BLE call with `Error::Box` and HTTP 502. `wifi_command: true` without `nmcli`
+  installed fails the same way. Use these flags to decide whether an endpoint exists, not
   whether it will succeed.
 </Warning>
 
@@ -144,8 +144,8 @@ and `Box is locked by <holder>`; unlocking as a non-holder is HTTP 403 with the 
 message. Unlocking a box that is already free succeeds.
 
 <Note>
-  `lock_guard()` is blocking-only. The async client has every other lock method, but
-  no RAII guard.
+  `lock_guard()` exists only on the blocking client. The async client has every other
+  lock method, but no RAII guard.
 </Note>
 
 ## Safety limits
@@ -197,14 +197,14 @@ Refused erase on net 'debug1': this net is configured with allow_destructive: fa
 <Warning>
   **Ceilings cap setpoints, not protection trips.** With a 3.6 V ceiling,
   `set_voltage(5.0)` is refused — but `set_ovp(12.0)` is accepted and applied. A
-  refused `set_ocp` on such a net is being refused by the instrument's own hardware
-  limit, not by the ceiling. Do not rely on a safety limit to bound an OVP or OCP
+  refused `set_ocp` on such a net comes from the instrument's own hardware limit,
+  not from the ceiling. Do not rely on a safety limit to bound an OVP or OCP
   setting.
 </Warning>
 
-There is deliberately no `max_power`: one setter call establishes either a voltage or
-a current, never both, so the box cannot evaluate a power ceiling honestly and refuses
-the key outright.
+There is deliberately no `max_power`. One setter call establishes either a voltage or
+a current, never both, so the box cannot evaluate a power ceiling honestly. It
+therefore refuses the key outright.
 
 ## Notes
 

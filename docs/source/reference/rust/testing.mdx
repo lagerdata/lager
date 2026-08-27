@@ -3,9 +3,9 @@ title: Testing with cargo test
 description: Structuring a Rust hardware-in-the-loop suite, parallelism, and CI
 ---
 
-The crate is designed so your HIL suite is just ordinary Rust integration
-tests: files under `tests/`, run by `cargo test`, living in the same
-repository as your firmware.
+The crate is designed so that your HIL suite is just ordinary Rust
+integration tests. These are files under `tests/`, run by `cargo test`, that
+live in the same repository as your firmware.
 
 ## Structure
 
@@ -39,11 +39,11 @@ Group tests by net or by DUT feature — one file per concern (`boot.rs`,
 ## Parallel tests and instrument safety
 
 `cargo test` runs tests on multiple threads by default. That is safe at the
-instrument level: the box serializes access per physical instrument — every
+instrument level. The box serializes access per physical instrument: every
 net command runs under a per-device lock in the box's single-owner hardware
-service — so parallel tests can never interleave I/O on one instrument
-(e.g. a LabJack shared across GPIO/ADC/SPI nets, or a Keithley shared by
-supply and battery roles).
+service. Because of that per-device lock, parallel tests can never interleave
+I/O on one instrument. Examples are a LabJack shared across GPIO/ADC/SPI
+nets, or a Keithley shared by supply and battery roles.
 
 Tests sharing a *net* still observe each other's state changes (one test's
 `disable()` is visible to another test reading the same supply). Either
@@ -55,16 +55,16 @@ cargo test -- --test-threads=1
 
 ## Timeouts
 
-Timeout budgets mirror the Lager CLI: quick commands use 10 s, and
-operations that block on the box for a caller-controlled duration
-(watt/energy integration windows, `wait_for_level`) widen or drop the
-client timeout automatically, so a healthy long measurement is never
-aborted mid-flight.
+Timeout budgets mirror the Lager CLI. Quick commands use 10 s. Some
+operations block on the box for a caller-controlled duration: the watt and
+energy integration windows, and `wait_for_level`. Those operations widen or
+drop the client timeout automatically, so a healthy long measurement is
+never aborted mid-flight.
 
 ## Hermetic tests vs. hardware tests
 
-Tests that always need real hardware should be marked `#[ignore]` so a
-plain `cargo test` (on a laptop with no box, or in a PR check) stays green:
+Mark tests that always need real hardware with `#[ignore]`. A plain
+`cargo test` then stays green on a laptop with no box, or in a PR check:
 
 ```rust
 #[test]
@@ -80,9 +80,9 @@ Then opt in explicitly where a box is available:
 LAGER_BOX_HOST=192.168.1.42 cargo test -- --ignored
 ```
 
-This is the convention the crate itself uses: its own suite is hermetic
-(`cargo test` runs against a mock box), and its hardware smoke tests run
-with `cargo test --test hardware -- --ignored`.
+This is the convention that the crate itself uses. Its own suite is
+hermetic, and `cargo test` runs against a mock box. Its hardware smoke tests
+run with `cargo test --test hardware -- --ignored`.
 
 ## CI
 
@@ -110,10 +110,10 @@ attached and refreshed.
 
 ## A harness that runs against any box
 
-The crate's own hardware suite uses a pattern worth copying: every test is `#[ignore]`d
-so `cargo test` stays hermetic, and each one reads its net name from an environment
-variable, skipping with a note when it is unset. The same suite then runs against
-whatever a given bench happens to have configured.
+The crate's own hardware suite uses a pattern worth copying. Every test is `#[ignore]`d,
+so `cargo test` stays hermetic. Each test reads its net name from an environment
+variable, and skips with a note when that variable is unset. The same suite then runs
+against whatever nets a given bench configures.
 
 ```rust
 #![cfg(feature = "blocking")]
