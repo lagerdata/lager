@@ -28,6 +28,7 @@ Response:
 """
 import importlib
 import logging
+import re
 
 from flask import Flask, request, jsonify
 
@@ -144,6 +145,11 @@ def _hw_proxy(netname, role, module_for_instrument, error_class, timeout=None):
     return Device(device_name, net_info, timeout=timeout)
 
 
+# Matches the T-series LabJack only. Kept local rather than imported from
+# nets_handler, which imports _physical_device_id from this module.
+_LABJACK_T7_RE = re.compile(r"labjack[_\-\s]*t7", re.IGNORECASE)
+
+
 def _physical_device_id(role, instrument, rec):
     """Stable identity for the physical device backing this net.
 
@@ -182,6 +188,22 @@ def _physical_device_id(role, instrument, rec):
         return "dexarm:" + (rec.get("serial") or loc_serial or addr or "ANY")
     if role == "watt-meter" or "yocto" in inst:
         return "yocto:" + (addr or "ANY")
+    if "labjack" in inst and not _LABJACK_T7_RE.search(inst):
+        # A LabJack that is not a T7 -- a U3/U6. It reaches the hardware over
+        # Exodriver, holds its own USB claim, and shares nothing with the T7's
+        # LJM handle, so it must not share the T7's lock either.
+        #
+        # The address alone would nearly do it (it carries the PID: 0x0007 for
+        # a T7, 0x0003 for a U3), but a LabJack net may be saved with no
+        # address at all -- the ADC dispatcher resolves an empty one on the
+        # grounds that LabJack auto-discovers. Both models would then collapse
+        # onto "labjack:ANY". Folding the model in keeps them apart in that
+        # case too.
+        #
+        # Deliberately below every other branch and additive: the T7 and every
+        # instrument that falls through to the default below keep the exact key
+        # they had, so nothing that works today changes lock identity.
+        return "labjack:" + inst + ":" + (addr or "ANY")
     # Default: LabJack T7 — one shared LJM handle across all roles/pins.
     return "labjack:" + (addr or "ANY")
 
