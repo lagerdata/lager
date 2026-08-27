@@ -130,7 +130,7 @@ def add(ctx, binary_path, box, name, yes):
 
             if result.get('restart_required'):
                 click.echo()
-                click.secho("Note: Container restart may be required for first-time setup.", fg='yellow')
+                click.secho("Note: A first-time setup needs a container restart.", fg='yellow')
                 click.echo("Run: lager update --box " + box)
         else:
             error_msg = response.json().get('error', response.text)
@@ -138,7 +138,7 @@ def add(ctx, binary_path, box, name, yes):
             ctx.exit(1)
 
     except requests.exceptions.ConnectionError:
-        click.secho(f"Error: Could not connect to box at {resolved_ip}", fg='red', err=True)
+        click.secho(f"Error: The box at {resolved_ip} did not answer", fg='red', err=True)
         click.secho("Possible causes:", err=True)
         click.secho("  - Box is offline or unreachable", err=True)
         click.secho("  - Box HTTP service not running (port 9000)", err=True)
@@ -147,7 +147,7 @@ def add(ctx, binary_path, box, name, yes):
         ctx.exit(1)
     except requests.exceptions.Timeout:
         click.secho("Error: Upload timed out", fg='red', err=True)
-        click.secho("The file may be too large or the connection is slow", err=True)
+        click.secho("The file can be too large, or the connection is slow", err=True)
         ctx.exit(1)
     except (Exit, Abort):
         raise
@@ -215,7 +215,7 @@ def list_binaries(ctx, box):
             ctx.exit(1)
 
     except requests.exceptions.ConnectionError:
-        click.secho(f"Error: Could not connect to box at {resolved_ip}", fg='red', err=True)
+        click.secho(f"Error: The box at {resolved_ip} did not answer", fg='red', err=True)
         click.secho("Possible causes:", err=True)
         click.secho("  - Box is offline or unreachable", err=True)
         click.secho("  - Box HTTP service not running (port 9000)", err=True)
@@ -300,7 +300,7 @@ def remove(ctx, binary_name, box, yes):
             ctx.exit(1)
 
     except requests.exceptions.ConnectionError:
-        click.secho(f"Error: Could not connect to box at {resolved_ip}", fg='red', err=True)
+        click.secho(f"Error: The box at {resolved_ip} did not answer", fg='red', err=True)
         click.secho("Possible causes:", err=True)
         click.secho("  - Box is offline or unreachable", err=True)
         click.secho("  - Box HTTP service not running (port 9000)", err=True)

@@ -75,7 +75,7 @@ def _fetch_uart_nets(ctx: click.Context, box_ip: str) -> list[dict]:
             click.echo(f"Error: Box returned status {response.status_code}", err=True)
             return []
     except (requests.RequestException, json.JSONDecodeError) as e:
-        click.echo(f"Error: Could not fetch nets from box at {box_ip}:9000: {e}", err=True)
+        click.echo(f"Error: The box at {box_ip}:9000 did not return its nets: {e}", err=True)
         return []
 
 
@@ -249,19 +249,19 @@ def _connect_uart_http(ctx, box_ip, netname, overrides, interactive):
     if "Connection refused" in error_str:
         click.secho(f"Error: Connection refused to {box_ip}:9000", fg='red', err=True)
         click.secho("Possible causes:", err=True)
-        click.secho("  - UART service is not running on the box", err=True)
+        click.secho("  - The UART service does not run on the box", err=True)
         click.secho("  - Docker container is not started", err=True)
         click.secho("  - Firewall blocking port 9000", err=True)
         click.secho(f"Try: lager hello --box {box_ip}", err=True)
     elif "timed out" in error_str.lower() or "timeout" in error_str.lower():
         click.secho(f"Error: Connection timed out to {box_ip}:9000", fg='red', err=True)
-        click.secho("The box is reachable but the UART service is not responding.", err=True)
+        click.secho("The box answers, but the UART service does not.", err=True)
         click.secho("Try restarting the Docker container on the box.", err=True)
     elif "No route to host" in error_str:
         click.secho(f"Error: No route to host {box_ip}", fg='red', err=True)
         click.secho("Check your network connection and VPN status.", err=True)
     elif "Name or service not known" in error_str or "getaddrinfo failed" in error_str:
-        click.secho(f"Error: Could not resolve hostname {box_ip}", fg='red', err=True)
+        click.secho(f"Error: The hostname {box_ip} did not resolve", fg='red', err=True)
         click.secho("Check that the box name is spelled correctly.", err=True)
     else:
         # Reaching here means a genuine exception, not a session exit: the

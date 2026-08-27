@@ -315,7 +315,7 @@ def autoscale(ctx, box, mcu):
     if _validate_scope_net(ctx, box_ip, netname) is None:
         return  # Error already displayed with available nets
 
-    click.echo("Running autoscale (this may take 10-15 seconds)...")
+    click.echo("Running autoscale (this can take 10-15 seconds)...")
     _run_backend(ctx, box_ip, "autoscale", netname=netname, mcu=mcu)
 
 
@@ -1346,7 +1346,7 @@ def stream_web(ctx, box, port):
     try:
         webbrowser.open(url)
     except Exception as e:
-        click.secho(f"Could not open browser: {e}", fg="red", err=True)
+        click.secho(f"The browser did not open: {e}", fg="red", err=True)
         click.secho(f"Please open {url} manually in your browser", fg="yellow")
 
 

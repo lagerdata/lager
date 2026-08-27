@@ -126,7 +126,7 @@ class LockTests(LockCommandTestCase):
             with mock.patch.object(lock_mod, 'get_lager_user', return_value='ada'):
                 result = self.runner.invoke(lock_mod.lock, ['--box', 'bench-1'])
         self.assertEqual(result.exit_code, 1)
-        self.assertIn('Could not reach', result.output)
+        self.assertIn('did not answer', result.output)
 
     def test_user_option_overrides_the_detected_user(self):
         with self.post(FakeResponse(200, {'user': 'ada'})) as post:
@@ -209,7 +209,7 @@ class UnlockTests(LockCommandTestCase):
             with mock.patch.object(lock_mod, 'get_lager_user', return_value='ada'):
                 result = self.runner.invoke(lock_mod.unlock, ['--box', 'bench-1'])
         self.assertEqual(result.exit_code, 1)
-        self.assertIn('Could not reach', result.output)
+        self.assertIn('did not answer', result.output)
 
     def test_unlock_has_no_user_override(self):
         """Asymmetry with `lock`, pinned deliberately.

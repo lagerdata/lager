@@ -208,7 +208,7 @@ def _read_data_file(filepath: str) -> List[int]:
         with open(filepath, 'rb') as f:
             return list(f.read())
     except (IOError, OSError) as e:
-        raise click.BadParameter(f"Could not read data file '{filepath}': {e}")
+        raise click.BadParameter(f"The CLI did not read the data file '{filepath}': {e}")
 
 
 def _dio_name(dio) -> str:

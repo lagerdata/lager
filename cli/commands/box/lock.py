@@ -14,7 +14,7 @@ from ...box_storage import resolve_and_validate_box_with_name, get_lager_user, f
 
 @click.command()
 @click.option('--box', required=True, help='Name of the box to lock')
-@click.option('--user', 'lock_user', default=None, help='Username to lock as (useful when running inside Docker where user would otherwise be root)')
+@click.option('--user', 'lock_user', default=None, help='Username to lock as (useful when running inside Docker where the user is otherwise root)')
 @click.pass_context
 def lock(ctx, box, lock_user):
     """Lock a box to prevent others from using it"""
@@ -48,7 +48,7 @@ def lock(ctx, box, lock_user):
         )
         resp = _check_gateway(resp, ip)
     except requests.exceptions.RequestException as e:
-        click.secho(f"Error: Could not reach box '{display_name}': {e}", fg='red', err=True)
+        click.secho(f"Error: Box '{display_name}' did not answer: {e}", fg='red', err=True)
         ctx.exit(1)
         return
 
@@ -94,7 +94,7 @@ def unlock(ctx, box, force):
         # plain box's application 403 has no discovery header).
         resp = _check_gateway(resp, ip)
     except requests.exceptions.RequestException as e:
-        click.secho(f"Error: Could not reach box '{display_name}': {e}", fg='red', err=True)
+        click.secho(f"Error: Box '{display_name}' did not answer: {e}", fg='red', err=True)
         ctx.exit(1)
         return
 

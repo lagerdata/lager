@@ -51,7 +51,7 @@ def instruments(ctx, box: str | None) -> None:
 
     if not isinstance(instruments_data, list):
         click.secho(
-            "Error: Could not parse instrument data from box",
+            "Error: The instrument data from the box did not parse",
             fg="red",
             err=True,
         )

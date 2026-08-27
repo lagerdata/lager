@@ -342,14 +342,14 @@ def tui(ctx, box):
         ctx.exit(1)
     except ConnectionRefusedError:
         click.secho(f"Error: Cannot connect to box '{resolved_box}'", fg='red', err=True)
-        click.secho("The box service may not be running.", err=True)
+        click.secho("The box service can be down.", err=True)
         click.secho(f"Check connectivity with: lager hello --box {box or resolved_box}", err=True)
         ctx.exit(1)
     except OSError as e:
         error_str = str(e).lower()
         if 'resource busy' in error_str or 'device or resource busy' in error_str:
             click.secho("Error: Power supply is already in use", fg='red', err=True)
-            click.secho("Another TUI session or process may be using this supply.", err=True)
+            click.secho("Another TUI session or process can hold this supply.", err=True)
             click.secho("Close other sessions and try again.", err=True)
         elif 'no route to host' in error_str:
             click.secho(f"Error: Cannot reach box '{resolved_box}'", fg='red', err=True)

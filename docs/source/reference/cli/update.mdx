@@ -18,7 +18,7 @@ lager update [OPTIONS]
 | `--box BOX` | Lager Box name or IP address |
 | `--version VERSION` | Release tag, semver pin, branch, or full 40-character commit SHA to update to (default: main). See [Version pinning](#version-pinning). |
 | `--yes` | Skip confirmation prompt |
-| `--check` | Dry run: report what would change without modifying the box |
+| `--check` | Dry run: report what will change without modifying the box |
 | `--force` | Update even if the box reports it is already up to date, and force a clean rebuild (wipes the cached image and the cargo/npm volumes) |
 | `--pull` | Pull the pre-built box image from GHCR for a release tag instead of building on the box (falls back to a local build on any miss) |
 | `--no-pull` | Never pull a pre-built image; always build on the box |

@@ -952,7 +952,7 @@ def repair_cmd(ctx: click.Context, box: Optional[str], yes: bool) -> None:
         # Specific hint for the most likely cause.
         if "password is required" in (stderr or "").lower() or "sudo:" in (stderr or "").lower():
             click.secho(
-                "Hint: the box's sudoers rule may not have the cp clause yet. "
+                "Hint: the box's sudoers rule can lack the cp clause. "
                 "Run `lager update --box X` to upgrade the sudoers bootstrap, "
                 "then retry repair.",
                 fg="yellow", err=True,
@@ -1011,7 +1011,7 @@ def repair_cmd(ctx: click.Context, box: Optional[str], yes: bool) -> None:
     help=(
         "Validate and report pending changes, but make no SSH writes — no "
         "mount auto-prep, no apt/sysctl, no bounce. Useful to preview what "
-        "`apply` would do."
+        "`apply` does."
     ),
 )
 @click.pass_context
@@ -1178,12 +1178,12 @@ def _apply_one(
         diff = _compute_diff(current, applied)
         if _diff_is_empty(diff):
             click.secho(
-                "Config unchanged since last apply; apply would be a no-op.",
+                "Config unchanged since last apply; apply changes nothing.",
                 fg="green",
             )
             return True
         click.secho(
-            "Dry run — no changes made. apply would perform:",
+            "Dry run — no changes made. apply performs:",
             bold=True,
         )
         _print_diff_human(diff)
@@ -1281,7 +1281,7 @@ def _apply_one(
         else:
             click.secho(
                 "Container restart failed and rollback was not possible. The "
-                "container may be down. SSH into the box, fix /etc/lager/box_config.json, "
+                "container can be down. SSH into the box, fix /etc/lager/box_config.json, "
                 "and run `~/box/start_box.sh` manually.",
                 fg="red",
                 err=True,
@@ -1336,7 +1336,7 @@ def _post_apply_consistency_ok(
     if not post_validate.get("ok", True):
         click.secho(
             "Warning: box_config.json no longer validates (edited during apply?). "
-            "Container is running on the pre-edit version. Errors:",
+            "The container runs the pre-edit version. Errors:",
             fg="yellow",
             err=True,
         )
@@ -1353,9 +1353,9 @@ def _post_apply_consistency_ok(
     ) or {}
     if post_show != expected:
         click.secho(
-            "Warning: box_config.json was modified during apply. Container is "
-            "running with the snapshot captured at the start of apply; the "
-            "latest on-disk changes have NOT been applied. Re-run "
+            "Warning: box_config.json was modified during apply. The container "
+            "runs the snapshot captured at the start of apply. It does NOT "
+            "have the latest on-disk changes. Re-run "
             "`lager box-config apply` to pick them up.",
             fg="yellow",
             err=True,
@@ -1532,7 +1532,7 @@ def _attempt_rollback(
     # block the bounce — getting the box back up beats leaving it down.
     if not _ensure_sysctl(resolved_box, previous_config or {}, failed_config):
         click.secho(
-            "Sysctl rollback failed; the host may still hold the failed "
+            "Sysctl rollback failed; the host can still hold the failed "
             "config's kernel parameters. Inspect "
             "/etc/sysctl.d/99-lager-box-config.conf manually.",
             fg="yellow",
@@ -1599,8 +1599,8 @@ def _preflight_mounts(ctx: click.Context, resolved: str, *, recursive: bool) -> 
 
     if ssh_warned and not failed:
         click.secho(
-            "Warning: could not verify mount host paths over SSH; continuing with "
-            "apply. If the container fails to start or a mounted path is missing "
+            "Warning: the CLI did not verify mount host paths over SSH; continuing with "
+            "apply. If the container fails to start, or a mounted path is absent "
             "or unwritable, fix SSH access to the box host (see above) and re-run "
             "`lager box-config apply`.",
             fg="yellow",
@@ -1692,7 +1692,7 @@ def _bounce_container_rc(ctx: click.Context, resolved_box: str) -> int:
     except subprocess.TimeoutExpired:
         click.secho(
             f"SSH command timed out after {_BOUNCE_TIMEOUT_SECONDS // 60} minutes. "
-            "start_box.sh may still be running on the box (cargo build, etc.); "
+            "start_box.sh can still run on the box (cargo build, etc.); "
             "re-run `lager box-config apply` once it finishes.",
             fg="red", err=True,
         )
@@ -2044,7 +2044,7 @@ def pip_add_cmd(
             click.secho("Validating packages on PyPI...", fg="blue")
             invalid, network_errors = validate_on_pypi(to_check)
             if invalid:
-                click.secho("The following packages could not be validated:", fg="red", err=True)
+                click.secho("The following packages failed validation:", fg="red", err=True)
                 for p, r in invalid:
                     click.secho(f"  - {p}: {r}", fg="red", err=True)
                 click.secho(
@@ -2053,7 +2053,7 @@ def pip_add_cmd(
                 )
                 ctx.exit(1)
             if network_errors:
-                click.secho("Could not validate some packages (network):", fg="yellow", err=True)
+                click.secho("Some packages did not validate (network):", fg="yellow", err=True)
                 for p, r in network_errors:
                     click.secho(f"  - {p}: {r}", fg="yellow", err=True)
                 click.echo("Proceeding anyway; install will fail later if the package is bad.", err=True)

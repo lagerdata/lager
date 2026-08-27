@@ -455,14 +455,14 @@ class CallersHonourTheThreeOutcomeContract(unittest.TestCase):
         result = self._check_run(None)
         self.assertNotIn('SSH key works', result.output)
 
-    def test_couldnt_tell_says_it_could_not_reach_the_box(self):
+    def test_couldnt_tell_says_the_box_did_not_answer(self):
         """False and None take the same path but are not the same claim."""
         result = self._check_run(None)
-        self.assertIn('could not reach the box', result.output)
+        self.assertIn('the box did not answer the probe', result.output)
 
     def test_a_definite_no_does_not_get_the_unreachable_note(self):
         result = self._check_run(False)
-        self.assertNotIn('could not reach the box', result.output)
+        self.assertNotIn('the box did not answer the probe', result.output)
 
     def test_a_confirmed_key_proceeds_past_the_setup_path(self):
         """True is the only value that may skip key setup."""
@@ -474,7 +474,7 @@ class CallersHonourTheThreeOutcomeContract(unittest.TestCase):
         result = self._check_run(True, key_file_exists=False)
         self.assertEqual(result.exit_code, 2)
         self.assertIn('SSH key not configured', result.output)
-        self.assertNotIn('could not reach the box', result.output)
+        self.assertNotIn('the box did not answer the probe', result.output)
 
     def test_no_call_site_reads_the_probe_with_bare_truthiness(self):
         """Which comparison is right depends on the site; truthiness never is.

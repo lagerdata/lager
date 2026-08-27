@@ -403,7 +403,7 @@ def webcam_stop_all(ctx, box):
         if r.get("was_running"):
             click.secho(f"  {net_name}: stopped", fg="green")
         elif r["success"]:
-            click.secho(f"  {net_name}: was not running", fg="yellow")
+            click.secho(f"  {net_name}: was not up", fg="yellow")
         else:
             click.secho(f"  {net_name}: {r.get('error', 'failed')}", fg="red")
 

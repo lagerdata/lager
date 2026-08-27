@@ -535,7 +535,7 @@ def _check_box_lock(ip, box_name):
                 _lock_check_unsupported_warned.add(ip)
                 display = box_name or ip
                 click.secho(
-                    f"Warning: Box '{display}' is running an old image without "
+                    f"Warning: Box '{display}' runs an old image without "
                     f"lock support on its :9000 API — lock checks are skipped. "
                     f"Run: lager update --box {display}",
                     fg='yellow', err=True,
@@ -849,7 +849,7 @@ def acquire_box_lock(
         except requests.exceptions.RequestException as exc:
             if not quiet:
                 click.secho(
-                    f"Warning: Could not reach box '{display}' to acquire lock: {exc}",
+                    f"Warning: box '{display}' did not answer the lock request: {exc}",
                     fg='yellow', err=True,
                 )
             # Unreachable - fall through with no lock held; the actual command
@@ -946,7 +946,7 @@ def release_box_lock(ip, holder, *, quiet=True):
     except requests.exceptions.RequestException as exc:
         if not quiet:
             click.secho(
-                f"Warning: Could not reach box at {ip} to release lock: {exc}",
+                f"Warning: the box at {ip} did not answer the lock release: {exc}",
                 fg='yellow', err=True,
             )
         return False

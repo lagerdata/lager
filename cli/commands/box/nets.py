@@ -82,7 +82,7 @@ def _box_request(ctx: click.Context, box_ip: str, method: str, path: str,
     click.secho(f"Error: {error}", fg="red", err=True)
     if resp.status_code == 404 and "not found" not in str(error).lower():
         click.echo(
-            f"This box image may predate '{path}'; update the box "
+            f"This box image can predate '{path}'; update the box "
             f"(lager update).", err=True)
     ctx.exit(1)
 
@@ -1328,7 +1328,7 @@ def add_cmd(ctx, name, role, channel, address, box, jlink_script, openocd_config
         if any(canonical_instrument(n["instrument"]) == instrument and n["address"] == address
                for n in saved_nets):
             click.secho(
-                f"Only one net may reference {instrument} at {address}.",
+                f"Only one net can reference {instrument} at {address}.",
                 fg="red",
             )
             ctx.exit(1)
@@ -2116,7 +2116,7 @@ def _warn_if_script_defines_init_target(backend: str, raw_bytes: bytes) -> None:
         "built-in target init for this device.\n"
         "  On nRF-family parts that built-in is what brings up a blank or "
         "protected target, so a flash\n"
-        "  (which erases first) may leave the part unattachable. Your "
+        "  (which erases first) can leave the part unattachable. Your "
         "InitTarget() must do that bring-up\n"
         "  itself. A script that does not define InitTarget() leaves the "
         "built-in in place.",

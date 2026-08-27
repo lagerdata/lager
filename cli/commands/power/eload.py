@@ -65,7 +65,7 @@ def _validate_eload_value(ctx, mode, value):
             fg='red', err=True
         )
         if mode == "cr" and value == 0:
-            click.echo("Note: Resistance cannot be 0 (would cause infinite current)", err=True)
+            click.echo("Note: Resistance cannot be 0 (0 ohms causes infinite current)", err=True)
         ctx.exit(1)
 
     if value > limits["max"]:
