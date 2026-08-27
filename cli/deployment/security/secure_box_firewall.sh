@@ -11,7 +11,7 @@
 # Security Model:
 # - Default DENY all incoming connections
 # - SSH (port 22) allowed from anywhere for management
-# - Lager services (ports 5000, 8301, 8765, 5001) restricted to:
+# - Lager service ports (the LAGER_PORTS array below) restricted to:
 #   - Tailscale VPN (tailscale0)
 #   - Corporate VPN (if specified)
 #   - Docker bridge (docker0)
@@ -38,6 +38,24 @@ NC='\033[0m' # No Color
 CORPORATE_VPN_IFACE=""
 BACKUP_DIR="/etc/lager/backups"
 
+# Lager service ports.
+#
+# Single ports plus the per-slot ranges that back concurrent debug probes:
+#   2331:2342  GDB + SWO + telnet (3 ports per slot, 4 slots; shared between the
+#              J-Link and OpenOCD backends -- which server answers is decided by
+#              the probe occupying the slot)
+#   4444:4447  OpenOCD interactive telnet (one port per slot)
+#   6666:6669  OpenOCD TCL/RPC (one port per slot; the debug service dispatches
+#              every OpenOCD runtime command through these)
+#   8081:8090  remote PDB console range
+#   9090:9097  RTT telnet (2 channels per slot, 4 slots; J-Link or OpenOCD)
+#
+# This list must match what box/start_box.sh publishes. That is enforced by
+# test/unit/box/test_firewall_port_allowlist.py, which parses both files. A
+# comment asking the next reader to keep them in step was the only thing holding
+# them together before, and they drifted three times.
+LAGER_PORTS=(2331:2342 4444:4447 5000 6666:6669 8080 8081:8090 8100 8301 8765 9000 9090:9097)
+
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -54,7 +72,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --corporate-vpn IFACE    Corporate VPN interface (e.g., tun0, enp3s0)"
             echo "  --help                   Show this help message"
             echo ""
-            echo "Lager service ports: 5000, 8301, 8765, 5001"
+            echo "Lager service ports: ${LAGER_PORTS[*]}"
             exit 0
             ;;
         *)
@@ -107,9 +125,6 @@ ufw default allow outgoing
 # Allow SSH from anywhere (critical - prevents lockout)
 echo -e "${GREEN}Allowing SSH (port 22) from anywhere${NC}"
 ufw allow 22/tcp comment "SSH access"
-
-# Lager service ports
-LAGER_PORTS=(5000 8301 8765 5001)
 
 # Detect Tailscale interface
 TAILSCALE_IFACE=""

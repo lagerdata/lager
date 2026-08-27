@@ -26,7 +26,7 @@ The key words MUST, MUST NOT, SHOULD, and MAY are used as in RFC 2119.
 
 | Actor | Role |
 | --- | --- |
-| **Box** | The Lager hardware service (`:9000` API, `:8765` debug service, Socket.IO namespaces). Auth-unaware; never sees or checks credentials. |
+| **Box** | The Lager hardware service (`:9000` API, `:8765` debug service, Socket.IO namespaces). Auth-unaware; never sees or checks credentials. The box also runs an MCP server on `:8100`, which is **not** part of the gateway-fronted surface — see §6.4. |
 | **Gateway** | Reverse proxy in front of the box. Verifies bearer tokens and either forwards traffic or denies it. |
 | **Auth server** | Issues and refreshes access tokens. Discovered by clients via the gateway's denial header. |
 | **Client** | Anything speaking to the box: the Lager CLI, the `lager-net` Rust crate, or third-party code. |
@@ -201,6 +201,27 @@ host, not just the `:9000` API — the gateway fronts everything:
   `Authorization` header on the opening HTTP request;
 - any other HTTP endpoint on the box host.
 
+**Except `:8100` (MCP), which the gateway MUST NOT forward.** The MCP server is
+an in-fabric service, reachable over the local network, Tailscale or the
+corporate VPN and no further. It is deliberately excluded rather than
+overlooked, for two reasons:
+
+- It performs no authentication of its own, and it disables DNS-rebinding
+  protection on purpose (`box/lager/mcp/server.py`) because the box is reached
+  at an arbitrary LAN address that cannot be known ahead of time. That is a
+  reasonable posture for a service on an internal fabric and a poor one for a
+  published service.
+- Its tool surface is not read-only. `LAGER_MCP_ALLOW_CONTROL` adds hardware
+  control, and `LAGER_MCP_ALLOW_EXEC` adds `box_exec`, `read_file`,
+  `write_file` and `list_dir` — arbitrary command execution and file writes,
+  available to anything that can reach the port. Publishing `:8100` on a box
+  with either gate on would put remote code execution on whatever network the
+  gateway fronts.
+
+Should MCP ever need to be reachable through the gateway, that is a change to
+this contract: `:8100` joins the coverage list below, the gateway enforces the
+same bearer policy it applies to `:9000`, and the version bumps.
+
 ## 7. Gateway requirements
 
 A conforming gateway:
@@ -214,6 +235,8 @@ A conforming gateway:
   never emits `X-Gateway-Auth-Url`, so there is no collision.)
 - MUST cover every box port it exposes (9000, 8765, WebSocket upgrades)
   with the same policy — clients assume one credential works box-wide.
+- MUST NOT forward `:8100` (MCP). It is an in-fabric service with no
+  authentication of its own (§6.4).
 
 ## 8. Environment variables (client side)
 
@@ -241,3 +264,5 @@ This contract is versioned by the integer at the top of this file.
 
 - **v1** (2026-07-22): initial written spec, documenting the contract as
   shipped in CLI ≥ 0.32.0 (`lager login`) and lager-net 0.2.0.
+- **v1** (2026-08-26): recorded the `:8100` (MCP) decision in §6.4 and §7.
+  Additive clarification of an unstated boundary; no version bump per §9.

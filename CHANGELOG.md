@@ -127,6 +127,35 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- **The firewall allowlist that provisioning deploys now matches the ports the
+  box publishes.** Two copies of `secure_box_firewall.sh` had drifted, and the
+  one carrying the correct debug port ranges was the copy nothing deploys --
+  absent from the box image, absent from the wheel, referenced only by a README
+  telling operators to run it. The deployed copy admitted `5000 8301 8765 5001`:
+  it omitted the GDB/SWO, OpenOCD telnet, OpenOCD TCL and RTT ranges, the MCP
+  and hardware-service ports and the box HTTP API, and admitted `5001`, which
+  nothing serves. Two previous release notes described this same allowlist being
+  brought in line; both changed only the copy that is never deployed.
+
+  There is now one copy. `test/unit/box/test_firewall_port_allowlist.py` parses
+  the publish list out of `box/start_box.sh` and the allowlist out of the script
+  and fails if they diverge, including the conditionally-published `9000` arm
+  that an array-literal read would miss. The script's `--help` renders the array
+  rather than restating it, since both its help text and its header comment had
+  gone stale against the array in their own file.
+
+  Note the scope. This corrects which ports the allowlist names. It does not
+  change how the host firewall treats a container-published port, which is
+  tracked separately.
+
+- **`docs/reference/gateway-auth-contract.md` states where MCP stands.** The
+  contract defined the box surface as `:9000` and `:8765` and never mentioned
+  `:8100`, leaving whether the gateway should front it as an open question
+  rather than a decision. It is now recorded as in-fabric only, with the
+  reasoning -- the MCP server authenticates nothing itself, deliberately
+  disables DNS-rebinding protection, and its opt-in gates extend it to hardware
+  control and arbitrary command execution.
+
 - **A second device of the same model no longer disables that whole instrument
   family.** Four call sites -- `nets add`, `nets add-all`, the net TUI and
   `lager instruments` -- each carried their own copy of a hardcoded model list

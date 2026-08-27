@@ -187,7 +187,7 @@ ssh lagerdata@<BOX_IP> 'sudo /tmp/secure_box_firewall.sh --corporate-vpn tun0'
 **What it does:**
 - Sets default DENY policy for incoming traffic
 - Allows SSH (port 22) from anywhere
-- Restricts Lager ports (5000, 8301, 8765) to:
+- Restricts the Lager service ports (the `LAGER_PORTS` array in the script) to:
   - Tailscale VPN (tailscale0)
   - Corporate VPN (if specified)
   - Docker bridge (docker0)
