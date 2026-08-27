@@ -259,7 +259,7 @@ echo "$INFO_OUTPUT"
 # Verify key information is present
 if echo "$INFO_OUTPUT" | grep -q "Device" && \
    echo "$INFO_OUTPUT" | grep -q "Probe\|Instrument" && \
-   echo "$INFO_OUTPUT" | grep -q "Status\|Disconnected\|Not connected"; then
+   echo "$INFO_OUTPUT" | grep -qE "GDB server running|Target attached"; then
     echo "[OK] Device type shown"
     echo "[OK] Probe/Instrument shown"
     echo "[OK] Connection status shown"
@@ -271,7 +271,7 @@ fi
 echo ""
 
 echo "Test 1.4: Check status (should be disconnected)"
-run_test_with_validation "Test 1.4" "Not connected" lager debug $NET status --box $BOX
+run_test_with_validation "Test 1.4" "GDB server running: False" lager debug $NET status --box $BOX
 echo ""
 
 echo "Test 1.5: Check status with JSON output"
@@ -422,7 +422,7 @@ fi
 echo ""
 
 echo "Test 3.2: Check status after connection"
-run_test_with_validation "Test 3.2" "Connected" lager debug $NET status --box $BOX
+run_test_with_validation "Test 3.2" "GDB server running: True" lager debug $NET status --box $BOX
 echo ""
 
 echo "Test 3.3: Check status with JSON"
@@ -1141,7 +1141,7 @@ fi
 echo ""
 
 echo "Test 13.2: Connection state persistence across operations"
-if lager debug $NET status --box $BOX | grep -q "Connected"; then
+if lager debug $NET status --box $BOX | grep -q "GDB server running: True"; then
     echo "[OK] Connection persisted"
     mark_test_passed
 else

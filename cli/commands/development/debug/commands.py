@@ -293,9 +293,32 @@ def _is_connected(client, debug_net=None):
     """
     try:
         status = client.get_debug_status(debug_net)
+        # `gdbserver_running` is the explicit name for what this has always
+        # meant. `connected` is its deprecated alias, still sent by the box and
+        # still the only field an older box sends at all.
+        if 'gdbserver_running' in status:
+            return bool(status['gdbserver_running'])
         return status.get('connected', False)
     except Exception:
         return False
+
+
+def _target_attached(client, debug_net=None):
+    """Whether the part answers, as opposed to whether a server is alive.
+
+    Tri-state, and the None matters. An older box does not send the field at
+    all; a probe can be refused or time out. Neither is evidence the target is
+    absent, so callers must test `is True` and must not treat None as failure.
+    Reading None as "not attached" would tear down working sessions.
+    """
+    try:
+        status = client.get_debug_status(debug_net, probe=True)
+    except Exception:
+        return None
+    if 'target_attached' not in status:
+        return None
+    value = status['target_attached']
+    return value if value is None else bool(value)
 
 def _resolve_debug_scripts(ctx, net_name, debug_net):
     """Return (jlink_script, openocd_config) for a debug net.
@@ -345,10 +368,47 @@ def _auto_connect_if_needed(client, debug_net, ctx, quiet=False,
     Returns:
         True if connected (either already or newly), False on failure
     """
-    # Check if already connected. Pass the net so the box checks THIS
-    # probe's gdbserver, not the legacy un-suffixed pidfile.
-    if _is_connected(client, debug_net):
+    # A live gdbserver is not the same thing as an attached part, and this
+    # gate used to conflate them: on a box where the server outlives the
+    # target, every caller below proceeded against hardware that was not
+    # there. Ask whether the target answers, and short-circuit only on a
+    # confirmed yes.
+    #
+    # The box returns None when it could not establish an answer -- an older
+    # box that omits the field, a refused probe, a timeout. None is not False:
+    # treating it as "absent" would tear down working sessions, so the branch
+    # below handles it explicitly and falls back to server liveness. That
+    # explicit branch is what protects the behaviour; `is True` here is
+    # defensive style on top of it, not the guard itself.
+    attached = _target_attached(client, debug_net)
+    if attached is True:
         return True
+
+    if attached is None:
+        # Nothing was established about the target, so behave exactly as this
+        # did before the distinction existed: trust the server's liveness.
+        if _is_connected(client, debug_net):
+            return True
+    elif _is_connected(client, debug_net):
+        # The server is up and the target demonstrably is not. Reconnecting is
+        # the only thing that can fix that; proceeding is what the old code did
+        # and is what let a flash report success against an absent part.
+        if not quiet:
+            click.secho(
+                "Debug session is up but the target is not responding; reconnecting...",
+                fg='yellow', err=True,
+            )
+        try:
+            client.connect(
+                debug_net, speed=None, force=True, halt=False,
+                jlink_script=jlink_script, openocd_config=openocd_config,
+            )
+            if not quiet:
+                click.secho("Reconnected!", fg='cyan', dim=True)
+            return True
+        except Exception as exc:
+            click.secho(f"Error: could not reconnect to the target: {exc}", fg='red', err=True)
+            return False
 
     # Not connected, auto-connect
     if not quiet:
@@ -1485,15 +1545,23 @@ def memrd(ctx, start_addr, length, box, json_output, halt, no_halt, no_reset):
         except Exception as e:
             click.secho(f"Warning: could not re-connect halted for memrd: {e}", fg='yellow', err=True)
 
-    # Auto-connect if not already connected
-    if not _is_connected(client, debug_net):
+    # Auto-connect if the target is not answering. A live gdbserver is not an
+    # attached part; see _auto_connect_if_needed for why this tests `is True`
+    # and treats None as "fall back to the old behaviour".
+    _memrd_attached = _target_attached(client, debug_net)
+    _memrd_needs_connect = (
+        _memrd_attached is False
+        or (_memrd_attached is None and not _is_connected(client, debug_net))
+    )
+    if _memrd_needs_connect:
         if effective_halt:
             click.secho("Auto-connecting to debugger (with halt for memory read)...", fg='cyan', dim=True)
         else:
             click.secho("Auto-connecting to debugger...", fg='cyan', dim=True)
         try:
             client.connect(
-                debug_net, speed=None, force=False, halt=effective_halt,
+                debug_net, speed=None, force=(_memrd_attached is False),
+                halt=effective_halt,
                 jlink_script=jlink_script, openocd_config=openocd_config,
             )
             if effective_halt:
@@ -1585,14 +1653,26 @@ def status(ctx, box):
         ctx.exit(1)
 
     # Get info from service
-    info_data = client.get_info(debug_net)
+    info_data = client.get_info(debug_net, probe=True)
+
+    running = info_data.get('gdbserver_running', info_data.get('connected'))
+    attached = info_data.get('target_attached')
+    if attached is True:
+        attached_text = 'Yes'
+    elif attached is False:
+        attached_text = 'No'
+    else:
+        # An older box does not report it, and a probe can be inconclusive.
+        # Say so rather than printing a confident No.
+        attached_text = 'Unknown'
 
     click.echo(f"Debug Net Information:")
     click.echo(f"  Name: {info_data.get('net_name')}")
     click.echo(f"  Device Type: {info_data.get('device')}")
     click.echo(f"  Architecture: {info_data.get('arch')}")
     click.echo(f"  Probe: {info_data.get('probe')}")
-    click.echo(f"  Connected: {info_data.get('connected')}")
+    click.echo(f"  GDB server running: {running}")
+    click.echo(f"  Target attached: {attached_text}")
     click.echo()
 
     client.close()

@@ -242,10 +242,14 @@ Get the current connection status.
 
 ```python
 status = dbg.status()
-print(f"Connected: {status.get('connected', False)}")
+print(f"GDB server running: {status.get('running', False)}")
 ```
 
-**Returns:** `dict` - Status dictionary with connection information
+**Returns:** `dict` - `running` (bool), `pid` and `backend`.
+
+This reports whether a gdbserver process is up for the probe. It is not a
+statement about the target: a server can outlive the part it was attached to.
+The CLI's `lager debug <net> status` reports both states separately.
 
 ### `session(speed=None, transport=None, connect=True, ignore_if_connected=True, disconnect_on_exit=True)`
 

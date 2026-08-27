@@ -276,8 +276,20 @@ Debug Net Information:
   Device Type: STM32F407VG
   Architecture: ARM Cortex-M4
   Probe: J-Link
-  Connected: True
+  GDB server running: True
+  Target attached: Yes
 ```
+
+`GDB server running` is about the process on the box. `Target attached` is
+about the part: the box reads the target to answer it. They are reported
+separately because they genuinely differ -- a gdbserver can outlive the device
+it was talking to, and a command that flashes or erases cares about the second,
+not the first.
+
+`Target attached` reads `Unknown` when the box could not establish an answer:
+a box older than this field, or a probe that could not run because a debugger
+is already attached to the session. `Unknown` does not mean the target is
+missing.
 
 ### `health`
 
