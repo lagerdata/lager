@@ -3,8 +3,8 @@ title: RTT
 description: Stream firmware log output, and drive an RTT console from a test
 ---
 
-Read what your firmware prints over SEGGER RTT, and — with the `rtt` feature — write
-back into its down-channel so a cargo test can drive an interactive console.
+Read what your firmware prints over SEGGER RTT. With the `rtt` feature you can also
+write back into its down-channel, so a cargo test can drive an interactive console.
 
 There are two paths, and they behave differently.
 
@@ -117,7 +117,7 @@ Write into the target's RTT **down**-channel.
   Writing needs a firmware-declared down buffer on that channel. `defmt-rtt` alone
   provides only the up buffer, and without a down buffer the target **silently
   discards** what you write — the call still returns `Ok(())`. That is a target-side
-  fact, not a transport failure, so there is nothing the crate can report.
+  fact, not a transport failure, so the crate has no error to report.
 </Warning>
 
 ### `stop() -> Result<()>`
@@ -134,8 +134,8 @@ implements `std::io::Read`. It needs no cargo feature and no Socket.IO.
   **`RttStream` yields raw HTTP chunked-transfer framing, not clean payload.** A read
   returns bytes like `384\r\nblink 46823 period=500ms\n...`, where `384` is a hex
   chunk length. Wrapping it in a `BufReader` and iterating lines produces `"64"`,
-  `"384"` and empty strings interleaved with real firmware output — and a hex chunk
-  length is indistinguishable from a line your firmware printed.
+  `"384"` and empty strings interleaved with real firmware output. A hex chunk
+  length is indistinguishable from a line that your firmware printed.
 
   This is tracked as
   [lager-rs#5](https://github.com/lagerdata/lager-rs/issues/5). Until it is fixed,
@@ -188,9 +188,9 @@ println!("{}", String::from_utf8_lossy(&log));
   probe are separate ports and can run at once.
 - Bytes are **raw**. `defmt` output is compressed binary and must be piped through
   `defmt-print -e <elf>`; `wait_for` only helps against a plain-text console.
-- The connect confirmation timeout is 30 seconds, wider than UART's 15, because the
-  box may search RAM for the RTT control block and retry the telnet attach while the
-  gdbserver settles.
+- The connect confirmation timeout is 30 seconds, wider than UART's 15. The extra time
+  covers a search of RAM for the RTT control block, and a retry of the telnet attach
+  while the gdbserver settles.
 - Sessions carry the gateway bearer token on the Socket.IO handshake, so a gated box
   works with no extra setup.
 - Requires box software 0.35.0 or newer. An older box gives `Error::UnsupportedByBox`.

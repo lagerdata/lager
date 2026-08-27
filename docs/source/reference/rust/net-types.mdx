@@ -4,7 +4,7 @@ description: Every net handle and box-level capability the Rust crate exposes
 ---
 
 Each net type has a handle obtained from `LagerBox` and a page of its own. Handles are
-cheap and do no network traffic until you call a method; the box resolves and
+cheap and do no network traffic until you call a method. The box resolves and
 validates the net name on every request, so a typo fails loudly.
 
 ## Instrument nets
@@ -50,8 +50,8 @@ Almost every constructor above returns a handle immediately and infallibly. Two 
 
 - **`lager.uart(name)?` returns a `Result`** — it opens a Socket.IO session and starts
   streaming right away, so it can fail at construction.
-- **`lager.scope(name)` returns a value, not a borrow** — `Scope` has no lifetime and
-  no async twin, because there is nothing for it to talk to yet.
+- **`lager.scope(name)` returns a value, not a borrow.** `Scope` has no lifetime and
+  no async twin, because the box has no endpoint for it to talk to yet.
 
 ## Discovery
 
@@ -65,14 +65,23 @@ for net in lager.nets()? {
 }
 ```
 
-`NetRecord` carries the name, the role, the instrument, the pin or channel, the VISA
-or device address, any role-specific saved params, and the net's safety limits. See
-[Client and Box](/source/reference/rust/client) for the rest of the discovery surface.
+`NetRecord` carries:
+
+- the name
+- the role
+- the instrument
+- the pin or channel
+- the VISA or device address
+- any role-specific saved params
+- the net's safety limits
+
+See [Client and Box](/source/reference/rust/client) for the rest of the discovery
+surface.
 
 ## Not yet available
 
 `Scope` is a documented stub, and there is no logic-analyzer handle at all: the box
-has no HTTP endpoint for scope or logic capture yet. `Rotation` and `Actuate` nets are
-provisioning flows rather than test-time net access and were left out of the crate
-deliberately. The work list is in
+has no HTTP endpoint for scope or logic capture yet. `Rotation` and `Actuate` nets serve
+provisioning flows rather than test-time net access, and the crate deliberately
+leaves them out. The work list is in
 [MISSING_ENDPOINTS.md](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md).

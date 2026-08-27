@@ -4,7 +4,7 @@ description: Degrade the network your DUT is on, rather than removing it
 ---
 
 Drive a MikroTik router as a Lager net. This is the bench's network fault-injection
-tool: it lets a test assert what firmware does when the network *degrades* — loses
+tool. It lets a test assert what firmware does when the network *degrades* — loses
 the internet, loses DNS, gets slow — rather than simply disappearing.
 
 ## Handle
@@ -92,7 +92,7 @@ Change the broadcast SSID.
 
 The generic escape hatch: invoke any other router action by name with raw JSON
 parameters. This is how you reach DNS blocking, port blocking, bandwidth limits,
-DHCP control, security profiles and access lists, none of which have a typed wrapper
+DHCP control, security profiles and access lists. None of these have a typed wrapper
 in this crate yet.
 
 ```rust
@@ -156,10 +156,11 @@ router.command("remove_bandwidth_limits", json!({}))?;
 
 ## Notes
 
-- **This net sends no role hint.** A router net may be saved with role `router` or
-  the legacy `mikrotik`, and the box verifies a supplied hint exactly, so sending one
-  would fail against the other spelling. A consequence you will see: a missing router
-  net reports `Net 'router1' not found` without naming a role, where other net types
+- **This net sends no role hint.** A router net can be saved with role `router` or
+  the legacy `mikrotik`. The box verifies a supplied hint exactly, so a hint will fail
+  against whichever spelling the net does not use. A consequence you will see: a
+  missing router net reports `Net 'router1' not found` without naming a role, where
+  other net types
   report `Net 'x (role adc)' not found`.
 - Every router action gets a flat 60-second budget, because reboots and reset actions
   are slow and a busy router lags.

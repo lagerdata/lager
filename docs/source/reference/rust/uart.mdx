@@ -28,7 +28,7 @@ let mut uart = lager.uart("uart1")?;
 
 <Note>
   `uart()` is the only handle constructor that returns a `Result`. Every other net
-  handle is inert until you call a method; this one connects the session and starts
+  handle is inert until you call a method. `uart()` connects the session and starts
   streaming immediately, so it can fail right here.
 </Note>
 
@@ -51,7 +51,7 @@ let mut uart = lager.uart("uart1")?;
 
 ### `read(timeout: Duration) -> Result<Vec<u8>>`
 
-Bytes arriving within `timeout`. May return empty.
+Bytes arriving within `timeout`. The call can return an empty vector.
 
 <Note>
   `read()` waits out the **full** timeout when the device is idle. Use `try_read()` in

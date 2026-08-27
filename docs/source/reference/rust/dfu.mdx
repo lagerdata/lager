@@ -156,8 +156,8 @@ assert!(dfu.list()?.iter().any(|d| d.mode == "DFU"), "did not enter DFU");
 - **`dfu-util` writes its progress to stderr**, not stdout. A successful download
   still fills `DfuOutput::stderr`; check `exit_code`, not whether stderr is empty.
 - A box without `dfu-util` installed answers with `Error::Box` and HTTP 500 carrying
-  `dfu-util is not installed on this box. Install it with 'lager box-config apt add
-  dfu-util'`. This is deliberately **not** `UnsupportedByBox` — the route exists, the
+  `dfu-util is not installed on this box. Install it with 'lager box-config apt add dfu-util'`.
+  This is deliberately **not** `UnsupportedByBox` — the route exists, the
   tool does not.
 - A box older than 0.33.0 does not serve the route at all, and that **is**
   `Error::UnsupportedByBox`.

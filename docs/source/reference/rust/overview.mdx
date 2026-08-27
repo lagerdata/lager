@@ -4,22 +4,26 @@ description: Write your entire hardware-in-the-loop test suite in Rust and run i
 ---
 
 The Lager Rust crate gives embedded developers first-class access to Lager
-nets, so a hardware-in-the-loop (HIL) test suite can live next to your
-firmware and run with `cargo test` — no Python required.
+nets. A hardware-in-the-loop (HIL) test suite can live next to your firmware
+and run with `cargo test`. No Python is required.
 
-The crate is a pure HTTP/JSON client of the Lager Box API: power supplies,
-battery simulators, e-loads, solar simulators, GPIO, ADC, DAC,
-thermocouples, watt meters, energy analyzers, SPI, I2C, USB hub ports,
-robot arms, webcams, routers, and streaming UART — plus the box-level
-capabilities (its own BLE adapter, WiFi interface, and BluFi ESP32
-provisioning). Debug-probe nets (flash / erase / reset / memory reads /
-RTT) talk to the box's debug service.
+The crate is a pure HTTP/JSON client of the Lager Box API. It covers:
+
+- power supplies, battery simulators, e-loads and solar simulators
+- GPIO, ADC, DAC, thermocouples, watt meters and energy analyzers
+- SPI, I2C, USB hub ports, robot arms, webcams and routers
+- streaming UART
+- the box-level capabilities: its own BLE adapter, WiFi interface, and BluFi
+  ESP32 provisioning
+
+Debug-probe nets (flash / erase / reset / memory reads / RTT) talk to the
+box's debug service.
 
 <Info>
 The package publishes on crates.io as
-[**`lager-net`**](https://crates.io/crates/lager-net) (the bare `lager`
-name is taken by an unrelated crate), but the library target is named
-`lager`, so your code reads `use lager::LagerBox;`. Full API reference
+[**`lager-net`**](https://crates.io/crates/lager-net), because the bare
+`lager` name is taken by an unrelated crate. The library target is still
+named `lager`, so your code reads `use lager::LagerBox;`. Full API reference
 lives on [docs.rs/lager-net](https://docs.rs/lager-net).
 </Info>
 

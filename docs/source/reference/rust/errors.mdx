@@ -31,7 +31,8 @@ variants will not break your build.
 
 ### `Connection(String)`
 
-The box could not be reached at all. Also covers a failed Socket.IO connect.
+The crate did not reach the box at all. This variant also covers a failed Socket.IO
+connect.
 
 ```text
 cannot reach the Lager box: {msg}. Check network/Tailscale and that the box is
@@ -111,8 +112,8 @@ The crate has no route for this feature on any box. Today this is only `Scope`.
 
 ### `Decode(String)`
 
-The response could not be parsed into the expected shape — a truncated body, an
-unexpected field type, or a missing required field.
+The crate did not parse the response into the expected shape. The cause is a truncated
+body, an unexpected field type, or a missing required field.
 
 ```text
 could not decode box response: {msg}

@@ -56,8 +56,8 @@ pub struct EloadState {
 ### `set(mode: EloadMode, value: f64) -> Result<()>`
 
 Switch to `mode` and apply `value` as its setpoint, **atomically**. The box performs
-both as one composite operation under the instrument lock, so the load never spends
-a moment in the new mode carrying the old mode's setpoint.
+both as one composite operation under the instrument lock. The load therefore never
+spends a moment in the new mode carrying the old mode's setpoint.
 
 ```rust
 load.set(EloadMode::Cc, 0.5)?;   // draw 500 mA

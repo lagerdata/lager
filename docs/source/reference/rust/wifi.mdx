@@ -3,9 +3,9 @@ title: WiFi
 description: Manage the box's own wireless interface
 ---
 
-Scan for access points and join networks using the box's own wireless interface —
-useful when the DUT hosts an access point, or when the box needs to move between
-networks during a test.
+Scan for access points and join networks with the box's own wireless interface. This
+is useful when the DUT hosts an access point. It is also useful when the box must move
+between networks during a test.
 
 ## Handle
 
@@ -21,7 +21,7 @@ WiFi is a **box-level** capability, not a net. There is no net name and no `name
 <Note>
   This is the box's own interface. It is not the `NetType.Wifi` net available in the
   Python API, which gates one DUT's internet access through a router's parental
-  controls, and it is not a router net.
+  controls. It is not a router net either.
 </Note>
 
 ## Methods
@@ -110,10 +110,11 @@ supply.disable()?;
 - `capabilities.wifi_command` being `true` means the box **serves the route**, not
   that it can do the work. A box whose container has no `nmcli` installed answers
   `scan()` with `Error::Box` and HTTP 502 carrying
-  `[Errno 2] No such file or directory: 'nmcli'`, while `status()` returns an
-  interface reporting `Interface detection failed` rather than erroring at all.
-- Every action gets a flat 90-second budget: nmcli and iwlist calls block for seconds,
-  a connect can retry through wpa_supplicant, and they queue on the box's wifi lock.
+  `[Errno 2] No such file or directory: 'nmcli'`. On that same box, `status()` does not
+  error at all: it returns an interface reporting `Interface detection failed`.
+- Every action gets a flat 90-second budget. The nmcli and iwlist calls block for
+  seconds, a connect can retry through wpa_supplicant, and they queue on the box's
+  wifi lock.
 - `strength` is an approximate percentage, not dBm.
 - Moving the box between networks can move the address you reach it at. Be careful
-  connecting the box to a DUT-hosted AP if that is also the path your test is using.
+  connecting the box to a DUT-hosted AP if that is also the path that your test uses.

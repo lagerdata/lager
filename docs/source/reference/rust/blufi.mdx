@@ -3,8 +3,8 @@ title: BluFi
 description: Provision an ESP32's WiFi credentials over BLE
 ---
 
-Provision an ESP32 onto a WiFi network over Bluetooth, using Espressif's BluFi
-protocol — the flow a phone app performs during onboarding, driven from a test.
+Provision an ESP32 onto a WiFi network over Bluetooth with Espressif's BluFi protocol.
+This is the flow that a phone app performs during onboarding, and a test drives it.
 
 ## Handle
 
@@ -116,12 +116,14 @@ println!("op mode {:?}, station {:?}", after.op_mode_name, after.sta_conn_name);
 
 - **`sta_conn == 0` means connected.** Zero is success here, not failure, and the
   values run 0 connected, 1 failed, 2 connecting, 3 connected but no IP. A target at
-  3 has associated but has no DHCP lease, which is a different bug from a wrong
+  3 is associated but has no DHCP lease, which is a different bug from a wrong
   password.
-- Every action except `scan` connects over BLE and negotiates BluFi security first,
-  so the budgets are wide: the box-side connect timeout is 20 seconds, the client
-  allows that plus 40, `provision` gets 20 plus 60 because end-to-end provisioning
-  routinely takes over 30 seconds, and `wifi_scan` gets 20 plus 30 because the target
-  runs its own scan.
+- Every action except `scan` connects over BLE and negotiates BluFi security first, so
+  the budgets are wide. The box-side connect timeout is 20 seconds, and the client adds
+  its own allowance on top of that:
+  - Most actions add 40 seconds.
+  - `provision` adds 60 seconds, because end-to-end provisioning routinely takes over
+    30 seconds.
+  - `wifi_scan` adds 30 seconds, because the target runs its own scan.
 - BluFi shares the box's one Bluetooth adapter with BLE, and the box serializes them.
 - Devices are addressed by advertised **name**, unlike BLE, which uses the address.

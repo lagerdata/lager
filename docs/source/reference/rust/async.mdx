@@ -75,8 +75,8 @@ let mut uart = blocking.uart("uart1")?;
 
 ## Concurrency
 
-The box serializes access per physical instrument, so firing many requests at one
-instrument concurrently does not interleave its I/O — the requests queue on the box.
+The box serializes access per physical instrument. Many concurrent requests to one
+instrument do not interleave its I/O, because the requests queue on the box.
 Concurrency buys you real parallelism only across *different* instruments.
 
 ```rust
@@ -98,7 +98,7 @@ let (v, temp, power) = tokio::try_join!(
 
 - `reqwest` is pulled in with `default-features = false`, so there is no TLS stack.
   Box traffic is plain HTTP on the local network or over Tailscale.
-- `tokio` is required only with the `time` feature for the async client itself; the
+- `tokio` is required only with the `time` feature for the async client itself. The
   `macros` and `rt-multi-thread` features in the snippet above are for writing the
   tests.
 - Gateway authentication works identically on both clients, including the automatic

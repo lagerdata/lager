@@ -41,21 +41,21 @@ MISSING_ENDPOINTS.md
 ## Why
 
 The crate is a pure HTTP/JSON client of the box's API on port 9000. Every other net
-type has a route there. Scope and logic-analyzer work does not: `lager scope` and
-`lager logic` still run over the legacy exec path on port 5000 and a dedicated
-oscilloscope streaming daemon on ports 8082-8085, neither of which is an HTTP/JSON
-API this crate can speak.
+type has a route there. Scope and logic-analyzer work does not. `lager scope` and
+`lager logic` still run over the legacy exec path on port 5000, and over a dedicated
+oscilloscope streaming daemon on ports 8082-8085. Neither of those is an HTTP/JSON
+API that this crate can speak.
 
 Closing the gap needs `analog` and `logic` roles in the box's `/net/command`
-`ROLE_ACTIONS`, covering trigger configuration, a single capture returning the trace
-as JSON, and scalar measurements. Streaming capture can stay on the dedicated daemon.
-The work list lives in
+`ROLE_ACTIONS`. Those roles must cover trigger configuration, a single capture that
+returns the trace as JSON, and scalar measurements. Streaming capture can stay on the
+dedicated daemon. The work list lives in
 [MISSING_ENDPOINTS.md](https://github.com/lagerdata/lager-rs/blob/main/MISSING_ENDPOINTS.md).
 
 ## What to do instead
 
-Use the Python API or the CLI for scope and logic work, and Rust for everything else —
-they drive the same box and the same nets.
+Use the Python API or the CLI for scope and logic work, and Rust for everything else.
+They drive the same box and the same nets.
 
 ```rust
 // Detect the stub explicitly rather than letting it surprise you.
@@ -75,9 +75,9 @@ step, or write that portion in Python.
 ## Notes
 
 - The stub returns `Error::NotSupportedByBox`, which is a **different variant** from
-  `Error::UnsupportedByBox`. The first means the crate has no route for this at all;
-  the second means this particular box is too old for a route that does exist. See
-  [Errors](/source/reference/rust/errors).
+  `Error::UnsupportedByBox`. `NotSupportedByBox` means the crate has no route for this
+  at all. `UnsupportedByBox` means this particular box is too old for a route that
+  does exist. See [Errors](/source/reference/rust/errors).
 - A logic net has no Rust handle whatsoever — there is no `lager.logic(...)`.
 - Nothing here depends on box version. A box running the newest software still
   returns the stub error.
