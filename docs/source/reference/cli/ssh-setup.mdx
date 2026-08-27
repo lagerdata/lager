@@ -7,9 +7,9 @@ Install this machine's Lager SSH key on a Lager Box so that `lager` commands and
 `lager ssh` work without a password. Run it once per box, enter the box password
 when prompted, and subsequent commands authenticate with the key.
 
-This wraps the `ssh-keygen` / `ssh-copy-id` dance into a single command, so a
-`Permission denied (publickey,password)` error can be fixed without knowing the
-key path or the `ssh-copy-id` incantation by hand.
+This wraps the `ssh-keygen` / `ssh-copy-id` dance into a single command. You can
+fix a `Permission denied (publickey,password)` error without the key path and
+without the `ssh-copy-id` incantation.
 
 <Note>Introduced in **lager 0.27.1** as `lager authorize`; renamed to
 `lager ssh-setup` because the old name read like authentication once
@@ -61,42 +61,43 @@ is installed, no further password prompts appear for that box.
    just installed, so no extra prompt.
 
 Step 6 is what makes the key durable rather than merely present. `ssh-copy-id`
-appends to `~/.ssh/authorized_keys` outside every marker block, and while
-`start_box.sh` preserves such lines against its own rebuild, it cannot preserve
-them against another key manager that rebuilds the file from its own source —
-that drops every line outside its own markers, and `start_box.sh` then
+appends to `~/.ssh/authorized_keys` outside every marker block. `start_box.sh`
+preserves such a line against its own rebuild. It cannot preserve that line
+against another key manager that rebuilds the file from its own source. Such a
+manager drops every line outside its own markers, and `start_box.sh` then
 re-creates its block from the key directory alone. A key registered in the key
 directory comes back; one that was only appended does not.
 
 The write is attempted unprivileged first, then with `sudo -n`. On a box Lager
 alone manages, the key directory is writable by the box user and no sudo is
-involved. On a box hardened by another key manager the directory is root-owned
-deliberately — a writable key directory would let any user on the box authorize
-any key — and the `sudo -n` fallback covers it wherever the box user has a
+involved. On a box hardened by another key manager, the directory is root-owned
+deliberately. A writable key directory will let any user on the box authorize
+any key. The `sudo -n` fallback covers that case wherever the box user has a
 NOPASSWD grant broad enough.
 
 If both attempts fail, the command warns and still reports success (the key
 works; only its durability is lost) and prints the grant to add. **Lager does
-not install this grant** — a fleet that scopes sudo tightly is the system that
-decided the directory should be root-owned, so it is the right place to decide
-who may write there. Add it through that fleet's own provisioning:
+not install this grant.** A fleet that scopes sudo tightly is the system that
+made the directory root-owned. That fleet is therefore the right place to decide
+who can write there. Add the grant through that fleet's own provisioning:
 
 ```
 <box-user> ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/lager/authorized_keys.d/lager-box-*.pub
 ```
 
 A sudoers wildcard does not match `/`, so the grant cannot reach outside the
-directory. It does not restrict what key is written, since the content is the
-box user's to choose — on a box where that user is already root-equivalent that
-changes nothing, and on one where it is not, read it before adding it.
+directory. The grant does not restrict which key is written, because the
+content is the box user's to choose. On a box where that user is already
+root-equivalent, that changes nothing. On a box where the user is not
+root-equivalent, read the key before you add the grant.
 
 <Warning>Do not widen the key directory's permissions instead. A writable
 `/etc/lager/authorized_keys.d` lets any user on the box authorize any key, which
 is exactly what a hardened box closed.</Warning>
 
-The key lives at `~/.ssh/lager_box`. Because that filename is not one of SSH's
-default identities, `lager ssh` passes `-i ~/.ssh/lager_box` explicitly when the
-key exists (since lager 0.28.1), so authorized boxes connect without a password.
+The key lives at `~/.ssh/lager_box`. That filename is not one of SSH's default
+identities. So `lager ssh` passes `-i ~/.ssh/lager_box` explicitly when the key
+exists (since lager 0.28.1), and an authorized box connects without a password.
 
 ---
 

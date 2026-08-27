@@ -155,6 +155,26 @@ All notable changes to the Lager platform are documented here. For detailed rele
   strings holds that budget where it was rather than raising it, which the
   ratchet does not allow.
 
+- **Fourteen `lager` command reference pages are converted to Simplified
+  Technical English.** `locking`, `login`, `nets`, `python`, `router`, `scope`,
+  `ssh`, `ssh-setup`, `supply`, `uninstall`, `update`, `usb`, `watt` and
+  `webcam` go from 79 budgeted violations to zero on all seven gated rules: 54
+  sentences over the 25-word reference cap, 13 uses of a modal STE does not
+  approve, and 12 perfect or progressive verbs. `tools/ste_baseline.json` drops
+  all fourteen files, taking the corpus budget from 380 violations across 73
+  files to 301 across 59.
+
+  Several of the long sentences were vertical lists that lost their formatting.
+  The longest ran to 54 words, and one carried three semicolon-joined clauses;
+  those are now lists or separate sentences rather than shorter run-ons.
+
+  Two fixes sat on lines that `tools/check_docs.py` reads as the page's
+  assertion that a flag exists -- `--cs`/`--sck`/`--mosi`/`--miso` on `nets`,
+  and `--check` on `update`. Those lines keep every `--flag` token and only
+  their description text changed, so the flag check still sees the same set of
+  declarations. The `nets` caveat that made its line too long moved into the
+  paragraph below it, which already describes how pins behave.
+
 - **Six CLI messages told the user to run `lager box update`, which does not
   exist.** The `lager box` group carries only `config` and `dut`; the `update`
   spelling was removed in favor of top-level `lager update`, and two comments in
