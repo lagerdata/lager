@@ -880,6 +880,7 @@ unset _env_arg
 
 # Host port publishing. Empty under --no-publish: lagernet-only, a reverse
 # proxy on the same network owns the host ports.
+# --- BEGIN port publishing (extracted verbatim by test/unit/box/test_firewall_port_allowlist.py) ---
 PORT_PUBLISH_ARGS=()
 if [ -z "$NO_PUBLISH" ]; then
     PORT_PUBLISH_ARGS=(
@@ -902,6 +903,7 @@ if [ -z "$NO_PUBLISH" ]; then
 else
     echo "Port publishing disabled (--no-publish): container reachable via lagernet only"
 fi
+# --- END port publishing ---
 
 docker run -d \
     --network lagernet \

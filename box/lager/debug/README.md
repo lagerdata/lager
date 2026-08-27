@@ -29,7 +29,7 @@ A single Lager Box can run up to four J-Link probes concurrently — each `lager
   - The 3-port stride is required because `JLinkGDBServerCLExe`'s `-swoport` and `-telnetport` defaults (`2332` and `2333`) are hardcoded — a stride of 1 would put slot 1's GDB on top of slot 0's SWO. The service passes `-swoport` and `-telnetport` explicitly so the auxiliary ports stay in the slot's window.
   - Helpers in `box/lager/debug/probes.py`: `gdb_port_for_slot`, `swo_port_for_slot`, `telnet_port_for_slot`, `rtt_port_for_slot`. Slot 0 is also the legacy single-probe path.
 - **Per-probe state on disk.** Each running gdbserver writes `/tmp/jlink_gdbserver_<serial>.pid` and `/tmp/jlink_gdbserver_<serial>.log`; `/tmp` is tmpfs so these vanish on container restart.
-- **Port range published by Docker.** `box/start_box.sh` publishes `2331-2342:2331-2342` (4 slots × 3 GDB-side ports) and `9090-9097:9090-9097` (4 slots × 2 RTT channels). Boxes hardened with `box/lager/scripts/secure_box_firewall.sh` must re-run that script after upgrade so UFW admits the new ranges.
+- **Port range published by Docker.** `box/start_box.sh` publishes `2331-2342:2331-2342` (4 slots × 3 GDB-side ports) and `9090-9097:9090-9097` (4 slots × 2 RTT channels). Boxes hardened with `cli/deployment/security/secure_box_firewall.sh` must re-run that script after upgrade so UFW admits the new ranges.
 - **`--gdb-port` is opt-in only.** The CLI's `lager debug <net> gdbserver --gdb-port <N>` flag overrides the slot allocator. With it omitted (the default), the box picks the right port for the probe automatically — that's the only safe option on multi-probe boxes.
 
 ## RTT transports
