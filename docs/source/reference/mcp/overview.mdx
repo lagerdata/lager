@@ -3,7 +3,7 @@ title: MCP Server Overview
 description: How AI agents discover hardware and plan tests on a Lager Box via the Model Context Protocol
 ---
 
-Every Lager Box runs an **MCP (Model Context Protocol) server** that lets an AI
+Every Lager Box runs an **MCP (Model Context Protocol) server**. It lets an AI
 agent understand the bench, understand the device under test (DUT), and plan
 hardware-in-the-loop tests. It runs on-box and is reachable over the box's local
 IP.
@@ -41,11 +41,11 @@ Point any MCP-compatible client at the box:
 
 <Note>
 Out of the box the MCP server is for **discovery and planning** only — it does
-not run code or drive hardware. (Two opt-in environment variables extend it past
-that; see [Optional tool gates](#optional-tool-gates).) To **execute** a test,
-the agent writes a Python file locally and
-runs it with `lager python path/to/test.py --box <box-ip>`, which syncs the
-project to the box and runs it with full project context. Pass the box's **IP
+not run code or drive hardware. Two opt-in environment variables extend it past
+that; see [Optional tool gates](#optional-tool-gates). To **execute** a test, the
+agent writes a Python file locally. It then runs the file with
+`lager python path/to/test.py --box <box-ip>`, which syncs the project to the box
+and runs it with full project context. Pass the box's **IP
 address** to `--box` — the same IP you connected to the MCP server on. Local box
 names are just client-side aliases, so the IP is the only identifier both sides
 can rely on. To make this concrete, `discover_bench()` echoes the address you
@@ -56,8 +56,8 @@ actually connected on as `box_address` and hands back a ready-to-run
 <Note>
 The URL above assumes a box that publishes its ports, which is the default. A box
 started with `start_box.sh --no-publish` (or `LAGER_NO_PUBLISH=1`) does not publish
-port 8100 on the host: the MCP server still runs and binds `0.0.0.0:8100` inside
-the container, but it is reachable only on the internal `lagernet` Docker network,
+port 8100 on the host. The MCP server still runs and binds `0.0.0.0:8100` inside
+the container. It is reachable only on the internal `lagernet` Docker network,
 where a reverse proxy owns the host ports. On such a box, point the client at the
 container's lagernet address or at the route the proxy exposes -- `<box-ip>:8100`
 will not connect.
@@ -142,10 +142,10 @@ network, and never on a shared or production box.
 
 ### Prompts
 
-The server also registers a few **prompts** — slash-command-style entry points
-that steer a client (e.g. Cursor) through the discover → plan → write → run
-workflow. They don't do work themselves; each returns an instruction the agent
-follows using the tools above.
+The server also registers a few **prompts**. These are slash-command-style entry
+points that steer a client (e.g. Cursor) through the discover → plan → write →
+run workflow. They do no work themselves. Each returns an instruction that the
+agent follows with the tools above.
 
 | Prompt | What it does |
 |--------|--------------|

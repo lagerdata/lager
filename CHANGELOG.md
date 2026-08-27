@@ -208,6 +208,23 @@ All notable changes to the Lager platform are documented here. For detailed rele
   `passive` stays report-only per rule 4, and the CI step stays `continue-on-error`
   until the last batch lands.
 
+- **The root prose files and the MCP and supported-instruments pages now read as
+  Simplified Technical English.** `README.md`, `CONTRIBUTING.md`,
+  `RELEASE_PROCESS.md`, `docs/README.md`, `test/README.md`,
+  `test/CONVENTIONS.md`, `test/COVERAGE.md`, the two `reference/mcp/` pages and
+  `supported-instruments.mdx` go from 82 violations to zero on every gated rule:
+  62 sentences over the 25-word cap, 11 uses of `should`/`may`/`could`/`would`
+  where `can`, `will` or `must` is meant, and 9 perfect or progressive tenses.
+  Five run-on inventories that had lost their list formatting are vertical lists
+  again. `tools/ste_baseline.json` drops from 35 files and 221 budgeted violations to
+  25 and 139. Two British spellings the checker's word list does not carry,
+  `labelled` and `analyses`, are also corrected.
+
+  No instrument name, model number or address string changed:
+  `supported-instruments.mdx` is what the CLI is checked against, so a rename
+  there would make the docs disagree with what the CLI prints. The counts in
+  `test/COVERAGE.md` are machine-checked and untouched; only its prose moved.
+
 - **Six CLI messages told the user to run `lager box update`, which does not
   exist.** The `lager box` group carries only `config` and `dut`; the `update`
   spelling was removed in favor of top-level `lager update`, and two comments in

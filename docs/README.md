@@ -42,9 +42,9 @@ npm run broken-links    # dangling links and anchors, scoped to source/
 `broken-links` is the one CI gates (`static-checks.yml`). `validate` is not gated,
 so an MDX parse error only shows up if you run it — please do.
 
-There is no local build step. docs.lagerdata.com is built and served by Mintlify's
-own hosted platform, which deploys straight from `main` via the Mintlify GitHub app;
-nothing in this repository produces the published site.
+There is no local build step. Mintlify's own hosted platform builds and serves
+docs.lagerdata.com, and it deploys straight from `main` through the Mintlify GitHub
+app. Nothing in this repository produces the published site.
 
 ## Adding a Page
 
@@ -55,8 +55,8 @@ nothing in this repository produces the published site.
 
 ## Troubleshooting
 
-- **A page loads as a 404** - make sure you are running from the `docs/` folder
-  (where `docs.json` is), and that the page is listed in `docs.json`.
+- **A page loads as a 404** - check that you run the command from the `docs/` folder,
+  where `docs.json` is. Check also that `docs.json` lists the page.
 - **Looking for a `build` script?** There isn't one, by design - see above. `mint`
   has no `build` subcommand; `mint export` writes an `export.zip`, which is not
   what a static host expects and is not part of publishing here.
