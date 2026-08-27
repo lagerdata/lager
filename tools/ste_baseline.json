@@ -100,63 +100,6 @@
     "length": 2,
     "tense": 1
   },
-  "docs/source/reference/cli/locking.mdx": {
-    "length": 9,
-    "modals": 1,
-    "tense": 3
-  },
-  "docs/source/reference/cli/login.mdx": {
-    "length": 3,
-    "modals": 1,
-    "tense": 1
-  },
-  "docs/source/reference/cli/nets.mdx": {
-    "length": 12,
-    "modals": 2
-  },
-  "docs/source/reference/cli/python.mdx": {
-    "length": 3,
-    "tense": 1
-  },
-  "docs/source/reference/cli/router.mdx": {
-    "length": 1,
-    "tense": 1
-  },
-  "docs/source/reference/cli/scope.mdx": {
-    "modals": 1
-  },
-  "docs/source/reference/cli/ssh-setup.mdx": {
-    "length": 6,
-    "modals": 3
-  },
-  "docs/source/reference/cli/ssh.mdx": {
-    "length": 1
-  },
-  "docs/source/reference/cli/supply.mdx": {
-    "length": 2,
-    "modals": 1,
-    "tense": 3
-  },
-  "docs/source/reference/cli/uninstall.mdx": {
-    "length": 1
-  },
-  "docs/source/reference/cli/update.mdx": {
-    "length": 6,
-    "modals": 1,
-    "tense": 2
-  },
-  "docs/source/reference/cli/usb.mdx": {
-    "length": 5,
-    "modals": 1,
-    "tense": 1
-  },
-  "docs/source/reference/cli/watt.mdx": {
-    "length": 5,
-    "modals": 1
-  },
-  "docs/source/reference/cli/webcam.mdx": {
-    "modals": 1
-  },
   "docs/source/reference/mcp/dut-context.mdx": {
     "length": 3
   },

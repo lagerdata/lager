@@ -31,31 +31,36 @@ in your shell — the `--all` flag and its multi-box loop were removed in v0.18.
 
 ## Pre-built box images
 
-Release tags publish a box container image to the GitHub Container Registry. When
-a pull is enabled, the client resolves the tag to an immutable digest, pulls that
-digest pinned to the box's own architecture, and verifies the image reports the
-version that was asked for before using it. Any miss at any step — a branch target
-rather than a release tag, an unpublished tag, an unreachable registry, a
-mismatched image — falls back to the local build that has always run.
+Release tags publish a box container image to the GitHub Container Registry. If a
+pull is enabled, the client does three things:
+
+1. It resolves the tag to an immutable digest.
+2. It pulls that digest, pinned to the box's own architecture.
+3. It verifies that the image reports the version you asked for.
+
+Any miss at any step falls back to the local build, which is the original
+behavior. A miss can be a branch target rather than a release tag, an unpublished
+tag, an unreachable registry, or a mismatched image.
 
 <Note>
 For `lager update`, pulling is **off by default**. It changes how the most
-load-bearing command in the fleet obtains the code it runs, so it is soaking on
+load-bearing command in the fleet obtains the code it runs, so it soaks on
 Lager's own boxes first. Pass `--pull` to opt a single run in, or set
 `LAGER_BOX_IMAGE_PULL=1` to opt in a whole shell.
 
 This differs from [`lager install`](/source/reference/cli/install), which already
 uses a pre-built image for a release tag by default. `--no-pull` works the same
-way on both, and is the switch that routes a fleet around a bad published image
-without waiting for a CLI release.
+way on both. It is the switch that routes a fleet around a bad published image,
+and it needs no CLI release.
 </Note>
 
 ## Version pinning
 
-Since **lager 0.22.0**, a semver value passed to `--version` — with or without a
-leading `v` (e.g. `0.26.0` or `v0.26.0`), including common pre-release suffixes
-(`-rc1`, `-beta2`, `-alpha`, `-preview`) — resolves to the release **tag**
-`vX.Y.Z`. Release tags are the single source of truth for a pinned version.
+Since **lager 0.22.0**, a semver value passed to `--version` resolves to the
+release **tag** `vX.Y.Z`. The leading `v` is optional (e.g. `0.26.0` or
+`v0.26.0`), and the common pre-release suffixes (`-rc1`, `-beta2`, `-alpha`,
+`-preview`) are accepted too. Release tags are the single source of truth for a
+pinned version.
 
 ```bash
 # All three pin the same release tag (v0.26.0)
@@ -72,11 +77,12 @@ lager update --box my-lager-box --version 5d84c68612384eed2854638c1e0941a4ff8b78
 ```
 
 Only the full 40 characters are accepted — a short hex prefix cannot be told
-apart from a branch name. Use this when you need a target that does not move:
+apart from a branch name. Use this when you need a target that does not move.
 `--version main` is re-resolved against `origin/main` each time it runs, so it
-can mean a different commit minutes later. A commit has no pre-built image
-(only release tags publish one), so a SHA builds on the box just as a branch
-does, and the commit must be reachable from a branch or tag on the remote.
+can mean a different commit minutes later. A commit has no pre-built image,
+because only release tags publish one. So a SHA builds on the box just as a
+branch does. The commit must also be reachable from a branch or tag on the
+remote.
 
 Any other value (`main`, `staging`, or a feature branch name) resolves to
 `origin/<name>` as before.
@@ -145,7 +151,7 @@ The update command performs the following steps (shown in progress bar):
 8. **J-Link Check** - Verify debug probe software (optional)
 9. **Version Update** - Record version in `/etc/lager/version`
 10. **Container Restart** - Start updated containers
-11. **Status Verification** - Confirm containers are running
+11. **Status Verification** - Confirm that the containers are up
 
 ---
 
@@ -252,7 +258,7 @@ cli/deployment/security/secure_box_firewall.sh <box-ip>
 - Container builds use `--no-cache` to ensure fresh builds
 - Version defaults to `main` if not specified
 - Update automatically verifies container health after restart
-- `--check` reports what would change without modifying the box, so it is the safe
+- `--check` reports what will change without modifying the box, so it is the safe
   way to find out whether a box is behind
 - `--force` updates even when the box reports it is already current, wiping the
   cached image and the cargo/npm volumes (useful after major code changes)

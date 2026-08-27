@@ -93,9 +93,9 @@ lager nets add NAME ROLE CHANNEL ADDRESS [OPTIONS]
 - `--box TEXT` - Lager Box name or IP
 - `--jlink-script FILE` - J-Link script file for debug nets (stored on box)
 - `--sda PIN` / `--scl PIN` - Custom LabJack pins for `i2c` nets
-- `--cs PIN` / `--sck PIN` / `--mosi PIN` / `--miso PIN` - Custom LabJack pins for `spi` nets (`--cs` is optional; omit it for 3-pin SPI with manual chip select)
+- `--cs PIN` / `--sck PIN` / `--mosi PIN` / `--miso PIN` - Custom LabJack pins for `spi` nets
 
-Pin values accept LabJack DIO names (`FIO0`-`FIO7`, `EIO0`-`EIO7`, `CIO0`-`CIO3`, `MIO0`-`MIO2`) or raw DIO numbers (`0`-`22`). When pin options are given, the `CHANNEL` argument is ignored — pass `custom`. If a chosen pin overlaps another saved LabJack net, a warning is printed but the net is still created.
+Pin values accept LabJack DIO names (`FIO0`-`FIO7`, `EIO0`-`EIO7`, `CIO0`-`CIO3`, `MIO0`-`MIO2`) or raw DIO numbers (`0`-`22`). When pin options are given, the `CHANNEL` argument is ignored — pass `custom`. If a chosen pin overlaps another saved LabJack net, a warning is printed but the net is still created. `--cs` is optional: omit it for 3-pin SPI with manual chip select.
 
 **Examples:**
 
@@ -198,7 +198,7 @@ Standalone debugger boxes — one probe drives one target MCU.
 
 #### 4. Multi-channel FTDI debug adapters
 
-`FT2232H` (2 channels: A, B) and `FT4232H` (4 channels: A, B, C, D) physically expose multiple USB interfaces. Channels A and B have an MPSSE engine; on the FT4232H, C and D do not. That matters per *net type*, not per chip: `debug`, `spi` and `i2c` are MPSSE protocols and are limited to A and B, while `gpio` runs as asynchronous bitbang, needs no MPSSE, and works on all four. The user picks an interface per net.
+`FT2232H` (2 channels: A, B) and `FT4232H` (4 channels: A, B, C, D) physically expose multiple USB interfaces. Channels A and B have an MPSSE engine; on the FT4232H, C and D do not. That matters per *net type*, not per chip. `debug`, `spi` and `i2c` are MPSSE protocols, so they are limited to A and B. `gpio` runs as asynchronous bitbang, needs no MPSSE, and works on all four. The user picks an interface per net.
 
 **Debug nets** encode the channel in the device field:
 
@@ -214,11 +214,11 @@ Equivalent forms: `@A`/`@0`, `@B`/`@1`, `@C`/`@2`, `@D`/`@3`. Devices without an
 
 **GPIO, I2C and SPI nets** take the channel as `params.interface` on the net record, accepting the same vocabulary as the `@` suffix: `A`-`D` or `0`-`3`. A net with no `interface` uses channel A, the only choice on a single-channel FT232H.
 
-Which channels are legal is enforced per net, not per instrument: asking for C or D on an `i2c` or `spi` net fails at net construction naming the channel, rather than somewhere inside pyftdi. A `gpio` net may use any channel the part has.
+Lager enforces which channels are legal per net, not per instrument. If you ask for C or D on an `i2c` or `spi` net, net construction fails and names the channel. The failure does not come from somewhere inside pyftdi. A `gpio` net can use any channel the part has.
 
-Before v0.43.0 all three drivers hardcoded interface A, so a board wiring comms to one channel and control lines to another could not be driven at all.
+Before v0.43.0 all three drivers hardcoded interface A. A board that wires comms to one channel and control lines to another was therefore impossible to drive.
 
-**UART nets** distinguish channels by their tty path. The USB scanner enumerates every `/dev/ttyUSB<N>` bound to the chip's USB serial; each shows up as a separate add-list entry, so on an FT4232H you'll see up to four UART options.
+**UART nets** distinguish channels by their tty path. The USB scanner enumerates every `/dev/ttyUSB<N>` bound to the chip's USB serial. Each one shows up as a separate add-list entry, so on an FT4232H you will see up to four UART options.
 
 **Rule:** a debug net is unique per `(instrument, address, channel-suffix)`. So a single FT2232H can host:
 - one `debug` net on `@A`
@@ -326,13 +326,13 @@ lager nets add-batch nets.json --box my-lager-box
 
 Assign a USB-serial cable to a known instrument the box cannot auto-detect.
 
-Some instruments have no USB control port and are reached over RS-232 through
-a generic USB-serial adapter — for example, a **Rigol DP711** power supply
-behind a Prolific cable. The box sees only the adapter (a `uart` device), not
-the instrument behind it. `assign` records "this cable is the DP711's serial
-line" on the box. From then on, the scanner reports the instrument itself:
-it appears in `lager instruments`, in the TUI, and you can create nets for it
-with `lager nets add` like any auto-detected device.
+Some instruments have no USB control port. You reach such an instrument over
+RS-232 through a generic USB-serial adapter — a **Rigol DP711** power supply
+behind a Prolific cable, for example. The box sees only the adapter (a `uart`
+device), not the instrument behind it. `assign` records "this cable is the
+DP711's serial line" on the box. From then on, the scanner reports the
+instrument itself. It appears in `lager instruments` and in the TUI, and you
+can create nets for it with `lager nets add` like any auto-detected device.
 
 Assign **once per cable**; the assignment is stored on the box and survives
 reboots and replugs. Creating nets stays the normal, repeatable step.
@@ -390,8 +390,8 @@ lager nets add <name> power-supply 1 'serial://067b:23a3/serial/00000006'
 <Note>
 Some cheap USB-serial clones share one serial number (or have none). If
 `assign` reports multiple matching cables, pin the assignment to a physical
-box port with `--port` instead — the trade-off is that moving the cable to a
-different port breaks the assignment.
+box port with `--port` instead. The trade-off is that if you move the cable to
+a different port, the assignment breaks.
 </Note>
 
 **Removing an assignment:**
@@ -403,9 +403,9 @@ lager nets assign --remove --serial 00000006 --box my-lager-box
 The cable is offered as a generic UART device again. **Nets live and die with
 their assignment**: any saved nets bound to the assignment's `serial://`
 address are deleted automatically and reported in the output. The same cascade
-applies when re-assigning a cable to a different instrument (or switching its
-identity from `--serial` to `--port`) — only a baud-only re-assign keeps the
-existing nets.
+applies when you re-assign a cable to a different instrument, and when you
+switch its identity from `--serial` to `--port`. Only a baud-only re-assign
+keeps the existing nets.
 
 **Currently assignable devices:** Rigol DP711 (single-channel RS-232 power
 supply). Run `lager nets assign --list` to see the catalog your box supports.
@@ -502,10 +502,11 @@ lager nets tui --box my-lager-box
 **TUI Features:**
 - Browse all connected instruments and their channels
 - Create new nets with guided prompts
-- Pick custom LabJack pins when adding i2c/spi nets — a pin dialog opens with
-  the defaults preselected (I2C: SDA=FIO4/SCL=FIO5; SPI: CS=FIO0/SCK=FIO1/
-  MOSI=FIO2/MISO=FIO3); any DIO pin can be chosen per signal, CS can be set to
-  none for 3-pin SPI, and pins already used by saved nets show a warning
+- Pick custom LabJack pins when you add an `i2c` or `spi` net. A pin dialog
+  opens with the defaults preselected (I2C: SDA=FIO4/SCL=FIO5; SPI:
+  CS=FIO0/SCK=FIO1/MOSI=FIO2/MISO=FIO3). You can choose any DIO pin per signal,
+  and you can set CS to none for 3-pin SPI. A pin already used by a saved net
+  shows a warning
 - Assign custom serial devices (RS-232 instruments) to their USB cables — the
   interactive twin of [`assign`](#assign), including the optional
   create-the-net step (`--as-net`)
@@ -581,7 +582,7 @@ lager nets remove-script debug1 --backend jlink --box my-lager-box
 
 ### `show-script`
 
-Display the contents of the debug script attached to a debug net. The script content is written to stdout (so `> out.cfg` works); a one-line summary like `# OpenOCD config, 1247 bytes` is written to stderr so interactive use tells you which backend's script you're looking at without polluting redirects.
+Display the contents of the debug script attached to a debug net. The script content is written to stdout, so `> out.cfg` works. A one-line summary like `# OpenOCD config, 1247 bytes` is written to stderr. That tells you which backend's script you see, and it does not pollute a redirect.
 
 ```bash
 lager nets show-script NAME [OPTIONS]
@@ -688,7 +689,7 @@ lager nets show battery1 --box my-lager-box
 
 ## Debug Script Workflow
 
-Both J-Link and OpenOCD debug probes can carry a custom script for handling reset sequences, clock initialization, board-specific signal pinning, or other device-specific behavior. Lager stores one script per debug net (either a JLinkScript or an OpenOCD `.cfg`/`.tcl`, never both) and applies it automatically during connect, flash, erase, and reset operations.
+Both J-Link and OpenOCD debug probes can carry a custom script for handling reset sequences, clock initialization, board-specific signal pinning, or other device-specific behavior. Lager stores one script per debug net — either a JLinkScript or an OpenOCD `.cfg`/`.tcl`, never both. It applies that script automatically during connect, flash, erase, and reset operations.
 
 ```bash
 # Attach a J-Link script to a J-Link probe (auto-detected from .JLinkScript extension)

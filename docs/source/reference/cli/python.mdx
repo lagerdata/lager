@@ -102,16 +102,17 @@ lager python long_running.py --box my-lager-box --detach
 ```
 
 In detached mode:
-- The command returns as soon as the box has accepted the job -- before the
-  script starts, and before any setup it needs (unpacking a module directory,
-  installing its `requirements.txt`)
+- The command returns as soon as the box accepts the job. It returns before the
+  script starts, and before any setup that the script needs (unpacking a module
+  directory, installing its `requirements.txt`)
 - No stdout/stderr is streamed back
 - The script continues running on the box
 - Use `--reattach` to see its output, `--kill` to stop it later
 
-Because the launch returns before the setup runs, a job that fails to start --
-a `requirements.txt` that will not install, say -- reports that through the job
-rather than at the prompt. `--reattach` shows the failure and exits non-zero:
+The launch returns before the setup runs. A job can therefore fail to start
+after the prompt comes back -- a `requirements.txt` that will not install, say.
+You see that failure through the job, not at the prompt. `--reattach` shows the
+failure and exits non-zero:
 
 ```bash
 lager python ./my_module --box my-lager-box --detach
@@ -318,10 +319,10 @@ psu.disable()
 
 ## Installing Python packages
 
-Scripts run inside the Lager Python container on the box. To install packages
-your scripts depend on, use the declarative `lager box-config pip` commands,
-which record the packages in the box config and rebuild the container so they
-persist across `lager python` runs and box updates.
+Scripts run inside the Lager Python container on the box. To install the
+packages that your scripts depend on, use the declarative `lager box-config pip`
+commands. Those commands record the packages in the box config and rebuild the
+container. The packages then persist across `lager python` runs and box updates.
 
 ```bash
 # Add one or more packages

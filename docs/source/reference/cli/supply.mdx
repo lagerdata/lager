@@ -209,7 +209,7 @@ Fields:
 - **Mode** - CV (constant voltage) or CC (constant current)
 - **Voltage/Current/Power** - Live measurements (4 decimal places)
 - **OCP/OVP Limit** - Protection thresholds
-- **OCP/OVP Tripped** - Whether protection has triggered (color-coded: green=NO, red=YES)
+- **OCP/OVP Tripped** - Whether protection tripped (color-coded: green=NO, red=YES)
 
 ### `clear-ovp`
 
@@ -279,7 +279,7 @@ Requires the `textual` Python package (`pip install textual`).
 | `r` | Refresh display |
 | Up/Down arrows | Navigate command history |
 
-**Concurrent access:** While the TUI is running, other `lager supply` CLI commands (e.g., `lager supply PSU voltage 3.3 --yes`) will automatically route through the TUI's WebSocket connection on port 9000, sharing the USB instrument connection. If the TUI is not running, commands use direct USB access.
+**Concurrent access:** While the TUI runs, other `lager supply` CLI commands (e.g., `lager supply PSU voltage 3.3 --yes`) will route through the TUI's WebSocket connection on port 9000. They share the one USB connection to the instrument. If the TUI is not open, commands use direct USB access.
 
 ## OVP / OCP Protection
 
@@ -307,7 +307,7 @@ lager supply PSU current 1.0 --ocp 1.2 --yes
 3. Clear the fault with `clear-ovp` or `clear-ocp`
 4. Re-enable the output with `enable`
 
-**Automatic OVP management (Rigol):** When setting a new voltage that would exceed the current OVP limit, the driver temporarily raises OVP by 10% headroom, sets the new voltage, then restores the desired OVP. This prevents false trips during voltage changes.
+**Automatic OVP management (Rigol):** If a new voltage will exceed the current OVP limit, the driver raises OVP by 10% headroom first. It then sets the new voltage and restores the desired OVP limit. This prevents false trips during voltage changes.
 
 ## Supported Hardware
 
