@@ -3,13 +3,14 @@ title: Router
 description: Drive a MikroTik router as a test net
 ---
 
-A **router net** puts a real access point under test control, so a test can change
-the SSID, break the network on purpose, and put it back. It is how you exercise a
-DUT's reconnect, roaming, and offline behavior without touching hardware by hand.
+A **router net** puts a real access point under test control. A test can then
+change the SSID, break the network on purpose, and put it back. It is how you
+exercise a DUT's reconnect, roaming, and offline behavior without touching
+hardware by hand.
 
-Unlike [WiFi](/source/reference/python/wifi), which manages the Lager Box's own
-wireless interface, a router net is a separate device on the bench that the box
-drives over the MikroTik REST API.
+[WiFi](/source/reference/python/wifi) manages the Lager Box's own wireless
+interface. A router net is different: it is a separate device on the bench that the
+box drives over the MikroTik REST API.
 
 ## Import
 
@@ -69,8 +70,8 @@ configuration, so scripts never hard-code them.
 
 ## Fault injection
 
-These are the methods that make a router net worth having: they break the network
-in specific, repeatable ways so you can assert how firmware responds.
+These are the methods that make a router net worth having. They break the network
+in specific, repeatable ways, so you can assert how firmware responds.
 
 | Method | Description |
 |--------|-------------|
@@ -91,10 +92,10 @@ router.reset_to_defaults()
 ```
 
 `reset_to_defaults(baseline_ssid=None, baseline_pass=None, wireless_interfaces=None)`
-restores the router to a known baseline. The rule of thumb: anything this API adds is
-tagged as test state, and the `remove_*` and `clear_*` methods above remove only
-those tagged entries — so a cleanup cannot delete a rule that was already on the
-router before the test ran.
+restores the router to a known baseline. As a rule of thumb, anything this API adds
+is tagged as test state. The `remove_*` and `clear_*` methods above remove only
+those tagged entries. A cleanup therefore cannot delete a rule that was already on
+the router before the test ran.
 
 ## Examples
 

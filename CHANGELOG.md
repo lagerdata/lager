@@ -96,6 +96,23 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Changed
 
+- **The Python API reference is converted to Simplified Technical English.** All
+  60 gated violations across the 14 affected pages of
+  `docs/source/reference/python/` are fixed: 43 sentences over the 25-word
+  reference cap, 9 unapproved modals, and 8 perfect or progressive tenses. Those
+  14 entries leave `tools/ste_baseline.json`, and no budget in the file rises.
+
+  Where a sentence carried four or more coordinate facts it became a vertical
+  list, not a shorter sentence -- the three-valued return of `cycle()`, the RTT
+  reader's reconnect rules per backend, and the two guarantees `cycle()` gives
+  over a hand-rolled `disable`/`sleep`/`enable`. STE prescribes a list past two
+  items, and in reference text it states the contract more precisely than the
+  running prose did.
+
+  One defect no check could see: `debug.mdx` read `materialised`. The
+  American-spelling rule carries no budget, but that stem is absent from the
+  checker's word list, so only reading the page finds it.
+
 - **User-facing prose now follows ASD-STE100, enforced in CI.**
   `docs/STYLE.md` adopts Simplified Technical English: fourteen rules covering
   sentence and paragraph length, active voice, simple tenses only, one
