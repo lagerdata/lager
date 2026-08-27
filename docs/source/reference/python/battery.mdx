@@ -140,7 +140,9 @@ batt.voltage_empty()
 
 ### `capacity(value=None)`
 
-Set or read the battery capacity. Must be greater than 0. The instrument may clamp the value to its supported range and will print a warning if the applied value differs.
+Set or read the battery capacity. Must be greater than 0. The instrument can clamp
+the value to its supported range. It prints a warning when the applied value
+differs from the requested value.
 
 ```python
 # Set capacity
@@ -205,10 +207,10 @@ The Keithley 2281S stores battery models in memory slots (0-9):
 | `'nicd'` | 3 | Requires pre-saved model |
 | `'lead-acid'` | 4 | Requires pre-saved model |
 
-**Note:** If a slot is empty, you'll get an error suggesting to use `'discharge'` or
-save a model first — either from the instrument front panel or with
-`define_model()` below. Use `'discharge'` for
-basic battery simulation that works on all instruments.
+**Note:** If a slot is empty, the call raises an error. The error tells you to use
+`'discharge'`, or to save a model first from the instrument front panel or with
+`define_model()` below. Use `'discharge'` for basic battery simulation that works
+on all instruments.
 
 ### `model_catalog()`
 
@@ -221,9 +223,10 @@ for entry in batt.model_catalog():
     print(entry)
 ```
 
-On the Keithley 2281S, slots 1-9 are reported when a model has been saved there, and
-the five firmware built-in models are listed without a slot. Discharge mode is not
-listed: it is front-panel-only and has no SCPI recall form on current firmware.
+On the Keithley 2281S, slots 1-9 are reported when a model occupies the slot. The
+five firmware built-in models are listed without a slot. Discharge mode is not
+listed, because it is front-panel-only and has no SCPI recall form on current
+firmware.
 
 ### `read_model(slot)`
 
@@ -234,9 +237,9 @@ exporting a model does not change which model is active.
 model = batt.read_model(1)
 ```
 
-On the Keithley 2281S, slots 1-9 hold saved models (there is no exportable slot 0) and
-each model is 101 points per element, for both VOC and resistance. Reading an empty
-slot is rejected, with a pointer to `model_catalog()`.
+On the Keithley 2281S, slots 1-9 hold saved models, and there is no exportable
+slot 0. Each model is 101 points per element, for both VOC and resistance. A read
+of an empty slot is rejected, with a pointer to `model_catalog()`.
 
 ### `define_model(slot, voc, resistance)`
 
@@ -248,10 +251,10 @@ batt.define_model(3, voc=voc_points, resistance=resistance_points)
 ```
 
 <Warning>
-Saving to an occupied slot overwrites it silently, and a slot cannot afterwards be
-deleted or emptied — the Keithley 2281S has no SCPI command for it, so slots can only
-be overwritten. Gate overwrites behind an explicit confirmation in your own code.
-Valid target slots are 1-9.
+A save to an occupied slot overwrites it silently. You cannot afterwards delete or
+empty a slot, because the Keithley 2281S has no SCPI command for it. A slot can
+only be overwritten. Gate overwrites behind an explicit confirmation in your own
+code. Valid target slots are 1-9.
 </Warning>
 
 ### `enable()` / `disable()`

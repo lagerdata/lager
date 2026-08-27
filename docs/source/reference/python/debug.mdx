@@ -87,25 +87,25 @@ dbg.connect(script='/home/lagerdata/probes/my_target.JLinkScript')
 **Returns:** `dict` - Status dictionary with connection information
 
 <Note>
-A script override is only adopted by a *relaunch* of the gdbserver. If a server
-is already running, pass `force=True` to restart it with the new script;
-`ignore_if_connected=True` returns early without relaunching (though the file is
-still repointed for subsequent operations). Invalid input — a missing path that
-isn't valid base64, or an empty string — is silently ignored and the net's
-previously materialised script stays in effect.
+A script override takes effect only when the gdbserver relaunches. If a server is
+already up, pass `force=True` to restart it with the new script.
+`ignore_if_connected=True` returns early and does not relaunch, but it still
+repoints the file for later operations. Invalid input means a missing path that
+is not valid base64, or an empty string. The net ignores such input silently, and
+the script that it materialized earlier stays in effect.
 
-The override is scoped to **this net and this session**: it is written to a
-per-net path rather than the box-wide config that the net record and the HTTP
-debug service share, and `disconnect()` clears it. Two debug nets connecting with
-different scripts therefore no longer clobber one another.
+The override is scoped to **this net and this session**. Lager writes it to a
+per-net path rather than to the box-wide config that the net record and the HTTP
+debug service share. `disconnect()` clears the override. Two debug nets that
+connect with different scripts therefore no longer clobber one another.
 </Note>
 
 <Warning>
-An `openocd_config` override must be a **complete** cfg, not a fragment. It is
-applied after the interface and target configs, but the launch line still carries
-lager's own `-c 'ftdi channel N'` whenever the net has a probe channel, and that
-command is not recognized unless a cfg has selected the ftdi adapter driver. A cfg
-holding only, say, `adapter speed 1000` dies at startup with
+An `openocd_config` override must be a **complete** cfg, not a fragment. Lager
+applies it after the interface and target configs. The launch line still carries
+lager's own `-c 'ftdi channel N'` whenever the net has a probe channel. OpenOCD
+does not recognize that command unless a cfg first selects the ftdi adapter
+driver. A cfg holding only, say, `adapter speed 1000` dies at startup with
 `invalid command name "ftdi"`.
 </Warning>
 
@@ -141,9 +141,22 @@ print(output)
 
 **Returns:** `str` - Combined output from reset operation
 
-**Self-heal (both backends):** Right after a `flash()` there is a short window where the debug server isn't reachable yet — for J-Link the restarted GDB server's PID isn't observable, for OpenOCD a transient daemon/RPC fault — and a bare call would raise. `reset()` now retries with bounded backoff on both the J-Link and OpenOCD backends, and only (re)starts a server when one is genuinely down. It never tears down a server that is already running, so an attached RTT session is left intact, and callers no longer need their own retry wrappers.
+**Self-heal (both backends):** Right after a `flash()` there is a short window
+where the debug server is not reachable yet. On J-Link the cause is that the
+restarted GDB server's PID is not observable yet. On OpenOCD the cause is a
+transient daemon or RPC fault. A bare call raises inside that window. `reset()`
+retries with bounded backoff on both the J-Link and OpenOCD backends, and it
+restarts a server only when one is genuinely down. It never tears down a server
+that is already up, so an attached RTT session stays intact. Callers no longer
+need their own retry wrappers.
 
-**DA1469x exception:** On DA1469x, `flash()` deliberately leaves the server down (it ends in a software reset rather than a server restart) and the documented flow is an explicit, halt-aware reconnect. So on DA1469x the self-heal retries but never auto-starts a server — a genuinely-down server still surfaces the original error, exactly as before, instead of silently coming up unhalted (which can yield garbage QSPI-XIP reads).
+**DA1469x exception:** On DA1469x, `flash()` deliberately leaves the server down.
+The flash ends in a software reset rather than a server restart, and the
+documented flow is an explicit, halt-aware reconnect. So the self-heal still
+retries on DA1469x, but it never auto-starts a server. A server that is genuinely
+down still surfaces the original error, exactly as before. The self-heal never
+brings a server up unhalted, because an unhalted server can return garbage
+QSPI-XIP reads.
 
 ### `halt()`
 
@@ -159,19 +172,19 @@ dbg.halt()
 **Returns:** `str` - Combined output from the halt operation
 
 This is **not** the same as `reset(halt=True)`. That runs OpenOCD's `reset halt`,
-which pulses nRESET and re-enters through the reset vector; `halt()` issues a bare
-`halt`, so the core stops at whatever it was executing and nRESET is never touched.
+which pulses nRESET and re-enters through the reset vector. `halt()` issues a bare
+`halt` instead, so the core stops where it is, and nRESET is never touched.
 
-The distinction matters on parts that execute in place out of QSPI. After
-programming such a part, `reset(halt=True)` re-runs the bootloader rather than
-stopping on the image you just wrote, and an unhalted re-attach risks garbage
-XIP reads. Halting in place is how you attach after a program without disturbing
+The distinction matters on parts that execute in place out of QSPI. After you
+program such a part, `reset(halt=True)` re-runs the bootloader rather than
+stopping on the image you just wrote. An unhalted re-attach risks garbage XIP
+reads. Halting in place is how you attach after a program without disturbing
 the image.
 
 <Note>
-J-Link has no standalone halt-in-place primitive — `reset_device` and `gdb_reset`
-both reset first — so on that backend `halt()` raises and names the halt-first
-`.JLinkScript` as the supported route.
+J-Link has no standalone halt-in-place primitive, because `reset_device` and
+`gdb_reset` both reset first. On that backend `halt()` raises, and the error
+names the halt-first `.JLinkScript` as the supported route.
 </Note>
 
 ### `flash(firmware_path)`
@@ -234,7 +247,11 @@ print(data.hex())
 
 **Returns:** `bytes` - Memory data
 
-**Self-heal:** like `reset()`, `read_memory()` retries with bounded backoff across the brief post-`flash()` settling window on both backends and only reconnects when no server is running, never disturbing a live session. `erase()` behaves the same way. The same DA1469x exception applies — no server is auto-started, so a post-flash DA1469x read raises clearly rather than returning unhalted-XIP garbage.
+**Self-heal:** like `reset()`, `read_memory()` retries with bounded backoff across
+the brief post-`flash()` settling window on both backends. It reconnects only when
+no server is up, and it never disturbs a live session. `erase()` behaves the same
+way. The same DA1469x exception applies. No server is auto-started, so a
+post-flash DA1469x read raises clearly rather than returning unhalted-XIP garbage.
 
 ### `status()`
 
@@ -253,7 +270,11 @@ The CLI's `lager debug <net> status` reports both states separately.
 
 ### `session(speed=None, transport=None, connect=True, ignore_if_connected=True, disconnect_on_exit=True)`
 
-Scoped debug session. Connects on entry and guarantees teardown on exit, so the safe flash → attach-RTT → reset ordering is encoded once instead of being rediscovered in every script. The `with` target is the net itself, so the full surface (`flash`, `rtt_defmt`, `reset`, `read_memory`, …) is available inside the block.
+Scoped debug session. It connects on entry and guarantees teardown on exit. The
+safe flash → attach-RTT → reset ordering is therefore encoded once, rather than
+rediscovered in every script. The `with` target is the net itself, so the full
+surface (`flash`, `rtt_defmt`, `reset`, `read_memory`, …) is available inside the
+block.
 
 ```python
 with dbg.session() as s:
@@ -278,7 +299,9 @@ with dbg.session() as s:
 
 **Returns:** a context manager yielding the debug net.
 
-**Why it pairs with RTT:** the in-process RTT reader is reconnect-aware (see below), so a `flash()` or `reset()` inside the session that bounces the GDB server doesn't kill a log stream opened in the same block.
+**Why it pairs with RTT:** the in-process RTT reader is reconnect-aware (see
+below). A `flash()` or `reset()` inside the session can bounce the GDB server.
+Such a bounce does not kill a log stream that you opened in the same block.
 
 ### `rtt(channel=0, search_addr=None, search_size=None, chunk_size=None)`
 
@@ -319,7 +342,24 @@ with dbg.rtt(search_addr=0x20000000, search_size=0x10000) as rtt:
 
 **Note:** Debug connection must be active before using RTT. Call `connect()` first.
 
-**Reconnect-aware (both backends):** a J-Link `flash()` (and `reset()` via its Commander grab) briefly frees the probe's USB and restarts the GDB server on the *same* ports, dropping the RTT socket. The reader transparently re-attaches to the same RTT telnet port instead of going silent, so a long-lived `read_some()` / `rtt_defmt()` loop keeps producing across a flash. The OpenOCD reader is reconnect-aware too — OpenOCD keeps its daemon up across an ordinary flash so the socket rarely drops, but if it does (daemon force-restart or rtt-server bounce) the reader re-runs the `rtt setup` / `rtt server start` and re-attaches. In both cases reconnection is bounded (default 30 s) and only re-attaches once the server/daemon is actually back up — it never *starts* one — so a flash that deliberately leaves the server down (e.g. DA1469x) won't spin forever, and the reader can't disturb a DA1469x left intentionally down. Pass `reconnect=False` for the legacy one-shot behavior.
+**Reconnect-aware (both backends):** the RTT reader re-attaches by itself when the
+GDB server or daemon restarts under it.
+
+- **J-Link.** A `flash()` briefly frees the probe's USB and restarts the GDB
+  server on the *same* ports, which drops the RTT socket. A `reset()` does the
+  same through its Commander grab. The reader re-attaches to the same RTT telnet
+  port instead of going silent. A long-lived `read_some()` or `rtt_defmt()` loop
+  therefore keeps producing across a flash.
+
+- **OpenOCD.** The daemon stays up across an ordinary flash, so the socket rarely
+  drops. If it does drop, from a daemon force-restart or an rtt-server bounce, the
+  reader re-runs `rtt setup` and `rtt server start` and re-attaches.
+
+Reconnection is bounded on both backends, and the default is 30 s. The reader
+re-attaches only once the server or daemon is back up, and it never *starts* one.
+A flash that deliberately leaves the server down, such as on DA1469x, therefore
+cannot make the reader spin forever. The reader also cannot disturb a DA1469x that
+you left down on purpose. Pass `reconnect=False` for the legacy one-shot behavior.
 
 ## Examples
 
@@ -484,11 +524,16 @@ with dbg.rtt_defmt(elf='build/app.elf', channel=0) as logs:
 | iteration (`for line in logs:`) | Yield decoded lines until the stream ends |
 | `write(data)` | Send bytes or `str` to the target's RTT down-channel |
 
-Like the CLI pipe, the RTT stream never ends on its own — bound your read loop with a time budget or line count, then exit the `with` block.
+Like the CLI pipe, the RTT stream never ends on its own. Bound your read loop with
+a time budget or a line count, then exit the `with` block.
 
 #### Driving the firmware while decoding its logs
 
-`write()` makes a decoding session bi-directional, so a script can send a command and assert on the decoded response. Decoding is one-way — `defmt-print` only sees the up-channel — so writes bypass it and go straight to the target. This is the only way to do both at once: the RTT telnet port accepts a single client, so you cannot open a raw `rtt()` alongside a `rtt_defmt()`.
+`write()` makes a decoding session bi-directional, so a script can send a command
+and assert on the decoded response. Decoding is one-way — `defmt-print` only sees
+the up-channel — so writes bypass it and go straight to the target. This is the
+only way to do both at once. The RTT telnet port accepts a single client, so you
+cannot open a raw `rtt()` alongside a `rtt_defmt()`.
 
 ```python
 with dbg.rtt_defmt(elf='build/app.elf') as logs:
@@ -503,7 +548,10 @@ with dbg.rtt_defmt(elf='build/app.elf') as logs:
 ```
 
 <Warning>
-This requires the firmware to declare an RTT **down** buffer on the channel you opened. `defmt-rtt` alone only sets up the up buffer — with no down buffer the target silently discards whatever you write, which looks like a host-side failure and is not one.
+This requires the firmware to declare an RTT **down** buffer on the channel you
+opened. `defmt-rtt` alone only sets up the up buffer. With no down buffer, the
+target silently discards whatever you write. That looks like a host-side failure,
+and it is not one.
 </Warning>
 
 **Parameters:**

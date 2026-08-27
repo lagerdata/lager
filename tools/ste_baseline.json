@@ -163,54 +163,6 @@
   "docs/source/reference/mcp/overview.mdx": {
     "length": 4
   },
-  "docs/source/reference/python/arm.mdx": {
-    "modals": 1
-  },
-  "docs/source/reference/python/battery.mdx": {
-    "length": 4,
-    "modals": 1,
-    "tense": 1
-  },
-  "docs/source/reference/python/binaries.mdx": {
-    "tense": 1
-  },
-  "docs/source/reference/python/ble.mdx": {
-    "modals": 1
-  },
-  "docs/source/reference/python/breakpoints.mdx": {
-    "length": 6
-  },
-  "docs/source/reference/python/debug.mdx": {
-    "length": 21,
-    "modals": 1,
-    "tense": 3
-  },
-  "docs/source/reference/python/eload.mdx": {
-    "modals": 2
-  },
-  "docs/source/reference/python/overview.mdx": {
-    "length": 1
-  },
-  "docs/source/reference/python/router.mdx": {
-    "length": 4
-  },
-  "docs/source/reference/python/solar.mdx": {
-    "tense": 1
-  },
-  "docs/source/reference/python/uart.mdx": {
-    "modals": 1
-  },
-  "docs/source/reference/python/usb.mdx": {
-    "length": 6,
-    "modals": 2,
-    "tense": 1
-  },
-  "docs/source/reference/python/watt.mdx": {
-    "length": 1
-  },
-  "docs/source/reference/python/webcam.mdx": {
-    "tense": 1
-  },
   "docs/source/reference/rust/arm.mdx": {
     "modals": 1,
     "tense": 1

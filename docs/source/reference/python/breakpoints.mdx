@@ -3,10 +3,11 @@ title: Breakpoints
 description: Pause a running lager python script to inspect the bench, then continue
 ---
 
-Pause a `lager python` script mid-run so you can inspect the bench with ad-hoc `lager`
-commands (or a live Python prompt), then resume where it left off. Useful for a long test
-that reaches a known trouble spot, or for checking on a device in an unknown state without
-killing and restarting the run.
+Pause a `lager python` script mid-run, inspect the bench, then resume where the
+script left off. You can inspect it with ad-hoc `lager` commands or with a live
+Python prompt. This helps on a long test that reaches a known trouble spot. It
+also helps when you must check a device in an unknown state without killing and
+restarting the run.
 
 Introduced in **lager 0.21.0**.
 
@@ -73,9 +74,10 @@ Resolution order is **`timeout=` argument → `LAGER_BREAKPOINT_TIMEOUT` env →
 explicit `timeout=` in the script wins over the env var.
 
 <Note>
-`lager python --timeout` is a different setting — the script's total runtime limit, capped at
-300 s on the box — and it will terminate the whole run when it elapses, paused or not. Leave it
-at its default (`0`, unlimited) when using long breakpoint pauses.
+`lager python --timeout` is a different setting. It is the script's total runtime
+limit, and the box caps it at 300 s. It terminates the whole run when it elapses,
+whether the script is paused or not. Leave it at its default (`0`, unlimited) when
+you use long breakpoint pauses.
 </Note>
 
 ## Interactive console
@@ -108,8 +110,9 @@ You can read any variable, evaluate expressions, and call functions the script d
 `Ctrl+D` disconnects (the script stays paused).
 
 <Note>
-The console is for **inspection**: it operates on a snapshot of the script's namespace, so
-changes you make in the console do **not** carry back into the running script when it resumes.
+The console is for **inspection**. It operates on a snapshot of the script's
+namespace. Changes that you make in the console do **not** carry back into the
+script when it resumes.
 </Note>
 
 ## Inspecting hardware while paused
@@ -129,10 +132,10 @@ owner at a time:
 - **A device the script itself has open is claimed by the paused process.** Reading it from a
   second terminal returns a "device busy / claimed by another process" error. Read it through the
   **`--console`** instead — that runs in the same process and shares the open handle.
-- **One net per physical instrument per process.** Two nets on the same instrument can't both be
-  open at once in a single script (e.g. the two channels of one Rigol DP821, `supply2`/`supply3`,
-  or the dual-role Keithley 2281S, `supply1`/`battery1`). Read them from separate terminals, or
-  one at a time.
+- **One net per physical instrument per process.** Two nets on the same instrument
+  cannot both be open at once in a single script. Examples are the two channels of
+  one Rigol DP821, `supply2`/`supply3`, and the dual-role Keithley 2281S,
+  `supply1`/`battery1`. Read them from separate terminals, or one at a time.
 
 ## Built-in `breakpoint()`
 
@@ -146,8 +149,9 @@ breakpoint("check DUT")   # same as pause("check DUT")
 
 ## Disabling breakpoints
 
-Set `LAGER_BREAKPOINTS` to an off value to turn every `pause()` (and `breakpoint()`) into a no-op
-— useful for a clean, non-interactive run of a script that has breakpoints left in it:
+Set `LAGER_BREAKPOINTS` to an off value. Every `pause()` and `breakpoint()` call
+then becomes a no-op, which gives a clean, non-interactive run of a script that
+still has breakpoints in it:
 
 ```bash
 lager python test.py --box mybox --env LAGER_BREAKPOINTS=off
