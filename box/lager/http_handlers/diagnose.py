@@ -37,6 +37,8 @@ import time
 
 from flask import Flask, jsonify, request
 
+from lager.util.paths import contained_path, fs_slug
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,13 +66,21 @@ _ACRONAME_VID = '24ff'
 # slot instead (see usb_scanner._TOPOLOGY_ADDRESSED). It names the device
 # directly, so it needs no vid/pid walk.
 _PORT_SLOT_PREFIX = 'port-'
+_SYSFS_USB_ROOT = '/sys/bus/usb/devices'
 
 
 def _sysfs_for_port_slot(serial):
     """Resolve a 'port-1-1.4' address slot straight to its sysfs directory."""
     if not serial or not serial.lower().startswith(_PORT_SLOT_PREFIX):
         return None
-    path = os.path.join('/sys/bus/usb/devices', serial[len(_PORT_SLOT_PREFIX):])
+    # The slot is read from a client-supplied VISA address, so slug it: a
+    # topology path is only ever digits, '-' and '.', which fs_slug leaves
+    # untouched, while anything carrying separators collapses to a flat name.
+    try:
+        path = contained_path(
+            _SYSFS_USB_ROOT, fs_slug(serial[len(_PORT_SLOT_PREFIX):]))
+    except ValueError:
+        return None
     return path if os.path.isdir(path) else None
 
 

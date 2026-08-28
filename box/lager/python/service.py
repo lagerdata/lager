@@ -614,8 +614,6 @@ class PythonServiceHandler(BaseHTTPRequestHandler):
                 self._handle_python_continue()
             elif self.path == '/python/breakpoint':
                 self._handle_python_breakpoint()
-            elif self.path == '/pip':
-                self._handle_pip()
             elif self.path == '/test-execute':
                 # Simple test endpoint: just run a hardcoded Python script
                 self._handle_test_execute()
@@ -996,39 +994,6 @@ print("Test execution complete.")
         # Execute the script
         proc = subprocess.Popen(
             ['/usr/local/bin/python3', script_path],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.PIPE,
-            bufsize=0,
-        )
-
-        self.send_streaming_response(
-            stream_process_output(proc, output_channel, cleanup_fns)
-        )
-
-    def _handle_pip(self):
-        """Handle POST /pip - Run pip command"""
-        content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length)
-        data = json.loads(body.decode('utf-8'))
-
-        pip_args = data.get('args', [])
-        if not isinstance(pip_args, list):
-            self.send_error_response(400, 'args must be a list')
-            return
-
-        # Run pip directly (no docker exec)
-        import subprocess
-        from lager.exec.process import make_output_channel, stream_process_output
-
-        cleanup_fns = set()
-        output_channel = make_output_channel(cleanup_fns)
-
-        base_command = ['pip3']
-        base_command.extend(pip_args)
-
-        proc = subprocess.Popen(
-            base_command,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE,

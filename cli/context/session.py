@@ -464,55 +464,6 @@ class DirectIPSession:
                 pass
             raise requests.HTTPError("Download timeout")
 
-    def run_pip(self, box, args):
-        """
-        Run pip commands in the python container via HTTP
-
-        Args:
-            box: Box identifier (IP address)
-            args: List of pip arguments (e.g., ['install', 'pandas'])
-
-        Returns:
-            HTTP response with streaming output
-        """
-        import requests
-
-        # Make HTTP request to the box's run-pip endpoint
-        url = f'http://{self.ip_address}:5001/run/pip'
-
-        try:
-            from ..gateway_auth import auth_headers_for_box
-            from ..box_storage import _check_gateway
-            response = requests.post(
-                url,
-                json={'args': args},
-                stream=True,
-                timeout=600,  # 10 minute timeout for pip operations
-                headers=auth_headers_for_box(self.ip_address),
-            )
-            # Gateway discovery/denial handling; on a gated box's first
-            # contact the request is retried with the stored token so the
-            # caller streams the real pip output.
-            response = _check_gateway(response, self.ip_address)
-
-            # Check for HTTP errors
-            if response.status_code != 200:
-                error_msg = f"HTTP {response.status_code}"
-                try:
-                    error_data = response.json()
-                    if 'error' in error_data:
-                        error_msg = error_data['error']
-                except ValueError:
-                    pass
-                raise requests.HTTPError(error_msg)
-
-            return response
-
-        except requests.exceptions.ConnectionError as e:
-            raise requests.HTTPError(f"Failed to connect to box at {self.ip_address}: {e}")
-        except requests.exceptions.Timeout:
-            raise requests.HTTPError("Pip operation timed out")
-
 
 class DirectHTTPSession:
     """

@@ -32,6 +32,8 @@ without a parseable address.
 
 import re
 
+from lager.util.paths import contained_path, fs_slug
+
 _VISA_RE = re.compile(
     # Serial slot may be empty for FTDI chips whose EEPROM was never
     # programmed (the scanner emits ``USB0::0x0403::0x6011::::INSTR`` in
@@ -69,6 +71,11 @@ _RTT_PORTS_PER_SLOT = 2  # Two RTT channels per probe
 _OPENOCD_TELNET_PORT_BASE = 4444
 _OPENOCD_TCL_PORT_BASE = 6666
 MAX_SLOTS = 4
+
+# Every per-probe pid/log file lands here. The serial that names them comes
+# off the wire (a net's VISA address), so it is slugged and the join is
+# checked -- see lager.util.paths.
+_PROBE_RUNTIME_DIR = '/tmp'
 
 _LEGACY_GDBSERVER_PIDFILE = '/tmp/jlink_gdbserver.pid'
 _LEGACY_GDBSERVER_LOGFILE = '/tmp/jlink_gdbserver.log'
@@ -304,25 +311,29 @@ def rtt_port_for_slot(slot):
 def jlink_gdbserver_pidfile(serial):
     if serial is None:
         return _LEGACY_GDBSERVER_PIDFILE
-    return f'/tmp/jlink_gdbserver_{serial}.pid'
+    return contained_path(
+        _PROBE_RUNTIME_DIR, f'jlink_gdbserver_{fs_slug(serial)}.pid')
 
 
 def jlink_gdbserver_logfile(serial):
     if serial is None:
         return _LEGACY_GDBSERVER_LOGFILE
-    return f'/tmp/jlink_gdbserver_{serial}.log'
+    return contained_path(
+        _PROBE_RUNTIME_DIR, f'jlink_gdbserver_{fs_slug(serial)}.log')
 
 
 def jlink_pidfile(serial):
     if serial is None:
         return _LEGACY_JLINK_PIDFILE
-    return f'/tmp/jlink_{serial}.pid'
+    return contained_path(
+        _PROBE_RUNTIME_DIR, f'jlink_{fs_slug(serial)}.pid')
 
 
 def jlink_logfile(serial):
     if serial is None:
         return _LEGACY_JLINK_LOGFILE
-    return f'/tmp/jlink_{serial}.log'
+    return contained_path(
+        _PROBE_RUNTIME_DIR, f'jlink_{fs_slug(serial)}.log')
 
 
 # ---- OpenOCD per-probe helpers -------------------------------------------------
@@ -342,10 +353,12 @@ def openocd_tcl_port_for_slot(slot):
 def openocd_pidfile(serial):
     if serial is None:
         return _LEGACY_OPENOCD_PIDFILE
-    return f'/tmp/openocd_{serial}.pid'
+    return contained_path(
+        _PROBE_RUNTIME_DIR, f'openocd_{fs_slug(serial)}.pid')
 
 
 def openocd_logfile(serial):
     if serial is None:
         return _LEGACY_OPENOCD_LOGFILE
-    return f'/tmp/openocd_{serial}.log'
+    return contained_path(
+        _PROBE_RUNTIME_DIR, f'openocd_{fs_slug(serial)}.log')
