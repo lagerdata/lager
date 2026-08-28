@@ -120,6 +120,7 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Changed
 
+<<<<<<< HEAD
 - **The prose gate is now a required context, and it can see three rules it
   could not see before.** `tools/check_ste.py` reported zero across the corpus
   while three of its own rules were partly blind, so the zero was a statement
@@ -160,6 +161,43 @@ All notable changes to the Lager platform are documented here. For detailed rele
   treats an underscore-prefixed page as a partial and exempts it from the nav
   and release-notes checks, which is Mintlify's own convention and the one case
   where "not in docs.json" is the intent rather than the defect.
+=======
+- **The CI guide is rewritten around a runner installed on the Lager Box.** The
+  published page assumed the runner is a separate machine that reaches the box
+  across the network, so every job paid for `pip install`, `lager login` and
+  `lager boxes add`, and the box IP became a repository secret. A runner on the
+  box removes all three: its label is the box name, the job needs no Lager
+  secrets, and a self-hosted runner takes one job at a time, which serializes
+  that bench with no `concurrency:` block.
+
+  The page covers both arrangements and recommends the second. It adds material
+  the old page had no equivalent for: a firmware build that runs off the bench
+  with a `github.sha`-pinned checkout, a flash step that checks its own result
+  because a programmer can report a fatal error and still exit 0, a 0/1/2
+  exit-code contract that separates a device failure from an infrastructure one,
+  a retry wrapper that power-cycles the probe and the DUT between attempts,
+  cleanup that runs on cancel rather than only on failure, a matrix generated
+  from checked-in bench files, and a gate job that catches a test which is not
+  applicable on any bench.
+
+  Every flag, environment variable, exit code and default is verified by walking
+  the live click tree rather than by reading the published docs. That found one
+  error in the source draft: `lager nets list` does not exist. `lager boxes
+  list` does, and bare `lager nets` is the listing form.
+
+- **`architecture.mdx` hands CI to the CI page, and explains why a box answers
+  on two HTTP ports.** Its CI section described the separate-host arrangement as
+  the only one and carried a second workflow example beside the real one; two CI
+  examples in two pages is what let them drift, so one page owns CI now.
+
+  The page gains a short section on the `:9000` / `:5000` split, which the port
+  table listed without explaining. `:9000` is the box API and takes all net
+  data-plane traffic; `:5000` is the older script-upload path that `lager python`
+  still uses; lock state answers on both and the CLI reads `:9000`. The
+  consequence a reader can act on was written down nowhere: a box that publishes
+  only `:9000` answers `lager nets` and `lager hello`, and fails `lager python`.
+  Closes #383.
+>>>>>>> a93b6866 (Rewrite the CI guide around a runner installed on the box)
 
 - **The Python API reference is converted to Simplified Technical English.** All
   60 gated violations across the 14 affected pages of
