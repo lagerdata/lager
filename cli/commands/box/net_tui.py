@@ -2029,7 +2029,7 @@ class AddScreen(Screen):
         # LabJack i2c/spi nets get a pin-picker dialog before saving;
         # defaults are preselected so accepting unchanged behaves exactly
         # like the pre-dialog flow. Nets whose pins were already chosen via
-        # the row's [⚙] button aren't prompted again.
+        # the row's pencil button aren't prompted again.
         labjack_pin_nets = [
             n for n in selected_nets
             if _is_pin_configurable(n) and not n.pins_confirmed
