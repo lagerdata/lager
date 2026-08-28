@@ -517,8 +517,17 @@ echo "Test 5.2: validate exits non-zero"
 # reports "Could not connect", which the old assertion recorded as a wording
 # mismatch -- a verdict about code it never reached. Same defect class as
 # issue #283. Retry once past the bounce, then say which of the two happened.
+# Both wordings are matched deliberately. cli/errors.py said "Could not connect
+# to the box" and "may be offline" until the prose pass rewrote them to "The
+# connection to the box failed" and "The box is offline". A probe that asks
+# whether the box was reachable only gets more reliable by accepting more
+# spellings, and an older CLI still emits the first pair.
+#
+# Whoever rewords those messages again must add the new spelling here. This
+# suite does not run in CI, so a mismatch ships green and shows up as a wrong
+# verdict on the next hardware run rather than as a failure.
 _validate_unreachable() {
-  echo "$1" | grep -qiE "could not connect to the box|may be offline"
+  echo "$1" | grep -qiE "connection to the box.*failed|the box is offline|could not connect to the box|may be offline"
 }
 
 VALIDATE_OUT=$(lager box config validate --box "$BOX" 2>&1)
