@@ -146,6 +146,23 @@ reaches it, and a reverse proxy owns the host ports. No `Yes` row answers at
 Port 22 is the exception. SSH is the host's own daemon rather than a published container
 port, so `--no-publish` does not affect it.
 
+### Why there are two HTTP ports
+
+A box answers on `:9000` and on `:5000`, and the split is historical rather than
+functional.
+
+`:9000` is the box API and the primary one. Net metadata, instrument discovery,
+box locking, file download and version reporting all go there.
+
+`:5000` is the older script-upload path. `lager python` still uses it to send a
+script to the box and to stop a running one. Nothing new is added to it.
+
+Some state answers on both. Lock state is one: the box exposes it on each
+server, and the CLI reads it from `:9000`.
+
+Open both to your VPN. A box that publishes only `:9000` answers `lager nets`
+and `lager hello` but fails `lager python`.
+
 ---
 
 ## Optional Control Plane Integration
@@ -323,92 +340,15 @@ How instruments physically connect between the Lager Box and the DUT:
 
 ---
 
-## GitHub Actions CI Integration
+## Running from CI
 
-A CI runner is an ephemeral GitHub Actions VM. It joins Tailscale and runs `lager` commands exactly like a developer. Lager needs no CI-specific infrastructure.
+A CI runner drives a Lager Box with the same commands a developer uses. Lager
+needs no CI-specific infrastructure.
 
-```
-GITHUB CLOUD                         TAILSCALE NETWORK           HARDWARE BENCH
-============                         =================           ==============
+There are two arrangements. A runner on a separate host reaches the box across
+the network, usually over a Tailscale VPN. A runner installed on the box needs
+no network hop and no secrets. It also serializes the jobs for that bench.
 
-+---------------------------+
-| GitHub Actions Runner     |
-| (ubuntu-latest)           |
-|                           |
-| 1. checkout code          |
-| 2. pip install lager-cli  |
-| 3. tailscale up       ----------->  Tailscale         +------------------+
-|    (TAILSCALE_AUTHKEY)    |         Coordination  -->  | LAGERBOX         |
-|                           |         Server             | 100.x.y.z       |
-| 4. lager hello         --.-------->                    |                  |
-|    --box $BOX_IP          |    encrypted tunnel        | Docker container |
-|                           |    (WireGuard)             |   :5000 Flask    |
-| 5. lager python        --.-------->                    |                  |
-|    tests/ci/test.py       |                            +--------+---------+
-|    --box $BOX_IP          |                                     |
-|                           |                              USB / VISA / LAN
-+---------------------------+                                     |
-                                                           +------+------+
-                                                           | Instruments |
-                                                           +------+------+
-                                                                  |
-                                                           +------+------+
-                                                           |     DUT     |
-                                                           +-------------+
-```
-
-### Required GitHub Secrets
-
-| Secret | Purpose |
-|--------|---------|
-| `TAILSCALE_AUTHKEY` | Ephemeral auth key so the runner can join the VPN |
-| `LAGER_BOX_IP` | Tailscale IP of the Lager Box (e.g., `100.x.y.z`) |
-
-### Workflow Example
-
-```yaml
-name: Hardware-in-the-Loop Test
-on:
-  workflow_dispatch:
-
-concurrency:
-  group: hardware-test
-  cancel-in-progress: false
-
-jobs:
-  hardware-test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install Lager CLI
-        run: cd cli && pip install -q -e .
-
-      - name: Connect to hardware bench via Tailscale
-        uses: tailscale/github-action@v2
-        with:
-          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
-
-      - name: Verify box connectivity
-        run: lager hello --box ${{ secrets.LAGER_BOX_IP }}
-
-      - name: Run hardware integration test
-        run: |
-          lager python tests/ci/demo_test.py \
-            --box ${{ secrets.LAGER_BOX_IP }} \
-            --add-file test/assets/firmware/nrf_blinky.hex \
-            --env FIRMWARE_PATH=nrf_blinky.hex \
-            --timeout 300
-
-      - name: Emergency cleanup
-        if: failure()
-        run: |
-          lager python tests/ci/cleanup.py \
-            --box ${{ secrets.LAGER_BOX_IP }} || true
-```
+[Using Lager in CI](/source/getting-started/using-lager-in-ci) covers both
+arrangements and the workflow for each. It also covers bench locking, firmware
+delivery, and cleanup after a cancelled job.
