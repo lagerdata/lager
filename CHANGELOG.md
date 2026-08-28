@@ -10,10 +10,16 @@ All notable changes to the Lager platform are documented here. For detailed rele
   pid and log files for a debug probe are named after its USB serial, which is
   read from a field of a net's VISA address that is permissive about what it
   accepts. That value is now reduced to characters that cannot alter the shape
-  of a path, and the join is checked to have stayed in its own directory --
-  through one shared helper, rather than the three near-copies of the idea that
-  had grown up separately. The sysfs lookup in `diagnose` that reads the same
-  field gets the same treatment.
+  of a path, through one shared helper rather than the near-copies of the idea
+  that had grown up separately, and each site then checks that its own join
+  stayed in its own directory. The sysfs lookup in `diagnose` that reads the
+  same field gets the same treatment.
+
+  The check is repeated at each site rather than shared, which is worth knowing
+  before someone tidies it away: a static analyser recognises a path guard only
+  inside the function that builds the path, so folding those lines into a
+  helper leaves the code correct and the analysis blind. The helper's docstring
+  records that, because the tidier version is the tempting one.
 
   An ordinary alphanumeric serial produces the byte-identical filename it did
   before, so a box that upgrades while a debug session is live still finds its

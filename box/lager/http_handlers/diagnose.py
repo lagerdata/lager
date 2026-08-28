@@ -37,7 +37,7 @@ import time
 
 from flask import Flask, jsonify, request
 
-from lager.util.paths import contained_path, fs_slug
+from lager.util.paths import fs_slug
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +76,9 @@ def _sysfs_for_port_slot(serial):
     # The slot is read from a client-supplied VISA address, so slug it: a
     # topology path is only ever digits, '-' and '.', which fs_slug leaves
     # untouched, while anything carrying separators collapses to a flat name.
-    try:
-        path = contained_path(
-            _SYSFS_USB_ROOT, fs_slug(serial[len(_PORT_SLOT_PREFIX):]))
-    except ValueError:
+    path = os.path.normpath(
+        os.path.join(_SYSFS_USB_ROOT, fs_slug(serial[len(_PORT_SLOT_PREFIX):])))
+    if not path.startswith(_SYSFS_USB_ROOT + os.sep):
         return None
     return path if os.path.isdir(path) else None
 

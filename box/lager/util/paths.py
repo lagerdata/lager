@@ -8,28 +8,25 @@ layer, the HTTP handler layer and the drivers all build paths out of strings a
 client supplied, and ``util`` is the only layer all three may import -- the
 same reasoning as ``lager.util.usb_sysfs``.
 
-Two functions, and both earn their place:
-
 ``fs_slug`` reduces a value to characters that cannot change the shape of a
-path, so a value carrying separators collapses to one flat filename.
+path, so a value carrying separators collapses to one flat filename. That is
+the defence, and it is shared.
 
-``contained_path`` joins, normalises, and then verifies the result is still
-directly inside the root it was given. That states the property a reader
-actually wants -- the file lands here -- instead of leaving them to re-derive
-it from a regex, and it fails loudly rather than silently writing elsewhere.
+The containment check that follows it is deliberately NOT shared, and this is
+the part worth reading before you tidy it up. Every caller repeats::
 
-It normalises rather than resolves, on purpose. ``realpath`` would rewrite
-``/tmp/x`` to ``/private/tmp/x`` on macOS, so the box and a developer's laptop
-would disagree about a path production spells one way, and it would reject
-every ``/sys/bus/usb/devices`` entry, all of which are symlinks into
-``/sys/devices`` by design.
+    path = os.path.normpath(os.path.join(ROOT, f'name_{fs_slug(value)}.ext'))
+    if not path.startswith(ROOT + os.sep):
+        raise ValueError(...)
 
-The limit that buys: a symlink pre-planted at the final filename is followed,
-not caught. That case needs write access to the directory already, which
-``SECURITY.md`` puts out of scope.
+That repetition is not an oversight. A static analyser recognises a path guard
+only inside the function that builds the path -- the barrier does not survive a
+return. Extracting these four lines into a helper here leaves the code correct
+and the analysis blind, which is measurably worse than it sounds: doing exactly
+that left 35 path-injection findings open against code that could not be made
+to traverse. Keep the check next to the join it guards.
 """
 
-import os
 import re
 
 # Everything outside this set collapses to '_'. Dot is allowed so that a
@@ -46,17 +43,3 @@ def fs_slug(value):
     interpolated into a filename without changing which directory it lands in.
     """
     return _UNSAFE_COMPONENT_CHARS.sub('_', str(value))
-
-
-def contained_path(root, name):
-    """Return ``root``/``name``, having proven *name* stayed a single component.
-
-    Raises :class:`ValueError` if it did not. Callers that build a filename out
-    of untrusted input should slug it with :func:`fs_slug` first -- this is the
-    check that the slug worked, not a replacement for it.
-    """
-    root_norm = os.path.normpath(root)
-    candidate = os.path.normpath(os.path.join(root_norm, name))
-    if os.path.dirname(candidate) != root_norm:
-        raise ValueError(f'refusing a path outside {root_norm!r}: {name!r}')
-    return candidate
