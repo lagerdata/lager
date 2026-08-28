@@ -160,6 +160,14 @@ All notable changes to the Lager platform are documented here. For detailed rele
   missing. Verified against MCP Python SDK 2.1.1: `lager://reference/Router`
   returns 37 methods, and `lager://guide/api-quick-reference` renders all six
   new types. Closes #372.
+- **Legacy double-booked nets no longer block unrelated adds in the
+  Net-Manager TUI.** Boxes that still hold two saved nets on a
+  single-channel instrument (e.g. a `battery` and a `power-supply` net on
+  the same Keithley 2281S, saved before the one-net-per-chip rule) made
+  the Add screen reject every selection with "Only one net may be added
+  per Keithley_2281S…", even pure GPIO adds. Both the single-channel and
+  mode-exclusive conflict checks now only fire for instruments the current
+  selection actually touches.
 
 ### Changed
 

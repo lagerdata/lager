@@ -1962,14 +1962,22 @@ class AddScreen(Screen):
         # between ``solar`` and ``supply``. The role tuple metadata in
         # ``_SINGLE_CHANNEL_INST`` is kept for future "available roles"
         # surfacing but doesn't relax the constraint.
-        single_cnt: dict[tuple[str, str], int] = defaultdict(int)
+        #
+        # Only pairs the *selection* touches can conflict: boxes can hold
+        # legacy double-booked saved nets (from before this rule existed),
+        # and those must not block adds that don't involve the instrument.
+        saved_single: dict[tuple[str, str], int] = defaultdict(int)
         for s in main.nets:
             if s.saved and s.instrument in _SINGLE_CHANNEL_INST:
-                single_cnt[(s.instrument, s.addr)] += 1
+                saved_single[(s.instrument, s.addr)] += 1
+        sel_single: dict[tuple[str, str], int] = defaultdict(int)
         for n in selected_nets:
             if n.instrument in _SINGLE_CHANNEL_INST:
-                single_cnt[(n.instrument, n.addr)] += 1
-        conflicts = [(inst, addr) for (inst, addr), cnt in single_cnt.items() if cnt > 1]
+                sel_single[(n.instrument, n.addr)] += 1
+        conflicts = [
+            (inst, addr) for (inst, addr), cnt in sel_single.items()
+            if cnt + saved_single[(inst, addr)] > 1
+        ]
         if conflicts:
             parts = [f"{inst} at {addr}" for inst, addr in conflicts]
             msg = "Only one net may be added per " + ", ".join(parts) + "."
@@ -1987,18 +1995,21 @@ class AddScreen(Screen):
         # Mode-exclusive chips: across all roles, only one net per chip+addr
         # can be selected (an FT232H can be SPI OR UART, never both). Detect
         # the case where the user picked two role options for the same chip
-        # in this batch and bail out with a hint.
-        mode_excl_pairs: dict[tuple[str, str], set[str]] = defaultdict(set)
+        # in this batch and bail out with a hint. As above, only pairs the
+        # selection touches can conflict — legacy saved state alone mustn't
+        # block unrelated adds.
+        saved_modes: dict[tuple[str, str], set[str]] = defaultdict(set)
         for s in main.nets:
             if s.saved and s.instrument in _MODE_EXCLUSIVE_INST:
-                mode_excl_pairs[(s.instrument, s.addr)].add(s.type)
+                saved_modes[(s.instrument, s.addr)].add(s.type)
+        sel_modes: dict[tuple[str, str], set[str]] = defaultdict(set)
         for n in selected_nets:
             if n.instrument in _MODE_EXCLUSIVE_INST:
-                mode_excl_pairs[(n.instrument, n.addr)].add(n.type)
+                sel_modes[(n.instrument, n.addr)].add(n.type)
         mode_conflicts = [
-            (inst, addr, sorted(types))
-            for (inst, addr), types in mode_excl_pairs.items()
-            if len(types) > 1
+            (inst, addr, sorted(types | saved_modes[(inst, addr)]))
+            for (inst, addr), types in sel_modes.items()
+            if len(types | saved_modes[(inst, addr)]) > 1
         ]
         if mode_conflicts:
             parts = [
