@@ -6,6 +6,25 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- **Per-probe runtime file paths are now built from a validated serial.** The
+  pid and log files for a debug probe are named after its USB serial, which is
+  read from a field of a net's VISA address that is permissive about what it
+  accepts. That value is now reduced to characters that cannot alter the shape
+  of a path, and the join is checked to have stayed in its own directory --
+  through one shared helper, rather than the three near-copies of the idea that
+  had grown up separately. The sysfs lookup in `diagnose` that reads the same
+  field gets the same treatment.
+
+  An ordinary alphanumeric serial produces the byte-identical filename it did
+  before, so a box that upgrades while a debug session is live still finds its
+  running gdbserver; a test pins that. Probe identity is unaffected -- slot
+  assignment still matches on the raw serial, because this is a path concern
+  and not an identity one.
+
+- **Removed an unused `/pip` endpoint from the box python service.** Its only
+  caller addressed a port and path the box has never served, so both halves
+  were dead code. Boxes should be updated to a release containing this change.
+
 - **A bench check stopped retrying past a box bounce, because the prose pass
   reworded the message it greps for.** `test/integration/infrastructure/box_config.sh`
   decides whether `lager box config validate` failed to reach the box by matching
