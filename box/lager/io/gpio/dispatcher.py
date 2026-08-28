@@ -19,6 +19,7 @@ from lager.dispatchers import helpers
 from lager.exceptions import GPIOBackendError, LibraryMissingError, DeviceNotFoundError
 
 from .labjack_t7 import LabJackGPIO
+from .labjack_ud import LabJackUDGPIO
 from .usb202 import USB202GPIO
 from .ft232h_gpio import FT232HGPIO
 from .aardvark_gpio import AardvarkGPIO
@@ -54,6 +55,11 @@ class GPIODispatcher(BaseDispatcher):
         # LabJack T7
         if re.search(r"labjack[_\-\s]*t7", inst, re.IGNORECASE) or inst == "labjack_t7":
             return LabJackGPIO
+
+        # LabJack UD series (U3). After the T7 check; the patterns are
+        # mutually exclusive, so order is for readability not correctness.
+        if re.search(r"labjack[_\-\s]*u[36]", inst, re.IGNORECASE):
+            return LabJackUDGPIO
 
         # USB-202 / MCC USB-202
         if re.search(r"(usb[_\-]?202|mcc.*usb.*202)", inst, re.IGNORECASE):
@@ -98,6 +104,12 @@ class GPIODispatcher(BaseDispatcher):
             if Driver is LabJackGPIO:
                 # LabJack GPIO: (name, pin)
                 driver = Driver(netname, pin)
+
+            elif Driver is LabJackUDGPIO:
+                # UD GPIO: (name, pin, unique_id). A UD device is opened by
+                # serial, so the net's address has to reach the driver -- the
+                # T7 branch above can omit it only because LJM auto-discovers.
+                driver = Driver(netname, pin, unique_id=rec.get("address"))
 
             elif Driver is USB202GPIO:
                 # USB-202 GPIO: (name, pin, unique_id)

@@ -85,7 +85,7 @@ T7_ADDRESS = "USB0::0x0CD5::0x0007::::INSTR"
 U3_ADDRESS = "USB0::0x0CD5::0x0003::::INSTR"
 
 T7 = "LabJack_T7"
-U3 = "LabJack_U3-HV"
+U3 = "LabJack_U3"   # the name the scanner registers (U3-HV and U3-LV share a pid)
 
 
 class DacDispatcherModelTests(unittest.TestCase):
@@ -117,14 +117,23 @@ class DacDispatcherModelTests(unittest.TestCase):
             with self.subTest(instrument=name):
                 self.assertIs(self.choose(name), USB202DAC)
 
-    def test_non_t7_labjack_is_rejected_not_routed_to_the_t7(self):
+    def test_non_t7_labjack_never_routes_to_the_t7_driver(self):
         """The bug itself.
 
-        Rejecting is the correct behaviour until a UD driver exists. What must
-        never happen again is returning ``LabJackDAC``, which would open an LJM
-        handle as a T7 and write to whichever LabJack LJM found first.
+        The invariant is "not ``LabJackDAC``", not any particular alternative.
+        Returning ``LabJackDAC`` would open an LJM handle as a T7 and write to
+        whichever LabJack LJM found first. Before a UD driver existed the only
+        safe answer was an error; now these route to ``LabJackUDDAC``. Both
+        satisfy the property this test exists to protect, so it asserts the
+        property rather than the answer.
         """
-        for name in ("LabJack_U3-HV", "labjack_u3", "LabJack_U6"):
+        for name in ("LabJack_U3", "labjack_u3", "LabJack_U6"):
+            with self.subTest(instrument=name):
+                self.assertIsNot(self.choose(name), LabJackDAC)
+
+    def test_an_unknown_instrument_is_still_rejected(self):
+        """The error path must survive the UD branch being added above it."""
+        for name in ("Some_Unknown_Box", "keithley_2281s"):
             with self.subTest(instrument=name):
                 with self.assertRaises(DACBackendError):
                     self.choose(name)

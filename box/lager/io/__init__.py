@@ -153,6 +153,8 @@ def __getattr__(name: str):
         return _load_adc().ADCBase
     elif name == "LabJackADC":
         return _load_adc().LabJackADC
+    elif name == "LabJackUDADC":
+        return _load_adc().LabJackUDADC
     elif name == "USB202ADC":
         return _load_adc().USB202ADC
     # DAC class access
@@ -160,6 +162,8 @@ def __getattr__(name: str):
         return _load_dac().DACBase
     elif name == "LabJackDAC":
         return _load_dac().LabJackDAC
+    elif name == "LabJackUDDAC":
+        return _load_dac().LabJackUDDAC
     elif name == "USB202DAC":
         return _load_dac().USB202DAC
     # GPIO class access
@@ -167,6 +171,8 @@ def __getattr__(name: str):
         return _load_gpio().GPIOBase
     elif name == "LabJackGPIO":
         return _load_gpio().LabJackGPIO
+    elif name == "LabJackUDGPIO":
+        return _load_gpio().LabJackUDGPIO
     elif name == "USB202GPIO":
         return _load_gpio().USB202GPIO
     # GPIO aliases
@@ -187,14 +193,17 @@ def __dir__():
         # ADC exports
         "ADCBase",
         "LabJackADC",
+        "LabJackUDADC",
         "USB202ADC",
         # DAC exports
         "DACBase",
         "LabJackDAC",
+        "LabJackUDDAC",
         "USB202DAC",
         # GPIO exports
         "GPIOBase",
         "LabJackGPIO",
+        "LabJackUDGPIO",
         "USB202GPIO",
         # Prefixed convenience functions
         "adc_read",
