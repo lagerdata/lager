@@ -7,51 +7,38 @@ An overview of how the Lager platform components fit together. It runs from the 
 
 ## High-Level Overview
 
-```
-USER COMPUTER                                  LAGERBOX (x86-64, Ubuntu 22.04+)
-+---------------------------+                  +----------------------------------------------+
-|                           |                  |                                              |
-|  $ lager supply psu1      |                  |   Docker Container ("lager")                 |
-|         voltage 3.3       |   Tailscale VPN  |  +----------------------------------------+  |
-|         --yes             |   (WireGuard)    |  |  Flask/WebSocket Server                |  |
-|                           | ───────────────> |  |       Python execution service         |  |
-|  $ lager python           |   SSH + HTTP     |  |       Debug service (GDB)              |  |
-|         my_test.py        |   over encrypted |  |                                        |  |
-|                           |   tunnel         |  |  Hardware Service                      |  |
-+---------------------------+                  |  |     |                                  |  |
-                                               |  |     v                                  |  |
-                                               |  |  Dispatchers --> Drivers               |  |
- GITHUB ACTIONS RUNNER                         |  |     |              |                   |  |
-+---------------------------+                  |  +-----|--------------|-------------------+  |
-|                           |                  |        |              |                      |
-|  $ lager python           |   Tailscale VPN  |  USB / Serial / VISA / LAN                   |
-|    tests/ci/test.py       | ───────────────> +--------|--------------|----------------------+
-|    --box $BOX_IP          |   (ephemeral key)         |              |
-|                           |                  +--------|--------------|----------+
-+---------------------------+                  |  INSTRUMENTS                     |
-                                               |                                  |
-                                               |  Power Supply    Oscilloscope    |
-                                               |  LabJack T7      Debug Probe     |
-                                               |  Battery Sim     USB Hub         |
-                                               |  E-Load          Thermocouple    |
-                                               +--------|-------------------------+
-                                                        |
-                                                        | Wires / probes / pins
-                                                        v
-                                               +------------------+
-                                               |                  |
-                                               |   DUT (Device    |
-                                               |   Under Test)    |
-                                               |                  |
-                                               +------------------+
+```mermaid
+flowchart LR
+  subgraph entry["Entry points"]
+    direction TB
+    A["Developer CLI<br/>lager supply psu1 voltage 3.3"]
+    B["Developer script<br/>lager python my_test.py"]
+    C["CI runner"]
+  end
+
+  VPN{{"Tailscale VPN<br/>WireGuard, encrypted"}}
+  BOX["Lager Box<br/>x86-64, Ubuntu 22.04+<br/>Docker container: lager"]
+  INST["Instruments<br/>power supply, oscilloscope, LabJack T7, debug probe,<br/>battery sim, e-load, USB hub, thermocouple"]
+  DUT["DUT<br/>Device Under Test"]
+
+  A --> VPN
+  B --> VPN
+  C --> VPN
+  VPN -->|"HTTP over the tunnel"| BOX
+  BOX -->|"USB / Serial / VISA / LAN"| INST
+  INST -->|"wires, probes, pins"| DUT
 ```
 
-All three entry points -- developer CLI commands, developer custom scripts, and CI runners --
-share the same execution infrastructure. They all reach the Lager Box through Tailscale VPN
-and call Flask on port 5000. Flask executes the uploaded script or impl module inside the
-Docker container with full access to `lager.*` hardware libraries.
+All three entry points reach the box through the same Tailscale tunnel. They end at the same
+drivers. Inside the box they take different routes.
 
----
+A command that drives a net through the box API posts directly to port 9000. `lager supply` is
+one. `lager python` instead uploads a script to the execution service on port 5000. That
+service runs the script as a subprocess. The subprocess gets full access to the `lager.*`
+hardware libraries.
+
+A CI runner is a developer machine that is ephemeral. It uses the same path as the command it
+runs.
 
 ## Terminology
 
@@ -59,68 +46,65 @@ Docker container with full access to `lager.*` hardware libraries.
 |------|------------|
 | **CLI** | The `lager-cli` Python package (installed via `pip install lager-cli`). A Click-based command-line tool that runs on the developer's laptop. |
 | **Tailscale VPN** | A WireGuard-based mesh VPN that creates an encrypted tunnel between the developer's machine and the Lager Box. |
-| **Lager Box** | Any x86-64 machine running Ubuntu 22.04 or newer, physically co-located with the test instruments. Runs a Docker container hosting the Flask/WebSocket server and hardware drivers. |
+| **Lager Box** | Any x86-64 machine running Ubuntu 22.04 or newer, physically co-located with the test instruments. Runs a Docker container hosting the box services and hardware drivers. |
 | **Net** | A logical name (e.g., `psu1`, `uart0`) that maps to a specific instrument + channel + address. Stored in `/etc/lager/saved_nets.json` on the box. |
 | **DUT** | Device Under Test -- the embedded board or product being tested. |
 | **Instrument** | A piece of test equipment (power supply, oscilloscope, LabJack, debug probe, etc.) connected to the box via USB, serial, or LAN. |
 | **`lager python`** | CLI command that uploads a user-written Python script to the box for execution with full access to `lager.*` hardware libraries. |
 
----
-
 ## Lager Box Internals
 
 ```
-LAGERBOX HOST (x86-64, Ubuntu 22.04+)
-+-----------------------------------------------------------------------+
-|                                                                       |
-|  /etc/lager/                       ~/third_party/                     |
-|    saved_nets.json                   JLink_Linux_*/  (optional)       |
-|    available_instruments.json        customer-binaries/  (optional)   |
-|    box_id                                                             |
-|                                                                       |
-|  Docker Container "lager"  (--restart always)                         |
-| +-------------------------------------------------------------------+ |
-| |                                                                   | |
-| |  Port 9000 -- Flask + SocketIO -- Main Box API                   | |
-| |                  |     (UART, supply, battery, instruments,      | |
-| |                  |      nets, lock)                               | |
-| |                  v                                                | |
-| |  Port 5000 -- HTTP Server -- Python Execution Service             | |
-| |                  |                                                | |
-| |                  |  receives impl script + LAGER_COMMAND_DATA     | |
-| |                  |  env var (JSON), executes it, streams results  | |
-| |                  v                                                | |
-| |  Port 8765 -- WebSocket Server -- Debug Service (GDB, OpenOCD)    | |
-| |                                                                   | |
-| |  Port 8100 -- HTTP Server -- MCP Service (AI tool integration)    | |
-| |                                                                   | |
-| |  Port 8080 -- Hardware Service (internal only, not exposed)       | |
-| |                  |                                                | |
-| |                  v                                                | |
-| |           +------------------+                                    | |
-| |           |  NetsCache       |  Thread-safe singleton             | |
-| |           |  (cache.py)      |  mtime-based invalidation          | |
-| |           +--------+---------+  O(1) lookup by net name           | |
-| |                    |                                              | |
-| |                    v                                              | |
-| |           +------------------+                                    | |
-| |           |  Dispatchers     |  BaseDispatcher subclasses         | |
-| |           |  (per domain)    |  driver caching, net resolution    | |
-| |           +--------+---------+                                    | |
-| |                    |                                              | |
-| |                    v                                              | |
-| |           +------------------+                                    | |
-| |           |  Drivers         |  VISA/SCPI, pySerial, LJM,         | |
-| |           |  (per instrument)|  pyOCD, aardvark_py, etc.          | |
-| |           +--------+---------+                                    | |
-| |                    |                                              | |
-| +--------------------+----------------------------------------------+ |
-|                      |                                                |
-|           USB / Serial / VISA / LAN                                   |
-+----------------------+------------------------------------------------+
-                       |
-                       v
-                  INSTRUMENTS
+/etc/lager/
+├── saved_nets.json
+├── available_instruments.json
+├── box_id
+└── authorized_keys.d/
+
+~/third_party/
+├── JLink_Linux_*/        (optional)
+└── customer-binaries/    (optional)
+```
+
+A single Docker container named `lager` (started with `--restart always`) runs every service.
+The services are **peer processes, not a pipeline**. A start script launches each one and
+restarts it if it dies.
+
+Only one of them calls another. The box API on port 9000 reaches the hardware service on port
+8080 over HTTP. The debug and MCP services are independent. A script running under the execution
+service drives its drivers itself.
+
+```mermaid
+flowchart TB
+  subgraph container["Docker container: lager"]
+    direction TB
+
+    P9000[":9000 box API<br/>Flask + SocketIO<br/>UART, supply, battery, nets, lock"]
+    P5000[":5000 python execution service<br/>ThreadingHTTPServer"]
+    P8765[":8765 debug service<br/>GDB, OpenOCD"]
+    P8100[":8100 MCP service"]
+    SUB["user script subprocess"]
+
+    subgraph hs[":8080 hardware service"]
+      direction TB
+      DISP["Dispatchers<br/>BaseDispatcher subclasses"]
+      CACHE["NetsCache<br/>mtime-invalidated, O(1) by net name"]
+      DRV["Drivers<br/>VISA/SCPI, pySerial, LJM, pyOCD, aardvark_py"]
+      DISP -->|"resolve net name"| CACHE
+      DISP -->|"instantiate, cache, lock per device"| DRV
+    end
+
+    P9000 -->|"POST /invoke, Device proxy"| DISP
+    P5000 -->|"spawns"| SUB
+  end
+
+  INST["Instruments"]
+  DUT["DUT"]
+
+  DRV --> INST
+  SUB -->|"imports lager.*, drives drivers in-process"| INST
+  P8765 -->|"SWD / JTAG via probe"| INST
+  INST --> DUT
 ```
 
 ### Port Summary
@@ -128,23 +112,24 @@ LAGERBOX HOST (x86-64, Ubuntu 22.04+)
 | Port | Service | Exposed | Purpose |
 |------|---------|---------|---------|
 | 9000 | Flask + SocketIO | Yes (VPN only) | Main box API: UART streaming, live supply/battery WebSockets, instrument discovery, net listing, box lock |
-| 5000 | HTTP | Yes (VPN only) | Python execution service: receives CLI commands, runs impl scripts |
+| 5000 | HTTP | Yes (VPN only) | Python execution service: receives uploaded scripts and runs them as subprocesses |
 | 8765 | WebSocket | Yes (VPN only) | Debug sessions (GDB, flash, reset) |
 | 8100 | HTTP | Yes (VPN only) | MCP service for AI tool integration |
-| 8080 | Hardware Service | No (container-internal) | Instrument control via Device proxy |
+| 8080 | Flask | Yes (VPN only) | Hardware service: instrument control via the Device proxy, called by the port 9000 API |
 | 8081 | HTTP | Yes (if PicoScope present) | Oscilloscope streaming UI |
 | 8082-8085 | TCP / WebSocket | Yes (if PicoScope present) | Oscilloscope daemon (commands, browser streaming, database streaming, CLI WebSocket) |
 | 8086+ | HTTP | Yes (if webcams present) | Webcam MJPEG streaming (one port per camera) |
 | 22 | SSH | Yes | Direct SSH access for deployment and debugging |
 
-The "Exposed" column describes a box that publishes its ports, which is the default. A box
-started with `start_box.sh --no-publish` (or `LAGER_NO_PUBLISH=1`) publishes none of them.
-Every service still listens inside the container. The `lagernet` Docker network still
-reaches it, and a reverse proxy owns the host ports. No `Yes` row answers at
-`<box-ip>:<port>`.
+<Note>
+  The **Exposed** column describes a box that publishes its ports, which is the default. A box
+  started with `start_box.sh --no-publish` (or `LAGER_NO_PUBLISH=1`) publishes none of them.
+  Every service still listens inside the container. The `lagernet` Docker network still reaches
+  it, and a reverse proxy owns the host ports. No `Yes` row answers at `<box-ip>:<port>`.
 
-Port 22 is the exception. SSH is the host's own daemon rather than a published container
-port, so `--no-publish` does not affect it.
+  Port 22 is the exception. SSH is the host's own daemon rather than a published container port,
+  so `--no-publish` does not affect it.
+</Note>
 
 ### Why there are two HTTP ports
 
@@ -162,8 +147,6 @@ server, and the CLI reads it from `:9000`.
 
 Open both to your VPN. A box that publishes only `:9000` answers `lager nets`
 and `lager hello` but fails `lager python`.
-
----
 
 ## Optional Control Plane Integration
 
@@ -183,29 +166,37 @@ Lager itself does not require or run a control plane -- this is a hook, not a de
 
 The [Professional Services directory](https://lagerdata.com/professional-services) lists the commercial control planes that build on this hook. They add org, RBAC and SSO, audit logging, and scheduling on top of Lager.
 
----
-
 ## Net Abstraction
 
 A **Net** is the central abstraction that decouples CLI commands from physical hardware details.
 
+```mermaid
+flowchart LR
+  A["CLI command<br/>lager supply psu1 voltage 3.3"]
+  B["saved_nets.json entry<br/>name: psu1"]
+  C["Physical hardware<br/>Rigol DP832, channel 1<br/>VISA: USB0::..."]
+  A -->|"resolve net name"| B -->|"instrument + channel + address"| C
 ```
-CLI command                     saved_nets.json entry              Physical hardware
-+---------------------+       +----------------------------+      +---------------------+
-|                     |       |  {                         |      |                     |
-| lager supply psu1   | ----> |    "name": "psu1",         | ---> | Rigol DP832         |
-|       voltage 3.3   |       |    "type": "power-supply", |      |   Channel 1         |
-|                     |       |    "channel": 1,           |      |   VISA: USB0::...   |
-+---------------------+       |    "instrument": {         |      +---------------------+
-                              |      "name": "rigol-dp832",|
-                              |      "address": "USB0::.."|
-                              |    },                      |
-                              |    "params": {             |
-                              |      "voltage_limit": 5.0  |
-                              |    }                       |
-                              |  }                         |
-                              +----------------------------+
+
+The record backing `psu1` looks like this:
+
+```json
+{
+  "name": "psu1",
+  "type": "power-supply",
+  "channel": 1,
+  "instrument": {
+    "name": "rigol-dp832",
+    "address": "USB0::0x1AB1::0x0E11::..."
+  },
+  "params": {
+    "voltage_limit": 5.0
+  }
+}
 ```
+
+Swapping the physical supply means editing this record. Every command that names `psu1` keeps
+working.
 
 ### Supported Net Types
 
@@ -229,57 +220,48 @@ CLI command                     saved_nets.json entry              Physical hard
 | `arm` | Rotrics Dexarm |
 | `usb-hub` | Acroname, YKUSH |
 
----
-
 ## Execution Flows
 
 ### CLI Command Execution
 
 Step-by-step data path for `lager supply psu1 voltage 3.3 --yes`:
 
-```
-DEVELOPER LAPTOP                    NETWORK              LAGERBOX
-================                    =======              ========
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as CLI on the laptop
+    participant N as Tailscale VPN
+    participant B as Box API :9000
+    participant H as Hardware service :8080
+    participant D as Dispatcher
+    participant I as Instrument
 
-1. User runs:
-   $ lager supply psu1
-         voltage 3.3 --yes
-         |
-         v
-2. CLI resolves box
-   - reads .lager/config
-   - finds box IP for "psu1"
-         |
-         v
-3. CLI builds command JSON
-         |
-         v
-4. CLI uploads impl script          5. SSH/HTTP over
-   cli/impl/power/supply.py  ---------> Tailscale VPN -------->  6. Flask receives
-   + sets env var                        (encrypted)                  request on :5000
-   LAGER_COMMAND_DATA=<JSON>                                              |
-                                                                          v
-                                                                  7. Box executes
-                                                                     supply.py in
-                                                                     subprocess
-                                                                          |
-                                                                          v
-                                                                  8. Dispatcher looks up
-                                                                     "psu1" in NetsCache,
-                                                                     selects driver
-                                                                          |
-                                                                          v
-                                                                  9. Driver sends SCPI
-                                                                     command to instrument
-                                                                          |
-                                                                          v
-14. CLI displays:  <--------------- result JSON <-----------  10. Result streamed back
-    "Voltage set to 3.300V"          streamed back
+    C->>C: Resolve the box IP from config
+    C->>C: Build the payload: netname, action, params
+    C->>N: POST /supply/command
+    N->>B: Encrypted tunnel
+    B->>H: POST /invoke, via the Device proxy
+    H->>D: Call the role adapter
+    D->>D: Resolve psu1 through NetsCache
+    D->>D: Instantiate and cache the driver
+    D->>I: SCPI command
+    I-->>D: Response
+    D-->>H: Result
+    H-->>B: Result JSON
+    B-->>N: Result JSON
+    N-->>C: Voltage set to 3.300V
 ```
+
+The hardware service owns and caches the driver for each physical device. It serializes access
+under a per-device lock. Concurrent requests to the box API cannot interleave I/O on the same
+instrument.
 
 ### Custom Script Execution (`lager python`)
 
-The `lager python` command uploads a user-written Python script to the box for execution. It uses the same Flask :5000 execution path as CLI commands.
+The `lager python` command uploads a user-written Python script to the execution service on
+port 5000. This is a different path from the box API commands above. The service runs the script
+as its own subprocess. The script constructs and drives its drivers in-process. It does not call
+the hardware service.
 
 ```bash
 $ lager python my_test.py --box mybox --env VOLTAGE=3.3 --timeout 300
@@ -287,44 +269,39 @@ $ lager python my_test.py --box mybox --env VOLTAGE=3.3 --timeout 300
 
 The script runs inside the Docker container with full access to the `lager.*` hardware libraries. The box streams its output back in real time.
 
----
-
 ## Physical Wiring
 
 How instruments physically connect between the Lager Box and the DUT:
 
-```
-                    LAGERBOX
-            (x86-64, Ubuntu 22.04+)
-                  +----------+
-                  |          |
-            USB-A |  USB-A   | USB-A        LAN
-            port  |  port    | port         port
-              |   |    |     |   |            |
-              |   +----+-----+   |            |
-              |        |         |            |
-    +---------+   +----+----+   +--------+   +------------+
-    |             |         |   |        |   |            |
-    v             v         v   v        v   v            |
-+--------+  +---------+ +------+  +--------+ +--------+  |
-| LabJack|  | Debug   | | USB  |  |Aardvark| | Phidget|  |
-| T7     |  | Probe   | | Hub  |  | I2C/SPI| | Thermo |  |
-+---+----+  +----+----+ +--+---+  +---+----+ +---+----+  |
-    |            |          |          |          |       |
-    |            v          v          |          |       |
-    |       SWD/JTAG    USB to DUT    |          |       |
-    |                                 |          |       |
-    v                                 v          v       v
-+----------------------------------------------------------------+
-|   DUT (Device Under Test)                                      |
-|   VCC, GND, SDA, SCL, SWD, TX, RX, GPIO, TEMP, USB            |
-+----------------------------------------------------------------+
-                                                         |
-+--------------------------------------------------------+
-|  VISA-over-LAN Instruments (on same LAN)               |
-|  Rigol DP832, Rigol MSO5074, Keithley 2281S            |
-|  Connected to DUT via banana jacks / BNC / probes      |
-+--------------------------------------------------------+
+```mermaid
+flowchart TB
+  subgraph box["Lager Box"]
+    direction LR
+    USB["USB-A ports"]
+    LAN["LAN port"]
+  end
+
+  LJ["LabJack T7"]
+  PROBE["Debug probe"]
+  HUB["USB hub"]
+  AA["Aardvark I2C/SPI"]
+  PH["Phidget thermocouple"]
+  VISA["VISA-over-LAN instruments<br/>Rigol DP832, Rigol MSO5074, Keithley 2281S"]
+  DUT["DUT (Device Under Test)<br/>VCC, GND, SDA, SCL, SWD, TX, RX, GPIO, TEMP, USB"]
+
+  USB --> LJ
+  USB --> PROBE
+  USB --> HUB
+  USB --> AA
+  USB --> PH
+  LAN --> VISA
+
+  LJ -->|"ADC / DAC / GPIO"| DUT
+  PROBE -->|"SWD / JTAG"| DUT
+  HUB -->|"USB"| DUT
+  AA -->|"I2C / SPI"| DUT
+  PH -->|"thermocouple"| DUT
+  VISA -->|"banana jacks / BNC / probes"| DUT
 ```
 
 ### Connection Types
@@ -337,8 +314,6 @@ How instruments physically connect between the Lager Box and the DUT:
 | Serial (UART) | DUT communication | RS-232 / TTL via USB adapter |
 | SWD / JTAG | Firmware flash, debug, reset | ARM debug (via probe) |
 | I2C / SPI | Peripheral communication with DUT | I2C / SPI via Aardvark or LabJack |
-
----
 
 ## Running from CI
 
