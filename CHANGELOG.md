@@ -6,6 +6,25 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- **A box install failed at the firewall step once the port allowlist held
+  ranges.** `secure_box_firewall.sh` writes its per-interface allow rules as
+  `ufw allow in on <iface> to any port <port>`, naming no protocol. ufw refuses
+  a port range spelled that way -- `Must specify 'tcp' or 'udp' with multiple
+  ports` -- so the first range aborted the script under `set -e` and
+  `lager install` exited 1 having configured nothing. The allowlist held only
+  single ports when those rules were written, which is why the omission went
+  unnoticed until the debug port ranges were added to it.
+
+  The rules name `proto tcp` now, on all four interfaces rather than only the
+  one that reports first. TCP is what `start_box.sh` publishes, and a test pins
+  both halves of that so neither can move alone.
+
+  The script disables and resets ufw before writing the new rules, so a failure
+  anywhere in between left the box with the firewall off and no rules at all,
+  reported as nothing more specific than `Deployment failed!`. It now restores a
+  deny-incoming policy with SSH allowed, prints which half is configured and
+  which is not, and keeps the failing exit code.
+
 - **A `lager python` connection error printed the literal `{box_ip}`.** The hint
   that follows `Connection refused by box` was a plain string rather than an
   f-string, so it told the reader to run `ssh lagerdata@{box_ip} "docker ps"`

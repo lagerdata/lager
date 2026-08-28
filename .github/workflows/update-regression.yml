@@ -578,6 +578,31 @@ jobs:
             --yes || install_rc=$?
           if [ "$install_rc" -ne 0 ]; then
             echo "::warning title=Recovery install failed::lager install exited ${install_rc} during recovery. The bench may have no box software."
+
+            # Recovery reinstalls the same commit that just failed, so any bug in
+            # a step install shares with the run strands the bench twice. That is
+            # not hypothetical: a bad ufw rule in the firewall step failed the
+            # run, then failed recovery for the identical reason, and the bench
+            # sat with no box software until someone noticed.
+            #
+            # --skip-firewall drops the one step that has done this, and nothing
+            # after it depends on the firewall being reconfigured. A bench that
+            # comes back this way is usable but NOT fully provisioned, so say so
+            # loudly -- a warning here is the difference between a known-degraded
+            # bench and a silently degraded one.
+            echo "Retrying without the firewall step..."
+            skip_rc=0
+            lager install \
+              --ip "${{ secrets.LAGER_BOX_IP }}" \
+              --user lagerdata \
+              --version "${{ github.sha }}" \
+              --skip-firewall \
+              --yes || skip_rc=$?
+            if [ "$skip_rc" -eq 0 ]; then
+              echo "::warning title=Bench recovered with the firewall step skipped::'$LAGER_BOX' has box software again, but its firewall was NOT reconfigured by this run. Re-run a full 'lager install' once the failure above is fixed."
+            else
+              echo "::warning title=Fallback install failed too::lager install --skip-firewall exited ${skip_rc}. The failure is not in the firewall step."
+            fi
           fi
 
           lager boxes add \
