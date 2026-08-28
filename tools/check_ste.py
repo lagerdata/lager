@@ -181,9 +181,25 @@ PROCEDURAL_DIRS = {'getting-started'}
 # A perfect or progressive form hides when the thing happens, which is the whole
 # objection -- "the box is not starting" and "the box does not start" describe
 # different situations to a reader who has to act on one of them.
+#
+# The adverb slot used to admit only `not`, so `is currently outputting` and
+# `is actually presenting` sat in pages that reported clean. Any adverb can
+# stand there; `\w+ly` plus the handful of common non-`-ly` ones covers it.
+_ADVERB = r'(?:\w+ly\s+|not\s+|never\s+|already\s+|just\s+|still\s+|also\s+)?'
+
+# `\w+ing` is not the same as a participle. `nothing`, `anything`, `something`
+# and `string` all end in -ing and all follow `is` in ordinary correct prose.
+# None appears in checked prose today, but the rule would fire on the first one
+# written, and a false positive in a zero-tolerance corpus costs more than the
+# rule earns.
+_NOT_PARTICIPLE = (r'nothing|something|anything|everything|string|thing|'
+                   r'during|morning|evening|ceiling|spring|timing|warning|'
+                   r'setting|meaning|listing|heading|building|wiring')
+
 _TENSE = re.compile(
-    r'\b(?:has|have|had)\s+(?:not\s+|never\s+|already\s+)?(?:been|\w+ed)\b'
-    r'|\b(?:is|are|was|were)\s+(?:not\s+)?\w+ing\b'
+    r'\b(?:has|have|had)\s+' + _ADVERB + r'(?:been|\w+ed)\b'
+    r'|\b(?:is|are|was|were)\s+' + _ADVERB +
+    r'(?!(?:' + _NOT_PARTICIPLE + r')\b)\w+ing\b'
     r'|\bwill\s+have\b', re.I)
 
 # STE forbids the solidus as a conjunction. Only `and/or` is checked. A general
@@ -254,12 +270,26 @@ def prose_paragraphs(text: str, is_mdx: bool):
     in_fence = False
 
     def flush():
+        """Join the paragraph's lines, THEN strip markdown across the whole of it.
+
+        Order matters: an inline code span may span a newline, and only the
+        joined text can see both of its backticks. The per-line map is rebuilt
+        from the cleaned text so a violation still reports the line its sentence
+        starts on.
+        """
         nonlocal para
-        if para:
-            yielded = (para[0][0], ' '.join(t for _, t in para), list(para))
-            para = []
-            return yielded
-        return None
+        if not para:
+            return None
+        joined = clean_inline(' '.join(t for _, t in para))
+        # Re-derive the line map by cleaning each line on its own. That is the
+        # old, wrong split for a wrapped span, but it is only used to attribute
+        # a line number, never to count words.
+        line_map = [(n, clean_inline(t)) for n, t in para]
+        line_map = [(n, t) for n, t in line_map if t]
+        para = []
+        if not joined:
+            return None
+        return (line_map[0][0] if line_map else 0, joined, line_map)
 
     for index in range(first, len(lines)):
         raw = lines[index]
@@ -306,9 +336,12 @@ def prose_paragraphs(text: str, is_mdx: bool):
             if done:
                 yield done
 
-        cleaned = clean_inline(stripped)
-        if cleaned:
-            para.append((index + 1, cleaned))
+        # Deliberately NOT cleaned here. clean_inline() used to run per source
+        # line, so a `code span` opened on one line and closed on the next was
+        # never collapsed to CODE and its literal words counted as prose -- the
+        # whole of a 33-word violation in usb.mdx that was not one. Cleaning
+        # happens once, on the joined paragraph, in flush().
+        para.append((index + 1, stripped))
 
     done = flush()
     if done:
@@ -339,7 +372,12 @@ def user_facing_literals(path: Path):
     except SyntaxError:
         return
 
-    emitters = {'echo', 'secho', 'UsageError', 'BadParameter', 'ClickException'}
+    # LagerError and BoxError were absent until batch G, and carried 11 banned
+    # modals across six files. They print at a user exactly as click.echo does;
+    # the only reason they were missed is that they are raised rather than
+    # called for their side effect.
+    emitters = {'echo', 'secho', 'UsageError', 'BadParameter', 'ClickException',
+                'LagerError', 'BoxError'}
 
     def literal_text(node) -> str:
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -358,7 +396,7 @@ def user_facing_literals(path: Path):
                     if text:
                         yield node.lineno, text
             for kw in node.keywords:
-                if kw.arg == 'help':
+                if kw.arg in ('help', 'cause', 'suggestion'):
                     text = clean_inline(literal_text(kw.value))
                     if text:
                         yield node.lineno, text

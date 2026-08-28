@@ -329,7 +329,7 @@ def get_devenv_json():
         )
     except IOError as e:
         raise LagerError(
-            f'Could not read the config file {config_path}.',
+            f'The config file {config_path} did not open.',
             cause=str(e),
             fixes=['Check the file exists and you have permission to read it.'],
             raw=e,

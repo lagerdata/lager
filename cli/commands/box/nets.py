@@ -579,7 +579,7 @@ def _build_custom_pin_config(role: str, instrument: str, pin_opts: dict) -> Opti
     if instrument.lower() not in _LJ_INSTRUMENT_NAMES:
         raise LagerError(
             f"Pin options ({opts_str}) are only supported for LabJack T7 nets; "
-            f"'{instrument}' has fixed hardware pins."
+            f"'{instrument}' uses fixed hardware pins."
         )
 
     if role == "i2c":
@@ -1498,7 +1498,7 @@ def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net,
             resp = _check_gateway(resp, resolved_box)
         except requests.RequestException as e:
             raise LagerError(
-                "The box could not complete the assign command.",
+                "The box did not complete the assign command.",
                 cause=str(e),
                 fixes=[
                     "Check network/Tailscale and that the box is online.",
@@ -1517,7 +1517,7 @@ def assign_cmd(ctx, device, list_, usb_serial, port_path, baud, remove_, as_net,
             )
         if not resp.ok:
             raise LagerError(
-                "The box could not complete the assign command.",
+                "The box did not complete the assign command.",
                 cause=result.get("error"),
                 fixes=[
                     "See live cables and devices: lager nets assign --list",

@@ -236,8 +236,12 @@ def main() -> int:
 
     if run('nav'):
         pages = nav_pages()
+        # A leading underscore marks a partial: a page that exists to be copied
+        # or included, never to be published. Mintlify's own convention, and the
+        # only case where "not in docs.json" is the intent rather than the bug.
         on_disk = {str(p.relative_to(DOCS)).removesuffix('.mdx')
-                   for p in SOURCE.rglob('*.mdx')}
+                   for p in SOURCE.rglob('*.mdx')
+                   if not p.name.startswith('_')}
         missing = sorted(set(pages) - on_disk)
         orphans = sorted(on_disk - set(pages))
         for page in missing:
@@ -248,7 +252,8 @@ def main() -> int:
 
     if run('notes'):
         versions = set(re.findall(r'^## \[(\d+\.\d+\.\d+)\]', CHANGELOG.read_text(), re.M))
-        noted = {p.stem.lstrip('v') for p in (SOURCE / 'release-notes').glob('*.mdx')}
+        noted = {p.stem.lstrip('v') for p in (SOURCE / 'release-notes').glob('*.mdx')
+                 if not p.name.startswith('_')}
         gaps = sorted(versions - noted - NOTES_EXEMPT,
                       key=lambda v: tuple(int(x) for x in v.split('.')))
         for version in gaps:

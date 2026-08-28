@@ -861,7 +861,7 @@ def gdbserver(ctx, box, force, halt, speed, quiet, json_output, rtt, rtt_reset, 
                     click.secho("  • Target device is not powered", fg='yellow', err=True)
                     click.secho("\nTry:", fg='cyan', err=True)
                     click.secho("  • Run the command again — the failure can be a timing issue", fg='cyan', err=True)
-                    click.secho("  • Using --rtt instead of --rtt-reset if device is already running", fg='cyan', err=True)
+                    click.secho("  • Use --rtt instead of --rtt-reset when the device already runs", fg='cyan', err=True)
                     click.secho("  • Verifying target is connected and powered", fg='cyan', err=True)
 
                 client.close()

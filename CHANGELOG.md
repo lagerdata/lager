@@ -101,6 +101,47 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Changed
 
+- **The prose gate is now a required context, and it can see three rules it
+  could not see before.** `tools/check_ste.py` reported zero across the corpus
+  while three of its own rules were partly blind, so the zero was a statement
+  about the checker as much as about the prose. Each gap was found by a
+  conversion batch running against the tool, not by reading it:
+
+  - The `tense` pattern admitted no adverb but `not` between the auxiliary and
+    the participle, so `is currently outputting` and `is actually presenting`
+    sat in pages that reported clean. Any adverb now counts. The same rule
+    treated every `-ing` word as a participle, which would have fired on `is
+    nothing` the first time anyone wrote it; the common non-participles are
+    excluded.
+  - `clean_inline()` ran per source line, so an inline code span opened on one
+    line and closed on the next never collapsed to `CODE` and its literal words
+    counted as prose. That was the whole of a 33-word `length` violation in
+    `usb.mdx` that was not one. Cleaning now happens once, on the joined
+    paragraph.
+  - `LagerError` and `BoxError` were absent from the emitter set, and their
+    `cause=` and `suggestion=` text was never read at all. They print at a user
+    exactly as `click.echo` does. They carried 11 banned modals across six
+    files.
+
+  Widening the checker surfaced 26 violations in text that had just merged as
+  clean, across `cli/errors.py`, `gateway_auth.py`, `config.py`, `_ssh.py`,
+  `nets.py`, `battery.py`, `install.py`, `python.py`, `debug/commands.py` and
+  one troubleshooting page. All 26 are rewritten. `tools/ste_baseline.json`
+  stays empty.
+
+  With the checker honest, the CI step drops `continue-on-error: true`. A
+  required context that cannot see three of its rules is worse than no context,
+  because it converts "nobody checked" into "the check passed".
+
+- **A release-note template, and a partial convention to hold it.**
+  `docs/source/release-notes/_template.mdx` carries the section order and the
+  STYLE.md rules that apply by hand, because the release-notes archive is
+  deliberately outside the gate: a note records what shipped on a date, and
+  editing one makes the archive disagree with itself. `tools/check_docs.py` now
+  treats an underscore-prefixed page as a partial and exempts it from the nav
+  and release-notes checks, which is Mintlify's own convention and the one case
+  where "not in docs.json" is the intent rather than the defect.
+
 - **The Python API reference is converted to Simplified Technical English.** All
   60 gated violations across the 14 affected pages of
   `docs/source/reference/python/` are fixed: 43 sentences over the 25-word
