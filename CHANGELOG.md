@@ -460,6 +460,25 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Added
 
+- **The Net-Manager Add screen now makes LabJack I2C/SPI default pins
+  obviously changeable.** Users read `Ch: FIO4-FIO5` on an available I2C net
+  as a fixed assignment and didn't discover the pin-picker dialog behind the
+  Add button. Three changes, all in the TUI:
+  - The Add screen carries a hint line saying the pins can be changed.
+    Warnings and the hint render as compact single-line notices in one
+    block with a `✕ Dismiss` button, so they can't crowd the net list out
+    of view.
+  - A LabJack I2C/SPI row's `[✎]` button now opens a combined editor —
+    name field plus the pin dropdowns — instead of the rename-only dialog,
+    so the net can be fully configured while selecting nets instead of
+    only after pressing Add. Nets edited this way aren't re-prompted for
+    pins during the add; rename validation is shared with the plain
+    rename dialog, which all other net types keep.
+  - The pin dialog now prefills with the net's current selection rather
+    than always the defaults, and reverting a customized net back to the
+    defaults restores the original scanner record (legacy channel string,
+    no params) byte-for-byte.
+
 - **The Rust API reference now mirrors the Python one, page for page.** The Rust tab
   was five pages against Python's twenty-seven, and a single 76-line `net-types.mdx`
   table row was the whole counterpart to Python's twenty-four per-instrument pages.
@@ -742,25 +761,6 @@ All notable changes to the Lager platform are documented here. For detailed rele
   README now carries a fixture table, on the principle that an undeclared wire
   reads as a hardware failure.
 
-
-- **The Net-Manager Add screen now makes LabJack I2C/SPI default pins
-  obviously changeable.** Users read `Ch: FIO4-FIO5` on an available I2C net
-  as a fixed assignment and didn't discover the pin-picker dialog behind the
-  Add button. Three changes, all in the TUI:
-  - The Add screen carries a hint line saying the pins can be changed.
-    Warnings and the hint render as compact single-line notices in one
-    block with a `✕ Dismiss` button, so they can't crowd the net list out
-    of view.
-  - A LabJack I2C/SPI row's `[✎]` button now opens a combined editor —
-    name field plus the pin dropdowns — instead of the rename-only dialog,
-    so the net can be fully configured while selecting nets instead of
-    only after pressing Add. Nets edited this way aren't re-prompted for
-    pins during the add; rename validation is shared with the plain
-    rename dialog, which all other net types keep.
-  - The pin dialog now prefills with the net's current selection rather
-    than always the defaults, and reverting a customized net back to the
-    defaults restores the original scanner record (legacy channel string,
-    no params) byte-for-byte.
 
 ## [0.43.0] - 2026-08-25
 
