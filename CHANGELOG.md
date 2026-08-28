@@ -6,6 +6,24 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Fixed
 
+- **A bench check stopped retrying past a box bounce, because the prose pass
+  reworded the message it greps for.** `test/integration/infrastructure/box_config.sh`
+  decides whether `lager box config validate` failed to reach the box by matching
+  `could not connect to the box|may be offline` in its output. The Simplified
+  Technical English pass rewrote both strings in `cli/errors.py` to "The connection
+  to the box failed" and "The box is offline", so the match could no longer
+  succeed.
+
+  Nothing went red. That suite does not run in CI, so the change shipped through
+  22 green checks. The failure mode is worse than an error: the retry never fires,
+  and the test then records a verdict about a box that was still coming back from
+  the section-3 bounce -- the defect class the comment above that function cites
+  issue #283 for.
+
+  The pattern now matches both wordings. A probe that asks whether the box was
+  reachable only becomes more reliable by accepting more spellings, and an older
+  CLI still emits the original pair. The comment says who has to update it next.
+
 - **A box install failed at the firewall step once the port allowlist held
   ranges.** `secure_box_firewall.sh` writes its per-interface allow rules as
   `ufw allow in on <iface> to any port <port>`, naming no protocol. ufw refuses
