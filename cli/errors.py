@@ -188,7 +188,7 @@ def connection_error(exc, host=None):
     if is_timeout and 'refused' not in text:
         return LagerError(
             f'Timed out connecting to the box{at}.',
-            cause='The box did not respond in time — it may be slow, overloaded, or still starting up.',
+            cause='The box did not answer in time. It is slow, overloaded, or still starting up.',
             fixes=[
                 'Wait a few seconds and try again.',
                 f'Confirm it is reachable: lager hello {box}'.rstrip(),
@@ -198,8 +198,8 @@ def connection_error(exc, host=None):
 
     if 'connection refused' in text or 'errno 111' in text or 'errno 61' in text:
         return LagerError(
-            f'Connection refused — the box{at} is reachable but the Lager service is not responding.',
-            cause='The Lager service (Docker container) is probably not running on the box.',
+            f'Connection refused. The box{at} is reachable, but the Lager service does not answer.',
+            cause='The Lager service (Docker container) probably does not run on the box.',
             fixes=[
                 f'Check the box: lager hello {box}'.rstrip(),
                 f'Restart the service: lager ssh {box} then sudo docker restart lager',
@@ -212,8 +212,8 @@ def connection_error(exc, host=None):
             or 'failed to resolve' in text
             or 'name resolution' in text):
         return LagerError(
-            f'Could not resolve "{host}".' if host else 'Could not resolve the box hostname.',
-            cause='The box name or address could not be looked up.',
+            f'The name "{host}" did not resolve.' if host else 'The box hostname did not resolve.',
+            cause='DNS returned no address for the box name.',
             fixes=[
                 'Check the spelling of the box name or IP.',
                 'List your saved boxes: lager boxes',
@@ -235,8 +235,8 @@ def connection_error(exc, host=None):
 
     # Generic fallback: still better than a bare traceback.
     return LagerError(
-        f'Could not connect to the box{at}.',
-        cause='The box may be offline, on a different network, or unreachable from here.',
+        f'The connection to the box{at} failed.',
+        cause='The box is offline, on a different network, or unreachable from here.',
         fixes=[
             f'Verify it is online: lager hello {box}'.rstrip(),
             'Check your network/VPN connection and the box IP (lager boxes).',
@@ -289,7 +289,7 @@ def ssh_error(stderr, ip, user=None):
     if 'permission denied' in text or 'publickey' in text:
         return LagerError(
             'SSH key authentication failed — the box rejected your key.',
-            cause='Your SSH key has not been authorized on this box yet.',
+            cause='This box does not yet authorize your SSH key.',
             fixes=[
                 f'Authorize it (enter the box password once): lager ssh-setup --box {ip}',
                 f'Or manually: ssh-copy-id {user or "lagerdata"}@{ip}',
@@ -301,7 +301,7 @@ def ssh_error(stderr, ip, user=None):
     if 'connection refused' in text:
         return LagerError(
             f'SSH connection refused by {ip} on port 22.',
-            cause='The box is reachable, but its SSH service is not accepting connections.',
+            cause='The box is reachable, but its SSH service refuses connections.',
             fixes=[
                 'Give the box a moment to finish booting, then retry.',
                 'Confirm SSH is running and port 22 is not firewalled.',
@@ -321,8 +321,8 @@ def ssh_error(stderr, ip, user=None):
             or 'name or service not known' in text
             or 'nodename nor servname' in text):
         return LagerError(
-            f'Could not resolve "{ip}".',
-            cause='The box hostname or address could not be looked up.',
+            f'The address "{ip}" did not resolve.',
+            cause='DNS returned no address for the box hostname.',
             fixes=['Check the spelling, or use the box IP address. List boxes: lager boxes'],
             raw=stderr or None,
         )
@@ -340,7 +340,7 @@ def ssh_error(stderr, ip, user=None):
 
     message = (stderr or '').strip()
     return LagerError(
-        f'Could not connect to {ip} over SSH.',
+        f'The SSH connection to {ip} failed.',
         cause=message or None,
         fixes=['Verify the box is online (lager hello) and reachable over SSH.'],
         raw=stderr or None,

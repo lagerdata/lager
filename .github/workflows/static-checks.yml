@@ -256,14 +256,21 @@ jobs:
       # whether those are one thing, and neither can a translator or an agent.
       # No review catches that across 118 pages and 2,600 CLI strings.
       #
-      # ADVISORY FOR NOW (continue-on-error). The budget in
-      # tools/ste_baseline.json ratchets down as each conversion batch lands;
-      # this becomes a required context in the last batch, not before. A green
-      # tick here means nothing until then -- that is the point of the flag,
-      # and it is why the flag has to come off deliberately.
+      # GATING as of the final conversion batch. tools/ste_baseline.json is
+      # empty: every published page, every root prose file and every message
+      # the CLI prints is at zero on all seven gated rules, so any violation
+      # this reports is one the change under review introduced.
+      #
+      # The flag came off only after the checker stopped lying. Three rules
+      # could not see their own subject matter: the tense pattern admitted no
+      # adverb but `not`, so `is currently outputting` read clean; inline code
+      # was collapsed per source line, so a span wrapped across a newline had
+      # its literal words counted as prose; and LagerError/BoxError were absent
+      # from the emitter set, hiding 11 banned modals across six files. A
+      # required context that cannot see three of its rules is worse than no
+      # context, because it converts "nobody checked" into "the check passed".
       - name: Prose follows docs/STYLE.md
         if: always()
-        continue-on-error: true
         run: python tools/check_ste.py
         shell: bash
 

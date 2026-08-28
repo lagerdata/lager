@@ -558,7 +558,7 @@ def run_python_internal(ctx, runnable, box, env, passenv, kill, download, allow_
         # reads as a box problem unless it says otherwise.
         from ...errors import LagerError
         raise LagerError(
-            f'Could not find {runnable}',
+            f'{runnable} does not exist',
             cause='It is neither a file nor a directory on this machine.',
             fixes=['Check the path, then re-run.'],
         )

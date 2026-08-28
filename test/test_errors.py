@@ -137,7 +137,7 @@ class TestConnectionErrorClassifier:
     def test_generic_fallback(self):
         err = connection_error(OSError('something weird'), host='box1')
         out = plain(err.format_message())
-        assert 'could not connect' in out.lower()
+        assert 'connection to the box' in out.lower()
 
     def test_no_host_does_not_crash(self):
         err = connection_error(ConnectionRefusedError('Connection refused'))

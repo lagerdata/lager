@@ -269,7 +269,7 @@ def login(url, email, password, mfa_code_prompt=None):
         )
     except requests.RequestException as e:
         raise LagerError(
-            f'Could not reach the auth server at {url}.',
+            f'The auth server at {url} did not answer.',
             cause=str(e),
         )
 
@@ -334,7 +334,7 @@ def handle_gateway_denial(response, box_ip):
             # We sent a token and the gateway rejected it (e.g. revoked).
             raise LagerError(
                 f'Your session for {url} was rejected by box {box_ip}.',
-                cause='The session may have expired or been revoked.',
+                cause='The session expired, or someone revoked it.',
                 fixes=[f'lager login {url}', f'Details: {ACCESS_DOCS_URL}'],
             )
         raise LagerError(
@@ -352,8 +352,8 @@ def handle_gateway_denial(response, box_ip):
         )
     if response.status_code == 503:
         raise LagerError(
-            f'Box {box_ip} could not verify your access right now — '
-            'its auth server is unreachable.',
+            f'Box {box_ip} did not verify your access. '
+            'Its auth server is unreachable.',
             fixes=['Try again shortly; if it persists, contact your admin.',
                    f'Details: {ACCESS_DOCS_URL}'],
         )

@@ -441,8 +441,8 @@ def model_create(ctx, box, slot, csv_path, force):
         if any(entry.get('slot') == slot for entry in catalog.get('models', [])):
             raise LagerError(
                 f"Battery model slot {slot} already holds a model.",
-                cause="Saving would silently overwrite it, and the instrument "
-                      "has no way to delete a model — only overwrite it.",
+                cause="A save overwrites it silently, and the instrument cannot "
+                      "delete a model — it can only overwrite one.",
                 fixes=[
                     f"lager battery {netname} model-create {slot} --csv {csv_path} --force",
                     f"lager battery {netname} models   (find a free slot)",
@@ -477,7 +477,7 @@ def model_export(ctx, box, slot, csv_path):
     if not points:
         raise LagerError(
             f"The box returned no curve points for battery model slot {slot}.",
-            cause="Its Lager software may predate the model-export command.",
+            cause="Its Lager software probably predates the model-export command.",
             fixes=[f"lager update --box {resolved_box}"],
         )
     write_model_csv(csv_path, points)

@@ -343,7 +343,7 @@ def install(ctx, box, ip, user, version, skip_jlink, skip_firewall, skip_verify,
     except subprocess.TimeoutExpired:
         LagerError(
             f'SSH connection to {ssh_host} timed out after 15 seconds.',
-            cause='The box did not respond — it may be offline, or packets are being dropped.',
+            cause='The box did not answer. It is offline, or the network drops the packets.',
             fixes=[
                 f'Confirm the box is online: ping {ip}',
                 'Check your network / VPN connection, then retry.',

@@ -267,7 +267,7 @@ def ensure_lager_box_keypair(key_path: str = _LAGER_BOX_KEY) -> bool:
         raise LagerError("ssh-keygen failed to launch.", cause=str(exc), raw=exc) from exc
     if proc.returncode != 0:
         raise LagerError(
-            "Could not generate the SSH key.",
+            "The SSH key generation failed.",
             cause=(proc.stderr or "").strip() or None,
             fixes=[f'Generate it manually: ssh-keygen -t ed25519 -f {key_path} -N ""'],
         )

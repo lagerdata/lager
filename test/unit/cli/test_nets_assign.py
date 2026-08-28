@@ -277,7 +277,7 @@ class TestBackendResponseRobustness:
                 ["assign", "Rigol_DP711", "--serial", SERIAL, "--box", "b"],
             )
         assert result.exit_code != 0
-        assert "could not complete the assign command" in result.output
+        assert "did not complete the assign command" in result.output
         assert "No USB-serial cable" in result.output
 
     def test_non_json_response_is_clean_error(self, fake_box):
