@@ -54,6 +54,12 @@ BACKUP_DIR="/etc/lager/backups"
 # test/unit/box/test_firewall_port_allowlist.py, which parses both files. A
 # comment asking the next reader to keep them in step was the only thing holding
 # them together before, and they drifted three times.
+#
+# Every rule built from this array must name `proto tcp`. ufw's extended syntax
+# refuses a range without one -- "Must specify 'tcp' or 'udp' with multiple
+# ports" -- and under `set -e` that aborts the install at the first range. TCP is
+# the right protocol because start_box.sh publishes all of these with a plain
+# `-p`, which docker reads as TCP. The same test file pins both halves of that.
 LAGER_PORTS=(2331:2342 4444:4447 5000 6666:6669 8080 8081:8090 8100 8301 8765 9000 9090:9097)
 
 # Parse command line arguments
@@ -109,6 +115,32 @@ fi
 # echo -e "${YELLOW}Backing up current firewall rules to $BACKUP_FILE${NC}"
 # ufw status numbered > "$BACKUP_FILE" 2>/dev/null || echo "No existing rules" > "$BACKUP_FILE"
 
+# From the disable below until the enable at the end of this script the box has
+# no firewall at all -- `ufw --force reset` on the next line removes every rule,
+# the SSH one included. A failure inside that window used to leave it that way
+# and say nothing more specific than "Deployment failed!", so a box could come
+# out of a failed install wide open with no line anywhere saying so.
+#
+# This is not a recovery. It puts the box somewhere safer to fail -- default-deny
+# with SSH reachable, so it can still be fixed -- says exactly what is and is not
+# configured, and keeps the failing exit code.
+restore_minimal_policy() {
+    local rc=$?
+    trap - EXIT
+    [ "$rc" -eq 0 ] && return 0
+
+    echo "" >&2
+    echo -e "${RED}[FAIL] Firewall configuration aborted (exit $rc) with the firewall down.${NC}" >&2
+    echo -e "${YELLOW}Restoring a minimal policy: deny incoming, SSH allowed.${NC}" >&2
+    ufw allow 22/tcp comment "SSH access" || true
+    ufw --force enable || true
+    echo -e "${RED}[FAIL] Lager service ports are NOT allowed through.${NC}" >&2
+    echo -e "${RED}       The box is reachable over SSH and its services are blocked${NC}" >&2
+    echo -e "${RED}       until this script completes successfully.${NC}" >&2
+    exit "$rc"
+}
+trap restore_minimal_policy EXIT
+
 # Disable UFW temporarily to avoid lockout
 echo -e "${YELLOW}Temporarily disabling firewall for configuration...${NC}"
 ufw --force disable
@@ -155,20 +187,20 @@ echo ""
 # Allow from localhost
 echo -e "${GREEN}Allowing Lager services from localhost (lo)${NC}"
 for PORT in "${LAGER_PORTS[@]}"; do
-    ufw allow in on lo to any port "$PORT" comment "Lager service (localhost)"
+    ufw allow in on lo to any port "$PORT" proto tcp comment "Lager service (localhost)"
 done
 
 # Allow from Docker bridge
 echo -e "${GREEN}Allowing Lager services from Docker (docker0)${NC}"
 for PORT in "${LAGER_PORTS[@]}"; do
-    ufw allow in on docker0 to any port "$PORT" comment "Lager service (Docker)"
+    ufw allow in on docker0 to any port "$PORT" proto tcp comment "Lager service (Docker)"
 done
 
 # Allow from Tailscale VPN
 if [ -n "$TAILSCALE_IFACE" ]; then
     echo -e "${GREEN}Allowing Lager services from Tailscale VPN ($TAILSCALE_IFACE)${NC}"
     for PORT in "${LAGER_PORTS[@]}"; do
-        ufw allow in on "$TAILSCALE_IFACE" to any port "$PORT" comment "Lager service (Tailscale)"
+        ufw allow in on "$TAILSCALE_IFACE" to any port "$PORT" proto tcp comment "Lager service (Tailscale)"
     done
 fi
 
@@ -176,7 +208,7 @@ fi
 if [ -n "$CORPORATE_VPN_IFACE" ]; then
     echo -e "${GREEN}Allowing Lager services from corporate VPN ($CORPORATE_VPN_IFACE)${NC}"
     for PORT in "${LAGER_PORTS[@]}"; do
-        ufw allow in on "$CORPORATE_VPN_IFACE" to any port "$PORT" comment "Lager service (Corporate VPN)"
+        ufw allow in on "$CORPORATE_VPN_IFACE" to any port "$PORT" proto tcp comment "Lager service (Corporate VPN)"
     done
 fi
 
@@ -189,6 +221,11 @@ done
 # Enable UFW
 echo -e "${BLUE}Enabling firewall...${NC}"
 ufw --force enable
+
+# The rules are in place and the firewall is up: the window the trap guards is
+# closed. Release it so a later failure -- `ufw status verbose` below, say --
+# does not re-run the restore path and report a configured box as unfirewalled.
+trap - EXIT
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
