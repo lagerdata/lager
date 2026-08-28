@@ -376,6 +376,71 @@ class TestAddScreenNotices:
 
 
 # --------------------------------------------------------------------------- #
+# AddScreen confirm: single-channel conflicts scoped to the selection          #
+# --------------------------------------------------------------------------- #
+
+KEITHLEY_ADDR = "USB0::0x05E6::0x2281::800000123::INSTR"
+
+
+class TestSingleChannelConflictScope:
+    """Legacy boxes can hold double-booked saved nets on a single-channel
+    instrument (saved before the one-net-per-chip rule). Those must not
+    block adds that don't involve the instrument."""
+
+    def _keithley(self, role, name, saved):
+        return tui.Net('Keithley_2281S', '1', role, name, KEITHLEY_ADDR,
+                       saved=saved)
+
+    def _confirm(self, all_nets, selection):
+        """Push an AddScreen over *all_nets*, select *selection*, press
+        Add Selected; return (app, save_mock)."""
+        async def main():
+            app = tui.NetApp(ctx=None, dut="box", inst_list=[], nets=all_nets)
+            app._fetch_saved_records = lambda: []
+            with patch.object(tui, '_save_nets_batch', return_value=True) as sb:
+                async with app.run_test(size=(100, 40)) as pilot:
+                    await pilot.pause()
+                    screen = tui.AddScreen(all_nets, False)
+                    app.push_screen(screen)
+                    await pilot.pause()
+                    for n in selection:
+                        screen.add_tree.toggle_net(n.key())
+                    screen.on_button_pressed(
+                        Button.Pressed(
+                            screen.query_one("#add-confirm", Button)))
+                    await app.workers.wait_for_complete()
+                    await pilot.pause()
+                    hint = ""
+                    if isinstance(app.screen, tui.AddScreen):
+                        try:
+                            hint = _static_text(
+                                app.screen.query_one("#keithley_hint", Static))
+                        except Exception:
+                            pass
+                    return sb.call_count, hint
+        return asyncio.run(main())
+
+    def test_legacy_double_booked_keithley_does_not_block_gpio_add(self):
+        gpio16 = _make_net(net='gpio16', type='gpio', chan='FIO4')
+        gpio17 = _make_net(net='gpio17', type='gpio', chan='FIO5')
+        all_nets = [
+            gpio16, gpio17,
+            self._keithley('battery', 'batt1', saved=True),
+            self._keithley('power-supply', 'supply1', saved=True),
+        ]
+        saves, hint = self._confirm(all_nets, [gpio16, gpio17])
+        assert saves == 1
+        assert 'Only one net' not in hint
+
+    def test_selecting_two_nets_on_same_chip_still_blocks(self):
+        batt = self._keithley('battery', 'batt1', saved=False)
+        supply = self._keithley('power-supply', 'supply1', saved=False)
+        saves, hint = self._confirm([batt, supply], [batt, supply])
+        assert saves == 0
+        assert 'Only one net' in hint
+
+
+# --------------------------------------------------------------------------- #
 # _save_nets_batch: params passthrough                                         #
 # --------------------------------------------------------------------------- #
 
