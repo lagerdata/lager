@@ -138,6 +138,38 @@ All notable changes to the Lager platform are documented here. For detailed rele
 
 ### Changed
 
+- **The Architecture page draws its diagrams, and four of its claims about the
+  box were wrong.** Five hand-drawn ASCII block diagrams are Mermaid now, which
+  Mintlify renders natively with zoom and pan and themes for dark mode. Several
+  had drifted out of alignment: borders that do not close, arrow columns landing
+  between the boxes beneath them, and a step list that runs 1 to 10 and then
+  jumps to 14.
+
+  Redrawing the internals meant checking them against the source, which is where
+  the wrong claims surfaced:
+
+  - `lager supply <net> voltage <v>` posts to `:9000/supply/command`. The page
+    described it as a script upload to `:5000`, and named an impl script,
+    `cli/impl/power/supply.py`, that does not exist.
+  - `:5000` is a `ThreadingHTTPServer`. Flask serves `:9000` and `:8080`.
+  - `:8080` is published to the host alongside `:5000`, `:8100` and `:8765`, and
+    unpublished only by `--no-publish`, which unpublishes all of them. The port
+    table called it container-internal.
+  - The old diagram's arrows implied a request chain
+    `9000 -> 5000 -> 8765 -> 8100 -> 8080`. The services are peer processes under
+    one start script. The only call between them is `9000 -> 8080`, through the
+    Device proxy.
+
+  The first three contradicted the `:9000` / `:5000` section the page had just
+  gained, which describes `:9000` as the box API and `:5000` as the older
+  script-upload path.
+
+  The `saved_nets.json` record is a highlighted `json` block rather than ASCII
+  art, and the `--no-publish` caveat is a `Note` so it is harder to skim past
+  than the port table it qualifies. The host file listing stays a code block:
+  Mintlify's `Tree` component renders nothing at all in the version that builds
+  these docs, in every documented spelling, with no error.
+
 - **The prose gate is now a required context, and it can see three rules it
   could not see before.** `tools/check_ste.py` reported zero across the corpus
   while three of its own rules were partly blind, so the zero was a statement
