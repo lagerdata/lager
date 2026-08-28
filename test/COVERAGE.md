@@ -42,12 +42,12 @@ Sixteen contexts are: the six `unit (...)` jobs, `static-checks`, the four `comp
 | Job (status context) | Path | Tests |
 |---|---|---:|
 | `unit (cli)` | `test/unit/cli/` + `cli/tests/` | 1916 (+2 xfailed) |
-| `unit (box)` | `test/unit/box/` | 2213 |
+| `unit (box)` | `test/unit/box/` | 2215 |
 | `unit (measurement)` | `test/unit/measurement/` | 105 |
 | `unit (blufi)` | `test/unit/blufi/` | 89 |
 | `unit (mcp)` | `test/mcp/unit/` | 181 |
 | `unit (root)` | `test/unit/test_*.py`, `test/test_*.py` | 183 (+1 skipped) |
-| | **Total gated** | **4687** |
+| | **Total gated** | **4689** |
 
 Each suite gets its own job, because the suites need incompatible `sys.modules` states for the
 name `lager`. `test/unit/measurement/conftest.py` registers a placeholder whose `__init__` never
@@ -152,7 +152,7 @@ OS.
 
 | Area | Size | Why not |
 |---|---|---|
-| `test/api/` | 82 scripts | Needs real hardware. The bench workflows invoke 10 by name; the other 72 execute nowhere -- though all are now syntax-checked. |
+| `test/api/` | 83 scripts | Needs real hardware. The bench workflows invoke 10 by name; the other 72 execute nowhere -- though all are now syntax-checked. |
 | `test/integration/` | 38 bash scripts | Needs a real box and instruments. **8 execute:** `communication/jlink_script.sh` nightly via `integration-tests.yml`, plus 7 weekly via `bench-extended.yml` -- 5 infrastructure suites (`deployment`, `devenv`, `nets`, `box_config`, `generic`) and 2 power suites (`power/supply.sh`, `power/battery.sh`). The other 30 are syntax-checked and shellchecked but never executed. |
 | `test/mcp/integration/` | 1 file | Needs two live boxes. Import-checked only. |
 | `test/manual/` | 2 bash scripts | Operator-driven. Syntax-checked only. |
@@ -412,7 +412,7 @@ Five other param types (`EnvVarType`, `PortForwardType`, `MemoryAddressType`, `H
 
 ```
 test/
-├── api/                  # Python API tests (82 files, run on box via `lager python`)
+├── api/                  # Python API tests (83 files, run on box via `lager python`)
 │   ├── communication/    # 30 files: I2C, SPI, UART, BLE, BluFi, WiFi, debug
 │   ├── io/               # 17 files: ADC, DAC, GPIO, PWM, pin conflict, USB-202
 │   ├── peripherals/      #  9 files: scope, arm, webcam, rotation, actuate
@@ -721,7 +721,7 @@ Gated as part of the `unit (cli)` job.
 |------|---------------|
 | `test_agent_loop.py` | End-to-end agent workflow: discovery, suitability, `lager python` execution, verify |
 
-### Python API Tests (`test/api/` -- 82 files)
+### Python API Tests (`test/api/` -- 83 files)
 
 These are **standalone scripts, not pytest** (see `test/CONVENTIONS.md`): each defines `main()`
 and runs on a box via `lager python`. None of them run in the PR gate.
@@ -760,6 +760,10 @@ and runs on a box via `lager python`. None of them run in the PR gate.
   `test_gpio_aardvark_api.py`.
 - Also `test_io_comprehensive.py`, `test_pin_conflict.py`, `test_pwm_measurement.py`,
   `test_LabJack_T7.py` (11-group suite), and `test_usb202.py` (MCC USB-202 DAQ).
+- `test_LabJack_U3.py` (LabJack UD-series over the Exodriver). Unlike the others it
+  needs no box and no saved nets -- it drives the U3 directly -- so it also runs
+  standalone on any machine with the device attached. Checks written from
+  LabJackPython's source rather than observed behaviour are labelled INFERRED.
 
 #### Sensors (9 files)
 

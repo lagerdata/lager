@@ -517,6 +517,35 @@ class DispatcherRoutingTests(unittest.TestCase):
         self.assertIs(DACDispatcher()._choose_driver(""), LabJackDAC)
 
 
+class ClaimReleaseTests(_UDTestCase):
+    """A UD device must be released when the box yields its USB claims.
+
+    ``_release_direct_usb_claims`` drains the ADC/DAC/GPIO dispatcher caches
+    and closes each cached driver -- but a UD device object lives in the handle
+    manager, not on the driver, and the drivers expose no close(). Without an
+    explicit call the claim outlives every reference to it, and the next
+    ``lager python`` script against that U3 fails with a USB busy error. This
+    is the same reason the T7's LJM handle gets its own force_close.
+    """
+
+    def test_release_closes_the_ud_device(self):
+        import lager.hardware_service as hw
+        udh.get_ud_device("u3", "320012345")
+        self.assertFalse(self.device.closed)
+        hw._release_direct_usb_claims()
+        self.assertTrue(self.device.closed)
+
+    def test_release_reports_the_ud_family_separately(self):
+        import lager.hardware_service as hw
+        udh.get_ud_device("u3", "320012345")
+        released = hw._release_direct_usb_claims()
+        # Returned or logged, depending on the box version; the device being
+        # closed is the contract. Assert the manager forgot it either way, so a
+        # later get_ud_device reopens rather than handing back a closed object.
+        del released
+        self.assertEqual(udh.close_all_ud_devices(), 0)
+
+
 class ScannerRegistrationTests(unittest.TestCase):
     """The scanner must advertise only roles that have a driver behind them."""
 

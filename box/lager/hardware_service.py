@@ -913,6 +913,20 @@ def _release_direct_usb_claims():
     except Exception as e:
         logger.warning(f"Failed to release LabJack claim: {e}")
 
+    # LabJack UD series (U3/U6): same reason the T7 needs an explicit call.
+    # Draining the ADC/DAC/GPIO dispatcher caches below is NOT enough, because
+    # _try_close_driver() looks for close()/_close() on the *driver instance*
+    # and a UD device object lives in its own manager, shared across all three
+    # roles. Evicting the drivers would leave the USB claim held with nothing
+    # left pointing at it -- the orphaned-claim case this function exists to
+    # prevent.
+    try:
+        from lager.io.labjack_ud_handle import close_all_ud_devices
+        close_all_ud_devices()
+        released.append('labjack_ud')
+    except Exception as e:
+        logger.warning(f"Failed to release LabJack UD claim: {e}")
+
     # Per-instance USB drivers (FT232H, Aardvark, USB-202, Joulescope, PPK2):
     # close each cached driver, then clear the cache so the next /invoke
     # recreates and reopens it cleanly.
