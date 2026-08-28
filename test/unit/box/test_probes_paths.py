@@ -24,10 +24,10 @@ BOX_DIR = os.path.join(REPO_ROOT, "box")
 if BOX_DIR not in sys.path:
     sys.path.insert(0, BOX_DIR)
 
-from lager.util.paths import contained_path, fs_slug  # noqa: E402
+from lager.util.paths import fs_slug  # noqa: E402
 
-# contained_path normalises but does not resolve, so /tmp stays /tmp on
-# macOS too -- production and a developer laptop spell these the same way.
+# The helpers normalise but do not resolve, so /tmp stays /tmp on macOS too --
+# production and a developer laptop spell these the same way.
 TMP = "/tmp"
 
 # An ordinary J-Link serial, and values whose separators must not survive
@@ -52,16 +52,6 @@ class TestFsSlug(unittest.TestCase):
             slug = fs_slug(value)
             self.assertNotIn("/", slug)
             self.assertNotIn("\\", slug)
-
-
-class TestContainedPath(unittest.TestCase):
-    def test_returns_a_path_under_the_root(self):
-        self.assertEqual(
-            os.path.dirname(contained_path("/tmp", "jlink_x.pid")), TMP)
-
-    def test_rejects_an_unslugged_multi_component_name(self):
-        with self.assertRaises(ValueError):
-            contained_path("/tmp", "../a/b")
 
 
 class TestProbeRuntimePaths(unittest.TestCase):

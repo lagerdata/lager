@@ -30,9 +30,10 @@ file ``/tmp/jlink_gdbserver.pid``, OpenOCD PID file ``/tmp/openocd.pid``.
 without a parseable address.
 """
 
+import os
 import re
 
-from lager.util.paths import contained_path, fs_slug
+from lager.util.paths import fs_slug
 
 _VISA_RE = re.compile(
     # Serial slot may be empty for FTDI chips whose EEPROM was never
@@ -311,29 +312,41 @@ def rtt_port_for_slot(slot):
 def jlink_gdbserver_pidfile(serial):
     if serial is None:
         return _LEGACY_GDBSERVER_PIDFILE
-    return contained_path(
-        _PROBE_RUNTIME_DIR, f'jlink_gdbserver_{fs_slug(serial)}.pid')
+    path = os.path.normpath(
+        os.path.join(_PROBE_RUNTIME_DIR, f'jlink_gdbserver_{fs_slug(serial)}.pid'))
+    if not path.startswith(_PROBE_RUNTIME_DIR + os.sep):
+        raise ValueError(f'refusing a path outside {_PROBE_RUNTIME_DIR!r}')
+    return path
 
 
 def jlink_gdbserver_logfile(serial):
     if serial is None:
         return _LEGACY_GDBSERVER_LOGFILE
-    return contained_path(
-        _PROBE_RUNTIME_DIR, f'jlink_gdbserver_{fs_slug(serial)}.log')
+    path = os.path.normpath(
+        os.path.join(_PROBE_RUNTIME_DIR, f'jlink_gdbserver_{fs_slug(serial)}.log'))
+    if not path.startswith(_PROBE_RUNTIME_DIR + os.sep):
+        raise ValueError(f'refusing a path outside {_PROBE_RUNTIME_DIR!r}')
+    return path
 
 
 def jlink_pidfile(serial):
     if serial is None:
         return _LEGACY_JLINK_PIDFILE
-    return contained_path(
-        _PROBE_RUNTIME_DIR, f'jlink_{fs_slug(serial)}.pid')
+    path = os.path.normpath(
+        os.path.join(_PROBE_RUNTIME_DIR, f'jlink_{fs_slug(serial)}.pid'))
+    if not path.startswith(_PROBE_RUNTIME_DIR + os.sep):
+        raise ValueError(f'refusing a path outside {_PROBE_RUNTIME_DIR!r}')
+    return path
 
 
 def jlink_logfile(serial):
     if serial is None:
         return _LEGACY_JLINK_LOGFILE
-    return contained_path(
-        _PROBE_RUNTIME_DIR, f'jlink_{fs_slug(serial)}.log')
+    path = os.path.normpath(
+        os.path.join(_PROBE_RUNTIME_DIR, f'jlink_{fs_slug(serial)}.log'))
+    if not path.startswith(_PROBE_RUNTIME_DIR + os.sep):
+        raise ValueError(f'refusing a path outside {_PROBE_RUNTIME_DIR!r}')
+    return path
 
 
 # ---- OpenOCD per-probe helpers -------------------------------------------------
@@ -353,12 +366,18 @@ def openocd_tcl_port_for_slot(slot):
 def openocd_pidfile(serial):
     if serial is None:
         return _LEGACY_OPENOCD_PIDFILE
-    return contained_path(
-        _PROBE_RUNTIME_DIR, f'openocd_{fs_slug(serial)}.pid')
+    path = os.path.normpath(
+        os.path.join(_PROBE_RUNTIME_DIR, f'openocd_{fs_slug(serial)}.pid'))
+    if not path.startswith(_PROBE_RUNTIME_DIR + os.sep):
+        raise ValueError(f'refusing a path outside {_PROBE_RUNTIME_DIR!r}')
+    return path
 
 
 def openocd_logfile(serial):
     if serial is None:
         return _LEGACY_OPENOCD_LOGFILE
-    return contained_path(
-        _PROBE_RUNTIME_DIR, f'openocd_{fs_slug(serial)}.log')
+    path = os.path.normpath(
+        os.path.join(_PROBE_RUNTIME_DIR, f'openocd_{fs_slug(serial)}.log'))
+    if not path.startswith(_PROBE_RUNTIME_DIR + os.sep):
+        raise ValueError(f'refusing a path outside {_PROBE_RUNTIME_DIR!r}')
+    return path
