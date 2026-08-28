@@ -238,7 +238,7 @@ class TestAddTreeEditDispatch:
             app = self._app_with_screen([net])
             async with app.run_test(size=(100, 40)) as pilot:
                 await pilot.pause()
-                screen = tui.AddScreen([net], False)
+                screen = tui.AddScreen([net])
                 app.push_screen(screen)
                 await pilot.pause()
                 screen.add_tree._edit_net(net)
@@ -256,7 +256,7 @@ class TestAddTreeEditDispatch:
             app = self._app_with_screen([net])
             async with app.run_test(size=(100, 40)) as pilot:
                 await pilot.pause()
-                screen = tui.AddScreen([net], False)
+                screen = tui.AddScreen([net])
                 app.push_screen(screen)
                 await pilot.pause()
                 screen.add_tree._edit_net(net)
@@ -271,7 +271,7 @@ class TestAddTreeEditDispatch:
             app = self._app_with_screen([net])
             async with app.run_test(size=(100, 40)) as pilot:
                 await pilot.pause()
-                screen = tui.AddScreen([net], False)
+                screen = tui.AddScreen([net])
                 app.push_screen(screen)
                 await pilot.pause()
                 screen.add_tree._edit_net(net)
@@ -299,7 +299,7 @@ class TestAddTreeEditDispatch:
             app = self._app_with_screen([net, saved])
             async with app.run_test(size=(100, 40)) as pilot:
                 await pilot.pause()
-                screen = tui.AddScreen([net, saved], False)
+                screen = tui.AddScreen([net, saved])
                 app.push_screen(screen)
                 await pilot.pause()
                 screen.add_tree._edit_net(net)
@@ -346,7 +346,7 @@ class TestAddScreenNotices:
             app = tui.NetApp(ctx=None, dut="box", inst_list=[], nets=[net])
             async with app.run_test(size=(100, 40)) as pilot:
                 await pilot.pause()
-                screen = tui.AddScreen([net], False)
+                screen = tui.AddScreen([net])
                 app.push_screen(screen)
                 await pilot.pause()
                 # The pin tip renders inside the dismissable block.
@@ -368,7 +368,7 @@ class TestAddScreenNotices:
             app = tui.NetApp(ctx=None, dut="box", inst_list=[], nets=[net])
             async with app.run_test(size=(100, 40)) as pilot:
                 await pilot.pause()
-                screen = tui.AddScreen([net], False)
+                screen = tui.AddScreen([net])
                 app.push_screen(screen)
                 await pilot.pause()
                 assert not screen.query("#add_notices")
@@ -400,7 +400,7 @@ class TestSingleChannelConflictScope:
             with patch.object(tui, '_save_nets_batch', return_value=True) as sb:
                 async with app.run_test(size=(100, 40)) as pilot:
                     await pilot.pause()
-                    screen = tui.AddScreen(all_nets, False)
+                    screen = tui.AddScreen(all_nets)
                     app.push_screen(screen)
                     await pilot.pause()
                     for n in selection:
